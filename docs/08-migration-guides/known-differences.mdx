@@ -48,16 +48,7 @@ for chunk := range textResult.Chunks() {
 }
 ```
 
-When the stream itself fails (`Next()` returns an error, rather than the
-provider sending an error part), Go still calls `OnStepEnd` and `OnEnd` with
-the error and ends the call's telemetry. TypeScript never runs its flush
-handler in that case, so it calls neither and leaves the root span open.
-
-When the stream ends cleanly without a finish part, Go still parses and
-validates the accumulated text and returns the object (finish reason
-`other`). TypeScript only parses the object in its finish handler, so there
-it calls `onFinish` with no object and no error, and `result.object` never
-settles.
+When the stream ends cleanly without a finish part, Go still parses, validates and returns the object (finish reason `other`); TypeScript's `result.object` never settles in that case (S3: a Go call must return). When the stream itself fails, Go closes the step and root spans with the error; TypeScript leaves them open (S7). Laziness itself: S1 (`StreamObject` returns a consumed result).
 
 ## Video generation webhook suspension in workflows
 
@@ -71,87 +62,37 @@ drive the job yourself with `ai.ExperimentalStartVideo` /
 `ai.ExperimentalGetVideoStatus`, which support both polling and webhook
 completion (fal and Replicate) outside of a workflow.
 
-## Vercel Sandbox OIDC token refresh
+Reason: S3: durable suspension needs the Node-only Workflow DevKit runtime.
 
-`@vercel/sandbox` refreshes the Vercel OIDC token through `@vercel/oidc` by default, writing the refreshed token to the Vercel token cache and `process.env`, and can prompt for local dev credentials. In `pkg/harness/sandbox/vercel` the refresh is opt-in: set `OIDCRefresh` on `CreateSessionOptions`, `ResumeSessionOptions` or `LegacySettings`. The refreshed token, and the project token TS saves to the token cache, are kept in memory in that `OIDCRefresh` value; the Vercel CLI login and the token cache are read only, the CLI login is never refreshed with its refresh token (the error is `Failed to refresh authentication token.: <reason>`), and there is no interactive credential prompt. Without `OIDCRefresh`, the token (`VERCEL_OIDC_TOKEN_FILE`, else `VERCEL_OIDC_TOKEN`) is used as read, also when it has expired. The sandbox follows `@vercel/oidc` 4.0.0 (the version `@vercel/sandbox` 3.9.0 pins); `gateway.VercelOIDCTokenFunc` follows 3.2.0 (the version TS `@ai-sdk/gateway` pins). A JWT `owner_id` claim that is an array is sent as one comma-joined `teamId`, where TS appends one `teamId` per element (owner decision b, review rounds 87b and 87c).
+## Vercel Sandbox OIDC token refresh
+`@vercel/sandbox` refreshes the Vercel OIDC token through `@vercel/oidc` by default, writing the refreshed token to the Vercel token cache and `process.env`, and can prompt for local dev credentials. In `pkg/harness/sandbox/vercel` the refresh is opt-in: set `OIDCRefresh` on `CreateSessionOptions`, `ResumeSessionOptions` or `LegacySettings`. The refreshed token, and the project token TS saves to the token cache, are kept in memory in that `OIDCRefresh` value; the Vercel CLI login and the token cache are read only, the CLI login is never refreshed with its refresh token (the error is `Failed to refresh authentication token.: <reason>`), and there is no interactive credential prompt. Without `OIDCRefresh`, the token (`VERCEL_OIDC_TOKEN_FILE`, else `VERCEL_OIDC_TOKEN`) is used as read, also when it has expired. The sandbox follows `@vercel/oidc` 4.0.0 (the version `@vercel/sandbox` 3.9.0 pins); `gateway.VercelOIDCTokenFunc` follows 3.2.0 (the version TS `@ai-sdk/gateway` pins) (S4: owner decision b).
 
 ## Vercel OIDC 4.0.0: keyring login and CLI config
 
 `@vercel/oidc` 4.0.0 asks `@vercel/cli-config` where the Vercel CLI keeps its login (`getGlobalPathConfig`, `tryReadAuthConfig`) and, when the CLI stores credentials in the system keyring (`VERCEL_TOKEN_STORAGE` / `credStorage`), runs `vercel project token <project> --format=json [--scope <team>]` to refresh the OIDC token. Go reads the login from `<user data dir>/com.vercel.cli/auth.json` as 3.2.0 did and never runs the Vercel CLI: with keyring storage, pass `OIDCRefresh.AccessToken`. The `@vercel/cli-config` source was not available to compare (not in the TS checkout or the owner-approved packages) (review round 87c).
 
+Reason: S4: owner decision b.
+
 ## Vercel OIDC token parse errors
 
 When the Vercel OIDC token payload is not JSON, the cause of the `LocalOidcContextError` carries Go's JSON parse error text (for example `unexpected end of JSON input`), not V8's `SyntaxError` text (`Unexpected end of JSON input`). A missing `VERCEL_OIDC_TOKEN_FILE` file is Go's `open <path>: no such file or directory` (matchable with `errors.Is(err, os.ErrNotExist)`), not Node's `ENOENT: ...` text. The zod issue texts match (review round 87c).
 
-## Vercel Sandbox snapshot listing bound
-
-`vercel.APIClient.ListSnapshots` and the template snapshot poll follow at most 20 pages; TS follows `pagination.next` without a bound (review round 87c).
+Reason: S3: V8 and Node error texts.
 
 ## Code-mode: never-settling promises and in-flight limits
+`pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly sandbox (wazero). Concurrent tool calls that need approval (for example inside one `Promise.all`) are batched into a single interrupt, as in TS. These details differ:
 
-`pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly
-sandbox (wazero). Concurrent tool calls that need approval (for example
-inside one `Promise.all`) are batched into a single interrupt, as in TS.
-These details differ:
-
-- A promise that never settles and has no pending tool call fails fast
-  with a `ProtocolError`. TypeScript waits for the execution timeout.
-- Tool call arguments are serialized with `JSON.stringify` when the call is
-  made. A function or symbol in the arguments is dropped instead of failing
-  the call (TS `run` serializes with devalue and throws), and a circular
-  value fails the call when it starts (review round 87c).
-- Every property of `tools` is a tool. In TS, names inherited from
-  `Object.prototype` (`tools.toString`, `tools.hasOwnProperty`) resolve to
-  those functions instead of a tool call (review round 87c).
-- A script that returns while a call paused for approval is still pending
-  always fails with `DetachedBridgeRequestError`. In TS the outcome depends
-  on timing: the host may register the interruption before the result and
-  return an interrupt instead (review round 87c).
-- `SetMaxWorkers(0)` means no concurrency limit; TypeScript rejects 0.
-- On platforms other than Linux, macOS and Windows, the default worker cap
-  is 32, because Go cannot read available memory there without cgo.
-- A resumed run whose `ToolExecutionOptions` has an empty `ToolCallID`
-  keeps the continuation's outer tool call ID. Go cannot tell an empty ID
-  from an unset one; TypeScript keeps an explicit `""`.
+- A script that returns while a call paused for approval is still pending always fails with `DetachedBridgeRequestError`. In TS the outcome depends on worker message timing (S3).
+- On platforms other than Linux, macOS and Windows, the default worker cap is 32, because Go cannot read available memory there without cgo (S3).
+- A resumed run whose `ToolExecutionOptions` has an empty `ToolCallID` keeps the continuation's outer tool call ID; `ToolCallID` is a v0.5.2 string (S1).
+- `SetMaxWorkers(0)` means no concurrency limit, as v0.5.2 documented; TypeScript rejects 0 (S6).
+- Tool inputs reach Go tools as JSON: a circular or BigInt input that devalue accepts fails the call with the JSON error; TS passes the JS value (S3: JS values with no JSON form; review round 87e).
 
 ## MCP transports
-
-- Transport failures that wrap a Go error (a failed dial, a broken pipe, a
-  request sent before `Connect` on `HTTPTransport`) are `*TransportError`,
-  whose text starts with `transport error: `. TypeScript lets the runtime's
-  own error through, and its text differs from Go's anyway. Errors that TS
-  creates itself use the TS text.
-- `HTTPTransport` reports a failed POST (an HTTP error status, an
-  unexpected content type, a failed authorization) to `OnError` once.
-  TypeScript reports these twice, because its inner and outer `catch`
-  blocks both call `onerror` with the same error.
-- `SSETransport.Connect` interrupted by `Close` before the endpoint event
-  returns an error. TypeScript's `start()` never settles once it is aborted.
-  `HTTPTransport.Connect` interrupted by `Close` (for example while it
-  refreshes an OAuth token) also returns an error and leaves the transport
-  closed; TypeScript's `start()` cannot be interrupted.
-- `Connect` after `Close` starts the transport again, as in v0.5.
-  TypeScript's HTTP transport fails with "Transport already started", and
-  its stdio transport never finishes starting.
-- After a stdio server process exits on its own, `StdioTransport.Send`
-  fails with a `*TransportError` for the closed pipe. TypeScript clears the
-  process on its `close` event and throws "StdioClientTransport not
-  connected". Go learns of the exit only through `Close`, which waits on
-  the process.
-- After a read error on its stream (once the endpoint event has arrived),
-  `SSETransport` marks itself disconnected: `Send` fails with "Not
-  connected" and `Receive` returns the stream error. TypeScript only reports
-  the error through `onerror` and stays connected, so a later send still
-  POSTs, but its reply can never arrive over the dead stream. Go fails fast
-  instead, as in v0.5.
-- `HTTPTransport.Close` waits for its background goroutines (inbound SSE,
-  reconnect timers, readers of event-stream POST responses), except one
-  that is inside an `OnError`, `OnSessionIDChange` or `OnSessionExpired`
-  callback, so that the callback can call `Close`. That goroutine exits
-  once its callback returns. It also does not wait for an OAuth
-  authorization the inbound SSE GET started after a 401: as in TypeScript,
-  `Close` does not cancel that flow, and its failure is still reported to
-  `OnError`.
+- Transport failures that wrap a Go error (a failed dial, a broken pipe, a request sent before `Connect` on `HTTPTransport`) are `*TransportError` (`transport error: ...`); TS passes the runtime's own error, whose text is Node's. Errors TS creates itself use the TS text (S3).
+- `SSETransport.Connect` or `HTTPTransport.Connect` interrupted by `Close` returns an error and leaves the transport closed; TS's `start()` then never settles (SSE) or cannot be interrupted (HTTP) (S3).
+- `StdioTransport.Connect` after `Close` starts the server again; TS's `start()` never settles (S3).
+- `HTTPTransport.Close` waits for its background goroutines, except one inside an `OnError`, `OnSessionIDChange` or `OnSessionExpired` callback (so the callback can call `Close`), and does not cancel an OAuth authorization the inbound SSE GET started after a 401 (as TS; its failure still reaches `OnError`) (S3: no goroutines in JS).
 
 ## fx: libfx runtime
 
@@ -220,155 +161,28 @@ These details differ:
     Braces nested thousands of levels deep make Node throw "Maximum call
     stack size exceeded"; Go expands them, slowly, until the context ends.
 
-## Harness file reporter
+Reason: S2 / S3 / S1 per item (the fx slice owns this section).
 
-- A step's `output` is rebuilt from the step-end telemetry event (text,
-  reasoning, files, tool calls, tool results), so it omits the approval
-  requests and sources that TS `step.content` holds, and writes
-  `"input": null` where TS leaves an undefined input out.
-- When a provider-executed tool sends a preliminary result and then its
-  final result, TS pushes the first `toolOutput` into the model-call content
-  twice; Go records each result once.
+## Harness file reporter
+A step's `output` is rebuilt from the step-end telemetry event in a fixed order: text, reasoning, files, tool calls, tool results. TS writes the step's content in stream order, including tool approval requests and responses and the per-part provider metadata, with each part shaped as its TS construction site builds it. Go writes `"input": null` where TS leaves an undefined input out. A Go step result does not record those per-site shapes (coordinator ruling round 87e: stays unless the shapes can be derived per site).
 
 ## Google batch and Perplexity: empty values and fractional counts
+`BatchV4ListOptions.Cursor`, `BatchV4StartOptions.WebhookURL`, `BatchV4ListResult.NextCursor` and `BatchV4Status.RawStatus` are v0.5.2 strings, so `""` means unset: Go sends no `pageToken=` or `webhookConfig` for `""` and reports `nextPageToken: ""` as no cursor. Fractional token and invocation counts (accepted, as TS `z.number()`) are truncated toward zero because `types.Usage` and the Perplexity metadata hold integers (S1).
 
-- **Google batch cursor and webhook.** `BatchV4ListOptions.Cursor` and
-  `BatchV4StartOptions.WebhookURL` are strings, so an empty value is the same
-  as unset. TS sends `pageToken=` for `cursor: ""` and a `webhookConfig` for
-  `webhookUrl: ""`; Go sends neither. A response `nextPageToken: ""` is
-  reported as no `NextCursor`, where TS returns `nextCursor: ""`. An empty
-  `metadata.state` and `responsesFile` are kept as values, like TS, but
-  `BatchV4Status.RawStatus` cannot tell `""` from absent.
-- **Fractional counts.** TS `z.number()` accepts counts such as `12.5`. Go
-  accepts them too (in streams and, since review round 79, in every
-  non-stream JSON response) and truncates integer counts toward zero,
-  because `types.Usage` and the providers' response structs hold integers.
-  `providerMetadata.perplexity.usage` and `toolCalls` invocation counts are
-  truncated the same way.
+## Accept header
+Streaming requests send `Accept: text/event-stream` and other requests send none. TS's `fetch` adds `accept: */*` to every request that sets none (S3: Node runtime default).
 
-## Gemini and Perplexity streaming
-
-- **Accept header.** Streaming requests send `Accept: text/event-stream`, an
-  SDK-wide Go convention. TS sends no `Accept` header.
-- **Google usage metadata merge.** When a long-decode response spans several
-  requests, the summed `usageMetadata` keeps the earlier `serviceTier` and
-  `trafficType` if a later request sends an explicit `null`. TS merges with
-  `{...a, ...b}`, so the `null` overrides the earlier value.
-
-## WorkflowAgent root call ID
-
-TS gives every `WorkflowAgent` root (and its `executeTool` events) the
-literal call ID `'workflow-agent'`. Go gives each `Generate` or `Stream`
-call its own ID. A constant ID would collide in an integration's call-state
-map when two runs share an integration concurrently, and would break
-correlating events with their run.
-
-## WorkflowRunMultiplexer run ID
-
-`workflow.WorkflowRunMultiplexer` is a Go-only type with no TS twin. Its
-`SendMessages` reads the `x-workflow-run-id` response header when the server
-sends one, but does not require it. `workflow.WorkflowChatTransport`, the
-twin of TS `WorkflowChatTransport`, fails without the header with the TS
-error `Workflow run ID not found in "x-workflow-run-id" response header`.
+## WorkflowAgent root telemetry outside a durable run
+TS WorkflowAgent reports its root telemetry in two ways, chosen by `isInWorkflow()`. In a Workflow DevKit run it records the events and reports them when the run ends, with a `call-…` call ID, the final step's fields on the end event, and an `onAbort` for a run that never closed. Outside one it dispatches live: the call ID is the literal `'workflow-agent'`, the end event has no `finalStep` (both TS OTel integrations throw on it), and an abort returned by the model step leaves the root open. Go has no Workflow DevKit and always behaves like the durable report (S3: the Node-only Workflow DevKit runtime).
 
 ## Option validation timing
-
-- `StreamText` returns an invalid `Instructions` value (a non-system
-  message) as its error, synchronously. TS `streamText` validates the prompt
-  inside its async run, so the error arrives as an error part or a rejected
-  promise, after the `maxRetries` check. Go reports it the way its other
-  `StreamText` validation errors are reported, as v0.5.x did.
-- `WorkflowAgent.Stream` rejects a `MaxTokens` below 1 before the model call
-  (`InvalidArgumentError` "maxOutputTokens must be >= 1"), as
-  `WorkflowAgent.Generate` and TS `generateText` do. The TS WorkflowAgent
-  stream path (`doStreamStep`) does not check it and sends the value to the
-  provider.
+`StreamText` returns an invalid `Instructions` value (a non-system message) as its error, synchronously, as v0.5.2 did. TS `streamText` validates the prompt inside its async run, so the error arrives as an error part or a rejected promise (S6).
 
 ## UI message stream: source failure writes an error chunk
-
-When the source stream of `ToUIMessageStream` fails (any error other than an
-abort), Go writes one standard `error` chunk (`{"type":"error","errorText":...}`,
-masked unless `OnError` returns other text), ends the UI stream cleanly, and
-returns the error on its error channel. The pipe and response helpers do the
-same. TS `toUIMessageStream` errors the stream instead (`controller.error`),
-so no `error` chunk is written and a TS client sees a failed or aborted
-response. The API and the chunk protocol are the same as TS, and TS clients
-(`useChat`) handle the extra `error` chunk and show its text. One caveat:
-client logic that reacts to a dropped connection (for example
-reconnect-on-network-error) sees a clean end with an `error` chunk instead.
-This is the v0.5.x behavior (owner decision, 2026-10-29).
-
-The SSE helpers follow the same ruling. After a fatal UI stream failure (a
-source read error, a processing failure or a callback that panics), the
-`Pipe*` and `Create*` UI message stream response helpers write the masked
-`error` chunk and then `data: [DONE]`, and
-`CreateUIMessageStreamResponseWithInit` closes its pipe cleanly, so the
-response body ends without an error. TS `writeToServerResponse` ends the
-response without `[DONE]`, and the body of `createUIMessageStreamResponse`
-errors.
-
-## InvalidArgumentError message prefix
-
-Go has one `errors.InvalidArgumentError` type, and its message always starts
-with `Invalid argument for parameter <field>: `. TS has two: the `ai`
-package's `InvalidArgumentError` adds that prefix, while the provider
-package's `InvalidArgumentError` (thrown, for example, by
-`DecisionLanguageModel` for "Decision requires at least one question.") has
-the bare text. Where Go ports the provider-package error, its text has the
-prefix TS leaves out. Match these errors with `errors.As`, not by their text
-(coordinator ruling, round 67).
-
-## Decide: model version check and telemetry fields
-
-- Go does not check a model's specification version. TS
-  `resolveDecisionModel` (and the other TS model resolvers) throws
-  `UnsupportedModelVersionError` for a model whose `specificationVersion` is
-  not the current one. Go models are typed by their Go interface, so no Go
-  resolver checks a version.
-- Go has no global default provider (TS
-  `globalThis.AI_SDK_DEFAULT_PROVIDER`). A string `Model` resolves through
-  `DecideOptions.DecisionProvider`, then the deprecated `Provider`, then the
-  AI Gateway. Both fields are typed, so the TS error "The default provider
-  does not support decision models" has no Go equivalent.
-- The Go `Decide` telemetry events (`telemetry.DecideStartEvent`,
-  `DecideEndEvent`, `DecisionModelCallEndEvent`) carry the subset of the TS
-  fields that the OpenTelemetry integration reads. They have no
-  `MaxOutputTokens`, `Reasoning`, `ProviderOptions`, `Warnings`, rounding
-  settings or full response. This matches the other Go telemetry events
-  (coordinator ruling, round 67).
-
-## WorkflowAgent Stream: root telemetry at run end
-
-- A `WorkflowAgent.Stream` / `StreamWithOptions` run cancelled mid-stream
-  ends the `ai.workflowAgent.stream` root with the telemetry `OnAbort`, as
-  Go already does for a run cancelled before its stream opens. TS reports
-  an abort its loop throws to the root `onError`, and nothing for an abort
-  its iterator returns, which leaves the root span open. Go cannot tell the
-  two apart, and an `OnAbort` closes the span.
-- Go fires the user callbacks first and then the root telemetry: user
-  `OnError`, user `OnEnd`, root `OnError`, root `OnEnd`. TS interleaves them
-  (user `onError`, telemetry `onError`, user `onEnd`, telemetry `onEnd`). The
-  order within each channel matches TS (coordinator ruling, round 68).
-
-## UI tool parts: `dynamic: false`
-
-Go UI tool parts and chunks cannot tell an unset `dynamic` from
-`dynamic: false` (`ToolCall.Dynamic` is a `bool`), so Go writes `dynamic`
-only when it is true. TS `toUIMessageChunk` copies a tool part's own
-`dynamic` for a tool missing from the tool set, so it can write
-`dynamic: false`; it also writes `dynamic: false` on the `tool-input-start`
-of an unknown tool and of a provider-executed tool that is not in the tool
-set. Clients read a missing `dynamic` as false (coordinator ruling, round 86:
-closing it needs a `DynamicSet` flag on `types.ToolCall`).
+When the source of `ToUIMessageStream` fails (any error other than an abort), Go writes one `error` chunk (masked unless `OnError` returns other text) before it ends; TS errors the stream without it. The `StreamTextResult` SSE helpers then end without `data: [DONE]` and return the error, as TS. The chunk-channel helpers do the same when given `UIMessageStreamResponseInit.StreamErrors`, else they end with `[DONE]`. TS clients show the error chunk's text (S4: owner decision, 2026-10-29).
 
 ## UI message stream JSON key order
-
-`UIMessageChunk` is a `map[string]interface{}`, so the SSE helpers
-(`ToUIMessageStreamResponse`, `PipeUIMessageStreamToResponse`,
-`CreateUIMessageStreamResponse`, ...) write each event's JSON with sorted
-keys (`{"errorText":"...","type":"error"}`). TS writes insertion order
-(`{"type":"error","errorText":"..."}`). The JSON values are the same; only
-byte-level comparisons of the stream differ (review round 70).
+UI SSE events write each chunk's keys in the TS order. Nested objects held in Go maps (provider metadata, tool input and output, data) and keys TS does not create are written in sorted order (S3: Go map order; review round 87e).
 
 ## ToUIMessageStream on a raw provider stream
 
@@ -384,15 +198,7 @@ source that starts with a start part (`StreamText`, harness and
 a `text-start` first, because Go providers may stream text without one; TS
 forwards the delta alone (review round 71).
 
-## Telemetry start before the start callbacks
-
-`GenerateText`, `StreamText`, the legacy `ToolLoopAgent` and `WorkflowAgent`
-(both modes: the workflow root `OnStart` fires before the user `OnStart`)
-call the telemetry `OnStart` before the user `OnStart`, so the callback runs inside
-the integration's span context (the context it receives is the one the
-integration returns). TS starts the callback first. `OnStepStart`, end,
-step-end, step-error, tool and `ExperimentalDecide` events run the callbacks
-first, as in TS (review rounds 71, 72 and 75).
+Reason: S4 (owner 2026-10-30, option a) + S6 (v0.5 providers may stream text without block parts).
 
 ## RuntimeContext defaults to nil
 
@@ -403,12 +209,7 @@ caller sets none. Go leaves `RuntimeContext` (and the deprecated
 and v0.5.x callers check it with `== nil` (owner preference, review round
 71). `ToolsContext` defaults to an empty map, as in TS.
 
-## EmbedMany waits for sibling batch calls
-
-A parallel `EmbedMany` group that fails returns the first failure in time,
-as TS does, but only after the other calls of that group finish. TS rejects
-at once and lets them run on. Go waits so that no provider call outlives
-`EmbedMany` (review round 72).
+Reason: S4: owner preference (R72 / R73).
 
 ## Abort keeps the parts produced before it
 
@@ -421,12 +222,10 @@ snapshot for an abort in the second step shows the first step and the
 not on a rule; `OnAbort`, the recorded steps and the result are the same
 (review round 72).
 
-## Tool call input keeps undeclared keys
+Reason: S3: TS stream queue timing.
 
-TS zod object schemas strip keys they do not declare from the parsed tool
-input, so the tool-call part and `execute` never see them (an xai MCP call's
-arguments become `{}` in TS). Go validates the input with JSON Schema and
-passes it through unchanged (review round 72).
+## Tool call input keeps undeclared keys
+TS zod object schemas strip keys they do not declare from the parsed tool input. Go strips them for the 20 Anthropic provider tools whose TS schema is a flat `z.object` and whose Go schema declares the same keys (bash, text editor, computer, code execution 20250522, tool search, web fetch, web search, advisor). Other provider tools keep undeclared keys: discriminated unions (memory, code execution 20250825 / 20260120), nested schemas and schemas not audited key by key, where a Go schema missing a key TS keeps would silently drop an argument of a locally executed tool (S7). Go user tools match TS `jsonSchema()` tools, which do not strip either (review round 87e).
 
 ## Reasoning lists hold reasoning text only
 
@@ -436,24 +235,7 @@ TS `StepResult.reasoning` and the result's `reasoning` are
 parts are returned by `StepResult.ReasoningFiles()` (from `Content`) and are
 in the telemetry `ReasoningFiles` (review rounds 72, 73).
 
-## Tool output structs holding NaN
-
-`ToJSONValue` (tool model output, response messages) nulls NaN and ±Inf
-inside maps, slices, arrays and pointers in place, as TS
-`JSON.parse(JSON.stringify(v))` does. It cannot null one held in a struct
-field without reimplementing encoding/json's struct rules, so such an output
-still becomes `null` as a whole. TS has no structs; a plain object with NaN
-keeps its other fields (review round 73).
-
-## WorkflowAgent root telemetry end
-
-TS `WorkflowAgent` sends its root `onEnd` the last step's fields plus
-`steps` / `usage`, with no `finalStep`. Both TS OTel integrations read
-`event.finalStep.providerMetadata` while building the root end attributes
-and throw there, so TS records no root end attributes (and onEnd does not
-end the root span). Go's `ai.workflowAgent.stream` root gets the
-generate-shaped end attributes (finish reason, text, usage) and ends
-(review round 73).
+Reason: S1: `Reasoning []types.ReasoningContent`.
 
 ## ConsumeStream returns the error
 
@@ -462,6 +244,8 @@ one). Go's `StreamTextResult.ConsumeStream() error` returns the error, the Go
 form of `onError`; ignore the return value for TS's behavior (review
 round 73).
 
+Reason: S1: v0.5.2 `ConsumeStream() error`.
+
 ## Merged UI message stream order
 
 When `CreateUIMessageStream` merges several sources (`writer.Merge`), TS's
@@ -469,64 +253,16 @@ exact interleaving follows its microtask queue. Go forwards every chunk and
 keeps each source's own order, but chunks of different sources interleave
 by goroutine scheduling (review round 73).
 
-## Provider tool error without a value
-
-A provider-executed tool result flagged `IsError` with a nil result gets the
-error text `tool error`. TS `JSON.stringify(undefined)` leaves `errorText`
-undefined (review round 73).
+Reason: S3: microtask versus goroutine scheduling.
 
 ## Message metadata merge with non-object values
-
-UI message metadata from `start`, `finish` and `message-metadata` chunks is
-merged as TS `mergeObjects(existing, incoming)` merges objects. An object
-followed by a number or boolean keeps the object, as TS. An object followed
-by a string or array, or a non-object followed by any value, is replaced by
-the incoming value. TS spreads the existing value into a new object and
-copies the incoming value's index keys into it (`{...base, 0: "a", 1: "b"}`
-for `"ab"`), a JavaScript object-spread artifact Go does not reproduce
-(coordinator ruling, review round 75).
+Metadata merges like TS `mergeObjects`. Where TS throws (`key in base` on a string, number or boolean base followed by a value with keys), Go replaces the metadata as v0.5 did (S6). A string's spread splits non-BMP characters into UTF-16 halves in TS; Go writes U+FFFD for each half (S3; round 87e).
 
 ## UI message stream end event finish reason
-
-The end event (`OnEnd`/`OnFinish`) of a UI message stream reports
-`finishReason` in the shape v0.5 used. `CreateUIMessageStreamWithOptions`
-gives the `finishReason` of the last `finish` chunk as written (normally a
-`string`), or `nil` when no chunk set one. `ToUIMessageStream` (and the
-`StreamTextResult` UI helpers) give a `types.FinishReason`, `""` when there is
-none. TS reports `state.finishReason` in both: the chunk's string or
-`undefined`. Compare with `== nil` / `== ""` per helper, or convert both with
-`fmt.Sprint` (review round 77).
-
-## Provider stream header metadata part
-
-Streams wrapped by `providerutils.WithResponseMetadata` (the Anthropic, AI
-Gateway, Cohere, Moonshot and openresponses language models) start with a
-`ChunkTypeResponseMetadata` part that carries the HTTP response headers (plus
-the model ID and the time the stream opened), after a leading `stream-start`.
-TS has no such part: `doStream` returns the headers on its result
-(`response.headers`) and the stream carries only the provider's own
-`response-metadata` parts. `provider.TextStream` has no other channel for the
-headers, and v0.5 callers of `DoStream` read them from this part, so it stays.
-`StreamText` and the UI helpers merge it into the step response as before; a
-raw `DoStream` consumer sees one extra part (review round 78). The TS gateway
-cases "should not modify response-metadata chunks without timestamp" and
-"should handle null timestamp values gracefully" are skipped on it.
-
-The OpenAI chat and completion streams carry the headers on their first
-`response-metadata` part instead; when no chunk carries an id, model or
-created, they add a headers-only `response-metadata` part just before the
-finish part, where TS emits none (review round 79).
+The UI stream end event's `finishReason` is a `types.FinishReason` from `ToUIMessageStream` (`""` when none) and the finish chunk's value from `CreateUIMessageStreamWithOptions` (`nil` when none), as in v0.5. TS reports the string or `undefined` in both (S6).
 
 ## Anthropic batch results of id-named provider tools across processes
-
-`ExperimentalBatch` restores the `Name` of a provider tool that keeps its
-constructor id (`anthropic.bash_20250124`) only when the results are read
-through the Provider that started the batch (it remembers up to 1024 such
-batches). Results read by another Provider value or process report the
-Anthropic wire name (`bash`): the Message Batches API returns no tool list,
-and TS has no such state because TS tools are named by the caller, normally
-with the wire name. Name the tool after its wire name (`tool.Name = "bash"`,
-as TS callers do) to get the same name everywhere (review round 75).
+A Go provider tool that keeps its constructor id as `Name` (`anthropic.bash_20250124`) has no TS counterpart: TS rejects a batch tool whose name differs from its wire name. Go accepts it and reports `Name` only when the Provider that started the batch reads the results (up to 1024 batches). Results read elsewhere report the wire name (`bash`). Name the tool `bash`, as TS callers do, to get the same name everywhere (S3).
 
 ## StreamText tool context failure ends the run
 
@@ -539,6 +275,8 @@ stream stops with no `finish-step` or `finish`, `OnEnd` is not called, and
 for the error part. This keeps StreamText in line with `GenerateText` and the
 agents, where a tool context failure fails the call (owner decision,
 2026-10-28).
+
+Reason: S4: owner decision, 2026-10-28.
 
 ## JSON payloads with `__proto__`
 
@@ -560,49 +298,7 @@ calls, where TS `secureJsonParse` throws. In Go, `ToolCallContent.Input` is
 always the wire text, also for inputs that TS holds as objects and passes
 through without parsing, so throwing would reject inputs that TS accepts.
 
-## Empty strings in provider response fields
-
-- **Typed string fields.** Some exported response structs hold a value as a
-  plain `string`, so `""` reads the same as an absent field: Gemini
-  `finishMessage`, `usageMetadata.serviceTier` and `continuationToken`;
-  Google interactions `signature`/`thought_signature`, the completed
-  `service_tier` and a file `mime_type`; Anthropic and Bedrock
-  `stop_sequence`. TS checks `!= null`, so `""` counts as present there.
-  Changing these fields' types would break v0.5.x callers, and the real APIs
-  do not send these empty values. An interactions builtin-tool
-  `delta.result: null` is not stored; TS stores `null`.
-  OpenAI Responses `computer_call` `pending_safety_checks[].code` and
-  `message` (`responses.ComputerSafetyCheck` holds plain strings, exported
-  in v0.5.2) drop a present `""` from the tool input, where TS keeps it.
-- **Interactions id on `interaction.created`.** An `interaction.created`
-  event with an empty id keeps the interaction id from an earlier event. TS
-  resets it, but Go also uses that id to reconnect to and cancel the
-  interaction.
-
-## Google Interactions tool call IDs
-
-A non-streaming Interactions response whose `function_call` step has no
-`id` (or an empty one) gets an ID from the provider's ID generator
-(`Config.GenerateID` or `InteractionsConfig.GenerateID`, else a random ID),
-as other Go providers do for missing tool call IDs. TS keeps the empty or missing ID. Go matches
-tool results and approvals by ID, so an empty ID, or the per-response
-`call_N` counter v0.5.2 used, could repeat across the steps of one run.
-
-The stream fallback follows TS: a step without an `id` is named
-`<interactionId>:<index>`, and `interaction:<index>` when the response has
-no interaction id (`store: false`). Under `store: false` that fallback can
-repeat across steps.
-
-## UI chunk-channel helpers cannot see a stream failure
-
-`PipeUIMessageChunksToResponse` and `CreateUIMessageChunksResponse` take a
-bare `<-chan UIMessageChunk`, so they cannot tell a closed channel from a
-failed stream and always end with `data: [DONE]`. TS
-`pipeUIMessageStreamToResponse` and `createUIMessageStreamResponse` end an
-errored stream without it. The `StreamTextResult` helpers
-(`PipeUIMessageStreamToResponse(WithInit)`,
-`CreateUIMessageStreamResponseWithInit`, `ToUIMessageStreamResponse`) see
-the UI conversion's failure and match TS (review round 79).
+Reason: S3: Go decoders build no prototypes.
 
 ## StreamText reads the provider stream without a reader
 
@@ -614,6 +310,8 @@ under backpressure. So after a client disconnect, and after a
 the `StreamText` ctx ends. Pass `r.Context()` (or another ctx you cancel) to
 stop it, or use `StreamTextLowMemory` for a bounded buffer with
 backpressure (review round 79).
+
+Reason: S6: v0.5 callbacks run without a reader (+S3: WHATWG backpressure).
 
 ## Invalid tool call input that is not a JSON object
 
@@ -630,6 +328,8 @@ accepts it. The validator text inside a `TypeValidationError` is Go's
 `JSONParseError` carries Go's parser message, not the JavaScript
 `SyntaxError` text (review round 79).
 
+Reason: S1 (`map[string]interface{}` inputs) and S3 (zod issue lists, V8 `SyntaxError` texts).
+
 ## Tool output JSON key order in replayed prompts
 
 A tool result's JSON output that the SDK serializes into the request text
@@ -640,76 +340,19 @@ json output", "should convert user - assistant (tool call) - tool message
 chain" and "should convert a tool roundtrip with follow-up assistant
 message" (openresponses) are skipped on it (review round 79). The google Interactions converter's `function_result` text (`JSON.stringify(output.value)`) follows the same rule; the TS assertion in "serializes a json tool result to a stringified payload" is marked n/a (review round 87d).
 
-## Embedding usage across EmbedMany batches
+Reason: S3: Go map order.
 
-When an `EmbedMany` call is split into batches and some batches return
-usage while others do not, Go records the token sum of the reporting
-batches (`EmbeddingUsage.Reported` is false, the positive `Tokens` is
-recorded as in v0.5); TS sums `usage.tokens` with NaN for a batch without
-usage, so its result is NaN and the telemetry attribute is dropped. A sum of
-0 with an unreported batch is not recorded, as in TS, and a call split into
-no batches records 0, as in TS (review round 80).
+## Embedding usage across EmbedMany batches
+When a provider sends no embedding usage for a call or for some `EmbedMany` batches (Google never does), `Usage.Tokens` is the sum of the reported batches (0 when none), as in v0.5.2, and the telemetry usage attribute is dropped. TS sums `usage ?? {tokens: NaN}`, so its result is NaN (S6: v0.5.2 callers sum, compare and `json.Marshal` the count, and `json.Marshal` fails on NaN; coordinator ruling round 87e).
 
 ## Legacy telemetry tool spans on error
-
-TS `LegacyOpenTelemetry.onError` does not end tool spans that are still
-open and then deletes the call state, so those spans are never ended or
-exported. Go's `LegacyOpenTelemetry.OnError` ends them with the error status
-before the step and root spans, so they are exported. Matching TS would leak
-spans (review round 80).
-
-## Executed tool results carry the tool title
-
-Go's executor copies the tool call's `Title` onto the `types.ToolResult` of a
-locally executed tool (the `ChunkTypeToolResult` stream part and the tool
-execution end events), as v0.5.2 did. TS builds a client tool's
-`tool-result` and `tool-error` without `title`. Step content, response
-messages and the UI message stream match TS. Dropping the field would
-silently remove a value v0.5.2 callers read, with no TS-observable gain
-(review round 80).
-
-## Live WebSocket close code
-
-Google and Vertex Live transcription and speech translation, and OpenAI
-realtime translation, end a WebSocket that closes before the stream
-finished with "... closed unexpectedly before finishing (code unknown).".
-TS includes the close code and reason (`(code 1011, reason: ...)`). Go uses
-`golang.org/x/net/websocket`, which discards the close frame's payload, and
-v0.5.2 exports that library's `*websocket.Conn` from
-`providerutils/websocket` (`Dial`, `Session.SetConn`, `ReceiveLoop`,
-`Receive`), so switching libraries would break v0.5.2 callers (review
-round 81).
-
-## OpenAI compaction metadata keeps the v0.5 keys
-
-An `openai.compaction` custom content part (generate and stream) carries
-`providerMetadata.openai = {type, itemId, encryptedContent}` like TS, and
-also the same three keys at the top level of `providerMetadata`, which
-v0.5.2 callers read. TS has only the provider-keyed object. The openai wire
-suite lists the 7 compaction tests under `SkipResults` for it (review
-round 81).
+When a call fails, Go's `LegacyOpenTelemetry.OnError` ends the tool spans that are still open with the error status, so they are exported. TS `LegacyOpenTelemetry.onError` deletes the call state without ending them, so they are never exported (S7: TS loses the spans of a failed call; review round 87e).
 
 ## Provider option spellings kept from v0.5
-
-Alibaba reads its options through the OpenAI-compatible resolver, so it
-also accepts `providerOptions["openai-compatible"]` and
-`providerOptions["openaiCompatible"]`, the raw `enable_thinking` /
-`thinking_budget` / `thinking-budget` / `parallel_tool_calls` spellings
-(with a `deprecated` warning) and the common `user` / `reasoningEffort` /
-`textVerbosity` options, which it sends. TS alibaba parses only
-`providerOptions.alibaba` with a strict schema (`enableThinking`,
-`thinkingBudget`, `preserveThinking`, `parallelToolCalls`) and drops the
-rest. The v0.5.2 Alibaba README and examples document
-`"enable_thinking"` / `"thinking_budget"`, so v0.5.x callers depend on
-them. Z.ai still forwards `user` and `verbosity`, which TS
-`transformZaiRequestBody` drops, as v0.5.2 did (review round 82).
+Alibaba also reads `providerOptions["openai-compatible"]` / `["openaiCompatible"]`, the raw `enable_thinking` / `thinking_budget` / `parallel_tool_calls` / `preserve_thinking` spellings (with a `deprecated` warning) and the common `user` / `reasoningEffort` / `textVerbosity` options, which it sends; TS alibaba parses only the camelCase `providerOptions.alibaba` keys. Z.ai still forwards `user` and `verbosity`, which TS `transformZaiRequestBody` drops. v0.5.2 read and documented these spellings (S6, coordinator ruling round 87e).
 
 ## Hugging Face byte image data
-
-A Hugging Face image part with byte data (`FileData.Data`) is sent as a
-base64 data URL. TS interpolates `part.data.data` into the data URL, so a
-`Uint8Array` becomes a comma-separated byte list there; base64 is what the
-API accepts (review round 82).
+A Hugging Face image part with byte data (`FileData.Data`) is sent as a base64 data URL. TS interpolates the `Uint8Array` into the data URL, which produces a comma-separated byte list that the API rejects (S7: Go does not copy a TS bug that breaks a working call; review round 87e).
 
 ## Provider option warning order
 
@@ -719,13 +362,16 @@ insertion order, which a Go map does not keep (the wire replay of "warns
 about unsupported options without adding fields to the request" is skipped
 for it; review round 82).
 
+Reason: S3: a Go map has no key order.
+
 ## Struct-tag schemas: Go-only choices
 
 `schema.NewStructSchema` / `NewSimpleStructSchema` generate the JSON Schema
 TS sends for the matching zod object, with these Go choices where no zod
 schema is the twin: a described required recursive reference is
-`{"description", "allOf": [{"$ref"}]}` inline (zod moves the described
-schema to its own `definitions` entry because it sits on the cycle);
+`{"description", "allOf": [{"$ref"}]}` inline, as the zod 3.25.76 `zod/v4`
+core the SDK pins emits it (zod 4.4 and later move it to a `definitions`
+entry, so TS output depends on the caller's zod);
 `float32` / `float64` are a bare `number` (zod `z.number()`, not
 `z.float32()` bounds); `time.Time` is `format: date-time` without zod
 `z.iso.datetime()`'s Z-only `pattern` (encoding/json accepts offsets);
@@ -734,6 +380,8 @@ slice elements are not nullable; `validate:"required"` also rejects zero
 values (go-playground), which JSON Schema `required` cannot state; and
 `validate` rules after `dive` and alternatives (`a|b`) are left out of the
 schema (review rounds 82 and 83).
+
+Reason: S3: TS output depends on the caller's zod version; the rest are Go types with no zod twin.
 
 ## URL parsing: three IDNA edge cases
 
@@ -746,6 +394,8 @@ rejects `xn---xii` (RFC 3492-valid, Node accepts), accepts
 Bidi rule to a label that decodes to Arabic Extended-B code points (Ada
 skips it) (review round 84).
 
+Reason: S4: R86B ruling 1.
+
 ## Typed URL fields
 
 TS treats a plain string file `data` that does not parse as a URL as
@@ -755,14 +405,7 @@ base64 inline data. Go has no field that may hold either:
 not parse fails with `Invalid URL`, as a TS tagged `{type: 'url'}` part does
 (review round 84).
 
-## Prompt deprecation warnings
-
-TS also logs `deprecated` warnings for the legacy `file-data`, `file-url`,
-`file-id`, `file-reference` and `image-*` tool-result content types. Go
-decodes those JSON types into `FileContentBlock`, so it cannot tell them
-apart and logs none. The `"image" content part` warning is logged for the
-messages of the initial prompt on every step; a message that `PrepareStep`
-adds is not scanned (review round 84).
+Reason: S4: R86B ruling 2 (+S1).
 
 ## Prompt file download errors
 
@@ -775,6 +418,8 @@ also resolves host names first, but reports them as the v0.5
 http, https, and data are permitted`, `URL resolves to loopback address
 127.0.0.1`) instead of TS `DownloadError` texts. The error type and text are
 kept from v0.5.2 (exported, security path) (review round 84).
+
+Reason: S4: R86B ruling 4 (+S2).
 
 ## TS test replays skipped in round 84
 
@@ -794,33 +439,31 @@ call's context when the call returns) (review round 84).
 
 TS `b6b9dcaec7` dropped runtime checks its types guarantee (prompt and message shapes, steering role, batch version, output type, nil schemas, tool callers, number types, smoothStream chunking, speech input, decide state and question shapes). Go types do not guarantee them, so Go keeps those checks and their v0.5 error texts; only the decide non-finite/cycle texts follow TS (coordinator ruling 5, review round 85).
 
+Reason: S3: Go types cannot express the TS unions, so the checks prevent panics.
+
 ## Durable workflow telemetry
 
 TS `4d6d830c14` adds a durable telemetry bridge for the Workflow DevKit; Go ports only its operation-name mapping (`ai.workflowAgent.stream` is `invoke_agent`). There is no Workflow DevKit gate in Go (coordinator ruling 6, review round 85).
 
-## ACP callbacks checked at session start
-
-TS `createACP` throws when `isMcpToolCall` / `resolveHostToolCall` are missing; Go keeps them as optional `acp.Settings` fields (v0.5 compile compatibility) and `DoStart` returns the TS error (review round 85).
-
-## Vercel policy inspection source
-
-TS reads response rules from `listSessions()`; Go reads the raw `networkPolicy` of the last session response it received (the same metadata, no extra request) (review round 85).
+Reason: S3: Workflow DevKit (Node runtime).
 
 ## SSE chunk-boundary artifacts
 
 eventsource-parser strips a mis-decoded BOM only when the first decoded chunk holds all three characters, and holds a CR at the end of a chunk until the next line terminator; a Node TextDecoderStream fed a BOM-only first chunk also drops a second BOM. Go parses as if the stream arrived in one piece (22 of 20,000 differential multi-chunk cases) (review round 85).
 
-## UI streams close open blocks at a step's finish
+Reason: S3: eventsource-parser / TextDecoderStream chunk timing.
 
-`ToUIMessageStream` closes a text or reasoning block still open at a step's finish with `text-end` / `reasoning-end`, also for a StreamText source; TS forwards the parts as they are, so a provider stream without its end parts leaves the UI part streaming (review round 85).
+## UI streams close open blocks at a step's finish
+A text or reasoning block still open at a step's finish gets its end part, for v0.5 provider streams without end parts; TS leaves the UI part streaming (S6, round 87e).
 
 ## Google videoMetadata validation errors
-
-TS throws a raw ZodError for an invalid file part `videoMetadata`; Go returns a `ValidationError` with the zod issue text, and the `gt(0)` issue renders `"inclusive":true` (review round 85).
+TS throws zod's `ZodError`; Go returns a `ValidationError` whose message ends with the same issue JSON (S3: a JS library error class).
 
 ## Deferred sandbox optional operations
 
 TS sandbox sessions always have `stat`, `listDirectory` and `deleteFile`; in Go they are optional interfaces. A deferred (recipe-less) harness session always implements them and returns `errors.ErrUnsupported` when the original sandbox lacks the method (review round 85).
+
+Reason: S1: required methods would break v0.5.2 implementers.
 
 ## TS test replays skipped in round 85
 
@@ -830,109 +473,112 @@ Recorded at TS `30548ee7f9` (ai@7.0.162) and skipped because the recording canno
 
 With `TerminateOnError`, `ReadUIMessages` stops reading at the first error and reports it once. TS keeps consuming the source until its next snapshot write, which throws `Invalid state: Controller is already closed` into `onError`, and later `error` chunks before that write also reach `onError` (a WHATWG streams artifact, not SDK behavior) (coordinator ruling, round 86).
 
-## Live tool results and telemetry order
-
-A StreamText tool result is streamed right after the user `OnToolExecutionEnd` returns and before the telemetry tool end; TS runs both end notifications before it enqueues the result. Only an integration that compares its tool-end time with the stream part can see it (round 86).
+Reason: S3: WHATWG controller artifact.
 
 ## WebSocket handshake headers with an empty value
 
 TS `connectToWebSocket` removes only `undefined` headers. Go header maps cannot hold `undefined`, so `wsutil.DialOptions.Headers` (and every WebSocket provider and the harness bridge) treats `""` as unset and does not send it; to send an empty header, set it on a custom dialer. A pointer or explicit-set flag would change the handshake of every WebSocket caller that uses `""` for unset since v0.5 (coordinator ruling, round 86).
 
-## Speech translation `TargetLanguage: ""`
+Reason: S1: `map[string]string` headers.
 
-TS checks `targetLanguage == null`, so an empty string reaches the provider. `ai.StreamTranslateOptions.TargetLanguage` and `provider.SpeechTranslationStreamOptions.TargetLanguage` are plain strings (v0.5.2), so `""` counts as missing and the call fails before connecting (coordinator ruling, round 86).
+## Speech translation `TargetLanguage: ""`
+`TargetLanguage: ""` counts as missing and fails before connecting; TS sends `""` to the provider (`== null` check). `ai.StreamTranslateOptions.TargetLanguage` / `provider.SpeechTranslationStreamOptions.TargetLanguage` are v0.5.2 strings (S1).
 
 ## Serializable tool patterns RE2 cannot compile
 
 A `pattern` or `patternProperties` key that uses lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`) or a backreference does not compile in Go's RE2, so `ResolveSerializableTools` / `ValidateSerializableToolInput` skip that keyword and accept the value; TS Ajv evaluates it. Every other pattern is matched with JavaScript u-mode semantics (`\s`, `.`, `\u` escapes) (review round 86b).
 
-## Tool call metadata from custom providers
-
-A `ToolCall.ToolMetadata` a custom provider sets on a valid model tool call is kept when the tool has no `Metadata`, and a provider-executed dynamic call keeps a provider `Title` / `ToolMetadata` (v0.5 behavior). TS model tool calls have neither field; invalid calls follow TS (`title: tool?.title`, metadata from the tool only). No built-in provider sets them. Decision providers called directly through `DoDecide` (not through `ExperimentalDecide`) still expect `[]interface{}` / `map[string]interface{}` criteria; TS providers receive JSON (review round 86b).
+Reason: S2: a backtracking engine would bring back ReDoS.
 
 ## Files results: empty filename on the result struct
-
-OpenAI, xAI and DeepSeek file results keep a returned `filename: ""` in `ProviderMetadata[<provider>]["filename"]`, but `UploadFileResult.Filename` / `FileMetadataResult.Filename` are v0.5.2 `string` fields, so `""` there means both "returned empty" and "absent" (TS keeps `filename: ""` on GetFileMetadata). Read the metadata map when the difference matters (review round 86b).
+`FileMetadataResult.Filename` is `""` both for a returned `filename: ""` and for none (S1: v0.5.2 string); TS keeps `""`. `ProviderMetadata[<provider>]["filename"]` keeps it (OpenAI, xAI, DeepSeek).
 
 ## MCP OAuth client authentication parameters
 
 A custom `AddClientAuthentication` callback's extra form parameters are sent after `client_id` / `client_secret` in key order; TS sends them in insertion order (`url.Values` keeps no order) (review round 86b).
 
+Reason: S1: v0.5.2 `url.Values` signature.
+
 ## ElevenLabs stream audio format rate
 
 A native `outputFormat` whose rate part is fractional (for example `pcm_22050.5`) has no `Rate`: `provider.AudioFormat.Rate` is an `*int` (v0.5.2), where TS reports `rate: 22050.5` (review round 86b).
 
-## OpenAI REST transcription `language: ""` / `prompt: ""`
-
-An empty `language` or `prompt` provider option is omitted from the OpenAI REST transcription request; TS sends them (`value != null`). The options are v0.5.2 string fields, where `""` means unset (coordinator ruling, round 86b; same ruling as the WebSocket empty header and speech translation `TargetLanguage`).
+Reason: S1: v0.5.2 `AudioFormat.Rate *int`.
 
 ## Sandbox text: lone surrogates and an empty encoding
 
 Sandbox `ReadTextFile` / `WriteTextFile` use Node Buffer encodings like TS, with two edges a Go string cannot express: `utf16le` / `ucs2` bytes that decode to a lone surrogate read as U+FFFD (a JS string keeps the surrogate), and `Encoding: ""` is the default `utf-8` (TS `toString('')` throws `Unknown encoding: `; `""` is unset in the v0.5.2 option) (review round 86b).
 
+Reason: S3 (JS UTF-16 strings) + S1 (v0.5.2 `Encoding` string).
+
 ## AI Gateway OIDC token refresh
 
 TS refreshes the Vercel OIDC token by default and writes the refreshed token to the Vercel token cache and `process.env`, and refreshes (or clears) the Vercel CLI login. Go refreshes only when `Config.OIDCTokenFunc` is set to `gateway.VercelOIDCTokenFunc(...)`, keeps the token in memory, reads the CLI login and the token cache read only, and fails with an error asking for `vercel login` when the CLI login has expired (owner decision b, review round 87).
+
+Reason: S4: owner decision b.
 
 ## WorkflowAgent ExperimentalTransform
 
 TS removed `experimental_transform` from `WorkflowAgent.stream()` (85b920f29e) because a transform cannot run across durable workflow step boundaries. Go keeps `WorkflowStreamOptions.ExperimentalTransform` working (it shipped in v0.5.2) and marks it deprecated (coordinator ruling 1, review round 87).
 
-## claude-code TurnStartTimeout zero
+Reason: S1: shipped in v0.5.2.
 
-TS `turnStartTimeoutMs: 0` fails a turn at once; Go `TurnStartTimeout: 0` is the 120 s default (like `StartupTimeout`), and a negative value disables the deadline (coordinator ruling 5, review round 87).
+## claude-code TurnStartTimeout zero
+TS `turnStartTimeoutMs: 0` fails a turn at once. Go `TurnStartTimeout: 0` is the 120 s default, the zero-value convention of the v0.5.2 `StartupTimeout`. A value below 1 ms other than zero, negative included, fails the turn the way TS does (S1: a pointer field would be needed to tell zero from unset).
 
 ## Mistral voice agent browser transport
 
 The LiveKit WebRTC transport and the `provider` connection kind of `mistral.experimental_realtime(modelId)` are browser-only and not in Go; `(*mistral.Provider).ExperimentalRealtime()` provides the server half (`CreateSession` / `CloseSession`, `BuildRealtimeSessionConfig`) (coordinator ruling 3, review round 87).
 
+Reason: S3: browser-only WebRTC transport.
+
 ## Mistral realtime transcription WebSocket hint
-
-TS appends "Pass a header-capable WebSocket implementation (e.g. ws) ..." to the socket error when no `webSocket` is configured; the Go client always sends the headers, so the text has no hint. The realtime URL follows Go's `/v1` path rule for custom base URLs, like the REST paths (review round 87).
-
-## Gateway streaming image decoding
-
-With `ExperimentalStreamingImageDecoding`, Go reads the body in 64 KiB reads; the 64 KiB minimum, the canonical-base64 rule and the placeholders (`[binary data: N bytes; ref A-B]`) match TS. Validation runs on the skeleton (placeholders are strings), which accepts and rejects the same bodies as TS's string-or-bytes schema (review round 87).
+TS appends "Pass a header-capable WebSocket implementation (e.g. ws) ..." to the socket error when no `webSocket` is configured. The Go client always sends the headers, so its error has no hint (S3: browser WebSocket). `Config.BaseURL` is the host root (v0.5.2): Go adds `/v1` unless the base URL already ends in `/v1`, for the realtime URL as for the REST paths of Mistral, Groq, Together and Fireworks; TS uses the base URL as given (S6, coordinator ruling round 87e).
 
 ## Empty string message content
-
-TS keeps the text part of a string `content: ''` message (only part arrays are filtered); Go messages always hold parts, so a single empty text part in a user message is removed before the model call (review round 87).
+Go messages have no string-content form, so a user message's single empty text part is removed before the model call; TS keeps the text part of `content: ''` (S1: `types.Message.Content` is `[]ContentPart`).
 
 ## Vercel Sandbox user agent
 
 `@vercel/sandbox` sends `vercel/sandbox/<version> (Node.js/<version>; <platform>/<arch>)`. The Go port sends the SDK's own Go user agent, because Go is not that client running on Node.js (review round 87b).
 
+Reason: S3: Node version and platform (R87B ruling 40).
+
 ## Vercel Sandbox JSON Lines errors under backpressure
 
 When a `@vercel/sandbox` command or logs stream contains a complete line that is not valid JSON, TS reports either a syntax error or a `ConnectionError` (a recoverable interruption). Which one depends on whether its JSON Lines parser handled the line before the HTTP body ended, and that depends on how fast the caller consumes the records. TS also drops valid records that precede the invalid line in the same network chunk. Go always gives what TS gives for a caller that keeps up: every earlier record, then a syntax error. An invalid unterminated last line is a `ConnectionError` in both (review round 87b).
+
+Reason: S3: Node stream timing.
 
 ## Provider usage and runtime context attributes: colliding keys in a Go map
 
 Two provider usage keys that normalize to the same attribute (`inputTokens` and `input_tokens`), or a dotted runtime context key that names the same path as a nested one (`"a.b"` and `"a": {"b": ...}`), give one attribute like TS. In TS the later key in object order wins. A Go map has no order, so its keys are read in sorted order (array-index keys first), which is the order `ai.response.usage` shows. An ordered object (`*jsonorder.Object`) or a struct keeps its own key order and matches TS exactly (review round 87b).
 
-## Empty tool and response format descriptions
+Reason: S4 (R87B ruling 43) + S3 (Go map order).
 
-A tool with `Description: ""` has no `description` in `ai.prompt.tools`, `gen_ai.tool.definitions`, a serialized workflow tool or an Open Responses function tool, and Open Responses `ResponseFormat.Description: ""` is not sent; TS writes `description: ""` (`!= null`). `types.Tool.Description` and `ResponseFormat.Description` are v0.5.2 string fields, where `""` means unset (coordinator ruling, round 87b; same ruling as the OpenAI REST transcription options). A custom tool's `description` provider arg of `""` is sent, as in TS.
+## Empty tool and response format descriptions
+`types.Tool.Description: ""` and `ResponseFormat.Description: ""` mean unset (S1: v0.5.2 strings), so no `description` is written to `ai.prompt.tools`, `gen_ai.tool.definitions`, serialized workflow tools or Open Responses tools / response formats; TS writes `""`. A custom tool's `description` provider arg of `""` is sent, as in TS.
 
 ## Realtime error events with an empty code
-
-Realtime server error events (`provider.RealtimeServerEvent.Code`: OpenAI realtime / live, xAI realtime) report a present `code: ""` the same as no code, where TS keeps `""` (`event.error?.code ?? event.code`). The field is a v0.5.2 string (review round 87b).
+`RealtimeServerEvent.Code` (OpenAI realtime / live, xAI realtime) is `""` both for `code: ""` and for no code (S1: v0.5.2 string); TS keeps `""`.
 
 ## Open Responses and AI Gateway: field values of an unexpected JSON type
-
-Open Responses events and responses, and AI Gateway stream parts and responses, are decoded leniently like TS (`z.any()` / unvalidated types): a string field holding another JSON value reads as JS `String(value)`, and other mismatched fields read as zero. Some differences remain because the Go fields are typed (v0.5.2): a non-numeric usage count (for example `"input_tokens": "5"`) or a mistyped finish reason or provider metadata reads as zero or unset where TS passes the value on; a null or absent `delta` on an Open Responses text, reasoning or custom tool input delta part is `""` where TS forwards `null` / `undefined` (accumulated tool arguments do append `"null"` / `"undefined"`, as in TS); and a numeric `item_id` is matched to an item whose `id` is the same digits as a string, where a TS `Map` keeps `5` and `"5"` apart (review round 87b).
+Events and responses decode leniently like TS `z.any()`: a mistyped string field reads as JS `String(value)`. Typed Go results cannot hold every JS value (S1: v0.5.2 types): a non-numeric usage count, a mistyped finish reason or provider metadata reads as zero or unset, and a null or absent text / reasoning / custom tool input `delta` is `""` where TS forwards `null` / `undefined` (accumulated tool arguments append `"null"` / `"undefined"` like TS).
 
 ## HTTP status text on a ResponseWriter
 
 `UIMessageStreamResponseInit.StatusText` / `TextStreamResponseInit.StatusText` set `http.Response.Status` on the `To*Response` / `Create*Response` helpers. The `Pipe*` helpers write to an `http.ResponseWriter`, and net/http always sends the standard reason phrase, so a custom status text (`'foo'` in TS `pipeUIMessageStreamToResponse(response, { statusText })`) is not sent (review round 87c; stream-text.test.ts 5205).
 
+Reason: S3: net/http writes the standard reason phrase.
+
 ## prepareStep `steps`
 
 TS passes `prepareStep` the live `steps` array, which later steps keep appending to; Go passes a copy of the steps recorded so far (review round 87c; stream-text.test.ts 15934, whose TS snapshot shows both steps in both calls for that reason).
 
-## You.com tools
+Reason: S3: JS array identity.
 
-`youcom.YouSearch` / `YouResearch` / `YouContents` follow the plugin API the TS tools registry documents (`youSearch`, `youResearch`, `youContents`), which `@youdotcom-oss/ai-sdk-plugin` 3.0 removed in favor of the hosted MCP client (`youcom.CreateYouClient`). Their request shapes and error texts (rate limit, the 402 free-tier message, 403, Contents API errors, `You.com API Error: ...`) follow the pre-3.0 plugin and cannot be checked against the current 3.x source, which has no REST code. `YouClientConfig.APIKey: ""` falls back to `YDC_API_KEY`; TS falls back only when `apiKey` is undefined, so an explicit `''` sends no `Authorization` header there (review round 87c).
+## You.com tools
+`youcom.YouSearch` / `YouResearch` / `YouContents` follow the pre-3.0 plugin API the TS tools registry documents; `@youdotcom-oss/ai-sdk-plugin` 3.x removed it (use `youcom.CreateYouClient`), so their request shapes and error texts cannot be checked against current TS source (S5). `YouToolsConfig.APIKey: ""` (S1: v0.5.2 string) falls back to `YDC_API_KEY`.
 
 ## TS assertions that cannot apply to Go
 
@@ -946,9 +592,25 @@ TS passes `prepareStep` the live `steps` array, which later steps keep appending
 
 A Go `oauth2.TokenSource` or Application Default Credentials failure (Google Vertex, Vertex Anthropic, MaaS and Vertex xAI) is returned with a Go prefix such as `failed to fetch Google access token: <error>` or `failed to load Google application default credentials: <error>`, the source's error kept as the cause (`errors.Is` / `errors.As` reach it). TS loads credentials with `google-auth-library`, whose error texts Go's `golang.org/x/oauth2` cannot reproduce. An `AuthToken` function's error is returned unchanged, as TS returns a custom `generateAuthToken` error (review round 87d).
 
+Reason: S3: google-auth-library (Node) texts.
+
 ## Errors of a caller-supplied HTTP transport
 
 An error that your own `HTTPClient` Transport returns is a TS fetch rejection, which TS returns unchanged. Go cannot tell such an error from a network failure the transport passed on from a stdlib `http.Transport` (an `EOF`, a TLS or HTTP/2 error is not a `net.Error`), so, outside the AI Gateway, it stays the retryable `Cannot connect to API: <error>` provider error, as for a failed fetch. Credential and signing errors of the SDK's own provider transports and key functions are returned unchanged (review round 87d). The AI Gateway, whose TS tests cover a rejecting `fetch`, treats a custom transport's non-network error as a fetch rejection (`Invalid error response format: Gateway request failed: <message>`).
+
+Reason: S3: net/http does not mark stdlib transport errors.
+
+## Vertex Gemini image model: URL input images
+
+The Vertex Gemini image model accepts URL and `gs://` input images (`ImageGenerateOptions.Files` entries of type `url`). Go sends each one as `fileData` with the caller's `MediaType`, else a type inferred from the extension of the URL path (the query string and fragment are ignored: `y.png?sig=1` is `image/png`), else `image/jpeg`, as v0.5.2 accepted them. Current TS rejects them with an `UnsupportedFunctionalityError` before any request. Set `MediaType` explicitly for a URL without an image extension (S4: owner ruling 2026-10-29; the section was lost in round 74 and restored in round 87e).
+
+## Open Responses function call namespace
+
+Open Responses function calls keep the v0.5 Go `namespace`: a returned item's `namespace` is in `providerMetadata[<provider>].namespace` (from the done item, else the added item), and a replayed tool call sends it from there. TS open-responses has no namespace (S6, coordinator ruling round 87e).
+
+## Open Responses done item without arguments
+
+An Open Responses `output_item.done` function call without an `arguments` key (or a custom tool call without `input`) uses the arguments accumulated from the deltas, as in v0.5.2; TS uses `undefined` as the tool input, which then fails to parse (S6, review round 87e).
 
 ## Features that are TypeScript-only (not ported)
 

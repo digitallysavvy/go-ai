@@ -483,6 +483,44 @@ already, you can skip them.
 | Vercel Sandbox request URLs (`teamId=`, `projectId=`) | Team first, TS key order, empty values kept | wire/protocol change | None | [Vercel Sandbox request queries keep empty values and the TS order](#vercel-query-empty-values) |
 | AI Gateway errors without credentials or connection | The GatewayAuthenticationError itself; connection failures read "Invalid error response format: Gateway request failed" | error text only | None unless you match the text | [AI Gateway credential and connection errors follow TS](#gateway-transport-errors) |
 | `ADTokenProvider`, `AuthToken`, `TokenSource`, `APIKeyFunc`, AWS `CredentialProvider` failures; `Cannot connect to API` on a credential error | The credential error itself (not a `ProviderError`), not retried | silent behavior change | Match your error with `errors.Is` / `errors.As` | [Provider credential, signing and key-function errors are returned unchanged](#provider-credential-errors-unchanged) |
+| `OnEnd:` / `OnStepEnd:` in `StreamObjectOptions` on a failed stream | Only `OnError` runs | silent behavior change | Use `OnError` | [StreamObject stream failure calls only OnError](#streamobject-stream-failure-callbacks) |
+| `ToolResult.Title`, `ToolOutput.Title` | Empty for executed tools | silent behavior change | Read `ToolCall.Title` | [Executed tool results have no title](#executed-tool-result-title) |
+| `ToolErrorContent.Error` of provider-executed tools | nil; `error-json` null; no `errorText` | wire/protocol change | Check for nil | [A provider tool error without a value keeps its error undefined](#provider-tool-error-no-value) |
+| `ToolCall.ToolMetadata` / `ToolCall.Title` set by a custom model | Taken from the tool only | silent behavior change | Set `Tool.Metadata` | [Model tool calls take title and metadata from the tool](#model-tool-call-tool-metadata) |
+| Extra keys in Anthropic bash / text editor / computer tool input | Dropped like TS zod | silent behavior change | None | [Anthropic provider tools drop undeclared input keys](#provider-tool-input-strip-undeclared) |
+| `SpecificationVersion()` of a custom decision model | Must be `v4` | silent behavior change | Return `"v4"` | [ExperimentalDecide checks the model's specification version](#decide-model-version) |
+| Direct `DoDecide` with `[]string` / `map[string]string` criteria | Criteria sent | silent behavior change | None | [Decision models read typed Go criteria from direct DoDecide callers](#decision-questions-json) |
+| UI SSE bodies compared byte for byte | Chunk keys in TS order | wire/protocol change | None unless you compare bytes | [UI message stream SSE events keep the TS key order](#ui-sse-key-order) |
+| `tool-input-start` chunks without `dynamic` | `dynamic: false` written | wire/protocol change | None | [UI tool-input-start writes dynamic: false for a tool outside the tool set](#ui-tool-input-start-dynamic-false) |
+| `messageMetadata` strings, arrays or scalars | TS mergeObjects | silent behavior change | Send objects | [UI message metadata merges non-object values like TS](#ui-metadata-merge-mergeobjects) |
+| `PipeAgentUIStreamFromUIMessagesToResponse`, `CreateAgentUIStreamResponseFromUIMessages` on failure | No `[DONE]`; error returned | wire/protocol change | Check the error | [Agent UI stream helpers end a failed run without [DONE]](#agent-ui-helpers-stream-errors) |
+| `OnStart` reading `trace.SpanFromContext(ctx)` | Runs before the root span | silent behavior change | Read it in `OnStepStart` | [User OnStart runs before the telemetry root start](#telemetry-start-after-onstart) |
+| WorkflowAgent root span / call ID | `call-<24>`; end carries the final step fields | silent behavior change | None | [WorkflowAgent root telemetry follows the TS durable report](#workflow-root-telemetry-durable) |
+| `Invalid argument for parameter` in provider errors | Bare TS message | error text only | Use `errors.As` | [Provider-package argument errors have no parameter prefix](#invalid-argument-bare-message) |
+| Google Interactions `function_call` without `id` | `ToolCallID` `""` | silent behavior change | None | [Google Interactions function_call without an id keeps the empty ID](#google-interactions-empty-call-id) |
+| Gemini `serviceTier` / `trafficType` after a continuation | Later null / "" wins; "" kept | silent behavior change | None | [Gemini usage after a continuation takes the later serviceTier and trafficType](#gemini-usage-merge-null) |
+| Google videoMetadata fps <= 0 error text | `"inclusive": false` | error text only | Use `errors.As` | [Google videoMetadata fps errors report inclusive false](#google-video-metadata-inclusive) |
+| `openai.compaction` `ProviderMetadata` `meta["itemId"]` | Only `providerMetadata.openai` | silent behavior change | Read `meta["openai"]` | [OpenAI compaction parts carry only providerMetadata.openai](#openai-compaction-metadata-keys) |
+| OpenAI transcription `"language": ""` / `"prompt": ""` | Sent as empty fields | wire/protocol change | Remove the keys | [OpenAI transcription sends an empty language or prompt option](#openai-transcription-empty-options) |
+| `pendingSafetyChecks` in computer tool input | `code` / `message` `""` kept | silent behavior change | None | [OpenAI computer calls keep an empty safety-check code or message](#openai-computer-safety-check-empty) |
+| Open Responses non-string `item_id` | Matched by JSON type | silent behavior change | None | [Open Responses stream tool calls match item ids by JSON type](#openresponses-item-id-map-keys) |
+| Alibaba `preserve_thinking` / `preserve-thinking` | `deprecated` warning | silent behavior change | Use `preserveThinking` | [Alibaba preserve_thinking spellings warn deprecated](#alibaba-preserve-thinking-deprecated) |
+| Open Responses replay `"itemId": ""` | Sent as `"id": ""` | wire/protocol change | Remove the keys | [Open Responses replay sends an empty item id](#openresponses-replay-empty-item-id) |
+| `ProviderMetadata["open-responses"]["itemId"]` | Keeps `""` / numbers; never nil on tool calls | silent behavior change | Don't assume string / nil | [Open Responses provider metadata itemId keeps the item's id value](#openresponses-metadata-item-id) |
+| `closed unexpectedly before finishing (code unknown)` | Real close code and reason | error text only | Match the new text | [Live WebSocket close errors carry the close code and reason](#live-websocket-close-code) |
+| Anthropic `stopSequence`, Gemini `finishMessage` / `continuationToken`, Interactions `serviceTier` / file `MediaType` | Present `""` kept | silent behavior change | None | [Provider responses keep a present empty string](#provider-response-empty-strings) |
+| Raw `DoStream` of OpenAI-style chat providers | text-start / text-end parts with TS ids | wire/protocol change | Skip or use the block parts | [OpenAI-style chat streams send text-start and text-end parts](#chat-stream-text-blocks) |
+| Header-only `ChunkTypeResponseMetadata` parts in raw `DoStream` | Headers via `ResponseHeaders()` | wire/protocol change | Use `provider.StreamResponseHeaders` | [Provider streams report response headers beside the stream](#stream-response-headers-capability) |
+| `HTTPTransportConfig.OnError` counts | Reported as often as TS | silent behavior change | Deduplicate | [MCP HTTP transport reports send failures to OnError as often as TS](#mcp-http-onerror-count) |
+| Reusing `*mcp.HTTPTransport` after `Close` | Fails: already started | silent behavior change | Create a new transport | [MCP HTTP transport starts once](#mcp-http-connect-once) |
+| `SSETransport` `Receive` / `IsConnected()` after a read error | Stays connected | silent behavior change | Watch `OnError` | [MCP SSE transport stays connected after a stream read error](#mcp-sse-read-error-connected) |
+| `*TransportError` / `broken pipe` after a stdio server exit | `*MCPClientError` not connected | error text only | Match `*mcp.MCPClientError` | [MCP stdio transport disconnects when the server exits](#mcp-stdio-server-exit) |
+| `tools.toString()` / `tools.hasOwnProperty()` in scripts | Calls the prototype function | silent behavior change | None | [Code mode tools names inherited from Object.prototype call those functions](#codemode-prototype-tool-names) |
+| `ProtocolError` for a never-settling promise | Timeout error after the timeout | silent behavior change | Match `*codemode.TimeoutError` | [A code mode script awaiting a promise nothing settles times out](#codemode-never-settling-timeout) |
+| Functions / symbols passed to `tools.<name>` | Throws at the call | silent behavior change | Pass JSON values | [Code mode tool arguments devalue cannot serialize fail at the call](#codemode-unserializable-arguments) |
+| Vercel network policy updates; stubbed Vercel API | Lists sessions first | wire/protocol change | Serve the sessions listing | [Vercel network policy inspection lists sessions](#vercel-policy-inspection-list-sessions) |
+| Vercel `ListSnapshots` | Every page | silent behavior change | Bound with a context | [Vercel snapshot listing follows every page](#vercel-snapshot-pagination) |
+| Vercel JWT array `owner_id` | One `teamId` per element | wire/protocol change | None | [Vercel array owner_id sends one teamId per element](#vercel-owner-id-array) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1018,6 +1056,8 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `PrepareStep` overrides and the legacy `ToolLoopAgent` fail with
   `*errors.InvalidArgumentError` ("maxOutputTokens must be >= 1") when
   `MaxTokens` is 0 or negative. v0.5 sent the value to the provider.
+  `WorkflowAgent.Stream` still sends it unchecked, as TS `doStreamStep`
+  (review round 87e).
 - **Am I affected?** `MaxTokens:` pointing to 0 or a negative value.
 - **What to do:** leave `MaxTokens` nil for the provider default, or set at
   least 1:
@@ -1226,8 +1266,10 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What changed:** when several parallel `EmbedMany` batch calls fail, the
   returned error is the one that failed first, not the lowest batch's. TS
   `embedMany` awaits `Promise.all`, which rejects with the first rejection
-  (review round 72). EmbedMany still waits for the group's other calls before
-  it returns.
+  (review round 72). EmbedMany returns as soon as the first call fails; the
+  group's other calls finish in the background (bounded by the ctx) and
+  their results are dropped (review round 87e). v0.5 waited for every
+  sibling.
 - **Am I affected?** Code that inspects the error of an `ai.EmbedMany` call
   with several failing parallel batches (`MaxParallelCalls`, a model with
   `SupportsParallelCalls`) and expects the first batch's error.
@@ -1500,7 +1542,7 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 ### StreamText streams each tool result when it settles {#streamtext-live-tool-results}
 
-- **What changed:** v0.5 ran a step's tool calls and then emitted every `ChunkTypeToolResult` in call order once the last call returned; a cancel during the tools dropped them all. v0.6 streams each executed call's result as soon as it settles (TS `executeToolsFromStream`), so with the default unlimited `ToolCallConcurrency` parallel results arrive in completion order, the step's `Content` and `ToolResults` follow that order, and a result that settled before a cancel is still streamed before the `abort` part. The tool message in `ResponseMessages` keeps call order. `ToolCallConcurrency: 1` keeps call order. WorkflowAgent keeps writing a step's results in call order after all its calls settled (TS `writeToolResults`) (review round 86).
+- **What changed:** v0.5 ran a step's tool calls and then emitted every `ChunkTypeToolResult` in call order once the last call returned; a cancel during the tools dropped them all. v0.6 streams each executed call's result as soon as it settles (TS `executeToolsFromStream`), so with the default unlimited `ToolCallConcurrency` parallel results arrive in completion order, the step's `Content` and `ToolResults` follow that order, and a result that settled before a cancel is still streamed before the `abort` part. The tool message in `ResponseMessages` keeps call order. `ToolCallConcurrency: 1` keeps call order. WorkflowAgent keeps writing a step's results in call order after all its calls settled (TS `writeToolResults`) (review round 86). Each result is streamed after the user and telemetry tool-end notifications, as TS (review round 87e).
 - **Am I affected?** Code that reads `ChunkTypeToolResult` from `Stream()` / `OnChunk` / the UI stream, or `step.Content` / `step.ToolResults`, and assumes call order; tests that pin it.
 - **What to do:** Match results by `ToolCallID`, or set `ToolCallConcurrency: &one` (`one := 1`) for sequential execution in call order.
 - **Kind:** silent behavior change
@@ -1588,6 +1630,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Am I affected?** Code that persists or forwards response messages or step content as JSON and reads `fileData` of reasoning-file parts.
 - **What to do:** No action unless you parse the JSON yourself; read `data`.
 - **Kind:** wire/protocol change
+
+### StreamObject stream failure calls only OnError {#streamobject-stream-failure-callbacks}
+
+- **What changed:** When the provider stream itself fails (`Next()` returns an error), v0.5 called `OnStepEnd` / `OnStepFinish` and `OnEnd` / `OnFinishEvent` with the error. v0.6 calls only `OnError`, as TS (its flush handler never runs). The error is still returned, and an error part still ends through `OnStepEnd` / `OnEnd` (review round 87e).
+- **Am I affected?** `StreamObjectOptions.OnEnd`, `OnFinishEvent`, `OnStepEnd`, `OnStepFinish` used to observe stream failures.
+- **What to do:** Handle the failure in `OnError` or from the returned error.
+- **Kind:** silent behavior change
 
 ## Prompts and validation {#prompts-and-validation}
 
@@ -2560,6 +2609,45 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** Use the Node name: `latin1` for ISO-8859-1 text; decode other legacy encodings from `ReadBinaryFile` yourself.
 - **Kind:** silent behavior change
 
+### Executed tool results have no title {#executed-tool-result-title}
+
+- **What changed:** v0.5 copied the tool call's `Title` onto the `types.ToolResult` of a locally executed tool (and of a tool-not-found error). v0.6 leaves it empty, as TS `execute-tool-call.ts` builds a client tool's tool-result / tool-error without a title. Tool calls and preliminary results keep it (review round 87e).
+- **Am I affected?** You read `ToolResult.Title` from `OnToolCallFinish` / `OnToolExecutionEnd` (`e.ToolOutput.Title`), `StepResult.ToolResults` or a StreamText `ChunkTypeToolResult` part.
+- **What to do:** Read the call's title:
+
+  ```go
+  // before: title := e.ToolOutput.Title
+  title := e.ToolCall.Title
+  _ = title
+  ```
+- **Kind:** silent behavior change
+
+### A provider tool error without a value keeps its error undefined {#provider-tool-error-no-value}
+
+- **What changed:** A provider tool result with `IsError` and no value became a tool-error with error `""` (GenerateText) or `"tool error"` (StreamText). v0.6 keeps the error undefined like TS: `ToolErrorContent.Error` is nil, the response message replays `error-json` `null`, and the UI `tool-output-error` chunk has no `errorText` (review round 87e).
+- **Am I affected?** You read `ToolErrorContent.Error` of provider-executed tools, replay such messages, or read `errorText` from UI chunks.
+- **What to do:** No action unless you compare that error to `""` / `"tool error"`; check for nil.
+- **Kind:** wire/protocol change
+
+### Model tool calls take title and metadata from the tool {#model-tool-call-tool-metadata}
+
+- **What changed:** A `ToolMetadata` (or `Title`) a custom provider set on a model `types.ToolCall` was kept when the tool had no `Metadata`, and on provider-executed dynamic calls. v0.6 uses the tool's `Metadata` / `Title` only, and none for provider-executed dynamic calls (TS `doParseToolCall` / `parseProviderExecutedDynamicToolCall`; review round 87e).
+- **Am I affected?** A custom `provider.LanguageModel` that sets `ToolCall.ToolMetadata` / `Title`, read in `ToolExecutionOptions.ToolMetadata`, step tool calls or results.
+- **What to do:** Put the metadata on the tool:
+
+  ```go
+  tool := types.Tool{Name: "lookup", Metadata: map[string]interface{}{"trace": "tool"}}
+  _ = tool
+  ```
+- **Kind:** silent behavior change
+
+### Anthropic provider tools drop undeclared input keys {#provider-tool-input-strip-undeclared}
+
+- **What changed:** The parsed input of the Anthropic provider tools whose TS input schema is a flat zod `z.object` (bash, text editor, computer, code execution 20250522, tool search, web fetch, web search, advisor) now drops keys the schema does not declare, as zod's default strip does. The tool call's `Arguments`, `execute` input and replayed messages carry the stripped input. Other provider tools and user tools keep every key (review round 87e).
+- **Am I affected?** Code that reads extra keys from the input of those Anthropic tools (`ToolCall.Arguments`, the `execute` input).
+- **What to do:** No action unless you rely on keys the tool schema does not declare.
+- **Kind:** silent behavior change
+
 ## Agents and approvals {#agents-and-approvals}
 
 ### A panicking ToolLoopAgent callback does not skip the other one {#agent-callback-panic-isolation}
@@ -3331,6 +3419,13 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** No action unless you want the default text for an empty reason: send no reason (omit the key, or `Reason: nil` in the policy result).
 - **Kind:** wire/protocol change
 
+### ExperimentalDecide checks the model's specification version {#decide-model-version}
+
+- **What changed:** A decision model whose `SpecificationVersion()` is not `"v4"` now fails with `*ai.UnsupportedModelVersionError` before any call (TS `resolveDecisionModel`). Built-in decision models report `v4` (review round 87e).
+- **Am I affected?** A custom `provider.DecisionModel` / `EvaluationModel` that returns another version.
+- **What to do:** Return `"v4"` from `SpecificationVersion()`.
+- **Kind:** silent behavior change
+
 ## UI message streams {#ui-message-streams}
 
 ### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
@@ -3886,6 +3981,39 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** No action unless your server sends such events; send `data: [DONE]` exactly.
 - **Kind:** wire/protocol change
 
+### UI message stream SSE events keep the TS key order {#ui-sse-key-order}
+
+- **What changed:** The UI SSE helpers (`ToUIMessageStreamResponse`, `PipeUIMessageStreamToResponse(WithInit)`, `CreateUIMessageStreamResponse(WithInit)`, `PipeUIMessageChunksToResponse`, `CreateUIMessageChunksResponse`) wrote each chunk's JSON with sorted keys (`{"delta":"Hi","id":"t1","type":"text-delta"}`). v0.6 writes the key order TS `toUIMessageChunk` creates (`{"type":"text-delta","id":"t1","delta":"Hi"}`). Keys TS does not create follow, sorted. Nested objects keep Go's order (review round 87e).
+- **Am I affected?** Byte-level comparisons of UI SSE bodies (`data: {`), golden files.
+- **What to do:** No action unless you compare the bytes; JSON values are unchanged.
+- **Kind:** wire/protocol change
+
+### UI tool-input-start writes dynamic: false for a tool outside the tool set {#ui-tool-input-start-dynamic-false}
+
+- **What changed:** A `tool-input-start` chunk for a tool missing from the tool set (an unknown tool, a provider-executed tool not in `Tools`, or any tool when the UI conversion has no tool set) now carries `"dynamic": false` (or `true` for a provider dynamic tool), as TS. v0.5 wrote `dynamic` only when true (review round 87e).
+- **Am I affected?** Clients or tests that check for the absence of `dynamic` on `tool-input-start`.
+- **What to do:** No action unless you compare chunks exactly; a missing `dynamic` and `false` mean the same.
+- **Kind:** wire/protocol change
+
+### UI message metadata merges non-object values like TS {#ui-metadata-merge-mergeobjects}
+
+- **What changed:** Message metadata from `start`, `finish` and `message-metadata` chunks merges as TS `mergeObjects`. An object followed by a string or array gets the value's index keys (`{"a":1}` + `"ab"` gives `{"0":"a","1":"b","a":1}`). A number or boolean followed by a number or boolean gives `{}`. An array followed by any value gives an object of its index keys plus the value's keys. v0.5 replaced the metadata with the incoming value. Where TS throws (a string, number or boolean followed by a value with keys), the v0.5 replacement stays (review round 87e).
+- **Am I affected?** `messageMetadata` callbacks or writers that send a string or array after object metadata, or mix scalar metadata values; readers of `metadata` in `OnEnd` / `ReadUIMessages` messages.
+- **What to do:** Send object metadata:
+
+  ```go
+  chunk := ai.UIMessageChunk{"type": "message-metadata", "messageMetadata": map[string]interface{}{"status": "done"}}
+  _ = chunk
+  ```
+- **Kind:** silent behavior change
+
+### Agent UI stream helpers end a failed run without [DONE] {#agent-ui-helpers-stream-errors}
+
+- **What changed:** `agent.PipeAgentUIStreamFromUIMessagesToResponse` and `agent.CreateAgentUIStreamResponseFromUIMessages` now pass the run's error channel to the chunk helpers (`UIMessageStreamResponseInit.StreamErrors`), so a failed agent stream ends without `data: [DONE]`, and the pipe helper returns the error, as TS `pipeAgentUIStreamToResponse` / `createAgentUIStreamResponse`. v0.5 wrote `[DONE]` (review round 87e).
+- **Am I affected?** Clients that wait for `data: [DONE]` after an agent run fails; callers ignoring the pipe helper's error.
+- **What to do:** Treat the end of the body without `[DONE]` as a failure, and check the returned error.
+- **Kind:** wire/protocol change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -4254,7 +4382,10 @@ compile-time changes.
   Google never. `EmbedMany` sets it only when every batch reported usage,
   and for a call split into no batches (TS sums `usage.tokens` with NaN for
   a batch without usage, and 0 for no batches). `testutil.MockEmbeddingModel`
-  sets it (review round 80).
+  sets it (review round 80). When the call or any `EmbedMany` batch sent no
+  usage, `Usage.Tokens` keeps the sum of the reported batches (0 when none),
+  as v0.5, and `ai.usage.tokens` is left off the `ai.embed` / `ai.embedMany`
+  root span, where TS's is NaN (review round 87e).
 - **Am I affected?** You read `gen_ai.usage.input_tokens` or
   `ai.usage.tokens` on embedding spans; you implement
   `provider.EmbeddingModel`; or you compare whole `types.EmbeddingUsage`
@@ -4373,6 +4504,20 @@ compile-time changes.
 - **Am I affected?** `InputExamples: []types.ToolInputExample{}`; tests comparing those attributes or serialized workflow tool JSON.
 - **What to do:** No action, or leave `InputExamples` nil to omit the key.
 - **Kind:** wire/protocol change
+
+### User OnStart runs before the telemetry root start {#telemetry-start-after-onstart}
+
+- **What changed:** GenerateText, StreamText, the ToolLoopAgent and WorkflowAgent started the telemetry root (integration `OnStart`) before the user `OnStart`, and ran `OnStart` with the root span's context. v0.6 runs the user callback first, outside the root span, as TS `notify([onStart, telemetry.onStart])`. `OnStepStart` and later callbacks still run inside it (review round 87e).
+- **Am I affected?** An `OnStart` callback that reads the span from its `ctx` (`trace.SpanFromContext`) or depends on an integration having started first.
+- **What to do:** Read the span in `OnStepStart` or later callbacks.
+- **Kind:** silent behavior change
+
+### WorkflowAgent root telemetry follows the TS durable report {#workflow-root-telemetry-durable}
+
+- **What changed:** The WorkflowAgent root's call ID is now `call-` plus 24 alphanumerics (it was 16 hex characters). Its end event carries what TS reports for a durable run: the final step's reasoning and provider metadata, the tool calls, tool results and files of every step, and the detailed usage. The OTel integrations record `ai.response.reasoning`, `ai.response.toolCalls`, `ai.response.providerMetadata`, `ai.response.files`, the `gen_ai.output.messages` tool parts and the cache / reasoning token counts on the root (review round 87e).
+- **Am I affected?** Custom `telemetry.TelemetryIntegration`s that parse `TelemetryStartEvent.CallID` / `TelemetryFinishEvent.CallID` from a `WorkflowAgent` or read its root `TelemetryFinishEvent`; dashboards on the root span's attributes.
+- **What to do:** No action unless you parse the call ID's format.
+- **Kind:** silent behavior change
 
 ## Errors {#errors}
 
@@ -4550,6 +4695,13 @@ compile-time changes.
 - **Am I affected?** `ProviderError.ResponseHeaders["Set-Cookie"]`, `ResponseMetadata.Headers`, `providerutils.ExtractHeaders`.
 - **What to do:** No action unless you parse several cookies from that value.
 - **Kind:** silent behavior change
+
+### Provider-package argument errors have no parameter prefix {#invalid-argument-bare-message}
+
+- **What changed:** TS has two `AI_InvalidArgumentError` classes: the `ai` package's (`Invalid argument for parameter <x>: <message>`) and `@ai-sdk/provider`'s, whose message is the bare text. Go errors that port the provider class (provider packages, `parseProviderOptions`' `invalid <provider> provider options`, provider-utils such as `CreateIDGenerator`, `NewDecisionLanguageModel`, base URL validation) now have the bare message, built with `providererrors.NewArgumentError`. The type, its fields and `errors.As` matching are unchanged (review round 87e).
+- **Am I affected?** Code that matches `Invalid argument for parameter` in provider error text.
+- **What to do:** Match with `errors.As` on `*providererrors.InvalidArgumentError` and read `Field`.
+- **Kind:** error text only
 
 ## Providers {#providers}
 
@@ -6806,6 +6958,125 @@ compile-time changes.
 - **What to do:** No action unless you match credential failures as a `ProviderError` or by that text. Match your own error with `errors.Is` / `errors.As`; it is returned as is. A token function that should be tried again must retry itself.
 - **Kind:** silent behavior change
 
+### Decision models read typed Go criteria from direct DoDecide callers {#decision-questions-json}
+
+- **What changed:** `DoDecide` of the OpenAI, Perplexity, Parallel, TypeSafe AI, Gateway and `ai.DecisionLanguageModel` decision models now converts typed Go containers in `DecisionQuestion.Instructions` / `Criteria` (`[]string`, `map[string]string`, ...) to their JSON form first (`provider.DecisionQuestionsJSON`), as `ExperimentalDecide` does; v0.5 silently dropped them when the model was called directly. TS providers always receive JSON (review round 87e).
+- **Am I affected?** Code that calls `DoDecide` directly with typed criteria.
+- **What to do:** No action; the typed criteria are now sent.
+- **Kind:** silent behavior change
+
+### Google Interactions function_call without an id keeps the empty ID {#google-interactions-empty-call-id}
+
+- **What changed:** v0.5.2 named a non-streaming Google Interactions `function_call` step without an `id` `call_N` (a per-response counter). v0.6 keeps the empty ID, as TS `parse-google-interactions-outputs.ts` (`toolCallId: call.id`). Built-in tool calls without an id still take a generated ID (TS `call.id || generateId()`; review round 87e).
+- **Am I affected?** `InteractionsLanguageModel` results whose `ToolCalls[i].ID` / `ToolCallContent.ToolCallID` you read when the API omits the step `id`.
+- **What to do:** No action unless you relied on a non-empty ID; match on `ToolName` and position.
+- **Kind:** silent behavior change
+
+### Gemini usage after a continuation takes the later serviceTier and trafficType {#gemini-usage-merge-null}
+
+- **What changed:** For a long-decode Gemini / Vertex response continued over several requests, the summed `usageMetadata` takes `serviceTier` / `trafficType` from the later request whenever it sent the key, an explicit `null` or `""` included (TS `addGoogleUsageMetadata` `{...a, ...b}`). `providerMetadata.google.serviceTier` reports `""` when the API sent `""` (TS `usageMetadata?.serviceTier ?? null`); v0.5 reported `null` (review round 87e).
+- **Am I affected?** `ProviderMetadata["google"]["serviceTier"]`, `["usageMetadata"]` on google / googlevertex results.
+- **What to do:** No action unless you treat `""` and `null` alike.
+- **Kind:** silent behavior change
+
+### Google videoMetadata fps errors report inclusive false {#google-video-metadata-inclusive}
+
+- **What changed:** An `fps` of 0 or less in `videoMetadata` reports `"inclusive": false` in the issue JSON, as zod v4's `gt(0)`; v0.5 wrote `true` (review round 87e).
+- **Am I affected?** Code matching the text of the `ValidationError` from Google / Vertex file parts.
+- **What to do:** No action unless you match that text.
+- **Kind:** error text only
+
+### OpenAI compaction parts carry only providerMetadata.openai {#openai-compaction-metadata-keys}
+
+- **What changed:** An `openai.compaction` custom part (generate and stream, also `responses.CompactionEventToChunk`) carries `providerMetadata.openai = {type: "compaction", itemId, encryptedContent}` only, like TS; v0.5 also wrote `type`, `itemId` and `encryptedContent` at the top level of `ProviderMetadata`. Replaying a v0.5 part that has only the flat keys still works (review round 87e).
+- **Am I affected?** Code that reads `CustomContent.ProviderMetadata` of `Kind == "openai.compaction"` parts at the top level (`meta["itemId"]`).
+- **What to do:** Read the provider object:
+
+  ```go
+  var meta map[string]map[string]interface{}
+  _ = json.Unmarshal(part.ProviderMetadata, &meta)
+  itemID := meta["openai"]["itemId"]
+  _ = itemID
+  ```
+- **Kind:** silent behavior change
+
+### OpenAI transcription sends an empty language or prompt option {#openai-transcription-empty-options}
+
+- **What changed:** `ProviderOptions["openai"]["language"]: ""` and `["prompt"]: ""` are now sent as empty form fields on REST transcription, and `language: ""` is sent in the realtime transcription session, like TS (`value != null`); v0.5 omitted them. A present `openai.language` also wins over the Go-only `TranscriptionOptions.Language`. `TranscriptionStreamOpenAIOptionsValue` gains `HasLanguage` (review round 87e).
+- **Am I affected?** OpenAI / Azure transcription calls whose provider options hold `"language": ""` or `"prompt": ""`.
+- **What to do:** No action unless you pass empty strings there; remove the keys to send nothing.
+- **Kind:** wire/protocol change
+
+### OpenAI computer calls keep an empty safety-check code or message {#openai-computer-safety-check-empty}
+
+- **What changed:** The tool input of an OpenAI Responses `computer_call` keeps a pending safety check's `code` / `message` when the API sends `""` (TS `!= null`); v0.5 dropped it. `null` or absent is still dropped (review round 87e).
+- **Am I affected?** `ToolCall.Arguments["pendingSafetyChecks"]` of the `computer` tool.
+- **What to do:** No action unless you test for the key's presence.
+- **Kind:** silent behavior change
+
+### Open Responses stream tool calls match item ids by JSON type {#openresponses-item-id-map-keys}
+
+- **What changed:** Stream tool-call accumulation keys `item_id` like a TS `Map`: a numeric id and a string id with the same digits are different items, `null` and a missing id are their own keys, and an object id matches nothing. v0.5 compared the ids' string forms (review round 87e).
+- **Am I affected?** Only Open Responses servers that send non-string `id` / `item_id` values.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Alibaba preserve_thinking spellings warn deprecated {#alibaba-preserve-thinking-deprecated}
+
+- **What changed:** `providerOptions.alibaba.preserve_thinking` / `preserve-thinking` still work but now add a `deprecated` warning pointing to `preserveThinking`, like the other v0.5 Alibaba spellings (review round 87e).
+- **Am I affected?** Alibaba calls using those spellings; code that expects no warnings.
+- **What to do:** Use `preserveThinking`.
+- **Kind:** silent behavior change
+
+### Open Responses replay sends an empty item id {#openresponses-replay-empty-item-id}
+
+- **What changed:** A replayed reasoning, text, tool call or custom tool call whose provider options hold `itemId: ""` now sends `"id": ""`, and `reasoningEncryptedContent: ""` sends `"encrypted_content": ""`, like TS (`typeof itemId === 'string'`); v0.5 left them out. Reasoning parts merge only when both carry an id, and a text part with no `itemId` starts a different message from one with `itemId: ""` (review round 87e).
+- **Am I affected?** Open Responses histories whose provider options hold `"itemId": ""` or `"reasoningEncryptedContent": ""`.
+- **What to do:** No action unless you set those keys to `""`; remove them to send no id.
+- **Kind:** wire/protocol change
+
+### Open Responses provider metadata itemId keeps the item's id value {#openresponses-metadata-item-id}
+
+- **What changed:** `providerMetadata[<provider>].itemId` on tool calls, text and reasoning is the item's `id` as sent: `""` is kept, a numeric id stays a number, and it is left out only when the item has no `id`; tool calls always carry the provider object. A stream tool call's `itemId` is the done item's, and a `""` `call_id` / `name` on `output_item.added` is kept (TS `??`; review round 87e).
+- **Am I affected?** Code that reads `ProviderMetadata["open-responses"]["itemId"]` as a string or checks Open Responses tool call metadata for nil.
+- **What to do:** No action unless you type-assert `itemId` to `string` or test the metadata for nil.
+- **Kind:** silent behavior change
+
+### Live WebSocket close errors carry the close code and reason {#live-websocket-close-code}
+
+- **What changed:** A Live or realtime socket that closes before finishing fails with `... WebSocket closed unexpectedly before finishing (code <N>, reason: <R>).` (`, reason: ...` only when the close frame has one; `1006` when the connection ended without a close frame), like TS. This covers OpenAI realtime translation, Google Live transcription and translation and Vertex Live transcription; v0.5 said `(code unknown)` (review round 87e).
+- **Am I affected?** Code that matches `closed unexpectedly before finishing (code unknown)`.
+- **What to do:** No action unless you match that text.
+- **Kind:** error text only
+
+### Provider responses keep a present empty string {#provider-response-empty-strings}
+
+- **What changed:** Response fields TS checks with `!= null` keep a present `""`: Anthropic `providerMetadata.anthropic.stopSequence` (generate and stream); Gemini `finishMessage` and `continuationToken` (a `CONTINUATION` with an empty token still continues, sending it); Google Interactions `service_tier` (over the header), image `mime_type` (no `image/png` default) and a builtin tool result delta of `null` (the tool result is `null`). An `interaction.created` event with an empty id clears the interaction id in later provider metadata, while the stream still reconnects to and cancels the earlier id. v0.5 read `""` as absent (review round 87e).
+- **Am I affected?** Code that reads those provider metadata keys or file media types and treats `""` like a missing value.
+- **What to do:** No action unless you compare those values with `nil` / absence.
+- **Kind:** silent behavior change
+
+### OpenAI-style chat streams send text-start and text-end parts {#chat-stream-text-blocks}
+
+- **What changed:** The raw `DoStream` of Groq, DeepSeek, Alibaba, OpenAI chat, the OpenAI-compatible model, the providers on `OpenAICompatStream` (Fireworks, Together, Ollama, Z.ai, GMI Cloud, Vertex xAI) and Mistral now wraps text in `ChunkTypeTextStart` / `ChunkTypeTextEnd` parts with TS's id (`txt-0`, or `0` for OpenAI, Alibaba and Mistral), and every text delta carries that id. The block ends where TS ends it (when reasoning starts for the compatible streams, Alibaba and Mistral; at the end before the tool calls). v0.5 sent text deltas without an id or block parts (review round 87e).
+- **Am I affected?** Code that reads a provider's `DoStream` directly and counts parts or expects the first part after metadata to be text.
+- **What to do:** Skip `ChunkTypeTextStart` / `ChunkTypeTextEnd`, or use them to group text.
+- **Kind:** wire/protocol change
+
+### Provider streams report response headers beside the stream {#stream-response-headers-capability}
+
+- **What changed:** TS `doStream` returns `response.headers` beside the stream. The Go providers no longer emit a header-only `ChunkTypeResponseMetadata` part: `providerutils.WithResponseMetadata` (Anthropic, Gateway, Cohere, Moonshot, Open Responses), OpenAI chat and completion and `OpenAICompatStream` report the headers through the new optional `provider.StreamResponseHeaders` interface (`ResponseHeaders() map[string]string`), which StreamText and StreamObject read. A response-metadata part with headers still wins, for v0.5 providers (review round 87e).
+- **Am I affected?** Code that reads a provider's `DoStream` directly and takes headers from a `ChunkTypeResponseMetadata` part, or counts those parts.
+- **What to do:** Read the headers from the stream:
+
+  ```go
+  if h, ok := stream.(provider.StreamResponseHeaders); ok {
+  	headers := h.ResponseHeaders()
+  	_ = headers
+  }
+  ```
+- **Kind:** wire/protocol change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -6870,6 +7141,34 @@ compile-time changes.
 - **Am I affected?** Servers or tests comparing raw token bodies or `MCPEventSubscription.Delivery.URL` strings.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
+
+### MCP HTTP transport reports send failures to OnError as often as TS {#mcp-http-onerror-count}
+
+- **What changed:** `HTTPTransport` reports a failed send to `OnError` as often as TS `send()`: twice for a non-ok response, an unexpected or bodiless content type, or a failed authorization after a 401, once for other failures, and once more when the failure happens in the retry after a 401. A caller-cancelled context still suppresses the catch's report. v0.5 reported each failure once (review round 87e).
+- **Am I affected?** `HTTPTransportConfig.OnError` callbacks that count calls or alert per call.
+- **What to do:** No action unless you count `OnError` calls; deduplicate by error value if needed.
+- **Kind:** silent behavior change
+
+### MCP HTTP transport starts once {#mcp-http-connect-once}
+
+- **What changed:** `HTTPTransport.Connect` after a successful `Connect` and `Close` fails with `MCP HTTP Transport Error: Transport already started. Note: client.connect() calls start() automatically.`, as TS `start()`; v0.5 started a new lifecycle (review round 87e).
+- **Am I affected?** Code that reuses an `*mcp.HTTPTransport` after `Close`.
+- **What to do:** Create a new transport (`mcp.NewHTTPTransport`) for each connection.
+- **Kind:** silent behavior change
+
+### MCP SSE transport stays connected after a stream read error {#mcp-sse-read-error-connected}
+
+- **What changed:** After the endpoint event, a read error on the SSE stream is reported to `OnError` and the transport stays connected (`Send` still POSTs, `Receive` waits), as TS. v0.5 marked it disconnected. A clean end of stream still disconnects (review round 87e).
+- **Am I affected?** `SSETransport` callers relying on `Receive` returning after a network failure, or on `IsConnected()` turning false.
+- **What to do:** Watch `OnError` and bound requests with a timeout or context.
+- **Kind:** silent behavior change
+
+### MCP stdio transport disconnects when the server exits {#mcp-stdio-server-exit}
+
+- **What changed:** After the stdio server exits on its own, `Send` fails with `*MCPClientError` `StdioClientTransport not connected` (TS) instead of a `*TransportError` for the closed pipe, `IsConnected()` turns false, and `Connect` starts the server again (review round 87e).
+- **Am I affected?** Code matching `*TransportError` / "broken pipe" after a server crash.
+- **What to do:** Match `*mcp.MCPClientError` (or check `!transport.IsConnected()`).
+- **Kind:** error text only
 
 ## Code mode {#code-mode}
 
@@ -6985,6 +7284,27 @@ compile-time changes.
 - **What changed:** v0.5 let a script change the built-in objects (`Array.prototype`, `Object.prototype`, `Promise.prototype`, `Math`, `JSON`, `Date`, the typed arrays) and reassign the intrinsic globals (`Array`, `Object`, `JSON`, `Promise`, ...). v0.6 freezes them and locks those globals before the script runs, as `run@2.1.8`'s HARDENING_SOURCE does in TS. An assignment to them is ignored in sloppy code and throws a `TypeError` in strict code; `Object.defineProperty` on them throws. Without the freeze, a script could hide its detached tool calls from the bridge's checks (review round 87c, integrator).
 - **Am I affected?** Code mode scripts that polyfill or patch built-ins.
 - **What to do:** No action unless a script patches built-ins; use local helper functions instead.
+- **Kind:** silent behavior change
+
+### Code mode tools names inherited from Object.prototype call those functions {#codemode-prototype-tool-names}
+
+- **What changed:** `tools.toString()`, `tools.hasOwnProperty(...)` and the other `Object.prototype` functions that are not registered tools call that function (with `this` undefined) instead of a tool call, as TS `run-code-mode.ts` reads `tools` from an object literal: `await tools.toString()` is `"[object Undefined]"`. A registered tool of the same name is still the tool (review round 87e).
+- **Am I affected?** Scripts that call a missing tool named like an `Object.prototype` function.
+- **What to do:** No action unless a script relies on that name reaching the missing-tool path.
+- **Kind:** silent behavior change
+
+### A code mode script awaiting a promise nothing settles times out {#codemode-never-settling-timeout}
+
+- **What changed:** A script that awaits a promise no host call settles (`await new Promise(() => {})`) now fails with the execution timeout error after the timeout, like TS run's manager (`RunTimeoutError`); v0.5 returned a `ProtocolError` at once (review round 87e).
+- **Am I affected?** Code that matches `*codemode.ProtocolError` for such scripts or relies on the immediate failure.
+- **What to do:** Match `*codemode.TimeoutError`, or set a shorter `ExecutionPolicy.TimeoutMs`.
+- **Kind:** silent behavior change
+
+### Code mode tool arguments devalue cannot serialize fail at the call {#codemode-unserializable-arguments}
+
+- **What changed:** A function, symbol, thenable, class instance or symbol-keyed object passed to a tool now throws a `TypeError` `Host function arguments are not serializable: <devalue message>` (code `RUN_SERIALIZATION_ERROR`) at the call, before any request, as TS run's host function proxy. v0.5 dropped a function or symbol and called the tool (review round 87e).
+- **Am I affected?** Scripts that pass such values to tools.
+- **What to do:** Pass plain JSON values.
 - **Kind:** silent behavior change
 
 ## Harness, ACP and fx {#harness-acp-and-fx}
@@ -7117,7 +7437,7 @@ compile-time changes.
 
 ### ACP host tools are resolved by the adapter {#acp-host-tool-resolver}
 
-- **What changed:** The ACP bridge no longer guesses which tool calls are host tools; it asks the host, which calls `acp.Settings.ResolveHostToolCall` (TS `03dac28304`). `DoStart` now fails with `ACP isMcpToolCall must be a function.` or `ACP resolveHostToolCall must be a function.` when either callback is nil (ruling: match TS, which throws). The Cursor, GitHub Copilot, Grok Build and fx adapters set both.
+- **What changed:** The ACP bridge no longer guesses which tool calls are host tools; it asks the host, which calls `acp.Settings.ResolveHostToolCall` (TS `03dac28304`). `acp.CreateACP` (and so `cursor.CreateCursor`, `githubcopilot.CreateGitHubCopilot`, `grokbuild.CreateGrokBuild` and `fx.CreateFx` on the ACP runtime) now fails with `ACP isMcpToolCall must be a function.` or `ACP resolveHostToolCall must be a function.` when either callback is nil (ruling: match TS, which throws). The Cursor, GitHub Copilot, Grok Build and fx adapters set both.
 - **Am I affected?** Only if you build `acp.Settings` yourself and call `acp.CreateACP` (grep `acp.Settings{`, `acp.CreateACP`).
 - **What to do:** Set both callbacks:
 
@@ -7229,7 +7549,7 @@ compile-time changes.
 
 - **What changed:** v0.5 waited forever for a claude-code turn's first bridge event. v0.6 fails the turn after `claudecode.Settings.TurnStartTimeout` (default 120 s) with `claude-code bridge did not emit a turn event within 120000ms.`, sends `abort` and closes the bridge connection. A start lost on a reconnect is resent once (same `startId`) when the bridge advertises `idempotentStart`; an older bridge that is waiting for a start fails the turn with `claude-code bridge is waiting for a start after reconnect and does not support safe start retries.` (TS 3bf70f83bc). Mid-turn user messages sent while disconnected are replayed once after the start instead of also being queued.
 - **Am I affected?** `claudecode.New`, `claudecode.Settings`, turns that legitimately emit no event for over 120 s (for example a very slow first model response), hosts that inspect the `start` frame (`startId`).
-- **What to do:** No action unless a first event can take longer than 120 s: set `claudecode.Settings{TurnStartTimeout: 10 * time.Minute}`, or a negative value to disable the deadline.
+- **What to do:** No action unless a first event can take longer than 120 s: set `claudecode.Settings{TurnStartTimeout: 10 * time.Minute}`. There is no value that disables it; as in TS, a value below 1 ms (negative included) fails the turn right after the start is sent.
 - **Kind:** silent behavior change
 
 ### `bridge.WithBridgeToken` serializes a WHATWG URL {#bridge-token-whatwg-url}
@@ -7321,6 +7641,27 @@ compile-time changes.
 - **What changed:** Every Vercel Sandbox API request sends `teamId` first and always, also when it is empty (`teamId=`), then the call's query keys in the `@vercel/sandbox` 3.9.0 order (`getSandbox`: `projectId`, `resume`; `listSnapshots`: `project`, `name`, `cursor`, `sortOrder`; `getCommand`: `wait`), with empty values kept (`projectId=`). v0.5 dropped empty values and sorted the keys. The createSandbox body always has `"projectId"` (`""` for an empty project). Snapshot listing follows `pagination.next` while it is not null (also after an empty page or with an empty cursor), and the template snapshot poll stops listing at the first created manual snapshot (review round 87c).
 - **Am I affected?** Proxies or test servers that match the exact Vercel Sandbox request URL or require a non-empty `teamId` / `projectId`; `vercel.APIClient.ListSnapshots` callers whose server returns an empty page with a next cursor.
 - **What to do:** No action unless you match the request URL or query order.
+- **Kind:** wire/protocol change
+
+### Vercel network policy inspection lists sessions {#vercel-policy-inspection-list-sessions}
+
+- **What changed:** Before mutating a custom network policy it did not create, the Vercel network policy manager lists the sandbox's sessions (`GET /v2/sandboxes/sessions?teamId&project&name[&cursor]`, every page until the current session) and checks that session's network policy for response rules, as TS; v0.6 drafts read the last session response (review round 87e).
+- **Am I affected?** Tokens without access to the sessions listing; tests stubbing the Vercel API.
+- **What to do:** No action unless you stub the API: serve `GET /v2/sandboxes/sessions`.
+- **Kind:** wire/protocol change
+
+### Vercel snapshot listing follows every page {#vercel-snapshot-pagination}
+
+- **What changed:** `ListSnapshots` and the template snapshot poll follow every page (`pagination.next` until null), like TS; they stopped after 20 pages (review round 87e).
+- **Am I affected?** Accounts with more than 20 pages of snapshots.
+- **What to do:** Bound the call with a context.
+- **Kind:** silent behavior change
+
+### Vercel array owner_id sends one teamId per element {#vercel-owner-id-array}
+
+- **What changed:** A JWT whose `owner_id` claim is an array sends one `teamId` query per element (none for `[]`), and a `null` element fails every request with `Cannot read properties of null (reading 'toString')`, as `@vercel/sandbox` 3.9.0; Go sent one comma-joined `teamId` (review round 87e).
+- **Am I affected?** Vercel tokens with an array `owner_id` claim.
+- **What to do:** No action (Vercel issues string owners).
 - **Kind:** wire/protocol change
 
 ## Policy {#policy}
@@ -7428,9 +7769,8 @@ lists all of them with the reasons. The ones you are most likely to notice
 after upgrading:
 
 - **`ToUIMessageStream` writes a masked `error` chunk** when its source stream
-  fails, and ends the UI stream cleanly (owner decision 2026-10-29, the v0.5.x
-  behavior). The SSE helpers then write `data: [DONE]` and close the response
-  body without an error. TS errors the stream instead. See
+  fails (owner decision 2026-10-29); TS errors the stream instead. The SSE
+  helpers then end without `data: [DONE]` and return the error, as TS. See
   [UI message stream: source failure writes an error chunk](./known-differences.mdx).
 - **The Vertex Gemini image model accepts URL and `gs://` input images**
   (owner ruling 2026-10-29). Current TS rejects them. Set `MediaType` for a
@@ -7440,32 +7780,17 @@ after upgrading:
   2026-10-28), as in `GenerateText` and the agents. TS streams an error part
   and finishes. See
   [StreamText tool context failure ends the run](./known-differences.mdx).
-- **`WorkflowRunMultiplexer` does not require the `x-workflow-run-id`
-  header.** It is a Go-only type with no TS twin. `WorkflowChatTransport`
-  fails without the header, as TS. See
-  [WorkflowRunMultiplexer run ID](./known-differences.mdx).
-- **`codemode.SetMaxWorkers(0)` means unlimited**, kept from v0.5.x; TS
+- **`codemode.SetMaxWorkers(0)` means unlimited**, kept from v0.5.2; TS
   rejects 0. See
   [Code-mode: never-settling promises and in-flight limits](./known-differences.mdx).
-- **`StreamText` returns an invalid `Instructions` value synchronously**, and
-  `WorkflowAgent.Stream` rejects a `MaxTokens` below 1. See
+- **`StreamText` returns an invalid `Instructions` value synchronously**, as
+  v0.5.2 did; TS reports it through the stream. See
   [Option validation timing](./known-differences.mdx).
-- **Each `WorkflowAgent` call has its own root call ID**; TS uses the literal
-  `workflow-agent`. See [WorkflowAgent root call ID](./known-differences.mdx).
-- **`InvalidArgumentError` text always starts with "Invalid argument for
-  parameter ..."**, also where TS throws the provider package's
-  `InvalidArgumentError`, whose message is the bare text. See
-  [InvalidArgumentError message prefix](./known-differences.mdx).
-- **Go does not check a model's specification version**, has no global
-  default provider for a decision model ID, and the `Decide` telemetry
-  events carry a subset of the TS fields. See
-  [Decide: model version check and telemetry fields](./known-differences.mdx).
-- **A `WorkflowAgent.Stream` run cancelled mid-stream ends its root span
-  with `OnAbort`**, and the root telemetry `OnError`/`OnEnd` run after the
-  user `OnError`/`OnEnd`. TS reports a thrown abort to the root `onError`,
-  leaves the root open for an abort its iterator returns, and interleaves the
-  user and telemetry callbacks. See
-  [WorkflowAgent Stream: root telemetry at run end](./known-differences.mdx).
+- **`WorkflowAgent` root telemetry always follows the TS durable-run report**
+  (a `call-…` call ID, final step fields, `onAbort` for an unclosed run);
+  outside a Workflow DevKit run TS dispatches live with the literal
+  `workflow-agent` call ID. See
+  [WorkflowAgent root telemetry outside a durable run](./known-differences.mdx).
 - **UI message stream SSE events have sorted JSON keys**, because
   `UIMessageChunk` is a map; TS writes insertion order. The values are the
   same. See [UI message stream JSON key order](./known-differences.mdx).
@@ -7473,39 +7798,23 @@ after upgrading:
   finish, incomplete-stream error); start-led sources (`StreamText`, harness
   streams) map one to one as in TS. See
   [ToUIMessageStream on a raw provider stream](./known-differences.mdx).
-- **The telemetry `OnStart` runs before the user `OnStart`** (also for the
-  `WorkflowAgent` root), so the callback runs in the integration's span context. TS starts the callback
-  first; step-start and end events run the callbacks first, as TS. See
-  [Telemetry start before the start callbacks](./known-differences.mdx).
 - **`RuntimeContext` stays nil when unset**; TS defaults it to `{}`. See
   [RuntimeContext defaults to nil](./known-differences.mdx).
-- **A failing parallel `EmbedMany` group returns after its other calls
-  finish.** The error is the first failure in time, as TS, but TS rejects at
-  once and lets the other calls run on. See
-  [EmbedMany waits for sibling batch calls](./known-differences.mdx).
 - **An aborted stream keeps the parts produced before the abort**; TS drops
   parts still queued in its stream pipeline. See
   [Abort keeps the parts produced before it](./known-differences.mdx).
-- **Tool call input keeps keys the schema does not declare**; TS zod object
-  schemas strip them. See
+- **Only audited provider tools strip undeclared tool input keys** (the flat
+  Anthropic tools); other provider tools keep them, and user tools keep them
+  as TS `jsonSchema()` tools do. See
   [Tool call input keeps undeclared keys](./known-differences.mdx).
 - **`Reasoning` lists hold reasoning text only**; reasoning file parts are
   returned by `StepResult.ReasoningFiles()`. See
   [Reasoning lists hold reasoning text only](./known-differences.mdx).
-- **A tool output struct holding NaN or ±Inf becomes `null` as a whole**;
-  typed maps, slices and arrays null only those numbers, as TS. See
-  [Tool output structs holding NaN](./known-differences.mdx).
-- **`WorkflowAgent.Stream`'s root span gets end attributes**; both TS OTel
-  integrations throw while building them. See
-  [WorkflowAgent root telemetry end](./known-differences.mdx).
 - **`ConsumeStream` returns the stream's error**; TS `consumeStream()`
   swallows it. See [ConsumeStream returns the error](./known-differences.mdx).
 - **Merged UI message streams interleave by goroutine scheduling**; each
   source keeps its order. See
   [Merged UI message stream order](./known-differences.mdx).
-- **A provider tool error with no result value has the error text
-  `tool error`**; TS leaves `errorText` undefined. See
-  [Provider tool error without a value](./known-differences.mdx).
 - **UI message metadata followed by a string or array is replaced**; TS
   merges the value's index keys into the object (a number or boolean keeps
   the object, as TS). See
@@ -7521,16 +7830,6 @@ after upgrading:
   `undefined` in both. See
   [UI message stream end event finish reason](./known-differences.mdx).
 
-- **Some provider streams start with a header-only `response-metadata`
-  part.** Streams wrapped by `providerutils.WithResponseMetadata`
-  (Anthropic, AI Gateway, Cohere, Moonshot, openresponses) carry the HTTP
-  response headers in an extra leading part, kept from v0.5; TS returns the
-  headers on the `doStream` result; OpenAI chat and completion streams add
-  a headers-only part before the finish when no chunk has metadata. See
-  [Provider stream header metadata part](./known-differences.mdx).
-- **The UI chunk-channel helpers always end with `data: [DONE]`**, as they
-  cannot see a stream failure; the `StreamTextResult` helpers match TS. See
-  [UI chunk-channel helpers cannot see a stream failure](./known-differences.mdx).
 - **`StreamText` reads the model's stream without a reader**, so the model
   call runs until its ctx ends; TS stalls an unread stream. See
   [StreamText reads the provider stream without a reader](./known-differences.mdx).
@@ -7544,8 +7843,6 @@ after upgrading:
   [URL parsing: three IDNA edge cases](./known-differences.mdx).
 - **Typed URL fields**: a Go URL field that does not parse fails with `Invalid URL`; TS treats such a plain string as base64 data (round 84). See
   [Typed URL fields](./known-differences.mdx).
-- **Prompt deprecation warnings**: no warnings for legacy tool-result content types (decoded into `FileContentBlock`), and image-part warnings cover the initial prompt only (round 84). See
-  [Prompt deprecation warnings](./known-differences.mdx).
 - **Prompt file download errors**: the default prompt-file downloader keeps the v0.5 `SSRFError` texts and its up-front DNS check; TS reports `DownloadError` texts (round 84). See
   [Prompt file download errors](./known-differences.mdx).
 - **TS test replays skipped in round 84**: eight TS cases are skipped for harness limits or Go idiom (azure-keyed OpenAI Responses case, `openai.chat` hint text, chat.ts replay start, a call-site spy, channel errors, provider signal after step end) (round 84). See
@@ -7554,10 +7851,6 @@ after upgrading:
   [Input checks TS removed in ai@7.0.155](./known-differences.mdx).
 - **Durable workflow telemetry**: Durable workflow telemetry: only the operation-name mapping is ported (ruling 6, round 85). See
   [Durable workflow telemetry](./known-differences.mdx).
-- **ACP callbacks checked at session start**: ACP `IsMcpToolCall` / `ResolveHostToolCall` are checked when the session starts, not in `CreateACP` (round 85). See
-  [ACP callbacks checked at session start](./known-differences.mdx).
-- **Vercel policy inspection source**: Vercel policy inspection reads the last session response instead of `listSessions()` (round 85). See
-  [Vercel policy inspection source](./known-differences.mdx).
 - **SSE chunk-boundary artifacts**: SSE parsing ignores chunk boundaries where eventsource-parser does not (round 85). See
   [SSE chunk-boundary artifacts](./known-differences.mdx).
 - **UI streams close open blocks at a step's finish**: ToUIMessageStream synthesizes text-end / reasoning-end for blocks still open at finish-step (round 85). See
@@ -7570,24 +7863,18 @@ after upgrading:
   [TS test replays skipped in round 85](./known-differences.mdx).
 - **ReadUIMessages after a terminating error**: `ReadUIMessages` with `TerminateOnError` calls `OnError` once and stops reading (round 86). See
   [ReadUIMessages after a terminating error](./known-differences.mdx).
-- **Live tool results and telemetry order**: StreamText streams a tool result after the user tool-end callback and before the telemetry tool end (round 86). See
-  [Live tool results and telemetry order](./known-differences.mdx).
 - **WebSocket handshake headers with an empty value**: WebSocket handshakes do not send a header whose value is `""` (round 86). See
   [WebSocket handshake headers with an empty value](./known-differences.mdx).
 - **Speech translation `TargetLanguage: ""`**: An empty speech translation `TargetLanguage` counts as missing (round 86). See
   [Speech translation `TargetLanguage: ""`](./known-differences.mdx).
 - **Serializable tool patterns RE2 cannot compile**: A serializable tool `pattern` with lookaround or a backreference is skipped (RE2) (round 86b). See
   [Serializable tool patterns RE2 cannot compile](./known-differences.mdx).
-- **Tool call metadata from custom providers**: A valid tool call keeps a custom provider's `ToolMetadata` / `Title` (v0.5 behavior) (round 86b). See
-  [Tool call metadata from custom providers](./known-differences.mdx).
 - **Files results: empty filename on the result struct**: File results: an empty returned `filename` reads as absent on the `Filename` field; the metadata map keeps it (round 86b). See
   [Files results: empty filename on the result struct](./known-differences.mdx).
 - **MCP OAuth client authentication parameters**: MCP OAuth: extra `AddClientAuthentication` form parameters are sent in key order (round 86b). See
   [MCP OAuth client authentication parameters](./known-differences.mdx).
 - **ElevenLabs stream audio format rate**: ElevenLabs: a fractional native output-format rate has no `Rate` (`*int`) (round 86b). See
   [ElevenLabs stream audio format rate](./known-differences.mdx).
-- **OpenAI REST transcription `language: ""` / `prompt: ""`**: OpenAI REST transcription: `language: ""` / `prompt: ""` are omitted (round 86b). See
-  [OpenAI REST transcription `language: ""` / `prompt: ""`](./known-differences.mdx).
 - **Sandbox text: lone surrogates and an empty encoding**: Sandbox text: a UTF-16 lone surrogate reads as U+FFFD and `Encoding: ""` is utf-8 (round 86b). See
   [Sandbox text: lone surrogates and an empty encoding](./known-differences.mdx).
 - **AI Gateway OIDC token refresh**: AI Gateway: OIDC refresh is opt-in (`Config.OIDCTokenFunc`), in memory, and never writes or clears the Vercel CLI files (round 87). See
@@ -7600,8 +7887,6 @@ after upgrading:
   [Mistral voice agent browser transport](./known-differences.mdx).
 - **Mistral realtime transcription WebSocket hint**: Mistral realtime transcription socket errors have no WebSocket-implementation hint (round 87). See
   [Mistral realtime transcription WebSocket hint](./known-differences.mdx).
-- **Gateway streaming image decoding**: Gateway streaming image decoding validates the placeholder skeleton (round 87). See
-  [Gateway streaming image decoding](./known-differences.mdx).
 - **Empty string message content**: A user message whose only part is an empty text part loses it; TS keeps a string `content: ''` (round 87). See
   [Empty string message content](./known-differences.mdx).
 - **Vercel Sandbox OIDC token refresh**: Vercel Sandbox: OIDC refresh is opt-in (`OIDCRefresh`), in memory, and follows `@vercel/oidc` 3.2.0 (round 87b). See
@@ -7620,18 +7905,12 @@ after upgrading:
   [Open Responses and AI Gateway: field values of an unexpected JSON type](./known-differences.mdx).
 - **Tool output JSON in replayed prompts keeps Go map key order.** See
   [Tool output JSON key order in replayed prompts](./known-differences.mdx).
-- **EmbedMany with a batch that reported no usage records the other batches' positive token sum**; TS sums to NaN and drops it. See
+- **Embedding usage stays a number when a provider sends none** (the sum of
+  the reported batches, 0 when none, as v0.5.2); TS returns NaN, and Go drops
+  the telemetry attribute where TS's is NaN. See
   [Embedding usage across EmbedMany batches](./known-differences.mdx).
 - **The legacy OpenTelemetry integration ends open tool spans on error**; TS leaves them unended. See
   [Legacy telemetry tool spans on error](./known-differences.mdx).
-- **Executed tool results carry the tool title** (`ToolResult.Title`, as in v0.5.2); TS client tool results have none. See
-  [Executed tool results carry the tool title](./known-differences.mdx).
-- **Live WebSocket close errors say `(code unknown)`**: the Go websocket
-  library does not expose the close code or reason. See
-  [Live WebSocket close code](./known-differences.mdx).
-- **OpenAI compaction parts keep the v0.5 top-level metadata keys** next to
-  the TS `providerMetadata.openai` object. See
-  [OpenAI compaction metadata keeps the v0.5 keys](./known-differences.mdx).
 - **Alibaba and Z.ai keep the v0.5 provider option spellings** (alibaba reads
   the `openai-compatible` keys and raw snake_case names; zai forwards `user`
   and `verbosity`). See

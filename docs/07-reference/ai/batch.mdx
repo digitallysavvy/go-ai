@@ -29,7 +29,7 @@ A `Provider` field accepts a `provider.BatchV4` value, a provider that exposes `
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `Provider` | `interface{}` | Provider is a provider.BatchV4 instance, a provider.BatchProvider (a Provider exposing ExperimentalBatch()), or nil. When nil, batches are processed through the AI Gateway (mirrors TypeScript: `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`). |
+| `Provider` | `interface{}` | Provider is a provider.BatchV4 instance, a provider.BatchProvider (a Provider exposing ExperimentalBatch()), or nil. When nil, batches are processed through the SetDefaultProvider provider, else the AI Gateway (mirrors TypeScript: `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`). |
 | `Requests` | `[]BatchRequest` |  |
 | `ProviderOptions` | `map[string]interface{}` |  |
 | `WebhookURL` | `string` | WebhookURL, when set, is the URL the provider notifies when the batch reaches a terminal state. Providers that do not support completion webhooks return an unsupported-functionality warning instead of erroring. |

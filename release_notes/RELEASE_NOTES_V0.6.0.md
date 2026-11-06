@@ -129,7 +129,11 @@ Also new:
 - **`claudecode.Settings.TurnStartTimeout`**, `bridge.HelloCapabilities.IdempotentStart`, `bridge.StartBase.StartID`, `(*bridge.Channel).SendWithOptions` / `bridge.SendOptions` (TS 3bf70f83bc); `vercel.Sandbox.SpawnCommandWithStdin`, `vercel.RemoteProcess.Stdin` (`@vercel/sandbox` 3.9.0 writeStdin / closeStdin); `harnessutil.Subscriptions`; `bridges.ContentHash`, `bridges.AdapterManifest.ContentHash` (review round 87).
 - **`vercel.OIDCRefresh`** on `CreateSessionOptions`, `ResumeSessionOptions` and `LegacySettings`: opt-in Vercel OIDC token refresh matching `@vercel/sandbox` 3.9.0 `getCredentials` / `ensureValidToken` (5 minute buffer, in memory, shares the resolver with `gateway.VercelOIDCTokenFunc` through `pkg/internal/verceloidc`); **`vercel.APIClient.ExtendSessionTimeout`** (`POST .../extend-timeout`, used by `Sandbox.Update`) (review round 87b).
 - **`providerutils.JSString` / `JSTruthy`**: JavaScript `String(value)` and truthiness for values decoded from JSON (used where TS reads unvalidated `z.any()` values: Open Responses, AI Gateway, You.com, the Vercel token claims) (review round 87b).
-- **`youcom.CreateYouClient`** (`youcom.YouClientConfig{APIKey, Tools, Profile}`): connects to the hosted You.com MCP server (`https://api.you.com/mcp`), matching `@youdotcom-oss/ai-sdk-plugin` 3.x `createYouClient`; resolve its tools with `mcp.GetMCPToolsForAgent` (review round 87c).
+- **`youcom.CreateYouClient`** (`youcom.YouClientConfig{APIKey *string, Tools, Profile}`; a nil `APIKey` falls back to `YDC_API_KEY`): connects to the hosted You.com MCP server (`https://api.you.com/mcp`), matching `@youdotcom-oss/ai-sdk-plugin` 3.x `createYouClient`; resolve its tools with `mcp.GetMCPToolsForAgent` (review round 87c).
+- **`ai.SetDefaultProvider`** (TS `globalThis.AI_SDK_DEFAULT_PROVIDER`): the provider used for string decision model IDs and batches without a provider, and **`ai.UnsupportedModelVersionError`**, returned when a decision model is not specification `v4` (review round 87e).
+- **`UIMessageStreamResponseInit.StreamErrors`**: pass the chunk stream's error channel so `PipeUIMessageChunksToResponse` / `CreateUIMessageChunksResponse` end a failed stream without `data: [DONE]`, as TS (review round 87e).
+- **`provider.StreamResponseHeaders`** (`ResponseHeaders() map[string]string`, TS `doStream` `response.headers`), **`providererrors.NewArgumentError`** (the bare-message `@ai-sdk/provider` `InvalidArgumentError`) and **`provider.DecisionQuestionsJSON`** (the JSON form of typed decision criteria) (review round 87e).
+- Decide telemetry events carry TS's fields: `DecideStartEvent.MaxOutputTokens` / `Reasoning` / `ProviderOptions`, `DecideEndEvent.Usage` / `Warnings` / `Rounding` / `ProviderMetadata` / `Response`, `DecisionModelCallEndEvent.Warnings` / `Rounding` / `Response` (review round 87e).
 - **`VERCEL_OIDC_TOKEN_FILE`** in `pkg/harness/sandbox/vercel` (`@vercel/oidc` 4.0.0, pinned by `@vercel/sandbox` 3.9.0); `pkg/internal/verceloidc` follows 4.0.0 for the sandbox and 3.2.0 for the AI Gateway (review round 87c).
 - **`ai.ShellSandbox` `Stat` / `ListDirectory` / `DeleteFile`** (the optional `providerutils.SandboxStatter` / `SandboxDirectoryLister` / `SandboxFileDeleter`, also on `bridgetest.Sandbox`), **`acp.ToolCall.HasName`**, **`websocket.ErrInvalidUTF8Text`** (review round 86b).
 - **`Config.APIKeyFunc`** for openai, azure, xai, deepseek, alibaba, moonshot, openresponses, huggingface, gmicloud, together, fireworks, zai, cerebras and deepinfra (TS 7716e189ee), called per request with the request's context; **`openai.Config.HeadersFuncCtx`, `deepseek.Config.HeadersFuncCtx`** for NoAPIKey wrappers (review round 85).
@@ -295,6 +299,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **StreamText OutputErr() reports the TS no-output rejection for a failed run** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-output-err-no-output)
 - **StreamTextResult.PipeTextStreamToResponse writes status 200 and the text/plain content type first** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-pipe-text-head)
 - **Reasoning-file parts marshal in the TS message shape (data string, no fileData)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-file-message-json)
+- **StreamObject stream failure calls only OnError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamobject-stream-failure-callbacks)
 
 #### Prompts and validation
 
@@ -350,6 +355,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Web fetch reports an invalid redirect Location as a `network_error` result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#web-fetch-invalid-redirect)
 - **Invalid tool calls take `Title` and `ToolMetadata` from the tool only, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-call-title-metadata)
 - **Sandbox text file encodings are Node Buffer encodings (`latin1`, `base64`, `hex`, ...), not WHATWG labels** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#sandbox-text-node-encodings)
+- **Executed tool results have no title** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#executed-tool-result-title)
+- **A provider tool error without a value keeps its error undefined** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-tool-error-no-value)
+- **Model tool calls take title and metadata from the tool** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#model-tool-call-tool-metadata)
+- **Anthropic provider tools drop undeclared input keys** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-tool-input-strip-undeclared)
 
 #### Agents and approvals
 
@@ -398,6 +407,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Approved calls of struct-schema tools are revalidated as they were parsed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-struct-schema-revalidation)
 - **Approval continuations take ToolMetadata, Dynamic and Title from the server tool, not from message history** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-continuation-server-tool-metadata)
 - **An empty tool approval reason is kept and sent as `""` instead of the provider's default denial text, as TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#empty-approval-reason)
+- **ExperimentalDecide checks the model's specification version** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-model-version)
 
 #### UI message streams
 
@@ -425,6 +435,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ReadUIMessageStream frames events and decodes UTF-8 like the TS chat transport; an unterminated last event is dropped** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#read-ui-message-stream-sse)
 - **UI tool parts decoded without input stay without it, an empty denial reason is kept, and ReadUIMessages writes no snapshot for unknown chunks** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-tool-part-absent-input)
 - **`WorkflowChatTransport` skips only an exact `[DONE]` and parses every other SSE data line** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-transport-sse-data)
+- **UI message stream SSE events keep the TS key order** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-sse-key-order)
+- **UI tool-input-start writes dynamic: false for a tool outside the tool set** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-tool-input-start-dynamic-false)
+- **UI message metadata merges non-object values like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-metadata-merge-mergeobjects)
+- **Agent UI stream helpers end a failed run without [DONE]** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-ui-helpers-stream-errors)
 
 #### Telemetry and events
 
@@ -458,6 +472,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Chat spans record server.address / server.port from the provider's request origin** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-server-address)
 - **Provider usage and runtime context attributes keep one value per name (later key wins)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-usage-key-collision)
 - **An empty InputExamples list is kept as [] in tool telemetry and serialized workflow tools** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-definitions-empty-input-examples)
+- **User OnStart runs before the telemetry root start** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-start-after-onstart)
+- **WorkflowAgent root telemetry follows the TS durable report** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-root-telemetry-durable)
 
 #### Errors
 
@@ -470,6 +486,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Output validation failures have a TypeValidationError cause** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#output-type-validation-cause)
 - **An empty provider error message is reported as is, not replaced by a fallback text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#empty-provider-error-message)
 - **Response header maps keep the last Set-Cookie line, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#set-cookie-last-line)
+- **Provider-package argument errors have no parameter prefix** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-argument-bare-message)
 
 #### Providers
 
@@ -637,6 +654,21 @@ search for and ends with a checklist for coding agents. Entries marked
 - **You.com 402 errors interpolate any truthy message / upgrade_url / reset_at value** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#youcom-402-message)
 - **AI Gateway missing-credential errors are the GatewayAuthenticationError itself, and connection failures read like TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-transport-errors)
 - **Provider credential, signing and key-function errors are returned unchanged and not retried** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-credential-errors-unchanged)
+- **Decision models read typed Go criteria from direct DoDecide callers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decision-questions-json)
+- **Google Interactions function_call without an id keeps the empty ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-interactions-empty-call-id)
+- **Gemini usage after a continuation takes the later serviceTier and trafficType** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gemini-usage-merge-null)
+- **Google videoMetadata fps errors report inclusive false** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-video-metadata-inclusive)
+- **OpenAI compaction parts carry only providerMetadata.openai** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-compaction-metadata-keys)
+- **OpenAI transcription sends an empty language or prompt option** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-transcription-empty-options)
+- **OpenAI computer calls keep an empty safety-check code or message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-computer-safety-check-empty)
+- **Open Responses stream tool calls match item ids by JSON type** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-item-id-map-keys)
+- **Alibaba preserve_thinking spellings warn deprecated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#alibaba-preserve-thinking-deprecated)
+- **Open Responses replay sends an empty item id** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-replay-empty-item-id)
+- **Open Responses provider metadata itemId keeps the item's id value** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-metadata-item-id)
+- **Live WebSocket close errors carry the close code and reason** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#live-websocket-close-code)
+- **Provider responses keep a present empty string** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-response-empty-strings)
+- **OpenAI-style chat streams send text-start and text-end parts** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#chat-stream-text-blocks)
+- **Provider streams report response headers beside the stream** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-response-headers-capability)
 
 #### MCP
 
@@ -645,6 +677,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **An explicit MCPToolSchema.InputSchema schema is the tool's Parameters, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-explicit-input-schema)
 - **MCP tool, prompt and resource calls answer input_required through OnElicitationRequest, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-input-required)
 - **MCP OAuth token bodies and the event callback query follow URLSearchParams order and escaping** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-form-order)
+- **MCP HTTP transport reports send failures to OnError as often as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-http-onerror-count)
+- **MCP HTTP transport starts once** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-http-connect-once)
+- **MCP SSE transport stays connected after a stream read error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-sse-read-error-connected)
+- **MCP stdio transport disconnects when the server exits** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-stdio-server-exit)
 
 #### Code mode
 
@@ -658,6 +694,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Code mode resumes fail with a ProtocolError when the replay diverges from the recorded ledger** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-replay-checks)
 - **Code mode Date.now() and Math.random() are deterministic per run and replayed on resume** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-deterministic-clock)
 - **Code mode freezes the JavaScript intrinsics before the script runs, as TS run** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-frozen-intrinsics)
+- **Code mode tools names inherited from Object.prototype call those functions** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-prototype-tool-names)
+- **A code mode script awaiting a promise nothing settles times out** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-never-settling-timeout)
+- **Code mode tool arguments devalue cannot serialize fail at the call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-unserializable-arguments)
 
 #### Harness, ACP and fx
 
@@ -697,6 +736,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The Vercel Sandbox reads the OIDC token from VERCEL_OIDC_TOKEN_FILE first** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-oidc-token-file)
 - **Vercel OIDC token failures are LocalOidcContextError authentication failures, and empty claims are accepted** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-oidc-token-decoding)
 - **Vercel Sandbox request queries keep empty values and the TS key order** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-query-empty-values)
+- **Vercel network policy inspection lists sessions** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-policy-inspection-list-sessions)
+- **Vercel snapshot listing follows every page** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-snapshot-pagination)
+- **Vercel array owner_id sends one teamId per element** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-owner-id-array)
 
 #### Policy
 
@@ -1606,77 +1648,40 @@ Notable ones:
   run with the `ValidationError` (no `finish-step`, `finish` or `OnEnd`;
   `OnError` once), as `GenerateText` and the agents fail the call. TS
   enqueues an `error` part and finishes the run (owner decision).
-- A `""` value in some typed string fields of provider responses (Gemini
-  `finishMessage`, `serviceTier` and `continuationToken`, interactions
-  signatures, `service_tier` and `mime_type`, Anthropic and Bedrock
-  `stop_sequence`) counts as absent; TS treats `""` as present. An
-  interactions `interaction.created` event with an empty id keeps the earlier
-  id, which Go uses to reconnect.
 - When the source stream of `ToUIMessageStream` fails (not an abort), Go
   writes one standard `error` chunk (masked text unless `OnError` says
   otherwise), ends the stream cleanly and returns the error; TS errors the
   stream and writes no `error` chunk. Same API and chunk protocol as TS, and
   `useChat` shows the error text. Caveat: client logic that reacts to a
   dropped connection (for example reconnect-on-network-error) sees a clean
-  end with an `error` chunk instead (v0.5.x behavior, owner decision). The
-  SSE helpers then write `data: [DONE]` and
-  `CreateUIMessageStreamResponseWithInit` closes the body cleanly; TS writes
-  no `[DONE]` and errors the body.
-- Go's single `InvalidArgumentError` type always starts its message with
-  "Invalid argument for parameter ..."; TS's provider-package
-  `InvalidArgumentError` has the bare text (coordinator ruling, round 67).
-- Go does not check a model's specification version (TS throws
-  `UnsupportedModelVersionError`), has no global default provider for a
-  decision model ID (TS `AI_SDK_DEFAULT_PROVIDER`; Go resolves through
-  `DecisionProvider`, `Provider`, then the AI Gateway), and the `Decide`
-  telemetry events carry a subset of the TS fields (Go design, rounds 67
-  and 69).
+  end with an `error` chunk instead (v0.5.x behavior, owner decision). The SSE helpers then end without `data: [DONE]` and return the error, as TS (round 87e).
 - A `WorkflowAgent.Stream` run cancelled mid-stream ends its
   `ai.workflowAgent.stream` root with `OnAbort`; TS reports a thrown abort to
   the root `onError` and leaves the root open for an abort its iterator
   returns. Go fires the root telemetry `OnError`/`OnEnd` after the user
   `OnError`/`OnEnd`; TS interleaves them (coordinator ruling, round 68).
-- UI tool parts cannot tell an unset `dynamic` from `dynamic: false` (Go
-  `bool`), so Go writes `dynamic` only when true; TS can write
-  `dynamic: false` for a tool missing from the tool set (and on an unknown or
-  provider-executed tool's `tool-input-start`, round 86).
-- UI message stream SSE events (`ToUIMessageStreamResponse`,
-  `PipeUIMessageStreamToResponse`, `CreateUIMessageStreamResponse`) write
-  each chunk's JSON with sorted keys, because `UIMessageChunk` is a map; TS
-  writes insertion order. The values are the same (round 70).
 - **ToUIMessageStream on a raw provider stream** is framed (start,
   finish-step, finish, incomplete-stream error); start-led sources map one to
   one as in TS (owner ruling 2026-10-30, round 71).
-- The telemetry `OnStart` of `GenerateText`, `StreamText`, the legacy
-  `ToolLoopAgent` and the `WorkflowAgent` root (both modes) runs before the
-  user `OnStart`, so the callback runs in the integration's span context; TS
-  starts the callback first. Step-start, end, step-end, step-error and tool
-  events run the callbacks first, as in TS (rounds 71-72, 75).
 - `RuntimeContext` stays nil when the caller sets none; TS defaults it to
   `{}` (owner preference for idiomatic Go, round 71).
-- **EmbedMany waits for sibling batch calls**: a failing parallel `EmbedMany` group returns the first failure in time, as TS, but only after the group's other calls finish; TS rejects at once and lets them run on (round 72).
 - **Abort keeps the parts produced before it**: the full and UI streams keep the aborted step's parts up to the abort part; TS drops parts still queued in its pipeline (round 72).
-- **Tool call input keeps undeclared keys**: TS zod object schemas strip keys they do not declare from the parsed tool input; Go validates with JSON Schema and passes the input through unchanged (round 72).
+- **Tool call input keeps undeclared keys**: Go strips undeclared keys only for the audited flat Anthropic provider tools; other provider tools keep them (S7) and user tools keep them, as TS `jsonSchema()` tools (round 87e).
 - **Reasoning lists hold reasoning text only**: reasoning file parts are returned by `StepResult.ReasoningFiles()` and are in `Content` (TS includes them in `reasoning`) (rounds 72, 73).
-- **Tool output structs holding NaN**: a tool output struct whose field holds NaN or ±Inf still becomes `null` as a whole; typed maps, slices and arrays null only those numbers, as TS (round 73).
 - **WorkflowAgent root telemetry end**: the `ai.workflowAgent.stream` root gets end attributes and ends; both TS OTel integrations throw while building them (no `finalStep` on the root end event) (round 73).
 - **ConsumeStream returns the error**: `StreamTextResult.ConsumeStream()` returns the stream error; TS `consumeStream()` swallows it (round 73).
 - **Merged UI message stream order**: chunks of merged UI stream sources interleave by goroutine scheduling, each source in order; TS follows its microtask queue (round 73).
-- **Provider tool error without a value**: a provider tool result flagged `IsError` with no value has the error text `tool error`; TS leaves `errorText` undefined (round 73).
 - **Message metadata merge with non-object values**: UI message metadata followed by a string or array (or a non-object followed by any value) is replaced; TS `mergeObjects` merges the value's index keys into a copy of the existing value. A number or boolean after an object keeps the object, as TS (coordinator ruling, round 75).
 - **Anthropic batch results of id-named provider tools across processes**: `ExperimentalBatch` restores the `Name` of a provider tool that keeps its constructor id (`anthropic.bash_20250124`) only when the results are read through the Provider that started the batch; results read by another Provider value or process report the wire name (`bash`). Name the tool after its wire name to get the same name everywhere (round 75).
 - **UI message stream end event finish reason**: the `OnEnd`/`OnFinish` event of `CreateUIMessageStreamWithOptions` reports the last finish chunk's `finishReason` as written (normally a `string`) or `nil`, and `ToUIMessageStream` a `types.FinishReason` (`""` when unset), the v0.5 shapes; TS reports the chunk's string or `undefined` in both (round 77).
-- **Provider stream header metadata part**: streams wrapped by `providerutils.WithResponseMetadata` (Anthropic, AI Gateway, Cohere, Moonshot, openresponses) start with a `response-metadata` part carrying the HTTP response headers, kept from v0.5 (`TextStream` has no other channel for them); TS returns the headers on the `doStream` result (round 78). OpenAI chat and completion streams add a headers-only part before the finish when no chunk has metadata (round 79).
-- **UI chunk-channel helpers cannot see a stream failure**: `PipeUIMessageChunksToResponse` and `CreateUIMessageChunksResponse` take a bare `<-chan UIMessageChunk` and always end with `data: [DONE]`; TS ends an errored stream without it. The `StreamTextResult` helpers match TS (round 79).
 - **StreamText reads the provider stream without a reader**: the model call runs until the `StreamText` ctx ends, also after a client disconnect or after a `ConsumeSSEStream` callback returns, as in v0.5; a TS stream nobody reads stalls under backpressure. Pass `r.Context()` or use `StreamTextLowMemory` (round 79).
 - **Invalid tool call input that is not a JSON object**: the raw text is kept in `ToolCall.RawArguments` / `ToolCallContent.Input` only (`Arguments`, `ToolResult.Input`, `ToolErrorContent.Input` are maps), JSON that is not an object is invalid also without `Parameters`, and validator / parser messages are Go's (round 79).
 - **Struct-tag schemas: Go-only choices**: floats are a bare `number`, `time.Time` has no Z-only `pattern`, `[]byte` has no base64 keywords, a described recursive reference is `allOf` inline, pointer slice elements are not nullable, and `dive` rules and alternatives are left out (rounds 82-83).
 - **Tool output JSON key order in replayed prompts**: serialized tool output JSON keeps Go map key order (three openresponses TS replays skipped) (round 79).
-- **Embedding usage across EmbedMany batches**: a positive token sum is recorded when some batches reported no usage; TS sums to NaN and drops it (round 80).
+- **Embedding usage across EmbedMany batches**: when a call or batch sent no usage, `Usage.Tokens` is the sum of the reported batches (0 when none), as v0.5.2, and the telemetry attribute is dropped; TS returns NaN (S6, round 87e).
 - **Legacy telemetry tool spans on error**: Go's legacy `OnError` ends still-open tool spans with the error status; TS never ends them (round 80).
 - **URL parsing: three IDNA edge cases**: Go's WHATWG URL serializer differs from Node on three classes of `xn--` labels (`xn---xii`, a doubly prefixed label, Arabic Extended-B Bidi) (round 84).
 - **Typed URL fields**: a Go URL field that does not parse fails with `Invalid URL`; TS treats such a plain string as base64 data (round 84).
-- **Prompt deprecation warnings**: no warnings for legacy tool-result content types (decoded into `FileContentBlock`), and image-part warnings cover the initial prompt only (round 84).
 - **Prompt file download errors**: the default prompt-file downloader keeps the v0.5 `SSRFError` texts and its up-front DNS check; TS reports `DownloadError` texts (round 84).
 - **TS test replays skipped in round 84**: eight TS cases are skipped for harness limits or Go idiom (azure-keyed OpenAI Responses case, `openai.chat` hint text, chat.ts replay start, a call-site spy, channel errors, provider signal after step end) (round 84).
 - **Input checks TS removed in ai@7.0.155**: Go keeps the input checks TS removed in ai@7.0.155, with their v0.5 texts (ruling 5, round 85) (round 85).
@@ -1697,7 +1702,6 @@ Notable ones:
 - **Files results: empty filename on the result struct**: File results: an empty returned `filename` reads as absent on the `Filename` field; the metadata map keeps it (round 86b).
 - **MCP OAuth client authentication parameters**: MCP OAuth: extra `AddClientAuthentication` form parameters are sent in key order (round 86b).
 - **ElevenLabs stream audio format rate**: ElevenLabs: a fractional native output-format rate has no `Rate` (`*int`) (round 86b).
-- **OpenAI REST transcription `language: ""` / `prompt: ""`**: OpenAI REST transcription: `language: ""` / `prompt: ""` are omitted (round 86b).
 - **Sandbox text: lone surrogates and an empty encoding**: Sandbox text: a UTF-16 lone surrogate reads as U+FFFD and `Encoding: ""` is utf-8 (round 86b).
 - **AI Gateway OIDC token refresh**: AI Gateway: OIDC refresh is opt-in (`Config.OIDCTokenFunc`), in memory, and never writes or clears the Vercel CLI files (round 87).
 - **WorkflowAgent ExperimentalTransform**: WorkflowAgent `ExperimentalTransform` still works (deprecated); TS removed it (round 87).
@@ -1723,9 +1727,6 @@ Notable ones:
 - **TS assertions that cannot apply to Go**: 10 TS provider-test assertions are marked n/a in `tsfixture` (pass-through objects a typed Go result cannot hold, reference identity, Go map key order); every other one is evaluated or hand-ported (round 87d).
 - **Google credential loading errors**: Go `oauth2` token source and ADC failures carry a Go prefix, with the error as the cause (round 87d).
 - **Errors of a caller-supplied HTTP transport**: outside the AI Gateway, stay the retryable "Cannot connect to API" error; TS returns a fetch rejection unchanged (round 87d).
-- **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
-- **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
-- **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).
 - **Provider option spellings kept from v0.5**: alibaba accepts the `openai-compatible` keys and raw snake_case option names documented in v0.5.2; zai forwards `user` and `verbosity`; TS drops them (round 82).
 - **Hugging Face byte image data**: sent as base64; TS interpolates the bytes as a comma-separated list (round 82).
 - **Provider option warning order**: Perplexity unsupported-option warnings follow sorted option names, not the TS object's insertion order (round 82).

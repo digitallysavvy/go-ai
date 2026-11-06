@@ -171,6 +171,8 @@ Options for streaming array elements as they complete.
 
 `ai.ExperimentalDecide` asks a decision model typed questions and returns one typed answer per question. `ai.NewDecisionLanguageModel` returns an `*ai.DecisionLanguageModel`, which adapts any language model into a decision model by prompting it with a JSON-schema-constrained request. Reasoning defaults to `none` unless you override it with provider options.
 
+A decision model must report specification version `v4`; another version fails with `*ai.UnsupportedModelVersionError` before any call. `ai.SetDefaultProvider(p)` sets the provider that resolves a string decision model ID (and a batch model without a provider), like TS `globalThis.AI_SDK_DEFAULT_PROVIDER`. Custom decision models called directly can normalize typed criteria with `provider.DecisionQuestionsJSON`.
+
 {/* gen:fields ai.DecisionLanguageModelOptions */}
 
 | Field | Type | Description |
