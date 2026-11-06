@@ -38,7 +38,8 @@ import (
 // it computed before the interruption.
 //
 // The intrinsics it uses are captured before any user source runs.
-// __CODE_MODE_DETERMINISM__ is replaced by the run's determinism (JSON).
+// __CODE_MODE_DETERMINISM__ is replaced by the run's determinism (JSON) and
+// __CODE_MODE_TOOL_NAMES__ by the registered tool names (a JSON array).
 const codeModeGuestSource = `(function () {
   "use strict";
   var resetDateNow = (function (config) {
@@ -212,8 +213,27 @@ const codeModeGuestSource = `(function () {
     return freeze(thenable);
   }
 
+  // TS run-code-mode.ts reads tools from an object literal
+  // (__codeModeBindings), so a name that is not a tool but is a function on
+  // Object.prototype (toString, hasOwnProperty, ...) calls that function
+  // with this undefined instead of the missing-tool path. The prototype
+  // functions are captured before any user source runs.
+  var toolNameSet = createObject(null);
+  var toolNameList = __CODE_MODE_TOOL_NAMES__;
+  for (var t = 0; t < toolNameList.length; t++) toolNameSet[toolNameList[t]] = true;
+  var prototypeFunctions = createObject(null);
+  var prototypeNames = Object.getOwnPropertyNames(Object.prototype);
+  for (var p = 0; p < prototypeNames.length; p++) {
+    var descriptor = Object.getOwnPropertyDescriptor(Object.prototype, prototypeNames[p]);
+    if (descriptor && typeof descriptor.value === "function") prototypeFunctions[prototypeNames[p]] = descriptor.value;
+  }
+
   var tools = new OriginalProxy(createObject(null), {
     get: function (_target, name) {
+      if (typeof name === "string" && toolNameSet[name] !== true) {
+        var prototypeFunction = prototypeFunctions[name];
+        if (prototypeFunction !== undefined) return (input) => prototypeFunction(input);
+      }
       return (input) => createBridgePromise(OriginalString(name), input !== undefined, input);
     }
   });
@@ -275,7 +295,12 @@ func bindCodeModeDispatch(jsCtx *qjs.Context, bridge *toolBridge) error {
 	if derr != nil {
 		return NewProtocolError("Failed to encode the code mode determinism state.", nil)
 	}
+	toolNamesJSON, terr := json.Marshal(bridge.toolNames)
+	if terr != nil || bridge.toolNames == nil {
+		toolNamesJSON = []byte("[]")
+	}
 	source := strings.Replace(codeModeGuestSource, "__CODE_MODE_DETERMINISM__", string(determinism), 1)
+	source = strings.Replace(source, "__CODE_MODE_TOOL_NAMES__", string(toolNamesJSON), 1)
 	guest, err := jsCtx.Eval("code-mode-bridge.js", qjs.Code(source))
 	if err != nil {
 		return err
