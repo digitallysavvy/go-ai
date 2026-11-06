@@ -51,6 +51,9 @@ func (m *DecisionModel) SupportedQuestionTypes() []string {
 // DoDecide decides every question against the same state through the
 // Gateway.
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	// Typed Go containers in Instructions / Criteria take their JSON form
+	// (TS providers always receive JSON).
+	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
 	if gatewayOptions, ok := opts.ProviderOptions["gateway"]; ok {
 		if err := validateGatewayDecisionProviderOptions(gatewayOptions); err != nil {
 			return nil, err

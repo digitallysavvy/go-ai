@@ -55,6 +55,9 @@ func (m *DecisionModel) SupportedQuestionTypes() []string {
 // AI's /systemone endpoint. Boolean questions are sent as TypeSafe's native
 // "noul" type and mapped back to "boolean" answers on the way out.
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	// Typed Go containers in Instructions / Criteria take their JSON form
+	// (TS providers always receive JSON).
+	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
 	// TypeSafe-specific provider limits (mirrors the TS doDecide checks,
 	// enforced before any HTTP request).
 	// In the TS insertion order when the caller gave it (QuestionOrder), so

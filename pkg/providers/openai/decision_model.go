@@ -154,6 +154,9 @@ func (r *decisionResponseWire) validate() error {
 
 // DoDecide sends every question in one Decisions API request.
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	// Typed Go containers in Instructions / Criteria take their JSON form
+	// (TS providers always receive JSON).
+	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
 	openaiOpts, err := parseDecisionProviderOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, err

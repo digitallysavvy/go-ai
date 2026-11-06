@@ -66,6 +66,9 @@ var parallelOptionsSchema = providerutils.OptionSchema{"includeExcerpts": provid
 
 // DoDecide decides every question against the same state in one request.
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	// Typed Go containers in Instructions / Criteria take their JSON form
+	// (TS providers always receive JSON).
+	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
 	ids := opts.QuestionIDs()
 	if len(ids) == 0 || len(ids) > 100 {
 		return nil, providererrors.NewArgumentError("questions", "Parallel Decisions supports 1 to 100 questions.", nil)

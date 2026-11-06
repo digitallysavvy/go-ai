@@ -71,6 +71,9 @@ type decisionLanguageModelEntry struct {
 // DoDecide prompts the wrapped language model once for every question and
 // parses its structured JSON response into typed answers.
 func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	// Typed Go containers in Instructions / Criteria take their JSON form
+	// (TS providers always receive JSON).
+	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
 	// TS abortSignal?.throwIfAborted() before any work.
 	if err := ctx.Err(); err != nil {
 		return nil, err
