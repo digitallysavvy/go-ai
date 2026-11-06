@@ -6,12 +6,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func TestVertexProvider_CreateAliasesAndClient(t *testing.T) {
@@ -78,8 +80,13 @@ func TestVertexProviderEnvironmentFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if p.config.APIKey != envKey || p.config.Project != envProject || p.config.Location != envLocation {
+	// The API key is read when the provider is created; project and location
+	// are read lazily (TS loadSetting inside loadBaseURL).
+	if p.config.APIKey != envKey || p.config.Project != "" || p.config.Location != "" {
 		t.Fatalf("config = %#v", p.config)
+	}
+	if p.Project() != envProject || p.Location() != envLocation {
+		t.Fatalf("Project/Location = %q/%q", p.Project(), p.Location())
 	}
 }
 
@@ -213,9 +220,9 @@ func TestVertexTranscriptionRejectsRegionThatWouldRewriteHost(t *testing.T) {
 	}
 }
 
-// TestVertexTranscriptionRejectsInvalidLocationFallback ports the
-// location-fallback half of the same fix: an invalid provider-level
-// Location is also rejected when no per-call region overrides it.
+// TestVertexTranscriptionRejectsInvalidLocationFallback ports TS
+// google-vertex-location-validation.test.ts: provider.transcription() validates
+// the location for the separate transcription host, even with a custom baseURL.
 func TestVertexTranscriptionRejectsInvalidLocationFallback(t *testing.T) {
 	p, err := New(Config{
 		Project:     "test-project",
@@ -226,17 +233,74 @@ func TestVertexTranscriptionRejectsInvalidLocationFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	model, err := p.TranscriptionModel("chirp_2")
+	for _, id := range []string{"chirp_2", "gemini-3.5-transcribe-live"} {
+		_, err = p.TranscriptionModel(id)
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) || invalid.Field != "location" {
+			t.Fatalf("TranscriptionModel(%s) error = %v, want InvalidArgumentError for location", id, err)
+		}
+	}
+}
+
+// TS: a custom baseURL needs neither project nor location (loadBaseURL returns
+// it before loading either); transcription models still need both.
+func TestVertexCustomBaseURLNeedsNoProjectOrLocation(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "")
+	p, err := New(Config{BaseURL: "https://proxy.example/v1", AccessToken: "token"})
 	if err != nil {
-		t.Fatalf("TranscriptionModel: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-	_, err = model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "AQIDBAUGBwg="})
-	var invalid *providererrors.InvalidArgumentError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("DoTranscribe error = %v, want InvalidArgumentError", err)
+	if _, err := p.LanguageModel("gemini-2.5-flash"); err != nil {
+		t.Fatalf("LanguageModel: %v", err)
 	}
-	if invalid.Field != "location" {
-		t.Fatalf("Field = %q, want location", invalid.Field)
+	if _, err := p.TranscriptionModel("chirp_2"); err == nil || !strings.Contains(err.Error(), "project setting is missing") {
+		t.Fatalf("TranscriptionModel error = %v", err)
+	}
+	// Without a baseURL the settings are needed, but only when a model is
+	// created (TS loads location first, then project).
+	p2, err := New(Config{AccessToken: "token"})
+	if err != nil {
+		t.Fatalf("New without baseURL: %v", err)
+	}
+	if _, err := p2.LanguageModel("gemini-2.5-flash"); err == nil || !strings.Contains(err.Error(), "location setting is missing") {
+		t.Fatalf("LanguageModel without baseURL error = %v", err)
+	}
+}
+
+// TS: the generated bearer token comes first and the caller's headers are
+// spread after it, so a caller-supplied Authorization header wins; in express
+// mode the API key is set last and wins over a same-named header.
+func TestVertexCallerAuthorizationHeaderWinsAndAPIKeyWins(t *testing.T) {
+	var got http.Header
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.Header.Clone()
+		return jsonResponse(200, `{"candidates":[{"content":{"parts":[{"text":"x"}]},"finishReason":"STOP"}]}`), nil
+	})
+	call := func(cfg Config) http.Header {
+		cfg.HTTPClient = &http.Client{Transport: rt}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := p.LanguageModel("gemini-2.5-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		return got
+	}
+	h := call(Config{Project: "p", Location: "us-central1", AccessToken: "generated", Headers: map[string]string{"Authorization": "Bearer mine"}})
+	if h.Get("Authorization") != "Bearer mine" {
+		t.Fatalf("Authorization = %q", h.Get("Authorization"))
+	}
+	h = call(Config{Project: "p", Location: "us-central1", AccessToken: "generated"})
+	if h.Get("Authorization") != "Bearer generated" {
+		t.Fatalf("Authorization = %q", h.Get("Authorization"))
+	}
+	h = call(Config{APIKey: "key", Headers: map[string]string{"X-Goog-Api-Key": "other"}})
+	if h.Get("X-Goog-Api-Key") != "key" {
+		t.Fatalf("x-goog-api-key = %q", h.Get("X-Goog-Api-Key"))
 	}
 }
 
@@ -271,7 +335,7 @@ func TestVertexProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddingModel() error = %v", err)
 	}
-	if em.Provider() != "google-vertex" {
+	if em.Provider() != "google.vertex.embedding" {
 		t.Fatalf("EmbeddingModel provider = %q, want google-vertex", em.Provider())
 	}
 	if _, err := p.EmbeddingModel(""); err == nil {
@@ -309,7 +373,30 @@ func TestVertexProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VideoModel() error = %v", err)
 	}
-	if video.Provider() != "google-vertex" || video.ModelID() != "veo-3.0-generate-preview" {
+	if video.Provider() != "google.vertex.video" || video.ModelID() != "veo-3.0-generate-preview" {
 		t.Fatalf("VideoModel metadata = %s/%s", video.Provider(), video.ModelID())
+	}
+}
+
+// TS withoutTrailingSlash(options.baseURL): a trailing slash on a custom or
+// express-mode baseURL is dropped so request paths do not get a "//".
+func TestVertexBaseURLTrailingSlashDropped(t *testing.T) {
+	for _, apiKey := range []string{"", "key"} {
+		var path string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path = r.URL.Path
+			_, _ = w.Write([]byte("{}"))
+		}))
+		p, err := New(Config{BaseURL: srv.URL + "/v1/", AccessToken: "token", APIKey: apiKey})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := p.Client().Get(context.Background(), "/models/m"); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		srv.Close()
+		if path != "/v1/models/m" {
+			t.Fatalf("apiKey=%q request path = %q", apiKey, path)
+		}
 	}
 }

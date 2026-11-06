@@ -255,3 +255,14 @@ func TestIsCodeModeApprovalInterrupt_RejectsForgedInterrupt(t *testing.T) {
 		t.Fatal("expected a forged interrupt (tampered toolName) to be rejected")
 	}
 }
+
+func TestGetCodeModeApprovalResponseAcceptsPointerPart(t *testing.T) {
+	interrupt := ApprovalInterrupt{InterruptID: "a1"}
+	msgs := []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{
+		&types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: true, Reason: "ok"},
+	}}}
+	got := GetCodeModeApprovalResponse(msgs, interrupt)
+	if got == nil || !got.Approved || got.Reason != "ok" {
+		t.Fatalf("got %+v", got)
+	}
+}

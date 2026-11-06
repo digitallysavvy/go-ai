@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const maxOAuthDiscoveryRedirects = 10
@@ -16,7 +18,7 @@ const maxOAuthDiscoveryRedirects = 10
 // isOAuthLoopbackHost allows loopback HTTP(S) for local MCP OAuth (RFC 8252
 // §7.3, RFC 6761 §6.3), matching TS isOAuthLoopbackHost.
 func isOAuthLoopbackHost(hostname string) bool {
-	normalized := strings.TrimRight(strings.ToLower(hostname), ".")
+	normalized := strings.TrimRight(providerutils.JSToLower(hostname), ".")
 	return normalized == "localhost" ||
 		strings.HasSuffix(normalized, ".localhost") ||
 		normalized == "127.0.0.1" ||
@@ -52,7 +54,7 @@ func assertSafeOAuthEndpoint(endpoint string, allowLoopback bool) error {
 		}
 	}
 	if err := fileutil.ValidateDownloadURL(endpoint); err != nil {
-		return fmt.Errorf("OAuth endpoint URL is not allowed: %s: %w", endpoint, err)
+		return &MCPClientOAuthError{Message: fmt.Sprintf("OAuth endpoint URL is not allowed: %s", endpoint), Cause: err}
 	}
 	return nil
 }
@@ -69,7 +71,32 @@ func assertSafeOAuthEndpoint(endpoint string, allowLoopback bool) error {
 //   - When no HTTP client is configured, untrusted hops are dialed through the
 //     DNS-pinning fileutil.SafeTransport. A caller-supplied client is
 //     responsible for equivalent connect-time validation (TS: injected fetch).
+//
+// A transport failure (a fetch TypeError in TS) is retried once without the
+// MCP-Protocol-Version header (the CORS-preflight workaround of TS
+// fetchWithCorsRetry); a second failure returns a nil response and nil error,
+// which the callers treat as "not found". Validation errors and context
+// cancellation are returned as they are.
 func oauthMetadataGET(ctx context.Context, client *http.Client, endpoint, protocolVersion, trustedOrigin string) (*http.Response, error) {
+	resp, err := oauthMetadataGETOnce(ctx, client, endpoint, protocolVersion, trustedOrigin)
+	var failure *oauthFetchFailure
+	if !errors.As(err, &failure) {
+		return resp, err
+	}
+	if protocolVersion != "" {
+		return oauthMetadataGET(ctx, client, endpoint, "", trustedOrigin)
+	}
+	return nil, nil
+}
+
+// oauthFetchFailure marks a transport-level failure of an OAuth metadata
+// request (TS: fetch rejecting with a TypeError).
+type oauthFetchFailure struct{ err error }
+
+func (e *oauthFetchFailure) Error() string { return e.err.Error() }
+func (e *oauthFetchFailure) Unwrap() error { return e.err }
+
+func oauthMetadataGETOnce(ctx context.Context, client *http.Client, endpoint, protocolVersion, trustedOrigin string) (*http.Response, error) {
 	var headers http.Header
 	if protocolVersion != "" {
 		headers = http.Header{}
@@ -93,10 +120,17 @@ func oauthMetadataGET(ctx context.Context, client *http.Client, endpoint, protoc
 		}
 		resp, err := noRedirectClient(client, trusted).Do(req)
 		if err != nil {
-			return nil, err
+			var downloadErr *providererrors.DownloadError
+			if ctx.Err() != nil || errors.As(err, &downloadErr) {
+				return nil, err
+			}
+			return nil, &oauthFetchFailure{err: err}
 		}
 
-		location := resp.Header.Get("Location")
+		// TS fetchWithValidatedRedirects reads response.headers.get('location')
+		// from a redirect: 'manual' hop: repeated lines joined with ", ", each
+		// byte one character (raw UTF-8 reads as Latin-1 before new URL).
+		location := providerutils.FetchHeaderText(resp.Header, "Location")
 		if !isFetchRedirectStatus(resp.StatusCode) || location == "" {
 			return resp, nil
 		}

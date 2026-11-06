@@ -16,7 +16,7 @@ func convertHuggingFaceResponsesUsage(usage *hfUsage) types.Usage {
 
 	inputTokens := usage.InputTokens
 	outputTokens := usage.OutputTokens
-	totalTokens := usage.TotalTokens
+	totalTokens := inputTokens + outputTokens // TS core: input total + output total
 
 	var cachedTokens int64
 	if usage.InputTokensDetails != nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // LangSmithDeploymentTransportOptions configures a LangSmith/LangGraph
@@ -22,6 +23,9 @@ type LangSmithDeploymentTransportOptions struct {
 	APIKey     string
 	GraphID    string
 	HTTPClient *http.Client
+
+	// Headers are sent with every request (TS RemoteGraph `headers`).
+	Headers map[string]string
 
 	// Stream, when set, overrides the default HTTP RemoteGraph-compatible
 	// streaming call. It exists for applications that already have a LangGraph
@@ -36,6 +40,7 @@ type LangSmithDeploymentTransport struct {
 	apiKey     string
 	graphID    string
 	httpClient *http.Client
+	headers    map[string]string
 	stream     func(context.Context, []LangChainMessage) (<-chan StreamEvent, error)
 }
 
@@ -54,6 +59,7 @@ func NewLangSmithDeploymentTransport(options LangSmithDeploymentTransportOptions
 		apiKey:     options.APIKey,
 		graphID:    graphID,
 		httpClient: client,
+		headers:    options.Headers,
 		stream:     options.Stream,
 	}
 }
@@ -104,6 +110,11 @@ func (t *LangSmithDeploymentTransport) ReconnectToStream(context.Context, ai.Cha
 	return out, errs
 }
 
+// openStream calls the LangGraph Platform API the way TS RemoteGraph does
+// (langgraph-sdk RunsClient.stream): a stateless POST {url}/runs/stream with
+// the assistant id, the messages as input and stream modes values and
+// messages-tuple (plus updates, which RemoteGraph always adds), authenticated
+// with the x-api-key header. The server answers with server-sent events.
 func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages []LangChainMessage) (<-chan StreamEvent, error) {
 	if t.stream != nil {
 		return t.stream(ctx, messages)
@@ -112,22 +123,31 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 		return nil, errors.New("langchain: URL is required")
 	}
 	body, err := json.Marshal(map[string]interface{}{
-		"input":       map[string]interface{}{"messages": messages},
-		"streamMode":  []string{"values", "messages"},
-		"stream_mode": []string{"values", "messages"},
+		"input": map[string]interface{}{"messages": messages},
+		"config": map[string]interface{}{
+			"tags":         []interface{}{},
+			"metadata":     map[string]interface{}{},
+			"configurable": map[string]interface{}{},
+		},
+		"stream_mode":      []string{"values", "messages-tuple", "updates"},
+		"stream_subgraphs": false,
+		"assistant_id":     t.graphID,
+		"if_not_exists":    "create",
 	})
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("%s/graphs/%s/stream", t.url, t.graphID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.url+"/runs/stream", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
+	for name, value := range t.headers {
+		req.Header.Set(name, value)
+	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream, application/x-ndjson, application/json")
+	req.Header.Set("Accept", "text/event-stream")
 	if t.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+t.apiKey)
+		req.Header.Set("x-api-key", t.apiKey)
 	}
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
@@ -136,71 +156,123 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("langchain: stream request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return readRemoteGraphEvents(ctx, resp.Body), nil
 }
 
+// maxRemoteGraphLine bounds one SSE line (a "values" event carries the whole
+// graph state).
+const maxRemoteGraphLine = 64 << 20
+
+// readRemoteGraphEvents decodes the server-sent events of a run stream and
+// maps them like RemoteGraph._streamIterator: "values" and "messages" events
+// become [mode, data] events, an "error" event fails the stream, and every
+// other event ("metadata", ...) is dropped. An "updates" event that carries
+// __interrupt__ fails the stream with a *GraphInterruptError (GraphInterrupt).
 func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan StreamEvent {
 	out := make(chan StreamEvent)
 	go func() {
 		defer close(out)
 		defer func() { _ = body.Close() }()
-		scanner := bufio.NewScanner(body)
-		scanner.Buffer(make([]byte, 1024), 1024*1024)
-		var sseData strings.Builder
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				flushRemoteGraphLine(ctx, out, sseData.String())
-				sseData.Reset()
-				continue
+		reader := bufio.NewReaderSize(body, 64<<10)
+		var event string
+		var data []string
+		dispatch := func() bool {
+			defer func() { event, data = "", nil }()
+			if event == "" && len(data) == 0 {
+				return true
 			}
-			if strings.HasPrefix(line, "data:") {
-				sseData.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-				continue
+			var payload interface{}
+			raw := strings.Join(data, "\n")
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				payload = raw
 			}
-			if strings.HasPrefix(line, "event:") || strings.HasPrefix(line, ":") {
-				continue
+			mode, _, _ := strings.Cut(event, "|")
+			switch mode {
+			case "values", "messages":
+				return sendStreamEvent(ctx, out, StreamEvent{Mode: mode, Data: payload})
+			case "updates":
+				// RemoteGraph._streamIterator throws GraphInterrupt for an
+				// updates event that carries __interrupt__.
+				if m, ok := payload.(map[string]interface{}); ok {
+					if interrupts, found := m["__interrupt__"]; found && interrupts != nil {
+						sendStreamEvent(ctx, out, StreamEvent{Err: newGraphInterrupt(interrupts)})
+						return false
+					}
+				}
+				return true
+			case "error":
+				text, ok := payload.(string)
+				if !ok {
+					encoded, _ := jsonstr.Marshal(payload)
+					text = string(encoded)
+				}
+				sendStreamEvent(ctx, out, StreamEvent{Err: errors.New(text)})
+				return false
 			}
-			flushRemoteGraphLine(ctx, out, line)
+			return true
 		}
-		if sseData.Len() > 0 {
-			flushRemoteGraphLine(ctx, out, sseData.String())
+		for {
+			line, err := readSSELine(reader)
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					sendStreamEvent(ctx, out, StreamEvent{Err: err})
+					return
+				}
+				dispatch()
+				return
+			}
+			switch {
+			case line == "":
+				if !dispatch() {
+					return
+				}
+			case strings.HasPrefix(line, ":"):
+			default:
+				field, value, _ := strings.Cut(line, ":")
+				value = strings.TrimPrefix(value, " ")
+				switch field {
+				case "event":
+					event = value
+				case "data":
+					data = append(data, value)
+				}
+			}
 		}
 	}()
 	return out
 }
 
-func flushRemoteGraphLine(ctx context.Context, out chan<- StreamEvent, line string) {
-	line = strings.TrimSpace(line)
-	if line == "" || line == "[DONE]" {
-		return
-	}
-	var tuple []interface{}
-	if err := json.Unmarshal([]byte(line), &tuple); err == nil {
-		sendStreamEvent(ctx, out, ParseLangGraphEvent(tuple))
-		return
-	}
-	var object map[string]interface{}
-	if err := json.Unmarshal([]byte(line), &object); err == nil {
-		if mode := stringValue(object["mode"]); mode != "" {
-			sendStreamEvent(ctx, out, StreamEvent{Mode: mode, Data: object["data"]})
-			return
+// readSSELine reads one line without its line terminator, failing on lines
+// longer than maxRemoteGraphLine. It returns the last unterminated line before
+// io.EOF as a line, then io.EOF.
+func readSSELine(reader *bufio.Reader) (string, error) {
+	var line []byte
+	for {
+		chunk, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(line) > 0 {
+				return string(line), nil
+			}
+			return "", err
 		}
-		if typ := stringValue(object["type"]); typ != "" {
-			sendStreamEvent(ctx, out, StreamEvent{Mode: typ, Data: object["data"]})
+		line = append(line, chunk...)
+		if len(line) > maxRemoteGraphLine {
+			return "", errors.New("langchain: event stream line too long")
+		}
+		if !isPrefix {
+			return string(line), nil
 		}
 	}
 }
 
-func sendStreamEvent(ctx context.Context, out chan<- StreamEvent, event StreamEvent) {
-	if event.Mode == "" {
-		return
-	}
+func sendStreamEvent(ctx context.Context, out chan<- StreamEvent, event StreamEvent) bool {
 	select {
 	case <-ctx.Done():
+		return false
 	case out <- event:
+		return true
 	}
 }
 
@@ -209,3 +281,25 @@ func closedChunkChannel() <-chan ai.UIMessageChunk {
 	close(out)
 	return out
 }
+
+// GraphInterruptError is the TS GraphInterrupt thrown by RemoteGraph when an
+// "updates" stream event carries __interrupt__. Interrupts holds the raw value.
+type GraphInterruptError struct {
+	Interrupts interface{}
+	message    string
+}
+
+func newGraphInterrupt(interrupts interface{}) *GraphInterruptError {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	message := ""
+	if err := enc.Encode(interrupts); err == nil {
+		message = strings.TrimSuffix(buf.String(), "\n")
+	}
+	return &GraphInterruptError{Interrupts: interrupts, message: message}
+}
+
+// Error returns JSON.stringify(interrupts, null, 2), as the TS message.
+func (e *GraphInterruptError) Error() string { return e.message }

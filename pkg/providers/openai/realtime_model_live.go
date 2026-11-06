@@ -3,7 +3,6 @@ package openai
 import (
 	"encoding/json"
 	"net/url"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -78,9 +77,16 @@ func (m *OpenAIRealtimeModelLive) GetServerWebSocketConfig() (provider.WebSocket
 	} else {
 		u.Scheme = "ws"
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/live/sessions"
+	// TS `${baseURL}/live/sessions`: the base URL lost one trailing "/" in New.
+	u.Path += "/live/sessions"
 
-	return provider.WebSocketConfig{URL: u.String(), Headers: m.provider.client.Headers()}, nil
+	// TS getServerWebSocketConfig reads config.headers(): a missing API key
+	// is a LoadAPIKeyError, not a handshake without credentials.
+	headers, err := m.provider.client.RequestHeaders()
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: u.String(), Headers: headers}, nil
 }
 
 // RealtimeLifecycle reports Live's non-default session framing: the session

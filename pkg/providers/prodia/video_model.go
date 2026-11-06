@@ -1,16 +1,22 @@
 package prodia
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ProdiaVideoModel implements the provider.VideoModelV3 interface for the
@@ -50,6 +56,10 @@ func (m *ProdiaVideoModel) MaxVideosPerCall() *int {
 type ProdiaVideoProviderOptions struct {
 	// Resolution specifies the output video resolution (e.g. "480p", "720p").
 	Resolution string `json:"resolution,omitempty"`
+
+	// resolutionSet records that the option map carried a resolution string,
+	// even "": TS `prodiaOptions?.resolution !== undefined` forwards it.
+	resolutionSet bool
 }
 
 // extractVideoProviderOptions reads Prodia-specific options from the provider
@@ -70,6 +80,12 @@ func extractVideoProviderOptions(opts *provider.VideoModelV3CallOptions) *Prodia
 	if err := json.Unmarshal(b, &o); err != nil {
 		return nil
 	}
+	var rawMap map[string]interface{}
+	if json.Unmarshal(b, &rawMap) == nil {
+		if _, ok := rawMap["resolution"].(string); ok {
+			o.resolutionSet = true
+		}
+	}
 	return &o
 }
 
@@ -79,7 +95,11 @@ func extractVideoProviderOptions(opts *provider.VideoModelV3CallOptions) *Prodia
 // When opts.Image is non-nil, an image-to-video request is sent as
 // multipart/form-data.
 func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+	if err := validateVideoOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	provOpts := extractVideoProviderOptions(opts)
+	currentDate := time.Now() // TS: taken before the request is built and sent
 
 	jobConfig := map[string]interface{}{}
 	if opts.PromptSet || opts.Prompt != "" {
@@ -88,7 +108,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	if opts.Seed != nil {
 		jobConfig["seed"] = *opts.Seed
 	}
-	if provOpts != nil && provOpts.Resolution != "" {
+	if provOpts != nil && (provOpts.Resolution != "" || provOpts.resolutionSet) {
 		jobConfig["resolution"] = provOpts.Resolution
 	}
 
@@ -96,9 +116,6 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		"type":   m.modelID,
 		"config": jobConfig,
 	}
-
-	reqURL := fmt.Sprintf("%s/job?price=true", m.prov.effectiveBaseURL())
-	apiKey := m.prov.effectiveAPIKey()
 
 	var (
 		respBodyBytes []byte
@@ -118,7 +135,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			return nil, fmt.Errorf("prodia: failed to build multipart request: %w", err)
 		}
 
-		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, reqURL, apiKey, buf, contentType, "multipart/form-data; video/mp4")
+		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, m.prov.client, buf, contentType, "multipart/form-data; video/mp4", opts.Headers)
 	} else {
 		// txt2vid: JSON request.
 		resp, err := m.prov.client.Do(ctx, internalhttp.Request{
@@ -126,11 +143,11 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			Path:    "/job",
 			Body:    body,
 			Query:   map[string]string{"price": "true"},
-			Headers: map[string]string{"Accept": "multipart/form-data; video/mp4"},
+			Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; video/mp4"}, opts.Headers),
 		})
 		if err != nil {
-			reqErr = fmt.Errorf("prodia API request failed: %w", err)
-		} else if resp.StatusCode != 200 {
+			reqErr = internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged
+		} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			reqErr = newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 		} else {
 			respBodyBytes = resp.Body
@@ -142,38 +159,30 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		return nil, reqErr
 	}
 
-	// Derive the response Content-Type (needed for multipart boundary parsing).
+	// TS response.headers.get('content-type') ?? '' (repeated lines joined,
+	// each byte one character): without a boundary in the header the
+	// response fails (the body is not sniffed).
 	respCT := ""
 	if respHeaders != nil {
-		respCT = respHeaders.Get("Content-Type")
-	}
-	if respCT == "" {
-		var err error
-		respCT, err = detectMultipartContentType(respBodyBytes)
-		if err != nil {
-			return nil, fmt.Errorf("prodia: cannot detect multipart boundary: %w", err)
-		}
+		respCT = providerutils.FetchHeaderText(respHeaders, "Content-Type")
 	}
 
 	jobResp, videoData, videoMIME, err := parseMultipartResponse(respCT, respBodyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("prodia: %w", err)
+		return nil, err
 	}
 
-	if len(videoData) == 0 {
-		return nil, fmt.Errorf("prodia: multipart response missing output video")
+	// TS `!videoBytes`: an empty output part is still an output.
+	if videoData == nil {
+		return nil, errors.New("Prodia multipart response missing output video") //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	if videoMIME == "" {
+	// TS keeps the video/mp4 default unless the part's Content-Type is video/*.
+	if !strings.HasPrefix(videoMIME, "video/") {
 		videoMIME = "video/mp4"
 	}
 
-	// Convert response headers to the flat map expected by VideoModelV3ResponseInfo.
-	headerMap := make(map[string]string)
-	for k, vals := range respHeaders {
-		if len(vals) > 0 {
-			headerMap[k] = vals[0]
-		}
-	}
+	// TS response.headers.forEach: repeated lines joined with ", ".
+	headerMap := providerutils.ExtractHeaders(respHeaders)
 
 	return &provider.VideoModelV3Response{
 		Videos: []provider.VideoModelV3VideoData{
@@ -189,7 +198,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			},
 		},
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   headerMap,
 		},
@@ -197,39 +206,55 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 }
 
 func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *providererrors.ProviderError {
-	message := prodiaErrorMessage(body)
-	err := providererrors.NewProviderError("prodia", statusCode, "", message, nil)
-	err.ResponseBody = string(body)
-	err.ResponseHeaders = map[string]string{}
-	for k, vals := range headers {
-		if len(vals) > 0 {
-			err.ResponseHeaders[k] = vals[0]
-		}
-	}
-	return err
+	message := prodiaErrorMessage(statusCode, body)
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderErrorFromResponse("prodia", 0, "", message, cause)
 }
 
-func prodiaErrorMessage(body []byte) string {
-	var parsed struct {
-		Message interface{} `json:"message"`
-		Detail  interface{} `json:"detail"`
-		Error   interface{} `json:"error"`
+// prodiaErrorMessage mirrors TS prodiaFailedResponseHandler: the body must
+// match {message?: string, detail?: unknown, error?: string}, else the HTTP
+// status text is the message. Then: a string detail, else the compact JSON of
+// any non-null detail, else `error ?? message ?? 'Unknown Prodia error'`.
+func prodiaErrorMessage(statusCode int, body []byte) string {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
+	var fields map[string]json.RawMessage
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &fields) != nil {
+		return http.StatusText(statusCode)
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "Unknown Prodia error"
+	optionalString := func(key string) (string, bool, bool) {
+		raw, present := fields[key]
+		if !present {
+			return "", false, true
+		}
+		var s string
+		// z.string().optional() accepts absent but not null.
+		if string(bytes.TrimSpace(raw)) == "null" || json.Unmarshal(raw, &s) != nil {
+			return "", false, false
+		}
+		return s, true, true
 	}
-	if detail, ok := parsed.Detail.(string); ok {
-		return detail
+	message, hasMessage, ok := optionalString("message")
+	if !ok {
+		return http.StatusText(statusCode)
 	}
-	if parsed.Detail != nil {
-		if b, err := json.Marshal(parsed.Detail); err == nil {
-			return string(b)
+	errorField, hasError, ok := optionalString("error")
+	if !ok {
+		return http.StatusText(statusCode)
+	}
+	if raw, present := fields["detail"]; present && string(bytes.TrimSpace(raw)) != "null" {
+		var detail string
+		if json.Unmarshal(raw, &detail) == nil {
+			return detail
+		}
+		// JSON.stringify(detail): numbers via a double, strings re-escaped.
+		if tree, ok := jsonorder.Parse(raw); ok {
+			return jsonorder.Stringify(tree)
 		}
 	}
-	if errorField, ok := parsed.Error.(string); ok {
+	if hasError {
 		return errorField
 	}
-	if message, ok := parsed.Message.(string); ok {
+	if hasMessage {
 		return message
 	}
 	return "Unknown Prodia error"

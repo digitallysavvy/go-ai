@@ -1,11 +1,13 @@
 package deepinfra
 
 import (
+	"context"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -28,6 +30,7 @@ type Provider struct {
 	imageBaseURL string
 	editBaseURL  string
 	headers      map[string]string
+	apiKeyFunc   providerutils.APIKeyFunc
 }
 
 // Config contains configuration for the DeepInfra provider
@@ -41,33 +44,50 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string
+
+	// APIKeyFunc resolves the API key before each request with the
+	// request's context (TS `apiKey: Resolvable<string>`, 7716e189ee), for
+	// chat, completion, embedding and image calls. DEEPINFRA_API_KEY is not
+	// read when it is set; setting both APIKey and APIKeyFunc fails every
+	// request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 }
 
 // New creates a new DeepInfra provider
 // DeepInfra uses OpenAI-compatible API
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the DEEPINFRA_API_KEY environment variable.
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "DEEPINFRA_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 
+	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
-		APIKey: cfg.APIKey,
-		// Never fall back to OPENAI_API_KEY (it would be sent to DeepInfra).
-		APIKeyEnvVar: "DEEPINFRA_API_KEY",
-		BaseURL:      baseURL,
-		Headers:      cfg.Headers,
+		APIKey:            cfg.APIKey,
+		APIKeyFunc:        cfg.APIKeyFunc,
+		APIKeyEnvVar:      "DEEPINFRA_API_KEY",
+		APIKeyDescription: "DeepInfra's API key",
+		BaseURL:           baseURL,
+		Headers:           cfg.Headers,
+		// TS provider ids deepinfra.chat / .completion / .embedding: the
+		// name keys providerOptions and providerMetadata.
+		Name: "deepinfra",
 		// TS DeepInfraChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:    true,
-		UserAgentName: "deepinfra",
-		// TS sends stream_options only when includeUsage is set (it is not).
-		OmitStreamUsage: true,
+		AllowVideo:                true,
+		OpenAICompatible:          true,
+		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
+		UserAgentName:             "deepinfra",
 	})
 
 	return &Provider{
 		Provider:     openaiProvider,
 		apiKey:       cfg.APIKey,
+		apiKeyFunc:   cfg.APIKeyFunc,
 		imageBaseURL: deriveDeepInfraImageBaseURL(baseURL),
 		editBaseURL:  baseURL,
 		headers:      cfg.Headers,
@@ -123,5 +143,11 @@ func (p *Provider) imageClient(baseURL string) *internalhttp.Client {
 	return internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(p.requestHeaders(), version.ProviderUserAgent("deepinfra")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			return providerutils.RequestAuthHeaderFunc(ctx, p.headers, providerutils.ResolveAPIKeyOptions{
+				APIKey: p.apiKey, APIKeyFunc: p.apiKeyFunc, EnvVar: "DEEPINFRA_API_KEY", Description: "DeepInfra's API key",
+			}, "Authorization", "Bearer ")
+		},
 	})
 }

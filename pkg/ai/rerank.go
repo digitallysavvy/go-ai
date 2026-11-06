@@ -197,17 +197,15 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if opts.Documents == nil {
-		return nil, fmt.Errorf("documents are required")
-	}
-	if opts.Query == "" {
-		return nil, fmt.Errorf("query is required")
-	}
+	// TS rerank() does not reject an empty query or missing documents: an
+	// empty query reaches the provider and zero documents short-circuit below.
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Validate documents type
 	var documentsSlice []interface{}
 	switch docs := opts.Documents.(type) {
+	case nil:
+		documentsSlice = []interface{}{}
 	case []string:
 		documentsSlice = make([]interface{}, len(docs))
 		for i, d := range docs {
@@ -234,8 +232,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if opts.ExperimentalTelemetry != nil {
 		telEnabled = telemetry.Enabled(opts.ExperimentalTelemetry)
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
-		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
-		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
+		// The event carries TS telemetry?.recordInputs: unset reads as false.
+		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs != nil && *opts.ExperimentalTelemetry.RecordInputs
+		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs != nil && *opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	if len(documentsSlice) == 0 {
@@ -263,10 +262,25 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, emptyStartEvent)
 		}
 		if opts.OnStart != nil {
-			opts.OnStart(emptyStartEvent)
+			safeInvoke(func() { opts.OnStart(emptyStartEvent) })
 		} else if opts.ExperimentalOnStart != nil {
-			opts.ExperimentalOnStart(emptyStartEvent)
+			safeInvoke(func() { opts.ExperimentalOnStart(emptyStartEvent) })
 		}
+		// TS notifies telemetryDispatcher.onStart/onEnd on this path too, so
+		// registered integrations still see the (empty) operation.
+		emptyMaxRetries := preparedMaxRetries(opts.MaxRetries)
+		ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+			CallID:         callID,
+			OperationType:  "ai.rerank",
+			ModelProvider:  opts.Model.Provider(),
+			ModelID:        opts.Model.ModelID(),
+			Settings:       opts.ExperimentalTelemetry,
+			Documents:      opts.Documents,
+			Headers:        opts.Headers,
+			MaxRetries:     &emptyMaxRetries,
+			RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
+			ToolsContext:   map[string]interface{}{},
+		})
 
 		emptyResponse := types.RerankResponse{
 			ModelID:   opts.Model.ModelID(),
@@ -279,7 +293,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			Response:          emptyResponse,
 		}
 		if opts.OnFinish != nil {
-			opts.OnFinish(emptyResult)
+			safeInvoke(func() { opts.OnFinish(emptyResult) })
 		}
 		emptyFinishEvent := RerankOnFinishEvent{
 			CallID:         callID,
@@ -302,15 +316,24 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, emptyFinishEvent)
 		}
 		if opts.OnEnd != nil {
-			opts.OnEnd(emptyFinishEvent)
+			safeInvoke(func() { opts.OnEnd(emptyFinishEvent) })
 		} else {
 			if opts.ExperimentalOnEnd != nil {
-				opts.ExperimentalOnEnd(emptyFinishEvent)
+				safeInvoke(func() { opts.ExperimentalOnEnd(emptyFinishEvent) })
 			}
 			if opts.ExperimentalOnFinish != nil {
-				opts.ExperimentalOnFinish(emptyFinishEvent)
+				safeInvoke(func() { opts.ExperimentalOnFinish(emptyFinishEvent) })
 			}
 		}
+		telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+			CallID:        callID,
+			OperationType: "ai.rerank",
+			Settings:      opts.ExperimentalTelemetry,
+			FinishReason:  string(types.FinishReasonStop),
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			Usage:         telemetry.TelemetryUsage{},
+		})
 		return emptyResult, nil
 	}
 
@@ -341,9 +364,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, startEvent)
 	}
 	if opts.OnStart != nil {
-		opts.OnStart(startEvent)
+		safeInvoke(func() { opts.OnStart(startEvent) })
 	} else if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(startEvent)
+		safeInvoke(func() { opts.ExperimentalOnStart(startEvent) })
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:         callID,
@@ -386,6 +409,12 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			TopN:          opts.TopN,
 		})
 		res, callErr := opts.Model.DoRerank(attemptCtx, rerankOpts)
+		if callErr == nil && res == nil {
+			// TS reads modelResponse.ranking and rejects (TypeError) when a
+			// model resolves without a result; Go reports an error instead of
+			// dereferencing nil.
+			callErr = fmt.Errorf("reranking model %s/%s returned no result", opts.Model.Provider(), opts.Model.ModelID())
+		}
 		if callErr != nil {
 			// TS rerank()'s try/catch rethrows the doRerank error unmodified
 			// (`catch (error) { ...; throw error; }`) — no "reranking
@@ -451,18 +480,28 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		rerankedDocs[i] = documentsSlice[item.Index]
 	}
 
+	// TS fills a response the model left blank: `timestamp ?? new Date()` and
+	// `modelId ?? model.modelId`.
+	response := modelResult.Response
+	if response.Timestamp.IsZero() {
+		response.Timestamp = timeNow()
+	}
+	if response.ModelID == "" {
+		response.ModelID = opts.Model.ModelID()
+	}
+
 	result := &RerankResult{
 		OriginalDocuments: opts.Documents,
 		Ranking:           ranking,
 		RerankedDocuments: rerankedDocs,
-		Response:          modelResult.Response,
+		Response:          response,
 		Warnings:          warningsOrEmpty(modelResult.Warnings),
 		ProviderMetadata:  modelResult.ProviderMetadata,
 	}
 
 	// Call finish callback
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		safeInvoke(func() { opts.OnFinish(result) })
 	}
 
 	// Fire ExperimentalOnFinish callback
@@ -472,6 +511,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			providerMeta = b
 		}
 	}
+	// TS builds the event ranking with its own ranking.map(...), so an onEnd
+	// callback that mutates it leaves the result untouched.
+	eventRanking := append(make([]RerankItem, 0, len(result.Ranking)), result.Ranking...)
 	finishEvent := RerankOnFinishEvent{
 		CallID:           callID,
 		OperationID:      "ai.rerank",
@@ -480,7 +522,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		Documents:        opts.Documents,
 		Query:            opts.Query,
 		RuntimeContext:   opts.RuntimeContext,
-		Ranking:          result.Ranking,
+		Ranking:          eventRanking,
 		Warnings:         result.Warnings,
 		Response:         result.Response,
 		ProviderMetadata: providerMeta,
@@ -494,13 +536,13 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, finishEvent)
 	}
 	if opts.OnEnd != nil {
-		opts.OnEnd(finishEvent)
+		safeInvoke(func() { opts.OnEnd(finishEvent) })
 	} else {
 		if opts.ExperimentalOnEnd != nil {
-			opts.ExperimentalOnEnd(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnEnd(finishEvent) })
 		}
 		if opts.ExperimentalOnFinish != nil {
-			opts.ExperimentalOnFinish(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnFinish(finishEvent) })
 		}
 	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
@@ -531,9 +573,17 @@ func validateRankingIndices(ranking []types.RerankItem, documents []interface{})
 }
 
 func rerankDocumentsType(documents interface{}) string {
-	switch documents.(type) {
+	switch d := documents.(type) {
 	case []string:
 		return "text"
+	case []interface{}:
+		// TS: typeof documents[0] === 'string'.
+		if len(d) > 0 {
+			if _, ok := d[0].(string); ok {
+				return "text"
+			}
+		}
+		return "object"
 	default:
 		return "object"
 	}

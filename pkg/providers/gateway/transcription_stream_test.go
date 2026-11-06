@@ -389,10 +389,16 @@ func TestTranscriptionModel_DoStream_AbnormalDisconnectAfterServerErrorSurfacesG
 		// error frame written above has necessarily already been delivered
 		// to the client's kernel socket buffer (same TCP stream, FIFO
 		// ordered), so the RST below cannot race ahead of it.
-		if _, err := gatewayTestReadClientFrame(buf.Reader); err != nil {
-			conn.Close() //nolint:errcheck
-			return
-		}
+		//
+		// The audio-done frame is NOT guaranteed: once the client sees the
+		// error part it stops audio (TS stopAudio), and if that wins the race
+		// against the pump's Next on the already-closed empty stream, the pump
+		// returns without sending audio-done. An unbounded read here then
+		// blocks forever while the client waits for the close (a rare
+		// 600s hang under load). Bound the wait and proceed either way; a
+		// short delay still lets the error frame reach the client first.
+		_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		_, _ = gatewayTestReadClientFrame(buf.Reader)
 
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			// SetLinger(0) makes the following Close() send a RST instead of
@@ -731,5 +737,124 @@ func TestParseGatewayTranscriptionStreamPart_AcceptsValidFrames(t *testing.T) {
 				t.Fatalf("parseGatewayTranscriptionStreamPart(%q) = rejected, want ok", tc)
 			}
 		})
+	}
+}
+
+// TS wraps connection errors, closed-before-finish and untyped server errors
+// with asGatewayError, so callers can match a GatewayError.
+func TestTranscriptionModel_DoStream_TerminalErrorsAreGatewayErrors(t *testing.T) {
+	// Dial failure (nothing listening).
+	model := newTestGatewayTranscriptionModel(t, "http://127.0.0.1:1")
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	for {
+		if _, err = result.Stream.Next(); err != nil {
+			break
+		}
+	}
+	if !gatewayerrors.IsGatewayError(err) {
+		t.Fatalf("err = %T %v, want a GatewayError", err, err)
+	}
+}
+
+func TestTranscriptionModel_DoStream_UntypedServerErrorAndEarlyCloseAreGatewayErrors(t *testing.T) {
+	for _, withErrorPart := range []bool{false, true} {
+		server := newGatewayTranscriptionTestServer(t)
+		model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            newChanTestAudioStream(),
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+		if withErrorPart {
+			server.toSend <- map[string]interface{}{"type": "error", "error": "model overloaded"}
+			if _, err := result.Stream.Next(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		server.closeConnection()
+		_, err = result.Stream.Next()
+		if !gatewayerrors.IsGatewayError(err) {
+			t.Errorf("withErrorPart=%v: err = %T %v, want a GatewayError", withErrorPart, err, err)
+		}
+		want := "closed before a finish part"
+		if withErrorPart {
+			want = "model overloaded"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("withErrorPart=%v: err = %v, want containing %q", withErrorPart, err, want)
+		}
+		_ = result.Stream.Close()
+		server.close()
+	}
+}
+
+// TS derives the subprotocols from the merged headers, so a per-call
+// Authorization header (any casing) wins over the resolved credential.
+func TestTranscriptionModel_DoStream_PerCallAuthorizationDrivesSubprotocol(t *testing.T) {
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		Headers:          map[string]string{"AUTHORIZATION": "Bearer per-call"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+	server.mu.Lock()
+	protocolHeader := server.protocolHeader
+	server.mu.Unlock()
+	if !strings.Contains(protocolHeader, GatewayAuthSubprotocolPrefix+"per-call") {
+		t.Errorf("Sec-WebSocket-Protocol = %q, want the per-call token", protocolHeader)
+	}
+}
+
+// TS isOptional(value, check) is `value === undefined || check(value)`: an
+// explicit JSON null fails the check and rejects the frame.
+func TestParseGatewayTranscriptionStreamPart_ExplicitNullOptionalsAreRejected(t *testing.T) {
+	for _, frame := range []string{
+		`{"type":"transcript-delta","delta":"a","id":null}`,
+		`{"type":"transcript-partial","text":"a","startSecond":null}`,
+		`{"type":"transcript-final","text":"a","providerMetadata":null}`,
+		`{"type":"finish","text":"a","segments":[],"language":null}`,
+		`{"type":"finish","text":"a","segments":[],"usage":"x"}`,
+	} {
+		if _, ok := parseGatewayTranscriptionStreamPart(frame); ok {
+			t.Errorf("%s accepted", frame)
+		}
+	}
+	part, ok := parseGatewayTranscriptionStreamPart(`{"type":"finish","text":"a","segments":[],"usage":{"seconds":3}}`)
+	if !ok || part.Usage["seconds"] != float64(3) {
+		t.Fatalf("finish usage must be kept: %+v ok=%v", part, ok)
+	}
+}
+
+func TestGatewayTranscriptionServerErrorFallbackMessages(t *testing.T) {
+	for payload, want := range map[string]string{
+		`{"code":5}`:         `AI Gateway transcription stream failed: {"code":5}`,
+		`"plain"`:            "AI Gateway transcription stream failed: plain",
+		`null`:               "AI Gateway transcription stream failed: unknown error",
+		`{"message":"boom"}`: "AI Gateway transcription stream failed: boom",
+	} {
+		var v interface{}
+		if err := json.Unmarshal([]byte(payload), &v); err != nil {
+			t.Fatal(err)
+		}
+		if got := gatewayTranscriptionServerError(v, "").Error(); got != want {
+			t.Errorf("%s: got %q, want %q", payload, got, want)
+		}
 	}
 }

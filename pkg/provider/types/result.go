@@ -19,6 +19,13 @@ type StepRequest struct {
 
 	// Messages are the model messages sent in this step when explicitly included.
 	Messages []Message `json:"messages,omitempty"`
+
+	// URL is the HTTP origin ("https://host[:port]") of the endpoint the
+	// provider reported for this request (GenerateResult.RequestURL or a
+	// stream's RequestURL), without credentials, path, query or fragment.
+	// Empty when the provider reported none or the URL is not http(s).
+	// Mirrors TS LanguageModelRequestMetadata.url (934100cad4).
+	URL string `json:"url,omitempty"`
 }
 
 // StepResponse contains metadata about the response received from the provider.
@@ -99,6 +106,14 @@ type GenerateResult struct {
 	// subsequent message history to round-trip thinking blocks through the API.
 	Content []ContentPart `json:"content,omitempty"`
 
+	// StructuredOutputText is the text to parse for structured JSON output when
+	// it differs from the concatenation of all text parts (for example drafts
+	// followed by a final answer). It does not replace or remove any generated
+	// content. nil means consumers use Text; a pointer to an empty string is an
+	// explicit selection and must not fall back to Text. Mirrors TS
+	// LanguageModelV4GenerateResult.structuredOutputText.
+	StructuredOutputText *string `json:"structuredOutputText,omitempty"`
+
 	// Tool calls made by the model (if any)
 	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
 
@@ -120,6 +135,13 @@ type GenerateResult struct {
 
 	// Raw request sent to the provider (for debugging)
 	RawRequest interface{} `json:"rawRequest,omitempty"`
+
+	// RequestURL is the HTTP endpoint the provider posted this request to,
+	// when known (TS LanguageModelV4GenerateResult.request.url, 934100cad4).
+	// pkg/ai reduces it to its origin before it reaches step results,
+	// callbacks or telemetry (types.StepRequest.URL); it never forwards the
+	// path, query, fragment or credentials.
+	RequestURL string `json:"requestUrl,omitempty"`
 
 	// Raw response from the provider (for debugging)
 	RawResponse interface{} `json:"rawResponse,omitempty"`
@@ -347,6 +369,11 @@ type GeneratedFile struct {
 
 	// MediaType is the MIME type of the file (e.g., "video/mp4", "image/png")
 	MediaType string `json:"mediaType"`
+
+	// ProviderMetadata holds per-file provider metadata keyed by provider name
+	// (TS GeneratedFile.providerMetadata). GenerateImage fills it from the
+	// model's providerMetadata.<provider>.images[index].
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // Base64 returns the generated file bytes as a base64 string, matching the
@@ -368,6 +395,12 @@ type StepResult struct {
 
 	// Step number (0-indexed), matching the TypeScript SDK.
 	StepNumber int `json:"stepNumber"`
+
+	// ExperimentalSteeringMessages are the user messages sent with
+	// ExperimentalSteering that were added to the input of this step. Empty
+	// when the step received no steering messages. They are not part of the
+	// step's response messages (TS experimental_steeringMessages).
+	ExperimentalSteeringMessages []Message `json:"experimentalSteeringMessages,omitempty"`
 
 	// Model identifies the provider and model ID that produced this step.
 	Model StepModel `json:"model"`
@@ -396,7 +429,10 @@ type StepResult struct {
 	// DynamicToolCalls are tool calls from dynamically registered tools.
 	DynamicToolCalls []ToolCall `json:"dynamicToolCalls,omitempty"`
 
-	// Tool results from this step
+	// Tool results from this step: the results of successful calls only. A
+	// failed call (execution error, invalid call, provider error result) is a
+	// ToolErrorContent part in Content, as TS toolResults holds only
+	// tool-result parts.
 	ToolResults []ToolResult `json:"toolResults,omitempty"`
 
 	// StaticToolResults are results from non-dynamic (typed) tools.
@@ -444,4 +480,48 @@ type StepResult struct {
 
 	// RuntimeContext is the user-defined context in effect for this step.
 	RuntimeContext interface{} `json:"runtimeContext,omitempty"`
+}
+
+// ReasoningFiles returns the reasoning file parts of the step's Content in
+// order. TS StepResult.reasoning is Array<ReasoningPart | ReasoningFilePart>;
+// Go's Reasoning field holds the reasoning parts and this method the
+// reasoning file parts.
+func (s StepResult) ReasoningFiles() []ReasoningFileContent {
+	var out []ReasoningFileContent
+	for _, p := range s.Content {
+		switch v := p.(type) {
+		case ReasoningFileContent:
+			out = append(out, v)
+		case *ReasoningFileContent:
+			if v != nil {
+				out = append(out, *v)
+			}
+		}
+	}
+	return out
+}
+
+// InsertLeadText returns parts with a TextContent{Text: text} inserted after the
+// leading run of reasoning parts, or at the front when there are none.
+//
+// Providers report a response's primary text in GenerateResult.Text and only
+// the remaining parts (reasoning, sources, files, tool calls) in
+// GenerateResult.Content. TS exposes every part, text included, in `content`,
+// in model order. Core uses this to rebuild that list: reasoning is emitted
+// before the answer text by every provider, while sources, files and tool
+// calls follow it.
+func InsertLeadText(parts []ContentPart, text string) []ContentPart {
+	i := 0
+	for i < len(parts) {
+		switch parts[i].(type) {
+		case ReasoningContent, *ReasoningContent:
+			i++
+			continue
+		}
+		break
+	}
+	out := make([]ContentPart, 0, len(parts)+1)
+	out = append(out, parts[:i]...)
+	out = append(out, TextContent{Text: text})
+	return append(out, parts[i:]...)
 }

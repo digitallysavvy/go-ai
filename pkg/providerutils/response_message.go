@@ -2,7 +2,10 @@ package providerutils
 
 import (
 	"encoding/json"
+	"reflect"
+	"sort"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -79,7 +82,9 @@ func ConvertToResponseMessages(toolCalls []types.ToolCall, content []types.Conte
 	}
 	if len(toolResults) > 0 {
 		for _, result := range toolResults {
-			if result.ProviderExecuted || seenToolResultIDs[result.ToolCallID] {
+			// A call awaiting user approval has no result yet: TS carries only
+			// the tool-approval-request part (in the assistant message).
+			if result.ProviderExecuted || seenToolResultIDs[result.ToolCallID] || result.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 				continue
 			}
 			seenToolResultIDs[result.ToolCallID] = true
@@ -89,10 +94,75 @@ func ConvertToResponseMessages(toolCalls []types.ToolCall, content []types.Conte
 	if len(parts) > 0 {
 		messages = append(messages, types.Message{
 			Role:    types.RoleTool,
-			Content: parts,
+			Content: sortToolResultContentByToolCallOrder(parts, toolCallOrder(toolCalls, content)),
 		})
 	}
 	return messages
+}
+
+// toolCallOrder maps each tool call ID to its position in the assistant
+// content (first appearance wins), falling back to the toolCalls list for
+// calls absent from content. Mirrors the TS toolCallOrder map in
+// toResponseMessages.
+func toolCallOrder(toolCalls []types.ToolCall, content []types.ContentPart) map[string]int {
+	order := map[string]int{}
+	add := func(id string) {
+		if _, ok := order[id]; !ok {
+			order[id] = len(order)
+		}
+	}
+	for _, part := range content {
+		switch p := part.(type) {
+		case types.ToolCallContent:
+			add(p.ToolCallID)
+		case *types.ToolCallContent:
+			if p != nil {
+				add(p.ToolCallID)
+			}
+		}
+	}
+	for _, call := range toolCalls {
+		add(call.ID)
+	}
+	return order
+}
+
+// sortToolResultContentByToolCallOrder reorders the tool-result parts of a
+// tool message into tool call order (parallel tools resolve in completion
+// order). Non-result parts keep their slots; results for unknown calls go
+// last, keeping their relative order. Mirrors TS
+// sortToolResultContentByToolCallOrder.
+func sortToolResultContentByToolCallOrder(parts []types.ContentPart, order map[string]int) []types.ContentPart {
+	var slots []int
+	var results []types.ToolResultContent
+	for i, part := range parts {
+		if r, ok := part.(types.ToolResultContent); ok {
+			slots = append(slots, i)
+			results = append(results, r)
+		}
+	}
+	if len(results) < 2 {
+		return parts
+	}
+	sort.SliceStable(results, func(a, b int) bool {
+		ao, aok := order[results[a].ToolCallID]
+		bo, bok := order[results[b].ToolCallID]
+		switch {
+		case !aok && !bok:
+			return false
+		case !aok:
+			return false
+		case !bok:
+			return true
+		}
+		return ao < bo
+	})
+	out := make([]types.ContentPart, len(parts))
+	copy(out, parts)
+	for i, slot := range slots {
+		out[slot] = results[i]
+	}
+	return out
 }
 
 func approvalResponseToolCallID(response types.ToolApprovalResponseContent) string {
@@ -103,13 +173,13 @@ func approvalResponseToolCallID(response types.ToolApprovalResponseContent) stri
 }
 
 func deniedApprovalToolResultContent(response types.ToolApprovalResponseContent) types.ToolResultContent {
-	reason := response.Reason
 	return types.ToolResultContent{
 		ToolCallID: approvalResponseToolCallID(response),
 		ToolName:   response.ToolCall.ToolName,
 		Output: &types.ToolResultOutput{
-			Type:   types.ToolResultOutputExecutionDenied,
-			Reason: reason,
+			Type:      types.ToolResultOutputExecutionDenied,
+			Reason:    response.Reason,
+			ReasonSet: response.ReasonSet,
 		},
 	}
 }
@@ -138,12 +208,16 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 			Title:            result.Title,
 			Input:            result.Input,
 			Error:            result.Error.Error(),
+			ErrorText:        ToolErrorText(result.Error),
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
 			Dynamic:          result.Dynamic,
 		}, false)
 	}
+	// Only result.Error makes a tool error: a raw value that is a Go error
+	// is a tool result whose model output is its JSON value (TS
+	// createToolModelOutput: an execute that returns an Error object).
 	switch output := result.Result.(type) {
 	case types.ToolResultOutput:
 		if part.Output == nil {
@@ -155,18 +229,6 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 			part.Output = output
 			part.Result = nil
 		}
-	case error:
-		return normalizeToolErrorContent(types.ToolErrorContent{
-			ToolCallID:       result.ToolCallID,
-			ToolName:         result.ToolName,
-			Title:            result.Title,
-			Input:            result.Input,
-			Error:            output.Error(),
-			ProviderExecuted: result.ProviderExecuted,
-			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
-			ToolMetadata:     result.ToolMetadata,
-			Dynamic:          result.Dynamic,
-		}, result.ProviderExecuted)
 	case string:
 		if part.Output == nil {
 			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
@@ -206,10 +268,6 @@ func normalizeToolResultContent(part types.ToolResultContent) types.ToolResultCo
 	case *types.ToolResultOutput:
 		part.Output = result
 		part.Result = nil
-	case error:
-		part.Error = result.Error()
-		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: result.Error()}
-		part.Result = nil
 	case string:
 		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: result}
 		part.Result = nil
@@ -220,17 +278,71 @@ func normalizeToolResultContent(part types.ToolResultContent) types.ToolResultCo
 	return part
 }
 
+// ErrorNamer is implemented by errors that correspond to a named TS error
+// class. TS getErrorMessage(error) is error.toString(), "<name>: <message>"
+// ("Error: boom", "AI_InvalidToolInputError: Invalid input ...").
+type ErrorNamer interface {
+	ErrorName() string
+}
+
+// ToolErrorText returns the text a tool error is shown to the model as, the
+// equivalent of TS getErrorMessage(error): "unknown error" for nil, the
+// "<name>: <message>" form for errors (name "Error" unless the error is one of
+// the SDK's named errors).
+func ToolErrorText(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	// An error that stands for a TS string error (getErrorMessage of a
+	// string is the string itself).
+	if text, ok := err.(interface{ ToolErrorText() string }); ok {
+		return text.ToolErrorText()
+	}
+	name := "Error"
+	if named, ok := err.(ErrorNamer); ok {
+		name = named.ErrorName()
+	}
+	return name + ": " + err.Error()
+}
+
+// normalizeToolErrorContent replays a tool-error part as a tool-result part
+// (TS createToolModelOutput): errorMode 'json' (a provider-executed error in
+// the assistant message) is toJSONValue(error); errorMode 'text' (a local
+// error in the tool message) is getErrorMessage(error), with ErrorText (the
+// TS error.toString() of a local failure) taking precedence.
 func normalizeToolErrorContent(part types.ToolErrorContent, providerExecuted bool) types.ToolResultContent {
-	outputType := types.ToolResultOutputErrorText
+	output := &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: toolErrorMessage(part)}
 	if providerExecuted {
-		outputType = types.ToolResultOutputErrorJSON
+		output = &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: toJSONValue(part.Error)}
 	}
 	return types.ToolResultContent{
 		ToolCallID:      part.ToolCallID,
 		ToolName:        part.ToolName,
-		Output:          &types.ToolResultOutput{Type: outputType, Value: part.Error},
+		Output:          output,
 		ProviderOptions: providerMetadataOptions(part.ProviderMetadata),
 	}
+}
+
+// toolErrorMessage is TS getErrorMessage(part.error): the ErrorText of a
+// local failure when set, otherwise the string itself, "unknown error" for
+// nil, error.toString() for an error and the JSON text of anything else.
+func toolErrorMessage(part types.ToolErrorContent) string {
+	if part.ErrorText != "" {
+		return part.ErrorText
+	}
+	switch e := part.Error.(type) {
+	case nil:
+		return "unknown error"
+	case string:
+		return e
+	case error:
+		return ToolErrorText(e)
+	}
+	b, err := json.Marshal(part.Error)
+	if err != nil {
+		return "unknown error"
+	}
+	return string(b)
 }
 
 func responseMessageHasContent(msg types.Message) bool {
@@ -281,13 +393,13 @@ func filterResponseContent(content []types.ContentPart) []types.ContentPart {
 	for _, part := range content {
 		switch p := part.(type) {
 		case types.TextContent:
-			if p.Text == "" {
+			if p.Text == "" && !hasProviderMetadata(p.ProviderMetadata) {
 				continue
 			}
 			filtered = append(filtered, responseTextContent(p))
 			continue
 		case *types.TextContent:
-			if p == nil || p.Text == "" {
+			if p == nil || (p.Text == "" && !hasProviderMetadata(p.ProviderMetadata)) {
 				continue
 			}
 			filtered = append(filtered, responseTextContent(*p))
@@ -389,6 +501,15 @@ func filterResponseContent(content []types.ContentPart) []types.ContentPart {
 	return filtered
 }
 
+// hasProviderMetadata reports whether a content part carries provider
+// metadata (TS `providerMetadata != null`): absent and the JSON literal null
+// count as none, an empty object does not. TS to-response-messages.ts
+// (fd7e8a75d7) keeps an empty text part that has metadata, so a Google
+// thoughtSignature on an empty text part is replayed.
+func hasProviderMetadata(metadata json.RawMessage) bool {
+	return len(metadata) > 0 && string(metadata) != "null"
+}
+
 func providerMetadataOptions(metadata json.RawMessage) map[string]interface{} {
 	if len(metadata) == 0 || string(metadata) == "null" {
 		return nil
@@ -406,18 +527,7 @@ func providerMetadataOptions(metadata json.RawMessage) map[string]interface{} {
 // TS createToolModelOutput's toJSONValue (JSON.stringify + JSON.parse;
 // undefined/marshal failure -> null). Audit row 6aa7c54 / WG24.
 func toJSONValue(value interface{}) interface{} {
-	if value == nil {
-		return nil
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var out interface{}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	return out
+	return jsonorder.ToJSONValue(value)
 }
 
 func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
@@ -431,9 +541,13 @@ func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
 	return raw
 }
 
+// responseTextContent is TS toResponseMessages' text part: {type, text,
+// providerOptions: part.providerMetadata}. The citations stay on the content
+// part (result.content); a model message text part has none.
 func responseTextContent(part types.TextContent) types.TextContent {
 	part.ProviderOptions = providerMetadataOptions(part.ProviderMetadata)
 	part.ProviderMetadata = nil
+	part.Citations = nil
 	return part
 }
 
@@ -506,13 +620,19 @@ func responseToolApprovalRequestContent(part types.ToolApprovalRequestContent) t
 	if toolCallID == "" {
 		toolCallID = part.ToolCall.ID
 	}
+	// TS adds inputSchemaInput only when it differs from the approved call
+	// input (isDeepEqualData).
+	inputSchemaInput := part.InputSchemaInput
+	if inputSchemaInput != nil && reflect.DeepEqual(jsonorder.Plain(toJSONValue(inputSchemaInput)), jsonorder.Plain(toJSONValue(part.ToolCall.Arguments))) {
+		inputSchemaInput = nil
+	}
 	return types.ToolApprovalRequestContent{
 		ApprovalID:       part.ApprovalID,
 		ToolCallID:       toolCallID,
 		Reason:           part.Reason,
 		Signature:        part.Signature,
 		IsAutomatic:      part.IsAutomatic,
-		InputSchemaInput: part.InputSchemaInput,
+		InputSchemaInput: inputSchemaInput,
 	}
 }
 
@@ -521,7 +641,11 @@ func responseToolApprovalResponseContent(part types.ToolApprovalResponseContent)
 		ApprovalID:       part.ApprovalID,
 		Approved:         part.Approved,
 		Reason:           part.Reason,
+		ReasonSet:        part.ReasonSet,
 		ProviderExecuted: part.ProviderExecuted,
+		// TS to-response-messages copies part.providerExecuted, an
+		// explicit false included.
+		ProviderExecutedSet: part.ProviderExecutedSet,
 	}
 }
 

@@ -112,7 +112,8 @@ const (
 	ModelGPT6Sol   = "gpt-6-sol"
 
 	// GPT-6.1 series
-	ModelGPT61Sol = "gpt-6.1-sol"
+	ModelGPT61Sol   = "gpt-6.1-sol"
+	ModelGPT61Terra = "gpt-6.1-terra"
 )
 
 // Completion model ID constants for the legacy OpenAI Completions API.

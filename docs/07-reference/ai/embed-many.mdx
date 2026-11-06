@@ -20,7 +20,8 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | Model | provider.EmbeddingModel | Yes | Embedding model to use |
-| Inputs | []string | Yes | Texts to embed (at least one required) |
+| Inputs | []string | Yes | Texts to embed |
+| Dimensions | *int | No | Requested output dimensions (positive integer). Mapped to each provider's native setting; an explicit provider option takes precedence. Invalid values return an `InvalidArgumentError` before the model is called |
 
 ## Return Value
 
@@ -255,8 +256,6 @@ if err != nil {
     switch {
     case strings.Contains(err.Error(), "model is required"):
         log.Println("Missing required model parameter")
-    case strings.Contains(err.Error(), "at least one input is required"):
-        log.Println("Inputs slice is empty")
     case strings.Contains(err.Error(), "batch embedding failed"):
         log.Println("Batch embedding error:", err)
     case errors.Is(err, context.DeadlineExceeded):

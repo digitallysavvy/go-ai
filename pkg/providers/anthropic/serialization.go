@@ -7,7 +7,10 @@ import (
 )
 
 func init() {
+	// "anthropic" is the pre-TS-parity Provider() value; keep it so models
+	// serialized by earlier versions still deserialize.
 	provider.RegisterModelDeserializer("anthropic", deserializeModel)
+	provider.RegisterModelDeserializer("anthropic.messages", deserializeModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

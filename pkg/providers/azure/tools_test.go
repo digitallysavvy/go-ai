@@ -30,3 +30,9 @@ func TestAzureHostedToolWrappers(t *testing.T) {
 		}
 	}
 }
+
+func TestAzureToolSearchWrapper(t *testing.T) {
+	if got := ToolSearch(openaitool.ToolSearchArgs{}).Name; got != "openai.tool_search" {
+		t.Fatalf("toolSearch name = %q", got)
+	}
+}

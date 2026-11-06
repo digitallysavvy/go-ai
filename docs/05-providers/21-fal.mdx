@@ -55,6 +55,15 @@ export FAL_API_KEY=...
 | fal-ai/flux-schnell | Good | Very Fast | Speed |
 | fal-ai/stable-diffusion-xl | High | Fast | General |
 
+Image options: `Size` becomes `image_size` (`width`/`height`), `AspectRatio`
+maps to fal's named sizes, and `Seed`, `N`, `Files` (`image_url`, or
+`image_urls` with `ProviderOptions["fal"]["useMultipleImages"] = true`) and
+`Mask` (`mask_url`) are forwarded. `ProviderOptions["fal"]` accepts camelCase
+keys such as `guidanceScale`, `numInferenceSteps`, `enableSafetyChecker`,
+`outputFormat` and `acceleration`; deprecated snake_case keys still work and
+produce a warning. Per-image details (content type, NSFW flags, response seed
+and timings) are returned in `ProviderMetadata["fal"]`.
+
 ### Video Generation
 
 | Model ID | Quality | Speed | Best For |

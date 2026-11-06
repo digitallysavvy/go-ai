@@ -1,6 +1,9 @@
 package codemode
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // errUnsupportedTSSyntax aborts a strip attempt for TypeScript syntax that
 // Node's stripTypeScriptTypes recognizes but rejects even in principle,
@@ -60,7 +63,18 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 		}
 
 		switch t.kind {
-		case "space", "comment", "string", "number", "regex":
+		case "string":
+			if strings.HasPrefix(t.text, "`") && strings.Contains(t.text, "${") {
+				if err := stripTemplateLiteral(t, out); err != nil {
+					return i, err
+				}
+				i++
+				continue
+			}
+			*out = append(*out, t)
+			i++
+			continue
+		case "space", "comment", "number", "regex":
 			*out = append(*out, t)
 			i++
 			continue
@@ -70,7 +84,19 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 			switch t.text {
 			case "(":
 				closeIdx := matchParen(tokens, i)
-				if closeIdx >= 0 && isArrowParamList(tokens, closeIdx) {
+				if closeIdx >= 0 && isArrowParamList(tokens, closeIdx) && (!inCaseLabel(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) && (!inConditionalTrueBranch(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) {
+					var err error
+					i, err = stripParamList(tokens, i, out, false)
+					if err != nil {
+						return i, err
+					}
+					afterParen := i
+					i = stripOptionalReturnType(tokens, i, out)
+					relocateArrowCloseParen(tokens, afterParen, i, out)
+					continue
+				}
+				if closeIdx >= 0 && isMethodParamList(tokens, closeIdx, *out) {
+					// An object-literal method: `m(a: number): string { ... }`.
 					var err error
 					i, err = stripParamList(tokens, i, out, false)
 					if err != nil {
@@ -124,8 +150,21 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				// expression). `!=`/`!==` are already single tokens from
 				// the tokenizer, so a bare "!" here can never be part of
 				// one.
-				if endsExpression(*out) {
+				// A `!` left in out is always a prefix NOT (a dropped
+				// non-null assertion never reaches out), so `!!x` keeps
+				// both; a line break before `!` also makes it a prefix.
+				if endsExpression(*out) && !endsWithLineBreak(*out) && !closesControlHeader(*out) {
 					i++
+					// `a!<T>(x)`: the type arguments after a non-null assertion
+					// go with it.
+					if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "<" {
+						if end, ok := consumeCallGenerics(tokens, p); ok && !followedByOptionalChain(tokens, end) {
+							for k := i; k < p; k++ {
+								*out = append(*out, tokens[k])
+							}
+							i = end
+						}
+					}
 					continue
 				}
 				*out = append(*out, t)
@@ -139,15 +178,49 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				// use in reverse -- since a `<` that follows something
 				// ending an expression is an ordinary less-than comparison,
 				// never generics.
-				if !endsExpression(*out) {
+				// A `}` may close a block statement, after which an arrow
+				// function can start; `{} < T > (x) => y` is not valid
+				// JavaScript either way, so a generic arrow reading wins.
+				if last := lastSignificant(*out); !endsExpression(*out) || (last != nil && last.kind == "punct" && last.text == "}") {
 					if open, ok := tryGenericArrowTypeParams(tokens, i); ok {
 						var err error
 						i, err = stripParamList(tokens, open, out, false)
 						if err != nil {
 							return i, err
 						}
+						afterParen := i
 						i = stripOptionalReturnType(tokens, i, out)
+						relocateArrowCloseParen(tokens, afterParen, i, out)
 						continue
+					}
+				}
+				if last := lastSignificant(*out); last != nil {
+					switch {
+					case last.kind == "punct" && last.text == "?.":
+						// `a?.<T>(x)`: type arguments of an optional call.
+						if end, ok := consumeAngleTypeArgsBalanced(tokens, i); ok {
+							if n := nextSignificant(tokens, end); n >= 0 && (tokens[n].text == "(" || (tokens[n].kind == "string" && strings.HasPrefix(tokens[n].text, "`"))) {
+								i = end
+								continue
+							}
+						}
+					case last.kind == "punct" && (last.text == ")" || last.text == "]") && !closesControlHeader(*out):
+						// `f(a)<T>(b)`, `a[0]<T>(b)`: type arguments of a call
+						// on a call/index result.
+						if end, ok := consumeCallGenerics(tokens, i); ok {
+							if n := nextSignificant(tokens, end); n >= 0 && (tokens[n].text == "(" || (tokens[n].text == "?." && !keepsTypeArgsBeforeOptionalCall(*out)) || tokens[n].kind == "string") {
+								i = end
+								continue
+							}
+						}
+					}
+				}
+				if !endsExpression(*out) {
+					// `<T>expr` is a TypeScript angle-bracket assertion:
+					// nothing in plain JavaScript starts with `<`, and Node
+					// refuses to strip it (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
+					if _, ok := consumeAngleTypeArgsBalanced(tokens, i); ok {
+						return i, errUnsupportedTSSyntax("angle-bracket type assertion")
 					}
 				}
 				*out = append(*out, t)
@@ -164,18 +237,39 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 		if !precededByDot(*out) {
 			switch t.text {
 			case "interface":
-				if isStatementStart(*out) {
+				if isStatementStart(*out) && nextOnSameLine(tokens, i) {
+					pos := t.pos
 					i = skipInterfaceDecl(tokens, i)
+					asiGuard(tokens, i, out, pos, true)
 					continue
 				}
 			case "type":
-				if isStatementStart(*out) && looksLikeTypeAlias(tokens, i) {
+				if isStatementStart(*out) && nextOnSameLine(tokens, i) && looksLikeTypeAlias(tokens, i) {
+					pos := t.pos
 					i = skipTypeAlias(tokens, i)
+					asiGuard(tokens, i, out, pos, true)
 					continue
 				}
 			case "satisfies", "as":
-				if endsExpression(*out) {
-					i = consumeTypeExpr(tokens, i+1, false)
+				// A line break before `as`/`satisfies` ends the statement
+				// (TypeScript allows none before the operator), so the word
+				// is an identifier then.
+				if endsExpression(*out) && !endsWithLineBreak(*out) {
+					// Node erases from the end of the operand, comments
+					// before the operator included.
+					for n := len(*out); n > 0 && ((*out)[n-1].kind == "space" || (*out)[n-1].kind == "comment"); n-- {
+						*out = (*out)[:n-1]
+					}
+					tokStart := i + 1
+					var unterminated bool
+					i, unterminated = splitAsType(tokens, i+1)
+					if unterminated {
+						return i, errUnsupportedTSSyntax("unterminated type")
+					}
+					if typeStart := nextSignificant(tokens, tokStart); typeStart < 0 || tokens[typeStart].text != "const" {
+						// `as const` keeps the following line as is.
+						asiGuard(tokens, i, out, t.pos, false)
+					}
 					continue
 				}
 			case "enum":
@@ -190,16 +284,20 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				// `abstract class C { ... }`: the class-level modifier
 				// (distinct from an `abstract` member inside a class
 				// body, handled by stripClassMember).
-				if nextIdentIs(tokens, i+1, "class") {
+				if nextIdentIs(tokens, i+1, "class") && nextOnSameLine(tokens, i) {
 					i = nextSignificant(tokens, i+1)
 					continue
 				}
 			case "declare":
 				if isStatementStart(*out) {
 					var err error
+					pos, before := t.pos, len(*out)
 					i, err = handleDeclare(tokens, i, out)
 					if err != nil {
 						return i, err
+					}
+					if len(*out) == before {
+						asiGuard(tokens, i, out, pos, true)
 					}
 					continue
 				}
@@ -233,11 +331,31 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 					return i, err
 				}
 				continue
+			case "catch":
+				// `catch (e: unknown)`: the binding's type annotation is
+				// erased.
+				*out = append(*out, t)
+				i++
+				if open := nextSignificant(tokens, i); open >= 0 && tokens[open].kind == "punct" && tokens[open].text == "(" {
+					for k := i; k < open; k++ {
+						*out = append(*out, tokens[k])
+					}
+					var err error
+					i, err = stripParamList(tokens, open, out, false)
+					if err != nil {
+						return i, err
+					}
+				}
+				continue
 			case "function":
 				var err error
+				pos, before := t.pos, len(*out)
 				i, err = handleFunctionSignature(tokens, i, out)
 				if err != nil {
 					return i, err
+				}
+				if len(*out) == before {
+					asiGuard(tokens, i, out, pos, true)
 				}
 				continue
 			case "class":
@@ -258,7 +376,14 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 		*out = append(*out, t)
 		i++
 		if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "<" {
-			if end, ok := consumeCallGenerics(tokens, p); ok {
+			// `new Box<T>;` has type arguments without a call.
+			end, ok := consumeCallGenerics(tokens, p)
+			if ok {
+				if n := nextSignificant(tokens, end); n >= 0 && tokens[n].text == "?." && keepsTypeArgsBeforeOptionalCall(*out) {
+					ok = false
+				}
+			}
+			if ok {
 				for k := i; k < p; k++ {
 					*out = append(*out, tokens[k])
 				}
@@ -322,13 +447,25 @@ func isStatementStart(out []tsToken) bool {
 		return true
 	}
 	if out[i].kind != "punct" {
-		return false
+		// A line break after a complete statement starts the next one
+		// (automatic semicolon insertion): `const a = b` newline `type T = ...`.
+		// `return` and a line break end the statement as well (a restricted
+		// production), so what follows on the next line starts a new one.
+		if out[i].kind == "ident" && out[i].text == "return" {
+			return endsWithLineBreak(out)
+		}
+		return endsWithLineBreak(out) && endsExpression(out)
 	}
 	switch out[i].text {
 	case ";", "}":
 		return true
+	case "++", "--":
+		// A postfix operator ends an expression statement at a line break.
+		return endsWithLineBreak(out) && endsExpression(out)
 	case "{":
 		return looksLikeBlockOpen(out[:i])
+	case ")", "]":
+		return endsWithLineBreak(out)
 	}
 	return false
 }
@@ -384,12 +521,13 @@ func endsExpression(out []tsToken) bool {
 		case "number", "string", "regex":
 			return true
 		case "punct":
-			// A `!` left in out is always a prefix NOT (a dropped non-null
-			// assertion never reaches out), so it does not end an
-			// expression: `!!x` keeps both.
 			switch t.text {
 			case ")", "]", "}":
 				return true
+			case "++", "--":
+				// Postfix when an operand precedes it on the same line
+				// (`y++ as T`); otherwise a prefix operator.
+				return endsExpression(out[:i]) && !endsWithLineBreak(out[:i])
 			}
 			return false
 		}
@@ -407,6 +545,71 @@ var expressionPrefixKeywords = map[string]bool{
 	"satisfies": true, "as": true, "enum": true, "namespace": true,
 	"declare": true, "abstract": true, "readonly": true, "public": true,
 	"private": true, "protected": true, "static": true, "instanceof": true,
+	// `await !x` and `for (k of !x)`: what follows is an operand, so a `!` is a
+	// prefix NOT, not a non-null assertion.
+	"await": true, "of": true,
+}
+
+// asiGuard keeps the statement boundary a type-only construct provided. After
+// an erased `as T`, type alias, interface, declare statement or overload
+// signature, a following line that starts with `(`, `[`, a template, `+`, `-`
+// or `/` would otherwise continue the previous expression (`x = y as T`
+// newline `(z)` becomes `x = y (z)`). Node writes a `;` over the first erased
+// character in that case; pos is that character's rune offset. After an
+// expression's `as T` Node does this for `(`, `[` and templates only, because
+// a following `+`, `-` or `/` continues the expression as an operator; after a
+// statement-level construct (statement is true) it does it for those too.
+func asiGuard(tokens []tsToken, next int, out *[]tsToken, pos int, statement bool) {
+	sawNewline := false
+	j := next
+	for ; j < len(tokens) && (tokens[j].kind == "space" || tokens[j].kind == "comment"); j++ {
+		if strings.ContainsAny(tokens[j].text, "\n\r") {
+			sawNewline = true
+		}
+	}
+	if !sawNewline || j >= len(tokens) {
+		return
+	}
+	t := tokens[j]
+	switch {
+	case t.kind == "string" && strings.HasPrefix(t.text, "`") && !templateHasSubstitution(t.text):
+		// Node guards only a template without substitutions
+		// (NoSubstitutionTemplateLiteral); one that starts with a
+		// `${...}` head gets no `;`.
+	case t.kind == "punct" && (t.text == "(" || t.text == "["):
+	case statement && t.kind == "regex":
+	case statement && t.kind == "punct" && (t.text == "+" || t.text == "-" || t.text == "/"):
+	default:
+		return
+	}
+	// A `;` that already ends the previous statement is the boundary: Node
+	// writes no second one over the erased construct.
+	for n := len(*out) - 1; n >= 0; n-- {
+		if k := (*out)[n].kind; k == "space" || k == "comment" {
+			continue
+		}
+		if (*out)[n].kind == "punct" && (*out)[n].text == ";" {
+			return
+		}
+		break
+	}
+	*out = append(*out, tsToken{kind: "punct", text: ";", pos: pos})
+}
+
+// templateHasSubstitution reports whether the template literal token holds an
+// unescaped `${`.
+func templateHasSubstitution(text string) bool {
+	for i := 1; i+1 < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '$':
+			if text[i+1] == '{' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isExpressionPrefixKeyword(ident string) bool { return expressionPrefixKeywords[ident] }
@@ -423,4 +626,421 @@ func looksLikeNamespaceDecl(tokens []tsToken, i int) bool {
 	}
 	after := nextSignificant(tokens, next+1)
 	return after >= 0 && tokens[after].kind == "punct" && tokens[after].text == "{"
+}
+
+// endsWithLineBreak reports whether the output so far ends in a line break
+// (ignoring nothing: the whitespace token directly before the current one).
+func endsWithLineBreak(out []tsToken) bool {
+	if len(out) == 0 {
+		return false
+	}
+	last := out[len(out)-1]
+	return (last.kind == "space" || last.kind == "comment") && strings.ContainsAny(last.text, "\n\r")
+}
+
+// nextOnSameLine reports whether the next significant token after tokens[i]
+// is on the same line: TypeScript reads `type`, `interface` and similar words
+// as declarations only when the name follows on the same line.
+func nextOnSameLine(tokens []tsToken, i int) bool {
+	for k := i + 1; k < len(tokens); k++ {
+		switch tokens[k].kind {
+		case "space", "comment":
+			if strings.ContainsAny(tokens[k].text, "\n\r") {
+				return false
+			}
+		default:
+			return true
+		}
+	}
+	return true
+}
+
+var methodNameExcluded = map[string]bool{
+	"if": true, "for": true, "while": true, "switch": true, "catch": true, "with": true,
+	"await": true, "function": true, "return": true, "typeof": true, "void": true,
+	"delete": true, "throw": true, "new": true, "in": true, "of": true, "instanceof": true,
+	"yield": true, "case": true, "do": true, "else": true, "extends": true, "super": true,
+	"import": true, "export": true, "default": true, "var": true, "let": true, "const": true,
+}
+
+// startsObjectMember reports whether the method name that ends at out[k]
+// (with any `async`, `get`, `set`, `*` modifiers before it) is the first thing
+// of an object-literal member, right after the `{` or `,` before it. In
+// `c ? x(c) : y(y)! satisfies { k: T }` the `x(c)` follows a `?`, so the `:`
+// after it belongs to the conditional, not to a method return type.
+func startsObjectMember(out []tsToken, k int) bool {
+	prevSignificant := func(from int) int {
+		for from >= 0 && (out[from].kind == "space" || out[from].kind == "comment") {
+			from--
+		}
+		return from
+	}
+	if out[k].kind == "punct" && out[k].text == "]" {
+		// A computed name: back up to its opening bracket.
+		depth := 0
+		for ; k >= 0; k-- {
+			if out[k].kind != "punct" {
+				continue
+			}
+			switch out[k].text {
+			case "]":
+				depth++
+			case "[":
+				depth--
+			}
+			if depth == 0 {
+				break
+			}
+		}
+		if k < 0 {
+			return false
+		}
+	}
+	p := prevSignificant(k - 1)
+	for p >= 0 {
+		switch {
+		case out[p].kind == "punct" && out[p].text == "*":
+		case out[p].kind == "ident" && (out[p].text == "async" || out[p].text == "get" || out[p].text == "set"):
+		default:
+			return out[p].kind == "punct" && (out[p].text == "{" || out[p].text == ",")
+		}
+		p = prevSignificant(p - 1)
+	}
+	return false
+}
+
+// isMethodParamList reports whether the parenthesized span closing at
+// tokens[closeIdx] is the parameter list of a method in an object literal:
+// a name (not a statement keyword) before the `(` and the body's `{` after
+// it, with an optional return type between.
+func isMethodParamList(tokens []tsToken, closeIdx int, out []tsToken) bool {
+	k := len(out) - 1
+	for k >= 0 && (out[k].kind == "space" || out[k].kind == "comment") {
+		k--
+	}
+	if k < 0 {
+		return false
+	}
+	switch out[k].kind {
+	case "ident":
+		if methodNameExcluded[out[k].text] {
+			return false
+		}
+	case "punct":
+		if out[k].text != "]" {
+			return false
+		}
+	case "string", "number":
+		// A quoted or numeric method name starts an object member:
+		// `{ 'a-b'(x: number) {} }`.
+		p := k - 1
+		for p >= 0 && (out[p].kind == "space" || out[p].kind == "comment") {
+			p--
+		}
+		if p < 0 || out[p].kind != "punct" || (out[p].text != "{" && out[p].text != ",") {
+			return false
+		}
+	default:
+		return false
+	}
+	if !startsObjectMember(out, k) {
+		return false
+	}
+	next := nextSignificant(tokens, closeIdx+1)
+	if next < 0 || tokens[next].kind != "punct" {
+		return false
+	}
+	switch tokens[next].text {
+	case "{":
+		return true
+	case ":":
+		end := consumeTypeExpr(tokens, next+1, true)
+		if end <= next+1 {
+			return false
+		}
+		brace := nextSignificant(tokens, end)
+		return brace >= 0 && tokens[brace].kind == "punct" && tokens[brace].text == "{"
+	}
+	return false
+}
+
+// stripTemplateLiteral emits a template literal token, stripping the
+// TypeScript syntax inside its `${...}` expressions (`${x as string}`).
+func stripTemplateLiteral(t tsToken, out *[]tsToken) error {
+	runes := []rune(t.text)
+	n := len(runes)
+	emit := func(from, to int) {
+		if to > from {
+			*out = append(*out, tsToken{"string", string(runes[from:to]), t.pos + from})
+		}
+	}
+	litStart := 0
+	for j := 1; j < n; {
+		switch {
+		case runes[j] == '\\' && j+1 < n:
+			j += 2
+		case runes[j] == '$' && j+1 < n && runes[j+1] == '{':
+			end := scanBalancedExpr(runes, j+2)
+			if end > n || end < j+3 || runes[end-1] != '}' {
+				j = end
+				continue
+			}
+			emit(litStart, j+2)
+			inner := tokenizeTS(string(runes[j+2 : end-1]))
+			for k := range inner {
+				inner[k].pos += t.pos + j + 2
+			}
+			var stripped []tsToken
+			stop, err := stripBody(inner, 0, &stripped, nil)
+			if err != nil {
+				return err
+			}
+			stripped = append(stripped, inner[stop:]...)
+			*out = append(*out, stripped...)
+			litStart = end - 1
+			j = end
+		default:
+			j++
+		}
+	}
+	emit(litStart, n)
+	return nil
+}
+
+// closesControlHeader reports whether the last significant token in out is
+// the `)` that ends an if/while/for/with/switch header, after which a `!` starts
+// the statement as a prefix NOT instead of asserting non-null.
+func closesControlHeader(out []tsToken) bool {
+	i := len(out) - 1
+	for i >= 0 && (out[i].kind == "space" || out[i].kind == "comment") {
+		i--
+	}
+	if i < 0 || out[i].kind != "punct" || out[i].text != ")" {
+		return false
+	}
+	depth := 0
+	for ; i >= 0; i-- {
+		if out[i].kind != "punct" {
+			continue
+		}
+		switch out[i].text {
+		case ")":
+			depth++
+		case "(":
+			depth--
+			if depth == 0 {
+				j := i - 1
+				for j >= 0 && (out[j].kind == "space" || out[j].kind == "comment") {
+					j--
+				}
+				if j >= 0 && out[j].kind == "ident" {
+					switch out[j].text {
+					case "if", "while", "for", "with", "switch", "await":
+						return true
+					}
+				}
+				return false
+			}
+		}
+	}
+	return false
+}
+
+// lastSignificant returns the last emitted token that is not whitespace or a
+// comment, or nil.
+func lastSignificant(out []tsToken) *tsToken {
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i].kind != "space" && out[i].kind != "comment" {
+			return &out[i]
+		}
+	}
+	return nil
+}
+
+// typeSpanUnterminated reports whether a scanned type span opens a bracket it
+// never closes (`x as T < y;`, where `<` starts type arguments that run to
+// the end of the source). Node rejects that source, so it is not stripped.
+func typeSpanUnterminated(span []tsToken) bool {
+	// Brackets must nest: a closer that does not match the innermost opener
+	// (the `}` of the block around `x as T < y;`, swallowed into the span) means
+	// the type arguments never close.
+	var stack []byte
+	pop := func(open byte) bool {
+		if len(stack) == 0 || stack[len(stack)-1] != open {
+			return false
+		}
+		stack = stack[:len(stack)-1]
+		return true
+	}
+	for _, t := range span {
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case "(", "[", "{", "<":
+			stack = append(stack, t.text[0])
+		case ")":
+			if !pop('(') {
+				return true
+			}
+		case "]":
+			if !pop('[') {
+				return true
+			}
+		case "}":
+			if !pop('{') {
+				return true
+			}
+		case ">":
+			if !pop('<') {
+				return true
+			}
+		case ">>", ">>>":
+			for range len(t.text) {
+				if !pop('<') {
+					return true
+				}
+			}
+		}
+	}
+	return len(stack) > 0
+}
+
+// keepsTypeArgsWindow is how many trailing significant tokens
+// keepsTypeArgsBeforeOptionalCall looks at.
+const keepsTypeArgsWindow = 2048
+
+// keepsTypeArgsBeforeOptionalCall reports whether Node 24 leaves the `<T>` of
+// `base<T>?.x` in place: swc does not read type arguments there when base is a
+// call result (`f()<T>?.()`, `new A()<T>?.()`) or a member chain that goes
+// through `?.` (`a?.b<T>?.()`); it does for `a<T>?.()`, `a.b<T>?.()`,
+// `a[0]<T>?.()` and `(a)<T>?.()`.
+func keepsTypeArgsBeforeOptionalCall(out []tsToken) bool {
+	// Only the tail matters; copying all of out for every call made a long
+	// run of optional calls quadratic.
+	var rev []tsToken
+	for i := len(out) - 1; i >= 0 && len(rev) < keepsTypeArgsWindow; i-- {
+		if out[i].kind != "space" && out[i].kind != "comment" {
+			rev = append(rev, out[i])
+		}
+	}
+	sig := make([]tsToken, len(rev))
+	for i, t := range rev {
+		sig[len(rev)-1-i] = t
+	}
+	n := len(sig)
+	if n == 0 {
+		return false
+	}
+	last := sig[n-1]
+	switch {
+	case last.kind == "punct" && last.text == ")":
+		open := -1
+		depth := 0
+		for k := n - 1; k >= 0; k-- {
+			if sig[k].kind != "punct" {
+				continue
+			}
+			switch sig[k].text {
+			case ")", "]", "}":
+				depth++
+			case "(", "[", "{":
+				depth--
+			}
+			if depth == 0 {
+				open = k
+				break
+			}
+		}
+		if open <= 0 {
+			return false
+		}
+		before := sig[open-1]
+		if before.kind == "ident" {
+			return !isRegexPrecedingKeyword(before.text)
+		}
+		return before.kind == "punct" && (before.text == ")" || before.text == "]")
+	case last.kind == "ident":
+		k := n - 1
+		for k >= 1 {
+			p := sig[k-1]
+			if p.kind != "punct" {
+				return false
+			}
+			if p.text == "?." {
+				return true
+			}
+			if p.text != "." || k < 2 {
+				return false
+			}
+			e := k - 2
+			if sig[e].kind == "punct" && sig[e].text == "]" {
+				depth := 0
+				m := e
+				for ; m >= 0; m-- {
+					if sig[m].kind != "punct" {
+						continue
+					}
+					if sig[m].text == "]" {
+						depth++
+					} else if sig[m].text == "[" {
+						depth--
+						if depth == 0 {
+							break
+						}
+					}
+				}
+				if m < 1 {
+					return false
+				}
+				if sig[m-1].kind == "punct" && sig[m-1].text == "?." {
+					return true
+				}
+				e = m - 1
+			}
+			if sig[e].kind != "ident" {
+				return false
+			}
+			k = e
+		}
+	}
+	return false
+}
+
+// followedByOptionalChain reports whether the next significant token at or
+// after i is `?.`. Node keeps `<T>` in `a!<T>?.(x)`.
+func followedByOptionalChain(tokens []tsToken, i int) bool {
+	n := nextSignificant(tokens, i)
+	return n >= 0 && tokens[n].kind == "punct" && tokens[n].text == "?."
+}
+
+// relocateArrowCloseParen keeps an arrow function's `)` on the `=>` line when an
+// erased return type spans a line break: `(x): Promise<{` newline `a: T }> =>
+// y` would otherwise leave a line break between `)` and `=>`, which JavaScript
+// rejects. Node writes the `)` over the last character of the erased type and
+// blanks the original one. afterParen is the index just past the parameter
+// list's `)`, afterType the index just past the erased return type.
+func relocateArrowCloseParen(tokens []tsToken, afterParen, afterType int, out *[]tsToken) {
+	if afterType <= afterParen || afterParen == 0 {
+		return
+	}
+	broken := false
+	for k := afterParen; k < afterType && !broken; k++ {
+		broken = strings.ContainsAny(tokens[k].text, "\n\r") || strings.ContainsRune(tokens[k].text, 0x2028) || strings.ContainsRune(tokens[k].text, 0x2029)
+	}
+	if !broken {
+		return
+	}
+	closeTok := tokens[afterParen-1]
+	if closeTok.kind != "punct" || closeTok.text != ")" {
+		return
+	}
+	for k := len(*out) - 1; k >= 0; k-- {
+		if (*out)[k].pos == closeTok.pos && (*out)[k].text == ")" {
+			*out = append((*out)[:k], (*out)[k+1:]...)
+			last := tokens[afterType-1]
+			*out = append(*out, tsToken{kind: "punct", text: ")", pos: last.pos + len([]rune(last.text)) - 1})
+			return
+		}
+	}
 }

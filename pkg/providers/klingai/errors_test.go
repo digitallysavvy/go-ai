@@ -1,6 +1,11 @@
 package klingai
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
+)
 
 func TestKlingAIErrorFormatting(t *testing.T) {
 	tests := []struct {
@@ -87,5 +92,25 @@ func TestKlingAIErrorConstructors(t *testing.T) {
 	missing := NewMissingVideoOptionsError("Mode")
 	if missing.ErrorCode != ErrCodeKlingVideoMissingOptions || missing.Code != 400 {
 		t.Fatalf("NewMissingVideoOptionsError mismatch: %#v", missing)
+	}
+}
+
+func TestParseKlingAIErrorBodyStatusTextAndRetry(t *testing.T) {
+	// Off-schema body: TS message is the HTTP status text.
+	err := parseKlingAIErrorBody(502, []byte(`<html>bad gateway</html>`))
+	var ke *Error
+	if !errors.As(err, &ke) || ke.Message != "Bad Gateway" {
+		t.Fatalf("got %T %v", err, err)
+	}
+	// code is required by the TS schema.
+	err = parseKlingAIErrorBody(400, []byte(`{"message":"nope"}`))
+	if !errors.As(err, &ke) || ke.Message != "Bad Request" {
+		t.Fatalf("missing code: %v", err)
+	}
+	for status, want := range map[int]bool{400: false, 401: false, 408: true, 429: true, 503: true} {
+		err := parseKlingAIErrorBody(status, []byte(`{"code":1200,"message":"x"}`))
+		if got := retry.IsRetryable(err); got != want {
+			t.Errorf("status %d retryable = %v, want %v", status, got, want)
+		}
 	}
 }

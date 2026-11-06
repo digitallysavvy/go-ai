@@ -12,8 +12,18 @@ import (
 // the provider for a single generation step.
 // Mirrors LanguageModelRequestMetadata in the TypeScript SDK.
 type GenerateStepRequest struct {
+	// URL is the HTTP(S) origin of the request the provider reports
+	// (scheme, host and non-default port only; credentials, path, query and
+	// fragment are removed). Empty when the provider reports no URL or the
+	// URL is not http(s). Mirrors TS LanguageModelRequestMetadata.url.
+	URL string `json:"url,omitempty"`
+
 	// Body is the raw request body sent to the provider API (for debugging).
 	Body interface{} `json:"body,omitempty"`
+
+	// Messages are the step's request messages when the call includes them
+	// (TS request.messages, set with include.requestMessages).
+	Messages []types.Message `json:"messages,omitempty"`
 }
 
 // GenerateStepResponse contains additional information about the response
@@ -163,7 +173,9 @@ type OnStepStartEvent struct {
 	// Messages being sent to the model for this step
 	Messages []types.Message
 
-	// Tools available in this step
+	// Tools are the call's tools (TS stepStartEvent.tools: the tools
+	// available for this generation). ActiveTools limits them for this step;
+	// the tools actually sent to the model are LanguageModelCallStartEvent.Tools.
 	Tools []types.Tool
 
 	// ToolChoice in effect for this step.
@@ -192,6 +204,19 @@ type OnStepStartEvent struct {
 	ExperimentalContext interface{}
 	RuntimeContext      interface{}
 	ToolsContext        map[string]interface{}
+}
+
+// OnStepErrorEvent is passed to OnStepError when a step that started fails
+// before it produces a step result (TS GenerateTextStepErrorEvent): the
+// provider call fails, the model stream ends without output, or, in
+// GenerateText only, the call is aborted or times out. OnStepEnd is not called
+// for such a step. It carries the OnStepStartEvent of the failed step plus the
+// error.
+type OnStepErrorEvent struct {
+	OnStepStartEvent
+
+	// Error is the error that ended the step.
+	Error error
 }
 
 // OnToolCallStartEvent is emitted just before a tool's Execute function is
@@ -334,6 +359,11 @@ type OnStepFinishEvent struct {
 	// Text produced by the model in this step
 	Text string
 
+	// Content holds the step's content parts in order (TS step.content):
+	// text, reasoning, tool calls, tool results and errors, approvals,
+	// sources and files.
+	Content []types.ContentPart
+
 	// Reasoning holds reasoning/thinking content parts from this step.
 	Reasoning []types.ReasoningContent
 
@@ -349,7 +379,8 @@ type OnStepFinishEvent struct {
 	// DynamicToolCalls are tool calls from dynamically registered tools.
 	DynamicToolCalls []types.ToolCall
 
-	// ToolResults collected for this step
+	// ToolResults collected for this step (successful calls only; a failed
+	// call is a types.ToolErrorContent part of the step's content).
 	ToolResults []types.ToolResult
 
 	// StaticToolResults are results from non-dynamic (typed) tools.
@@ -363,6 +394,14 @@ type OnStepFinishEvent struct {
 
 	// Usage reports token consumption for this step
 	Usage types.Usage
+
+	// Performance holds the step's performance metrics (TS
+	// step.performance).
+	Performance types.StepPerformance
+
+	// ExperimentalSteeringMessages are the steering user messages sent with
+	// this step (TS step.experimental_steeringMessages). Experimental.
+	ExperimentalSteeringMessages []types.Message
 
 	// Warnings emitted by the provider during this step
 	Warnings []types.Warning
@@ -415,47 +454,69 @@ type OnFinishEvent struct {
 	// Text is the final generated text
 	Text string
 
+	// Content holds the content parts of all steps, in order. Mirrors the TS
+	// onEnd event's `content`.
+	Content []types.ContentPart
+
 	// Reasoning holds reasoning/thinking content parts from the final step.
 	Reasoning []types.ReasoningContent
 
 	// ReasoningText is the concatenated reasoning text from the final step.
 	ReasoningText string
 
-	// ToolCalls from the final step
+	// ToolCalls from all steps (TS onEnd aggregates across steps; the final
+	// step alone is FinalStep.ToolCalls).
 	ToolCalls []types.ToolCall
 
-	// StaticToolCalls are tool calls from non-dynamic (typed) tools in the final step.
+	// StaticToolCalls are tool calls from non-dynamic (typed) tools in all steps.
 	StaticToolCalls []types.ToolCall
 
-	// DynamicToolCalls are tool calls from dynamically registered tools in the final step.
+	// DynamicToolCalls are tool calls from dynamically registered tools in all steps.
 	DynamicToolCalls []types.ToolCall
 
-	// ToolResults from the final step
+	// ToolResults from all steps (successful calls only; a failed call is a
+	// types.ToolErrorContent part of its step's content).
 	ToolResults []types.ToolResult
 
-	// StaticToolResults are results from non-dynamic (typed) tools in the final step.
+	// StaticToolResults are results from non-dynamic (typed) tools in all steps.
 	StaticToolResults []types.ToolResult
 
-	// DynamicToolResults are results from dynamically registered tools in the final step.
+	// DynamicToolResults are results from dynamically registered tools in all steps.
 	DynamicToolResults []types.ToolResult
 
 	// FinishReason of the last step
 	FinishReason types.FinishReason
 
-	// Usage is the token usage of the final (last) step.
-	// For single-step generation, Usage == TotalUsage.
+	// Usage is the token usage summed across all steps (TS onEnd:
+	// `usage: totalUsage`); it equals TotalUsage. The final step's own usage
+	// is FinalStep.Usage.
 	Usage types.Usage
 
 	// Steps contains the full result of every step.
 	Steps []types.StepResult
 
+	// FinalStep is the last step. Mirrors the TS onEnd event's `finalStep`.
+	FinalStep types.StepResult
+
+	// ResponseMessages are the messages generated across all steps (including
+	// any messages restored from an approval resume). Mirrors the TS onEnd
+	// event's `responseMessages`.
+	ResponseMessages []types.Message
+
 	// TotalUsage is the sum of token usage across all steps.
 	TotalUsage types.Usage
+
+	// Messages is the final conversation: the instructions as a system
+	// message and the input messages (after PrepareCall and the approval
+	// resume), followed by the messages generated by every step. Only WorkflowAgent sets it (TS
+	// WorkflowAgent onEnd `messages`); it is nil for generateText, streamText
+	// and ToolLoopAgent, whose events carry ResponseMessages instead.
+	Messages []types.Message
 
 	// RawFinishReason is the raw finish reason string from the provider.
 	RawFinishReason string
 
-	// Sources contains citation or grounding references from the final step.
+	// Sources contains citation or grounding references from all steps.
 	Sources []types.SourceContent
 
 	// Files contains model-generated output files from all steps.
@@ -488,6 +549,33 @@ type OnFinishEvent struct {
 	// result instead). Mirrors TS generate-text.ts/stream-text.ts's onEnd/
 	// onFinish event carrying the parsed output (audit row 6669d69 / WG4).
 	Output interface{}
+}
+
+// SetAggregatesFromSteps fills the fields TS builds by flattening the steps in
+// the onEnd event: content, toolCalls, toolResults (and their static/dynamic
+// splits), sources, files and warnings span all steps, usage is the total
+// usage and finalStep is the last step. responseMessages is stored as given.
+func (e *OnFinishEvent) SetAggregatesFromSteps(steps []types.StepResult, responseMessages []types.Message) {
+	e.Content, e.ToolCalls, e.StaticToolCalls, e.DynamicToolCalls = nil, nil, nil, nil
+	e.ToolResults, e.StaticToolResults, e.DynamicToolResults = nil, nil, nil
+	e.Sources, e.Files, e.Warnings = nil, nil, nil
+	e.ResponseMessages = responseMessages
+	for _, step := range steps {
+		e.Content = append(e.Content, step.Content...)
+		e.ToolCalls = append(e.ToolCalls, step.ToolCalls...)
+		e.StaticToolCalls = append(e.StaticToolCalls, step.StaticToolCalls...)
+		e.DynamicToolCalls = append(e.DynamicToolCalls, step.DynamicToolCalls...)
+		e.ToolResults = append(e.ToolResults, step.ToolResults...)
+		e.StaticToolResults = append(e.StaticToolResults, step.StaticToolResults...)
+		e.DynamicToolResults = append(e.DynamicToolResults, step.DynamicToolResults...)
+		e.Sources = append(e.Sources, step.Sources...)
+		e.Files = append(e.Files, step.Files...)
+		e.Warnings = append(e.Warnings, step.Warnings...)
+	}
+	if len(steps) > 0 {
+		e.FinalStep = steps[len(steps)-1]
+	}
+	e.Usage = e.TotalUsage
 }
 
 // Canonical event type name aliases. The deprecated On* names remain for backward compatibility.
@@ -582,8 +670,20 @@ type LanguageModelCallEndEvent struct {
 	// ProviderMetadata is optional provider-specific metadata.
 	ProviderMetadata map[string]interface{}
 
+	// Request is the request the provider reports for this call, nil when
+	// it reports no HTTP(S) URL. Mirrors TS LanguageModelCallEndEvent.request.
+	Request *LanguageModelCallRequest
+
 	// Performance contains performance metrics for the model call.
 	Performance LanguageModelCallPerformance
+}
+
+// LanguageModelCallRequest is the request metadata on
+// LanguageModelCallEndEvent. Mirrors TS `request?: { url?: string }`.
+type LanguageModelCallRequest struct {
+	// URL is the HTTP(S) origin of the request (scheme, host and
+	// non-default port), without credentials, path, query or fragment.
+	URL string `json:"url,omitempty"`
 }
 
 // OnLanguageModelCallStartCallback is the callback type for

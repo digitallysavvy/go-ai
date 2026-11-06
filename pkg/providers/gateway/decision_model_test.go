@@ -1,0 +1,571 @@
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+)
+
+// TS: gateway-decision-model.test.ts createTestModel / basic request shape
+func TestGatewayDecisionModel_DoDecide_RequestShapeAndHeaders(t *testing.T) {
+	var gotPath string
+	var gotHeaders http.Header
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotHeaders = r.Header.Clone()
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"answers": {"correct": {"type": "boolean", "probability": 0.97}}
+		}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("typesafe-ai/jev-latest")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: "The capital of France is Paris.",
+		Questions: map[string]provider.DecisionQuestion{
+			"correct": {Type: "boolean", Instructions: "Is the statement factually correct?"},
+		},
+		ProviderOptions: map[string]interface{}{"typesafe-ai": map[string]interface{}{"strict": true}},
+	})
+	if err != nil {
+		t.Fatalf("DoDecide() error = %v", err)
+	}
+
+	if gotPath != "/decision-model" {
+		t.Fatalf("path = %q, want /decision-model", gotPath)
+	}
+	if got := gotHeaders.Get("ai-model-id"); got != "typesafe-ai/jev-latest" {
+		t.Fatalf("ai-model-id = %q", got)
+	}
+	if got := gotHeaders.Get("ai-decision-model-specification-version"); got != "4" {
+		t.Fatalf("ai-decision-model-specification-version = %q, want 4", got)
+	}
+	wantParts := []interface{}{map[string]interface{}{"type": "text", "text": "The capital of France is Paris."}}
+	if !reflect.DeepEqual(gotBody["stateParts"], wantParts) {
+		t.Fatalf("stateParts = %v", gotBody["stateParts"])
+	}
+	if _, legacy := gotBody["state"]; legacy {
+		t.Fatalf("legacy state key must not be sent: %v", gotBody)
+	}
+	questions, _ := gotBody["questions"].(map[string]interface{})
+	correctQ, _ := questions["correct"].(map[string]interface{})
+	if correctQ["type"] != "boolean" {
+		t.Fatalf("question type = %v, want boolean", correctQ["type"])
+	}
+	providerOptions, _ := gotBody["providerOptions"].(map[string]interface{})
+	if providerOptions["typesafe-ai"] == nil {
+		t.Fatalf("providerOptions not forwarded: %+v", gotBody)
+	}
+
+	if model.Provider() != "gateway" {
+		t.Fatalf("Provider() = %q, want gateway", model.Provider())
+	}
+	if model.ModelID() != "typesafe-ai/jev-latest" {
+		t.Fatalf("ModelID() = %q", model.ModelID())
+	}
+	if result.Answers["correct"].Probability == nil || *result.Answers["correct"].Probability != 0.97 {
+		t.Fatalf("Answers[correct] = %+v", result.Answers["correct"])
+	}
+}
+
+// TS: gateway-decision-model.test.ts includes criteria only when the
+// question defines it (boolean questions may omit criteria entirely).
+func TestGatewayDecisionModel_DoDecide_OmitsNilCriteria(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("m")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: "s",
+		Questions: map[string]provider.DecisionQuestion{
+			"q": {Type: "boolean", Instructions: "i"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoDecide() error = %v", err)
+	}
+
+	questions, _ := gotBody["questions"].(map[string]interface{})
+	q, _ := questions["q"].(map[string]interface{})
+	if _, present := q["criteria"]; present {
+		t.Fatalf("criteria should be omitted for a boolean question with nil Criteria: %+v", q)
+	}
+}
+
+// TS: gateway-decision-model.test.ts maps rounding/usage/warnings/providerMetadata/response
+func TestGatewayDecisionModel_DoDecide_MapsFullResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req-123")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"answers": {
+				"quality": {"type": "score", "score": 1.8, "probabilities": {"0": 0.05, "1": 0.1, "2": 0.85}}
+			},
+			"rounding": {"probabilityDecimals": 2, "scoreDecimals": 1},
+			"usage": {"inputTokens": 12, "outputTokens": 3},
+			"warnings": [{"type": "other", "message": "note"}],
+			"providerMetadata": {"gateway": {"routing": {"provider": "typesafe-ai"}}}
+		}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("m")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: "s",
+		Questions: map[string]provider.DecisionQuestion{
+			"quality": {Type: "score", Instructions: "Rate the quality.", Criteria: []interface{}{"Poor.", "Acceptable.", "Excellent."}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoDecide() error = %v", err)
+	}
+
+	if result.Rounding == nil || result.Rounding.ProbabilityDecimals == nil || *result.Rounding.ProbabilityDecimals != 2 {
+		t.Fatalf("Rounding = %+v", result.Rounding)
+	}
+	if result.Usage == nil || result.Usage.InputTokens == nil || *result.Usage.InputTokens != 12 {
+		t.Fatalf("Usage = %+v", result.Usage)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Message != "note" {
+		t.Fatalf("Warnings = %+v", result.Warnings)
+	}
+	if result.ProviderMetadata == nil {
+		t.Fatalf("ProviderMetadata missing")
+	}
+	if result.Response == nil || result.Response.ModelID != "m" || result.Response.Headers["X-Request-Id"] != "req-123" {
+		t.Fatalf("Response = %+v", result.Response)
+	}
+	qualityAnswer := result.Answers["quality"]
+	if qualityAnswer.Score == nil || *qualityAnswer.Score != 1.8 {
+		t.Fatalf("Answers[quality] = %+v", qualityAnswer)
+	}
+}
+
+func TestGatewayDecisionModel_SupportedQuestionTypes(t *testing.T) {
+	p, err := New(Config{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("m")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+	types := model.SupportedQuestionTypes()
+	if len(types) != 3 {
+		t.Fatalf("SupportedQuestionTypes() = %v, want 3 entries", types)
+	}
+	if model.SpecificationVersion() != "v4" {
+		t.Fatalf("SpecificationVersion() = %q, want v4", model.SpecificationVersion())
+	}
+}
+
+// TS: gateway-decision-model.test.ts "should attribute the response to
+// the returned model after a fallback".
+func TestGatewayDecisionModel_DoDecide_AttributesResponseToReturnedModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}, "model": "anthropic/claude-sonnet-5"}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("typesafe-ai/jev")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     "s",
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	if err != nil {
+		t.Fatalf("DoDecide() error = %v", err)
+	}
+	if result.Response == nil || result.Response.ModelID != "anthropic/claude-sonnet-5" {
+		t.Fatalf("Response.ModelID = %+v, want anthropic/claude-sonnet-5", result.Response)
+	}
+}
+
+// TS: gateway-decision-model.test.ts "should attribute the response to
+// the requested model when none is returned".
+func TestGatewayDecisionModel_DoDecide_AttributesResponseToRequestedModelWhenNoneReturned(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("typesafe-ai/jev")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     "s",
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	if err != nil {
+		t.Fatalf("DoDecide() error = %v", err)
+	}
+	if result.Response == nil || result.Response.ModelID != "typesafe-ai/jev" {
+		t.Fatalf("Response.ModelID = %+v, want typesafe-ai/jev", result.Response)
+	}
+}
+
+// TS: gateway-decision-model.test.ts "should pass conditional model
+// fallbacks into request body".
+func TestGatewayDecisionModel_DoDecide_PassesConditionalModelFallbacks(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("typesafe-ai/jev")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+
+	confidenceBelow := 0.6
+	providerOptions := GatewayProviderOptions{
+		Models: []GatewayModelFallback{
+			GatewayConditionalModelFallback("openai/gpt-5.6-sol", DecisionFallbackCondition{
+				Any: []DecisionFallbackCondition{
+					{Question: "tone", ConfidenceBelow: &confidenceBelow},
+					{Question: "correct", ProbabilityBetween: &[2]float64{0.4, 0.6}},
+				},
+			}),
+			GatewayModel("anthropic/claude-sonnet-5"),
+		},
+	}.ToProviderOptions()
+
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:           "s",
+		Questions:       map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		ProviderOptions: providerOptions,
+	})
+	if err != nil {
+		t.Fatalf("DoDecide() error = %v", err)
+	}
+
+	body, _ := gotBody["providerOptions"].(map[string]interface{})
+	gw, _ := body["gateway"].(map[string]interface{})
+	models, _ := gw["models"].([]interface{})
+	if len(models) != 2 {
+		t.Fatalf("models = %#v, want 2 entries", gw["models"])
+	}
+	first, _ := models[0].(map[string]interface{})
+	if first["model"] != "openai/gpt-5.6-sol" {
+		t.Fatalf("models[0].model = %#v", first["model"])
+	}
+	when, _ := first["when"].(map[string]interface{})
+	anyList, _ := when["any"].([]interface{})
+	if len(anyList) != 2 {
+		t.Fatalf("when.any = %#v, want 2 conditions", when["any"])
+	}
+	if models[1] != "anthropic/claude-sonnet-5" {
+		t.Fatalf("models[1] = %#v, want plain string", models[1])
+	}
+}
+
+// TS: gateway-decision-model.test.ts "should reject invalid conditional
+// model fallbacks" — the request must never reach the server.
+func TestGatewayDecisionModel_DoDecide_RejectsInvalidConditionalModelFallbacks(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("typesafe-ai/jev")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+
+	providerOptions := map[string]interface{}{
+		"gateway": map[string]interface{}{
+			"models": []interface{}{
+				map[string]interface{}{
+					"model": "openai/gpt-5.6-sol",
+					"when": map[string]interface{}{
+						"question":           "correct",
+						"probabilityBetween": []interface{}{0.7, 0.3},
+					},
+				},
+			},
+		},
+	}
+
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:           "s",
+		Questions:       map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		ProviderOptions: providerOptions,
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "invalid gateway provider options") {
+		t.Fatalf("err = %v, want to contain %q", err, "invalid gateway provider options")
+	}
+	if calls != 0 {
+		t.Fatalf("calls = %d, want 0 (request must not reach the server)", calls)
+	}
+}
+
+func TestGatewayDecisionModel_DoDecide_ErrorMapsToTypedGatewayError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad question","type":"invalid_request_error"}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.DecisionModel("m")
+	if err != nil {
+		t.Fatalf("DecisionModel error = %v", err)
+	}
+
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     "s",
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	var invalidReq *gatewayerrors.GatewayInvalidRequestError
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if e, ok := err.(*gatewayerrors.GatewayInvalidRequestError); ok {
+		invalidReq = e
+	}
+	if invalidReq == nil {
+		t.Fatalf("err = %v (%T), want GatewayInvalidRequestError", err, err)
+	}
+}
+
+// TS: gateway-decision-model.test.ts "should extract refusal answers"
+func TestGatewayDecisionModel_DoDecide_ExtractsRefusalAnswers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers": {"tone": {"type": "refusal"}, "ok": {"type": "boolean", "probability": 0.5}}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ := p.DecisionModel("m")
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: "s",
+		Questions: map[string]provider.DecisionQuestion{
+			"tone": {Type: "choice", Instructions: "t", Criteria: map[string]interface{}{"a": nil}},
+			"ok":   {Type: "boolean", Instructions: "o"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Answers["tone"]; got.Type != "refusal" || got.Choice != "" {
+		t.Fatalf("tone = %+v", got)
+	}
+}
+
+func decodeGatewayStateParts(t *testing.T, state interface{}) (map[string]interface{}, error) {
+	t.Helper()
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers": {"q": {"type": "boolean", "probability": 0.5}}}`))
+	}))
+	defer server.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ := p.DecisionModel("m")
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     state,
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	return gotBody, err
+}
+
+// TS: "sends $name as ordered state parts"
+func TestGatewayDecisionModel_DoDecide_SendsOrderedStateParts(t *testing.T) {
+	cases := map[string][]provider.DecisionStatePart{
+		"text":    {provider.DecisionTextPart("Inspect.")},
+		"object":  {provider.DecisionJSONPart(map[string]interface{}{"product": "vase"})},
+		"array":   {provider.DecisionJSONPart([]interface{}{"vase", nil})},
+		"empty":   {},
+		"mixed":   {provider.DecisionTextPart("Inspect."), provider.DecisionJSONPart(map[string]interface{}{"product": "vase"}), provider.DecisionJSONPart([]interface{}{1.0, nil})},
+		"number":  {provider.DecisionJSONPart(1.0)},
+		"jsonnil": {provider.DecisionJSONPart(nil)},
+	}
+	for name, parts := range cases {
+		body, err := decodeGatewayStateParts(t, parts)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		raw, _ := json.Marshal(parts)
+		var want []interface{}
+		_ = json.Unmarshal(raw, &want)
+		got, _ := body["stateParts"].([]interface{})
+		if len(got) != len(want) || (len(want) > 0 && !reflect.DeepEqual(got, want)) {
+			t.Fatalf("%s: stateParts = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TS: "sends file bytes as base64 in ordered state parts"
+func TestGatewayDecisionModel_DoDecide_SendsFileBytesAsBase64(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionTextPart("Inspect this package."),
+		provider.DecisionFilePart(types.FileContent{
+			MediaType: "image/png", Filename: "box.png",
+			FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}},
+		}),
+		provider.DecisionJSONPart(map[string]interface{}{"product": "vase"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{
+		map[string]interface{}{"type": "text", "text": "Inspect this package."},
+		map[string]interface{}{"type": "file", "mediaType": "image/png", "filename": "box.png", "data": map[string]interface{}{"type": "data", "data": "AQID"}},
+		map[string]interface{}{"type": "json", "value": map[string]interface{}{"product": "vase"}},
+	}
+	if !reflect.DeepEqual(body["stateParts"], want) {
+		t.Fatalf("stateParts = %v", body["stateParts"])
+	}
+}
+
+// TS: "sends base64 file strings unchanged"
+func TestGatewayDecisionModel_DoDecide_SendsBase64FileStringsUnchanged(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/jpeg", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{map[string]interface{}{"type": "file", "mediaType": "image/jpeg", "data": map[string]interface{}{"type": "data", "data": "AQID"}}}
+	if !reflect.DeepEqual(body["stateParts"], want) {
+		t.Fatalf("stateParts = %v", body["stateParts"])
+	}
+}
+
+// TS: "rejects URL file data before sending a Gateway request"
+func TestGatewayDecisionModel_DoDecide_RejectsURLFileData(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/a.png"}}),
+	})
+	var target *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &target) || target.Functionality != "Gateway decision file input: url data" {
+		t.Fatalf("err = %v", err)
+	}
+	if body != nil {
+		t.Fatalf("a request was sent: %v", body)
+	}
+}
+
+// TS createJsonResponseHandler(gatewayDecisionResponseSchema) rejects a
+// malformed answer instead of passing it through.
+func TestGatewayDecisionModel_DoDecide_ValidatesResponse(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown answer type": `{"answers":{"q":{"type":"mystery"}}}`,
+		"boolean no prob":     `{"answers":{"q":{"type":"boolean"}}}`,
+		"answers missing":     `{"model":"m"}`,
+		"bad warning":         `{"answers":{},"warnings":[{"type":"nope"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			model, _ := p.DecisionModel("m")
+			_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+				State:     "s",
+				Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+			})
+			if err == nil {
+				t.Fatal("want validation error")
+			}
+		})
+	}
+}

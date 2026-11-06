@@ -615,3 +615,28 @@ func TestConvertToResponseMessagesSerializesProviderExecutedToolErrorAsErrorJSON
 		t.Fatalf("provider options = %+v, want forwarded metadata", tr.ProviderOptions)
 	}
 }
+
+// TS to-response-messages.test.ts "should serialize parallel tool results in
+// tool call order".
+func TestConvertToResponseMessages_ToolResultsInToolCallOrder(t *testing.T) {
+	content := []types.ContentPart{
+		types.TextContent{Text: "Using tools"},
+		types.ToolCallContent{ToolCallID: "call-a", ToolName: "toolA"},
+		types.ToolCallContent{ToolCallID: "call-b", ToolName: "toolB"},
+		types.ToolResultContent{ToolCallID: "call-b", ToolName: "toolB", Result: "B result"},
+		types.ToolResultContent{ToolCallID: "call-a", ToolName: "toolA", Result: "A result"},
+	}
+	msgs := ConvertToResponseMessages(nil, content, nil)
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	var ids []string
+	for _, p := range msgs[1].Content {
+		if r, ok := p.(types.ToolResultContent); ok {
+			ids = append(ids, r.ToolCallID)
+		}
+	}
+	if len(ids) != 2 || ids[0] != "call-a" || ids[1] != "call-b" {
+		t.Fatalf("tool results not in call order: %v", ids)
+	}
+}

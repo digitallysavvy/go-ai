@@ -65,8 +65,16 @@ func MergeConsecutiveToolMessages(messages []types.Message) []types.Message {
 				merged[n-1] = pushDownProviderOptions(merged[n-1], lastMsg.ProviderOptions)
 			}
 			merged = append(merged, msg.Content...)
+			// An empty previous tool message (for example approval-only
+			// responses already filtered out) has no part to carry its
+			// options, so merge them into the combined message instead of
+			// dropping them. Mirrors TS #22178.
+			if len(lastMsg.Content) == 0 {
+				lastMsg.ProviderOptions = mergeProviderOptionsDeep(lastMsg.ProviderOptions, msg.ProviderOptions)
+			} else {
+				lastMsg.ProviderOptions = msg.ProviderOptions
+			}
 			lastMsg.Content = merged
-			lastMsg.ProviderOptions = msg.ProviderOptions
 			continue
 		}
 
@@ -126,4 +134,10 @@ func mergeProviderOptionsDeep(base, overrides map[string]interface{}) map[string
 		result[k] = v
 	}
 	return result
+}
+
+// MergeProviderOptions deep-merges overrides onto base (TS mergeObjects) and
+// returns the result without mutating either input.
+func MergeProviderOptions(base, overrides map[string]interface{}) map[string]interface{} {
+	return mergeProviderOptionsDeep(base, overrides)
 }

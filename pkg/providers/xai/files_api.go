@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	stdhttp "net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -48,6 +50,21 @@ func extractXAIFilesOptions(providerOptions map[string]interface{}) (xaiFilesOpt
 	raw, ok := providerOptions["xai"]
 	if !ok || raw == nil {
 		return opts, nil
+	}
+	// TS z.looseObject({teamId, filePath: z.string().optional(),
+	// expiresAfter: z.number().int()...optional()}): a present null or a
+	// non-string filePath is invalid.
+	if m, ok := raw.(map[string]interface{}); ok {
+		for _, k := range []string{"teamId", "filePath", "expiresAfter"} {
+			if v, present := m[k]; present && v == nil {
+				return opts, invalidXAIProviderOptions(fmt.Errorf("invalid input: %s is null", k))
+			}
+		}
+		if v, present := m["filePath"]; present {
+			if _, ok := v.(string); !ok {
+				return opts, invalidXAIProviderOptions(fmt.Errorf("invalid input: expected string at filePath"))
+			}
+		}
 	}
 	b, err := json.Marshal(raw)
 	if err != nil {
@@ -134,14 +151,19 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaXAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out xaiFileResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
-	filename := out.Filename
-	if filename == "" {
-		filename = opts.Filename
+	// TS `response.filename ?? filename`, reported when truthy.
+	filename := opts.Filename
+	if out.Filename != nil {
+		filename = *out.Filename
 	}
 
 	succeeded = true
@@ -189,14 +211,18 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaXAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out xaiFileResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
 	return &provider.FileMetadataResult{
 		ProviderReference: types.ProviderReference{"xai": out.ID},
-		Filename:          out.Filename,
+		Filename:          xaiFilesString(out.Filename),
 		ByteSize:          out.Bytes,
 		CreatedAt:         xaiUnixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         xaiUnixSecondsToTime(out.ExpiresAt),
@@ -229,8 +255,8 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 	// Media type from the content endpoint's Content-Type, without
 	// parameters, mirroring TS's responseHeaders['content-type'].split(';')[0].
 	mediaType := ""
-	if ct := httpResp.Header.Get("Content-Type"); ct != "" {
-		mediaType = strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
+	if ct := providerutils.FetchHeaderText(httpResp.Header, "Content-Type"); ct != "" {
+		mediaType = providerutils.JSTrim(strings.SplitN(ct, ";", 2)[0])
 	}
 
 	return &provider.DownloadFileResult{
@@ -260,6 +286,10 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaFileDelete)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out struct {
 		ID      string `json:"id"`
 		Deleted bool   `json:"deleted"`
@@ -279,57 +309,80 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 // mirroring TS XaiFiles#getFileId.
 func xaiFileID(ref types.ProviderReference) (string, error) {
 	id := ref["xai"]
-	if strings.TrimSpace(id) == "" {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "file",
-			Message: "file reference is missing an 'xai' file id.",
-		}
+	if providerutils.JSTrim(id) == "" {
+		return "", providererrors.NewArgumentError("file", "file reference is missing an 'xai' file id.", nil)
 	}
 	return id, nil
 }
 
 // xaiFileResponse mirrors TS xaiFilesResponseSchema.
 type xaiFileResponse struct {
-	ID        string `json:"id"`
-	Object    string `json:"object,omitempty"`
-	Bytes     *int64 `json:"bytes,omitempty"`
-	CreatedAt *int64 `json:"created_at,omitempty"`
-	ExpiresAt *int64 `json:"expires_at,omitempty"`
-	Filename  string `json:"filename,omitempty"`
-	Purpose   string `json:"purpose,omitempty"`
-	Status    string `json:"status,omitempty"`
+	ID        string   `json:"id"`
+	Object    string   `json:"object,omitempty"`
+	Bytes     *int64   `json:"bytes,omitempty"`
+	CreatedAt *float64 `json:"created_at,omitempty"`
+	ExpiresAt *float64 `json:"expires_at,omitempty"`
+	Filename  *string  `json:"filename,omitempty"`
+	Purpose   *string  `json:"purpose,omitempty"`
+	Status    *string  `json:"status,omitempty"`
 }
 
-// xaiFileMetadata mirrors TS XaiFiles#toFileMetadata.
+func xaiFilesString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// xaiFileMetadata mirrors TS XaiFiles#toFileMetadata: each field that is
+// not null (a present empty string included).
 func xaiFileMetadata(r xaiFileResponse) map[string]interface{} {
 	meta := map[string]interface{}{}
-	if r.Filename != "" {
-		meta["filename"] = r.Filename
+	if r.Filename != nil {
+		meta["filename"] = *r.Filename
 	}
-	if r.Purpose != "" {
-		meta["purpose"] = r.Purpose
+	if r.Purpose != nil {
+		meta["purpose"] = *r.Purpose
 	}
 	if r.Bytes != nil {
 		meta["bytes"] = *r.Bytes
 	}
 	if r.CreatedAt != nil {
-		meta["createdAt"] = *r.CreatedAt
+		meta["createdAt"] = xaiUnixSecondsMetadataValue(*r.CreatedAt)
 	}
-	if r.Status != "" {
-		meta["status"] = r.Status
+	if r.Status != nil {
+		meta["status"] = *r.Status
 	}
 	if r.ExpiresAt != nil {
-		meta["expiresAt"] = *r.ExpiresAt
+		meta["expiresAt"] = xaiUnixSecondsMetadataValue(*r.ExpiresAt)
 	}
 	return meta
 }
 
-func xaiUnixSecondsToTime(sec *int64) *time.Time {
+// xaiUnixSecondsToTime converts a wire timestamp in unix seconds (TS
+// z.number(), so it may be fractional) as TS new Date(seconds * 1000):
+// milliseconds are kept (truncated). Nil, or outside the JS Date range (an
+// Invalid Date in TS), is nil.
+func xaiUnixSecondsToTime(sec *float64) *time.Time {
 	if sec == nil {
 		return nil
 	}
-	t := time.Unix(*sec, 0).UTC()
+	ms := *sec * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return nil
+	}
+	t := time.UnixMilli(int64(ms)).UTC()
 	return &t
+}
+
+// xaiUnixSecondsMetadataValue reports a wire number in provider metadata: an
+// integral value stays an int64 (as v0.5 reported it), a fractional one
+// (TS z.number() accepts it) is the float64 TS reports.
+func xaiUnixSecondsMetadataValue(v float64) interface{} {
+	if v == math.Trunc(v) && math.Abs(v) < 1<<53 {
+		return int64(v)
+	}
+	return v
 }
 
 func inlineFileBytes(data types.FileData) ([]byte, error) {

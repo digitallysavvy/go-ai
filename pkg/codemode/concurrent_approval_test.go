@@ -187,9 +187,12 @@ func TestConcurrentApprovalBatch_OneNeedsApprovalOneDoesNot(t *testing.T) {
 }
 
 // A nested Promise.all still collects every concurrently-dispatched call
-// into the same batch: the inner array's elements are evaluated
-// synchronously while building it, exactly like the outer array's, all
-// before the sandbox's job queue ever goes quiescent.
+// into the same batch. A host call starts only once its thenable is
+// observed (run@2.1.8 createBridgePromise): the inner Promise.all observes
+// b and c while the outer array is still being built, and the outer one
+// observes a after it, so the requests (and the batch, in request order)
+// are b, c, a, as in TS (checked against run's createBridgePromise in
+// Node).
 func TestConcurrentApprovalBatch_NestedPromiseAll(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
@@ -229,10 +232,10 @@ func TestConcurrentApprovalBatch_NestedPromiseAll(t *testing.T) {
 		t.Fatalf("expected all three concurrently-dispatched calls (a, b, c) in one batch, got %d: %#v", len(batch), batch)
 	}
 	gotNames := []string{batch[0].ToolName, batch[1].ToolName, batch[2].ToolName}
-	wantNames := []string{"a", "b", "c"}
+	wantNames := []string{"b", "c", "a"}
 	for i, want := range wantNames {
 		if gotNames[i] != want {
-			t.Fatalf("expected dispatch order a, b, c (array-literal evaluation order); got %v", gotNames)
+			t.Fatalf("expected request order b, c, a (observation order); got %v", gotNames)
 		}
 	}
 
@@ -375,25 +378,22 @@ func TestConcurrentApprovalBatch_ExceedsMaxInFlightBridgeRequests(t *testing.T) 
 	}
 }
 
-// A script that awaits a promise tied to no host call at all (not a
-// deliberately-unresolved interrupt, just ordinary JavaScript that never
-// settles anything) must fail with a clear protocol error instead of
-// hanging until the execution timeout -- driveCodeModeExecution's
-// defensive fallback once the job queue is quiescent with nothing pending
-// and nothing fatal recorded (run_code_mode.go).
-func TestConcurrentApprovalBatch_AwaitingAnUnrelatedNeverSettlingPromiseFailsFast(t *testing.T) {
+// A script that awaits a promise tied to no host call at all waits for the
+// execution timeout and fails with the timeout error, like TS run's manager
+// (RunTimeoutError; cr-r87e-tools-to-integrator 3).
+func TestConcurrentApprovalBatch_AwaitingAnUnrelatedNeverSettlingPromiseTimesOut(t *testing.T) {
 	start := time.Now()
 	_, err := RunCodeMode(context.Background(), RunInput{
 		JS:      "return await new Promise(() => {});",
 		Tools:   ToolSet{},
-		Options: &Options{ExecutionPolicy: &ExecutionPolicy{TimeoutMs: 30_000}},
+		Options: &Options{ExecutionPolicy: &ExecutionPolicy{TimeoutMs: 50}},
 	})
 	elapsed := time.Since(start)
-	var protoErr *ProtocolError
-	if !errors.As(err, &protoErr) {
-		t.Fatalf("expected *ProtocolError, got %#v (%v)", err, err)
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) || err.Error() != "Code mode execution timed out after 50ms." {
+		t.Fatalf("expected the execution timeout error, got %#v (%v)", err, err)
 	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("expected the quiescence check to fail fast well under the 30s timeout, took %s", elapsed)
+	if elapsed < 40*time.Millisecond || elapsed > 10*time.Second {
+		t.Fatalf("expected the run to wait for its 50ms timeout, took %s", elapsed)
 	}
 }

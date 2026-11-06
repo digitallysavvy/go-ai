@@ -172,7 +172,7 @@ func (s *ResumeSessionState) Validate() error {
 		return errors.New("harness: nil resume-session state")
 	}
 	if s.Type != LifecycleStateResumeSession {
-		return fmt.Errorf("harness: expected lifecycle state type %q, got %q", LifecycleStateResumeSession, s.Type)
+		return NewHarnessError(fmt.Sprintf("Lifecycle state has unexpected type '%s'; expected '%s'.", s.Type, LifecycleStateResumeSession), nil)
 	}
 	if err := validateLifecycleBase(s.HarnessID, s.SpecificationVersion); err != nil {
 		return err
@@ -189,7 +189,7 @@ func (s *ContinueTurnState) Validate() error {
 		return errors.New("harness: nil continue-turn state")
 	}
 	if s.Type != LifecycleStateContinueTurn {
-		return fmt.Errorf("harness: expected lifecycle state type %q, got %q", LifecycleStateContinueTurn, s.Type)
+		return NewHarnessError(fmt.Sprintf("Lifecycle state has unexpected type '%s'; expected '%s'.", s.Type, LifecycleStateContinueTurn), nil)
 	}
 	if err := validateLifecycleBase(s.HarnessID, s.SpecificationVersion); err != nil {
 		return err
@@ -207,7 +207,7 @@ func validateLifecycleBase(harnessID, specificationVersion string) error {
 		return errors.New("harness: lifecycle state is missing harnessId")
 	}
 	if specificationVersion != SpecificationVersion {
-		return fmt.Errorf("harness: unsupported lifecycle state specificationVersion %q", specificationVersion)
+		return NewHarnessError(fmt.Sprintf("Lifecycle state has unexpected specificationVersion '%s'; expected '%s'.", specificationVersion, SpecificationVersion), nil)
 	}
 	return nil
 }
@@ -224,12 +224,20 @@ func (*ContinueTurnState) lifecycleStateType() string  { return LifecycleStateCo
 // DecodeLifecycleState parses persisted lifecycle JSON (produced by a Go or
 // TS host) into its concrete variant and validates it.
 func DecodeLifecycleState(data []byte) (LifecycleState, error) {
-	typ, _, err := ReadTagged(data)
+	typ, fields, err := ReadTagged(data)
 	if err != nil {
 		return nil, err
 	}
 	switch typ {
 	case LifecycleStateResumeSession:
+		// Unfinished turns live in `continueFrom`; a top-level pending list
+		// is a malformed state (TS validateLifecycleStateData).
+		if _, ok := fields["pendingToolApprovals"]; ok {
+			return nil, NewHarnessError("Resume session state cannot contain pending tool approvals; unfinished turns must be stored as `continueFrom`.", nil)
+		}
+		if _, ok := fields["pendingToolResults"]; ok {
+			return nil, NewHarnessError("Resume session state cannot contain pending tool results; unfinished turns must be stored as `continueFrom`.", nil)
+		}
 		var s ResumeSessionState
 		if err := json.Unmarshal(data, &s); err != nil {
 			return nil, err

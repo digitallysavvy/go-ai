@@ -3,6 +3,8 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // LanguageModel implements provider.LanguageModel using the Hugging Face
@@ -53,31 +56,19 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 	return map[string][]string{"image/*": {`^https?://.*$`}}
 }
 
-// hfProviderOptions mirrors TS HuggingFaceLanguageModelResponsesOptions.
-type hfProviderOptions struct {
-	Metadata         map[string]string `json:"metadata,omitempty"`
-	Instructions     string            `json:"instructions,omitempty"`
-	StrictJSONSchema *bool             `json:"strictJsonSchema,omitempty"`
-	ReasoningEffort  string            `json:"reasoningEffort,omitempty"`
+// hfOptionsSchema is huggingfaceLanguageModelResponsesOptions: every member
+// is optional (a null value is rejected like zod's .optional()).
+var hfOptionsSchema = providerutils.OptionSchema{
+	"metadata":         providerutils.OptRecord(nil, providerutils.OptString),
+	"instructions":     providerutils.OptString,
+	"strictJsonSchema": providerutils.OptBool,
+	"reasoningEffort":  providerutils.OptString,
 }
 
-func extractHFProviderOptions(raw map[string]interface{}) *hfProviderOptions {
-	if raw == nil {
-		return nil
-	}
-	value, ok := raw[hfProviderOptionsKey]
-	if !ok {
-		return nil
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var opts hfProviderOptions
-	if err := json.Unmarshal(data, &opts); err != nil {
-		return nil
-	}
-	return &opts
+// parseHFProviderOptions is parseProviderOptions({provider: 'huggingface'}):
+// nil when absent, an InvalidArgumentError when a member is mistyped.
+func parseHFProviderOptions(raw map[string]interface{}) (map[string]interface{}, error) {
+	return providerutils.ParseProviderOptions(hfProviderOptionsKey, raw, hfOptionsSchema)
 }
 
 // getArgs mirrors TS getArgs: it builds the request body shared by
@@ -107,8 +98,16 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	}
 	warnings = append(warnings, messageWarnings...)
 
-	hfOpts := extractHFProviderOptions(opts.ProviderOptions)
+	hfOpts, err := parseHFProviderOptions(opts.ProviderOptions)
+	if err != nil {
+		return nil, warnings, err
+	}
 
+	if prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice) != nil {
+		// TS prepareResponsesTools' exhaustive check throws a plain Error
+		// that interpolates the tool choice object.
+		return nil, warnings, fmt.Errorf("%s", "Unsupported tool choice type: [object Object]")
+	}
 	hfTools, toolsPresent, mappedToolChoice, toolWarnings := prepareResponsesTools(opts.Tools, opts.ToolChoice)
 	warnings = append(warnings, toolWarnings...)
 
@@ -128,10 +127,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 
 	// Hugging Face Responses API uses text.format for structured output.
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" && opts.ResponseFormat.Schema != nil {
-		strict := false
-		if hfOpts != nil && hfOpts.StrictJSONSchema != nil {
-			strict = *hfOpts.StrictJSONSchema
-		}
+		strict, _ := hfOpts["strictJsonSchema"].(bool)
 		name := opts.ResponseFormat.Name
 		if name == "" {
 			name = "response"
@@ -148,11 +144,13 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 		body["text"] = map[string]interface{}{"format": format}
 	}
 
-	if hfOpts != nil && len(hfOpts.Metadata) > 0 {
-		body["metadata"] = hfOpts.Metadata
+	// TS sends metadata and instructions whenever they are set, even when
+	// empty.
+	if v, ok := hfOpts["metadata"]; ok {
+		body["metadata"] = v
 	}
-	if hfOpts != nil && hfOpts.Instructions != "" {
-		body["instructions"] = hfOpts.Instructions
+	if v, ok := hfOpts["instructions"]; ok {
+		body["instructions"] = v
 	}
 
 	if toolsPresent {
@@ -162,8 +160,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 		body["tool_choice"] = mappedToolChoice
 	}
 
-	if hfOpts != nil && hfOpts.ReasoningEffort != "" {
-		body["reasoning"] = map[string]interface{}{"effort": hfOpts.ReasoningEffort}
+	if v, ok := hfOpts["reasoningEffort"]; ok {
+		body["reasoning"] = map[string]interface{}{"effort": v}
 	}
 
 	return body, warnings, nil
@@ -187,12 +185,20 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Path:    "/responses",
 		Body:    body,
 		Headers: opts.Headers,
+		// TS createJsonResponseHandler(huggingfaceResponsesResponseSchema).
+		ValidateResponse: providerutils.HuggingFaceResponsesResponseValidator("huggingface"),
 	}, &resp)
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if providererrors.IsLoadAPIKeyError(err) || providerutils.IsInvalidJSONResponse(err) {
+			return nil, err
+		}
 		if converted := parseHuggingFaceError(err); converted != nil {
 			return nil, converted
 		}
-		return nil, providererrors.NewProviderError("huggingface", 0, "", err.Error(), err)
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	responseHeaders := providerutils.ExtractHeaders(httpResp.Headers)
@@ -212,11 +218,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result := m.convertResponse(resp)
 	result.Warnings = warnings
 	result.RawRequest = body
-	result.RawResponse = resp
+	result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
 	result.ResponseHeaders = responseHeaders
 	result.ResponseMetadata = &types.ResponseMetadata{
 		ID:        resp.ID,
-		Timestamp: time.Unix(resp.CreatedAt, 0).UTC(),
+		Timestamp: hfCreatedTimestamp(resp.CreatedAt),
 		ModelID:   resp.Model,
 		Headers:   responseHeaders,
 		Body:      json.RawMessage(httpResp.Body),
@@ -299,7 +305,7 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 				RawArguments:     string(inputJSON),
 				ProviderExecuted: true,
 			})
-			if len(item.Tools) > 0 {
+			if item.Tools != nil { // JS `if (part.tools)`: an empty array is truthy
 				content = append(content, types.ToolResultContent{
 					ToolCallID: item.ID,
 					ToolName:   "list_tools",
@@ -333,9 +339,11 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 
 	reason := "stop"
 	rawFinishReason := ""
-	if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
-		reason = resp.IncompleteDetails.Reason
-		rawFinishReason = resp.IncompleteDetails.Reason
+	// TS `incomplete_details?.reason ?? 'stop'`: only a missing reason falls
+	// back; an empty string maps to "other".
+	if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != nil {
+		reason = *resp.IncompleteDetails.Reason
+		rawFinishReason = reason
 	}
 
 	return &types.GenerateResult{
@@ -385,7 +393,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		if converted := parseHuggingFaceError(err); converted != nil {
 			return nil, converted
 		}
-		return nil, providererrors.NewProviderError("huggingface", 0, "", err.Error(), err)
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	s := newHFStream(httpResp.Body, warnings, m.provider.responsesProviderName())
@@ -399,4 +407,15 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // .provider`).
 func (p *Provider) responsesProviderName() string {
 	return "huggingface.responses"
+}
+
+// hfCreatedTimestamp is TS new Date(created_at * 1000) for a z.number()
+// created_at (unix seconds, possibly fractional): milliseconds are kept
+// (truncated); outside the JS Date range (an Invalid Date) is no timestamp.
+func hfCreatedTimestamp(createdAt float64) time.Time {
+	ms := createdAt * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(ms)).UTC()
 }

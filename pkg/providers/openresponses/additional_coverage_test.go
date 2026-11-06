@@ -1,6 +1,7 @@
 package openresponses
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -119,7 +120,7 @@ func TestOpenResponsesConvertUserAndFileHelpers(t *testing.T) {
 			MediaType: "application/pdf",
 		},
 	}, &[]types.Warning{}, "open-responses")
-	if err == nil || !strings.Contains(err.Error(), "provider references are not supported") {
+	if err == nil || !strings.Contains(err.Error(), "file parts with provider references") {
 		t.Fatalf("convertUserContent() error = %v, want unsupported provider reference", err)
 	}
 }
@@ -184,6 +185,11 @@ func TestOpenResponsesDoGenerateNoOutputReturnsDescriptiveError(t *testing.T) {
 	if !strings.Contains(err.Error(), "Responses API returned no output (max_output_tokens)") {
 		t.Fatalf("error = %v, want descriptive no-output message with incomplete reason", err)
 	}
+	// TS isRetryable: false (a 500 would otherwise be retried).
+	var provErr *providererrors.ProviderError
+	if !errors.As(err, &provErr) || provErr.StatusCode != 500 || provErr.IsRetryable() {
+		t.Fatalf("error = %#v, want a non-retryable 500 ProviderError", err)
+	}
 }
 
 // TestOpenResponsesDoGenerateEmbeddedErrorMapsTo400 covers row 75f86f4: a 200
@@ -227,5 +233,26 @@ func TestOpenResponsesConvertToolFileContentBlockWarnings(t *testing.T) {
 	}
 	if len(warnings) == 0 {
 		t.Fatal("expected warning for unsupported empty file content block")
+	}
+}
+
+// TS resolveFullMediaType: a top-level-only media type on inline bytes is
+// sniffed from the signature, and undetectable bytes are rejected.
+func TestConvertFilePartPartialMediaTypeSniffing(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	conv := func(c types.FileContent) (interface{}, error) {
+		in, _, _, err := ConvertToOpenResponsesInputForProvider([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{c}}}, "", "openai")
+		return in, err
+	}
+	in, err := conv(types.FileContent{Data: png, MediaType: "image"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(in)
+	if !strings.Contains(string(b), `"image_url":"data:image/png;base64,`) {
+		t.Fatalf("want sniffed image/png, got %s", b)
+	}
+	if _, err := conv(types.FileContent{Data: []byte("zzzz"), MediaType: "application"}); err == nil || !strings.Contains(err.Error(), "could not be auto-detected") {
+		t.Fatalf("err = %v", err)
 	}
 }

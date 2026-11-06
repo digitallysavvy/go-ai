@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func newXAIProviderError(provider string, statusCode int, body []byte) *providererrors.ProviderError {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var responsesError struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
@@ -25,12 +27,12 @@ func newXAIProviderError(provider string, statusCode int, body []byte) *provider
 		} `json:"error"`
 	}
 
-	message := string(body)
+	// TS xaiErrorDataSchema is a union of three shapes (API error object,
+	// responses {code, error}, speech {error: string}); the message follows
+	// xaiFailedResponseHandler's errorToMessage for whichever matches.
+	message := parseXAIErrorMessage(body)
 	errorCode := ""
 	if err := json.Unmarshal(body, &parsed); err == nil {
-		if parsed.Error.Message != "" {
-			message = parsed.Error.Message
-		}
 		switch code := parsed.Error.Code.(type) {
 		case string:
 			errorCode = code
@@ -140,7 +142,10 @@ func xaiStreamErrorIsRetryableStatusCode(statusCode int) bool {
 // createXaiResponsesStreamError. eventType is "error" or "response.failed"
 // (used as the error's Type, matching TS's `type: eventType`). data is the
 // raw event payload, attached verbatim for callers that inspect it further.
-func newXAIResponsesStreamError(providerName, message, code, eventType string, data interface{}) *providererrors.StreamProviderError {
+//
+// codePresent reports a present, non-null code: TS `code ?? undefined` keeps
+// an empty string.
+func newXAIResponsesStreamError(providerName, message, code string, codePresent bool, eventType string, data interface{}) *providererrors.StreamProviderError {
 	var statusCode *int
 	var isRetryable *bool
 
@@ -154,7 +159,7 @@ func newXAIResponsesStreamError(providerName, message, code, eventType string, d
 	}
 
 	var codeArg interface{}
-	if code != "" {
+	if codePresent || code != "" {
 		codeArg = code
 	}
 	return providererrors.NewStreamProviderError(message, providerName, eventType, codeArg, statusCode, isRetryable, data)
@@ -187,31 +192,6 @@ func (e *XAIStreamFailed) Error() string {
 	return "xai.responses stream failed"
 }
 
-// xaiAPIErrorBody is the structured `{"error": {"message": ..., "code": ...}}`
-// error shape used by most xAI REST endpoints (chat completions, images,
-// videos).
-type xaiAPIErrorBody struct {
-	Error struct {
-		Message string      `json:"message"`
-		Type    string      `json:"type,omitempty"`
-		Code    interface{} `json:"code,omitempty"`
-	} `json:"error"`
-}
-
-// xaiResponsesErrorBody is the `{"code": ..., "error": "..."}` shape used by
-// the xAI Responses API.
-type xaiResponsesErrorBody struct {
-	Code  string `json:"code"`
-	Error string `json:"error"`
-}
-
-// xaiSpeechErrorBody is the simpler `{"error": "some string"}` shape used by
-// the xAI text-to-speech endpoint, e.g. {"error":"speed must be between 0.7
-// and 1.5"}.
-type xaiSpeechErrorBody struct {
-	Error string `json:"error"`
-}
-
 // parseXAIErrorMessage extracts a human-readable error message from a raw
 // xAI error response body, mirroring the TS SDK's xaiFailedResponseHandler /
 // xaiErrorDataSchema union. It tries, in order:
@@ -221,24 +201,53 @@ type xaiSpeechErrorBody struct {
 //
 // If none of these shapes match, the raw body (trimmed) is returned as-is.
 func parseXAIErrorMessage(body []byte) string {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	// 1. Structured API error shape (object under "error").
-	var apiErr xaiAPIErrorBody
-	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error.Message != "" {
-		return apiErr.Error.Message
+	// Each member's strings are required (z.string()), so an empty string
+	// matches and is the message.
+	var apiErr struct {
+		Error *struct {
+			Message *string `json:"message"`
+			Type    *string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error != nil && apiErr.Error.Message != nil {
+		return *apiErr.Error.Message
 	}
 
 	// 2. Responses API shape: {"code": "...", "error": "..."}.
-	var responsesErr xaiResponsesErrorBody
+	var responsesErr struct {
+		Code  *string `json:"code"`
+		Error *string `json:"error"`
+	}
 	if err := json.Unmarshal(body, &responsesErr); err == nil &&
-		responsesErr.Code != "" && responsesErr.Error != "" {
-		return responsesErr.Code + ": " + responsesErr.Error
+		responsesErr.Code != nil && responsesErr.Error != nil {
+		return *responsesErr.Code + ": " + *responsesErr.Error
 	}
 
 	// 3. Plain speech error shape: {"error": "some string"}.
-	var speechErr xaiSpeechErrorBody
-	if err := json.Unmarshal(body, &speechErr); err == nil && speechErr.Error != "" {
-		return speechErr.Error
+	var speechErr struct {
+		Error *string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &speechErr); err == nil && speechErr.Error != nil {
+		return *speechErr.Error
 	}
 
 	return string(body)
+}
+
+// xaiWireValuePresent reports whether the decoded JSON value holds a non-null
+// value at path (object keys).
+func xaiWireValuePresent(data interface{}, path ...string) bool {
+	for _, key := range path {
+		m, ok := data.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		data, ok = m[key]
+		if !ok {
+			return false
+		}
+	}
+	return data != nil
 }

@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterTranscriptionModelDeserializer("assemblyai", deserializeModel)
+	provider.RegisterTranscriptionModelDeserializer("assemblyai.transcription", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

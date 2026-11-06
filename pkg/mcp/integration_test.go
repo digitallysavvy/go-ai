@@ -316,12 +316,13 @@ func TestMCPToolConverterSchemaProvidedToolsAreStaticAndExposeRawMeta(t *testing
 	if tools[0].Metadata["toolName"] != "with-meta" {
 		t.Fatalf("MCP metadata = %#v, want generated metadata preserved", tools[0].Metadata)
 	}
-	params, ok := tools[0].Parameters.(map[string]interface{})
-	if !ok {
-		t.Fatalf("Parameters = %T, want JSON Schema map", tools[0].Parameters)
+	// TS uses schemas[name].inputSchema as given (mcp-client.ts 1352).
+	params, ok := schema.ParametersMap(tools[0].Parameters)
+	if _, isSchema := tools[0].Parameters.(*schema.SimpleJSONSchema); !isSchema || !ok {
+		t.Fatalf("Parameters = %T, want the given schema", tools[0].Parameters)
 	}
 	if params["type"] != "object" {
-		t.Fatalf("Parameters = %#v, want normalized JSON Schema map", params)
+		t.Fatalf("Parameters = %#v, want the JSON Schema", params)
 	}
 }
 
@@ -505,5 +506,32 @@ func TestConvertToGoAIToolsErrorPath(t *testing.T) {
 	if _, err := GetMCPToolsForAgent(context.Background(), client); err == nil {
 		// A disconnected mock client should fail ListTools and cover error wrapping path.
 		t.Fatal("GetMCPToolsForAgent() expected error on disconnected client")
+	}
+}
+
+// TS #23935: primitive and nullish outputs convert without an MCP envelope.
+func TestMCPToolConverterModelOutputPrimitiveAndNullish(t *testing.T) {
+	converter := NewMCPToolConverter(NewMCPClient(newMockTransport(), MCPClientConfig{}))
+	tests := []struct {
+		name     string
+		output   interface{}
+		wantType types.ToolResultOutputType
+		want     interface{}
+	}{
+		{"string", "Hello world", types.ToolResultOutputText, "Hello world"},
+		{"empty string", "", types.ToolResultOutputText, ""},
+		{"number", 7, types.ToolResultOutputJSON, 7},
+		{"zero", 0, types.ToolResultOutputJSON, 0},
+		{"true", true, types.ToolResultOutputJSON, true},
+		{"false", false, types.ToolResultOutputJSON, false},
+		{"nil", nil, types.ToolResultOutputJSON, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := converter.convertToModelOutput(tt.output)
+			if out.Type != tt.wantType || out.Value != tt.want || len(out.Content) != 0 {
+				t.Fatalf("out = %#v, want type %q value %#v", out, tt.wantType, tt.want)
+			}
+		})
 	}
 }

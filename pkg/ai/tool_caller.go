@@ -41,7 +41,7 @@ func ResolveToolCallerConfiguration(tools []types.Tool, toolCallers Experimental
 		if _, ok := byName[toolName]; !ok {
 			return nil, &providererrors.InvalidArgumentError{
 				Field:   "experimental_toolCallers",
-				Message: fmt.Sprintf("unknown tool %q.", toolName),
+				Message: fmt.Sprintf("unknown tool \"%s\".", toolName),
 			}
 		}
 
@@ -55,7 +55,7 @@ func ResolveToolCallerConfiguration(tools []types.Tool, toolCallers Experimental
 			if !ok || callerTool.ExperimentalToolCaller == nil {
 				return nil, &providererrors.InvalidArgumentError{
 					Field:   "experimental_toolCallers",
-					Message: fmt.Sprintf("tool %q contains an invalid caller.", toolName),
+					Message: fmt.Sprintf("tool \"%s\" contains an invalid caller.", toolName),
 				}
 			}
 			out[i] = caller

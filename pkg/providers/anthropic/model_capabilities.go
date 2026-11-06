@@ -36,6 +36,11 @@ type ModelCapabilities struct {
 	// thinking.type "disabled" and "enabled" are rejected.
 	RejectsThinkingDisabled bool
 
+	// RejectsBudgetThinking reports that budget-based thinking
+	// (thinking.type "enabled" with budget_tokens) is rejected; only adaptive
+	// thinking is supported.
+	RejectsBudgetThinking bool
+
 	// RejectsForcedToolUse reports that tool_choice "any" or a named tool is
 	// rejected.
 	RejectsForcedToolUse bool
@@ -71,6 +76,7 @@ func GetModelCapabilities(modelID string) ModelCapabilities {
 			SupportsXHighEffort:                    true,
 			RejectsThinkingDisabledAboveHighEffort: true,
 			RejectsThinkingDisabled:                true,
+			RejectsBudgetThinking:                  true,
 			RejectsForcedToolUse:                   true,
 			SupportsBetweenToolsThinking:           true,
 			IsKnownModel:                           true,
@@ -84,7 +90,20 @@ func GetModelCapabilities(modelID string) ModelCapabilities {
 			SupportsXHighEffort:                    true,
 			RejectsThinkingDisabledAboveHighEffort: true,
 			RejectsThinkingDisabled:                true,
+			RejectsBudgetThinking:                  true,
 			RejectsForcedToolUse:                   true,
+			IsKnownModel:                           true,
+		}
+	case strings.Contains(modelID, "claude-haiku-5-5"):
+		// Thinking can be turned off, but only up to "high" effort.
+		return ModelCapabilities{
+			MaxOutputTokens:                        128000,
+			SupportsStructuredOutput:               true,
+			SupportsAdaptiveThinking:               true,
+			RejectsSamplingParameters:              true,
+			SupportsXHighEffort:                    true,
+			RejectsThinkingDisabledAboveHighEffort: true,
+			RejectsBudgetThinking:                  true,
 			IsKnownModel:                           true,
 		}
 	case strings.Contains(modelID, "claude-opus-5"):
@@ -105,6 +124,7 @@ func GetModelCapabilities(modelID string) ModelCapabilities {
 			RejectsSamplingParameters: true,
 			SupportsXHighEffort:       true,
 			RejectsThinkingDisabled:   true,
+			RejectsBudgetThinking:     true,
 			RejectsForcedToolUse:      true,
 			IsKnownModel:              true,
 		}
@@ -116,6 +136,7 @@ func GetModelCapabilities(modelID string) ModelCapabilities {
 			RejectsSamplingParameters: true,
 			SupportsXHighEffort:       true,
 			RejectsThinkingDisabled:   true,
+			RejectsBudgetThinking:     true,
 			IsKnownModel:              true,
 		}
 	case strings.Contains(modelID, "claude-opus-4-8"),

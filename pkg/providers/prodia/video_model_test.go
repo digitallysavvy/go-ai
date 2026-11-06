@@ -97,10 +97,9 @@ func TestProviderVideoModelRouting(t *testing.T) {
 		t.Errorf("default ModelID() = %q, want %q", vm3.ModelID(), VideoModelWan22LightningTxt2Vid)
 	}
 
-	// Unknown model ID → error
-	_, err = prov.VideoModel("some-other-model")
-	if err == nil {
-		t.Error("expected error for unsupported video model, got nil")
+	// TS accepts any model id (`(string & {})`).
+	if vm4, err := prov.VideoModel("some-other-model"); err != nil || vm4.ModelID() != "some-other-model" {
+		t.Errorf("VideoModel(any id) = %v, %v", vm4, err)
 	}
 }
 

@@ -1,0 +1,75 @@
+package assemblyai
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+)
+
+// TS `?? undefined` keeps "" (only null/undefined are skipped), and
+// `boostParam != null` / `languageCode != null` still drive the warnings.
+func TestEmptyStringOptionsAreSent(t *testing.T) {
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelUniversal3Pro)
+	body, warnings := m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
+		"assemblyai": map[string]interface{}{
+			"prompt": "", "domain": "", "webhookUrl": "", "boostParam": "", "languageCode": "",
+			"languageDetection":        true,
+			"languageDetectionOptions": map[string]interface{}{"fallbackLanguage": ""},
+		},
+	}})
+	for _, k := range []string{"prompt", "domain", "webhook_url", "boost_param", "language_code"} {
+		if v, ok := body[k]; !ok || v != "" {
+			t.Errorf("%s = %v (present %v)", k, v, ok)
+		}
+	}
+	ldo, _ := body["language_detection_options"].(map[string]interface{})
+	if v, ok := ldo["fallback_language"]; !ok || v != "" {
+		t.Errorf("fallback_language = %v", ldo)
+	}
+	var boost, lang bool
+	for _, w := range warnings {
+		boost = boost || (w.Type == "deprecated" && w.Setting == "boostParam")
+		lang = lang || (w.Type == "other" && len(w.Message) > 18 && w.Message[:18] == "'languageDetection")
+	}
+	if !boost || !lang {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+}
+
+// The upload's Content-Type is only a default: caller headers are spread after it in TS.
+func TestR33_UploadContentTypeCanBeOverridden(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/upload" {
+			got = r.Header.Get("Content-Type")
+		}
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer server.Close()
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: server.URL}), ModelUniversal2)
+	_, _ = m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), Headers: map[string]string{"Content-Type": "audio/mpeg"}})
+	if got != "audio/mpeg" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+}
+
+// Unset options stay absent (only an explicit "" is forwarded).
+func TestUnsetStringOptionsAreOmitted(t *testing.T) {
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelUniversal3Pro)
+	body, _ := m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
+		"assemblyai": map[string]interface{}{"languageDetection": true, "languageDetectionOptions": map[string]interface{}{}},
+	}})
+	for _, k := range []string{"prompt", "domain", "webhook_url", "boost_param", "language_code"} {
+		if v, ok := body[k]; ok {
+			t.Errorf("%s = %v sent although the option is unset", k, v)
+		}
+	}
+	if ldo, _ := body["language_detection_options"].(map[string]interface{}); ldo != nil {
+		if v, ok := ldo["fallback_language"]; ok {
+			t.Errorf("fallback_language = %v sent although unset", v)
+		}
+	}
+}

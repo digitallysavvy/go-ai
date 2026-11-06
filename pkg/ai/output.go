@@ -167,10 +167,9 @@ type NoObjectGeneratedError struct {
 	FinishReason types.FinishReason
 }
 
+// Error returns the message alone, as TS NoObjectGeneratedError.message does;
+// the underlying parse or validation error is Cause (errors.Unwrap).
 func (e *NoObjectGeneratedError) Error() string {
-	if e.Cause != nil {
-		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
-	}
 	return e.Message
 }
 
@@ -278,7 +277,16 @@ func ObjectOutput[T any](opts ObjectOutputOptions) Output[T, T] {
 }
 
 func (o *objectOutput[T]) ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error) {
-	jsonSchema := o.schema.Validator().JSONSchema()
+	var jsonSchema interface{} = o.schema.Validator().JSONSchema()
+	if ordered, ok := o.schema.(*schema.OrderedSchema); ok && ordered != nil {
+		// Its source key order, as generateObject sends it
+		// (objectResponseSchema) and TS keeps the JSON schema's keys.
+		jsonSchema = ordered
+	} else if ordered, ok := schema.OrderedParameters(o.schema); ok {
+		// A struct schema: its fields in declaration order, as the TS zod
+		// object keeps its keys.
+		jsonSchema = ordered
+	}
 
 	format := &provider.ResponseFormat{
 		Type:   "json",
@@ -303,7 +311,7 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 	if err := json.Unmarshal([]byte(options.Text), &result); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
-			Cause:        err,
+			Cause:        providererrors.NewJSONParseError(options.Text, err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -313,11 +321,12 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 
 	result = schema.ApplyDefaults(result, o.schema)
 
-	// Validate against schema
+	// Validate against schema (TS safeValidateTypes: the cause is a
+	// TypeValidationError holding the value).
 	if err := o.schema.Validator().Validate(result); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        err,
+			Cause:        objectTypeValidationError(result, err.Error(), err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -565,6 +574,11 @@ func (o *arrayOutput[ELEMENT]) ResponseFormat(ctx context.Context) (*provider.Re
 		Type:   "json",
 		Schema: arraySchema,
 	}
+	if ordered, ok := orderedArrayResponseSchema(o.elementSchema, o.minItems, o.maxItems); ok {
+		// A struct or ordered element schema: its keys in source order,
+		// as the TS object spread keeps them.
+		format.Schema = ordered
+	}
 
 	if o.name != "" {
 		format.Name = o.name
@@ -581,7 +595,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if err := json.Unmarshal([]byte(options.Text), &outerValue); err != nil {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
-			Cause:        err,
+			Cause:        providererrors.NewJSONParseError(options.Text, err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -593,7 +607,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object with an elements array", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -605,7 +619,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object with an elements array", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -616,7 +630,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object with an elements array", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -627,7 +641,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if lengthErr := arrayLengthValidationError(len(elementsArray), o.minItems, o.maxItems); lengthErr != nil {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        lengthErr,
+			Cause:        objectTypeValidationError(elementsArray, lengthErr.Error(), lengthErr),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -643,7 +657,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 		if err := o.elementSchema.Validator().Validate(elem); err != nil {
 			return nil, &NoObjectGeneratedError{
 				Message:      "No object generated: response did not match schema.",
-				Cause:        err,
+				Cause:        objectTypeValidationError(elem, err.Error(), err),
 				Text:         options.Text,
 				Response:     options.Response,
 				Usage:        options.Usage,
@@ -847,7 +861,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if err := json.Unmarshal([]byte(options.Text), &outerValue); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
-			Cause:        err,
+			Cause:        providererrors.NewJSONParseError(options.Text, err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -859,7 +873,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object that contains a choice value.", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -870,7 +884,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object that contains a choice value.", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -881,7 +895,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object that contains a choice value.", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -901,7 +915,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if !found {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object that contains a choice value.", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -1037,7 +1051,7 @@ func (o *jsonOutput) ParseCompleteOutput(ctx context.Context, options ParseCompl
 	if err := json.Unmarshal([]byte(options.Text), &result); err != nil {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
-			Cause:        err,
+			Cause:        providererrors.NewJSONParseError(options.Text, err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,

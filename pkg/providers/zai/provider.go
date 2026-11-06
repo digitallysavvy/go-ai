@@ -3,7 +3,9 @@
 package zai
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -26,6 +28,13 @@ type Config struct {
 	// variable.
 	APIKey string
 
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for API calls. Defaults to
 	// https://api.z.ai/api/paas/v4.
 	BaseURL string
@@ -42,9 +51,11 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	// TS withoutTrailingSlash(baseURL).
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("ZAI_API_KEY")
 	}
 
@@ -54,6 +65,15 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("zai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "ZAI_API_KEY", Description: "Z.AI API key",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "ZAI_API_KEY", "Z.AI API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -88,28 +108,28 @@ func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 // EmbeddingModel returns an error: Z.AI does not support embeddings (TS
 // createZai throws NoSuchModelError for embeddingModel).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("zai provider does not support embedding models (no such model: %q)", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an error: Z.AI does not support image generation (TS
 // createZai throws NoSuchModelError for imageModel).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("zai provider does not support image models (no such model: %q)", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns an error: Z.AI does not support speech synthesis.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("zai provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns an error: Z.AI does not support transcription.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("zai provider does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns an error: Z.AI does not support reranking.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("zai provider does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client used for API requests.

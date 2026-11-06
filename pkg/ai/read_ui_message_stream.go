@@ -57,8 +57,18 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 		// Only an assistant message is continued; otherwise a new message
 		// with the given ID is started.
 		state := newUIMessageCallbackState(original, messageID)
+		// A start chunk with a different message ID begins a separate
+		// response: discard the seeded message instead of adopting it (TS #22194).
+		state.resetOnMessageIDChange = true
 
 		for {
+			// A cancelled ctx wins over a ready chunk (non-blocking check
+			// first, as ToUIMessageStream and the CreateUIMessageStream merge
+			// do), instead of Go's select picking between the two ready cases
+			// at random. TS: a cancelled reader receives no further value.
+			if ctx.Err() != nil {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -66,16 +76,7 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 				if !ok {
 					return
 				}
-				var processingErr error
-				state.apply(chunk, func(err error) string {
-					if processingErr == nil {
-						processingErr = err
-					}
-					if opts.OnError != nil {
-						opts.OnError(err)
-					}
-					return ""
-				})
+				write, processingErr := state.applyForSnapshot(chunk, opts.OnError)
 				if processingErr != nil {
 					if opts.TerminateOnError {
 						errCh <- processingErr
@@ -89,12 +90,15 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 					}
 					continue
 				}
-				if !uiChunkWritesMessage(chunk) {
+				if !write {
 					continue
 				}
 				snapshot, err := UIMessageFromChunk(state.responseMessage())
 				if err != nil {
 					errCh <- err
+					return
+				}
+				if ctx.Err() != nil {
 					return
 				}
 				select {
@@ -108,6 +112,29 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 	return out, errCh
 }
 
+// applyForSnapshot applies one chunk to the state and reports whether TS
+// processUIMessageStream would write() a new message snapshot for it, and
+// the first processing error (also passed to onError, when set).
+func (s *uiMessageCallbackState) applyForSnapshot(chunk UIMessageChunk, onError func(error)) (bool, error) {
+	// TS reset-step writes a snapshot only when it removed parts.
+	emptyReset := stringValue(chunk["type"]) == "reset-step" &&
+		currentStepStartIndex(uiParts(s.message)) >= len(uiParts(s.message))
+	var processingErr error
+	s.apply(chunk, func(err error) string {
+		if processingErr == nil {
+			processingErr = err
+		}
+		if onError != nil {
+			onError(err)
+		}
+		return ""
+	})
+	if processingErr != nil {
+		return false, processingErr
+	}
+	return !emptyReset && uiChunkWritesMessage(chunk), nil
+}
+
 // uiChunkWritesMessage reports whether TS processUIMessageStream calls
 // write() (emits a new message snapshot) for the chunk.
 func uiChunkWritesMessage(chunk UIMessageChunk) bool {
@@ -117,12 +144,21 @@ func uiChunkWritesMessage(chunk UIMessageChunk) bool {
 		return chunk["messageId"] != nil || chunk["messageMetadata"] != nil
 	case "finish", "message-metadata":
 		return chunk["messageMetadata"] != nil
-	case "start-step", "finish-step", "error", "abort":
-		return false
+	case "text-start", "text-delta", "text-end", "custom",
+		"reasoning-start", "reasoning-delta", "reasoning-end",
+		"file", "reasoning-file", "source-url", "source-document",
+		"tool-input-start", "tool-input-delta", "tool-input-available", "tool-input-error",
+		"tool-approval-request", "tool-approval-response",
+		"tool-output-denied", "tool-output-available", "tool-output-error",
+		"reset-step":
+		return true
 	}
+	// start-step, finish-step, error, abort and any type TS does not know
+	// (its default branch) write nothing, except a data part that is not
+	// transient.
 	if strings.HasPrefix(chunkType, "data-") {
 		transient, _ := chunk["transient"].(bool)
 		return !transient
 	}
-	return true
+	return false
 }

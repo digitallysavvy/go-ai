@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -49,7 +50,7 @@ func newHFStream(reader io.ReadCloser, warnings []types.Warning, providerName st
 		parser:       streaming.NewSSEParser(reader),
 		warnings:     warnings,
 		providerName: providerName,
-		finishReason: types.FinishReasonOther,
+		finishReason: types.FinishReasonInterrupted,
 	}
 }
 
@@ -98,8 +99,10 @@ func (s *hfStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
-			s.finished = true
-			return s.buildFinishChunk(), nil
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// the finish part comes at the end of the body (the io.EOF branch
+			// above).
+			continue
 		}
 
 		chunk, err := s.handleEvent(event.Data)
@@ -124,10 +127,25 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 		// Mirrors TS's `if (!chunk.success) { ... enqueue({type:'error', error: chunk.error}); return; }`
 		s.finishReason = types.FinishReasonError
 		s.rawFinishReason = ""
+		msg, perr := providerutils.ChunkParseFailure(data, err)
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
-			Text: err.Error(),
-			Err:  providererrors.NewStreamProviderError(err.Error(), s.providerName, "", nil, nil, nil, nil),
+			Text: msg,
+			Err:  perr,
+		}, nil
+	}
+
+	// TS huggingfaceResponsesChunkSchema ends in `z.object({type: z.string()})
+	// .loose()`: every frame must be an object with a string `type`, anything
+	// else fails the parse and becomes an error part.
+	if _, ok := raw["type"].(string); !ok {
+		msg, perr := providerutils.CheckTypedFrame(data)
+		s.finishReason = types.FinishReasonError
+		s.rawFinishReason = ""
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: msg,
+			Err:  perr,
 		}, nil
 	}
 
@@ -158,7 +176,7 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 				Type: provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: &provider.ResponseMetadata{
 					ID:        event.Response.ID,
-					Timestamp: time.Unix(event.Response.CreatedAt, 0).UTC(),
+					Timestamp: hfStreamCreatedTimestamp(event.Response.CreatedAt),
 					ModelID:   event.Response.Model,
 					Headers:   s.responseHeaders,
 				},
@@ -239,8 +257,8 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 		if event.Response != nil {
 			s.responseID = event.Response.ID
 			reason := "stop"
-			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason != "" {
-				reason = event.Response.IncompleteDetails.Reason
+			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason != nil {
+				reason = *event.Response.IncompleteDetails.Reason
 				s.rawFinishReason = reason
 			} else {
 				s.rawFinishReason = ""
@@ -319,7 +337,7 @@ func createHFStreamError(raw map[string]interface{}, providerName string) *provi
 		return nil
 	}
 	message, ok := details["message"].(string)
-	if !ok || message == "" {
+	if !ok { // TS typeof details.message !== 'string'; an empty message is still an error
 		return nil
 	}
 
@@ -332,4 +350,23 @@ func createHFStreamError(raw map[string]interface{}, providerName string) *provi
 	}
 
 	return providererrors.NewStreamProviderError(message, providerName, outerType, code, nil, nil, raw)
+}
+
+// hfStreamCreatedTimestamp is TS new Date(value.response.created_at * 1000)
+// for a response.created chunk. The chunk union ends in a loose fallback, so
+// the value is not validated: a number is the timestamp, null is the epoch
+// (null * 1000 is 0), and an absent or non-numeric one is an Invalid Date
+// (no timestamp).
+func hfStreamCreatedTimestamp(raw json.RawMessage) time.Time {
+	if len(raw) == 0 {
+		return time.Time{}
+	}
+	var v *float64
+	if json.Unmarshal(raw, &v) != nil {
+		return time.Time{}
+	}
+	if v == nil {
+		return time.UnixMilli(0).UTC()
+	}
+	return hfCreatedTimestamp(*v)
 }

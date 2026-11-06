@@ -3,9 +3,9 @@ package mistral
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"mime/multipart"
 	"strconv"
@@ -19,10 +19,9 @@ import (
 )
 
 // TranscriptionModel implements the provider.TranscriptionModel interface for
-// Mistral's Voxtral batch transcription models (POST
-// /v1/audio/transcriptions). Only batch transcription is supported: Mistral
-// (like the TS SDK's MistralTranscriptionModel) has no streaming
-// transcription endpoint.
+// Mistral's Voxtral transcription models: batch transcription (POST
+// /v1/audio/transcriptions, DoTranscribe) and realtime streaming over the
+// /v1/audio/transcriptions/realtime WebSocket (DoStream, TS b26902ea1a).
 type TranscriptionModel struct {
 	provider *Provider
 	modelID  string
@@ -37,7 +36,7 @@ func NewTranscriptionModel(provider *Provider, modelID string) *TranscriptionMod
 func (m *TranscriptionModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *TranscriptionModel) Provider() string { return "mistral" }
+func (m *TranscriptionModel) Provider() string { return "mistral.transcription" }
 
 // ModelID returns the model ID.
 func (m *TranscriptionModel) ModelID() string { return m.modelID }
@@ -51,6 +50,27 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 
+	// TS getArgs: the realtime-only options warn on the REST endpoint.
+	warnings := []types.Warning{}
+	if mistralOpts, _ := parseMistralTranscriptionOptions(opts.ProviderOptions); mistralOpts != nil {
+		for _, option := range []struct {
+			name string
+			set  bool
+		}{
+			{"targetStreamingDelayMs", mistralOpts.TargetStreamingDelayMs != nil},
+			{"speakerReferences", mistralOpts.SpeakerReferences != nil},
+			{"turnDetection", mistralOpts.TurnDetection != nil},
+		} {
+			if option.set {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "providerOptions.mistral." + option.name,
+					Details: "This option is only supported for realtime transcription.",
+				})
+			}
+		}
+	}
+
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Path:    "/v1/audio/transcriptions",
@@ -58,7 +78,19 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, internalhttp.StatusProviderError("mistral", resp.StatusCode, resp.Headers, resp.Body)
+	}
+
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
+	if err := providerutils.MediaResponseValidator("mistral", providerutils.SchemaMistralTranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	var response mistralTranscriptionResponse
@@ -88,6 +120,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	result := &types.TranscriptionResult{
+		Warnings:          warnings,
 		Text:              response.Text,
 		Segments:          segments,
 		Language:          response.Language,
@@ -97,7 +130,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: currentDate,
 			ModelID:   response.Model,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
+			Body:      providerutils.RawJSONBody(resp.Body),
 		},
 	}
 
@@ -155,9 +188,9 @@ func mistralTranscriptionProviderMetadata(response mistralTranscriptionResponse)
 		if response.Usage.RequestCount != nil {
 			usage["requestCount"] = *response.Usage.RequestCount
 		}
-		if len(usage) > 0 {
-			metadata["usage"] = usage
-		}
+		// TS assigns usage even when no field is present, so an empty usage
+		// object still produces providerMetadata.mistral.usage.
+		metadata["usage"] = usage
 	}
 
 	var providerSegments []map[string]interface{}
@@ -195,32 +228,117 @@ func mistralTranscriptionProviderMetadata(response mistralTranscriptionResponse)
 // ai/packages/mistral/src/mistral-transcription-model-options.ts.
 type mistralTranscriptionOptions struct {
 	Language               string
+	ReturnLanguage         *bool
 	Temperature            *float64
 	TimestampGranularities []string
 	Diarize                *bool
 	ContextBias            []string
+
+	// Realtime only (TS b26902ea1a).
+	TargetStreamingDelayMs *float64
+	SpeakerReferences      map[string]string
+	TurnDetection          *mistralRealtimeTurnDetection
 }
 
-// extractMistralTranscriptionOptions reads providerOptions.mistral. Mistral
-// documents language and timestampGranularities as mutually exclusive;
-// rejecting the combination locally provides a stable SDK error instead of an
-// API 4xx, matching TS.
-func extractMistralTranscriptionOptions(opts *provider.TranscriptionOptions) (*mistralTranscriptionOptions, error) {
-	if opts == nil || opts.ProviderOptions == nil {
+// mistralTargetStreamingDelayMs is z.union([z.number().int().min(80).max(1200),
+// z.literal(2400)]).
+func mistralTargetStreamingDelayMs(path string, v interface{}) error {
+	lo, hi := 80, 1200
+	if providerutils.OptInt(&lo, &hi)(path, v) == nil || providerutils.OptNumberLiterals(2400)(path, v) == nil {
+		return nil
+	}
+	return fmt.Errorf("invalid input (at %s)", path)
+}
+
+var mistralZero = 0
+
+// mistralLegacyTranscriptionModels are the known models that cannot combine a
+// pinned language with timestamp granularities. Only these are restricted so
+// future and custom models can combine them without an SDK update.
+var mistralLegacyTranscriptionModels = map[string]bool{
+	"voxtral-mini-2507":   true,
+	"voxtral-mini-2602":   true,
+	"voxtral-mini-latest": true,
+}
+
+// mistralTranscriptionOptionsSchema is mistralTranscriptionModelOptions.
+var mistralTranscriptionOptionsSchema = providerutils.OptionSchema{
+	"language":               providerutils.OptStringLen(1, -1),
+	"returnLanguage":         providerutils.OptBool,
+	"temperature":            providerutils.OptNumber,
+	"timestampGranularities": providerutils.OptArray(providerutils.OptEnum("segment", "word"), 1, -1),
+	"diarize":                providerutils.OptBool,
+	// Voxtral 3 accepts phrases and descriptions of the recording, including
+	// spaces and punctuation; entries only need to be non-empty.
+	"contextBias": providerutils.OptArray(providerutils.OptStringLen(1, -1), 0, -1),
+	// Realtime only (TS b26902ea1a).
+	"targetStreamingDelayMs": mistralTargetStreamingDelayMs,
+	"speakerReferences":      providerutils.OptRecord(nil, providerutils.OptStringLen(1, -1)),
+	"turnDetection": providerutils.OptObject(providerutils.OptionSchema{
+		"startThreshold":    providerutils.OptRange(0, 1),
+		"eagerEndThreshold": providerutils.OptRange(0, 1),
+		"endThreshold":      providerutils.OptRange(0, 1),
+		"minSilenceMs":      providerutils.OptInt(&mistralZero, nil),
+		"endTimeoutMs":      providerutils.OptInt(&mistralZero, nil),
+	}),
+}
+
+// extractMistralTranscriptionOptions reads providerOptions.mistral and
+// validates it like TS parseProviderOptions(mistralTranscriptionModelOptions).
+// The value is normalized through its JSON form first, so Go ints, []string
+// slices and typed structs are read like their JSON equivalents. Known legacy
+// models cannot combine language with timestampGranularities; rejecting the
+// combination locally provides a stable SDK error instead of an API 4xx,
+// matching TS. Language and returnLanguage are always mutually exclusive.
+func extractMistralTranscriptionOptions(modelID string, opts *provider.TranscriptionOptions) (*mistralTranscriptionOptions, error) {
+	if opts == nil {
 		return nil, nil
 	}
-	raw, ok := opts.ProviderOptions["mistral"]
+	result, err := parseMistralTranscriptionOptions(opts.ProviderOptions)
+	if err != nil || result == nil {
+		return result, err
+	}
+
+	if mistralLegacyTranscriptionModels[modelID] && result.Language != "" && len(result.TimestampGranularities) > 0 {
+		return nil, providererrors.NewArgumentError("providerOptions", "providerOptions.mistral.language cannot be combined with providerOptions.mistral.timestampGranularities", nil)
+	}
+
+	if result.Language != "" && result.ReturnLanguage != nil && *result.ReturnLanguage {
+		return nil, providererrors.NewArgumentError("providerOptions", "providerOptions.mistral.language cannot be combined with providerOptions.mistral.returnLanguage", nil)
+	}
+
+	return result, nil
+}
+
+// parseMistralTranscriptionOptions is TS parseProviderOptions(
+// mistralTranscriptionModelOptions) (shared by DoTranscribe and DoStream).
+func parseMistralTranscriptionOptions(providerOptions map[string]interface{}) (*mistralTranscriptionOptions, error) {
+	if providerOptions == nil {
+		return nil, nil
+	}
+	raw, ok := providerOptions["mistral"]
 	if !ok || raw == nil {
 		return nil, nil
 	}
-	m, ok := raw.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid mistral provider options: expected object")
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mistral provider options: %w", err)
+	}
+	var normalized interface{}
+	if err := json.Unmarshal(encoded, &normalized); err != nil {
+		return nil, fmt.Errorf("invalid mistral provider options: %w", err)
+	}
+	m, err := providerutils.ParseProviderOptions("mistral", map[string]interface{}{"mistral": normalized}, mistralTranscriptionOptionsSchema)
+	if err != nil {
+		return nil, err
 	}
 
 	result := &mistralTranscriptionOptions{}
 	if v, ok := m["language"].(string); ok {
 		result.Language = v
+	}
+	if v, ok := m["returnLanguage"].(bool); ok {
+		result.ReturnLanguage = &v
 	}
 	if v, ok := m["temperature"].(float64); ok {
 		result.Temperature = &v
@@ -236,17 +354,35 @@ func extractMistralTranscriptionOptions(opts *provider.TranscriptionOptions) (*m
 		result.Diarize = &v
 	}
 	if items, ok := m["contextBias"].([]interface{}); ok {
+		result.ContextBias = []string{}
 		for _, item := range items {
 			if s, ok := item.(string); ok {
 				result.ContextBias = append(result.ContextBias, s)
 			}
 		}
 	}
-
-	if result.Language != "" && len(result.TimestampGranularities) > 0 {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "providerOptions.mistral.language cannot be combined with providerOptions.mistral.timestampGranularities",
+	if v, ok := m["targetStreamingDelayMs"].(float64); ok {
+		result.TargetStreamingDelayMs = &v
+	}
+	if refs, ok := m["speakerReferences"].(map[string]interface{}); ok {
+		result.SpeakerReferences = map[string]string{}
+		for k, v := range refs {
+			result.SpeakerReferences[k], _ = v.(string)
+		}
+	}
+	if td, ok := m["turnDetection"].(map[string]interface{}); ok {
+		num := func(key string) *float64 {
+			if v, ok := td[key].(float64); ok {
+				return &v
+			}
+			return nil
+		}
+		result.TurnDetection = &mistralRealtimeTurnDetection{
+			StartThreshold:    num("startThreshold"),
+			EagerEndThreshold: num("eagerEndThreshold"),
+			EndThreshold:      num("endThreshold"),
+			MinSilenceMs:      num("minSilenceMs"),
+			EndTimeoutMs:      num("endTimeoutMs"),
 		}
 	}
 
@@ -254,7 +390,7 @@ func extractMistralTranscriptionOptions(opts *provider.TranscriptionOptions) (*m
 }
 
 func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOptions) (io.Reader, string, error) {
-	mistralOpts, err := extractMistralTranscriptionOptions(opts)
+	mistralOpts, err := extractMistralTranscriptionOptions(m.modelID, opts)
 	if err != nil {
 		return nil, "", err
 	}
@@ -268,14 +404,14 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audioBytes := opts.Audio
 	if len(audioBytes) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("mistral: failed to decode base64 audio: %w", err)
 		}
 		audioBytes = decoded
 	}
 
-	part, err := writer.CreateFormFile("file", "audio."+mistralAudioExtension(opts.MimeType))
+	part, err := providerutils.CreateTypedFormFile(writer, "file", "audio."+mistralAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create form file: %w", err)
 	}
@@ -296,6 +432,11 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	if mistralOpts != nil {
+		if mistralOpts.ReturnLanguage != nil {
+			if err := writer.WriteField("return_language", strconv.FormatBool(*mistralOpts.ReturnLanguage)); err != nil {
+				return nil, "", err
+			}
+		}
 		if mistralOpts.Temperature != nil {
 			if err := writer.WriteField("temperature", strconv.FormatFloat(*mistralOpts.Temperature, 'f', -1, 64)); err != nil {
 				return nil, "", err
@@ -326,22 +467,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 }
 
 func mistralAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/x-wav", "audio/wave":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a", "audio/x-m4a":
-		return "m4a"
-	case "audio/flac", "audio/x-flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "audio"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 type mistralTranscriptionResponse struct {

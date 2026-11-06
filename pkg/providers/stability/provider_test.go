@@ -1,7 +1,10 @@
 package stability
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -81,3 +84,51 @@ func TestImageModelBuildAndConvert(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+func TestStabilityImageSizeSeedAndAllArtifacts(t *testing.T) {
+	m := NewImageModel(New(Config{APIKey: "k"}), "m")
+	seed := 5
+	body := m.buildRequestBody(&provider.ImageGenerateOptions{Prompt: "x", Size: "640x480", Seed: &seed})
+	if body["width"] != 640 || body["height"] != 480 || body["seed"] != 5 {
+		t.Fatalf("body = %v", body)
+	}
+	var resp stabilityImageResponse
+	resp.Artifacts = append(resp.Artifacts, struct {
+		Base64       string `json:"base64"`
+		FinishReason string `json:"finishReason"`
+		Seed         int    `json:"seed"`
+	}{Base64: "YQ=="}, struct {
+		Base64       string `json:"base64"`
+		FinishReason string `json:"finishReason"`
+		Seed         int    `json:"seed"`
+	}{Base64: "Yg=="})
+	res, err := m.convertResponse(resp)
+	if err != nil || len(res.Images) != 2 || string(res.Images[1]) != "b" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+func TestStabilityDoGenerateResponseMetadataAndWarnings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "req-1")
+		_, _ = w.Write([]byte(`{"artifacts":[{"base64":"aGk=","finishReason":"SUCCESS","seed":1}]}`))
+	}))
+	defer srv.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "stable-diffusion-xl-1024-v1-0")
+	res, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "p", AspectRatio: "16:9", Mask: &provider.ImageFile{Type: "url", URL: "https://x/m.png"},
+		Files: []provider.ImageFile{{Type: "url", URL: "https://x/i.png"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Response == nil || res.Response.ModelID != "stable-diffusion-xl-1024-v1-0" || res.Response.Headers["X-Request-Id"] != "req-1" || res.Response.Timestamp.IsZero() {
+		t.Fatalf("response metadata = %+v", res.Response)
+	}
+	if len(res.Warnings) != 3 {
+		t.Fatalf("warnings = %+v", res.Warnings)
+	}
+	if _, err := model.DoGenerate(context.Background(), nil); err != nil {
+		t.Fatalf("nil options: %v", err)
+	}
+}

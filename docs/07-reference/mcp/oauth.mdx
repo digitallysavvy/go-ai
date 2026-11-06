@@ -26,7 +26,7 @@ One call advances the flow one step. It refreshes tokens when it can, registers 
 
 On `REDIRECT`, send the user to the authorization URL (the provider's `RedirectToAuthorization` runs), then call `Auth` again with the authorization code from the callback.
 
-When the authorization server answers `invalid_client` or `unauthorized_client`, `Auth` invalidates credentials and retries once, but only when the client information came from Dynamic Client Registration. A client you registered yourself is never replaced silently. On `invalid_grant`, it invalidates the stored tokens and retries once.
+When the authorization server answers `invalid_client` or `unauthorized_client`, `Auth` invalidates credentials and retries once, but only when the client information came from Dynamic Client Registration. A client you registered yourself is never replaced silently. When a refresh is rejected with `invalid_grant`, it invalidates the refreshed tokens and retries once. An `invalid_grant` from an authorization-code exchange is returned to the caller without invalidating stored credentials or retrying, because a rejected code does not mean existing tokens are invalid.
 
 ### AuthOptions
 
@@ -41,6 +41,7 @@ Set `HasAuthorizationCode` (with `AuthorizationCode`, `CallbackState` and `Callb
 | `AuthorizationCode` | `string` |  |
 | `CallbackState` | `string` |  |
 | `CallbackIssuer` | `string` | CallbackIssuer is the `iss` parameter from the authorization response, validated against the pinned issuer when present (hash 1f29230). |
+| `HasCallbackIssuer` | `bool` | HasCallbackIssuer marks the `iss` parameter as present even when its value is empty (`?iss=`). TS validates `callbackIssuer != null`, so an empty value is rejected unless it equals the expected issuer. |
 | `Scope` | `string` | Scope is an explicit scope override, typically extracted from a 401 challenge via ExtractWWWAuthenticateParams (hash 1011e33). |
 | `ResourceMetadataURL` | `*url.URL` |  |
 | `HTTPClient` | `*http.Client` |  |
@@ -130,6 +131,7 @@ A provider can also implement these. `Auth` checks for them with a type assertio
 | `TosURI` | `string` |  |
 | `PolicyURI` | `string` |  |
 | `JWKSURI` | `string` |  |
+| `JWKS` | `interface{}` | JWKS is the client's inline JSON Web Key Set (TS `jwks: z.any()`). |
 | `SoftwareID` | `string` |  |
 | `SoftwareVersion` | `string` |  |
 | `SoftwareStatement` | `string` |  |
@@ -151,6 +153,19 @@ A provider can also implement these. `Auth` checks for them with a type assertio
 {/* /gen:fields */}
 
 `mcp.OAuthClientInformationFull` is the full result of Dynamic Client Registration: the registered metadata plus the client credentials.
+
+Pre-registered confidential clients (a `ClientSecret`, or a provider implementing `mcp.OAuthClientAuthenticator`) must be bound to their authorization server: set `Issuer` on the client information, or store authorization server information. Otherwise `mcp.Auth` fails with an authorization-server mismatch before sending the secret, because the MCP server chooses which authorization server is discovered. An `Issuer` that differs from the discovered server is always rejected, even when a stored flow pin points at it. `ValidateAuthorizationServerURL` restricts the discovered server but does not replace this binding. When a refresh fails with `invalid_grant`, the binding carried by the rejected tokens still guards the fresh authorization attempt.
+
+<Note>
+  Upgrading from v0.5.2: pre-registered confidential credentials that have no
+  `Issuer` and no stored authorization server information (the old code skipped
+  validation for them) now fail with an authorization-server mismatch error, as
+  in the TypeScript SDK. There is no automatic migration. Set `Issuer` on the
+  client information to the authorization server the secret was registered with
+  (or return it from `OAuthAuthorizationServerInformationStore`). Credentials
+  obtained by dynamic registration already carry their binding and keep
+  working.
+</Note>
 
 ## Discovery
 
@@ -217,7 +232,7 @@ Discovery refuses unsafe endpoints. It applies an SSRF guard to every hop of met
 | `CodeVerifier` | `string` |  |
 | `RedirectURI` | `string` |  |
 | `Resource` | `*url.URL` |  |
-| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
+| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
 | `HTTPClient` | `*http.Client` |  |
 
 {/* /gen:fields */}
@@ -230,7 +245,7 @@ Discovery refuses unsafe endpoints. It applies an SSRF guard to every hop of met
 | `ClientInformation` | `OAuthClientInformation` |  |
 | `RefreshToken` | `string` |  |
 | `Resource` | `*url.URL` |  |
-| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
+| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
 | `HTTPClient` | `*http.Client` |  |
 
 {/* /gen:fields */}

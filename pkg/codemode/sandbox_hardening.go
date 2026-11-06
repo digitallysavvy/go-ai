@@ -6,13 +6,14 @@ import (
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // sandboxGlobalsToStrip lists every quickjs-libc-provided global that must
 // never stay reachable from code-mode JavaScript: each one is a host-escape
 // primitive (filesystem, process/env, raw binary JSON) with no sanctioned
 // path in or out of the sandbox other than the `tools.*` host bridge
-// (bindCodeModeDispatch in run_code_mode.go). stripSandboxGlobals deletes
+// (bindCodeModeDispatch in bridge_guest.go). stripSandboxGlobals deletes
 // every one of them from the global object before any user source runs, as
 // defense in depth alongside never mounting a host filesystem
 // (qjs.Option.NoFSMount, wired in runInSandbox below) and never passing
@@ -132,6 +133,82 @@ const runtimeHardeningSource = `(function(){
 		});
 	} catch (e) {}
 })();`
+
+// intrinsicFreezeSource is the rest of `run@2.1.8`'s HARDENING_SOURCE
+// (dist/runtime/guest-sources.js): it freezes the intrinsics and their
+// prototypes and locks the intrinsic globals (non-writable,
+// non-configurable). run evaluates it after its deterministic Date / Math
+// and before the bridge tracking and any user code; here it runs after the
+// code mode guest bridge (which replaces Date and Math.random and captures
+// the intrinsics it uses) and before user code (freezeIntrinsics). Without
+// it, user code could shadow the guest bridge's bookkeeping through a
+// prototype setter (for example an Array.prototype index setter).
+const intrinsicFreezeSource = `(function(){
+	// runtimeHardeningSource already replaced every function constructor
+	// (and each prototype's constructor property) with the blocking one, so
+	// the function prototypes are taken from function instances.
+	var functionPrototypes = [];
+	try { functionPrototypes.push(Object.getPrototypeOf(function(){})); } catch (e) {}
+	try { functionPrototypes.push(Object.getPrototypeOf(async function(){})); } catch (e) {}
+	try { functionPrototypes.push(Object.getPrototypeOf(function*(){})); } catch (e) {}
+	try { functionPrototypes.push(Object.getPrototypeOf(async function*(){})); } catch (e) {}
+	var g = globalThis;
+	var toFreeze = [
+		Object, Object.prototype,
+		Function,
+		Array, Array.prototype,
+		String, String.prototype,
+		Number, Number.prototype,
+		g.BigInt, g.BigInt && g.BigInt.prototype,
+		Boolean, Boolean.prototype,
+		g.Symbol, g.Symbol && g.Symbol.prototype,
+		RegExp, RegExp.prototype,
+		Date, Date.prototype,
+		Map, Map.prototype,
+		Set, Set.prototype,
+		WeakMap, WeakMap.prototype,
+		WeakSet, WeakSet.prototype,
+		Promise, Promise.prototype,
+		ArrayBuffer, ArrayBuffer.prototype,
+		g.DataView, g.DataView && g.DataView.prototype,
+		JSON, Math, g.Reflect, g.Proxy
+	];
+	for (var f = 0; f < functionPrototypes.length; f++) toFreeze.push(functionPrototypes[f]);
+	var typed = ['Int8Array','Uint8Array','Uint8ClampedArray','Int16Array','Uint16Array','Int32Array','Uint32Array','Float16Array','Float32Array','Float64Array','BigInt64Array','BigUint64Array'];
+	for (var i = 0; i < typed.length; i++) {
+		if (g[typed[i]]) toFreeze.push(g[typed[i]], g[typed[i]].prototype);
+	}
+	for (var j = 0; j < toFreeze.length; j++) {
+		if (toFreeze[j] != null) {
+			try { Object.freeze(toFreeze[j]); } catch (e) {}
+		}
+	}
+	var names = ['AggregateError','Array','ArrayBuffer','BigInt','Boolean','DataView','Error',
+		'EvalError','FinalizationRegistry','Float16Array','Float32Array','Float64Array',
+		'Int8Array','Int16Array','Int32Array','InternalError','Iterator','JSON','Map',
+		'Math','Number','Object','Promise','Proxy','RangeError','ReferenceError',
+		'Reflect','RegExp','Set','String','Symbol','SyntaxError','TypeError',
+		'Uint8Array','Uint8ClampedArray','Uint16Array','Uint32Array','URIError',
+		'WeakMap','WeakRef','WeakSet','BigInt64Array','BigUint64Array','console',
+		'globalThis'];
+	for (var k = 0; k < names.length; k++) {
+		if (g[names[k]] !== undefined) {
+			try {
+				Object.defineProperty(g, names[k], { value: g[names[k]], writable: false, configurable: false });
+			} catch (e) {}
+		}
+	}
+})();`
+
+// freezeIntrinsics evaluates intrinsicFreezeSource in jsCtx (see its doc
+// comment). It must run after bindCodeModeDispatch and before user code.
+func freezeIntrinsics(jsCtx *qjs.Context) error {
+	v, err := jsCtx.Eval("sandbox-freeze.js", qjs.Code(intrinsicFreezeSource))
+	if v != nil {
+		v.Free()
+	}
+	return err
+}
 
 // installRuntimeHardening evaluates runtimeHardeningSource in jsCtx. It must
 // run after stripSandboxGlobals and before any (untrusted) user source is
@@ -346,8 +423,10 @@ func (w *cappedConsoleWriter) Write(p []byte) (int, error) {
 
 // regexDynamicImport matches an import( call (allowing whitespace or a
 // comment before the parenthesis) inside a token the tokenizer classified
-// as a regular-expression literal.
-var regexDynamicImport = regexp.MustCompile(`\bimport\s*(?:/\*.*?\*/\s*)*\(`)
+// as a regular-expression literal. The whitespace is JavaScript's (the
+// engine also accepts U+00A0, U+FEFF, the Unicode spaces and the line
+// terminators between import and "("), and a block comment may span lines.
+var regexDynamicImport = regexp.MustCompile(`\bimport` + providerutils.JSRegexpSpace + `*(?:/\*(?s:.)*?\*/` + providerutils.JSRegexpSpace + `*)*\(`)
 
 func dynamicImportError(offset int) error {
 	return NewUnsupportedSyntaxError(

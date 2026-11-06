@@ -41,3 +41,30 @@ func TestIsUndeclaredParallelToolCall_CollisionScopedToFunctionTools(t *testing.
 		}
 	})
 }
+
+func TestGetParallelToolCallMetadataRequiresEveryField(t *testing.T) {
+	full := func() map[string]interface{} {
+		return map[string]interface{}{"itemId": "i", "toolCallId": "c", "toolName": "parallel", "input": "{}", "index": 0, "count": 1}
+	}
+	if _, ok := GetParallelToolCallMetadata(map[string]interface{}{"openai": map[string]interface{}{"parallelToolCall": full()}}, "openai"); !ok {
+		t.Fatal("full metadata must be accepted")
+	}
+	// Empty strings are valid in TS (typeof === 'string').
+	e := full()
+	e["itemId"] = ""
+	if _, ok := GetParallelToolCallMetadata(map[string]interface{}{"openai": map[string]interface{}{"parallelToolCall": e}}, "openai"); !ok {
+		t.Fatal("empty itemId must be accepted")
+	}
+	for _, drop := range []string{"itemId", "input", "index", "count"} {
+		m := full()
+		delete(m, drop)
+		if _, ok := GetParallelToolCallMetadata(map[string]interface{}{"openai": map[string]interface{}{"parallelToolCall": m}}, "openai"); ok {
+			t.Fatalf("metadata missing %s must be rejected", drop)
+		}
+	}
+	m := full()
+	m["index"] = 0.5
+	if _, ok := GetParallelToolCallMetadata(map[string]interface{}{"openai": map[string]interface{}{"parallelToolCall": m}}, "openai"); ok {
+		t.Fatal("fractional index must be rejected")
+	}
+}

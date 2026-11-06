@@ -24,6 +24,37 @@ type chunkBuffer struct {
 	chunks []provider.StreamChunk
 	closed bool
 	err    error
+
+	// single switches the buffer to single-consumer mode (low-memory
+	// streaming): a chunk is removed once its reader took it, there is no
+	// replay, and push blocks while limit chunks wait unread (backpressure,
+	// like the TS pull stream with a zero high-water mark). detached releases
+	// a blocked or later push, which then drops its chunk, once the consumer
+	// is gone.
+	single   bool
+	limit    int
+	detached bool
+}
+
+// singleConsumerBufferLimit bounds the unread chunks of a single-consumer
+// buffer.
+const singleConsumerBufferLimit = 16
+
+func newSingleConsumerChunkBuffer() *chunkBuffer {
+	b := newChunkBuffer()
+	b.single = true
+	b.limit = singleConsumerBufferLimit
+	return b
+}
+
+// detach marks the consumer as gone: waiting chunks are dropped and every
+// later push returns immediately.
+func (b *chunkBuffer) detach() {
+	b.mu.Lock()
+	b.detached = true
+	b.chunks = nil
+	b.cond.Broadcast()
+	b.mu.Unlock()
 }
 
 func newChunkBuffer() *chunkBuffer {
@@ -35,6 +66,15 @@ func newChunkBuffer() *chunkBuffer {
 // push appends a chunk and wakes any blocked readers.
 func (b *chunkBuffer) push(c provider.StreamChunk) {
 	b.mu.Lock()
+	if b.single {
+		for len(b.chunks) >= b.limit && !b.detached && !b.closed {
+			b.cond.Wait()
+		}
+		if b.detached {
+			b.mu.Unlock()
+			return
+		}
+	}
 	b.chunks = append(b.chunks, c)
 	b.cond.Broadcast()
 	b.mu.Unlock()
@@ -61,6 +101,9 @@ type chunkBufferReader struct {
 	buf    *chunkBuffer
 	index  int
 	closed bool
+	// last is the chunk Next returned last, so unread can put it back in a
+	// single-consumer buffer.
+	last *provider.StreamChunk
 }
 
 // Next returns the next buffered chunk, blocking until one is available, the
@@ -73,10 +116,35 @@ type chunkBufferReader struct {
 // reports io.EOF once closed, the same terminal value a reader sees once the
 // whole shared buffer closes cleanly.
 func (r *chunkBufferReader) Next() (*provider.StreamChunk, error) {
+	return r.nextUnless(nil)
+}
+
+// errReadAborted is returned by nextUnless when abort fired.
+var errReadAborted = io.ErrClosedPipe
+
+// nextUnless is Next that also returns errReadAborted, without detaching the
+// reader, once abort reports true (checked under the buffer lock; the aborter
+// must call wake after making it true).
+func (r *chunkBufferReader) nextUnless(abort func() bool) (*provider.StreamChunk, error) {
 	r.buf.mu.Lock()
 	defer r.buf.mu.Unlock()
 	for {
-		if r.index < len(r.buf.chunks) {
+		if abort != nil && abort() {
+			return nil, errReadAborted
+		}
+		if r.closed {
+			return nil, io.EOF
+		}
+		if r.buf.single {
+			if len(r.buf.chunks) > 0 {
+				c := r.buf.chunks[0]
+				r.buf.chunks[0] = provider.StreamChunk{} // release the reference
+				r.buf.chunks = r.buf.chunks[1:]
+				r.last = &c
+				r.buf.cond.Broadcast() // wake a push blocked on the limit
+				return &c, nil
+			}
+		} else if r.index < len(r.buf.chunks) {
 			c := r.buf.chunks[r.index]
 			r.index++
 			return &c, nil
@@ -87,11 +155,31 @@ func (r *chunkBufferReader) Next() (*provider.StreamChunk, error) {
 			}
 			return nil, io.EOF
 		}
-		if r.closed {
-			return nil, io.EOF
-		}
 		r.buf.cond.Wait()
 	}
+}
+
+// wake wakes every goroutine blocked in a reader's Next so it re-checks its
+// abort condition.
+func (b *chunkBuffer) wake() {
+	b.mu.Lock()
+	b.cond.Broadcast()
+	b.mu.Unlock()
+}
+
+// unread steps the cursor back over the chunk just returned by Next, for a
+// consumer that took it but could not deliver it.
+func (r *chunkBufferReader) unread() {
+	r.buf.mu.Lock()
+	if r.buf.single {
+		if !r.closed && r.last != nil {
+			r.buf.chunks = append([]provider.StreamChunk{*r.last}, r.buf.chunks...)
+			r.last = nil
+		}
+	} else if !r.closed && r.index > 0 {
+		r.index--
+	}
+	r.buf.mu.Unlock()
 }
 
 // Err returns the terminal error of the underlying buffer, if any.
@@ -115,6 +203,11 @@ func (r *chunkBufferReader) Close() error {
 	r.buf.mu.Lock()
 	r.closed = true
 	r.index = len(r.buf.chunks)
+	if r.buf.single {
+		// The only consumer is gone: nothing will read what is left.
+		r.buf.detached = true
+		r.buf.chunks = nil
+	}
 	r.buf.cond.Broadcast()
 	r.buf.mu.Unlock()
 	return nil

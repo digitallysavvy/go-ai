@@ -502,7 +502,7 @@ func TestAuthenticationEnvironment(t *testing.T) {
 }
 
 func TestHeadersAndClientApp(t *testing.T) {
-	if ClientApp("claude-code", "1.2.3") != "ai-sdk/harness-claude-code/1.2.3" {
+	if ClientApp("claude-code", "1.2.3") != "ai-sdk-harness-claude-code/1.2.3" {
 		t.Fatal(ClientApp("claude-code", "1.2.3"))
 	}
 	h, err := NormalizeHeaders(map[string]string{"X-Trace": "1"})
@@ -806,5 +806,24 @@ func TestOAuth(t *testing.T) {
 	srv.Close()
 	if err == nil || !strings.Contains(err.Error(), "invalid refresh_token") {
 		t.Fatal(err)
+	}
+}
+
+func TestR25NormalizeHeadersDeterministicForbidden(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		_, err := NormalizeHeaders(map[string]string{"X-Client-App": "a", "Authorization": "b", "User-Agent": "c", "x-api-key": "d"})
+		if err == nil || !strings.Contains(err.Error(), "`authorization`") {
+			t.Fatalf("err = %v", err)
+		}
+	}
+}
+
+func TestReadBoundedResponseCapsAt1MiB(t *testing.T) {
+	got, err := ReadBoundedResponse(strings.NewReader(strings.Repeat("a", 3<<20)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1<<20 {
+		t.Fatalf("read %d bytes, want %d", len(got), 1<<20)
 	}
 }

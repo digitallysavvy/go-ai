@@ -9,12 +9,17 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // applyUserAgentSuffix appends the Go runtime tag to whatever "User-Agent"
@@ -70,6 +75,8 @@ type Client struct {
 	baseURL string
 	headers map[string]string
 
+	headersFunc  func() (map[string]string, error)
+	headersCtx   func(ctx context.Context) (map[string]string, error)
 	maxBodyBytes int64
 
 	mu sync.RWMutex
@@ -89,6 +96,18 @@ type Config struct {
 	// HTTPClient is the underlying HTTP client to use
 	// If nil, DefaultHTTPClient will be used
 	HTTPClient *http.Client
+
+	// HeadersFunc, when set, is called for every request and its result is
+	// layered over Headers (TS lazy `headers: () => ...`). An error aborts the
+	// request before anything is sent.
+	HeadersFunc func() (map[string]string, error)
+
+	// HeadersFuncCtx is HeadersFunc for a credential resolved with the
+	// request's context (TS `Resolvable` headers and API keys, TS 7716e189ee /
+	// 63bf860638, such as an APIKeyFunc). It is called for every request
+	// after HeadersFunc and layered over its result; an error aborts the
+	// request before anything is sent.
+	HeadersFuncCtx func(ctx context.Context) (map[string]string, error)
 
 	// MaxResponseBytes bounds buffered response body reads. Zero uses
 	// fileutil.DefaultMaxDownloadSize (2 GiB), the TS response-handler limit.
@@ -131,6 +150,8 @@ func NewClient(cfg Config) *Client {
 		baseURL: cfg.BaseURL,
 		headers: cfg.Headers,
 
+		headersFunc:  cfg.HeadersFunc,
+		headersCtx:   cfg.HeadersFuncCtx,
 		maxBodyBytes: cfg.MaxResponseBytes,
 	}
 }
@@ -156,6 +177,11 @@ type Request struct {
 	Headers map[string]string
 	Body    interface{}
 	Query   map[string]string
+
+	// ValidateResponse, when set, checks a successful (non-error status) body
+	// in DoJSON and DoJSONResponse before it is decoded: TS createJsonResponseHandler
+	// (response schema). Its error is returned as is.
+	ValidateResponse func(statusCode int, headers http.Header, body []byte) error
 }
 
 // Response represents an HTTP response
@@ -187,19 +213,97 @@ func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
 	if e == nil {
 		return 0, nil, nil
 	}
+	// TS APICallError.responseHeaders is extractResponseHeaders(response):
+	// repeated lines joined with ", " (the last Set-Cookie line wins), each
+	// byte one character.
 	headers := make(map[string]string, len(e.Headers))
 	for k, v := range e.Headers {
 		if len(v) > 0 {
-			headers[strings.ToLower(k)] = v[0]
+			headers[strings.ToLower(k)] = providerutils.IsomorphicDecode(providerutils.FetchHeaderEntry(k, v))
 		}
 	}
 	return e.StatusCode, headers, e.Body
+}
+
+// HTTPResponseHeader returns the raw response header, so error helpers can
+// keep Go canonical key casing and every value of a repeated header.
+func (e *HTTPStatusError) HTTPResponseHeader() http.Header {
+	if e == nil {
+		return nil
+	}
+	return e.Headers
 }
 
 // snapshot returns a point-in-time copy of the mutable client state (base
 // URL and default headers) under the read lock, so callers never range over
 // or concatenate the live fields while SetHeader/SetBaseURL may be running
 // on another goroutine.
+func (c *Client) requestDefaults(ctx context.Context) (string, map[string]string, error) {
+	baseURL, headers := c.snapshot()
+	if err := c.overlayRequestHeaders(ctx, headers); err != nil {
+		// TS resolves the config headers (a key or token function) before
+		// the request and throws its error as is: a FetchRejection, so a
+		// provider's error handler returns it unchanged. A LoadAPIKeyError
+		// stays unmarked: every handler already returns it as is.
+		var loadKeyErr *providererrors.LoadAPIKeyError
+		if errors.As(err, &loadKeyErr) {
+			return "", nil, err
+		}
+		return "", nil, RejectFetch(err)
+	}
+	return baseURL, headers, nil
+}
+
+// overlayRequestHeaders layers the request-time headers (HeadersFunc, then
+// HeadersFuncCtx) over headers.
+func (c *Client) overlayRequestHeaders(ctx context.Context, headers map[string]string) error {
+	if c.headersFunc != nil {
+		extra, err := c.headersFunc()
+		if err != nil {
+			return err
+		}
+		overlayHeaders(headers, extra)
+	}
+	if c.headersCtx != nil {
+		extra, err := c.headersCtx(ctx)
+		if err != nil {
+			return err
+		}
+		overlayHeaders(headers, extra)
+	}
+	return nil
+}
+
+// overlayHeaders layers extra over headers. HTTP header names are
+// case-insensitive, so an existing entry that differs only in case (the
+// providers' tagged static headers are lower-cased) takes the new value under
+// its own spelling instead of keeping both, where map order would pick the
+// winner.
+func overlayHeaders(headers, extra map[string]string) {
+	for k, v := range extra {
+		keep := k
+		if _, exact := headers[k]; !exact {
+			// Keep the lexicographically first spelling already present so the
+			// result does not depend on map order.
+			first := ""
+			for existing := range headers {
+				if strings.EqualFold(existing, k) && (first == "" || existing < first) {
+					first = existing
+				}
+			}
+			if first != "" {
+				keep = first
+			}
+		}
+		for existing := range headers {
+			if existing != keep && strings.EqualFold(existing, k) {
+				delete(headers, existing)
+			}
+		}
+		headers[keep] = v
+	}
+}
+
 func (c *Client) snapshot() (string, map[string]string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -210,22 +314,65 @@ func (c *Client) snapshot() (string, map[string]string) {
 	return c.baseURL, headers
 }
 
+// encodeQuery is URLSearchParams.toString() for a parameter map, in sorted
+// key order so the URL is deterministic. It uses the
+// application/x-www-form-urlencoded byte set: ASCII alphanumerics and
+// "*-._" stay literal, space is "+", everything else (including "~", which
+// Go's url.QueryEscape leaves alone) is percent-encoded in upper-case hex.
+func encodeQuery(q map[string]string) string {
+	keys := make([]string, 0, len(q))
+	for k := range q {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte('&')
+		}
+		formEscape(&b, k)
+		b.WriteByte('=')
+		formEscape(&b, q[k])
+	}
+	return b.String()
+}
+
+// EncodeQuery exposes encodeQuery to provider packages that build their own
+// URLs (URLSearchParams escaping).
+func EncodeQuery(q map[string]string) string { return encodeQuery(q) }
+
+func formEscape(b *strings.Builder, s string) {
+	const hex = "0123456789ABCDEF"
+	// Invalid UTF-8 becomes U+FFFD, as the WHATWG encoder does.
+	for _, r := range s {
+		switch {
+		case r == ' ':
+			b.WriteByte('+')
+		case r < 0x80 && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '*' || r == '-' || r == '.' || r == '_'):
+			b.WriteByte(byte(r))
+		default:
+			var buf [4]byte
+			n := utf8.EncodeRune(buf[:], r)
+			for _, c := range buf[:n] {
+				b.WriteByte('%')
+				b.WriteByte(hex[c>>4])
+				b.WriteByte(hex[c&15])
+			}
+		}
+	}
+}
+
 // Do performs an HTTP request
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
-	baseURL, defaultHeaders := c.snapshot()
+	baseURL, defaultHeaders, err := c.requestDefaults(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build full URL
 	url := baseURL + req.Path
 	if len(req.Query) > 0 {
-		url += "?"
-		first := true
-		for k, v := range req.Query {
-			if !first {
-				url += "&"
-			}
-			url += fmt.Sprintf("%s=%s", k, v)
-			first = false
-		}
+		url += "?" + encodeQuery(req.Query)
 	}
 
 	// Serialize body if present
@@ -237,7 +384,9 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 		case []byte:
 			bodyReader = bytes.NewReader(body)
 		default:
-			bodyBytes, err := json.Marshal(req.Body)
+			// JSON.stringify bytes: no HTML escaping of <, > and &, no
+			// trailing newline (TS postJsonToApi).
+			bodyBytes, err := jsonstr.Marshal(req.Body)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal request body: %w", err)
 			}
@@ -298,6 +447,7 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 	if err != nil {
 		return err
 	}
+	resp.Body = responseText(resp.Body)
 
 	// Check for error status codes
 	if resp.StatusCode >= 400 {
@@ -308,8 +458,14 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 		}
 	}
 
+	if req.ValidateResponse != nil {
+		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return err
+		}
+	}
+
 	// Decode JSON response
-	if err := json.Unmarshal(resp.Body, result); err != nil {
+	if err := decodeJSONBody(resp.Body, result); err != nil {
 		return fmt.Errorf("failed to decode JSON response: %w", err)
 	}
 
@@ -325,6 +481,7 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 	if err != nil {
 		return nil, err
 	}
+	resp.Body = responseText(resp.Body)
 	if resp.StatusCode >= 400 {
 		return nil, &HTTPStatusError{
 			StatusCode: resp.StatusCode,
@@ -332,16 +489,68 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 			Body:       resp.Body,
 		}
 	}
-	if err := json.Unmarshal(resp.Body, result); err != nil {
+	if req.ValidateResponse != nil {
+		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return nil, err
+		}
+	}
+	if err := decodeJSONBody(resp.Body, result); err != nil {
 		return nil, fmt.Errorf("failed to decode JSON response: %w", err)
 	}
 	return resp, nil
 }
 
+// decodeJSONBody decodes a response body into result. TS response schemas
+// declare counts and timestamps as z.number(), which accepts fractional and
+// exponent forms (1.5, 2.0, 1e9) that Go's integer struct fields reject; when
+// the strict decode fails on such a number, the body is decoded again with
+// providerutils.UnmarshalChunk, which truncates only the numbers under the
+// member names the decoder reported. A body that decodes strictly is
+// unchanged. When the retry also fails on a number (a number where the
+// schema wants another type), the strict decode's error is returned, so it
+// names the value as sent; when the retry fails on anything else, that
+// error is returned, since it is the real schema violation the strict
+// decode did not reach (Go reports only the first type error).
+//
+// The body is read as text first (responseText), as TS parses
+// response.text().
+func decodeJSONBody(body []byte, result interface{}) error {
+	body = responseText(body)
+	err := json.Unmarshal(body, result)
+	var typeErr *json.UnmarshalTypeError
+	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
+		return err
+	}
+	retryErr := providerutils.UnmarshalChunk(body, result)
+	if retryErr == nil {
+		return nil
+	}
+	var retryTypeErr *json.UnmarshalTypeError
+	if errors.As(retryErr, &retryTypeErr) && !strings.HasPrefix(retryTypeErr.Value, "number") {
+		return retryErr
+	}
+	return err
+}
+
+// utf8BOM is the UTF-8 byte order mark TextDecoder drops.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// responseText is a JSON response body as TS response.text() reads it (the
+// JSON response and error handlers, response-handler.ts): a WHATWG UTF-8
+// decode that drops a leading BOM and turns each maximal invalid sequence
+// into one U+FFFD. A valid body without a BOM is returned as is.
+func responseText(body []byte) []byte {
+	if bytes.HasPrefix(body, utf8BOM) || !utf8.Valid(body) {
+		return []byte(prompt.DecodeUTF8Text(body))
+	}
+	return body
+}
+
 // streamClient returns the client used for streaming requests. The shared
-// DefaultHTTPClient carries a whole-request timeout that would abort a stream
-// still being read, so streams use a copy of it without that timeout. A
-// caller-supplied client (or an explicit Config.Timeout) is honoured as is.
+// DefaultHTTPClient has no whole-request timeout; if one is ever set on it
+// (for example by a caller mutating DefaultHTTPClient), streams use a copy
+// without it so a stream still being read is not aborted. A caller-supplied
+// client (or an explicit Config.Timeout) is honoured as is.
 func (c *Client) streamClient() *http.Client {
 	if c.client == DefaultHTTPClient && DefaultHTTPClient.Timeout > 0 {
 		clone := *DefaultHTTPClient
@@ -353,20 +562,15 @@ func (c *Client) streamClient() *http.Client {
 
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
-	baseURL, defaultHeaders := c.snapshot()
+	baseURL, defaultHeaders, err := c.requestDefaults(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build full URL
 	url := baseURL + req.Path
 	if len(req.Query) > 0 {
-		url += "?"
-		first := true
-		for k, v := range req.Query {
-			if !first {
-				url += "&"
-			}
-			url += fmt.Sprintf("%s=%s", k, v)
-			first = false
-		}
+		url += "?" + encodeQuery(req.Query)
 	}
 
 	// Serialize body if present
@@ -378,7 +582,9 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		case []byte:
 			bodyReader = bytes.NewReader(body)
 		default:
-			bodyBytes, err := json.Marshal(req.Body)
+			// JSON.stringify bytes: no HTML escaping of <, > and &, no
+			// trailing newline (TS postJsonToApi).
+			bodyBytes, err := jsonstr.Marshal(req.Body)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal request body: %w", err)
 			}
@@ -412,8 +618,9 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	}
 
 	// Perform request. http.Client.Timeout covers reading the response body,
-	// so the shared default client's 60s budget would cut off long-running
-	// streams (TS fetch has no overall timeout; callers cancel via ctx).
+	// so a timeout set on the shared default client would cut off
+	// long-running streams (TS fetch has no overall timeout; callers cancel
+	// via ctx); streamClient drops it.
 	httpResp, err := c.streamClient().Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
@@ -426,7 +633,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		return nil, &HTTPStatusError{
 			StatusCode: httpResp.StatusCode,
 			Headers:    httpResp.Header,
-			Body:       errBody,
+			Body:       responseText(errBody),
 		}
 	}
 
@@ -483,14 +690,48 @@ func (c *Client) SetHeader(key, value string) {
 // merged in at construction). Used by callers that need to authenticate a
 // non-HTTP connection (e.g. a WebSocket handshake) the same way the client
 // authenticates its own requests.
+//
+// Request-time headers from Config.HeadersFunc (a lazily loaded API key) are
+// layered over the defaults. When that function fails (a missing key) the
+// defaults are returned as configured; Do and DoStream surface the error.
 func (c *Client) Headers() map[string]string {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	out := make(map[string]string, len(c.headers))
 	for k, v := range c.headers {
 		out[k] = v
 	}
+	c.mu.RUnlock()
+	with := make(map[string]string, len(out))
+	for k, v := range out {
+		with[k] = v
+	}
+	if c.overlayRequestHeaders(context.Background(), with) == nil {
+		return with
+	}
 	return out
+}
+
+// RequestHeaders is Headers for a connection that must be authenticated like
+// a request (a WebSocket handshake): when Config.HeadersFunc fails (a missing
+// API key) the error is returned (a LoadAPIKeyError) instead of handing back
+// headers without credentials.
+func (c *Client) RequestHeaders() (map[string]string, error) {
+	return c.RequestHeadersCtx(context.Background())
+}
+
+// RequestHeadersCtx is RequestHeaders with the context HeadersFuncCtx
+// resolves its credential with.
+func (c *Client) RequestHeadersCtx(ctx context.Context) (map[string]string, error) {
+	c.mu.RLock()
+	out := make(map[string]string, len(c.headers))
+	for k, v := range c.headers {
+		out[k] = v
+	}
+	c.mu.RUnlock()
+	if err := c.overlayRequestHeaders(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // SetBaseURL updates the base URL
@@ -505,6 +746,10 @@ func (c *Client) SetBaseURL(baseURL string) {
 // errors) are returned unchanged, and other transport failures read
 // "Cannot connect to API: <cause>". The cause stays wrapped for errors.Is/As.
 func transportError(err error) error {
+	var rejection *FetchRejection
+	if errors.As(err, &rejection) {
+		return rejection
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
@@ -525,3 +770,70 @@ func (e *connectError) Unwrap() error { return e.err }
 
 // IsRetryable reports true: TS retries connection failures.
 func (e *connectError) IsRetryable() bool { return true }
+
+// FetchRejection marks an error a provider's own http.RoundTripper raises
+// before (or instead of) a network round trip: a credential, signing or
+// configuration failure. In TS such an error is thrown by the provider's
+// fetch wrapper or by its headers() resolution (bedrock / anthropic-aws
+// createSigV4FetchFunction, google-vertex and azure token headers), and
+// provider-utils handleFetchError returns any rejection that is not a failed
+// fetch unchanged: it is not the retryable APICallError "Cannot connect to
+// API". transportError therefore returns a FetchRejection itself (without
+// the *url.Error "Post <url>:" prefix or the connect wrapper), and a
+// provider's error handler returns Err as is (FetchRejectionCause), so the
+// caller gets the credential error unchanged and the core retry does not
+// retry it. Only pre-network errors are marked: an error of the base
+// transport the RoundTripper delegates to keeps the failed-fetch path.
+//
+// Err must not carry a token or secret in its text.
+type FetchRejection struct{ Err error }
+
+// Error returns Err's text.
+func (e *FetchRejection) Error() string { return e.Err.Error() }
+
+// Unwrap returns Err.
+func (e *FetchRejection) Unwrap() error { return e.Err }
+
+// RejectFetch marks err (when non-nil) as a FetchRejection.
+func RejectFetch(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *FetchRejection
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &FetchRejection{Err: err}
+}
+
+// UnwrapFetchRejection returns the error a FetchRejection marks, or err
+// itself. Call sites that return a request error as is (TS: postToApi lets a
+// transport failure propagate unchanged) use it so the marker never reaches
+// the caller.
+func UnwrapFetchRejection(err error) error {
+	if cause, ok := FetchRejectionCause(err); ok {
+		return cause
+	}
+	return err
+}
+
+// FetchRejectionCause returns the error a provider RoundTripper rejected the
+// request with (see FetchRejection), when err's chain holds one. Provider
+// error handlers return it unwrapped, like TS.
+func FetchRejectionCause(err error) (error, bool) {
+	var rejection *FetchRejection
+	if errors.As(err, &rejection) {
+		return rejection.Err, true
+	}
+	return nil, false
+}
+
+// StatusProviderError builds a *providererrors.ProviderError for a non-2xx
+// provider response, mirroring the TS APICallError a failedResponseHandler
+// produces: the status code (and so retryability), response headers and body
+// are preserved and the message is taken from the JSON error body when
+// present.
+func StatusProviderError(providerName string, statusCode int, headers http.Header, body []byte) error {
+	cause := &HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderError(providerName, 0, "", cause.Error(), cause)
+}

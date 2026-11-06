@@ -4,11 +4,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"reflect"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // ConvertToOpenResponsesInput converts AI SDK messages to Open Responses
@@ -46,6 +50,7 @@ func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, syst
 	if len(extOpts) > 0 {
 		extensionOptions = extOpts[0]
 	}
+	extensionOptions.Warnings = &warnings
 
 	// Collect system messages
 	if system != "" {
@@ -75,7 +80,21 @@ func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, syst
 			})
 
 		case types.RoleAssistant:
-			input = append(input, convertAssistantContent(msg.Content, providerName, strictResponseInput, extensionOptions)...)
+			items := convertAssistantContent(msg.Content, providerName, strictResponseInput, extensionOptions)
+			// TS compares against the last input item, not just the last item of
+			// this message, so same-id reasoning merges across assistant messages.
+			if len(items) > 0 && len(input) > 0 {
+				if head, ok := items[0].(ReasoningInputItem); ok && head.ID != "" {
+					if prev, ok := input[len(input)-1].(ReasoningInputItem); ok && prev.ID == head.ID {
+						if head.Content != nil {
+							prev.Content = append(prev.Content, head.Content...)
+							input[len(input)-1] = prev
+						}
+						items = items[1:]
+					}
+				}
+			}
+			input = append(input, items...)
 
 		case types.RoleTool:
 			// Convert tool results
@@ -123,7 +142,20 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 			if err != nil {
 				return nil, err
 			}
+			if file.MediaType == "" {
+				file.MediaType = file.MimeType
+			}
 			mediaType := file.MediaType
+			// TS resolveFullMediaType: a top-level-only or wildcard type on
+			// inline bytes is sniffed (or rejected), never sent as is.
+			b64 := fileDataString(file.FileData)
+			if (len(file.Data) > 0 || b64 != "") && file.URL == "" && file.Reference == "" {
+				resolved, err := resolveInlineMediaTypeData(mediaType, file.Data, b64)
+				if err != nil {
+					return nil, err
+				}
+				file.MediaType, mediaType = resolved, resolved
+			}
 			if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 				imageURL := convertFileToImageURL(file, warnings)
 				if imageURL != "" {
@@ -140,14 +172,14 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 				result = append(result, InputFileContent{Type: "input_file", FileURL: file.URL})
 			case file.Reference != "":
 				result = append(result, InputFileContent{Type: "input_file", FileID: file.Reference})
-			case len(file.Data) > 0:
+			case len(file.Data) > 0 || b64 != "":
 				filename := file.Filename
 				if filename == "" {
 					filename = "data"
 				}
 				result = append(result, InputFileContent{
 					Type:     "input_file",
-					FileData: fmt.Sprintf("data:%s;base64,%s", mediaTypeOrDefault(file.MediaType), base64.StdEncoding.EncodeToString(file.Data)),
+					FileData: fmt.Sprintf("data:%s;base64,%s", mediaTypeOrDefault(file.MediaType), inlineBase64(file.Data, b64)),
 					Filename: filename,
 				})
 			case file.Text != "":
@@ -201,12 +233,49 @@ func convertFileToImageURL(file types.FileContent, warnings *[]types.Warning) st
 		return fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString([]byte(file.Text)))
 	}
 
-	if len(file.Data) > 0 {
-		dataStr := base64.StdEncoding.EncodeToString(file.Data)
-		return fmt.Sprintf("data:%s;base64,%s", mediaType, dataStr)
+	if b64 := fileDataString(file.FileData); len(file.Data) > 0 || b64 != "" {
+		return fmt.Sprintf("data:%s;base64,%s", mediaType, inlineBase64(file.Data, b64))
 	}
 
 	return ""
+}
+
+// fileDataString is the base64 string of a data part given as one
+// (FileData.DataString with no bytes), or "".
+func fileDataString(fd types.FileData) string {
+	if fd.Type == types.FileDataTypeData && len(fd.Data) == 0 {
+		return fd.DataString
+	}
+	return ""
+}
+
+// inlineBase64 is TS convertToBase64: a base64 string is returned
+// unchanged, bytes are encoded.
+func inlineBase64(data []byte, b64 string) string {
+	if len(data) == 0 && b64 != "" {
+		return b64
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// resolveInlineMediaTypeData is resolveInlineMediaType for bytes or a base64
+// string; a string is sniffed from its prefix only (TS decodePrefix).
+func resolveInlineMediaTypeData(mediaType string, data []byte, b64 string) (string, error) {
+	if len(data) > 0 || b64 == "" || mediaType == "" {
+		return resolveInlineMediaType(mediaType, data)
+	}
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, false); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(b64, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
 }
 
 func normalizeFileContentData(file types.FileContent) (types.FileContent, error) {
@@ -219,14 +288,23 @@ func normalizeFileContentData(file types.FileContent) (types.FileContent, error)
 	case types.FileDataTypeURL:
 		file.URL = file.FileData.URL
 	case types.FileDataTypeReference:
-		return types.FileContent{}, fmt.Errorf("openresponses: file parts with provider references are not supported")
+		return types.FileContent{}, &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
 	case types.FileDataTypeText:
-		return types.FileContent{}, fmt.Errorf("openresponses: text file parts are not supported")
+		return types.FileContent{}, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
 	}
 	if file.FileData.MediaType != "" && file.MediaType == "" {
 		file.MediaType = file.FileData.MediaType
 	}
 	return file, nil
+}
+
+// resolveInlineMediaType is TS resolveFullMediaType for inline bytes. An empty
+// media type keeps the legacy application/octet-stream default.
+func resolveInlineMediaType(mediaType string, data []byte) (string, error) {
+	if mediaType == "" {
+		return "", nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, data, true)
 }
 
 func mediaTypeOrDefault(mediaType string) string {
@@ -257,6 +335,10 @@ type openResponsesExtensionOptions struct {
 	// custom_tool_call/custom_tool_call_output instead of
 	// function_call/function_call_output.
 	CustomToolID string
+
+	// Warnings, when set, collects the "provider-defined tool ... history"
+	// warnings emitted when an extension cannot encode a replayed part.
+	Warnings *[]types.Warning
 }
 
 func convertAssistantContent(content []types.ContentPart, providerName string, strictResponseInput bool, extOpts ...openResponsesExtensionOptions) []interface{} {
@@ -267,6 +349,9 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 	var items []interface{}
 	var assistantContent []OutputTextContent
 	var assistantMessageID string
+	// assistantHasMessageID: the text parts carried a string itemId, ""
+	// included (TS assistantMessageId is undefined otherwise).
+	var assistantHasMessageID bool
 	handledExtensionItemIDs := map[string]bool{}
 
 	flush := func() {
@@ -274,7 +359,7 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			return
 		}
 		switch {
-		case strictResponseInput && assistantMessageID == "":
+		case strictResponseInput && !assistantHasMessageID:
 			var text strings.Builder
 			for _, part := range assistantContent {
 				text.WriteString(part.Text)
@@ -293,6 +378,7 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			}
 			items = append(items, MessageItem{
 				ID:      assistantMessageID,
+				idSet:   true,
 				Type:    "message",
 				Status:  "completed",
 				Role:    "assistant",
@@ -304,13 +390,13 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				parts = append(parts, part)
 			}
 			item := MessageItem{Type: "message", Role: "assistant", Content: parts}
-			if assistantMessageID != "" {
-				item.ID = assistantMessageID
+			if assistantHasMessageID {
+				item.ID, item.idSet = assistantMessageID, true
 			}
 			items = append(items, item)
 		}
 		assistantContent = nil
-		assistantMessageID = ""
+		assistantMessageID, assistantHasMessageID = "", false
 	}
 
 	for _, part := range content {
@@ -322,20 +408,23 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			flush()
 
 			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
-			itemID, _ := data["itemId"].(string)
+			// TS `typeof x === 'string'`: a string itemId / encrypted content
+			// is sent even when it is "".
+			itemID, hasItemID := data["itemId"].(string)
 			summary := openResponsesParseSummaryParts(data["reasoningSummary"])
 			if summary == nil {
 				summary = []SummaryPart{}
 			}
 			reasoningContent, hasReasoningContentKey := openResponsesParseReasoningTextParts(data)
-			encryptedContent, _ := data["reasoningEncryptedContent"].(string)
-			if encryptedContent == "" {
+			encryptedContent, hasEncryptedContent := data["reasoningEncryptedContent"].(string)
+			if !hasEncryptedContent {
+				// Go-only: ReasoningContent.EncryptedContent (v0.5.2).
 				encryptedContent = p.EncryptedContent
 			}
 
 			reasoningItem := ReasoningInputItem{Type: "reasoning", Summary: summary}
-			if itemID != "" {
-				reasoningItem.ID = itemID
+			if hasItemID {
+				reasoningItem.ID, reasoningItem.idSet = itemID, true
 			}
 			switch {
 			case reasoningContent != nil:
@@ -343,12 +432,14 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			case !hasReasoningContentKey && p.Text != "":
 				reasoningItem.Content = []ReasoningTextPart{{Type: "reasoning_text", Text: p.Text}}
 			}
-			if encryptedContent != "" {
+			if encryptedContent != "" || hasEncryptedContent {
 				reasoningItem.EncryptedContent = encryptedContent
+				reasoningItem.encryptedContentSet = hasEncryptedContent
 			}
 
-			if reasoningItem.ID != "" && len(items) > 0 {
-				if prev, ok := items[len(items)-1].(ReasoningInputItem); ok && prev.ID == reasoningItem.ID {
+			// TS: reasoningItem.id != null && previousItem.id === reasoningItem.id.
+			if hasItemID && len(items) > 0 {
+				if prev, ok := items[len(items)-1].(ReasoningInputItem); ok && (prev.idSet || prev.ID != "") && prev.ID == reasoningItem.ID {
 					if reasoningItem.Content != nil {
 						prev.Content = append(prev.Content, reasoningItem.Content...)
 						items[len(items)-1] = prev
@@ -360,13 +451,14 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 
 		case types.TextContent:
 			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
-			itemID, _ := data["itemId"].(string)
+			itemID, hasItemID := data["itemId"].(string)
 			annotations := openResponsesParseAnnotations(data["annotations"])
 
-			if len(assistantContent) > 0 && assistantMessageID != itemID {
+			// TS assistantMessageId !== itemId (undefined only equals undefined).
+			if len(assistantContent) > 0 && (assistantHasMessageID != hasItemID || assistantMessageID != itemID) {
 				flush()
 			}
-			assistantMessageID = itemID
+			assistantMessageID, assistantHasMessageID = itemID, hasItemID
 			assistantContent = append(assistantContent, OutputTextContent{
 				Type:        "output_text",
 				Text:        p.Text,
@@ -388,6 +480,14 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			}
 
 		case types.ToolCallContent:
+			// TS: a tool-call whose provider tool has a registered extension
+			// replays through the extension's encodeInputItem (or warns),
+			// whether or not the provider executed it.
+			if encoded, ok := encodeProviderToolHistory(p, p.ToolName, "tool-call", opts); ok {
+				flush()
+				items = append(items, encoded...)
+				continue
+			}
 			if p.ProviderExecuted {
 				// Row 9a68261 (OR-EXT): a provider-executed call from a
 				// registered extension replays via its preserved raw item
@@ -400,13 +500,21 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				if encoded := encodeExtensionInputItems(extensionID, p, opts); len(encoded) > 0 {
 					flush()
 					items = append(items, encoded...)
+					continue
 				}
-				continue
+				// TS only skips a call when getExtensionReplay resolves a
+				// registered extension reference; any other provider-executed
+				// call replays as a plain function_call.
+				if itemID != "" && opts.Registry != nil {
+					if _, registered := opts.Registry.ByExtensionID[extensionID]; registered {
+						continue
+					}
+				}
 			}
 			flush()
 
 			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
-			itemID, _ := data["itemId"].(string)
+			itemID, hasItemID := data["itemId"].(string)
 			namespace, _ := data["namespace"].(string)
 
 			// A caller-executed "custom" tool (Config.CustomToolID) replays as
@@ -421,8 +529,8 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 					Name:   p.ToolName,
 					Input:  customToolCallInputText(p),
 				}
-				if itemID != "" {
-					custom.ID = itemID
+				if hasItemID {
+					custom.ID, custom.idSet = itemID, true
 				}
 				items = append(items, custom)
 				continue
@@ -435,8 +543,8 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				Arguments: serializeToolCallArguments(p),
 				Namespace: namespace,
 			}
-			if itemID != "" {
-				item.ID = itemID
+			if hasItemID {
+				item.ID, item.idSet = itemID, true
 			}
 			items = append(items, item)
 
@@ -447,6 +555,11 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			// Non-extension provider-executed results have no other replay
 			// path in this package and are silently skipped, unchanged from
 			// before this feature existed.
+			if encoded, ok := encodeProviderToolHistory(p, p.ToolName, "tool-result", opts); ok {
+				flush()
+				items = append(items, encoded...)
+				continue
+			}
 			if !p.ProviderExecuted {
 				continue
 			}
@@ -503,6 +616,59 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 	return items
 }
 
+// encodeProviderToolHistory mirrors the TS branch that replays a tool-call or
+// tool-result of a provider tool owning a registered extension through
+// extension.encodeInputItem; ok is false when the part does not belong to such
+// a tool. A part the extension cannot encode yields an "unsupported" warning
+// and no items.
+func encodeProviderToolHistory(part types.ContentPart, toolName, partType string, opts openResponsesExtensionOptions) ([]interface{}, bool) {
+	if opts.Registry == nil || toolName == "" {
+		return nil, false
+	}
+	tool := findToolByName(opts.Tools, toolName)
+	if tool.Type != "provider" || tool.ProviderID == "" {
+		return nil, false
+	}
+	ext := opts.Registry.ByProviderToolID[tool.ProviderID]
+	if ext == nil {
+		return nil, false
+	}
+	var items []interface{}
+	if ext.EncodeInputItem != nil {
+		if encoded, err := ext.EncodeInputItem(part, tool); err == nil && len(encoded) > 0 {
+			valid := true
+			allowed := ExtensionItemTypes(ext)
+			for _, item := range encoded {
+				if !IsExtensionItem(item) || !containsString(allowed, ExtensionRecord(item).Type()) {
+					valid = false
+					break
+				}
+			}
+			if valid {
+				for _, item := range encoded {
+					items = append(items, map[string]interface{}(item))
+				}
+			}
+		}
+	}
+	if items == nil && opts.Warnings != nil {
+		*opts.Warnings = append(*opts.Warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: fmt.Sprintf("provider-defined tool %s %s history", tool.ProviderID, partType),
+		})
+	}
+	return items, true
+}
+
+func containsString(list []string, value string) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
 // customToolCallInputText recovers the raw (un-escaped) text a custom tool
 // call's input represents, for replay into the custom_tool_call wire item's
 // `input` field. This package's decode path (convertResponse /
@@ -528,16 +694,12 @@ func customToolCallInputText(toolCall types.ToolCallContent) string {
 
 func serializeToolCallArguments(toolCall types.ToolCallContent) string {
 	if toolCall.Input != "" {
-		if json.Valid([]byte(toolCall.Input)) {
-			return toolCall.Input
-		}
-		data, err := json.Marshal(toolCall.Input)
-		if err == nil {
-			return string(data)
-		}
+		// TS `typeof part.input === 'string' ? part.input :
+		// JSON.stringify(part.input)`.
+		return prompt.StringToolCallInput(toolCall.Input)
 	}
 	if toolCall.Arguments != nil {
-		data, err := json.Marshal(toolCall.Arguments)
+		data, err := jsonstr.Marshal(toolCall.Arguments)
 		if err == nil {
 			return string(data)
 		}
@@ -676,9 +838,6 @@ func openResponsesParseReasoningTextParts(data map[string]interface{}) ([]Reason
 		}
 		out = append(out, ReasoningTextPart{Type: "reasoning_text", Text: text})
 	}
-	if len(out) == 0 {
-		return nil, true
-	}
 	return out, true
 }
 
@@ -751,6 +910,10 @@ func convertToolResults(content []types.ContentPart, warnings *[]types.Warning, 
 	for _, part := range content {
 		if part.ContentType() == "tool-result" {
 			if toolResult, ok := part.(types.ToolResultContent); ok {
+				if encoded, ok := encodeProviderToolHistory(toolResult, toolResult.ToolName, "tool-result", opts); ok {
+					results = append(results, encoded...)
+					continue
+				}
 				output, err := convertToolResultOutput(toolResult, warnings, providerName)
 				if err != nil {
 					return nil, err
@@ -801,14 +964,17 @@ func convertToolResultOutput(toolResult types.ToolResultContent, warnings *[]typ
 		return fmt.Sprintf("%v", v), nil
 	default:
 		// For complex types, JSON encode
-		jsonBytes, _ := json.Marshal(v)
+		jsonBytes, _ := jsonstr.Marshal(v)
 		return string(jsonBytes), nil
 	}
 }
 
 func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *[]types.Warning, providerName string) (interface{}, error) {
 	switch output.Type {
-	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
+	case types.ToolResultOutputErrorJSON:
+		jsonBytes, _ := jsonstr.Marshal(output.Value)
+		return string(jsonBytes), nil
+	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText:
 		if output.Value == nil {
 			return "", nil
 		}
@@ -817,12 +983,9 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 		}
 		return fmt.Sprintf("%v", output.Value), nil
 	case types.ToolResultOutputExecutionDenied:
-		if output.Reason != "" {
-			return output.Reason, nil
-		}
-		return "Tool call execution denied.", nil
+		return output.ReasonOr("Tool call execution denied."), nil
 	case types.ToolResultOutputJSON:
-		jsonBytes, _ := json.Marshal(output.Value)
+		jsonBytes, _ := jsonstr.Marshal(output.Value)
 		return string(jsonBytes), nil
 	case types.ToolResultOutputContent:
 		parts := make([]interface{}, 0, len(output.Content))
@@ -860,7 +1023,7 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 		if output.Value == nil {
 			return "", nil
 		}
-		jsonBytes, _ := json.Marshal(output.Value)
+		jsonBytes, _ := jsonstr.Marshal(output.Value)
 		return string(jsonBytes), nil
 	}
 }
@@ -884,6 +1047,14 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 	if err != nil {
 		return nil, false, err
 	}
+	b64 := fileDataString(file.FileData)
+	if (len(file.Data) > 0 || b64 != "") && file.URL == "" && file.Reference == "" {
+		resolved, err := resolveInlineMediaTypeData(file.MediaType, file.Data, b64)
+		if err != nil {
+			return nil, false, err
+		}
+		file.MediaType = resolved
+	}
 	mediaType := mediaTypeOrDefault(file.MediaType)
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 		detail := openResponsesImageDetail(block.ProviderOptions, nil, providerName)
@@ -892,10 +1063,10 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 			return InputImageContent{Type: "input_image", ImageURL: file.URL, Detail: detail}, true, nil
 		case file.Reference != "":
 			return InputImageContent{Type: "input_image", ImageURL: file.Reference, Detail: detail}, true, nil
-		case len(file.Data) > 0:
+		case len(file.Data) > 0 || b64 != "":
 			return InputImageContent{
 				Type:     "input_image",
-				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
+				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, inlineBase64(file.Data, b64)),
 				Detail:   detail,
 			}, true, nil
 		case file.Text != "":
@@ -915,7 +1086,7 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 		return InputFileContent{Type: "input_file", FileURL: file.URL}, true, nil
 	case file.Reference != "":
 		return InputFileContent{Type: "input_file", FileID: file.Reference}, true, nil
-	case len(file.Data) > 0:
+	case len(file.Data) > 0 || b64 != "":
 		filename := file.Filename
 		if filename == "" {
 			filename = "data"
@@ -923,7 +1094,7 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 		return InputFileContent{
 			Type:     "input_file",
 			Filename: filename,
-			FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
+			FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, inlineBase64(file.Data, b64)),
 		}, true, nil
 	case file.Text != "":
 		return InputTextContent{Type: "input_text", Text: file.Text}, true, nil

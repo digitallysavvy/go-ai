@@ -2,6 +2,9 @@ package replicate
 
 import (
 	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -26,21 +29,42 @@ type Config struct {
 
 	// BaseURL is the base URL for the Replicate API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Replicate provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	baseURL := cfg.BaseURL
+	// TS validateBaseURL(options.baseURL): a whitespace-only base URL is an
+	// InvalidArgumentError. TS throws from the constructor; New keeps
+	// returning a provider and every request fails with that error instead.
+	baseURLErr := providerutils.ValidateBaseURL(baseURL)
 	if baseURL == "" {
 		baseURL = "https://api.replicate.com/v1"
 	}
 
+	// TS: apiToken ?? REPLICATE_API_TOKEN, loaded per request (loadApiKey).
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("REPLICATE_API_TOKEN")
+	}
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
-			"Authorization": "Token " + cfg.APIKey,
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
+			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		}, version.ProviderUserAgent("replicate")),
+		}, cfg.Headers), version.ProviderUserAgent("replicate")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			if baseURLErr != nil {
+				return nil, baseURLErr
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "REPLICATE_API_TOKEN", "Replicate", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -92,7 +116,7 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("replicate embeddings require custom implementation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
@@ -116,17 +140,17 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("replicate does not directly support speech synthesis through this interface")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("replicate does not directly support transcription through this interface")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("replicate does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

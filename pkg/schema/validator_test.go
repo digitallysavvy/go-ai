@@ -431,3 +431,44 @@ func TestJSONSchemaValidator_NullTypeAndNullableUnion(t *testing.T) {
 		t.Fatalf("items without array type should ignore nil instead of panicking: %v", err)
 	}
 }
+
+// "required" and "properties" only constrain object instances: a nullable
+// object schema must accept null, and a bare "required" accepts non-objects.
+func TestValidateRequiredAndPropertiesIgnoreNonObjects(t *testing.T) {
+	nullable := map[string]interface{}{
+		"type":       []interface{}{"object", "null"},
+		"properties": map[string]interface{}{"a": map[string]interface{}{"type": "string"}},
+		"required":   []interface{}{"a"},
+	}
+	if err := NewJSONSchema(nullable).Validate(nil); err != nil {
+		t.Errorf("null against nullable object schema: %v", err)
+	}
+	if err := NewJSONSchema(nullable).Validate(map[string]interface{}{}); err == nil {
+		t.Error("empty object must still fail the required check")
+	}
+	if err := NewJSONSchema(map[string]interface{}{"required": []interface{}{"a"}}).Validate("x"); err != nil {
+		t.Errorf("required must not constrain a string: %v", err)
+	}
+	if err := NewJSONSchema(map[string]interface{}{"type": "object", "required": []interface{}{"a"}}).Validate("x"); err == nil {
+		t.Error("type: object must still reject a string")
+	}
+}
+
+func TestValidateIntegerAcceptsLargeWholeFloatsAndPipeTypesReject(t *testing.T) {
+	integer := NewJSONSchema(map[string]interface{}{"type": "integer"})
+	for _, v := range []interface{}{float64(1e20), float64(3), float32(2)} {
+		if err := integer.Validate(v); err != nil {
+			t.Errorf("%v should be an integer: %v", v, err)
+		}
+	}
+	if err := integer.Validate(1.5); err == nil {
+		t.Error("1.5 must not be an integer")
+	}
+	pipe := NewJSONSchema(map[string]interface{}{"type": "string|number"})
+	if err := pipe.Validate(true); err == nil {
+		t.Error("boolean must not match string|number")
+	}
+	if err := pipe.Validate("x"); err != nil {
+		t.Errorf("string must match string|number: %v", err)
+	}
+}

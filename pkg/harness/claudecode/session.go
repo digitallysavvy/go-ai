@@ -2,17 +2,17 @@ package claudecode
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -32,6 +32,7 @@ type sessionOptions struct {
 	proc providerutils.SandboxProcess
 
 	maxTurns               int
+	startSettings          startSettings
 	agentProgressSummaries bool
 	forwardSubagentText    bool
 	env                    map[string]string
@@ -42,6 +43,9 @@ type sessionOptions struct {
 	continueOnFirstPrompt bool
 	rerunContinue         bool
 	resumeSessionID       string
+	// deferredToolUseID is sent on the rerun-continue start (TS
+	// `deferredToolUseId`).
+	deferredToolUseID string
 
 	bridgePort                   int
 	bridgeToken                  string
@@ -63,7 +67,42 @@ type sessionOptions struct {
 	// reaches the Channel's normal dispatch, so it cannot be observed via
 	// channel.On. Mirrors TS `supportsUserMessageResponses()`, captured once
 	// at channel-build (session) time, the same way.
-	supportsUserMessages bool
+	supportsUserMessages func() bool
+
+	// finishListenerAttachment releases the channel's buffered events once
+	// the first turn has registered its listeners (attach/replay hold them
+	// back until then). Mirrors TS `finishListenerAttachment`.
+	finishListenerAttachment func()
+
+	// debug is the observability debug config forwarded on `start`.
+	debug *harness.DebugConfig
+
+	// bridgeHello returns the latest bridge-hello of the channel's current
+	// connection (nil before any). Mirrors TS `getBridgeHello`.
+	bridgeHello func() *bridge.Hello
+	// turnStartTimeout bounds the wait for a turn's first event (0 only in
+	// internal tests: no deadline). Mirrors TS `turnStartTimeoutMs`.
+	turnStartTimeout time.Duration
+}
+
+// startSettings are the Settings forwarded unchanged on every start frame.
+// Mirrors the TS `createSession` parameters skillOverrides, maxBudgetUsd,
+// strictMcpConfig, questionTimeoutMs, excludeDynamicSections and toolHints.
+type startSettings struct {
+	skillOverrides         map[string]SkillOverride
+	maxBudgetUSD           *float64
+	strictMCPConfig        *bool
+	questionTimeoutMs      *int
+	excludeDynamicSections *bool
+	toolHints              map[string]ToolHint
+}
+
+func startSettingsFrom(settings Settings) startSettings {
+	return startSettings{
+		skillOverrides: settings.SkillOverrides, maxBudgetUSD: settings.MaxBudgetUSD,
+		strictMCPConfig: settings.StrictMCPConfig, questionTimeoutMs: settings.QuestionTimeoutMs,
+		excludeDynamicSections: settings.ExcludeDynamicSections, toolHints: settings.ToolHints,
+	}
 }
 
 type session struct {
@@ -72,11 +111,17 @@ type session struct {
 	mu                sync.Mutex
 	stopped           bool
 	pendingResumeFlag bool
+	finishAttachment  func()
 	lastSessionID     string
+	// destroyed is closed when the first DoDestroy finishes its teardown.
+	destroyed chan struct{}
+	// rerunContinue is the live copy of opts.rerunContinue: true until the
+	// single recovery start has been sent. Mirrors TS `rerunContinue`.
+	rerunContinue bool
 }
 
 func newSession(opts sessionOptions) *session {
-	return &session{opts: opts, pendingResumeFlag: opts.continueOnFirstPrompt, lastSessionID: opts.resumeSessionID}
+	return &session{opts: opts, pendingResumeFlag: opts.continueOnFirstPrompt, lastSessionID: opts.resumeSessionID, rerunContinue: opts.rerunContinue, finishAttachment: opts.finishListenerAttachment}
 }
 
 func (s *session) SessionID() string { return s.opts.sessionID }
@@ -101,21 +146,29 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	if err := s.prepareTurn(ctx, opts.Skills, opts.ResponseFormat); err != nil {
 		return nil, err
 	}
+	// An unsupported prompt is rejected before the turn is wired, so the
+	// failure leaves no listeners or abort watcher behind (an already-aborted
+	// call never builds the start message, like TS).
+	var content harnessutil.PromptContent
+	if ctx.Err() == nil {
+		var err error
+		if content, err = harnessutil.ExtractPromptContent(opts.Prompt); err != nil {
+			return nil, err
+		}
+	}
 	control := s.wireTurn(ctx, opts.Emit)
 	if ctx.Err() != nil {
 		return control, nil
 	}
 
-	text, err := extractUserText(opts.Prompt)
-	if err != nil {
-		return nil, err
-	}
-	frame := s.buildStartFrame(text, opts.TurnSettings, opts.ResponseFormat)
+	frame := s.buildStartFrame(content, opts.TurnSettings, opts.ResponseFormat)
 	s.mu.Lock()
 	frame.Continue, frame.ResumeSessionID = s.resumeFields()
 	s.pendingResumeFlag = false
+	// Recovery starts a native turn once. Later continuations attach to it.
+	s.rerunContinue = false
 	s.mu.Unlock()
-	if err := s.opts.channel.Send(frame); err != nil {
+	if err := control.sendStart(frame); err != nil {
 		return nil, err
 	}
 	return control, nil
@@ -126,13 +179,26 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		return nil, err
 	}
 	control := s.wireTurn(ctx, opts.Emit)
-	if s.opts.rerunContinue && ctx.Err() == nil {
-		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat)
+	s.mu.Lock()
+	rerun := s.rerunContinue && ctx.Err() == nil
+	if rerun {
+		s.rerunContinue = false
+	}
+	s.mu.Unlock()
+	if rerun {
+		frame := s.buildStartFrame(harnessutil.PromptContent{Text: "Continue."}, opts.TurnSettings, opts.ResponseFormat)
 		s.mu.Lock()
-		frame.Continue, frame.ResumeSessionID = s.resumeFields()
+		// Unlike a prompt turn, a rerun continuation always rehydrates: the
+		// exact conversation when known, else `continue: true`.
+		if s.lastSessionID != "" {
+			frame.ResumeSessionID = s.lastSessionID
+		} else {
+			frame.Continue = true
+		}
+		frame.DeferredToolUseID = s.opts.deferredToolUseID
 		s.pendingResumeFlag = false
 		s.mu.Unlock()
-		if err := s.opts.channel.Send(frame); err != nil {
+		if err := control.sendStart(frame); err != nil {
 			return nil, err
 		}
 	}
@@ -151,10 +217,10 @@ func (s *session) resumeFields() (continueFlag bool, resumeSessionID string) {
 	return false, ""
 }
 
-func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *harness.ResponseFormat) *StartFrame {
+func (s *session) buildStartFrame(prompt harnessutil.PromptContent, ts harness.TurnSettings, rf *harness.ResponseFormat) *StartFrame {
 	frame := &StartFrame{
 		StartBase: bridge.StartBase{
-			Prompt: prompt, Tools: ts.Tools, Model: ts.Model, ResponseFormat: rf,
+			Prompt: prompt.Text, Tools: ts.Tools, Model: ts.Model, ResponseFormat: rf,
 			PermissionMode: s.opts.permissionMode, BuiltinToolFiltering: s.opts.builtinToolFiltering,
 		},
 		Instructions: ts.Instructions,
@@ -164,6 +230,16 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 	if s.opts.maxTurns > 0 {
 		frame.MaxTurns = &s.opts.maxTurns
 	}
+	extra := s.opts.startSettings
+	frame.SkillOverrides = extra.skillOverrides
+	frame.MaxBudgetUSD = extra.maxBudgetUSD
+	frame.StrictMCPConfig = extra.strictMCPConfig
+	frame.QuestionTimeoutMs = extra.questionTimeoutMs
+	frame.ExcludeDynamicSections = extra.excludeDynamicSections
+	frame.ToolHints = extra.toolHints
+	if !prompt.IsText() {
+		frame.PromptContent = &prompt
+	}
 	frame.AgentProgressSummaries = s.opts.agentProgressSummaries
 	frame.ForwardSubagentText = s.opts.forwardSubagentText
 	if len(s.opts.env) > 0 {
@@ -171,8 +247,12 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 	}
 	for _, sk := range ts.Skills {
 		frame.Skills = append(frame.Skills, sk.Name)
+		// The bridge trusts reads under each skill's directory. Built like
+		// TS (`${sandboxHomeDir}/.claude/skills/${name}`, not path-cleaned).
+		frame.ReadableSkillRoots = append(frame.ReadableSkillRoots, s.opts.sandboxHomeDir+"/.claude/skills/"+sk.Name)
 	}
 	frame.MCPServers = s.opts.mcpServers
+	frame.Debug = s.opts.debug
 	return frame
 }
 
@@ -180,7 +260,7 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 // Mirrors TS `doCompact`.
 func (s *session) DoCompact(ctx context.Context, customInstructions string) error {
 	text := "/compact"
-	if trimmed := strings.TrimSpace(customInstructions); trimmed != "" {
+	if trimmed := providerutils.JSTrim(customInstructions); trimmed != "" {
 		text = "/compact " + trimmed
 	}
 	return s.opts.channel.Send(bridge.UserMessageCommand{Text: text})
@@ -228,11 +308,24 @@ func (s *session) resumeData(lastSeenEventID float64) resumeStateData {
 func (s *session) DoDestroy(ctx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
+		// A second destroy awaits the first one's teardown (TS returns the
+		// same `stopPromise`). A destroy after stop/detach has nothing to do.
+		done := s.destroyed
 		s.mu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		return nil
 	}
 	s.stopped = true
+	s.destroyed = make(chan struct{})
+	done := s.destroyed
 	s.mu.Unlock()
+	defer close(done)
 
 	s.opts.channel.BeginClose()
 	if !s.opts.channel.IsClosed() {
@@ -322,19 +415,41 @@ func waitForProcOrTimeout(proc providerutils.SandboxProcess, d time.Duration) {
 // wireTurn subscribes to one turn's worth of bridge events and returns the
 // control surface. Mirrors TS `wireTurn`.
 func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
-	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{})}
+	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{}), bridgeHello: s.opts.bridgeHello, turnStartTimeout: s.opts.turnStartTimeout}
 	pc.checkpoint = bridge.NewCheckpointRecorder(s.opts.channel)
 	forward := func(part harness.StreamPart) {
+		pc.clearPendingStart()
 		defer func() { _ = recover() }()
 		emit(part)
 	}
+
+	// Registered before the user-message submitter's own reconnect handler,
+	// so a lost turn start is retried before pending steering is replayed.
+	pc.subs.Add(s.opts.channel.OnReconnect(pc.retryStartAfterReconnect))
 
 	// Mid-turn steering: only when the bridge advertised acknowledged user
 	// messages on its hello (captured once at DoStart time — see
 	// sessionOptions.supportsUserMessages). Mirrors TS `wireTurn`'s
 	// `supportsUserMessageResponses() ? experimental_createBridgeUserMessageSubmitter(...) : undefined`.
-	if s.opts.supportsUserMessages {
-		pc.userMessages = bridge.NewChannelUserMessageSubmitter(s.opts.channel)
+	// The submitter owns replay after the turn start has been retried, so
+	// its requests are not queued while disconnected (TS
+	// `queueIfDisconnected: false`).
+	if s.opts.supportsUserMessages != nil && s.opts.supportsUserMessages() {
+		channel := s.opts.channel
+		noQueue := false
+		pc.userMessages = bridge.NewExperimentalUserMessageSubmitter(bridge.ExperimentalUserMessageSubmitterOptions{
+			Send: func(cmd bridge.UserMessageCommand) error {
+				return channel.SendWithOptions(cmd, bridge.SendOptions{QueueIfDisconnected: &noQueue})
+			},
+			OnResponse: func(fn func(*bridge.UserMessageResponse)) func() {
+				return channel.On(bridge.TypeUserMessageResponse, func(ev bridge.Event) {
+					if r, ok := ev.Message.(*bridge.UserMessageResponse); ok {
+						fn(r)
+					}
+				})
+			},
+			OnReconnect: channel.OnReconnect,
+		})
 	}
 
 	eventTypes := []string{
@@ -344,10 +459,9 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		harness.PartTypeToolCall, harness.PartTypeToolApprovalRequest, harness.PartTypeToolResult,
 		harness.PartTypeFinishStep, harness.PartTypeCompaction, harness.PartTypeRaw,
 	}
-	var unsubs []func()
 	for _, t := range eventTypes {
 		t := t
-		unsubs = append(unsubs, s.opts.channel.On(t, func(e bridge.Event) {
+		pc.subs.Add(s.opts.channel.On(t, func(e bridge.Event) {
 			if t == harness.PartTypeFinishStep {
 				pc.checkpoint.Record(e)
 			}
@@ -356,7 +470,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			}
 		}))
 	}
-	unsubs = append(unsubs, s.opts.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
+	pc.subs.Add(s.opts.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -373,7 +487,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		forward(f.Part)
 		pc.settleSuccess()
 	}))
-	unsubs = append(unsubs, s.opts.channel.On(harness.PartTypeError, func(e bridge.Event) {
+	// A buffered finish or error can settle the turn while its listeners are
+	// still being registered (the channel replays it from On): Subscriptions
+	// then removes each later listener as soon as it is added.
+	pc.subs.Add(s.opts.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -381,11 +498,19 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		forward(f.Part)
 		var cause = errors.New("claude-code bridge reported an error")
 		if ep, ok := f.Part.(*harness.ErrorPart); ok && ep.Error != nil {
-			cause = fmt.Errorf("%v", ep.Error)
+			cause = ep.AsError()
 		}
 		pc.settleError(cause)
 	}))
-	pc.unsubs = unsubs
+	// Listeners are registered: release events the channel buffered while an
+	// attach/replay was in flight (first turn only).
+	s.mu.Lock()
+	finish := s.finishAttachment
+	s.finishAttachment = nil
+	s.mu.Unlock()
+	if finish != nil {
+		finish()
+	}
 
 	s.opts.channel.OnClose(func(_ int, reason string) {
 		if reason == bridge.CloseReasonSuspended {
@@ -395,14 +520,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		pc.settleError(errors.New("claude-code bridge closed before the turn finished.")) //nolint:staticcheck // matches TS SDK's exact error text
 	})
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = s.opts.channel.Send(bridge.AbortCommand{})
-			pc.settleError(ctx.Err())
-		case <-pc.done:
-		}
-	}()
+	go bridge.WatchAbort(ctx, pc.done, func() {
+		_ = s.opts.channel.Send(bridge.AbortCommand{})
+		pc.settleError(context.Cause(ctx))
+	})
 
 	return pc
 }
@@ -411,38 +532,182 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 // UserMessageSubmitter (when the bridge advertises support).
 type promptControl struct {
 	channel      *bridge.Channel
-	unsubs       []func()
 	userMessages *bridge.ExperimentalUserMessageSubmitter
 	checkpoint   *bridge.CheckpointRecorder
+
+	bridgeHello      func() *bridge.Hello
+	turnStartTimeout time.Duration
+
+	// subs holds the turn's bridge listener unsubscribes; settle runs them.
+	subs harnessutil.Subscriptions
+
+	// mu guards the fields below.
+	mu      sync.Mutex
+	settled bool
+	// pendingStart is the start frame until the turn's first event (or its
+	// settlement); awaitingStartSend is true while it is queued but not yet
+	// written; startCursor is the event cursor when it was first sent.
+	// Mirrors TS `pendingStart`, `awaitingStartSend`, `startCursor`.
+	pendingStart      *StartFrame
+	awaitingStartSend bool
+	startCursor       float64
+	startTimer        *time.Timer
 
 	once sync.Once
 	done chan struct{}
 	err  error
 }
 
-func (c *promptControl) settleSuccess() {
-	c.once.Do(func() {
-		for _, u := range c.unsubs {
-			u()
-		}
-		if c.userMessages != nil {
-			c.userMessages.Close(nil)
-		}
-		close(c.done)
-	})
-}
+func (c *promptControl) settleSuccess() { c.settle(nil) }
 
-func (c *promptControl) settleError(err error) {
+func (c *promptControl) settleError(err error) { c.settle(err) }
+
+func (c *promptControl) settle(err error) {
 	c.once.Do(func() {
+		c.mu.Lock()
+		c.settled = true
+		c.clearPendingStartLocked()
+		c.mu.Unlock()
 		c.err = err
-		for _, u := range c.unsubs {
-			u()
-		}
+		c.subs.UnsubscribeAll()
 		if c.userMessages != nil {
 			c.userMessages.Close(err)
 		}
 		close(c.done)
 	})
+}
+
+// clearPendingStart forgets the start frame and stops its deadline: the
+// bridge emitted a turn event, so the start arrived. Mirrors TS
+// `clearPendingStart`.
+func (c *promptControl) clearPendingStart() {
+	c.mu.Lock()
+	c.clearPendingStartLocked()
+	c.mu.Unlock()
+}
+
+func (c *promptControl) clearPendingStartLocked() {
+	c.pendingStart = nil
+	if c.startTimer != nil {
+		c.startTimer.Stop()
+		c.startTimer = nil
+	}
+}
+
+// sendStart sends the turn's start frame with a fresh StartID and arms the
+// first-event deadline. A send error settles the turn and is returned.
+// Mirrors TS `sendStart`.
+func (c *promptControl) sendStart(frame *StartFrame) error {
+	cursor := c.channel.LastSeenEventID()
+	if hello := c.hello(); hello != nil && hello.LastSeq != nil && *hello.LastSeq > cursor {
+		cursor = *hello.LastSeq
+	}
+	c.mu.Lock()
+	if c.settled {
+		c.mu.Unlock()
+		return nil
+	}
+	c.startCursor = cursor
+	frame.StartID = newStartID()
+	c.pendingStart = frame
+	if timeout := c.turnStartTimeout; timeout != 0 {
+		// Node's setTimeout runs a delay below 1 ms (negative included) after
+		// 1 ms, so the start is sent before the deadline can fire.
+		delay := timeout
+		if delay < time.Millisecond {
+			delay = time.Millisecond
+		}
+		// TS `within ${turnStartTimeoutMs}ms`: the configured milliseconds
+		// as a JS number.
+		ms := providerutils.JSNumberString(float64(timeout) / float64(time.Millisecond))
+		c.startTimer = time.AfterFunc(delay, func() {
+			c.mu.Lock()
+			fire := !c.settled && c.pendingStart != nil
+			c.mu.Unlock()
+			if fire {
+				c.failStart(fmt.Errorf("claude-code bridge did not emit a turn event within %sms.", ms)) //nolint:staticcheck // matches TS SDK's exact error text
+			}
+		})
+	}
+	c.mu.Unlock()
+	if err := c.sendPendingStart(); err != nil {
+		c.settleError(err)
+		return err
+	}
+	return nil
+}
+
+// sendPendingStart (re)sends the pending start frame. awaitingStartSend
+// stays true until the frame was handed to the socket, so a reconnect that
+// flushes the queued frame does not send it a second time. Mirrors TS
+// `sendPendingStart`.
+func (c *promptControl) sendPendingStart() error {
+	c.mu.Lock()
+	frame := c.pendingStart
+	if frame == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	c.awaitingStartSend = true
+	c.mu.Unlock()
+	err := c.channel.SendWithOptions(frame, bridge.SendOptions{OnSent: func() {
+		c.mu.Lock()
+		c.awaitingStartSend = false
+		c.mu.Unlock()
+	}})
+	if err != nil {
+		c.mu.Lock()
+		c.awaitingStartSend = false
+		c.mu.Unlock()
+	}
+	return err
+}
+
+// retryStartAfterReconnect resends a start the bridge never received: only
+// when the reconnected bridge reports it is waiting for a turn and has not
+// emitted an event past the start's cursor. A bridge without
+// idempotentStart cannot tell a resend from a new turn, so the turn fails
+// instead. Mirrors the TS `channel.onReconnect` handler in `wireTurn`.
+func (c *promptControl) retryStartAfterReconnect() {
+	c.mu.Lock()
+	if c.pendingStart == nil || c.settled || c.awaitingStartSend {
+		c.mu.Unlock()
+		return
+	}
+	cursor := c.startCursor
+	c.mu.Unlock()
+	hello := c.hello()
+	if hello == nil || hello.State != "waiting" || hello.LastSeq == nil || *hello.LastSeq > cursor {
+		return
+	}
+	if hello.SupportsIdempotentStart() {
+		_ = c.sendPendingStart()
+		return
+	}
+	c.failStart(errors.New("claude-code bridge is waiting for a start after reconnect and does not support safe start retries.")) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
+// failStart fails the turn and tears the bridge connection down. Mirrors TS
+// `failStart`.
+func (c *promptControl) failStart(err error) {
+	c.settleError(err)
+	c.channel.BeginClose()
+	_ = c.channel.Send(bridge.AbortCommand{})
+	c.channel.Close()
+}
+
+func (c *promptControl) hello() *bridge.Hello {
+	if c.bridgeHello == nil {
+		return nil
+	}
+	return c.bridgeHello()
+}
+
+// newStartID returns a random turn start identifier (TS `generateId()`).
+func newStartID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (c *promptControl) SubmitToolResult(ctx context.Context, result harness.ToolResultSubmission) error {
@@ -482,24 +747,3 @@ func (c *promptControl) SubmitUserMessage(ctx context.Context, text string) erro
 	}
 	return c.userMessages.Submit(ctx, text)
 }
-
-// extractUserText mirrors TS `extractUserText`: a bare string prompt, or a
-// user message whose content is only text parts.
-func extractUserText(prompt harness.Prompt) (string, error) {
-	if prompt.Message == nil {
-		return prompt.Text, nil
-	}
-	var parts []string
-	for _, part := range prompt.Message.Content {
-		text, ok := part.(types.TextContent)
-		if !ok {
-			return "", harness.NewCapabilityUnsupportedError(
-				fmt.Sprintf("The claude-code harness does not yet support user message parts of type '%s'. Pass a string or a user message whose content contains only text parts.", part.ContentType()),
-				HarnessID, nil)
-		}
-		parts = append(parts, text.Text)
-	}
-	return joinLinesDouble(parts), nil
-}
-
-func joinLinesDouble(parts []string) string { return strings.Join(parts, "\n\n") }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
@@ -37,10 +39,8 @@ type InteractionsConfig struct {
 	ProviderName string
 	// Client issues the actual /interactions HTTP requests.
 	Client *internalhttp.Client
-	// GenerateID generates fallback tool-call/source IDs (TS
-	// `GoogleInteractionsConfig.generateId`). Reserved for future use; the
-	// current implementation derives fallback IDs from the response/step
-	// shape instead (matching existing Go behavior).
+	// GenerateID generates fallback tool-call, processing and source ids (TS
+	// `GoogleInteractionsConfig.generateId`). Defaults to a random id.
 	GenerateID func() string
 
 	// SerializableConfig returns a JSON-friendly copy of the constructing
@@ -67,6 +67,7 @@ func interactionsConfigFromProvider(p *Provider) InteractionsConfig {
 	return InteractionsConfig{
 		ProviderName: p.Name() + ".interactions",
 		Client:       p.client,
+		GenerateID:   p.config.GenerateID,
 		SerializableConfig: func() map[string]interface{} {
 			return provider.SerializableConfig(p.config)
 		},
@@ -146,16 +147,21 @@ func (m *InteractionsLanguageModel) DoGenerate(ctx context.Context, opts *provid
 
 	var response interactionsResponse
 	resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/interactions",
-		Body:    args,
-		Headers: requestHeaders(opts),
+		ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractions),
+		Method:           http.MethodPost,
+		Path:             "/interactions",
+		Body:             args,
+		Headers:          requestHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	if m.agent != "" && !isTerminalInteractionStatus(response.Status) {
+	// Agent calls and background: true calls (e.g. Gemini 4 long decode, where
+	// the server runs every hop) may return a non-terminal status. Poll until
+	// terminal so the result matches a synchronous call (TS #23261).
+	isBackground := interactionsOpts.Background != nil && *interactionsOpts.Background
+	if (m.agent != "" || isBackground) && !isTerminalInteractionStatus(response.Status) {
 		response, resp, err = m.pollUntilTerminal(ctx, response.ID, requestHeaders(opts), interactionsOpts.PollingTimeoutMs)
 		if err != nil {
 			return nil, err
@@ -173,22 +179,25 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 	}
 	headers := requestHeaders(opts)
 
-	if m.agent != "" {
+	// `background: true` is incompatible with `stream: true` on POST, so
+	// background calls (TS isBackground) POST first and then stream the GET.
+	if interactionsOpts.Background != nil && *interactionsOpts.Background {
 		var response interactionsResponse
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-			Method:  http.MethodPost,
-			Path:    "/interactions",
-			Body:    args,
-			Headers: headers,
+			ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractions),
+			Method:           http.MethodPost,
+			Path:             "/interactions",
+			Body:             args,
+			Headers:          headers,
 		}, &response)
 		if err != nil {
 			return nil, m.handleError(err)
 		}
 		if response.ID == "" {
-			return nil, fmt.Errorf("google.interactions: background POST response did not include an interaction id; cannot stream the result")
+			return nil, fmt.Errorf("google.interactions: background POST response did not include an interaction id; cannot stream the result.") //nolint:staticcheck // matches TS SDK exact error text
 		}
 		if isTerminalInteractionStatus(response.Status) {
-			synth := newSynthesizedInteractionsStream(response, warnings, resp.Headers)
+			synth := newSynthesizedInteractionsStream(m, response, warnings, resp.Headers, opts.IncludeRawChunks)
 			if s, ok := synth.(*sliceTextStream); ok {
 				s.requestBody = args
 			}
@@ -200,6 +209,8 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 		}
 		if s, ok := pollStream.(*interactionsStream); ok {
 			s.requestBody = args
+			s.generateID = m.cfg.GenerateID
+			s.includeRawChunks = opts.IncludeRawChunks
 		}
 		return pollStream, nil
 	}
@@ -220,6 +231,8 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 	eventStream := newInteractionsEventStream(ctx, m.cfg.Client, httpResp.Body, "", headers, warnings, providerutils.ExtractHeaders(httpResp.Header), 0)
 	if s, ok := eventStream.(*interactionsStream); ok {
 		s.requestBody = streamArgs
+		s.generateID = m.cfg.GenerateID
+		s.includeRawChunks = opts.IncludeRawChunks
 	}
 	return eventStream, nil
 }
@@ -244,7 +257,9 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 
 	interactionsOpts, err := parseInteractionsProviderOptions(opts.ProviderOptions)
 	if err != nil {
-		return interactionsRequest{}, nil, GoogleInteractionsProviderOptions{}, err
+		// TS parseProviderOptions: InvalidArgumentError "invalid google
+		// provider options" wrapping the schema failure.
+		return interactionsRequest{}, nil, GoogleInteractionsProviderOptions{}, invalidGoogleFilesOptions(err)
 	}
 	isAgent := m.agent != ""
 	warnings := make([]types.Warning, 0)
@@ -252,8 +267,9 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 	// Agents keep tools (TS `hasTools` gate is unconditional on isAgent): the
 	// Interactions API accepts `tools`/`tool_choice` on agent requests too
 	// (e.g. `google.file_search` for Deep Research agents).
-	toolsForBody, toolChoice, toolWarnings := prepareInteractionsTools(opts.Tools, opts.ToolChoice)
-	warnings = append(warnings, toolWarnings...)
+	// Warning order follows TS getArgs: penalties, tools, agent responseFormat,
+	// prompt conversion, system instruction, dropped fields, imageConfig,
+	// environment.
 	if !isAgent {
 		if opts.FrequencyPenalty != nil {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
@@ -261,6 +277,13 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		if opts.PresencePenalty != nil {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
 		}
+	}
+	toolsForBody, toolChoice, toolWarnings := prepareInteractionsTools(opts.Tools, opts.ToolChoice)
+	warnings = append(warnings, toolWarnings...)
+	rfIsJSON := opts.ResponseFormat != nil && (opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema" || opts.ResponseFormat.Type == "json_object")
+	if rfIsJSON && isAgent {
+		const msg = "google.interactions: structured output (responseFormat) is not supported when an agent is set; responseFormat will be ignored."
+		warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 	}
 
 	input, systemInstruction, convWarnings, err := m.convertPrompt(normalizedOpts.Prompt, interactionsOpts)
@@ -293,45 +316,39 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 	 *     didn't already supply one.
 	 */
 	var responseFormatEntries []map[string]interface{}
-	if opts.ResponseFormat != nil && (opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema" || opts.ResponseFormat.Type == "json_object") {
-		if isAgent {
-			warnings = append(warnings, types.Warning{
-				Type:    "other",
-				Message: "google.interactions: structured output (responseFormat) is not supported when an agent is set; responseFormat will be ignored.",
-				Details: "google.interactions: structured output (responseFormat) is not supported when an agent is set; responseFormat will be ignored.",
-			})
-		} else {
-			entry := map[string]interface{}{"type": "text", "mime_type": "application/json"}
-			if opts.ResponseFormat.Schema != nil {
-				entry["schema"] = opts.ResponseFormat.Schema
-			}
-			responseFormatEntries = append(responseFormatEntries, entry)
+	if rfIsJSON && !isAgent {
+		entry := map[string]interface{}{"type": "text", "mime_type": "application/json"}
+		if opts.ResponseFormat.Schema != nil {
+			entry["schema"] = providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema)
 		}
+		responseFormatEntries = append(responseFormatEntries, entry)
 	}
 	hasImageEntry := false
 	for _, entry := range interactionsOpts.ResponseFormat {
+		// TS pruneUndefined drops only absent values: an empty mime_type or
+		// an empty schema object is sent.
 		switch stringValue(entry["type"]) {
 		case "text":
-			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+			responseFormatEntries = append(responseFormatEntries, dropNilValues(map[string]interface{}{
 				"type":      "text",
 				"mime_type": entry["mimeType"],
 				"schema":    entry["schema"],
 			}))
 		case "image":
 			hasImageEntry = true
-			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+			responseFormatEntries = append(responseFormatEntries, dropNilValues(map[string]interface{}{
 				"type":         "image",
 				"mime_type":    entry["mimeType"],
 				"aspect_ratio": entry["aspectRatio"],
 				"image_size":   entry["imageSize"],
 			}))
 		case "audio":
-			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+			responseFormatEntries = append(responseFormatEntries, dropNilValues(map[string]interface{}{
 				"type":      "audio",
 				"mime_type": entry["mimeType"],
 			}))
 		case "video":
-			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+			responseFormatEntries = append(responseFormatEntries, dropNilValues(map[string]interface{}{
 				"type":         "video",
 				"aspect_ratio": entry["aspectRatio"],
 				"resolution":   entry["resolution"],
@@ -364,7 +381,9 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 
 		// Deprecated fallback: imageConfig contributes an image entry only
 		// when responseFormat didn't already supply one. Always warn.
-		if len(interactionsOpts.ImageConfig) > 0 {
+		// TS `imageConfig != null`: an empty imageConfig warns and adds
+		// the default image entry too.
+		if interactionsOpts.ImageConfig != nil {
 			msg := "google.interactions: providerOptions.google.imageConfig is deprecated. Use providerOptions.google.responseFormat with a { type: \"image\", ... } entry instead."
 			if hasImageEntry {
 				msg = "google.interactions: providerOptions.google.imageConfig is deprecated and was ignored because providerOptions.google.responseFormat already supplies an image entry. Use responseFormat exclusively."
@@ -394,22 +413,47 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		ServiceTier:           interactionsOpts.ServiceTier,
 		Store:                 interactionsOpts.Store,
 		GenerationConfig:      generationConfig,
-		AgentConfig:           emptyMapToNil(interactionsOpts.AgentConfig),
-		Environment:           interactionsOpts.Environment,
+		AgentConfig:           interactionsAgentConfig(isAgent, interactionsOpts.AgentConfig),
 		Background:            interactionsOpts.Background,
 	}
+	// TS sends `background` only when providerOptions.google.background is
+	// set: some agents require it, others reject it.
+	if interactionsOpts.Environment != nil {
+		if !isAgent {
+			const msg = "google.interactions: environment is only supported when an agent is set; environment will be omitted from the request body."
+			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
+		} else {
+			body.Environment = interactionsEnvironment(interactionsOpts.Environment)
+		}
+	}
+	// TS sends `agent` only for agent models; providerOptions.google.agent is
+	// accepted by the schema but never read.
 	if isAgent {
 		body.Agent = m.agent
-		if body.Background == nil {
-			background := true
-			body.Background = &background
-		}
-	} else if interactionsOpts.Agent != "" {
-		body.Agent = interactionsOpts.Agent
 	} else {
 		body.Model = m.modelID
 	}
 	return body, warnings, interactionsOpts, nil
+}
+
+// interactionsAgentConfig mirrors TS getArgs: agent_config is built only when
+// an agent is set, from the deep-research fields or {type: 'dynamic'}.
+func interactionsAgentConfig(isAgent bool, cfg map[string]interface{}) map[string]interface{} {
+	if !isAgent || cfg == nil {
+		return nil
+	}
+	switch cfg["type"] {
+	case "deep-research":
+		return dropNilValues(map[string]interface{}{
+			"type":                   "deep-research",
+			"thinking_summaries":     cfg["thinking_summaries"],
+			"visualization":          cfg["visualization"],
+			"collaborative_planning": cfg["collaborative_planning"],
+		})
+	case "dynamic":
+		return map[string]interface{}{"type": "dynamic"}
+	}
+	return nil
 }
 
 func (m *InteractionsLanguageModel) convertResponse(response interactionsResponse, httpResp *internalhttp.Response, request interactionsRequest, warnings []types.Warning) *types.GenerateResult {
@@ -422,17 +466,15 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 		headers = providerutils.ExtractHeaders(httpResp.Headers)
 		rawBody = json.RawMessage(httpResp.Body)
 	}
-	serviceTier := response.ServiceTier
-	if serviceTier == "" && headers != nil {
-		serviceTier = headers["x-gemini-service-tier"]
-	}
 	googleMeta := pruneMap(map[string]interface{}{
 		"interactionId":          emptyToNil(normalizedInteractionID(response.ID)),
-		"serviceTier":            emptyToNil(serviceTier),
 		"outputTokensByModality": outputTokensByModalityMap(response.Usage),
 	})
 	if googleMeta == nil {
 		googleMeta = map[string]interface{}{}
+	}
+	if st := interactionsServiceTier(response.ServiceTier, headerServiceTier(headers)); st != nil {
+		googleMeta["serviceTier"] = *st
 	}
 	providerMeta := map[string]interface{}{"google": googleMeta}
 	created, _ := time.Parse(time.RFC3339, response.Created)
@@ -461,7 +503,7 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 
 func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, interactionID string, headers map[string]string, timeoutMs int) (interactionsResponse, *internalhttp.Response, error) {
 	if interactionID == "" {
-		return interactionsResponse{}, nil, fmt.Errorf("google.interactions: background POST response did not include an interaction id")
+		return interactionsResponse{}, nil, fmt.Errorf("google.interactions: cannot poll a background interaction without an id. The POST response did not include an interaction id.") //nolint:staticcheck // matches TS SDK exact error text
 	}
 	timeout := defaultInteractionsPollTimeout
 	if timeoutMs > 0 {
@@ -471,27 +513,29 @@ func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, inter
 	startedAt := time.Now()
 	for {
 		if time.Since(startedAt) > timeout {
-			_ = m.cancelInteraction(context.Background(), interactionID, headers)
-			return interactionsResponse{}, nil, fmt.Errorf("google.interactions: timed out polling interaction %s after %dms", interactionID, timeout.Milliseconds())
+			// TS only cancels on abort; a timeout leaves the run going so the
+			// caller can still retrieve it by id.
+			return interactionsResponse{}, nil, fmt.Errorf("google.interactions: timed out polling interaction %s after %dms.", interactionID, timeout.Milliseconds()) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		timer := time.NewTimer(nextDelay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			_ = m.cancelInteraction(context.Background(), interactionID, headers)
+			_ = m.cancelInteraction(context.WithoutCancel(ctx), interactionID, headers)
 			return interactionsResponse{}, nil, ctx.Err()
 		case <-timer.C:
 		}
 
 		var response interactionsResponse
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-			Method:  http.MethodGet,
-			Path:    "/interactions/" + url.PathEscape(interactionID),
-			Headers: headers,
+			ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractions),
+			Method:           http.MethodGet,
+			Path:             "/interactions/" + url.PathEscape(interactionID),
+			Headers:          headers,
 		}, &response)
 		if err != nil {
 			if ctx.Err() != nil {
-				_ = m.cancelInteraction(context.Background(), interactionID, headers)
+				_ = m.cancelInteraction(context.WithoutCancel(ctx), interactionID, headers)
 			}
 			return interactionsResponse{}, nil, m.handleError(err)
 		}
@@ -519,6 +563,16 @@ func (m *InteractionsLanguageModel) cancelInteraction(ctx context.Context, inter
 }
 
 func (m *InteractionsLanguageModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
+	}
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
@@ -537,18 +591,26 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 	}
 	switch v := raw.(type) {
 	case GoogleInteractionsProviderOptions:
-		if err := validateInteractionsProviderOptions(v); err != nil {
+		out = v
+	case *GoogleInteractionsProviderOptions:
+		if v == nil {
+			return out, nil
+		}
+		out = *v
+	case map[string]interface{}:
+		if env, ok := v["environment"].(map[string]interface{}); ok {
+			// TS parses the JSON value: typed Go slices inside the
+			// environment read like their JSON form.
+			normalized := make(map[string]interface{}, len(v))
+			for k, x := range v {
+				normalized[k] = x
+			}
+			normalized["environment"] = providerutils.NormalizeOptionsJSON(env)
+			v = normalized
+		}
+		if err := checkInteractionsOptionTypes(v); err != nil {
 			return out, err
 		}
-		return v, nil
-	case *GoogleInteractionsProviderOptions:
-		if v != nil {
-			if err := validateInteractionsProviderOptions(*v); err != nil {
-				return out, err
-			}
-			return *v, nil
-		}
-	case map[string]interface{}:
 		out.PreviousInteractionID, _ = v["previousInteractionId"].(string)
 		out.MediaResolution, _ = v["mediaResolution"].(string)
 		out.SystemInstruction, _ = v["systemInstruction"].(string)
@@ -593,10 +655,223 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 	default:
 		return out, fmt.Errorf("google interactions provider options must be GoogleInteractionsProviderOptions or map[string]interface{}, got %T", raw)
 	}
+	// TS parses the JSON value: an environment map holding typed Go slices
+	// ([]map[string]interface{} sources or allowlist) reads like its JSON
+	// form.
+	if env, ok := out.Environment.(map[string]interface{}); ok {
+		out.Environment = providerutils.NormalizeOptionsJSON(env)
+	}
 	if err := validateInteractionsProviderOptions(out); err != nil {
 		return out, err
 	}
 	return out, nil
+}
+
+// checkInteractionsOptionTypes mirrors the zod type checks of
+// googleInteractionsLanguageModelOptions for a raw providerOptions.google map:
+// a present, non-null value of the wrong type fails the call.
+func checkInteractionsOptionTypes(v map[string]interface{}) error {
+	for _, k := range []string{"previousInteractionId", "mediaResolution", "systemInstruction", "serviceTier", "thinkingLevel", "thinkingSummaries", "agent", "signature", "interactionId"} {
+		if x, ok := v[k]; ok && x != nil {
+			if _, isStr := x.(string); !isStr {
+				return fmt.Errorf("google.interactions: %s: expected string, received %T", k, x)
+			}
+		}
+	}
+	for _, k := range []string{"background", "store"} {
+		if x, ok := v[k]; ok && x != nil {
+			if _, isBool := x.(bool); !isBool {
+				return fmt.Errorf("google.interactions: %s: expected boolean, received %T", k, x)
+			}
+		}
+	}
+	if x, ok := v["pollingTimeoutMs"]; ok && x != nil {
+		n, isNum := numberToInt(x)
+		if f, isF := x.(float64); isNum && isF && f != float64(n) {
+			isNum = false
+		}
+		if !isNum || n <= 0 {
+			return fmt.Errorf("google.interactions: pollingTimeoutMs: expected a positive integer, received %v", x)
+		}
+	}
+	if x, ok := v["responseModalities"]; ok && x != nil {
+		switch x.(type) {
+		case []string, []interface{}:
+		default:
+			return fmt.Errorf("google.interactions: responseModalities: expected array, received %T", x)
+		}
+	}
+	if x, ok := v["imageConfig"]; ok && x != nil {
+		if _, isMap := x.(map[string]interface{}); !isMap {
+			return fmt.Errorf("google.interactions: imageConfig: expected object, received %T", x)
+		}
+	}
+	if x, ok := v["agentConfig"]; ok && x != nil {
+		m, isMap := x.(map[string]interface{})
+		if !isMap {
+			return fmt.Errorf("google.interactions: agentConfig: expected object, received %T", x)
+		}
+		if _, hasType := m["type"].(string); !hasType {
+			return fmt.Errorf("google.interactions: agentConfig.type: invalid input")
+		}
+		if c, ok := m["collaborativePlanning"]; ok && c != nil {
+			if _, isBool := c.(bool); !isBool {
+				return fmt.Errorf("google.interactions: agentConfig.collaborativePlanning: expected boolean, received %T", c)
+			}
+		}
+	}
+	if x, ok := v["responseFormat"]; ok && x != nil {
+		var entries []map[string]interface{}
+		switch list := x.(type) {
+		case []interface{}:
+			for i, item := range list {
+				m, isMap := item.(map[string]interface{})
+				if !isMap {
+					return fmt.Errorf("google.interactions: responseFormat[%d]: expected object, received %T", i, item)
+				}
+				entries = append(entries, m)
+			}
+		case []map[string]interface{}:
+			entries = list
+		default:
+			return fmt.Errorf("google.interactions: responseFormat: expected array, received %T", x)
+		}
+		for i, e := range entries {
+			if err := checkInteractionsResponseFormatEntry(i, e); err != nil {
+				return err
+			}
+		}
+	}
+	if x, ok := v["environment"]; ok && x != nil {
+		if err := checkInteractionsEnvironment(x); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkInteractionsResponseFormatEntry(i int, e map[string]interface{}) error {
+	typ, _ := e["type"].(string)
+	enum := func(key string, allowed ...string) error {
+		x, ok := e[key]
+		if !ok || x == nil {
+			return nil
+		}
+		if s, isStr := x.(string); isStr && containsString(allowed, s) {
+			return nil
+		}
+		return fmt.Errorf("google.interactions: responseFormat[%d].%s: invalid option %v", i, key, x)
+	}
+	str := func(key string) error {
+		if x, ok := e[key]; ok && x != nil {
+			if _, isStr := x.(string); !isStr {
+				return fmt.Errorf("google.interactions: responseFormat[%d].%s: expected string, received %T", i, key, x)
+			}
+		}
+		return nil
+	}
+	ratios := []string{"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:8", "8:1", "1:4", "4:1"}
+	var errs []error
+	switch typ {
+	case "text", "audio":
+		errs = append(errs, str("mimeType"))
+	case "image":
+		errs = append(errs, str("mimeType"), enum("aspectRatio", ratios...), enum("imageSize", "1K", "2K", "4K", "512"))
+	case "video":
+		errs = append(errs, enum("aspectRatio", "16:9", "9:16"), enum("resolution", "360p", "720p", "1080p", "4k"),
+			str("duration"), enum("delivery", "inline", "uri"), str("gcsUri"))
+	default:
+		return fmt.Errorf("google.interactions: responseFormat[%d].type: invalid input", i)
+	}
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkInteractionsEnvironment(x interface{}) error {
+	if _, isStr := x.(string); isStr {
+		return nil
+	}
+	env, isMap := x.(map[string]interface{})
+	if !isMap {
+		return fmt.Errorf("google.interactions: environment: expected string or object, received %T", x)
+	}
+	if env["type"] != "remote" {
+		return fmt.Errorf("google.interactions: environment.type: invalid input")
+	}
+	needStr := func(path string, m map[string]interface{}, key string, nullable bool) error {
+		val, ok := m[key]
+		if !ok || val == nil {
+			if nullable {
+				return nil
+			}
+			return fmt.Errorf("google.interactions: %s.%s: required", path, key)
+		}
+		if _, isStr := val.(string); !isStr {
+			return fmt.Errorf("google.interactions: %s.%s: expected string, received %T", path, key, val)
+		}
+		return nil
+	}
+	if srcs, ok := env["sources"]; ok && srcs != nil {
+		list, isList := srcs.([]interface{})
+		if !isList {
+			return fmt.Errorf("google.interactions: environment.sources: expected array, received %T", srcs)
+		}
+		for i, item := range list {
+			path := fmt.Sprintf("environment.sources[%d]", i)
+			m, isMap := item.(map[string]interface{})
+			if !isMap {
+				return fmt.Errorf("google.interactions: %s: expected object, received %T", path, item)
+			}
+			switch m["type"] {
+			case "gcs", "repository":
+				if err := needStr(path, m, "source", false); err != nil {
+					return err
+				}
+				if err := needStr(path, m, "target", true); err != nil {
+					return err
+				}
+			case "inline":
+				if err := needStr(path, m, "content", false); err != nil {
+					return err
+				}
+				if err := needStr(path, m, "target", false); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("google.interactions: %s.type: invalid input", path)
+			}
+		}
+	}
+	if net, ok := env["network"]; ok && net != nil {
+		switch n := net.(type) {
+		case string:
+			if n != "disabled" {
+				return fmt.Errorf("google.interactions: environment.network: invalid input")
+			}
+		case map[string]interface{}:
+			list, isList := n["allowlist"].([]interface{})
+			if !isList {
+				return fmt.Errorf("google.interactions: environment.network.allowlist: expected array")
+			}
+			for i, item := range list {
+				path := fmt.Sprintf("environment.network.allowlist[%d]", i)
+				m, isMap := item.(map[string]interface{})
+				if !isMap {
+					return fmt.Errorf("google.interactions: %s: expected object, received %T", path, item)
+				}
+				if err := needStr(path, m, "domain", false); err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("google.interactions: environment.network: invalid input")
+		}
+	}
+	return nil
 }
 
 func validateInteractionsProviderOptions(opts GoogleInteractionsProviderOptions) error {
@@ -639,6 +914,75 @@ func validateInteractionsProviderOptions(opts GoogleInteractionsProviderOptions)
 	return nil
 }
 
+// dropNilValues is TS pruneUndefined: only nil values are dropped.
+func dropNilValues(in map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		if v != nil {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// interactionsEnvironment maps providerOptions.google.environment to the wire
+// value (TS getArgs): a string is sent as is; an object becomes
+// {type:"remote", sources?, network?}.
+func interactionsEnvironment(raw interface{}) interface{} {
+	if s, ok := raw.(string); ok {
+		return s
+	}
+	var env map[string]interface{}
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		env = v
+	default:
+		b, err := json.Marshal(raw)
+		if err != nil || json.Unmarshal(b, &env) != nil {
+			return raw
+		}
+	}
+	out := map[string]interface{}{"type": "remote"}
+	if sources, ok := env["sources"].([]interface{}); ok && len(sources) > 0 {
+		mapped := make([]interface{}, 0, len(sources))
+		for _, src := range sources {
+			m, _ := src.(map[string]interface{})
+			if m == nil {
+				mapped = append(mapped, src)
+				continue
+			}
+			if m["type"] == "inline" {
+				mapped = append(mapped, map[string]interface{}{"type": "inline", "content": m["content"], "target": m["target"]})
+				continue
+			}
+			mapped = append(mapped, dropNilValues(map[string]interface{}{"type": m["type"], "source": m["source"], "target": m["target"]}))
+		}
+		out["sources"] = mapped
+	}
+	switch n := env["network"].(type) {
+	case string:
+		if n == "disabled" {
+			out["network"] = "disabled"
+		}
+	case map[string]interface{}:
+		var allow []interface{}
+		entries, _ := n["allowlist"].([]interface{})
+		for _, e := range entries {
+			m, _ := e.(map[string]interface{})
+			if m == nil {
+				allow = append(allow, e)
+				continue
+			}
+			allow = append(allow, dropNilValues(map[string]interface{}{"domain": m["domain"], "transform": m["transform"]}))
+		}
+		if allow == nil {
+			allow = []interface{}{}
+		}
+		out["network"] = map[string]interface{}{"allowlist": allow}
+	}
+	return out
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -651,7 +995,8 @@ func containsString(values []string, target string) bool {
 func snakeImageConfig(in map[string]interface{}) map[string]interface{} {
 	aspectRatio := firstMapValue(in, "aspectRatio", "aspect_ratio")
 	imageSize := firstMapValue(in, "imageSize", "image_size")
-	return pruneMap(map[string]interface{}{
+	// TS reads each field `!= null`; an empty imageConfig stays an object.
+	return dropNilValues(map[string]interface{}{
 		"aspect_ratio": aspectRatio,
 		"image_size":   imageSize,
 	})
@@ -723,7 +1068,7 @@ func droppedAgentGenerationFields(opts *provider.GenerateOptions, googleOpts Goo
 	if googleOpts.ThinkingSummaries != "" {
 		dropped = append(dropped, "thinkingSummaries")
 	}
-	if len(googleOpts.ImageConfig) > 0 {
+	if googleOpts.ImageConfig != nil {
 		dropped = append(dropped, "imageConfig")
 	}
 	return dropped
@@ -757,6 +1102,18 @@ func nonEmptyStrings(v []string) interface{} {
 	return v
 }
 
+// interactionsServiceTier is TS `response.service_tier ?? headerServiceTier`:
+// a body value ("" included) wins, else the header's (nil when absent).
+func interactionsServiceTier(body *string, header string) *string {
+	if body != nil {
+		return body
+	}
+	if header != "" {
+		return &header
+	}
+	return nil
+}
+
 func emptyToNil(v string) interface{} {
 	if v == "" {
 		return nil
@@ -770,13 +1127,6 @@ func emptyToNil(v string) interface{} {
 func stringValue(v interface{}) string {
 	s, _ := v.(string)
 	return s
-}
-
-func emptyMapToNil(v map[string]interface{}) map[string]interface{} {
-	if len(v) == 0 {
-		return nil
-	}
-	return v
 }
 
 func pruneMap(in map[string]interface{}) map[string]interface{} {
@@ -825,11 +1175,33 @@ func convertInteractionsUsage(usage *interactionsUsage) types.Usage {
 	if usage == nil {
 		return types.Usage{}
 	}
+	// TS convertGoogleInteractionsUsage: output total is output + thought
+	// tokens, text is total_output_tokens, noCache is input - cached, raw is
+	// the API's usage object untouched.
+	var totalInput, totalCached int64
+	if usage.TotalInputTokens != nil {
+		totalInput = *usage.TotalInputTokens
+	}
+	if usage.TotalCachedTokens != nil {
+		totalCached = *usage.TotalCachedTokens
+	}
 	out := types.Usage{
-		InputTokens:  usage.TotalInputTokens,
-		OutputTokens: usage.TotalOutputTokens,
-		TotalTokens:  usage.TotalTokens,
-		Raw: map[string]interface{}{
+		InputTokens: usage.TotalInputTokens,
+		TotalTokens: usage.TotalTokens,
+		Raw:         usage.raw,
+	}
+	if usage.TotalOutputTokens != nil || usage.TotalThoughtTokens != nil {
+		var total int64
+		if usage.TotalOutputTokens != nil {
+			total += *usage.TotalOutputTokens
+		}
+		if usage.TotalThoughtTokens != nil {
+			total += *usage.TotalThoughtTokens
+		}
+		out.OutputTokens = &total
+	}
+	if out.Raw == nil {
+		out.Raw = map[string]interface{}{
 			"total_input_tokens":          usage.TotalInputTokens,
 			"total_output_tokens":         usage.TotalOutputTokens,
 			"total_thought_tokens":        usage.TotalThoughtTokens,
@@ -841,19 +1213,24 @@ func convertInteractionsUsage(usage *interactionsUsage) types.Usage {
 			"cached_tokens_by_modality":   usage.CachedTokensByModality,
 			"tool_use_tokens_by_modality": usage.ToolUseTokensByModality,
 			"grounding_tool_count":        usage.GroundingToolCount,
-		},
+		}
 	}
-	if usage.TotalCachedTokens != nil || len(usage.InputTokensByModality) > 0 {
-		out.InputDetails = &types.InputTokenDetails{
+	if usage.TotalInputTokens != nil || usage.TotalCachedTokens != nil || len(usage.InputTokensByModality) > 0 {
+		details := &types.InputTokenDetails{
 			CacheReadTokens: usage.TotalCachedTokens,
 			TextTokens:      modalityToken(usage.InputTokensByModality, "text"),
 			ImageTokens:     modalityToken(usage.InputTokensByModality, "image"),
 		}
+		if usage.TotalInputTokens != nil {
+			noCache := totalInput - totalCached
+			details.NoCacheTokens = &noCache
+		}
+		out.InputDetails = details
 	}
-	if usage.TotalThoughtTokens != nil || len(usage.OutputTokensByModality) > 0 {
+	if usage.TotalThoughtTokens != nil || usage.TotalOutputTokens != nil {
 		out.OutputDetails = &types.OutputTokenDetails{
 			ReasoningTokens: usage.TotalThoughtTokens,
-			TextTokens:      modalityToken(usage.OutputTokensByModality, "text"),
+			TextTokens:      usage.TotalOutputTokens,
 		}
 	}
 	return out
@@ -933,11 +1310,37 @@ func outputTokensByModalityMap(usage *interactionsUsage) map[string]interface{} 
 	return out
 }
 
-func providerMetaRaw(signature, interactionID string) json.RawMessage {
-	google := pruneMap(map[string]interface{}{
-		"signature":     emptyToNil(signature),
+// withSignature adds a present signature (even "") to the google metadata.
+func withSignature(google map[string]interface{}, signature *string) map[string]interface{} {
+	if signature != nil {
+		if google == nil {
+			google = map[string]interface{}{}
+		}
+		google["signature"] = *signature
+	}
+	return google
+}
+
+// signaturePtr is a Go string signature as a response one ("" is absent).
+func signaturePtr(signature string) *string {
+	if signature == "" {
+		return nil
+	}
+	return &signature
+}
+
+// signatureText is the signature string ("" when absent).
+func signatureText(signature *string) string {
+	if signature == nil {
+		return ""
+	}
+	return *signature
+}
+
+func providerMetaRaw(signature *string, interactionID string) json.RawMessage {
+	google := withSignature(pruneMap(map[string]interface{}{
 		"interactionId": emptyToNil(interactionID),
-	})
+	}), signature)
 	if len(google) == 0 {
 		return nil
 	}
@@ -945,11 +1348,10 @@ func providerMetaRaw(signature, interactionID string) json.RawMessage {
 	return raw
 }
 
-func providerMetaMap(signature, interactionID string) map[string]interface{} {
-	google := pruneMap(map[string]interface{}{
-		"signature":     emptyToNil(signature),
+func providerMetaMap(signature *string, interactionID string) map[string]interface{} {
+	google := withSignature(pruneMap(map[string]interface{}{
 		"interactionId": emptyToNil(interactionID),
-	})
+	}), signature)
 	if len(google) == 0 {
 		return nil
 	}
@@ -959,36 +1361,17 @@ func providerMetaMap(signature, interactionID string) map[string]interface{} {
 // processingMeta builds the providerMetadata.google payload for
 // `google.processing_call`/`google.processing_result` custom content parts
 // (TS googleProviderMetadata's processingId/processingCallId fields).
-func processingMeta(signature, interactionID, processingID, processingCallID string) json.RawMessage {
-	google := pruneMap(map[string]interface{}{
-		"signature":        emptyToNil(signature),
+func processingMeta(signature *string, interactionID, processingID, processingCallID string) json.RawMessage {
+	google := withSignature(pruneMap(map[string]interface{}{
 		"interactionId":    emptyToNil(interactionID),
 		"processingId":     emptyToNil(processingID),
 		"processingCallId": emptyToNil(processingCallID),
-	})
+	}), signature)
 	if len(google) == 0 {
 		return nil
 	}
 	raw, _ := json.Marshal(map[string]interface{}{"google": google})
 	return raw
-}
-
-func signatureFromRawMetadata(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var envelope map[string]map[string]interface{}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return ""
-	}
-	google := envelope["google"]
-	if google == nil {
-		return ""
-	}
-	if sig, _ := google["signature"].(string); sig != "" {
-		return sig
-	}
-	return ""
 }
 
 func extractGoogleMetadata(raw json.RawMessage) map[string]interface{} {
@@ -1003,15 +1386,6 @@ func extractGoogleMetadata(raw json.RawMessage) map[string]interface{} {
 		return google
 	}
 	return nil
-}
-
-func googleSignature(raw json.RawMessage) string {
-	if google := extractGoogleMetadata(raw); google != nil {
-		if s, ok := google["signature"].(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 func googleInteractionID(raw json.RawMessage) string {

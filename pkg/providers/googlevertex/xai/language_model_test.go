@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,7 +44,7 @@ func TestLanguageModel_Metadata(t *testing.T) {
 	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
 	require.NoError(t, err)
 
-	assert.Equal(t, "v3", model.SpecificationVersion())
+	assert.Equal(t, "v4", model.SpecificationVersion())
 	assert.Equal(t, "googleVertex.xai", model.Provider())
 	assert.Equal(t, ModelGrok41FastReasoning, model.ModelID())
 	assert.True(t, model.SupportsTools())
@@ -247,4 +248,122 @@ func TestLanguageModel_TopKWarning(t *testing.T) {
 	require.Len(t, result.Warnings, 1)
 	assert.Equal(t, "unsupported", result.Warnings[0].Type)
 	assert.Equal(t, "topK", result.Warnings[0].Feature)
+}
+
+// TS createJsonResponseHandler(openai-compatible chat schema): a 200 body that
+// does not match is an APICallError "Invalid JSON response".
+func TestLanguageModel_DoGenerate_InvalidResponseSchema(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":"nope"}`))
+	}))
+	defer server.Close()
+	prov, err := New(Config{Project: "test-project", AccessToken: "test-token", BaseURL: server.URL})
+	require.NoError(t, err)
+	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
+	require.NoError(t, err)
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	var perr *providererrors.ProviderError
+	require.ErrorAs(t, err, &perr)
+	assert.Equal(t, "Invalid JSON response", perr.Message)
+	assert.Equal(t, 200, perr.StatusCode)
+}
+
+// TS openai-compatible getArgs: strict defaults to true, unknown
+// providerOptions[googleVertex] keys are spread into the body, extra keys
+// under the deprecated "xai" key are not spread, and reasoning_effort is
+// stripped by transformRequestBody.
+func TestLanguageModel_ProviderOptionsLikeTS(t *testing.T) {
+	prov, err := New(Config{Project: "p", AccessToken: "t", BaseURL: "http://unused"})
+	require.NoError(t, err)
+	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
+	require.NoError(t, err)
+	lm := model.(*LanguageModel)
+	body, _ := lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt:         types.Prompt{Text: "hi"},
+		ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object"}},
+		ProviderOptions: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"customFlag": true, "user": "u1", "reasoningEffort": "low"},
+			"xai":          map[string]interface{}{"otherFlag": 1},
+		},
+	}, false)
+	assert.Equal(t, true, body["customFlag"])
+	assert.Equal(t, "u1", body["user"])
+	assert.NotContains(t, body, "otherFlag")
+	assert.NotContains(t, body, "reasoning_effort")
+	rf := body["response_format"].(map[string]interface{})
+	js := rf["json_schema"].(map[string]interface{})
+	assert.Equal(t, true, js["strict"])
+}
+
+// The Go-only "xai" options key read by v0.5.2 still fills the chat option
+// fields (googleVertex wins) and returns a deprecated warning.
+func TestLanguageModel_DeprecatedXaiOptionsKey(t *testing.T) {
+	prov, err := New(Config{Project: "p", AccessToken: "t", BaseURL: "http://unused"})
+	require.NoError(t, err)
+	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
+	require.NoError(t, err)
+	lm := model.(*LanguageModel)
+
+	body, warnings := lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"user": "legacy", "textVerbosity": "low", "otherFlag": 1},
+		},
+	}, false)
+	assert.Equal(t, "legacy", body["user"])
+	assert.Equal(t, "low", body["verbosity"])
+	assert.NotContains(t, body, "otherFlag")
+	found := false
+	for _, w := range warnings {
+		if w.Type == "deprecated" && w.Setting == "providerOptions key 'xai'" {
+			found = true
+		}
+	}
+	assert.True(t, found, "deprecated warning for the xai key, got %#v", warnings)
+
+	body, _ = lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"user": "new"},
+			"xai":          map[string]interface{}{"user": "legacy"},
+		},
+	}, false)
+	assert.Equal(t, "new", body["user"])
+
+	_, warnings = lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"googleVertex": map[string]interface{}{"user": "new"}},
+	}, false)
+	for _, w := range warnings {
+		assert.NotEqual(t, "providerOptions key 'xai'", w.Setting)
+	}
+}
+
+// TestLanguageModel_GoogleTokenOverridesCallerAuthorization matches the TS
+// node wrapper: the generated bearer token is spread after user headers, so a
+// caller Authorization header (config or per-call) never wins.
+func TestLanguageModel_GoogleTokenOverridesCallerAuthorization(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(mockChatCompletionsResponse())
+	}))
+	defer server.Close()
+
+	prov, err := New(Config{
+		Project: "p", Location: "global", AccessToken: "google-token", BaseURL: server.URL,
+		Headers: map[string]string{"Authorization": "Bearer config-header"},
+	})
+	require.NoError(t, err)
+	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
+	require.NoError(t, err)
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt:  types.Prompt{Text: "hi"},
+		Headers: map[string]string{"Authorization": "Bearer call-header"},
+	})
+	require.NoError(t, err)
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Bearer google-token", "Bearer google-token"}, got)
 }

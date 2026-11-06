@@ -27,6 +27,7 @@ func TestGroqReasoningAllLevels(t *testing.T) {
 		{types.ReasoningMedium, "medium", true},
 		{types.ReasoningHigh, "high", true},
 		{types.ReasoningXHigh, "high", true},
+		{types.ReasoningMax, "high", true},
 		{types.ReasoningDefault, "", false},
 	}
 

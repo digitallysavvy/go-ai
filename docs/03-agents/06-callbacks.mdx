@@ -98,6 +98,24 @@ myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
 })
 ```
 
+### Step Errors, Errors and Aborts
+
+`AgentConfig` also accepts `OnStepError`, `ErrorHandler` and `AbortHandler`. They are set on the agent, not per call.
+
+- `OnStepError` receives an `ai.OnStepErrorEvent` when a step that started fails before it produces a step result (see [event callbacks](../03-ai-sdk-core/65-event-callbacks.mdx)). `OnStepEnd` is not called for that step.
+- `ErrorHandler` receives the errors of `Stream`, and the error `Generate` returns, just before it is returned. Aborts and timeouts are not reported. A per-call `AgentStreamOptions.OnError` runs after it.
+- `AbortHandler` runs when `Stream` is aborted or times out. `Generate` does not call it: its aborted step ends with `OnStepError`.
+
+```go
+agent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    OnStepError: func(ctx context.Context, e ai.OnStepErrorEvent) {
+        log.Printf("step %d failed: %v", e.StepNumber, e.Error)
+    },
+    ErrorHandler: func(ctx context.Context, err error) { log.Println("agent error:", err) },
+})
+```
+
 ## Common Use Cases
 
 ### Logging Agent Execution

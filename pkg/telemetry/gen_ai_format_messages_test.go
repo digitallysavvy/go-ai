@@ -366,3 +366,16 @@ func TestFormatInputMessagesEmpty(t *testing.T) {
 		t.Fatalf("formatInputMessages(nil) = %v, want empty", got)
 	}
 }
+
+func TestConvertMessagePartToSemConv_ToolApprovalResponseOmitsEmptyReason(t *testing.T) {
+	t.Parallel()
+
+	without := convertMessagePartToSemConv(types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: true})
+	if _, ok := without["reason"]; ok {
+		t.Fatalf("reason must be omitted when unset (TS undefined), got %v", without)
+	}
+	with := convertMessagePartToSemConv(types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: false, Reason: "no"})
+	if with["reason"] != "no" || with["approved"] != false || with["approval_id"] != "a1" {
+		t.Fatalf("unexpected part %v", with)
+	}
+}

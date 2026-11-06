@@ -8,6 +8,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -168,7 +169,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 				return fail(uiValidationError(toolPart.Input, fmt.Errorf("No tool schema found for tool part %s", toolName), inputField, toolName, toolPart.ToolCallID)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 
-			hasInputSchemaInput := toolPart.Approval != nil && toolPart.Approval.InputSchemaInput != nil
+			hasInputSchemaInput := toolPart.Approval.hasInputSchemaInput()
 			inputToValidate := toolPart.Input
 			if hasInputSchemaInput {
 				inputToValidate = toolPart.Approval.InputSchemaInput
@@ -176,7 +177,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 			convertToDynamic := false
 
 			if toolPart.State != ToolStateInputStreaming &&
-				(toolPart.State != ToolStateOutputError || hasInputSchemaInput || toolPart.Input != nil) {
+				(toolPart.State != ToolStateOutputError || hasInputSchemaInput || toolPart.hasInput()) {
 				inputErr := validateUIToolInput(ctx, tool, toolPart, inputToValidate, hasInputSchemaInput, opts.ExperimentalRefineToolInput[toolName], inputField)
 				if inputErr != nil {
 					// Failed calls and empty terminal inputs must remain
@@ -216,12 +217,26 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 func validateUIToolInput(ctx context.Context, tool *types.Tool, toolPart *ToolUIPart, value interface{}, hasInputSchemaInput bool, refine ToolInputRefiner, field string) error {
 	toolName := GetStaticToolName(toolPart)
 	parsed := value
-	if validator := toolInputValidator(tool); validator != nil {
+	if tool.ValidateInput != nil {
+		// TS safeValidateTypes runs the jsonSchema validate function: the
+		// tool's validator replaces the schema check, and its error shows as
+		// getErrorMessage(cause) ("Error: <message>").
+		validated, err := tool.ValidateInput(value)
+		if err != nil {
+			return providererrors.NewValidationErrorWithContext(value, providerutils.ToolErrorText(err), err, &providererrors.ValidationContext{
+				Field:      field,
+				EntityName: toolName,
+				EntityID:   toolPart.ToolCallID,
+			})
+		}
+		parsed = validated
+	} else if validator := toolInputValidator(tool); validator != nil {
 		// Apply defaults before validating (see the metadata handling in
 		// SafeValidateUIMessages for why): a missing field with a default
 		// must not fail validation, and the defaulted value is what gets
 		// parsed on.
-		defaulted := applyDefaultsForValidator(value, validator)
+		// Audited provider tools strip undeclared keys (TS zod z.object).
+		defaulted := applyDefaultsForValidator(stripUndeclaredProviderToolInput(tool, value), validator)
 		if err := validator.Validate(defaulted); err != nil {
 			return uiValidationError(value, err, field, toolName, toolPart.ToolCallID)
 		}
@@ -298,7 +313,7 @@ func asDynamicToolPart(part *ToolUIPart) *ToolUIPart {
 	dynamic := *part
 	dynamic.ToolName = GetStaticToolName(part)
 	dynamic.Type = "dynamic-tool"
-	return &dynamic
+	return markToolPartAsUnavailable(&dynamic)
 }
 
 // uiMessagesToJSONValue converts the caller-supplied messages into decoded
@@ -345,8 +360,15 @@ func decodeValidatedUIMessages(raw interface{}) ([]UIMessage, error) {
 			if !ok {
 				continue
 			}
-			if tool.State != ToolStateOutputError {
+			// TS declares rawInput on input-streaming (the partial input a
+			// resumed stream continues from) and output-error parts, and
+			// inputEncoding only on input-streaming parts.
+			if tool.State != ToolStateOutputError && tool.State != ToolStateInputStreaming {
 				tool.RawInput = nil
+				tool.rawInputNull = false
+			}
+			if tool.State != ToolStateInputStreaming {
+				tool.InputEncoding = ""
 			}
 			if tool.State != ToolStateOutputAvailable && tool.State != ToolStateOutputError {
 				tool.ResultProviderMetadata = nil
@@ -451,7 +473,7 @@ func uiPartIssue(raw interface{}) string {
 
 	switch {
 	case partType == "text":
-		return checks(str("text"), optState, optPM("providerMetadata"))
+		return checks(str("text"), func() string { return citationsIssue(part) }, optState, optPM("providerMetadata"))
 	case partType == "reasoning":
 		return checks(optStr("id"), str("text"), optState, optPM("providerMetadata"))
 	case partType == "custom":
@@ -482,13 +504,91 @@ func uiPartIssue(raw interface{}) string {
 	case partType == "step-start":
 		return ""
 	case strings.HasPrefix(partType, "data-"):
-		return optionalString(part, "id")
+		// TS `data: z.unknown()` is required under zod 4 (owner ruling
+		// 2026-11-02, pending decision 1 option b): a data part without a
+		// `data` key fails with zod 4.4.3's invalid_type issue
+		// ("expected nonoptional, received undefined"); any value, null
+		// included, satisfies it.
+		return checks(optStr("id"), func() string {
+			if _, exists := part["data"]; !exists {
+				return "Invalid input: expected nonoptional, received undefined for data"
+			}
+			return ""
+		})
 	case partType == "dynamic-tool":
-		return checks(str("toolName"), func() string { return uiToolPartIssue(part) })
+		return checks(str("toolName"), func() string {
+			// TS z.literal(false).optional(): a present null is rejected too.
+			if v, ok := part["dynamic"]; ok && v != false {
+				return "Invalid input: dynamic must be false"
+			}
+			return ""
+		}, func() string { return uiToolPartIssue(part) })
 	case strings.HasPrefix(partType, "tool-"):
 		return uiToolPartIssue(part)
 	}
 	return fmt.Sprintf("Invalid input: unsupported part type %q", partType)
+}
+
+// citationsIssue checks a text part's optional citations against the TS
+// citationSchema: a url or document source and optional non-negative integer
+// offsets and cited text.
+func citationsIssue(part map[string]interface{}) string {
+	raw, exists := part["citations"]
+	if !exists {
+		return ""
+	}
+	citations, ok := raw.([]interface{})
+	if !ok {
+		return "Invalid input: expected array for citations"
+	}
+	for i, rawCitation := range citations {
+		prefix := fmt.Sprintf("citations[%d].", i)
+		citation, ok := rawCitation.(map[string]interface{})
+		if !ok {
+			return fmt.Sprintf("Invalid input: expected object for citations[%d]", i)
+		}
+		source, ok := citation["source"].(map[string]interface{})
+		if !ok {
+			return "Invalid input: expected object for " + prefix + "source"
+		}
+		if source["type"] != "source" {
+			return `Invalid input: expected "source" for ` + prefix + "source.type"
+		}
+		var msg string
+		switch source["sourceType"] {
+		case "url":
+			msg = firstIssue(requireString(source, "id"), requireString(source, "url"), optionalString(source, "title"),
+				optionalProviderMetadata(source, "providerMetadata"))
+		case "document":
+			msg = firstIssue(requireString(source, "id"), requireString(source, "mediaType"), requireString(source, "title"),
+				optionalString(source, "filename"), optionalProviderMetadata(source, "providerMetadata"))
+		default:
+			return `Invalid option: expected one of "url"|"document" for ` + prefix + "source.sourceType"
+		}
+		if msg != "" {
+			return strings.Replace(msg, " for ", " for "+prefix+"source.", 1)
+		}
+		for _, key := range []string{"startIndex", "endIndex"} {
+			if v, exists := citation[key]; exists {
+				if n, ok := v.(float64); !ok || n != float64(int64(n)) || n < 0 {
+					return "Invalid input: expected non-negative integer for " + prefix + key
+				}
+			}
+		}
+		if msg := optionalString(citation, "citedText"); msg != "" {
+			return strings.Replace(msg, " for ", " for "+prefix, 1)
+		}
+	}
+	return ""
+}
+
+func firstIssue(issues ...string) string {
+	for _, issue := range issues {
+		if issue != "" {
+			return issue
+		}
+	}
+	return ""
 }
 
 func uiToolPartIssue(part map[string]interface{}) string {
@@ -529,6 +629,13 @@ func uiToolPartIssue(part map[string]interface{}) string {
 	}
 	switch ToolUIPartState(state) {
 	case ToolStateInputStreaming:
+		if v, exists := part["inputEncoding"]; exists && v != "json" && v != "text" {
+			return "Invalid input: inputEncoding must be json or text"
+		}
+		// TS: rawInput: z.string().optional() in this state only.
+		if msg := optionalString(part, "rawInput"); msg != "" {
+			return msg
+		}
 		return never("output", "errorText", "approval")
 	case ToolStateInputAvailable:
 		if msg := required("input"); msg != "" {
@@ -690,4 +797,18 @@ func optionalProviderMetadata(obj map[string]interface{}, key string) string {
 		}
 	}
 	return ""
+}
+
+// markToolPartAsUnavailable records that a dynamic-tool part was normalized
+// from a static tool part, so model-message conversion never falls back to
+// the tool's unfiltered raw output. Mirrors TS markToolPartAsUnavailable.
+func markToolPartAsUnavailable(part *ToolUIPart) *ToolUIPart {
+	f := false
+	part.Dynamic = &f
+	return part
+}
+
+// isToolPartFromUnavailableTool mirrors TS isToolPartFromUnavailableTool.
+func isToolPartFromUnavailableTool(part *ToolUIPart) bool {
+	return part.Type == "dynamic-tool" && part.Dynamic != nil && !*part.Dynamic
 }

@@ -2,7 +2,6 @@ package ollama
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -28,7 +27,7 @@ func NewEmbeddingModel(provider *Provider, modelID string) *EmbeddingModel {
 
 // SpecificationVersion returns the specification version
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -59,10 +58,13 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 	if len(result.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
+	embedding := result.Embeddings[0]
 	r := &types.EmbeddingResult{
-		Embedding: result.Embeddings[0],
+		Embedding: embedding,
 		Usage:     result.Usage,
 	}
 	if len(result.Responses) > 0 {
@@ -85,6 +87,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		Headers: optsHeaders(opts),
 	}, &response)
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("ollama", 0, "", err.Error(), err)
 	}
 	embeddings := make([][]float64, len(response.Data))
@@ -93,12 +98,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.TotalTokens,
-		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Usage:      response.embeddingUsage(),
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }
 
@@ -118,8 +119,23 @@ type ollamaEmbedResponse struct {
 		Index     int       `json:"index"`
 	} `json:"data"`
 	Model string `json:"model"`
-	Usage struct {
+	Usage *struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+}
+
+// embeddingUsage maps the wire usage as TS `response.usage ? { tokens:
+// response.usage.prompt_tokens } : undefined`: Reported only when the
+// response carried a usage object.
+func (r ollamaEmbedResponse) embeddingUsage() types.EmbeddingUsage {
+	if r.Usage == nil {
+		return types.EmbeddingUsage{}
+	}
+	return types.EmbeddingUsage{
+		Tokens:      float64(r.Usage.PromptTokens),
+		InputTokens: r.Usage.PromptTokens,
+		TotalTokens: r.Usage.TotalTokens,
+		Reported:    true,
+	}
 }

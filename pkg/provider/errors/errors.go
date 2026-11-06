@@ -4,7 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // Error types for the AI SDK
@@ -126,6 +132,7 @@ func (e *ProviderError) IsRetryable() bool {
 	if e.Retryable != nil {
 		return *e.Retryable
 	}
+	// TS APICallError default: 408 (request timeout), 409 (conflict), 429, 5xx.
 	return e.StatusCode == 0 || e.StatusCode == 408 || e.StatusCode == 409 || e.StatusCode == 429 || e.StatusCode >= 500
 }
 
@@ -134,6 +141,10 @@ func IsProviderError(err error) bool {
 	var providerErr *ProviderError
 	return errors.As(err, &providerErr)
 }
+
+// InvalidJSONResponseMessage is the TS createJsonResponseHandler failure
+// message (an APICallError for a successful body that fails its schema).
+const InvalidJSONResponseMessage = "Invalid JSON response"
 
 // HTTPStatusDetails is implemented by errors that carry a non-2xx HTTP
 // response (internal/http.HTTPStatusError). NewProviderError uses it to
@@ -153,6 +164,26 @@ type HTTPStatusDetails interface {
 // retryability honest: a 401 must not be classified as a retryable
 // no-status error.
 func NewProviderError(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
+	return newProviderError(provider, statusCode, errorCode, message, cause, true)
+}
+
+// NewProviderErrorFromResponse is NewProviderError for a caller that has
+// already applied its provider's failed-response handler to the body: the
+// message is final and is kept verbatim, even when it is empty (TS
+// APICallError keeps "" from a body such as {"error":{"message":""}}). The
+// status code, headers and body are still taken from the HTTP cause.
+func NewProviderErrorFromResponse(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
+	return newProviderError(provider, statusCode, errorCode, message, cause, false)
+}
+
+func newProviderError(provider string, statusCode int, errorCode, message string, cause error, replaceEmpty bool) *ProviderError {
+	// A body that failed its response schema (TS createJsonResponseHandler)
+	// is already the final APICallError "Invalid JSON response"; it is not
+	// re-wrapped.
+	var inner *ProviderError
+	if errors.As(cause, &inner) && inner.Message == InvalidJSONResponseMessage {
+		return inner
+	}
 	e := &ProviderError{
 		Provider:   provider,
 		StatusCode: statusCode,
@@ -173,6 +204,17 @@ func NewProviderError(provider string, statusCode int, errorCode, message string
 	}
 	e.StatusCode = code
 	e.ResponseHeaders = headers
+	if !replaceEmpty {
+		// NewProviderErrorFromResponse replaces provider code that built
+		// ResponseHeaders with Go canonical keys and comma-joined values in
+		// v0.5.2; keep that shape (accepted deviation from TS lower-case keys).
+		e.ResponseHeaders = canonicalResponseHeaders(cause, headers)
+	}
+	// TS createJsonErrorResponseHandler reads response.text(): a leading
+	// BOM is dropped and each maximal invalid UTF-8 subpart is one U+FFFD.
+	if textdecode.HasBOM(body) || !utf8.Valid(body) {
+		body = []byte(textdecode.UTF8(body))
+	}
 	e.ResponseBody = string(body)
 	if len(body) > 0 {
 		var data interface{}
@@ -180,18 +222,51 @@ func NewProviderError(provider string, statusCode int, errorCode, message string
 			e.Data = data
 		}
 	}
-	if message == "" || message == cause.Error() || message == hs.Error() {
+	if message == cause.Error() || message == hs.Error() || (replaceEmpty && message == "") {
 		if msg := ExtractAPIErrorMessage(body); msg != "" {
 			e.Message = msg
+		} else if text := http.StatusText(code); text != "" {
+			// TS createJsonErrorResponseHandler: an empty or unparseable
+			// body falls back to the response status text. The body stays
+			// available on ResponseBody.
+			e.Message = text
 		}
 	}
 	return e
 }
 
+// canonicalResponseHeaders returns the response headers with Go canonical keys
+// (the v0.5.2 ResponseHeaders shape) and repeated values joined by ", ",
+// except Set-Cookie, whose last line wins (TS extractResponseHeaders,
+// Object.fromEntries over fetch's Headers iterator). It uses the raw header
+// when the cause keeps one, else canonicalizes headers.
+func canonicalResponseHeaders(cause error, headers map[string]string) map[string]string {
+	var raw interface{ HTTPResponseHeader() http.Header }
+	if errors.As(cause, &raw) {
+		if h := raw.HTTPResponseHeader(); len(h) > 0 {
+			out := make(map[string]string, len(h))
+			for k, vs := range h {
+				out[http.CanonicalHeaderKey(k)] = fetchHeaderEntry(k, vs)
+			}
+			return out
+		}
+	}
+	if len(headers) == 0 {
+		return headers
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		out[http.CanonicalHeaderKey(k)] = v
+	}
+	return out
+}
+
 // ExtractAPIErrorMessage pulls a human-readable message out of a JSON error
 // body using the shapes common to provider APIs: {"error":{"message"}},
 // {"error":"msg"}, {"message"}, {"detail"}, {"errors":[{"message"}]}.
-// It returns "" when no message is found.
+// It returns "" when no message is found. The message is returned as sent,
+// without trimming, like the TS providers' errorToMessage (for example
+// openai-compatible `data.error.message`).
 func ExtractAPIErrorMessage(body []byte) string {
 	var v map[string]interface{}
 	if err := json.Unmarshal(body, &v); err != nil {
@@ -199,7 +274,7 @@ func ExtractAPIErrorMessage(body []byte) string {
 	}
 	str := func(x interface{}) string {
 		s, _ := x.(string)
-		return strings.TrimSpace(s)
+		return s
 	}
 	switch e := v["error"].(type) {
 	case map[string]interface{}:
@@ -279,13 +354,30 @@ type InvalidArgumentError struct {
 	Field   string
 	Message string
 	Cause   error
+
+	// bare marks the @ai-sdk/provider class (NewArgumentError): Error() is
+	// the message alone.
+	bare bool
+}
+
+// NewArgumentError is TS `@ai-sdk/provider` `new InvalidArgumentError({
+// argument, message, cause })`, which providers throw: its Error() is the
+// message alone, without the `Invalid argument for parameter <x>: ` prefix
+// of the `ai` package's class (a struct literal). Field holds the argument.
+// The type, its fields and errors.As matching are the same for both.
+func NewArgumentError(argument, message string, cause error) *InvalidArgumentError {
+	return &InvalidArgumentError{Field: argument, Message: message, Cause: cause, bare: true}
 }
 
 func (e *InvalidArgumentError) Error() string {
-	if e.Field == "" {
-		return "invalid argument: " + e.Message
+	if e.bare {
+		return e.Message
 	}
-	return fmt.Sprintf("invalid argument for %s: %s", e.Field, e.Message)
+	if e.Field == "" {
+		return "Invalid argument: " + e.Message
+	}
+	// TS InvalidArgumentError: `Invalid argument for parameter ${parameter}: ${message}`.
+	return fmt.Sprintf("Invalid argument for parameter %s: %s", e.Field, e.Message)
 }
 
 func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
@@ -293,6 +385,69 @@ func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
 // IsInvalidArgumentError checks if an error is an InvalidArgumentError.
 func IsInvalidArgumentError(err error) bool {
 	var target *InvalidArgumentError
+	return errors.As(err, &target)
+}
+
+// InvalidPromptError signals an invalid prompt (TS AI_InvalidPromptError):
+// the standardizePrompt checks (neither or both of prompt and messages,
+// empty messages, system messages without the opt-in).
+type InvalidPromptError struct {
+	// Prompt is the offending prompt value, when there is one.
+	Prompt  interface{}
+	Message string
+	Cause   error
+}
+
+func (e *InvalidPromptError) Error() string { return "Invalid prompt: " + e.Message }
+
+func (e *InvalidPromptError) Unwrap() error { return e.Cause }
+
+// IsInvalidPromptError checks if an error is an InvalidPromptError.
+func IsInvalidPromptError(err error) bool {
+	var target *InvalidPromptError
+	return errors.As(err, &target)
+}
+
+// LoadAPIKeyError signals that a required API key was neither passed
+// explicitly nor found in its environment variable (TS AI_LoadAPIKeyError).
+type LoadAPIKeyError struct {
+	Message string
+}
+
+func (e *LoadAPIKeyError) Error() string { return e.Message }
+
+// NewLoadAPIKeyError builds the TS loadApiKey error text:
+// "<description> API key is missing. Pass it using the 'apiKey' parameter or
+// the <ENV> environment variable."
+func NewLoadAPIKeyError(description, envVar string) *LoadAPIKeyError {
+	return &LoadAPIKeyError{Message: fmt.Sprintf("%s API key is missing. Pass it using the 'apiKey' parameter or the %s environment variable.", description, envVar)}
+}
+
+// IsLoadAPIKeyError checks if an error is a LoadAPIKeyError.
+func IsLoadAPIKeyError(err error) bool {
+	var target *LoadAPIKeyError
+	return errors.As(err, &target)
+}
+
+// LoadSettingError signals that a required provider setting was neither
+// passed explicitly nor found in its environment variable (TS
+// AI_LoadSettingError).
+type LoadSettingError struct {
+	Message string
+}
+
+func (e *LoadSettingError) Error() string { return e.Message }
+
+// NewLoadSettingError builds the TS loadSetting error text:
+// "<description> setting is missing. Pass it using the '<settingName>'
+// parameter or the <ENV> environment variable."
+func NewLoadSettingError(description, settingName, envVar string) *LoadSettingError {
+	return &LoadSettingError{Message: fmt.Sprintf("%s setting is missing. Pass it using the '%s' parameter or the %s environment variable.", description, settingName, envVar)}
+}
+
+// IsLoadSettingError checks if an error is a LoadSettingError.
+func IsLoadSettingError(err error) bool {
+	var target *LoadSettingError
 	return errors.As(err, &target)
 }
 
@@ -322,11 +477,17 @@ type UnsupportedFunctionalityError struct {
 	Message       string
 }
 
+// Is reports a match with ErrUnsupportedFeature so callers that matched the
+// sentinel keep working when a provider raises the typed error.
+func (e *UnsupportedFunctionalityError) Is(target error) bool {
+	return target == ErrUnsupportedFeature
+}
+
 func (e *UnsupportedFunctionalityError) Error() string {
 	if e.Message != "" {
 		return e.Message
 	}
-	return fmt.Sprintf("%q functionality not supported.", e.Functionality)
+	return fmt.Sprintf("'%s' functionality not supported.", e.Functionality)
 }
 
 // IsUnsupportedFunctionalityError checks if an error is an UnsupportedFunctionalityError.
@@ -356,7 +517,8 @@ func (e *ValidationError) Error() string {
 				parts = append(parts, e.Context.EntityName)
 			}
 			if e.Context.EntityID != "" {
-				parts = append(parts, fmt.Sprintf("id: %q", e.Context.EntityID))
+				// TS: `id: "${entityId}"` (no escaping).
+				parts = append(parts, `id: "`+e.Context.EntityID+`"`)
 			}
 			for i, part := range parts {
 				if i > 0 {
@@ -372,7 +534,8 @@ func (e *ValidationError) Error() string {
 		// Format the full error message
 		msg := contextPrefix
 		if e.Value != nil {
-			msg += fmt.Sprintf("\nValue: %+v.", e.Value)
+			// TS: `${contextPrefix}: Value: ${JSON.stringify(value)}.\n...`
+			msg += " Value: " + validationValueText(e.Value) + "."
 		}
 		if e.Message != "" {
 			msg += fmt.Sprintf("\nError message: %s", e.Message)
@@ -387,6 +550,19 @@ func (e *ValidationError) Error() string {
 		return fmt.Sprintf("validation error on field '%s': %s", e.Field, e.Message)
 	}
 	return fmt.Sprintf("validation error: %s", e.Message)
+}
+
+// validationValueText renders the failing value like TS's JSON.stringify(value)
+// in TypeValidationError's message. A string is used as-is because callers pass
+// the already-compacted JSON text of the value there.
+func validationValueText(value interface{}) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	if b, err := jsonstr.Marshal(value); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%+v", value)
 }
 
 // Unwrap returns the underlying cause
@@ -681,4 +857,14 @@ func NewDownloadError(url string, statusCode int, statusText, message string, ca
 		Message:    message,
 		Cause:      cause,
 	}
+}
+
+// fetchHeaderEntry is providerutils.FetchHeaderEntry (this package cannot
+// import providerutils): the last Set-Cookie line, every other repeated
+// header joined with ", ".
+func fetchHeaderEntry(name string, values []string) string {
+	if len(values) > 0 && strings.EqualFold(name, "Set-Cookie") {
+		return values[len(values)-1]
+	}
+	return strings.Join(values, ", ")
 }

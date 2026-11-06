@@ -13,7 +13,7 @@ func TestFireworksSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := modelAny.(*LanguageModel).Serialize()
-	if serialized.Provider != "fireworks" || serialized.ModelID != "accounts/fireworks/models/llama-v3p1-70b-instruct" {
+	if serialized.Provider != "fireworks.chat" || serialized.ModelID != "accounts/fireworks/models/llama-v3p1-70b-instruct" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -24,7 +24,7 @@ func TestFireworksSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "fireworks" || restored.ModelID() != "accounts/fireworks/models/llama-v3p1-70b-instruct" {
+	if restored.Provider() != "fireworks.chat" || restored.ModelID() != "accounts/fireworks/models/llama-v3p1-70b-instruct" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -44,7 +44,7 @@ func TestFireworksSerializeAndDeserializeImageModel(t *testing.T) {
 		t.Fatalf("ImageModel error = %v", err)
 	}
 	serialized := modelAny.(*ImageModel).Serialize()
-	if serialized.Provider != "fireworks" || serialized.ModelID != "accounts/fireworks/models/flux-1-schnell-fp8" {
+	if serialized.Provider != "fireworks.image" || serialized.ModelID != "accounts/fireworks/models/flux-1-schnell-fp8" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -55,7 +55,7 @@ func TestFireworksSerializeAndDeserializeImageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeImageModel error = %v", err)
 	}
-	if restored.Provider() != "fireworks" || restored.ModelID() != "accounts/fireworks/models/flux-1-schnell-fp8" {
+	if restored.Provider() != "fireworks.image" || restored.ModelID() != "accounts/fireworks/models/flux-1-schnell-fp8" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 

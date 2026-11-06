@@ -63,6 +63,10 @@ func resolveCerebrasOptions(opts *provider.GenerateOptions) (cerebrasRequestExtr
 	}
 	if reasoningEffort, ok := providerutils.OpenAICompatibleStringOption(cerebrasOpts, "reasoningEffort"); ok {
 		extras["reasoning_effort"] = reasoningEffort
+	} else if v, present := cerebrasOpts["reasoningEffort"]; present && v == nil {
+		// TS 5006d83c4e: an explicit null is sent as reasoning_effort: null
+		// and beats the top-level reasoning setting.
+		extras["reasoning_effort"] = nil
 	}
 	if reasoningFormat, ok := providerutils.OpenAICompatibleStringOption(cerebrasOpts, "reasoningFormat"); ok {
 		extras["reasoning_format"] = reasoningFormat

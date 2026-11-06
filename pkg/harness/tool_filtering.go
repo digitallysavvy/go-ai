@@ -70,6 +70,9 @@ func ResolveToolFiltering(opts ResolveToolFilteringOptions) (ResolvedToolFilteri
 	for name := range opts.Harness.BuiltinTools() {
 		builtinToolNames = append(builtinToolNames, name)
 	}
+	// Go maps have no insertion order; sort so the allow/deny lists forwarded
+	// to the adapter (and persisted in lifecycle state) are deterministic.
+	sort.Strings(builtinToolNames)
 
 	var disabledBuiltinToolNames []string
 	switch {

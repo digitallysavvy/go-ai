@@ -8,7 +8,9 @@ import (
 
 func init() {
 	provider.RegisterSpeechModelDeserializer("deepgram", deserializeSpeechModel)
+	provider.RegisterSpeechModelDeserializer("deepgram.speech", deserializeSpeechModel)
 	provider.RegisterTranscriptionModelDeserializer("deepgram", deserializeTranscriptionModel)
+	provider.RegisterTranscriptionModelDeserializer("deepgram.transcription", deserializeTranscriptionModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

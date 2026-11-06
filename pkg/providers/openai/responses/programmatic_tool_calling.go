@@ -29,10 +29,14 @@ import (
 //
 //	tool := responses.NewProgrammaticToolCallingTool()
 func NewProgrammaticToolCallingTool() types.Tool {
-	return types.Tool{
+	return providerDefinedTool(types.Tool{
 		Name:             "openai.programmatic_tool_calling",
 		Description:      "Generate and execute JavaScript that calls declared function tools programmatically",
+		Parameters:       schemaFromJSON(programmaticToolCallingInputSchemaJSON),
+		OutputSchema:     schemaFromJSON(programmaticToolCallingOutputSchemaJSON),
 		ProviderExecuted: true,
+		// TS supportsDeferredResults: true.
+		SupportsDeferredResults: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("programmatic tool calling is executed by the OpenAI API, not locally")
 		},
@@ -54,29 +58,35 @@ func NewProgrammaticToolCallingTool() types.Tool {
 						openaiOpts[k] = v
 					}
 				}
+				// TS: [...new Set([...(allowedCallers ?? []), 'programmatic'])]
+				// -- existing callers keep their order and "programmatic" is
+				// appended when absent.
 				const allowedCaller = "programmatic"
-				seen := map[string]bool{allowedCaller: true}
-				callers := []string{allowedCaller}
+				seen := map[string]bool{}
+				callers := []string{}
+				add := func(c string) {
+					if !seen[c] {
+						seen[c] = true
+						callers = append(callers, c)
+					}
+				}
 				switch existing := openaiOpts["allowedCallers"].(type) {
 				case []string:
 					for _, c := range existing {
-						if !seen[c] {
-							seen[c] = true
-							callers = append(callers, c)
-						}
+						add(c)
 					}
 				case []interface{}:
 					for _, c := range existing {
-						if s, ok := c.(string); ok && !seen[s] {
-							seen[s] = true
-							callers = append(callers, s)
+						if s, ok := c.(string); ok {
+							add(s)
 						}
 					}
 				}
+				add(allowedCaller)
 				openaiOpts["allowedCallers"] = callers
 				out["openai"] = openaiOpts
 				return out
 			},
 		},
-	}
+	}, "openai.programmatic_tool_calling", map[string]interface{}{})
 }

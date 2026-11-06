@@ -3,21 +3,25 @@ package opencode
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // Native OpenCode subscription auth. Mirrors TS opencode-subscription.ts.
@@ -121,6 +125,20 @@ type Subscription struct {
 	AccessToken   string
 	AccountID     string
 	EnterpriseURL string
+
+	// accountIDSet / enterpriseURLSet record a present empty string read
+	// from the auth store (TS keeps `typeof x === 'string'` values and then
+	// tests `== null`). A non-empty field counts as set on its own.
+	accountIDSet     bool
+	enterpriseURLSet bool
+}
+
+// hasAccountID mirrors TS `accountId != null`.
+func (s *Subscription) hasAccountID() bool { return s.AccountID != "" || s.accountIDSet }
+
+// hasEnterpriseURL mirrors TS `enterpriseUrl != null`.
+func (s *Subscription) hasEnterpriseURL() bool {
+	return s.EnterpriseURL != "" || s.enterpriseURLSet
 }
 
 // GitLabDirectAccess is the result of exchanging a GitLab OAuth token for AI
@@ -175,7 +193,7 @@ func resolveOpenCodeAuthentication(ctx context.Context, auth AuthenticationMode,
 // hasOpenCodeCredential mirrors TS `hasOpenCodeCredential`.
 func hasOpenCodeCredential(environment map[string]string, authenticationMode ResolvedAuthenticationMode) bool {
 	if authenticationMode == AuthAIGateway {
-		return environment["AI_GATEWAY_API_KEY"] != ""
+		return hasKey(environment, "AI_GATEWAY_API_KEY") // TS `!= null`
 	}
 	for name := range environment {
 		if strings.HasSuffix(name, "_API_KEY") || strings.HasSuffix(name, "_TOKEN") || name == "ANTHROPIC_AUTH_TOKEN" {
@@ -233,17 +251,18 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 		return nil, nil
 	}
 
-	access, _ := candidate["access"].(string)
-	refresh, _ := candidate["refresh"].(string)
+	// TS only checks `typeof ... === 'string'`/'number': empty strings pass.
+	access, accessOK := candidate["access"].(string)
+	refresh, refreshOK := candidate["refresh"].(string)
 	expiresF, expiresOK := candidate["expires"].(float64)
-	if access == "" || refresh == "" || !expiresOK {
+	if !accessOK || !refreshOK || !expiresOK {
 		return nil, nil
 	}
 	expires := int64(expiresF)
-	enterpriseURL, _ := candidate["enterpriseUrl"].(string)
+	enterpriseURL, enterpriseURLSet := candidate["enterpriseUrl"].(string)
 
 	if providerID == string(SubscriptionGitHubCopilot) {
-		return &Subscription{ProviderID: SubscriptionGitHubCopilot, AccessToken: refresh, EnterpriseURL: enterpriseURL}, nil
+		return &Subscription{ProviderID: SubscriptionGitHubCopilot, AccessToken: refresh, EnterpriseURL: enterpriseURL, enterpriseURLSet: enterpriseURLSet}, nil
 	}
 	if providerID == string(SubscriptionPoe) {
 		if harnessutil.IsAccessTokenExpiringSoon(expires, time.Now().UnixMilli(), 0) {
@@ -255,7 +274,7 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 	accessToken := access
 	accountID, hasAccountID := candidate["accountId"].(string)
 	if !hasAccountID && providerID == string(SubscriptionOpenAI) {
-		accountID = extractOpenAIAccountID(access)
+		accountID, hasAccountID = extractOpenAIAccountID(access)
 	}
 	if harnessutil.IsAccessTokenExpiringSoon(expires, time.Now().UnixMilli(), 0) {
 		tokenURL, clientID := resolveRefreshSettings(providerID, candidate, env)
@@ -267,8 +286,10 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 		}
 		accessToken = refreshed.AccessToken
 		if providerID == string(SubscriptionOpenAI) {
-			if aid := extractOpenAIAccountID(refreshed.AccessToken); aid != "" {
-				accountID = aid
+			// TS `(await extractOpenAIAccountId(...)) ?? accountId`: a
+			// present empty claim wins.
+			if aid, ok := extractOpenAIAccountID(refreshed.AccessToken); ok {
+				accountID, hasAccountID = aid, true
 			}
 		}
 		updated := map[string]any{}
@@ -282,7 +303,7 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 		}
 		updated["refresh"] = newRefresh
 		updated["expires"] = float64(refreshed.ExpiresAt)
-		if accountID != "" {
+		if hasAccountID { // TS `accountId == null ? {} : ...`
 			updated["accountId"] = accountID
 		}
 		store.Value[providerID] = updated
@@ -293,16 +314,25 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 		}
 	}
 
-	return &Subscription{ProviderID: SubscriptionProvider(providerID), AccessToken: accessToken, AccountID: accountID, EnterpriseURL: enterpriseURL}, nil
+	return &Subscription{ProviderID: SubscriptionProvider(providerID), AccessToken: accessToken, AccountID: accountID, EnterpriseURL: enterpriseURL,
+		accountIDSet: hasAccountID, enterpriseURLSet: enterpriseURLSet}, nil
 }
 
 // requestOpenCodeGitLabDirectAccess mirrors TS
 // `requestOpenCodeGitLabDirectAccess`.
 func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Client, accessToken, instanceURL, aiGatewayURL string) (*GitLabDirectAccess, error) {
-	if instanceURL == "" {
+	return requestOpenCodeGitLabDirectAccessWith(ctx, httpClient, accessToken, instanceURL, instanceURL != "", aiGatewayURL, aiGatewayURL != "")
+}
+
+// requestOpenCodeGitLabDirectAccessWith is requestOpenCodeGitLabDirectAccess
+// with presence flags: TS destructuring defaults apply only to an absent
+// (undefined) `instanceUrl` / `aiGatewayUrl`, so a present empty string is
+// used as given.
+func requestOpenCodeGitLabDirectAccessWith(ctx context.Context, httpClient *http.Client, accessToken, instanceURL string, instanceURLSet bool, aiGatewayURL string, aiGatewayURLSet bool) (*GitLabDirectAccess, error) {
+	if !instanceURLSet {
 		instanceURL = "https://gitlab.com"
 	}
-	if aiGatewayURL == "" {
+	if !aiGatewayURLSet {
 		aiGatewayURL = gitlabAIGatewayURL
 	}
 	if httpClient == nil {
@@ -321,15 +351,16 @@ func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Cli
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := harnessutil.ReadBoundedResponse(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, fmt.Errorf("OpenCode GitLab direct access request failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	respBody = []byte(textdecode.UTF8(respBody)) // TS response.json() decodes the text first
 	var parsed map[string]any
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	if err := securejson.Unmarshal(respBody, &parsed); err != nil {
 		return nil, errors.New("OpenCode GitLab direct access returned invalid JSON.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	token, _ := parsed["token"].(string)
@@ -353,7 +384,7 @@ func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Cli
 func createOpenCodeGitLabSubscriptionRequestTransformations(directAccess *GitLabDirectAccess, sandboxAccessToken string) ([]harness.RequestTransformation, error) {
 	headers := map[string]string{}
 	for k, v := range directAccess.Headers {
-		lower := strings.ToLower(k)
+		lower := providerutils.JSToLower(k)
 		if lower == "authorization" || lower == "x-api-key" {
 			continue
 		}
@@ -444,7 +475,8 @@ func gitlabModelsFor(providerID string) map[string]any {
 func resolveOpenCodeGitLabSubscriptionModel(model, provider string) (string, error) {
 	if model == "" {
 		if provider == string(SubscriptionGitLab) {
-			return "", unsupported("brokering native GitLab subscription credentials without an explicit model")
+			return "", harness.NewCapabilityUnsupportedError(
+				"Harness 'opencode' requires an explicit GitLab model when native GitLab subscription credentials are brokered.", HarnessID, nil)
 		}
 		return "", nil
 	}
@@ -456,14 +488,34 @@ func resolveOpenCodeGitLabSubscriptionModel(model, provider string) (string, err
 		return model, nil
 	}
 	mapping, ok := openCodeGitLabModels[modelID]
+	if !ok && isJSObjectPrototypeMember(modelID) {
+		// TS reads the mapping off a plain object, so an Object.prototype
+		// member name resolves to an inherited value: not the unknown-model
+		// error, and with no providerId, so the result is `undefined/<id>`.
+		return "undefined/" + modelID, nil
+	}
 	if !ok {
-		return "", unsupported(fmt.Sprintf("brokering native GitLab subscription credentials for unknown model %q", modelID))
+		return "", harness.NewCapabilityUnsupportedError(
+			fmt.Sprintf("Harness 'opencode' cannot broker native GitLab subscription credentials for unknown model '%s'.", modelID), HarnessID, nil)
 	}
 	if mapping.ProviderID == "workflow" {
-		return "", unsupported(fmt.Sprintf(
-			"brokering native GitLab subscription credentials for workflow model %q because it authenticates over WebSocket. Use a sandbox without credential brokering to use the credential-forwarding fallback", modelID))
+		return "", harness.NewCapabilityUnsupportedError(
+			fmt.Sprintf("Harness 'opencode' cannot broker native GitLab subscription credentials for workflow model '%s' because it authenticates over WebSocket. Use a sandbox without credential brokering to use the credential-forwarding fallback.", modelID),
+			HarnessID, nil)
 	}
 	return mapping.ProviderID + "/" + modelID, nil
+}
+
+// isJSObjectPrototypeMember reports whether name is a property every plain JS
+// object inherits from Object.prototype.
+func isJSObjectPrototypeMember(name string) bool {
+	switch name {
+	case "constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty",
+		"__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable",
+		"toString", "valueOf", "__proto__", "toLocaleString":
+		return true
+	}
+	return false
 }
 
 // createOpenCodeSubscriptionAuthContent mirrors TS
@@ -472,26 +524,30 @@ func resolveOpenCodeGitLabSubscriptionModel(model, provider string) (string, err
 // with a host-managed access token that never expires from its point of
 // view (the host is the one holding the real, refreshable OAuth credential).
 func createOpenCodeSubscriptionAuthContent(authentication *Subscription, accessToken string) (string, error) {
-	var value map[string]any
+	// Built by hand: JSON.stringify keeps insertion order and does not
+	// HTML-escape, which a Go map would not.
+	q := func(s string) string {
+		b, _ := jsstr.Marshal(s)
+		return string(b)
+	}
+	var value string
 	if authentication.ProviderID == SubscriptionOpenCodeGo {
-		value = map[string]any{"type": "api", "key": accessToken}
+		value = `{"type":"api","key":` + q(accessToken) + `}`
 	} else {
 		refresh := "host-managed"
 		if authentication.ProviderID == SubscriptionGitHubCopilot {
 			refresh = accessToken
 		}
-		value = map[string]any{
-			"type": "oauth", "access": accessToken, "refresh": refresh, "expires": numberMaxSafeInteger,
+		value = `{"type":"oauth","access":` + q(accessToken) + `,"refresh":` + q(refresh) + `,"expires":` + strconv.FormatInt(numberMaxSafeInteger, 10)
+		if authentication.hasAccountID() {
+			value += `,"accountId":` + q(authentication.AccountID)
 		}
-		if authentication.AccountID != "" {
-			value["accountId"] = authentication.AccountID
+		if authentication.hasEnterpriseURL() {
+			value += `,"enterpriseUrl":` + q(authentication.EnterpriseURL)
 		}
-		if authentication.EnterpriseURL != "" {
-			value["enterpriseUrl"] = authentication.EnterpriseURL
-		}
+		value += "}"
 	}
-	out, err := json.Marshal(map[string]any{string(authentication.ProviderID): value})
-	return string(out), err
+	return "{" + q(string(authentication.ProviderID)) + ":" + value + "}", nil
 }
 
 // createOpenCodeSubscriptionRequestTransformations mirrors TS
@@ -531,15 +587,18 @@ func resolveRefreshSettings(providerID string, candidate map[string]any, env map
 	case string(SubscriptionXAI):
 		return "https://auth.x.ai/oauth2/token", xaiClientID
 	}
-	instanceURL, _ := candidate["enterpriseUrl"].(string)
-	if instanceURL == "" {
-		instanceURL = env["GITLAB_INSTANCE_URL"]
+	// TS: `(typeof enterpriseUrl === 'string' ? enterpriseUrl :
+	// env.GITLAB_INSTANCE_URL) ?? default` and `env.X ?? default`: only an
+	// absent value falls back, an empty string is kept.
+	instanceURL, isString := candidate["enterpriseUrl"].(string)
+	if !isString {
+		var set bool
+		if instanceURL, set = env["GITLAB_INSTANCE_URL"]; !set {
+			instanceURL = "https://gitlab.com"
+		}
 	}
-	if instanceURL == "" {
-		instanceURL = "https://gitlab.com"
-	}
-	clientID = env["GITLAB_OAUTH_CLIENT_ID"]
-	if clientID == "" {
+	var set bool
+	if clientID, set = env["GITLAB_OAUTH_CLIENT_ID"]; !set {
 		clientID = gitlabClientID
 	}
 	return strings.TrimRight(instanceURL, "/") + "/oauth/token", clientID
@@ -553,7 +612,7 @@ func resolveOpenCodeSubscriptionRequestURL(authentication *Subscription) string 
 	case SubscriptionXAI:
 		return "https://api.x.ai/v1"
 	case SubscriptionGitHubCopilot:
-		if authentication.EnterpriseURL == "" {
+		if !authentication.hasEnterpriseURL() {
 			return "https://api.githubcopilot.com"
 		}
 		return "https://copilot-api." + normalizeDomain(authentication.EnterpriseURL)
@@ -562,7 +621,7 @@ func resolveOpenCodeSubscriptionRequestURL(authentication *Subscription) string 
 	case SubscriptionOpenCodeGo:
 		return "https://opencode.ai/zen/go/v1"
 	case SubscriptionGitLab:
-		if authentication.EnterpriseURL != "" {
+		if authentication.hasEnterpriseURL() { // TS `??`
 			return authentication.EnterpriseURL
 		}
 		return "https://gitlab.com"
@@ -570,32 +629,47 @@ func resolveOpenCodeSubscriptionRequestURL(authentication *Subscription) string 
 	return ""
 }
 
-// normalizeDomain mirrors TS `normalizeDomain`.
+// normalizeDomain mirrors TS `normalizeDomain`: the WHATWG URL host
+// (`new URL(...).host`, with IDNA, IPv4 forms and default ports as Node),
+// else the value without one leading http(s):// and its trailing slashes.
 func normalizeDomain(value string) string {
 	target := value
 	if !strings.Contains(value, "://") {
 		target = "https://" + value
 	}
-	if u, err := url.Parse(target); err == nil && u.Host != "" {
+	if u, err := urlnorm.Parse(target); err == nil {
+		if u.Port >= 0 {
+			return u.Host + ":" + strconv.Itoa(u.Port)
+		}
 		return u.Host
 	}
-	v := strings.TrimPrefix(value, "https://")
-	v = strings.TrimPrefix(v, "http://")
+	// TS value.replace(/^https?:\/\//, '').replace(/\/+$/, ''): one prefix.
+	v, ok := strings.CutPrefix(value, "https://")
+	if !ok {
+		v = strings.TrimPrefix(value, "http://")
+	}
 	return strings.TrimRight(v, "/")
 }
 
 // extractOpenAIAccountID mirrors TS `extractOpenAIAccountId`.
-func extractOpenAIAccountID(accessToken string) string {
+// extractOpenAIAccountID mirrors TS `extractOpenAIAccountId`; ok is false
+// where TS returns undefined (a present empty claim is kept).
+func extractOpenAIAccountID(accessToken string) (accountID string, ok bool) {
 	payload := subscription.ParseJWTPayload(accessToken)
 	if payload == nil {
-		return ""
+		return "", false
 	}
-	auth, ok := payload["https://api.openai.com/auth"].(map[string]any)
-	if !ok {
-		return ""
+	auth, isRecord := payload["https://api.openai.com/auth"].(map[string]any)
+	if !isRecord {
+		return "", false
 	}
-	accountID, _ := auth["chatgpt_account_id"].(string)
-	return accountID
+	accountID, ok = auth["chatgpt_account_id"].(string)
+	return accountID, ok
+}
+
+func hasKey(m map[string]string, k string) bool {
+	_, ok := m[k]
+	return ok
 }
 
 // authStore is OpenCode's on-disk (or env-supplied) credential store.
@@ -613,7 +687,7 @@ type authStore struct {
 func readAuthStore(env map[string]string, homeDirectoryOverride, goosOverride string) (*authStore, error) {
 	if content, ok := env["OPENCODE_AUTH_CONTENT"]; ok {
 		var parsed map[string]any
-		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		if err := securejson.Unmarshal([]byte(content), &parsed); err != nil {
 			return nil, nil
 		}
 		return &authStore{Value: parsed}, nil
@@ -630,7 +704,7 @@ func readAuthStore(env map[string]string, homeDirectoryOverride, goosOverride st
 	}
 	var authPath string
 	switch {
-	case env["XDG_DATA_HOME"] != "":
+	case hasKey(env, "XDG_DATA_HOME"):
 		authPath = filepath.Join(env["XDG_DATA_HOME"], "opencode", "auth.json")
 	case harnessutil.IsWindows(goos):
 		authPath = filepath.Join(homeDirectory, ".opencode", "auth.json")
@@ -642,7 +716,7 @@ func readAuthStore(env map[string]string, homeDirectoryOverride, goosOverride st
 		return nil, nil
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(data, &parsed); err != nil {
+	if err := securejson.Unmarshal(data, &parsed); err != nil {
 		return nil, nil
 	}
 	return &authStore{Value: parsed, Write: func(value map[string]any) error { return writeAuthStore(authPath, value) }}, nil
@@ -656,7 +730,7 @@ func writeAuthStore(authPath string, value map[string]any) error {
 		return err
 	}
 	temporaryPath := fmt.Sprintf("%s.%d.tmp", authPath, os.Getpid())
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := jsstr.MarshalIndent(value)
 	if err != nil {
 		return err
 	}

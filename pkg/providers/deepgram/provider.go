@@ -1,7 +1,8 @@
 package deepgram
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -22,6 +23,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the Deepgram API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Deepgram provider with the given configuration
@@ -36,10 +41,14 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Token " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		}, version.ProviderUserAgent("deepgram")),
+		}, cfg.Headers), version.ProviderUserAgent("deepgram")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "DEEPGRAM_API_KEY", "Deepgram", "Authorization", "Token ")
+		},
 	})
 
 	return &Provider{
@@ -55,17 +64,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("deepgram does not support language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "languageModel", Message: "Deepgram does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("deepgram does not support embeddings")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "Deepgram does not provide text embedding models"}
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("deepgram does not support image generation")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "Deepgram does not provide image models"}
 }
 
 // SpeechModel returns a speech synthesis model by ID
@@ -84,7 +93,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("deepgram does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

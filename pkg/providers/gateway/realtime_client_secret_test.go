@@ -254,3 +254,27 @@ func TestGatewayBaseURLTrimsTrailingSlashForRuntimeAndModelRoutes(t *testing.T) 
 		t.Fatalf("paths = %#v", paths)
 	}
 }
+
+// TS createAuthHeaders spreads the provider's custom headers after the
+// Authorization header, so a custom Authorization (any casing) wins; the mint
+// request also carries the custom headers (verified against
+// gateway-provider.ts mintClientSecret).
+func TestMintRealtimeClientSecretCustomHeadersOverrideAuthorization(t *testing.T) {
+	var headers http.Header
+	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"vcst_test"}`))
+	}))
+	defer closeServer()
+	p, err := New(Config{APIKey: "long-lived", BaseURL: serverURL + "/v4/ai", Headers: map[string]string{"authorization": "Bearer custom", "X-Custom": "yes"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.MintRealtimeClientSecret(context.Background(), MintRealtimeClientSecretParams{ModelID: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := headers.Values("Authorization"); len(got) != 1 || got[0] != "Bearer custom" || headers.Get("X-Custom") != "yes" {
+		t.Fatalf("headers = %#v", headers)
+	}
+}

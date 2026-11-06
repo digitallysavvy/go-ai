@@ -48,6 +48,7 @@ export MINIMAX_API_KEY=...
 
 | Model ID | Go constant |
 |----------|-------------|
+| `minimax-m3.1-flash` | `minimax.ModelM31Flash` |
 | `minimax-m3` | `minimax.ModelM3` |
 | `minimax-m2.7` | `minimax.ModelM27` |
 | `minimax-m2.7-highspeed` | `minimax.ModelM27HighSpeed` |
@@ -96,6 +97,34 @@ Since chat delegates to the Anthropic language model, MiniMax accepts the
 same per-call `providerOptions.anthropic` fields (thinking, context
 management, etc. — see the [Anthropic provider](03-anthropic.mdx)) under
 either the `"minimax"` or `"anthropic"` key.
+
+## MiniMax M3.1 and later
+
+Models whose ID is `minimax-m3.1` or newer (`minimax-m3.1-flash`, `minimax-m3.2`, `minimax-m4`, ...; IDs are compared case-insensitively and the version numerically) get these capabilities. Older and unrecognized IDs keep the Anthropic behavior.
+
+- **Reasoning effort.** `Reasoning` maps to `providerOptions.minimax.effort`: `minimal` and `low` to `low`, `medium` to `medium`, `high` to `high`, `xhigh` to `xhigh` and `max` to `max`. `none` maps to `low` with a `compatibility` warning, because these models always reason. `minimal` also warns about the mapping. An explicit `effort` in `providerOptions.minimax` or `providerOptions.anthropic` takes precedence, and the model's default applies when `Reasoning` is unset. Effort replaces the Anthropic thinking budget.
+- **Sampling.** Temperature may be up to 2 (the clamp warning names `minimax`), and temperature and `topP` are kept when thinking is enabled.
+- **Media input.** Image and video parts are sent as MiniMax `image` and `video` blocks, from bytes or base64, from URLs (sent as is, without a download), or, for video only, from a MiniMax file reference (`mm_file://<id>`; pass the ID under the `"minimax"` key of the reference). Per-part options go under `providerOptions["minimax"]`: `detail` (`low`, `default`, `high`) on images and `fps` (0.2 to 5) on videos. Invalid values fail before the request is sent.
+- **Prompt caching.** `cacheControl` (or `cache_control`) is read from `providerOptions["minimax"]` first, then `providerOptions["anthropic"]`. The four-breakpoint limit counts one per block.
+
+```go
+effort := types.ReasoningHigh
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model, // minimax.ModelM31Flash
+    Reasoning: &effort,
+    Messages: []types.Message{{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "What happens in this clip?"},
+            types.FileContent{
+                MediaType: "video/mp4",
+                FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/clip.mp4"},
+                ProviderOptions: map[string]interface{}{"minimax": map[string]interface{}{"fps": 2}},
+            },
+        },
+    }},
+})
+```
 
 ## See Also
 

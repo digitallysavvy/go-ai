@@ -1,10 +1,12 @@
 package topaz
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -18,20 +20,51 @@ type topazErrorData struct {
 	Message   *string         `json:"message"`
 	Error     *string         `json:"error"`
 	ErrorCode *string         `json:"errorCode"`
-	Errors    []topazIssue    `json:"errors"`
+	Errors    []*topazIssue   `json:"errors"`
 }
 
 type topazIssue struct {
 	Msg *string `json:"msg"`
 }
 
-// parseTopazErrorData decodes a Topaz error response body. A body that
-// cannot be decoded as JSON is treated as having no structured fields, so
-// the caller falls back to the raw body text.
-func parseTopazErrorData(body []byte) topazErrorData {
-	var data topazErrorData
-	_ = json.Unmarshal(body, &data)
-	return data
+// parseTopazErrorData decodes a Topaz error response body against the TS
+// topazErrorDataSchema. ok is false for a body that does not match it (empty,
+// not a JSON object, a wrongly typed field), in which case TS
+// createJsonErrorResponseHandler uses the HTTP status text as the message.
+func parseTopazErrorData(body []byte) (data topazErrorData, ok bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &data) != nil {
+		return topazErrorData{}, false
+	}
+	// detail: string | array of loose objects with a nullish string msg.
+	if len(data.Detail) > 0 && string(bytes.TrimSpace(data.Detail)) != "null" {
+		var asString string
+		var asIssues []*topazIssue
+		if json.Unmarshal(data.Detail, &asString) != nil && !validTopazIssues(data.Detail, &asIssues) {
+			return topazErrorData{}, false
+		}
+	}
+	// errors: array of loose objects (a null entry is not an object).
+	for _, issue := range data.Errors {
+		if issue == nil {
+			return topazErrorData{}, false
+		}
+	}
+	return data, true
+}
+
+// validTopazIssues reports whether raw is an array of objects (z.object
+// rejects null and non-objects), filling issues.
+func validTopazIssues(raw json.RawMessage, issues *[]*topazIssue) bool {
+	if json.Unmarshal(raw, issues) != nil {
+		return false
+	}
+	for _, issue := range *issues {
+		if issue == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // topazErrorToMessage renders a Topaz error response body into a
@@ -46,7 +79,7 @@ func topazErrorToMessage(data topazErrorData) string {
 	// The video API lists field validation failures separately.
 	var issues []string
 	for _, issue := range data.Errors {
-		if issue.Msg != nil {
+		if issue != nil && issue.Msg != nil {
 			issues = append(issues, *issue.Msg)
 		}
 	}
@@ -64,11 +97,11 @@ func topazBaseErrorMessage(data topazErrorData) string {
 			return asString
 		}
 
-		var asIssues []topazIssue
+		var asIssues []*topazIssue
 		if err := json.Unmarshal(data.Detail, &asIssues); err == nil {
 			var messages []string
 			for _, issue := range asIssues {
-				if issue.Msg != nil {
+				if issue != nil && issue.Msg != nil {
 					messages = append(messages, *issue.Msg)
 				}
 			}
@@ -90,21 +123,15 @@ func topazBaseErrorMessage(data topazErrorData) string {
 // newTopazAPIError converts a failed Topaz API response into a provider
 // error, mirroring TS topazFailedResponseHandler.
 func newTopazAPIError(statusCode int, body []byte, headers http.Header) error {
-	data := parseTopazErrorData(body)
-	message := topazErrorToMessage(data)
+	data, ok := parseTopazErrorData(body)
+	message := http.StatusText(statusCode)
+	if ok {
+		message = topazErrorToMessage(data)
+	}
 	errorCode := ""
 	if data.ErrorCode != nil {
 		errorCode = *data.ErrorCode
 	}
-	err := providererrors.NewProviderError("topaz", statusCode, errorCode, message, nil)
-	err.ResponseBody = string(body)
-	if headers != nil {
-		err.ResponseHeaders = map[string]string{}
-		for k, vals := range headers {
-			if len(vals) > 0 {
-				err.ResponseHeaders[k] = vals[0]
-			}
-		}
-	}
-	return err
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderErrorFromResponse("topaz", 0, errorCode, message, cause)
 }

@@ -14,7 +14,7 @@ func TestNewBrowserbaseFetchSchemaAndProviderExecutedStub(t *testing.T) {
 	if tool.Name != "browserbase_fetch" {
 		t.Fatalf("name = %q", tool.Name)
 	}
-	if tool.Title != "Browserbase Fetch" || !tool.ProviderExecuted {
+	if tool.Title != "" || !tool.ProviderExecuted {
 		t.Fatalf("tool metadata = %#v", tool)
 	}
 	if tool.Type != types.ToolTypeProviderDefined || tool.ProviderID != "gateway.browserbase_fetch" {
@@ -46,19 +46,19 @@ func TestNewBrowserbaseFetchSchemaAndProviderExecutedStub(t *testing.T) {
 	if !ok {
 		t.Fatalf("output schema type = %T", tool.OutputSchema)
 	}
-	variants, ok := output["oneOf"].([]interface{})
+	variants, ok := output["anyOf"].([]interface{})
 	if !ok || len(variants) != 2 {
 		t.Fatalf("output schema should match TS success/error union: %#v", output)
 	}
 	success := variants[0].(map[string]interface{})
-	successRequired := success["required"].([]string)
+	successRequired := r72provStrings(success["required"])
 	for _, want := range []string{"id", "content", "contentType", "encoding", "headers", "statusCode"} {
 		if !containsString(successRequired, want) {
 			t.Fatalf("success schema should require %q: %#v", want, success)
 		}
 	}
 	errorSchema := variants[1].(map[string]interface{})["properties"].(map[string]interface{})
-	errorEnum := errorSchema["error"].(map[string]interface{})["enum"].([]string)
+	errorEnum := r72provStrings(errorSchema["error"].(map[string]interface{})["enum"])
 	if !containsString(errorEnum, "rate_limit") {
 		t.Fatalf("output error enum missing TS rate_limit: %#v", errorEnum)
 	}

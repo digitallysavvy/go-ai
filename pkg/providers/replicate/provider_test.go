@@ -88,16 +88,19 @@ func TestImageModelBuildAndConvertErrors(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewImageModel(p, "img-model")
 	n := 3
-	body := m.buildRequestBody(&provider.ImageGenerateOptions{
+	body, _, _, err := m.buildRequest(&provider.ImageGenerateOptions{
 		Prompt: "draw",
 		N:      &n,
 		Size:   "1280x720",
 	})
-	if body["version"] != "img-model" {
-		t.Fatalf("version mismatch: %#v", body["version"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["version"]; ok {
+		t.Fatalf("unversioned model must not send version: %#v", body["version"])
 	}
 	input := body["input"].(map[string]interface{})
-	if input["num_outputs"] != 3 || input["width"] != 1280 || input["height"] != 720 {
+	if input["num_outputs"] != 3 || input["size"] != "1280x720" {
 		t.Fatalf("input mismatch: %#v", input)
 	}
 

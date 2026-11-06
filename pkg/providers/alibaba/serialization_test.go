@@ -9,7 +9,7 @@ func TestAlibabaSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := model.(*LanguageModel).Serialize()
-	if serialized.Provider != "alibaba" || serialized.ModelID != "qwen-plus" || serialized.Config == nil {
+	if serialized.Provider != "alibaba.chat" || serialized.ModelID != "qwen-plus" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestAlibabaSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeLanguageModel error = %v", err)
 	}
-	if restored.Provider() != "alibaba" || restored.ModelID() != "qwen-plus" {
+	if restored.Provider() != "alibaba.chat" || restored.ModelID() != "qwen-plus" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

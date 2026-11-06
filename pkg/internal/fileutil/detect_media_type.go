@@ -198,3 +198,39 @@ func DetectMediaTypeSignature(data []byte, topLevelType string) (string, bool) {
 	}
 	return detectMediaTypeBySignatures(data, build())
 }
+
+// DetectMediaTypeSignatureBase64 is DetectMediaTypeSignature for a base64
+// string payload, as TS detectMediaType takes one: it decodes only the
+// prefix it inspects (TS decodePrefix: ceil(maxBytes/3)*4 characters, with
+// convertBase64ToUint8Array), so a string whose tail is not base64 is still
+// detected. The error is that decode's failure (TS atob throws).
+func DetectMediaTypeSignatureBase64(s, topLevelType string) (string, bool, error) {
+	b, err := decodeBase64Prefix(s, defaultSniffBytes)
+	if err != nil {
+		return "", false, err
+	}
+	if hasID3(b) {
+		if b, err = decodeBase64Prefix(s, id3ScanBytes); err != nil {
+			return "", false, err
+		}
+	}
+	mediaType, ok := DetectMediaTypeSignature(b, topLevelType)
+	return mediaType, ok, nil
+}
+
+// decodeBase64Prefix is TS decodePrefix for a string: decode whole 4-char
+// groups covering maxBytes, then trim to maxBytes.
+func decodeBase64Prefix(s string, maxBytes int) ([]byte, error) {
+	maxChars := (maxBytes + 2) / 3 * 4
+	if len(s) > maxChars {
+		s = s[:maxChars]
+	}
+	b, err := ConvertBase64ToBytes(s)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxBytes {
+		b = b[:maxBytes]
+	}
+	return b, nil
+}

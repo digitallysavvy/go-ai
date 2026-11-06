@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -46,7 +47,8 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	// that only drains Next() to io.EOF may never make.
 	defer s.CancelContext()
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
 		s.SetErr(err)
 		cfg.audio.Cancel(err)
@@ -124,12 +126,16 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				// returns immediately below), so it is always an
 				// unexpected termination — mirroring TS onClose. A clean
 				// close and an abnormal disconnection (TS onSocketError)
-				// both fail the stream; x/net/websocket does not expose
-				// close codes/reasons to thread through the message like
-				// TS does.
+				// both fail the stream. CloseInfo reads the close frame's code
+				// and reason (1006 when the connection ended without one, as
+				// the ws library reports it).
 				var failErr error
 				if wsutil.IsCleanClose(res.Err) {
-					failErr = errors.New("OpenAI realtime translation WebSocket closed unexpectedly before finishing.") //nolint:staticcheck // matches TS SDK's exact error text
+					suffix := " (code " + strconv.Itoa(closeInfo.Code())
+					if reason := closeInfo.Reason(); reason != "" {
+						suffix += ", reason: " + reason
+					}
+					failErr = errors.New("OpenAI realtime translation WebSocket closed unexpectedly before finishing" + suffix + ").") //nolint:staticcheck // TS SDK text
 				} else {
 					failErr = errors.New("OpenAI realtime translation error")
 				}
@@ -180,9 +186,11 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				return
 
 			case "error":
+				// TS `raw.error?.message ?? 'OpenAI realtime error'`: only a
+				// missing (or null) message falls back; an empty one stays.
 				message := "OpenAI realtime error"
 				if errObj, ok := raw["error"].(map[string]interface{}); ok {
-					if m, ok := errObj["message"].(string); ok && m != "" {
+					if m, ok := errObj["message"].(string); ok {
 						message = m
 					}
 				}
@@ -221,9 +229,9 @@ func (s *openAIRealtimeSpeechTranslationStream) pumpAudio(conn *websocket.Conn, 
 	)
 }
 
-func (s *openAIRealtimeSpeechTranslationStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
+func (s *openAIRealtimeSpeechTranslationStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
 	protocols, filteredHeaders := openAIRealtimeWSAuth(headers)
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols, WrapConn: closeInfo.Wrap})
 }
 
 func (s *openAIRealtimeSpeechTranslationStream) send(conn *websocket.Conn, message []byte) error {

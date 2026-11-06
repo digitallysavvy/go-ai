@@ -37,9 +37,12 @@ func TestConvertResponse_ReasoningWithEncryptedContentNoID(t *testing.T) {
 		t.Fatalf("convertResponse failed: %v", convertErr)
 	}
 
-	// The reasoning text should appear in the combined output.
-	if !strings.Contains(result.Text, "thinking step") {
-		t.Errorf("expected reasoning summary in text, got %q", result.Text)
+	// Reasoning is its own content part and is not mixed into the text.
+	if !hasReasoningText(result, "thinking step") {
+		t.Errorf("expected reasoning summary in reasoning content, got %#v", result.Content)
+	}
+	if strings.Contains(result.Text, "thinking step") {
+		t.Errorf("reasoning leaked into text: %q", result.Text)
 	}
 	if !strings.Contains(result.Text, "final answer") {
 		t.Errorf("expected message text in output, got %q", result.Text)
@@ -67,8 +70,8 @@ func TestConvertResponse_ReasoningWithIDNoEncryptedContent(t *testing.T) {
 		t.Fatalf("convertResponse failed: %v", convertErr)
 	}
 
-	if !strings.Contains(result.Text, "reasoning text") {
-		t.Errorf("expected reasoning text in output, got %q", result.Text)
+	if !hasReasoningText(result, "reasoning text") {
+		t.Errorf("expected reasoning text in reasoning content, got %#v", result.Content)
 	}
 }
 
@@ -267,13 +270,13 @@ func TestConvertResponse_ReasoningPopulatesContentWithEncryptedContent(t *testin
 	}
 }
 
-// TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted verifies
-// that result.Content is empty when the reasoning item has neither ID nor
-// EncryptedContent (the item is skipped entirely).
-func TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted(t *testing.T) {
+// TestConvertResponse_ReasoningEmittedWhenNeitherIDNorEncrypted verifies that a
+// reasoning item with neither an id nor encrypted_content still yields its
+// reasoning part, as TS does (it never skips reasoning items).
+func TestConvertResponse_ReasoningEmittedWhenNeitherIDNorEncrypted(t *testing.T) {
 	response := OpenResponsesResponse{
 		Output: []OutputItem{
-			{Type: "reasoning", Summary: []ContentPart{{Type: "summary_text", Text: "ignore me"}}},
+			{Type: "reasoning", Summary: []ContentPart{{Type: "summary_text", Text: "keep me"}}},
 		},
 	}
 
@@ -283,8 +286,12 @@ func TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted(t *testing.
 		t.Fatalf("convertResponse failed: %v", convertErr)
 	}
 
-	if len(result.Content) != 0 {
-		t.Errorf("expected no content parts, got %d", len(result.Content))
+	if len(result.Content) != 1 {
+		t.Fatalf("expected one content part, got %d", len(result.Content))
+	}
+	rc, ok := result.Content[0].(types.ReasoningContent)
+	if !ok || rc.Text != "keep me" {
+		t.Fatalf("content = %#v", result.Content[0])
 	}
 }
 
@@ -422,4 +429,13 @@ func TestBuildRequestBody_ReasoningHighAndXHighMapping(t *testing.T) {
 	if reasoningXHigh["effort"] != "xhigh" {
 		t.Fatalf("xhigh effort = %v, want xhigh", reasoningXHigh["effort"])
 	}
+}
+
+func hasReasoningText(result *types.GenerateResult, text string) bool {
+	for _, p := range result.Content {
+		if r, ok := p.(types.ReasoningContent); ok && r.Text == text {
+			return true
+		}
+	}
+	return false
 }

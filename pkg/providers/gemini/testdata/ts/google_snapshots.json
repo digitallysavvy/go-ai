@@ -1,0 +1,597 @@
+{
+ "doGenerate > reasoning-gemini3 > should extract reasoning with thoughtSignature": {
+  "kind": "generate",
+  "parts": [
+   {
+    "text": "There are **3** \"r\"s in strawberry",
+    "type": "text"
+   }
+  ],
+  "finishReason": {
+   "raw": "STOP",
+   "unified": "stop"
+  },
+  "usage": {
+   "inputTokens": 9,
+   "outputTokens": 287
+  }
+ },
+ "doGenerate > text > should extract text response": {
+  "kind": "generate",
+  "parts": [
+   {
+    "text": "There are **3** r's in strawberry",
+    "type": "text"
+   }
+  ],
+  "finishReason": {
+   "raw": "STOP",
+   "unified": "stop"
+  },
+  "usage": {
+   "inputTokens": 9,
+   "outputTokens": 272
+  }
+ },
+ "doGenerate > text > should extract usage": {
+  "kind": "generate",
+  "parts": []
+ },
+ "doGenerate > tool-call > should extract tool calls": {
+  "kind": "generate",
+  "parts": [
+   {
+    "input": "{\"location\":\"San Francisco\"}",
+    "toolCallId": "test-id",
+    "toolName": "weather",
+    "type": "tool-call"
+   }
+  ],
+  "finishReason": {
+   "raw": "STOP",
+   "unified": "tool-calls"
+  },
+  "usage": {
+   "inputTokens": 29,
+   "outputTokens": 908
+  }
+ },
+ "doGenerate > tool-call-gemini3 > should extract tool call with thoughtSignature": {
+  "kind": "generate",
+  "parts": [
+   {
+    "input": "{\"location\":\"San Francisco\"}",
+    "toolCallId": "test-id",
+    "toolName": "weather",
+    "type": "tool-call"
+   }
+  ],
+  "finishReason": {
+   "raw": "STOP",
+   "unified": "tool-calls"
+  },
+  "usage": {
+   "inputTokens": 29,
+   "outputTokens": 1816
+  }
+ },
+ "doStream > reasoning > should stream reasoning and text parts": {
+  "kind": "stream",
+  "parts": [
+   {
+    "type": "stream-start"
+   },
+   {
+    "id": "dX6LadKVC7SZ28oPr9yJoQs",
+    "type": "response-metadata"
+   },
+   {
+    "id": "0",
+    "type": "text-start"
+   },
+   {
+    "delta": "There are **3** \"r\"s in",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "delta": " strawberry",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "delta": "",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "id": "0",
+    "type": "text-end"
+   },
+   {
+    "finishReason": {
+     "raw": "STOP",
+     "unified": "stop"
+    },
+    "type": "finish",
+    "usage": {
+     "inputTokens": 9,
+     "outputTokens": 285
+    }
+   }
+  ]
+ },
+ "doStream > reasoning-gemini3 > should stream reasoning with thoughtSignature": {
+  "kind": "stream",
+  "parts": [
+   {
+    "type": "stream-start"
+   },
+   {
+    "id": "M3iLaY-AI7zTxN8P3Piw4Qg",
+    "type": "response-metadata"
+   },
+   {
+    "id": "0",
+    "type": "text-start"
+   },
+   {
+    "delta": "There are **3** \"r\"s in strawberry",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "delta": "St**r**awbe**rr**y",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "delta": "",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "id": "0",
+    "type": "text-end"
+   },
+   {
+    "finishReason": {
+     "raw": "STOP",
+     "unified": "stop"
+    },
+    "type": "finish",
+    "usage": {
+     "inputTokens": 9,
+     "outputTokens": 325
+    }
+   }
+  ]
+ },
+ "doStream > streaming-tool-call-arguments > should stream partial function call arguments with parallel tool calls": {
+  "kind": "stream",
+  "parts": [
+   {
+    "type": "stream-start"
+   },
+   {
+    "id": "dqHOab6xGLzWodAPkPuViA4",
+    "type": "response-metadata"
+   },
+   {
+    "id": "test-id",
+    "toolName": "getWeather",
+    "type": "tool-input-start"
+   },
+   {
+    "delta": "{\"location\":\"Boston",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"}",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "id": "test-id",
+    "type": "tool-input-end"
+   },
+   {
+    "input": "{\"location\":\"Boston\"}",
+    "toolCallId": "test-id",
+    "toolName": "getWeather",
+    "type": "tool-call"
+   },
+   {
+    "id": "test-id",
+    "toolName": "getWeather",
+    "type": "tool-input-start"
+   },
+   {
+    "delta": "{\"location\":\"San Francisco",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"}",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "id": "test-id",
+    "type": "tool-input-end"
+   },
+   {
+    "input": "{\"location\":\"San Francisco\"}",
+    "toolCallId": "test-id",
+    "toolName": "getWeather",
+    "type": "tool-call"
+   },
+   {
+    "finishReason": {
+     "raw": "STOP",
+     "unified": "tool-calls"
+    },
+    "type": "finish",
+    "usage": {
+     "inputTokens": 26,
+     "outputTokens": 155
+    }
+   }
+  ]
+ },
+ "doStream > streaming-tool-call-arguments-nested > should stream nested partial function call arguments into proper nested JSON": {
+  "kind": "stream",
+  "parts": [
+   {
+    "type": "stream-start"
+   },
+   {
+    "id": "tjXVaYaxFISTq8YP_MWiyAo",
+    "type": "response-metadata"
+   },
+   {
+    "id": "test-id",
+    "toolName": "cookRecipe",
+    "type": "tool-input-start"
+   },
+   {
+    "delta": "{\"recipe\":{\"ingredients\":[{\"amount\":\"16 oz",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Lasagna noodles",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"1 lb",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Ground beef",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"15 oz",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Ricotta cheese",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"3 cups",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Mozzarella cheese",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"1/2 cup",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Parmesan cheese",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"24 oz",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Tomato sauce",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"1",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Egg",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"2 cloves",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Garlic",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"1 tsp",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Salt",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"},{\"amount\":\"1/2 tsp",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"name\":\"Pepper",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"}],\"name\":\"Lasagna",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"steps\":[\"Preheat oven to 375°F (190°C).",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"Cook lasagna noodles according to package directions, drain and set aside",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": ".",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"Brown ground beef with minced garlic in a skillet. Drain fat and stir in tomato sauce. Simmer for 10 minutes.",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"In a bowl, mix ricotta cheese, egg, salt, pepper, and Parmesan cheese.",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"In a 9x13 baking dish, spread a",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": " thin layer of meat sauce.",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"Layer noodles, ricotta mixture, mozzarella, and meat sauce. Repeat.",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"Top with remaining mozzarella cheese.",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"Cover with foil and bake for 25 minutes.",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"Remove foil and bake for another 25 minutes until golden.",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\",\"Let stand for 15 minutes before serving.",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "delta": "\"]}}",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "id": "test-id",
+    "type": "tool-input-end"
+   },
+   {
+    "input": "{\"recipe\":{\"ingredients\":[{\"amount\":\"16 oz\",\"name\":\"Lasagna noodles\"},{\"amount\":\"1 lb\",\"name\":\"Ground beef\"},{\"amount\":\"15 oz\",\"name\":\"Ricotta cheese\"},{\"amount\":\"3 cups\",\"name\":\"Mozzarella cheese\"},{\"amount\":\"1/2 cup\",\"name\":\"Parmesan cheese\"},{\"amount\":\"24 oz\",\"name\":\"Tomato sauce\"},{\"amount\":\"1\",\"name\":\"Egg\"},{\"amount\":\"2 cloves\",\"name\":\"Garlic\"},{\"amount\":\"1 tsp\",\"name\":\"Salt\"},{\"amount\":\"1/2 tsp\",\"name\":\"Pepper\"}],\"name\":\"Lasagna\",\"steps\":[\"Preheat oven to 375°F (190°C).\",\"Cook lasagna noodles according to package directions, drain and set aside.\",\"Brown ground beef with minced garlic in a skillet. Drain fat and stir in tomato sauce. Simmer for 10 minutes.\",\"In a bowl, mix ricotta cheese, egg, salt, pepper, and Parmesan cheese.\",\"In a 9x13 baking dish, spread a thin layer of meat sauce.\",\"Layer noodles, ricotta mixture, mozzarella, and meat sauce. Repeat.\",\"Top with remaining mozzarella cheese.\",\"Cover with foil and bake for 25 minutes.\",\"Remove foil and bake for another 25 minutes until golden.\",\"Let stand for 15 minutes before serving.\"]}}",
+    "toolCallId": "test-id",
+    "toolName": "cookRecipe",
+    "type": "tool-call"
+   },
+   {
+    "finishReason": {
+     "raw": "STOP",
+     "unified": "tool-calls"
+    },
+    "type": "finish",
+    "usage": {
+     "inputTokens": 31,
+     "outputTokens": 1710
+    }
+   }
+  ]
+ },
+ "doStream > text > should include raw chunks when includeRawChunks is enabled": {
+  "kind": "stream",
+  "parts": [
+   {
+    "type": "raw"
+   },
+   {
+    "type": "raw"
+   },
+   {
+    "type": "raw"
+   }
+  ]
+ },
+ "doStream > text > should stream text deltas": {
+  "kind": "stream",
+  "parts": [
+   {
+    "type": "stream-start"
+   },
+   {
+    "id": "bH6LaZW8Fp_3nsEPqtaSwQ4",
+    "type": "response-metadata"
+   },
+   {
+    "id": "0",
+    "type": "text-start"
+   },
+   {
+    "delta": "There are **3**",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "delta": " \"r\"s in strawberry",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "delta": "",
+    "id": "0",
+    "type": "text-delta"
+   },
+   {
+    "id": "0",
+    "type": "text-end"
+   },
+   {
+    "finishReason": {
+     "raw": "STOP",
+     "unified": "stop"
+    },
+    "type": "finish",
+    "usage": {
+     "inputTokens": 9,
+     "outputTokens": 208
+    }
+   }
+  ]
+ },
+ "doStream > tool-call > should stream tool call": {
+  "kind": "stream",
+  "parts": [
+   {
+    "type": "stream-start"
+   },
+   {
+    "id": "b36LacjwM668nsEP2tbsgQQ",
+    "type": "response-metadata"
+   },
+   {
+    "id": "test-id",
+    "toolName": "weather",
+    "type": "tool-input-start"
+   },
+   {
+    "delta": "{\"location\":\"San Francisco\"}",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "id": "test-id",
+    "type": "tool-input-end"
+   },
+   {
+    "input": "{\"location\":\"San Francisco\"}",
+    "toolCallId": "test-id",
+    "toolName": "weather",
+    "type": "tool-call"
+   },
+   {
+    "finishReason": {
+     "raw": "STOP",
+     "unified": "tool-calls"
+    },
+    "type": "finish",
+    "usage": {
+     "inputTokens": 29,
+     "outputTokens": 60
+    }
+   }
+  ]
+ },
+ "doStream > tool-call-gemini3 > should stream tool call with thoughtSignature": {
+  "kind": "stream",
+  "parts": [
+   {
+    "type": "stream-start"
+   },
+   {
+    "id": "QHiLaa6LBrb8vdIPoNztsAg",
+    "type": "response-metadata"
+   },
+   {
+    "id": "test-id",
+    "toolName": "weather",
+    "type": "tool-input-start"
+   },
+   {
+    "delta": "{\"location\":\"San Francisco\"}",
+    "id": "test-id",
+    "type": "tool-input-delta"
+   },
+   {
+    "id": "test-id",
+    "type": "tool-input-end"
+   },
+   {
+    "input": "{\"location\":\"San Francisco\"}",
+    "toolCallId": "test-id",
+    "toolName": "weather",
+    "type": "tool-call"
+   },
+   {
+    "finishReason": {
+     "raw": "STOP",
+     "unified": "tool-calls"
+    },
+    "type": "finish",
+    "usage": {
+     "inputTokens": 29,
+     "outputTokens": 819
+    }
+   }
+  ]
+ }
+}

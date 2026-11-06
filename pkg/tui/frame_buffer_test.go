@@ -61,3 +61,16 @@ func (w *recordingWriter) Last() string {
 	}
 	return w.chunks[len(w.chunks)-1]
 }
+
+// TS diffFrame compares against an undefined line for frames that got
+// shorter, so a trailing empty line is still cleared.
+func TestTerminalFrameBufferClearsTrailingEmptyLineWhenFrameShrinks(t *testing.T) {
+	out := &recordingWriter{}
+	useSync := false
+	buffer := NewTerminalFrameBuffer(out, TerminalFrameBufferOptions{UseSynchronizedUpdates: &useSync})
+	buffer.Present("a\n")
+	buffer.Present("a")
+	if got, want := out.Last(), "\x1b[2;1H\x1b[2K"; got != want {
+		t.Fatalf("diff = %q, want %q", got, want)
+	}
+}

@@ -30,7 +30,7 @@ func makeVertexTestModel(modelID string) *LanguageModel {
 // --- thinkingConfig from call-level Reasoning --------------------------------
 
 func TestReasoningNoneDisablesThinking(t *testing.T) {
-	m := makeTestModel("gemini-2.5-pro")
+	m := makeTestModel("gemini-2.5-flash")
 	level := types.ReasoningNone
 	body := m.buildRequestBody(&provider.GenerateOptions{Reasoning: &level}, false)
 
@@ -75,6 +75,7 @@ func TestReasoningDynamicBudget(t *testing.T) {
 		{"gemini-2.5-pro", types.ReasoningMedium, 19661}, // round(65536*0.3)
 		{"gemini-2.5-pro", types.ReasoningHigh, 32768},   // clamped to 2.5-pro max
 		{"gemini-2.5-pro", types.ReasoningXHigh, 32768},  // clamped to 2.5-pro max
+		{"gemini-2.5-pro", types.ReasoningMax, 32768},
 		{"gemini-2.5-flash-lite", types.ReasoningMedium, 19661},
 		{"gemini-2.5-flash", types.ReasoningHigh, 24576}, // clamped to flash max
 	}
@@ -113,13 +114,22 @@ func TestReasoningGemini3MinimumThinkingLevel(t *testing.T) {
 		want  string
 		warn  bool
 	}{
-		{"gemini-3-pro-preview", types.ReasoningMinimal, "minimal", false},
-		{"gemini-3-pro-preview", types.ReasoningNone, "minimal", false},
+		{"gemini-3-pro-preview", types.ReasoningMinimal, "low", true},
+		{"gemini-3-pro-preview", types.ReasoningNone, "low", true},
+		// Regional prefixes and Pro 3+ (TS #22394).
+		{"au.gemini-3.5-flash", types.ReasoningNone, "minimal", true},
+		{"eu.gemini-3.5-flash", types.ReasoningNone, "minimal", true},
+		{"us.gemini-3.1-pro", types.ReasoningNone, "low", true},
+		{"gemini-3.5-pro", types.ReasoningNone, "low", true},
+		{"gemini-3.5-pro", types.ReasoningMinimal, "low", true},
+		{"gemini-3.1-pro", types.ReasoningNone, "low", true},
+		{"gemini-3.1-pro", types.ReasoningMinimal, "low", true},
 		{"gemini-3-pro-preview", types.ReasoningXHigh, "high", true},
+		{"gemini-3-pro-preview", types.ReasoningMax, "high", true},
 		{"gemini-3.1-pro-preview", types.ReasoningMedium, "medium", false},
 		{"gemini-3.7-flash", types.ReasoningMinimal, "low", true},
-		{"gemini-3.7-flash", types.ReasoningNone, "low", false},
-		{"gemini-3.7-flash-video-understanding-eap", types.ReasoningNone, "low", false},
+		{"gemini-3.7-flash", types.ReasoningNone, "low", true},
+		{"gemini-3.7-flash-video-understanding-eap", types.ReasoningNone, "low", true},
 		{"gemini-flash-latest", types.ReasoningMinimal, "low", true},
 		{"models/gemini-3.7-flash", types.ReasoningMinimal, "low", true},
 		{"gemini-3.8-flash", types.ReasoningMinimal, "low", true},
@@ -153,6 +163,25 @@ func TestReasoningGemini3MinimumThinkingLevel(t *testing.T) {
 				t.Errorf("compatibility warning = %v, want %v (%#v)", hasCompat, tt.warn, warnings)
 			}
 		})
+	}
+}
+
+// TS 61a315e333: Gemini 2.5 Pro cannot disable thinking, so reasoning "none"
+// sends the minimum budget of 128 with a compatibility warning (it sent 0,
+// which Pro rejects).
+func TestR85provaGemini25ProNoneUsesMinimumBudget(t *testing.T) {
+	level := types.ReasoningNone
+	body, _, warnings, err := makeTestModel("gemini-2.5-pro").buildRequest(context.Background(), &provider.GenerateOptions{Reasoning: &level}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc := body["generationConfig"].(map[string]interface{})["thinkingConfig"].(map[string]interface{})
+	if tc["thinkingBudget"] != 128 {
+		t.Errorf("thinkingBudget = %v, want 128", tc["thinkingBudget"])
+	}
+	want := `reasoning "none" is not supported by this model. mapped to the minimum reasoning budget of 128 tokens.`
+	if len(warnings) != 1 || warnings[0].Type != "compatibility" || warnings[0].Details != want {
+		t.Errorf("warnings = %#v", warnings)
 	}
 }
 
@@ -277,6 +306,33 @@ func TestIsGemmaModel(t *testing.T) {
 	for _, id := range no {
 		if isGemmaModel(id) {
 			t.Errorf("isGemmaModel(%q) = true, want false", id)
+		}
+	}
+}
+
+// TS #22394: a resolved thinkingLevel is never combined with an explicit
+// providerOptions thinkingBudget (or the reverse).
+func TestReasoningNotCombinedWithExplicitThinkingOptions(t *testing.T) {
+	for _, opt := range []map[string]interface{}{{"thinkingBudget": 999}, {"thinkingLevel": "medium"}} {
+		level := types.ReasoningHigh
+		body, _, warnings, err := makeTestModel("gemini-3-pro-preview").buildRequest(context.Background(), &provider.GenerateOptions{
+			Reasoning:       &level,
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"thinkingConfig": opt}},
+		}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tc := body["generationConfig"].(map[string]interface{})["thinkingConfig"].(map[string]interface{})
+		if len(tc) != 1 {
+			t.Errorf("thinkingConfig = %v, want only the explicit option %v", tc, opt)
+		}
+		for k, v := range opt {
+			if tc[k] != v {
+				t.Errorf("thinkingConfig[%s] = %v, want %v", k, tc[k], v)
+			}
+		}
+		if len(warnings) != 0 {
+			t.Errorf("warnings = %#v, want none", warnings)
 		}
 	}
 }

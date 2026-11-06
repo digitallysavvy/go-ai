@@ -1,0 +1,37 @@
+{
+ "source": "node v24.20.0 fetch (redirect: manual) against a raw TCP response; TS 30548ee7f9 prodia-*-model.ts headers.get('content-type') ?? '' and /boundary=([^\\s;]+)/, prodia-api.ts TextEncoder `--${boundary}`",
+ "cases": [
+  {
+   "name": "nbsp after boundary",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IG11bHRpcGFydC9mb3JtLWRhdGE7IGJvdW5kYXJ5PWFiY6B4DQpDb250ZW50LUxlbmd0aDogMA0KQ29ubmVjdGlvbjogY2xvc2UNCg0K",
+   "ts": {
+    "contentType": "multipart/form-data; boundary=abc x",
+    "delimiterHex": "2d2d616263"
+   }
+  },
+  {
+   "name": "latin-1 boundary",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IG11bHRpcGFydC9mb3JtLWRhdGE7IGJvdW5kYXJ5PWFi6WMNCkNvbnRlbnQtTGVuZ3RoOiAwDQpDb25uZWN0aW9uOiBjbG9zZQ0KDQo=",
+   "ts": {
+    "contentType": "multipart/form-data; boundary=abéc",
+    "delimiterHex": "2d2d6162c3a963"
+   }
+  },
+  {
+   "name": "repeated content-type lines",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IG11bHRpcGFydC9mb3JtLWRhdGENCkNvbnRlbnQtVHlwZTogYm91bmRhcnk9eHl6DQpDb250ZW50LUxlbmd0aDogMA0KQ29ubmVjdGlvbjogY2xvc2UNCg0K",
+   "ts": {
+    "contentType": "multipart/form-data, boundary=xyz",
+    "delimiterHex": "2d2d78797a"
+   }
+  },
+  {
+   "name": "no boundary",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IG11bHRpcGFydC9mb3JtLWRhdGE7oGNoYXJzZXQ9eA0KQ29udGVudC1MZW5ndGg6IDANCkNvbm5lY3Rpb246IGNsb3NlDQoNCg==",
+   "ts": {
+    "contentType": "multipart/form-data; charset=x",
+    "delimiterHex": null
+   }
+  }
+ ]
+}

@@ -8,6 +8,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for AI Gateway
@@ -54,32 +55,33 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	body := map[string]interface{}{
 		"values": []string{input},
 	}
+	if opts != nil && opts.Dimensions != nil {
+		body["dimensions"] = *opts.Dimensions
+	}
 	if opts != nil && opts.ProviderOptions != nil {
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
+	var callHeaders map[string]string
 	if opts != nil {
-		for k, v := range opts.Headers {
-			headers[k] = v
-		}
+		callHeaders = opts.Headers
 	}
+	headers := gatewayRequestHeaders(ctx, callHeaders, m.getModelConfigHeaders())
 
 	var response gatewayEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embedding-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/embedding-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
 	rawBody := rawJSONBody(httpResp.Body)
 	result := &types.EmbeddingResult{
-		Usage:            response.Usage,
+		Usage:            response.embeddingUsage(),
 		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: response.ProviderMetadata,
 		Response: types.EmbeddingResponse{
@@ -99,32 +101,33 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	body := map[string]interface{}{
 		"values": inputs,
 	}
+	if opts != nil && opts.Dimensions != nil {
+		body["dimensions"] = *opts.Dimensions
+	}
 	if opts != nil && opts.ProviderOptions != nil {
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
+	var callHeaders map[string]string
 	if opts != nil {
-		for k, v := range opts.Headers {
-			headers[k] = v
-		}
+		callHeaders = opts.Headers
 	}
+	headers := gatewayRequestHeaders(ctx, callHeaders, m.getModelConfigHeaders())
 
 	var response gatewayEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embedding-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/embedding-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
 	result := &types.EmbeddingsResult{
 		Embeddings:       response.Embeddings,
-		Usage:            response.Usage,
+		Usage:            response.embeddingUsage(),
 		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: response.ProviderMetadata,
 		Responses:        []types.EmbeddingResponse{{Headers: flattenHeaders(httpResp.Headers), Body: rawJSONBody(httpResp.Body)}},
@@ -143,9 +146,20 @@ func (m *EmbeddingModel) getModelConfigHeaders() map[string]string {
 
 type gatewayEmbeddingResponse struct {
 	Embeddings       [][]float64            `json:"embeddings"`
-	Usage            types.EmbeddingUsage   `json:"usage"`
+	Usage            *types.EmbeddingUsage  `json:"usage"`
 	Warnings         []types.Warning        `json:"warnings,omitempty"`
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+}
+
+// embeddingUsage is TS `responseBody.usage ?? undefined`: Reported only when
+// the response carried a usage object.
+func (r gatewayEmbeddingResponse) embeddingUsage() types.EmbeddingUsage {
+	if r.Usage == nil {
+		return types.EmbeddingUsage{}
+	}
+	usage := *r.Usage
+	usage.Reported = true
+	return usage
 }
 
 func warningsOrEmpty(warnings []types.Warning) []types.Warning {

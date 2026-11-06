@@ -2,14 +2,15 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
-	"strings"
 	"sync"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ToolSearchDefaultName is the tool name ToolSearch uses when config.Name is
@@ -133,7 +134,8 @@ func ToolSearch(config ...ToolSearchConfig) types.Tool {
 		Type:         types.ToolTypeFunction,
 		IsToolSearch: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("toolSearch must be bound by an AI SDK generation")
+			// Trailing period kept: TS message text is "toolSearch must be bound by an AI SDK generation."
+			return nil, errors.New("toolSearch must be bound by an AI SDK generation.") //nolint:staticcheck,revive // exact TS error text
 		},
 	}
 }
@@ -200,7 +202,7 @@ func NewToolSearchState(tools []types.Tool, toolCallers ResolvedToolCallers) (*T
 			return nil, &providererrors.InvalidArgumentError{
 				Field: "tools",
 				Message: fmt.Sprintf(
-					"tool %q must be callable directly or through code mode with toolDiscovery: 'conversation'. The search tool itself must not defer loading.",
+					"tool \"%s\" must be callable directly or through code mode with toolDiscovery: 'conversation'. The search tool itself must not defer loading.",
 					name,
 				),
 			}
@@ -408,7 +410,7 @@ var (
 // prepare-tool-search.ts.
 func tokenizeSearchText(text string) []string {
 	spaced := camelCaseBoundary.ReplaceAllString(text, "$1 $2")
-	lower := strings.ToLower(spaced)
+	lower := providerutils.JSToLower(spaced)
 	return searchWordToken.FindAllString(lower, -1)
 }
 

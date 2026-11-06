@@ -41,10 +41,13 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 	if len(result.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding returned from Alibaba")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
+	embedding := result.Embeddings[0]
 	out := &types.EmbeddingResult{
-		Embedding:        result.Embeddings[0],
+		Embedding:        embedding,
 		Usage:            result.Usage,
 		Warnings:         result.Warnings,
 		ProviderMetadata: result.ProviderMetadata,
@@ -86,6 +89,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	if alibabaOpts.Dimension != nil {
 		parameters["dimension"] = *alibabaOpts.Dimension
+	} else if opts != nil && opts.Dimensions != nil {
+		// Top-level dimensions (TS #22338); the provider option wins.
+		parameters["dimension"] = *opts.Dimensions
 	}
 	if alibabaOpts.OutputType != "" {
 		parameters["output_type"] = alibabaOpts.OutputType
@@ -94,10 +100,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response alibabaTextEmbeddingResponse
 	httpResp, err := m.provider.embeddingClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/services/embeddings/text-embedding/text-embedding",
-		Body:    body,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAlibabaEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/services/embeddings/text-embedding/text-embedding",
+		Body:             body,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -107,7 +114,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		return nil, err
 	}
 
-	sort.Slice(response.Output.Embeddings, func(i, j int) bool {
+	sort.SliceStable(response.Output.Embeddings, func(i, j int) bool {
 		return response.Output.Embeddings[i].TextIndex < response.Output.Embeddings[j].TextIndex
 	})
 
@@ -115,7 +122,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	sparse := make([]map[string]interface{}, 0)
 	for i, item := range response.Output.Embeddings {
 		embeddings[i] = item.Embedding
-		if len(item.SparseEmbedding) > 0 {
+		if item.SparseEmbedding != nil {
 			sparse = append(sparse, map[string]interface{}{
 				"textIndex":       item.TextIndex,
 				"sparseEmbedding": normalizeAlibabaSparseEmbedding(item.SparseEmbedding),
@@ -123,9 +130,13 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 
+	// TS `response.usage ? { tokens: response.usage.total_tokens } :
+	// undefined`: Reported only when the response carried usage.
 	var inputTokens int
+	usageReported := false
 	if response.Usage != nil {
 		inputTokens = response.Usage.TotalTokens
+		usageReported = true
 	}
 	var providerMetadata map[string]interface{}
 	if len(sparse) > 0 {
@@ -140,6 +151,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Tokens:      float64(inputTokens),
 			InputTokens: inputTokens,
 			TotalTokens: inputTokens,
+			Reported:    usageReported,
 		},
 		Responses: []types.EmbeddingResponse{{
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),
@@ -150,26 +162,22 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 }
 
 func (m *EmbeddingModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload struct {
-			Code      string `json:"code"`
-			Message   string `json:"message"`
-			RequestID string `json:"request_id"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil {
-			if payload.Message != "" {
-				message = payload.Message
-			}
-			code = payload.Code
-		}
-		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		return providerErr
+		message, code := alibabaNativeErrorMessage(statusErr.StatusCode, statusErr.Body)
+		return providererrors.NewProviderErrorFromResponse(m.Provider(), 0, code, message, err)
 	}
-	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
+	// TS postJsonToApi lets a transport failure propagate unchanged.
+	return err
 }
 
 func extractAlibabaEmbeddingOptions(opts *provider.EmbedModelOptions) (AlibabaEmbeddingModelOptions, error) {
@@ -203,11 +211,7 @@ func wrapAlibabaEmbeddingOptionsValidation(opts AlibabaEmbeddingModelOptions, er
 }
 
 func invalidAlibabaEmbeddingOptionsError(cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions",
-		Message: "invalid alibaba provider options",
-		Cause:   cause,
-	}
+	return providererrors.NewArgumentError("providerOptions", "invalid alibaba provider options", cause)
 }
 
 func parseAlibabaEmbeddingOptionMap(raw map[string]interface{}) (AlibabaEmbeddingModelOptions, error) {
@@ -216,6 +220,9 @@ func parseAlibabaEmbeddingOptionMap(raw map[string]interface{}) (AlibabaEmbeddin
 		textType, ok := v.(string)
 		if !ok {
 			return out, fmt.Errorf("invalid alibaba textType: expected string")
+		}
+		if textType == "" {
+			return out, fmt.Errorf("invalid alibaba textType \"\": expected \"query\" or \"document\"")
 		}
 		out.TextType = textType
 	}
@@ -238,6 +245,9 @@ func parseAlibabaEmbeddingOptionMap(raw map[string]interface{}) (AlibabaEmbeddin
 		outputType, ok := v.(string)
 		if !ok {
 			return out, fmt.Errorf("invalid alibaba outputType: expected string")
+		}
+		if outputType == "" {
+			return out, fmt.Errorf("invalid alibaba outputType \"\": expected \"dense\", \"sparse\", or \"dense&sparse\"")
 		}
 		out.OutputType = outputType
 	}

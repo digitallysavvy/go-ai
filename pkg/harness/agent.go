@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // AgentVersion is the agent-interface specification version HarnessAgent
@@ -82,10 +85,16 @@ func NewAgent(settings AgentSettings) (*Agent, error) {
 	permissionMode := ResolvePermissionMode(settings.PermissionMode)
 
 	tools := make(map[string]types.Tool, len(settings.Harness.BuiltinTools())+len(userTools))
+	// The map key is the tool name (TS `tools` is keyed by name); tool-call
+	// parsing and spec building look tools up by Tool.Name, so keep the two in
+	// step for a tool registered without (or under a different) Name.
 	for name, bt := range settings.Harness.BuiltinTools() {
-		tools[name] = bt.Tool
+		t := bt.Tool
+		t.Name = name
+		tools[name] = t
 	}
 	for name, t := range userTools {
+		t.Name = name
 		tools[name] = t
 	}
 
@@ -118,6 +127,17 @@ func NewAgent(settings AgentSettings) (*Agent, error) {
 		permissionMode:       permissionMode,
 		headers:              headers,
 	}, nil
+}
+
+// withToolNames returns tools with each entry's Name set to its map key (TS
+// `tools` is keyed by name).
+func withToolNames(tools map[string]types.Tool) map[string]types.Tool {
+	out := make(map[string]types.Tool, len(tools))
+	for name, t := range tools {
+		t.Name = name
+		out[name] = t
+	}
+	return out
 }
 
 // Version returns "agent-v1".
@@ -166,6 +186,12 @@ type CreateSessionOptions struct {
 	// SandboxSession is a caller-owned sandbox session. When set, the caller
 	// retains ownership of its lifecycle; Agent.Sandbox is not consulted.
 	SandboxSession providerutils.SandboxSession
+	// SandboxCreator creates a caller-owned sandbox session when it is
+	// needed: for a harness without a bootstrap recipe, on the first file,
+	// exec or spawn operation; otherwise in CreateSession. Mutually exclusive
+	// with SandboxSession. Mirrors TS `sandboxSession:
+	// HarnessAgentSandboxCreator` (TS 8a20b57d41).
+	SandboxCreator *SandboxCreator
 }
 
 // CreateSession starts a fresh session, or resumes one from state previously
@@ -207,28 +233,63 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 		return nil, errors.New("HarnessAgent.CreateSession: `ToolsContext` can only rebind an unfinished turn from ContinueFrom or ResumeFrom.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	isResumedSession := validatedResumeFrom != nil || effectiveContinueFrom != nil
+	if opts.SandboxSession != nil && opts.SandboxCreator != nil {
+		return nil, errors.New("HarnessAgent.CreateSession: pass either SandboxSession or SandboxCreator, not both.") //nolint:staticcheck // Go-only option conflict, phrased like the TS option errors
+	}
+	if opts.SandboxCreator != nil && opts.SandboxCreator.CreateSandboxSession == nil {
+		return nil, errors.New("HarnessAgent.CreateSession: SandboxCreator.CreateSandboxSession is required.") //nolint:staticcheck // Go-only option check, phrased like the TS option errors
+	}
 
-	ownsSandboxLifecycle := opts.SandboxSession == nil
-	sandboxSession, sessionWorkDir, err := a.acquireSandbox(ctx, opts, isResumedSession)
+	ownsSandboxLifecycle := opts.SandboxSession == nil && opts.SandboxCreator == nil
+	sandboxSession, sessionWorkDir, recipe, err := a.acquireSandboxSession(ctx, opts, isResumedSession)
 	if err != nil {
 		return nil, err
 	}
-
-	if err := EnsureSandboxDirectory(ctx, sandboxSession, sessionWorkDir); err != nil {
-		a.cleanupAfterStartFailure(ctx, sandboxSession, ownsSandboxLifecycle)
-		return nil, err
+	// setupSandboxSession runs sandboxConfig.OnBootstrap (skipped when its
+	// marker exists), creates the session work directory and runs
+	// sandboxConfig.OnSession. Mirrors TS `setupSandboxSession`.
+	setupSandboxSession := func(ctx context.Context, session providerutils.SandboxSession) error {
+		restricted := GetRestrictedSandboxSession(session)
+		if err := RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
+			Session: restricted, WorkDir: a.sandboxConfig.WorkDir,
+			OnBootstrap: a.sandboxConfig.OnBootstrap, BootstrapHash: a.sandboxConfig.BootstrapHash,
+			SkipOnBootstrapIfMarked: true,
+		}); err != nil {
+			return err
+		}
+		if err := EnsureSandboxDirectory(ctx, session, sessionWorkDir); err != nil {
+			return err
+		}
+		if a.sandboxConfig.OnSession != nil {
+			return a.sandboxConfig.OnSession(ctx, SandboxSessionContext{Session: restricted, SessionWorkDir: sessionWorkDir})
+		}
+		return nil
 	}
-	if a.sandboxConfig.OnSession != nil {
-		if err := a.sandboxConfig.OnSession(ctx, SandboxSessionContext{Session: GetRestrictedSandboxSession(sandboxSession), SessionWorkDir: sessionWorkDir}); err != nil {
+	// The session handed to the adapter and the host tools. A harness with a
+	// bootstrap recipe gets the sandbox set up before it starts. Without a
+	// recipe the setup (and, for a SandboxCreator, the sandbox creation)
+	// waits for the first file, exec or spawn operation (TS 8a20b57d41).
+	var adapterSandboxSession providerutils.SandboxSession
+	switch {
+	case opts.SandboxCreator != nil && recipe == nil:
+		adapterSandboxSession = deferSandboxSession(opts.SandboxCreator.DefaultWorkingDirectory, opts.SandboxCreator.CreateSandboxSession, setupSandboxSession)
+		sandboxSession = adapterSandboxSession
+	case recipe != nil:
+		if err := setupSandboxSession(ctx, sandboxSession); err != nil {
 			a.cleanupAfterStartFailure(ctx, sandboxSession, ownsSandboxLifecycle)
 			return nil, err
 		}
+		adapterSandboxSession = sandboxSession
+	default:
+		original := sandboxSession
+		adapterSandboxSession = deferSandboxSetup(original, func(ctx context.Context) error { return setupSandboxSession(ctx, original) })
 	}
 
 	startOpts := StartOptions{
 		Headers: a.headers, SessionID: sessionID, ResumeFrom: validatedResumeFrom, ContinueFrom: effectiveContinueFrom,
 		PermissionMode: a.permissionMode, BuiltinToolFiltering: a.builtinToolFiltering,
-		SandboxSession: sandboxSession, SessionWorkDir: sessionWorkDir,
+		SandboxSession: adapterSandboxSession, SessionWorkDir: sessionWorkDir,
+		Observability: buildObservability(a.settings),
 	}
 	underlying, err := a.settings.Harness.DoStart(ctx, startOpts)
 	if err != nil {
@@ -256,121 +317,118 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 
 	return newAgentSession(AgentSessionOptions{
 		SessionID: sessionID, Harness: a.settings.Harness, Underlying: underlying,
-		SandboxSession: sandboxSession, OwnsSandboxLifecycle: ownsSandboxLifecycle,
+		SandboxSession: adapterSandboxSession, OwnsSandboxLifecycle: ownsSandboxLifecycle,
 		SessionWorkDir: sessionWorkDir, ToolApproval: a.settings.ToolApproval,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
 		TurnSettings: turnSettings, ResumedToolsContext: opts.ToolsContext, ResumedRuntimeContext: opts.RuntimeContext, TurnState: turnState,
 	}), nil
 }
 
-func (a *Agent) acquireSandbox(ctx context.Context, opts CreateSessionOptions, isResumedSession bool) (providerutils.SandboxSession, string, error) {
-	sandboxSession, sessionWorkDir, err := a.acquireSandboxSession(ctx, opts, isResumedSession)
-	if err != nil {
-		return nil, "", err
-	}
-
-	// Unconditionally ensures sandboxConfig.OnBootstrap has run against this
-	// physical sandbox, regardless of which branch above produced it —
-	// including a caller-supplied SandboxSession (31742b9a1b), which
-	// previously never ran OnBootstrap at all, and a freshly-created
-	// sandbox whose provider may not honor CreateSandboxSessionOptions.
-	// OnFirstCreate. SkipOnBootstrapIfMarked makes the common case (a
-	// provider that already ran it via OnFirstCreate) a cheap marker-file
-	// read. Mirrors TS `HarnessAgent.createSession`'s unconditional
-	// post-branch `runSandboxBootstrap` call.
-	if err := RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
-		Session: GetRestrictedSandboxSession(sandboxSession), WorkDir: a.sandboxConfig.WorkDir,
-		OnBootstrap: a.sandboxConfig.OnBootstrap, BootstrapHash: a.sandboxConfig.BootstrapHash,
-		SkipOnBootstrapIfMarked: true,
-	}); err != nil {
-		return nil, "", err
-	}
-	return sandboxSession, sessionWorkDir, nil
-}
-
 // acquireSandboxSession resolves the concrete sandbox session (caller-owned,
-// resumed, or freshly created) and applies the harness's own bootstrap
-// recipe. It does not run sandboxConfig.OnBootstrap — see acquireSandbox's
-// unconditional post-branch call for that.
-func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOptions, isResumedSession bool) (providerutils.SandboxSession, string, error) {
+// created by a SandboxCreator, resumed, or freshly created), applies the
+// harness's own bootstrap recipe and returns that recipe. It does not run
+// the session setup (sandboxConfig.OnBootstrap, the work directory,
+// OnSession); CreateSession does, now or on first use. With a SandboxCreator
+// and no recipe the returned session is nil: CreateSession defers it.
+func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOptions, isResumedSession bool) (providerutils.SandboxSession, string, *Bootstrap, error) {
 	harness := a.settings.Harness
 
-	if opts.SandboxSession != nil {
-		restricted := GetRestrictedSandboxSession(opts.SandboxSession)
-		defaultWD, err := ResolveSandboxDefaultWorkingDirectory(ctx, opts.SandboxSession)
-		if err != nil {
-			return nil, "", err
+	if opts.SandboxSession != nil || opts.SandboxCreator != nil {
+		var defaultWD string
+		if opts.SandboxCreator != nil {
+			defaultWD = opts.SandboxCreator.DefaultWorkingDirectory
+		} else {
+			var err error
+			if defaultWD, err = ResolveSandboxDefaultWorkingDirectory(ctx, opts.SandboxSession); err != nil {
+				return nil, "", nil, err
+			}
 		}
 		sessionWorkDir := ResolveSessionWorkDir(defaultWD, harness.HarnessID(), opts.SessionID, a.sandboxConfig.WorkDir)
-		if recipe, err := GetBootstrap(ctx, harness); err != nil {
-			return nil, "", err
-		} else if recipe != nil {
+		recipe, err := GetBootstrap(ctx, harness)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		session := opts.SandboxSession
+		if opts.SandboxCreator != nil {
+			if recipe == nil {
+				return nil, sessionWorkDir, nil, nil
+			}
+			if session, err = opts.SandboxCreator.CreateSandboxSession(ctx); err != nil {
+				return nil, "", nil, err
+			}
+		}
+		if recipe != nil {
+			restricted := GetRestrictedSandboxSession(session)
 			identity := HashHarnessBootstrap(*recipe)
 			home, err := ResolveSandboxHomeDir(ctx, restricted)
 			if err != nil {
-				return nil, "", err
+				return nil, "", nil, err
 			}
 			if err := ApplyBootstrapRecipe(ctx, restricted, *recipe, identity, StateDirectoryPath(home)); err != nil {
-				return nil, "", err
+				return nil, "", nil, err
 			}
 		}
-		return opts.SandboxSession, sessionWorkDir, nil
+		return session, sessionWorkDir, recipe, nil
 	}
 
 	if a.settings.Sandbox == nil {
-		return nil, "", errors.New("HarnessAgent.CreateSession: configure `Sandbox` on the agent or pass `SandboxSession`.") //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, "", nil, errors.New("HarnessAgent.CreateSession: configure `Sandbox` on the agent or pass `SandboxSession`.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	recipe, err := GetBootstrap(ctx, harness)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	if isResumedSession {
 		resumer, ok := a.settings.Sandbox.(SandboxSessionResumer)
 		if !ok {
-			return nil, "", NewCapabilityUnsupportedError(
+			return nil, "", nil, NewCapabilityUnsupportedError(
 				fmt.Sprintf("Sandbox provider '%s' does not support resume.", a.settings.Sandbox.ProviderID()),
 				harness.HarnessID(), nil)
 		}
 		resumed, err := resumer.ResumeSession(ctx, opts.SessionID)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		sessionWorkDir := ResolveSessionWorkDir(resumed.DefaultWorkingDirectory(), harness.HarnessID(), opts.SessionID, a.sandboxConfig.WorkDir)
 		if recipe != nil {
 			identity := HashHarnessBootstrap(*recipe)
 			home, err := ResolveSandboxHomeDir(ctx, resumed)
-			if err != nil {
-				return nil, "", err
+			if err == nil {
+				err = ApplyBootstrapRecipe(ctx, resumed.Restricted(), *recipe, identity, StateDirectoryPath(home))
 			}
-			if err := ApplyBootstrapRecipe(ctx, resumed.Restricted(), *recipe, identity, StateDirectoryPath(home)); err != nil {
-				return nil, "", err
+			if err != nil {
+				// The agent owns this sandbox: do not leak it when the
+				// bootstrap fails (TS cleanupAfterStartFailure).
+				a.cleanupAfterStartFailure(ctx, resumed, true)
+				return nil, "", nil, err
 			}
 		}
-		return resumed, sessionWorkDir, nil
+		return resumed, sessionWorkDir, recipe, nil
 	}
 
 	plan, err := CreateSandboxBootstrapPlan(recipe, a.sandboxConfig)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	created, err := a.settings.Sandbox.CreateSession(ctx, CreateSandboxSessionOptions{
 		SessionID: opts.SessionID, Identity: plan.Identity, OnFirstCreate: plan.OnFirstCreate,
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	sessionWorkDir := ResolveSessionWorkDir(created.DefaultWorkingDirectory(), harness.HarnessID(), opts.SessionID, plan.WorkDir)
 	if plan.Recipe != nil && plan.RecipeIdentity != "" {
 		home, err := ResolveSandboxHomeDir(ctx, created)
-		if err != nil {
-			return nil, "", err
+		if err == nil {
+			err = ApplyBootstrapRecipe(ctx, created.Restricted(), *plan.Recipe, plan.RecipeIdentity, StateDirectoryPath(home))
 		}
-		if err := ApplyBootstrapRecipe(ctx, created.Restricted(), *plan.Recipe, plan.RecipeIdentity, StateDirectoryPath(home)); err != nil {
-			return nil, "", err
+		if err != nil {
+			a.cleanupAfterStartFailure(ctx, created, true)
+			return nil, "", nil, err
 		}
 	}
-	return created, sessionWorkDir, nil
+	return created, sessionWorkDir, recipe, nil
 }
 
 func (a *Agent) cleanupAfterStartFailure(ctx context.Context, sandboxSession providerutils.SandboxSession, ownsSandboxLifecycle bool) {
@@ -381,33 +439,36 @@ func (a *Agent) cleanupAfterStartFailure(ctx context.Context, sandboxSession pro
 }
 
 func validateLifecycleStateData(h Harness, state LifecycleState) error {
+	var data []byte
+	var nested *ContinueTurnState
 	switch s := state.(type) {
 	case *ResumeSessionState:
 		if err := s.Validate(); err != nil {
 			return err
 		}
 		if s.HarnessID != h.HarnessID() {
-			return fmt.Errorf("harness: lifecycle state was produced by harness '%s' but this agent uses '%s'", s.HarnessID, h.HarnessID())
+			return NewHarnessError(fmt.Sprintf("Lifecycle state was produced by harness '%s' but this agent uses '%s'.", s.HarnessID, h.HarnessID()), nil)
 		}
+		data, nested = s.Data, s.ContinueFrom
 	case *ContinueTurnState:
 		if err := s.Validate(); err != nil {
 			return err
 		}
 		if s.HarnessID != h.HarnessID() {
-			return fmt.Errorf("harness: lifecycle state was produced by harness '%s' but this agent uses '%s'", s.HarnessID, h.HarnessID())
+			return NewHarnessError(fmt.Sprintf("Lifecycle state was produced by harness '%s' but this agent uses '%s'.", s.HarnessID, h.HarnessID()), nil)
 		}
+		data = s.Data
 	}
 	if v, ok := h.(LifecycleStateValidator); ok {
-		var data []byte
-		switch s := state.(type) {
-		case *ResumeSessionState:
-			data = s.Data
-		case *ContinueTurnState:
-			data = s.Data
-		}
 		if err := v.ValidateLifecycleStateData(data); err != nil {
-			return err
+			// Mirrors TS: a schema failure is reported as a HarnessError.
+			return NewHarnessError(fmt.Sprintf("Lifecycle state failed schema validation for harness '%s': %s", h.HarnessID(), err.Error()), err)
 		}
+	}
+	// TS validates a resume-session's nested `continueFrom` recursively
+	// (type, harness id and adapter data schema).
+	if nested != nil {
+		return validateLifecycleStateData(h, nested)
 	}
 	return nil
 }
@@ -428,7 +489,11 @@ func (a *Agent) Generate(ctx context.Context, opts agent.AgentGenerateOptions) (
 	if err != nil {
 		return nil, err
 	}
-	result, err := a.startTurn(ctx, session, opts, "prompt", nil, nil)
+	mode, approvals, results, err := resolveTurnMode(opts)
+	if err != nil {
+		return nil, err
+	}
+	result, err := a.startTurn(ctx, session, opts, mode, approvals, results)
 	if err != nil {
 		return nil, err
 	}
@@ -436,6 +501,24 @@ func (a *Agent) Generate(ctx context.Context, opts agent.AgentGenerateOptions) (
 		return nil, err
 	}
 	return streamResultToGenerateResult(result), nil
+}
+
+// resolveTurnMode mirrors TS `HarnessAgent.generate`/`stream`: a trailing
+// `tool` message carrying approval responses or tool results continues the
+// session's unfinished turn instead of starting a new prompt.
+func resolveTurnMode(opts agent.AgentGenerateOptions) (mode string, approvals []types.ToolApprovalResponseContent, results []types.ToolResultContent, err error) {
+	if opts.Prompt != "" || len(opts.Messages) == 0 {
+		return "prompt", nil, nil, nil
+	}
+	approvals, err = CollectToolApprovalContinuations(opts.Messages)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	results = CollectToolResultContinuations(opts.Messages)
+	if len(approvals) > 0 || len(results) > 0 {
+		return "continue", approvals, results, nil
+	}
+	return "prompt", nil, nil, nil
 }
 
 // Stream runs one fresh prompt turn and returns the streaming result.
@@ -446,7 +529,11 @@ func (a *Agent) Stream(ctx context.Context, opts agent.AgentStreamOptions) (*ai.
 	if err != nil {
 		return nil, err
 	}
-	return a.startTurn(ctx, session, opts.AgentGenerateOptions, "prompt", nil, nil)
+	mode, approvals, results, err := resolveTurnMode(opts.AgentGenerateOptions)
+	if err != nil {
+		return nil, err
+	}
+	return a.startTurn(ctx, session, opts.AgentGenerateOptions, mode, approvals, results)
 }
 
 // ContinueGenerate resumes a paused turn (awaiting an approval, a tool
@@ -507,8 +594,11 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// it (TS 4d1bf28: `HarnessAgentSettings.instructions: string |
 	// SystemModelMessage`).
 	var instructionsRaw = a.settings.Instructions
+	// A continuation runs with the agent's own settings (TS
+	// `_prepareContinueTurnInput` / `continueGenerate` read `this.settings`
+	// only), so the per-call overrides below apply to fresh prompts alone.
 	toolsContext := a.settings.ToolsContext
-	if opts.ToolsContext != nil {
+	if opts.ToolsContext != nil && mode != "continue" {
 		toolsContext = opts.ToolsContext
 	}
 	// RuntimeContext mirrors TS `this.settings.runtimeContext ?? {}`
@@ -516,7 +606,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// agent-level default, overridden by a per-call value when the caller
 	// supplies one.
 	runtimeContext := a.settings.RuntimeContext
-	if opts.RuntimeContext != nil {
+	if opts.RuntimeContext != nil && mode != "continue" {
 		runtimeContext = opts.RuntimeContext
 	}
 	skills := a.settings.Skills
@@ -524,15 +614,12 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 
 	var prompt Prompt
 	if mode != "continue" {
-		if len(opts.Messages) > 0 {
-			last := opts.Messages[len(opts.Messages)-1]
-			m := last
-			prompt = Prompt{Message: &m}
-		} else {
-			prompt = TextPrompt(opts.Prompt)
+		var err error
+		if prompt, err = resolvePromptTurnInput(opts); err != nil {
+			return nil, err
 		}
 	}
-	if opts.Instructions != nil {
+	if opts.Instructions != nil && mode != "continue" {
 		instructionsRaw = *opts.Instructions
 	}
 
@@ -542,7 +629,9 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// defaults above and the per-call Instructions/ToolsContext already
 	// applied, matching TS's "prepared values are frozen for the lifetime of
 	// the turn" contract.
-	if a.settings.PrepareCall != nil {
+	// A continuation runs with the agent's own settings (no prepareCall), like
+	// TS `_prepareContinueTurnInput`.
+	if a.settings.PrepareCall != nil && mode != "continue" {
 		prepared, err := a.settings.PrepareCall(ctx, PrepareCallOptions{
 			CallOptions: opts.CallOptions, Prompt: prompt, Model: model,
 			Skills: skills, Instructions: instructionsRaw, Tools: tools, ToolsContext: toolsContext,
@@ -561,7 +650,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 			instructionsRaw = prepared.Instructions
 		}
 		if prepared.Tools != nil {
-			tools = prepared.Tools
+			tools = withToolNames(prepared.Tools)
 		}
 		if prepared.ToolsContext != nil {
 			toolsContext = prepared.ToolsContext
@@ -569,7 +658,17 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		if prepared.HasRuntimeContext {
 			runtimeContext = prepared.RuntimeContext
 		}
-		if mode != "continue" && (prepared.Prompt.Text != "" || prepared.Prompt.Message != nil) {
+		if prepared.Prompt.Message != nil {
+			one := []types.Message{*prepared.Prompt.Message}
+			ap, aerr := CollectToolApprovalContinuations(one)
+			if aerr != nil {
+				return nil, aerr
+			}
+			if len(ap) > 0 || len(CollectToolResultContinuations(one)) > 0 {
+				return nil, errors.New("HarnessAgent.PrepareCall must return a fresh user prompt, not a tool continuation.") //nolint:staticcheck // matches TS SDK's exact error text
+			}
+		}
+		if prepared.Prompt.Text != "" || prepared.Prompt.Message != nil {
 			prompt = prepared.Prompt
 		}
 	}
@@ -616,36 +715,24 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// excluded too — mirrors TS `_toToolSpecs(toolFiltering.activeUserTools)`.
 	toolSpecs := make([]ToolSpec, 0, len(activeTools))
 	for name, t := range activeTools {
-		schema, _ := t.Parameters.(map[string]any)
-		toolSpecs = append(toolSpecs, ToolSpec{Name: name, Description: t.Description, InputSchema: schema})
+		toolSpecs = append(toolSpecs, ToolSpec{Name: name, Description: t.Description, InputSchema: toolSpecInputSchema(t)})
 	}
+	// Go map iteration is random, while TS follows tool definition order.
+	// The specs feed order-sensitive consumers (Codex's turn-configuration
+	// fingerprint, ACP's lossy-rerun tool-catalog check), so a stable order
+	// keeps a resumed turn from looking like a changed tool catalog.
+	sort.Slice(toolSpecs, func(i, j int) bool { return toolSpecs[i].Name < toolSpecs[j].Name })
 
-	pendingApprovals, pendingResults, turnSettings := session.snapshotPendingState()
-	if turnSettings != nil {
-		if turnSettings.Model != "" {
-			model = turnSettings.Model
-		}
-		if turnSettings.Instructions != "" {
-			instructions = turnSettings.Instructions
-		}
-	}
-	// Continuing an unfinished turn from a session created via
-	// CreateSession's ContinueFrom/ResumeFrom (rather than one still
-	// in-process from an earlier promptTurn/continueTurn call) rebinds
-	// host-only tools/runtime context from whatever CreateSessionOptions
-	// passed, in preference to this call's own options. Mirrors TS
-	// `HarnessAgentSession.resolveActiveTurnSettings`'s
-	// `this.resumedToolsContext ?? options.toolsContext` /
-	// `this.resumedRuntimeContext ?? options.runtimeContext`, which only
-	// ever applies on the continueTurn path (a fresh promptTurn has nothing
-	// to resume).
-	if mode == "continue" {
-		if session.resumedToolsContext != nil {
-			toolsContext = session.resumedToolsContext
-		}
-		if session.resumedRuntimeContext != nil {
-			runtimeContext = session.resumedRuntimeContext
-		}
+	// Resolve the turn's settings. A fresh prompt persists them on the
+	// session; a continuation reuses the unfinished turn's (rebuilding them
+	// from persisted state for a resumed session). Mirrors TS
+	// `promptTurn`/`continueTurn` + `resolveActiveTurnSettings`.
+	cur := &activeTurnSettings{
+		persisted:      TurnSettings{Model: model, Skills: skills, Instructions: instructions, Tools: toolSpecs},
+		tools:          tools,
+		toolsContext:   toolsContext,
+		runtimeContext: runtimeContext,
+		activeTools:    activeTools, builtinToolFiltering: a.builtinToolFiltering,
 	}
 
 	// Resolved fresh for every turn (TS `_resolveResponseFormat`, called from
@@ -657,20 +744,24 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		return nil, fmt.Errorf("harness: output.ResponseFormat failed: %w", err)
 	}
 
-	turnID, err := session.startTrackedTurn(mode)
+	turnID, active, err := session.startTrackedTurn(mode, cur)
 	if err != nil {
 		return nil, err
 	}
+	pendingApprovals, pendingResults, _ := session.snapshotPendingState()
+	model, skills, instructions = active.persisted.Model, active.persisted.Skills, active.persisted.Instructions
+	tools, toolsContext, runtimeContext = active.tools, active.toolsContext, active.runtimeContext
+	activeTools, toolSpecs = active.activeTools, active.persisted.Tools
 
 	out := runPrompt(ctx, runPromptInput{
 		Harness: a.settings.Harness, Session: session.underlying,
 		Mode: mode, Prompt: prompt,
 		Model: model, Skills: skills, Instructions: instructions,
 		Tools: tools, ToolsContext: toolsContext, ActiveTools: activeTools, ToolSpecs: toolSpecs,
-		BuiltinToolFiltering: a.builtinToolFiltering,
+		BuiltinToolFiltering: active.builtinToolFiltering,
 		SandboxSession:       session.sandboxSession, SessionWorkDir: session.sessionWorkDir,
 		ResponseFormat: responseFormat, Output: a.settings.Output, Telemetry: a.settings.Telemetry,
-		Callbacks: a.settings.Callbacks, StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval,
+		Callbacks: a.turnCallbacks(opts, mode), StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval, ToolApprovalReasons: a.settings.ToolApprovalReasons,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
 		ToolApprovalContinuations: toolApprovalContinuations, ToolResultContinuations: toolResultContinuations,
 		OnPendingToolApproval: session.recordPendingApproval,
@@ -693,8 +784,9 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		// calls neither: session.recordPendingApproval/recordPendingResult
 		// already transitioned the turn to awaiting-approval/
 		// awaiting-tool-result at the moment the pause was discovered.
-		OnTurnFinished: func() { session.finishTrackedTurn(turnID) },
-		OnTurnFailed:   func() { session.finishTrackedTurn(turnID) },
+		IsTurnSuspending: func() bool { return session.isTurnSuspending(turnID) },
+		OnTurnFinished:   func() { session.finishTrackedTurn(turnID) },
+		OnTurnFailed:     func() { session.finishTrackedTurn(turnID) },
 		// OnStopConditionMet suspends the underlying harness session's turn
 		// in place when StopWhen stops the result early, so it stays
 		// resumable via ContinueGenerate/ContinueStream instead of being
@@ -706,7 +798,80 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		RuntimeContext: runtimeContext,
 	})
 
+	session.setActivePromptDone(turnID, out.Done)
 	return out.Result, nil
+}
+
+// turnCallbacks merges the agent's lifecycle callbacks with the call's own
+// (both run, settings first), for a fresh prompt. A continuation uses the
+// settings alone, and the language-model-call callbacks are settings-only.
+// Mirrors TS `_resolveLifecycleCallbacks`, whose merged pairs are
+// `onStart`/`experimental_onStart`, `onStepStart`/`experimental_onStepStart`,
+// `onToolExecutionStart`/`experimental_onToolCallStart`,
+// `onToolExecutionEnd`/`experimental_onToolCallFinish`, `onStepEnd`/
+// `onStepFinish` and `onEnd`/`onFinish`.
+func (a *Agent) turnCallbacks(opts agent.AgentGenerateOptions, mode string) Callbacks {
+	c := a.settings.Callbacks
+	if mode == "continue" {
+		return c
+	}
+	c.OnStart = mergeCallbacks(c.OnStart, opts.OnStart)
+	c.OnStepStart = mergeCallbacks(c.OnStepStart, opts.OnStepStart)
+	c.OnToolExecutionStart = mergeCallbacks(c.OnToolExecutionStart, firstCallback(opts.OnToolExecutionStart, opts.OnToolCallStart)) //nolint:staticcheck // the call's deprecated alias still applies
+	c.OnToolExecutionEnd = mergeCallbacks(c.OnToolExecutionEnd, firstCallback(opts.OnToolExecutionEnd, opts.OnToolCallFinish))      //nolint:staticcheck // the call's deprecated alias still applies
+	c.OnStepEnd = mergeCallbacks(c.OnStepEnd, firstCallback(opts.OnStepEnd, opts.OnStepFinish))                                     //nolint:staticcheck // the call's deprecated alias still applies
+	c.OnEnd = mergeCallbacks(c.OnEnd, firstCallback(opts.OnEnd, opts.OnFinish))                                                     //nolint:staticcheck // the call's deprecated alias still applies
+	return c
+}
+
+// firstCallback is TS `a ?? b`.
+func firstCallback[E any](a, b func(context.Context, E)) func(context.Context, E) {
+	if a != nil {
+		return a
+	}
+	return b
+}
+
+// mergeCallbacks runs every non-nil callback in order; a panic in one does not
+// stop the others (TS `mergeCallbacks` awaits them with `Promise.allSettled`).
+func mergeCallbacks[E any](callbacks ...func(context.Context, E)) func(context.Context, E) {
+	var live []func(context.Context, E)
+	for _, cb := range callbacks {
+		if cb != nil {
+			live = append(live, safeCallback(cb))
+		}
+	}
+	switch len(live) {
+	case 0:
+		return nil
+	case 1:
+		return live[0]
+	}
+	return func(ctx context.Context, e E) {
+		for _, cb := range live {
+			cb(ctx, e)
+		}
+	}
+}
+
+// resolvePromptTurnInput reduces the call's input to the single user message
+// the harness runs for this turn: the harness session owns prior-turn state,
+// so earlier messages are never replayed. A message list collapses to its last
+// `user` entry. Mirrors TS `_resolvePromptTurnInput`.
+func resolvePromptTurnInput(opts agent.AgentGenerateOptions) (Prompt, error) {
+	if opts.Prompt != "" {
+		return TextPrompt(opts.Prompt), nil
+	}
+	for i := len(opts.Messages) - 1; i >= 0; i-- {
+		if opts.Messages[i].Role == types.RoleUser {
+			m := opts.Messages[i]
+			return Prompt{Message: &m}, nil
+		}
+	}
+	if len(opts.Messages) > 0 {
+		return Prompt{}, errors.New("HarnessAgent: messages must contain at least one `role: \"user\"` entry.") //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	return Prompt{}, errors.New("HarnessAgent: either `prompt` or `messages` is required.") //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 // Execute runs a single prompt to completion against an ephemeral session
@@ -740,12 +905,9 @@ func (a *Agent) ExecuteWithMessages(ctx context.Context, messages []types.Messag
 	return &agent.AgentResult{
 		Text: result.Text, Output: result.Output, Steps: result.Steps, ToolResults: result.ToolResults,
 		FinishReason: result.FinishReason, StopReason: result.StopReason,
-		// result.TotalUsage (not result.Usage) is the authoritative total
-		// here: streamResultToGenerateResult below sets this harness
-		// GenerateTextResult's Usage to the *final step's* usage and
-		// TotalUsage to the real cross-step/server-overridden total, unlike
-		// pkg/ai's own GenerateTextResult construction where the two are
-		// always equal.
+		// streamResultToGenerateResult sets Usage and its deprecated alias
+		// TotalUsage to the same turn total (across all steps, or the
+		// bridge's own total when it reports one).
 		Usage:    result.TotalUsage, //nolint:staticcheck
 		Warnings: result.Warnings,
 	}, nil
@@ -780,19 +942,54 @@ func streamResultToGenerateResult(r *ai.StreamTextResult) *ai.GenerateTextResult
 		Steps:              steps,
 		FinalStep:          finalStep,
 		FinishReason:       r.FinishReason(),
-		// Usage is deliberately the final step's usage, not the total
-		// (unlike pkg/ai's own GenerateTextResult, where Usage is already
-		// the cross-step total and TotalUsage is just its deprecated
-		// alias): TotalUsage below carries the real aggregate/bridge-
-		// overridden total, and callers such as Agent.ExecuteWithMessages
-		// read TotalUsage, not Usage, for that total. r.Usage() (not the
-		// also-deprecated r.TotalUsage(), its pure alias) is used as the
-		// source value here.
-		Usage:            finalStep.Usage,
+		// TS HarnessGenerateTextResult: `usage` is the stream result's usage,
+		// the total across all steps (the bridge's own total when it reports
+		// one), and `totalUsage` is its deprecated alias.
+		Usage:            r.Usage(),
 		TotalUsage:       r.Usage(), //nolint:staticcheck
+		RawFinishReason:  finalStep.RawFinishReason,
+		Request:          finalStep.Request,          //nolint:staticcheck // mirrors TS HarnessGenerateTextResult.request
+		Response:         finalStep.Response,         //nolint:staticcheck // mirrors TS HarnessGenerateTextResult.response
+		ProviderMetadata: finalStep.ProviderMetadata, //nolint:staticcheck
 		Warnings:         r.Warnings(),
 		Sources:          r.Sources(),
 		Files:            r.Files(),
 		ResponseMessages: r.ResponseMessages(),
 	}
+}
+
+// toolSpecInputSchema is a user tool's JSON Schema for its ToolSpec (TS
+// `asSchema(tool.inputSchema).jsonSchema`). A schema with a key order (a
+// struct schema in field order, an *schema.OrderedSchema, an MCP tool's
+// schema with its ParameterKeyOrder) is an *schema.OrderedSchema, which
+// marshals in that order as the TS object keeps its keys; any other schema is
+// its JSON Schema map. A bare schema.Validator contributes its JSONSchema().
+// nil means no schema.
+func toolSpecInputSchema(t types.Tool) any {
+	if ordered, ok := jsonschema.OrderedToolParameters(t.Parameters, t.ParameterKeyOrder); ok {
+		return ordered
+	}
+	if ordered, ok := jsonschema.OrderedParameters(t.Parameters); ok {
+		return ordered
+	}
+	switch p := t.Parameters.(type) {
+	case *jsonschema.OrderedSchema:
+		if p != nil {
+			return p
+		}
+		return nil
+	case jsonschema.Schema:
+	case jsonschema.Validator:
+		if v := reflect.ValueOf(p); v.Kind() == reflect.Pointer && v.IsNil() {
+			return nil
+		}
+		if m := p.JSONSchema(); m != nil {
+			return m
+		}
+		return nil
+	}
+	if m, ok := jsonschema.ParametersMap(t.Parameters); ok {
+		return m
+	}
+	return nil
 }

@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
-	"time"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -94,7 +96,10 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		})
 	}
 
-	inputFileExpiresAfterSeconds := openaiBatchInputFileExpiresAfter(opts.ProviderOptions)
+	inputFileExpiresAfterSeconds, err := openaiBatchInputFileExpiresAfter(b.provider.Name(), opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 
 	var fileParts bytes.Buffer
 	for _, req := range opts.Requests {
@@ -106,12 +111,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			return nil, err
 		}
 
-		line, err := json.Marshal(map[string]interface{}{
-			"custom_id": textReq.ID,
-			"method":    "POST",
-			"url":       openaiBatchEndpoint,
-			"body":      body,
-		})
+		line, err := providerutils.BatchJSONLLine(textReq.ID, "POST", openaiBatchEndpoint, body)
 		if err != nil {
 			return nil, err
 		}
@@ -122,7 +122,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			warnings = append(warnings, provider.BatchV4Warning{RequestID: textReq.ID, Warning: w})
 		}
 		for _, tool := range textReq.Options.Tools {
-			if tool.Type == types.ToolTypeProviderDefined && !openAIBatchConvertibleProviderToolIDs[tool.ProviderID] {
+			// Typed hosted tools (openaitool.*) carry the id in Name and are
+			// flagged ProviderExecuted instead of Type "provider".
+			toolID := tool.ProviderID
+			if toolID == "" {
+				toolID = tool.Name
+			}
+			if (tool.Type == types.ToolTypeProviderDefined || tool.ProviderExecuted || strings.HasPrefix(toolID, "openai.")) && !openAIBatchConvertibleProviderToolIDs[toolID] {
 				warnings = append(warnings, provider.BatchV4Warning{
 					RequestID: textReq.ID,
 					Warning: types.Warning{
@@ -142,8 +148,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var batchResp openAIBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/batches",
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatch),
+		Method:           http.MethodPost,
+		Path:             "/batches",
 		Body: map[string]interface{}{
 			"input_file_id":     uploadedFile.ID,
 			"endpoint":          openaiBatchEndpoint,
@@ -155,8 +162,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	metadata := map[string]interface{}{"inputFileId": uploadedFile.ID}
-	if uploadedFile.ExpiresAt != nil {
-		metadata["inputFileExpiresAt"] = unixSecondsToTime(uploadedFile.ExpiresAt).UTC().Format(time.RFC3339)
+	// TS convertUnixTimestamp: an Invalid Date is left out.
+	if t := unixSecondsToTime(uploadedFile.ExpiresAt); t != nil {
+		metadata["inputFileExpiresAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 
 	status := batchResp.toStatus()
@@ -197,8 +205,12 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, expire
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out openAIFilesResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -218,10 +230,11 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var resp openAIBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatch),
+		Method:           http.MethodPost,
+		Path:             "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -240,10 +253,11 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 
 	var resp openAIBatchListResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatchList),
+		Method:           http.MethodGet,
+		Path:             "/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -269,10 +283,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 	status := batch.toStatus()
 	if status.Status == provider.BatchStatusPending {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("OpenAI batch %q is not complete.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("OpenAI batch %q is not complete.", opts.BatchID), nil)
 	}
 
 	var fileIDs []string
@@ -293,9 +304,10 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*openAIBatchResponseWire, error) {
 	var resp openAIBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/batches/" + providerutils.EncodePathSegment(batchID),
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatch),
+		Method:           http.MethodGet,
+		Path:             "/batches/" + providerutils.EncodePathSegment(batchID),
+		Headers:          headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -303,6 +315,12 @@ func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[s
 }
 
 func (b *Batch) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	lm := &LanguageModel{provider: b.provider}
 	return lm.handleError(err)
 }
@@ -329,29 +347,58 @@ func validateOpenAISingleModel(requests []provider.BatchV4Request) error {
 	modelID := requests[0].Text.ModelID
 	for _, req := range requests {
 		if req.Text.ModelID != modelID {
-			return &providererrors.InvalidArgumentError{
-				Field: "requests",
-				Message: fmt.Sprintf(
-					"The OpenAI Batch API requires all requests in a batch to use the same model. Found %q and %q.",
-					modelID, req.Text.ModelID),
-			}
+			return providererrors.NewArgumentError("requests", fmt.Sprintf(
+				"The OpenAI Batch API requires all requests in a batch to use the same model. Found %q and %q.",
+				modelID, req.Text.ModelID), nil)
 		}
 	}
 	return nil
 }
 
 // openaiBatchInputFileExpiresAfter extracts
-// providerOptions.openai.inputFileExpiresAfter (or providerOptions.azure.*
-// for Azure-hosted OpenAI), defaulting to 48 hours.
-func openaiBatchInputFileExpiresAfter(providerOptions map[string]interface{}) int {
-	for _, key := range []string{"openai", "azure"} {
-		if opts, ok := providerOptions[key].(map[string]interface{}); ok {
-			if v, ok := opts["inputFileExpiresAfter"].(float64); ok {
-				return int(v)
-			}
-		}
+// providerOptions.<name>.inputFileExpiresAfter, defaulting to 48 hours. Like
+// TS parseBatchProviderOptions it reads "azure" first for Azure-hosted OpenAI
+// (falling back to "openai"), only "openai" otherwise, and rejects values that
+// are not integers between 3600 and 2592000.
+func openaiBatchInputFileExpiresAfter(providerName string, providerOptions map[string]interface{}) (int, error) {
+	keys := []string{"openai"}
+	if strings.Contains(providerName, "azure") {
+		keys = []string{"azure", "openai"}
 	}
-	return openaiBatchInputFileDefaultExpiresAfterSeconds
+	for _, key := range keys {
+		raw, present := providerOptions[key]
+		if !present || raw == nil {
+			continue
+		}
+		opts, ok := raw.(map[string]interface{})
+		if !ok {
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("expected an object"))
+		}
+		v, present := opts["inputFileExpiresAfter"]
+		if !present || v == nil {
+			return openaiBatchInputFileDefaultExpiresAfterSeconds, nil
+		}
+		var n float64
+		switch x := v.(type) {
+		case float64:
+			n = x
+		case int:
+			n = float64(x)
+		case int64:
+			n = float64(x)
+		default:
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("inputFileExpiresAfter must be a number"))
+		}
+		if n != math.Trunc(n) || n < 3600 || n > 2_592_000 {
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("inputFileExpiresAfter must be an integer between 3600 and 2592000"))
+		}
+		return int(n), nil
+	}
+	return openaiBatchInputFileDefaultExpiresAfterSeconds, nil
+}
+
+func invalidOpenAIBatchOptions(key string, cause error) error {
+	return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", key), cause)
 }
 
 // --- Wire types -------------------------------------------------------
@@ -372,8 +419,8 @@ type openAIBatchResponseWire struct {
 	Status        string                        `json:"status"`
 	OutputFileID  *string                       `json:"output_file_id"`
 	ErrorFileID   *string                       `json:"error_file_id"`
-	CreatedAt     *int64                        `json:"created_at"`
-	ExpiresAt     *int64                        `json:"expires_at"`
+	CreatedAt     *float64                      `json:"created_at"`
+	ExpiresAt     *float64                      `json:"expires_at"`
 	RequestCounts *openAIBatchRequestCountsWire `json:"request_counts"`
 	Errors        *struct {
 		Data []openAIBatchErrorDataWire `json:"data"`
@@ -408,10 +455,10 @@ func (r openAIBatchResponseWire) toStatus() provider.BatchV4Status {
 		status.Error = batchErr
 	}
 	if t := unixSecondsToTime(r.CreatedAt); t != nil {
-		status.CreatedAt = t.UTC().Format(time.RFC3339)
+		status.CreatedAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 	if t := unixSecondsToTime(r.ExpiresAt); t != nil {
-		status.ExpiresAt = t.UTC().Format(time.RFC3339)
+		status.ExpiresAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 	return status
 }
@@ -453,7 +500,10 @@ type openAIBatchResultLineWire struct {
 // API can include that responses.ResponsesAPIResponse doesn't model).
 type openAIBatchResponseBody struct {
 	responses.ResponsesAPIResponse
-	Error *struct {
+	// CreatedAt shadows the embedded int64: TS z.number() accepts a
+	// fractional created_at (the timestamp is read from the body).
+	CreatedAt *float64 `json:"created_at"`
+	Error     *struct {
 		Message string      `json:"message"`
 		Type    string      `json:"type,omitempty"`
 		Code    interface{} `json:"code,omitempty"`
@@ -471,6 +521,8 @@ type openAIBatchResultsStream struct {
 	scanner *bufio.Scanner
 	rc      io.ReadCloser
 	err     error
+
+	maxLineBytes int
 }
 
 func newOpenAIBatchResultsStream(ctx context.Context, b *Batch, fileIDs []string, headers map[string]string) *openAIBatchResultsStream {
@@ -487,6 +539,10 @@ func (s *openAIBatchResultsStream) advanceFile() (bool, error) {
 	}
 	fileID := s.fileIDs[s.fileIdx]
 	s.fileIdx++
+	maxLineBytes, err := s.batch.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
+		return false, err
+	}
 
 	httpResp, err := s.batch.provider.client.DoStream(s.ctx, internalhttp.Request{
 		Method:  http.MethodGet,
@@ -497,9 +553,8 @@ func (s *openAIBatchResultsStream) advanceFile() (bool, error) {
 		return false, s.batch.handleError(err)
 	}
 	s.rc = httpResp.Body
-	scanner := bufio.NewScanner(s.rc)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	s.scanner = scanner
+	s.maxLineBytes = maxLineBytes
+	s.scanner = providerutils.NewJSONLinesScanner(s.rc, maxLineBytes)
 	return true, nil
 }
 
@@ -518,19 +573,21 @@ func (s *openAIBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, "/files/"+providerutils.EncodePathSegment(s.fileIDs[s.fileIdx-1])+"/content", s.maxLineBytes)
 				s.err = err
+				_ = s.rc.Close()
 				return nil, err
 			}
 			s.scanner = nil
 			continue
 		}
 
-		line := bytes.TrimSpace(s.scanner.Bytes())
-		if len(line) == 0 {
+		line := s.scanner.Bytes()
+		if providerutils.JSONLineIsBlank(line) {
 			continue
 		}
 		var wire openAIBatchResultLineWire
-		if err := json.Unmarshal(line, &wire); err != nil {
+		if err := providerutils.UnmarshalChunk(line, &wire); err != nil {
 			s.err = err
 			return nil, err
 		}
@@ -577,24 +634,36 @@ func convertOpenAIBatchResultLine(wire openAIBatchResultLineWire) *provider.Batc
 }
 
 func convertOpenAIBatchErrorResponse(body json.RawMessage, statusCode int) *provider.BatchError {
+	// TS openaiErrorDataSchema: error.message a string ("" is valid), type a
+	// nullish string, code a nullish string or number (String(code)).
 	var envelope struct {
 		Error struct {
-			Message string      `json:"message"`
+			Message *string     `json:"message"`
 			Type    string      `json:"type"`
 			Code    interface{} `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Error.Message == "" {
+	code, codeOK := "", true
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		codeOK = false
+	} else {
+		switch c := envelope.Error.Code.(type) {
+		case nil:
+		case string:
+			code = c
+		case float64:
+			code = providerutils.JSNumberString(c)
+		default:
+			codeOK = false
+		}
+	}
+	if envelope.Error.Message == nil || !codeOK {
 		return &provider.BatchError{
 			Message:    fmt.Sprintf("OpenAI batch request failed with status code %d.", statusCode),
 			StatusCode: statusCode,
 		}
 	}
-	code := ""
-	if envelope.Error.Code != nil {
-		code = fmt.Sprintf("%v", envelope.Error.Code)
-	}
-	return &provider.BatchError{Message: envelope.Error.Message, Type: envelope.Error.Type, Code: code, StatusCode: statusCode}
+	return &provider.BatchError{Message: *envelope.Error.Message, Type: envelope.Error.Type, Code: code, StatusCode: statusCode}
 }
 
 // convertOpenAIBatchResponseBodyBytes decodes and converts one succeeded
@@ -604,9 +673,10 @@ func convertOpenAIBatchErrorResponse(body json.RawMessage, statusCode int) *prov
 // is safe here — there is no original request context for a batch result).
 func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateResult, *provider.BatchError) {
 	var resp openAIBatchResponseBody
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := providerutils.UnmarshalChunk(body, &resp); err != nil {
 		return nil, &provider.BatchError{Message: "OpenAI returned an invalid Responses batch result.", Code: "invalid_response"}
 	}
+	resp.ResponsesAPIResponse.CreatedAt = responsesWholeSeconds(resp.CreatedAt)
 	if resp.Error != nil {
 		code := ""
 		if resp.Error.Code != nil {
@@ -647,7 +717,63 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 	if err != nil {
 		return nil, &provider.BatchError{Message: err.Error(), Code: "invalid_response"}
 	}
+	shapeOpenAIBatchResult(genResult, resp.ResponsesAPIResponse)
+	applyResponsesBodyEchoes(genResult, body, "openai")
+	if ts, ok := responsesCreatedAt(body, false); ok {
+		genResult.ResponseMetadata.Timestamp = ts // TS created_at != null: 0 is the epoch
+	}
 	return genResult, nil
+}
+
+// openaiBatchDynamicToolNames are the provider-executed tools TS's batch
+// converter reports as dynamic tool calls and results.
+var openaiBatchDynamicToolNames = map[string]bool{
+	"web_search":       true,
+	"file_search":      true,
+	"code_interpreter": true,
+}
+
+// shapeOpenAIBatchResult adapts the shared Responses conversion to what TS's
+// batch-local convertOpenAIBatchResult returns: no sources, citations or
+// text/message metadata (it only reads output_text), provider-executed web
+// search, file search and code interpreter calls and results marked dynamic,
+// message logprobs and the response id/timestamp/model in the result.
+func shapeOpenAIBatchResult(res *types.GenerateResult, resp responses.ResponsesAPIResponse) {
+	content := make([]types.ContentPart, 0, len(res.Content))
+	for _, part := range res.Content {
+		switch c := part.(type) {
+		case types.SourceContent:
+			continue
+		case *types.SourceContent:
+			continue
+		case types.TextContent:
+			c.ProviderMetadata, c.ProviderOptions, c.Citations = nil, nil, nil
+			part = c
+		case types.ToolCallContent:
+			if c.ProviderExecuted && openaiBatchDynamicToolNames[c.ToolName] {
+				c.Dynamic = true
+			}
+			part = c
+		case types.ToolResultContent:
+			if openaiBatchDynamicToolNames[c.ToolName] {
+				c.Dynamic = true
+			}
+			part = c
+		}
+		content = append(content, part)
+	}
+	res.Content = content
+	for i := range res.ToolCalls {
+		if res.ToolCalls[i].ProviderExecuted && openaiBatchDynamicToolNames[res.ToolCalls[i].ToolName] {
+			res.ToolCalls[i].Dynamic = true
+		}
+	}
+	if logprobs := responsesOutputLogprobs(resp.Output); len(logprobs) > 0 {
+		if pm, ok := res.ProviderMetadata["openai"].(map[string]interface{}); ok {
+			pm["logprobs"] = logprobs
+		}
+	}
+	res.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
 }
 
 // openaiBatchKnownOutputItemTypes are the Responses output-item types TS's

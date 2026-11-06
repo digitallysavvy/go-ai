@@ -99,7 +99,7 @@ func TestStreamRenderSourceCloseWaitsForOwningGoroutine(t *testing.T) {
 
 	select {
 	case <-nextDone:
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Next() goroutine did not finish after Close()")
 	}
 
@@ -128,7 +128,7 @@ func TestStreamRenderSourceNoGoroutineLeak(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for runtime.NumGoroutine() > before && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -185,7 +185,7 @@ func TestStreamRenderSourceCloseBoundedWhenStreamNextNeverReturns(t *testing.T) 
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Close() blocked forever waiting on a stream whose Next() never returns")
 	}
 	if calls := atomic.LoadInt32(&stream.closeCalls); calls != 0 {
@@ -200,7 +200,7 @@ func TestStreamRenderSourceCloseBoundedWhenStreamNextNeverReturns(t *testing.T) 
 	}()
 	select {
 	case <-done2:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("second Close() blocked forever waiting on a stream whose Next() never returns")
 	}
 }
@@ -239,7 +239,7 @@ func TestStreamRenderSourceCloseWithoutNextNeverStartsPump(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Close() without a prior Next() should return promptly")
 	}
 

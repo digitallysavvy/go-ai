@@ -1,12 +1,16 @@
 package together
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -20,6 +24,13 @@ type Provider struct {
 type Config struct {
 	// APIKey is the Together AI API key
 	APIKey string
+
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the Together AI API (optional)
 	BaseURL string
@@ -58,8 +69,12 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = "https://api.together.xyz"
 	}
+	baseURL = trimBaseURL(baseURL)
 
-	apiKey := getAPIKey(cfg.APIKey)
+	apiKey := cfg.APIKey
+	if cfg.APIKeyFunc == nil {
+		apiKey = getAPIKey(cfg.APIKey)
+	}
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
@@ -67,6 +82,15 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("togetherai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "TOGETHER_API_KEY", Description: "TogetherAI",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, getAPIKey(cfg.APIKey), "TOGETHER_API_KEY", "TogetherAI", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -86,6 +110,37 @@ func CreateTogetherAI(cfg Config) *Provider {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "together"
+}
+
+// completionAPIKey is the static key for the completion model: the resolved
+// key, or the caller's own APIKey when an APIKeyFunc resolves it per
+// request.
+func (p *Provider) completionAPIKey() string {
+	if p.config.APIKeyFunc != nil {
+		return p.config.APIKey
+	}
+	return getAPIKey(p.config.APIKey)
+}
+
+// CompletionModel returns a text completion model (TS provider.completionModel,
+// an OpenAICompatibleCompletionLanguageModel with includeUsage: true).
+func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
+	baseURL := p.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.together.xyz"
+	}
+	return openai.New(openai.Config{
+		APIKey:            p.completionAPIKey(),
+		APIKeyFunc:        p.config.APIKeyFunc,
+		APIKeyEnvVar:      "TOGETHER_API_KEY",
+		APIKeyDescription: "TogetherAI",
+		BaseURL:           trimBaseURL(baseURL) + "/v1",
+		Headers:           p.config.Headers,
+		Name:              "togetherai",
+		OpenAICompatible:  true,
+		IncludeUsage:      true,
+		UserAgentName:     "togetherai",
+	}).CompletionModel(modelID)
 }
 
 // LanguageModel returns a language model by ID
@@ -117,12 +172,12 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("together AI does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("together AI does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
@@ -137,4 +192,11 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// trimBaseURL mirrors TS withoutTrailingSlash and also accepts TS-style base
+// URLs that already carry the "/v1" segment: every request path in this
+// package starts with "/v1/", so ".../v1" must not double it.
+func trimBaseURL(baseURL string) string {
+	return strings.TrimSuffix(providerutils.WithoutTrailingSlash(baseURL), "/v1")
 }

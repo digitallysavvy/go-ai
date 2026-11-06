@@ -3,7 +3,6 @@ package fishaudio
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -49,6 +48,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 
 	body, contentType, err := m.buildMultipartBody(opts)
@@ -58,10 +60,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var response fishAudioTranscriptionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/asr",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFishAudioTr),
+		Method:           http.MethodPost,
+		Path:             "/v1/asr",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &response)
 	if err != nil {
 		return nil, handleError(err)
@@ -85,7 +88,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}
 	// `language_code` is absent from the documented response schema but is
@@ -116,7 +119,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("fish-audio: failed to decode base64 audio: %w", err)
 		}
@@ -133,8 +136,11 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	filename := "audio." + fishAudioExtension(opts.MimeType)
 	header := textproto.MIMEHeader{}
 	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="audio"; filename=%q`, filename))
+	// A File with an empty type is sent as application/octet-stream.
 	if opts.MimeType != "" {
 		header.Set("Content-Type", opts.MimeType)
+	} else {
+		header.Set("Content-Type", "application/octet-stream")
 	}
 	part, err := writer.CreatePart(header)
 	if err != nil {
@@ -168,20 +174,5 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 }
 
 func fishAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }

@@ -14,8 +14,9 @@
 //	})
 //
 // Pass the result as the Schema field of ai.GenerateObjectOptions. For Go
-// structs, see SimpleStructSchema and StructValidator. ApplyDefaults fills in
-// default values from a schema.
+// structs, see SimpleStructSchema and StructValidator: their JSON Schema is
+// generated from the struct fields and tags, as TS zodSchema(z.object(...))
+// emits it. ApplyDefaults fills in default values from a schema.
 //
 // Guide: https://goaisdk.com/docs/ai-sdk-core/generating-structured-data.
 package schema

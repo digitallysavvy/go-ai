@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
@@ -92,15 +94,24 @@ type googleLiveSpeechTranslationServerMessage struct {
 				} `json:"inlineData,omitempty"`
 			} `json:"parts,omitempty"`
 		} `json:"modelTurn,omitempty"`
-		OutputTranscription *googleLiveTranscription `json:"outputTranscription,omitempty"`
-		InputTranscription  *googleLiveTranscription `json:"inputTranscription,omitempty"`
-		TurnComplete        bool                     `json:"turnComplete,omitempty"`
+		OutputTranscription *googleLiveTranscription     `json:"outputTranscription,omitempty"`
+		InputTranscription  *googleLiveTranslationSource `json:"inputTranscription,omitempty"`
+		TurnComplete        bool                         `json:"turnComplete,omitempty"`
 	} `json:"serverContent,omitempty"`
-	InputTranscription *googleLiveTranscription            `json:"inputTranscription,omitempty"`
+	InputTranscription *googleLiveTranslationSource        `json:"inputTranscription,omitempty"`
 	UsageMetadata      *googleLiveTranslationUsageMetadata `json:"usageMetadata,omitempty"`
 	Error              *struct {
-		Message string `json:"message,omitempty"`
+		// Message is a pointer: TS `message.error.message ?? default`
+		// keeps an empty message.
+		Message *string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
+}
+
+// googleLiveTranslationSource is an inputTranscription; Text is a pointer
+// because TS reads `serverContent?.inputTranscription?.text ??
+// message.inputTranscription?.text`, so only an absent text falls back.
+type googleLiveTranslationSource struct {
+	Text *string `json:"text,omitempty"`
 }
 
 type googleLiveTranslationTokenDetail struct {
@@ -164,7 +175,7 @@ func intOrZero(v *int) int {
 // milliseconds at googleLiveOutputAudioRate. Mirrors TS
 // getPcm16SilenceDurationMs.
 func pcm16SilenceDurationMs(base64Audio string) (float64, bool) {
-	raw, err := base64.StdEncoding.DecodeString(base64Audio)
+	raw, err := fileutil.ConvertBase64ToBytes(base64Audio)
 	if err != nil {
 		return 0, false
 	}
@@ -174,18 +185,20 @@ func pcm16SilenceDurationMs(base64Audio string) (float64, bool) {
 	sampleCount := len(raw) / 2
 	for i := 0; i < sampleCount; i++ {
 		sample := int16(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
-		if abs16(sample) > pcm16SilenceAmplitudeThreshold {
+		if absPCM16(sample) > pcm16SilenceAmplitudeThreshold {
 			return 0, false
 		}
 	}
 	return float64(sampleCount) / float64(googleLiveOutputAudioRate) * 1000, true
 }
 
-func abs16(v int16) int16 {
+// absPCM16 is Math.abs of a sample, widened so -32768 is 32768 (negating it
+// as an int16 overflows back to -32768, which read as silence).
+func absPCM16(v int16) int {
 	if v < 0 {
-		return -v
+		return -int(v)
 	}
-	return v
+	return int(v)
 }
 
 // run drives the Live API WebSocket session: dial, send the setup message,
@@ -218,7 +231,10 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 		cfg.audio.Cancel(err)
 	}
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	// CloseInfo reads the close frame's code and reason off the raw
+	// connection (TS ws close event).
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
 		fail(err)
 		return
@@ -333,7 +349,26 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 		cfg.audio.Cancel(nil)
 	}
 
+	// drainAudioEnded consumes an audio-ended signal that lost the select
+	// race against a clean close in the same tick (TS orders them).
+	drainAudioEnded := func() bool {
+		select {
+		case <-audioEndedCh:
+			audioEnded = true
+			audioEndedCh = nil
+			if sawTurnComplete && !openTurn {
+				schedulePendingFinish()
+			}
+		default:
+		}
+		return false
+	}
+
 	for {
+		audioEndedSel := audioEndedCh
+		if testHideAudioEnded.Load() {
+			audioEndedSel = nil
+		}
 		select {
 		case <-s.Context().Done():
 			fail(context.Cause(s.Context()))
@@ -344,7 +379,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			finish()
 			return
 
-		case <-audioEndedCh:
+		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil // consumed once; a nil channel blocks forever in future selects
 			if sawTurnComplete && !openTurn {
@@ -367,13 +402,19 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					// An abnormal disconnection (TS onSocketError) always
 					// fails the stream.
 					fail(errors.New("Google Live translation error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-				} else if finishTimer != nil {
+				} else if drainAudioEnded() || finishTimer != nil {
 					// A close while a finish is pending confirms that no
 					// further turn activity follows (TS onClose's
 					// `finishTimer != null` branch).
 					finish()
 				} else {
-					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing.")) //nolint:staticcheck // matches TS SDK's exact error text
+					// TS: (code ${code}${reason ? `, reason: ${reason}` : ''}); ws
+					// reports 1006 when the connection ended without a close frame.
+					detail := " (code " + strconv.Itoa(closeInfo.Code())
+					if reason := closeInfo.Reason(); reason != "" {
+						detail += ", reason: " + reason
+					}
+					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing" + detail + ").")) //nolint:staticcheck // TS text
 				}
 				return
 			}
@@ -403,19 +444,19 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			}
 
 			if message.Error != nil {
-				msg := message.Error.Message
-				if msg == "" {
-					msg = "Google Live API error"
+				msg := "Google Live API error"
+				if message.Error.Message != nil {
+					msg = *message.Error.Message
 				}
 				fail(errors.New(msg))
 				return
 			}
 
 			inputText := ""
-			if message.ServerContent != nil && message.ServerContent.InputTranscription != nil {
-				inputText = message.ServerContent.InputTranscription.Text
-			} else if message.InputTranscription != nil {
-				inputText = message.InputTranscription.Text
+			if message.ServerContent != nil && message.ServerContent.InputTranscription != nil && message.ServerContent.InputTranscription.Text != nil {
+				inputText = *message.ServerContent.InputTranscription.Text
+			} else if message.InputTranscription != nil && message.InputTranscription.Text != nil {
+				inputText = *message.InputTranscription.Text
 			}
 			if inputText != "" {
 				onTurnActivity()
@@ -436,8 +477,14 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					if part.InlineData == nil || part.InlineData.Data == "" {
 						continue
 					}
-					audioBytes, decodeErr := base64.StdEncoding.DecodeString(part.InlineData.Data)
+					audioBytes, decodeErr := fileutil.ConvertBase64ToBytes(part.InlineData.Data)
 					if decodeErr != nil {
+						// TS enqueues the string as is and, as
+						// getPcm16SilenceDurationMs returns undefined for
+						// it, counts it as turn activity. Go audio parts
+						// carry bytes, so the part is dropped, but the
+						// activity is kept.
+						onTurnActivity()
 						continue
 					}
 					if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, ID: itemID(), AudioData: audioBytes}) {
@@ -483,8 +530,8 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 	}
 }
 
-func (s *googleLiveSpeechTranslationStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
+func (s *googleLiveSpeechTranslationStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: closeInfo.Wrap})
 }
 
 func (s *googleLiveSpeechTranslationStream) send(conn *websocket.Conn, message []byte) error {

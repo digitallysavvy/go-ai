@@ -115,3 +115,85 @@ func TestFromNativeRequest_InvalidRequest(t *testing.T) {
 		t.Errorf("expected nil for an invalid native request, got %+v", part)
 	}
 }
+
+// zod requires every field; json.Unmarshal alone would accept these.
+func TestFromNativeRequest_MissingRequiredFields(t *testing.T) {
+	for name, raw := range map[string]string{
+		"no toolCallId": `{"sessionId":"s","mode":"default","questions":[]}`,
+		"no questions":  `{"sessionId":"s","toolCallId":"c","mode":"default"}`,
+		"no options":    `{"sessionId":"s","toolCallId":"c","mode":"default","questions":[{"question":"q"}]}`,
+		"no label":      `{"sessionId":"s","toolCallId":"c","mode":"plan","questions":[{"question":"q","options":[{"description":"d"}]}]}`,
+		"bad multi":     `{"sessionId":"s","toolCallId":"c","mode":"plan","questions":[{"question":"q","options":[],"multi_select":"yes"}]}`,
+	} {
+		if part := AskUserQuestions.FromNativeRequest(toAny(t, []byte(raw)), nil); part != nil {
+			t.Errorf("%s: expected nil, got %+v", name, part)
+		}
+	}
+	ok := `{"sessionId":"s","toolCallId":"c","mode":"plan","questions":[{"question":"q","options":[{"label":"l","description":"d","preview":null}],"multi_select":null}]}`
+	if AskUserQuestions.FromNativeRequest(toAny(t, []byte(ok)), nil) == nil {
+		t.Error("nullable preview/multi_select must be accepted")
+	}
+}
+
+// TS flatMap yields [] (not null) for an answer with no selected options.
+func TestToNativeResponse_EmptyAnswerIsEmptyArray(t *testing.T) {
+	toolResult := types.ToolResultContent{
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]any{
+			"action":  "answered",
+			"answers": map[string]any{"question-1": map[string]any{"optionIds": []any{}}},
+		}},
+	}
+	got := AskUserQuestions.ToNativeResponse(toAny(t, nativeRequestJSON), toolResult)
+	data, _ := json.Marshal(got)
+	if want := `{"answers":{"Which framework?":[]},"outcome":"accepted"}`; string(data) != want {
+		t.Errorf("got %s want %s", data, want)
+	}
+}
+
+// TS positionalIdIndex uses JS Number(), so "option-2.0", "option- 2" and
+// "option-0x2" all resolve to the second option.
+func TestPositionalIDIndex_JSNumberSemantics(t *testing.T) {
+	for id, want := range map[string]int{"option-1": 0, "option-2.0": 1, "option- 2": 1, "option-0x2": 1, "option-1e0": 0, "option-3": 2,
+		"option-\u30002": 1, "option-\u20032\u200a": 1} {
+		got, ok := positionalIDIndex(id, "option-")
+		if !ok || got != want {
+			t.Errorf("%q = %d,%v want %d", id, got, ok, want)
+		}
+	}
+	for _, id := range []string{"option-", "option-0", "option--1", "option-1.5", "option-abc", "option-1_0", "option-Infinity", "x-1"} {
+		if got, ok := positionalIDIndex(id, "option-"); ok {
+			t.Errorf("%q accepted as %d", id, got)
+		}
+	}
+}
+
+// TS fingerprints the zod-parsed request, which keeps an explicit `null` for
+// nullable().optional() fields while an absent key stays absent.
+func TestMatchesNativeRequestDistinguishesNullFromOmitted(t *testing.T) {
+	build := func(extra string) any {
+		return toAny(t, []byte(`{"sessionId":"s","toolCallId":"c","mode":"default","questions":[{"question":"q","options":[{"label":"a","description":"d"`+extra+`}]}]}`))
+	}
+	omitted, withNull, withNull2 := build(""), build(`,"preview":null`), build(`,"preview":null`)
+	if AskUserQuestions.MatchesNativeRequest(omitted, withNull) {
+		t.Fatal("preview:null must not match an omitted preview")
+	}
+	if !AskUserQuestions.MatchesNativeRequest(withNull, withNull2) {
+		t.Fatal("identical null previews must match")
+	}
+	ms := toAny(t, []byte(`{"sessionId":"s","toolCallId":"c","mode":"default","questions":[{"question":"q","options":[],"multi_select":null}]}`))
+	noMS := toAny(t, []byte(`{"sessionId":"s","toolCallId":"c","mode":"default","questions":[{"question":"q","options":[]}]}`))
+	if AskUserQuestions.MatchesNativeRequest(ms, noMS) {
+		t.Fatal("multi_select:null must not match an omitted multi_select")
+	}
+}
+
+// TS emits `description` and `preview` even when they are "" and never
+// HTML-escapes the JSON.stringify text.
+func TestFromNativeRequestKeepsEmptyStringsAndRawHTML(t *testing.T) {
+	req := toAny(t, []byte(`{"sessionId":"s","toolCallId":"c","mode":"plan","questions":[{"question":"a<b&c?","options":[{"label":"L","description":"","preview":""}],"multi_select":true}]}`))
+	part := AskUserQuestions.FromNativeRequest(req, nil)
+	want := `{"allowPartialAnswers":true,"questions":[{"id":"question-1","question":"a<b&c?","options":[{"id":"option-1","label":"L","description":"","preview":""}],"allowMultiple":true,"allowFreeForm":true}]}`
+	if part == nil || part.Input != want {
+		t.Fatalf("got %v, want %s", part, want)
+	}
+}

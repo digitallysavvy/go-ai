@@ -1,13 +1,13 @@
 ---
 title: TypeSafe AI Provider
-description: Setup and usage guide for TypeSafe AI evaluation models with Go AI SDK
+description: Setup and usage guide for TypeSafe AI decision models with Go AI SDK
 ---
 
 # TypeSafe AI Provider
 
-TypeSafe AI provides evaluation models for use with the experimental
-`ai.ExperimentalEvaluate` API — judging free-form output against a set of
-questions (choice, score, or boolean) rather than generating text. It's
+TypeSafe AI provides decision models for use with the experimental
+`ai.ExperimentalDecide` API — judging free-form output against a set of
+questions (choice, score, boolean, or box) rather than generating text. It's
 the only capability this provider implements: `LanguageModel`,
 `EmbeddingModel`, `ImageModel`, `SpeechModel`, and `TranscriptionModel` all
 return errors.
@@ -32,8 +32,9 @@ provider := typesafeai.New(typesafeai.Config{
 })
 ```
 
-`typesafeai.Config` also accepts `BaseURL` (default
-`https://api.typesafe.ai/v1`), `Headers`, and `HTTPClient`. If `APIKey` is
+`typesafeai.Config` also accepts `BaseURL` (defaults to the
+`TYPESAFE_AI_BASE_URL` environment variable, then
+`https://api.typesafe.ai/v1`; an explicit `BaseURL` takes precedence), `Headers`, and `HTTPClient`. If `APIKey` is
 left empty, it is read from `TYPESAFE_AI_API_KEY` lazily on each request
 (so setting the environment variable after `New()` still works).
 
@@ -43,18 +44,18 @@ left empty, it is read from `TYPESAFE_AI_API_KEY` lazily on each request
 export TYPESAFE_AI_API_KEY=...
 ```
 
-## Evaluation
+## Decision
 
 ```go
-evalModel, err := provider.EvaluationModel("jev-latest")
+evalModel, err := provider.DecisionModel("jev-latest")
 if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.ExperimentalEvaluate(ctx, ai.EvaluateOptions{
+result, err := ai.ExperimentalDecide(ctx, ai.DecideOptions{
     Model: evalModel,
     State: "The capital of France is Paris.",
-    Questions: map[string]goprovider.EvaluationQuestion{
+    Questions: map[string]goprovider.DecisionQuestion{
         "factual": {
             Type:         "boolean",
             Instructions: "Is this statement factually correct?",
@@ -75,15 +76,55 @@ for id, answer := range result.Answers {
 }
 ```
 
-`ai.ExperimentalEvaluate` also accepts any `provider.EvaluationModel`
-instance (or a model ID string, resolved via `Provider`, falling back to
-the AI Gateway when `Provider` is nil) — you are not limited to
+`ai.ExperimentalDecide` also accepts any `provider.DecisionModel`
+instance (or a model ID string, resolved via `DecisionProvider`, falling
+back to the AI Gateway when it is nil) — you are not limited to
 TypeSafe AI as the judge model.
+
+### Box questions
+
+A `box` question (`Type: "box"`, `Instructions` only) asks where something is in an image. The answer's `Box` holds normalized `Top`, `Bottom`, `Left` and `Right` edges in `[0, 1]`. The model sends `TypeSafe-Danger-Zone-Images: true` for requests with a box question, and the per-question confidence is reported in `ProviderMetadata["typesafe"]["confidence"]`.
+
+### Model IDs
+
+`jev-1.13.0`, `jev-1.14.0`, `jev-latest` and `jev-preview` are sent unchanged; any other ID is also accepted.
+
+### Images
+
+State may contain inline PNG or JPEG file parts. Other media types and URL, reference or text file data are rejected with `*errors.UnsupportedFunctionalityError` before any request. When the state has images, the model sends a `multipart/form-data` request (a JSON `request` part plus one part per image) with `TypeSafe-Danger-Zone-Images: true`.
+
+Each image gets a reference, a random ID by default (as TypeSafe recommends, so it cannot match request text by accident). The reference is inserted into the state at the file's position and listed in the request's `assets`. Set a reference with `ProviderOptions["typesafe"]["reference"]` on the file part so instructions or criteria can name the image. A reference must be non-blank and unique within the request, otherwise the call fails with `*errors.InvalidArgumentError`. Every occurrence of a reference in state, instructions or criteria sends another copy of the image.
+
+By default the reference is inserted unless a text part or a string inside a JSON part (not an object key) of the state already contains it. Set `ProviderOptions["typesafe"]["insertReference"]` to `false` to send the image only where instructions or criteria mention it (this needs an explicit `reference`), or to `true` to insert it even when the state contains it.
+
+```go
+state := []goprovider.DecisionStatePart{
+    goprovider.DecisionTextPart("Is the dog in [found] the dog on the poster?"),
+    goprovider.DecisionFilePart(types.FileContent{
+        MediaType: "image/jpeg",
+        FileData:  types.FileData{Type: types.FileDataTypeData, Data: foundJPEG},
+        ProviderOptions: map[string]interface{}{
+            "typesafe": map[string]interface{}{"reference": "[found]"},
+        },
+    }),
+    goprovider.DecisionFilePart(types.FileContent{
+        MediaType: "image/jpeg",
+        FileData:  types.FileData{Type: types.FileDataTypeData, Data: posterJPEG},
+        ProviderOptions: map[string]interface{}{
+            "typesafe": map[string]interface{}{"reference": "[poster]", "insertReference": false},
+        },
+    }),
+}
+```
+
+### Long context
+
+Set `ProviderOptions["typesafe"]["longContext"] = true` on the decision call to send `TypeSafe-Danger-Zone-Long-Context: true`, which raises the per-request and per-question context limits to 262k tokens. Long context is slower and less accurate than the default limits, so it is off by default and not enabled automatically. Other `typesafe` provider options produce `unsupported` warnings.
 
 ## Workflow Serialization
 
-TypeSafe AI evaluation models can cross a workflow boundary with
-`provider.SerializeEvaluationModel` / `DeserializeEvaluationModel`. See
+TypeSafe AI decision models can cross a workflow boundary with
+`provider.SerializeDecisionModel` / `DeserializeDecisionModel`. See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism.
 

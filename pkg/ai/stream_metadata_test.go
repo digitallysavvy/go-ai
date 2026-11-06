@@ -16,8 +16,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-// TestStreamProviderMetadataPassedWithChunks verifies that provider metadata
-// emitted in stream chunks is accumulated and exposed via ProviderMetadata().
+// TestStreamProviderMetadataPassedWithChunks verifies that the finish chunk's
+// provider metadata is exposed via ProviderMetadata() (TS
+// finalStep.providerMetadata); metadata on a text chunk belongs to that part.
 func TestStreamProviderMetadataPassedWithChunks(t *testing.T) {
 	t.Parallel()
 
@@ -27,8 +28,8 @@ func TestStreamProviderMetadataPassedWithChunks(t *testing.T) {
 		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
 			return testutil.NewMockTextStream([]provider.StreamChunk{
 				{Type: provider.ChunkTypeText, Text: "hello"},
-				{Type: provider.ChunkTypeText, Text: " world", ProviderMetadata: meta},
-				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				{Type: provider.ChunkTypeText, Text: " world", ProviderMetadata: json.RawMessage(`{"part":true}`)},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, ProviderMetadata: meta},
 			}), nil
 		},
 	}
@@ -138,7 +139,9 @@ func TestStreamReadAllProviderInlineToolResultUsesToModelOutputAndPreservesRawRe
 	if !found {
 		t.Fatalf("missing tool result content in step: %#v", steps[0].Content)
 	}
-	if contentResult.Result != nil || contentResult.Output == nil || contentResult.Output.Type != types.ToolResultOutputText || contentResult.Output.Value != "model sees: provider result" {
+	// The content keeps the model output in Output and the raw provider
+	// result in Result (TS content output is the raw result; gen r74 CR-1).
+	if !reflect.DeepEqual(contentResult.Result, raw) || contentResult.Output == nil || contentResult.Output.Type != types.ToolResultOutputText || contentResult.Output.Value != "model sees: provider result" {
 		t.Fatalf("tool result content = %+v, want converted model output", contentResult)
 	}
 }
@@ -229,21 +232,16 @@ func TestDynamicToolResultIncludesInput(t *testing.T) {
 
 	args := map[string]interface{}{"query": "go generics"}
 
-	// First call returns a provider-executed tool call; second call finishes.
-	callCount := 0
+	// The provider executes the call and returns its result in the same
+	// response: a tool-result part without input.
 	model := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
-			callCount++
-			if callCount == 1 {
-				return &types.GenerateResult{
-					ToolCalls: []types.ToolCall{
-						{ID: "tc1", ToolName: "web-search", Arguments: args},
-					},
-					FinishReason: types.FinishReasonToolCalls,
-				}, nil
-			}
 			return &types.GenerateResult{
-				Text:         "result",
+				Text:      "result",
+				ToolCalls: []types.ToolCall{{ID: "tc1", ToolName: "web-search", Arguments: args, ProviderExecuted: true}},
+				Content: []types.ContentPart{types.ToolResultContent{
+					ToolCallID: "tc1", ToolName: "web-search", Result: "found", ProviderExecuted: true,
+				}},
 				FinishReason: types.FinishReasonStop,
 			}, nil
 		},

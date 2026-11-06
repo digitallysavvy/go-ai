@@ -236,3 +236,7 @@ The DeepSeek provider preserves `reasoning_content` for DeepSeek v4-style multi-
 p := deepseek.New(deepseek.Config{APIKey: os.Getenv("DEEPSEEK_API_KEY")})
 model, err := p.LanguageModel("deepseek-v4-pro")
 ```
+
+## October 14 2026 catch-up
+
+Models that are not known legacy IDs are treated as V4-or-newer: thinking mode is on by default and prior-turn `reasoning_content` is replayed (with an empty string filled in for assistant turns without reasoning). Only `deepseek-chat`, `deepseek-reasoner` and pre-V4 version IDs (`deepseek-v1` to `deepseek-v3.x`, with or without a provider prefix) keep the legacy behavior, so future IDs such as `deepseek-v5-pro` need no SDK update.

@@ -21,17 +21,19 @@ type sessionParams struct {
 	channel                      *bridge.Channel
 	proc                         providerutils.SandboxProcess // nil on attach
 	modelMapping                 ModelMapping
+	streamStartFallbackModelID   string
 	sessionMeta                  map[string]any
 	instructionMapping           *InstructionMapping
 	outputSchemaMapping          *OutputSchemaMapping
 	askUserQuestions             *AskUserQuestionsSettings
-	implementationIdentity       string
+	agentIdentity                string
 	authenticationProfile        authenticationProfileIdentity
 	builtinTools                 []BuiltinToolMapping
 	permissionMode               harness.PermissionMode
 	permissionModeMapping        *PermissionModeMapping
 	mcpServers                   map[string]any
 	isMcpToolCall                func(ToolCall) bool
+	resolveHostToolCall          ResolveHostToolCallFunc
 	sandbox                      providerutils.SandboxSession
 	homePath                     string
 	skillsDir                    string
@@ -40,6 +42,12 @@ type sessionParams struct {
 	sandboxCredentialEnvironment map[string]string
 	reconnect                    bridge.ReconnectOptions
 	bridgeStateDir               string
+	debug                        *harness.DebugConfig
+	// initialGuidanceApplied / instructionsFingerprint seed the prompt
+	// guidance bookkeeping from the lifecycle state. Mirrors TS
+	// `resolveACPInitialGuidanceApplied` + `instructionsFingerprint`.
+	initialGuidanceApplied  bool
+	instructionsFingerprint string
 
 	bridgePort      int
 	bridgeToken     string
@@ -82,6 +90,7 @@ func newSession(p sessionParams) *session {
 		latestACPSessionID: p.acpSessionID, turnStartConfig: p.turnStartConfig,
 		recoveryStatus: p.recoveryStatus, restoration: p.restoration,
 		replayOnly: p.replayOnly, lossyRerun: p.lossyRerun,
+		initialGuidanceApplied: p.initialGuidanceApplied, instructionsFingerprint: p.instructionsFingerprint,
 	}
 	s.p.channel.On("bridge-thread", func(e bridge.Event) {
 		if t, ok := e.Message.(*bridge.Thread); ok {
@@ -216,7 +225,7 @@ func (c *promptControl) SubmitToolResult(_ context.Context, r harness.ToolResult
 func (c *promptControl) toNativeResponse(nativeRequest any, toolResult types.ToolResultContent) (output any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("%v", r)
+			err = harness.ErrorFromValue(r)
 		}
 	}()
 	return c.s.p.askUserQuestions.ToNativeResponse(nativeRequest, toolResult), nil
@@ -296,7 +305,7 @@ func (s *session) takeBufferedQuestionResult(toolCallID string, nativeRequest an
 func classifyToolCallCandidate(askUserQuestions *AskUserQuestionsSettings, isMcpToolCall func(ToolCall) bool, toolCall ToolCall) (suppress, dynamic bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("%v", r)
+			err = harness.ErrorFromValue(r)
 		}
 	}()
 	if askUserQuestions != nil && askUserQuestions.IsNativeToolCall != nil {
@@ -327,7 +336,31 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 	c.checkpoint = bridge.NewCheckpointRecorder(s.p.channel)
 
 	var openBlockType, openBlockID string
+	// Handlers can fire (a replayed terminal event) while later ones are
+	// still being registered, so the subscription list is guarded and a
+	// handler registered after the turn settled is removed at once.
+	var unsubMu sync.Mutex
 	var unsub []func()
+	unsubscribed := false
+	addUnsub := func(u func()) {
+		unsubMu.Lock()
+		if unsubscribed {
+			unsubMu.Unlock()
+			u()
+			return
+		}
+		unsub = append(unsub, u)
+		unsubMu.Unlock()
+	}
+	unsubscribeAll := func() {
+		unsubMu.Lock()
+		list := unsub
+		unsub, unsubscribed = nil, true
+		unsubMu.Unlock()
+		for _, u := range list {
+			u()
+		}
+	}
 	forward := func(part harness.StreamPart) {
 		switch p := part.(type) {
 		case *harness.TextStartPart:
@@ -359,14 +392,25 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		}
 	}
 
+	// An abort asks the bridge to stop; the turn then settles with the abort
+	// error when the bridge reports `finish` (or the channel closes), so the
+	// terminal event is still forwarded and the session's in-flight state is
+	// reset. Mirrors TS `abortRequested` / `abortError`.
+	var abortMu sync.Mutex
+	var abortRequested bool
+	var abortErr error
+	abortState := func() (bool, error) {
+		abortMu.Lock()
+		defer abortMu.Unlock()
+		return abortRequested, abortErr
+	}
+
 	settle := func(err error) {
-		for _, u := range unsub {
-			u()
-		}
+		unsubscribeAll()
 		c.settle(err)
 	}
 
-	unsub = append(unsub, s.p.channel.On(TypeToolCallCandidate, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(TypeToolCallCandidate, func(e bridge.Event) {
 		f, ok := e.Message.(ToolCallCandidateFrame)
 		if !ok {
 			return
@@ -393,79 +437,107 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"suppress": suppress}})
 	}))
 
-	unsub = append(unsub, s.p.channel.On(TypeQuestionRequest, func(e bridge.Event) {
+	// The bridge asks the host to resolve a native tool call to a host tool
+	// (TS 03dac28304, acp-v1-harness.ts 1229-1274). A resolver error (or a
+	// result naming an unknown tool or lacking an object input) answers
+	// `{hostToolCall: null}`, then fails the turn with an error part and an
+	// abort command.
+	addUnsub(s.p.channel.On(TypeHostToolCallResolutionRequest, func(e bridge.Event) {
+		f, ok := e.Message.(HostToolCallResolutionRequestFrame)
+		if !ok {
+			return
+		}
+		resolved, err := resolveHostToolCall(s.p.harnessID, s.p.resolveHostToolCall, f)
+		if err != nil {
+			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: hostToolCallResolutionOutput(nil)})
+			closeForwardedBlock()
+			forward(&harness.ErrorPart{Error: err})
+			_ = s.p.channel.Send(bridge.AbortCommand{})
+			settle(err)
+			return
+		}
+		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: hostToolCallResolutionOutput(resolved)})
+	}))
+
+	addUnsub(s.p.channel.On(TypeQuestionRequest, func(e bridge.Event) {
 		f, ok := e.Message.(QuestionRequestFrame)
 		if !ok {
 			return
 		}
-		if s.p.askUserQuestions == nil {
-			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
-			return
-		}
-		nativeRequest := rawJSONToAny(f.NativeRequest)
-		toolCall := s.p.askUserQuestions.FromNativeRequest(nativeRequest, f.NativeToolCall)
-		if toolCall == nil {
-			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
-			return
-		}
-		if toolCall.ToolName != string(harness.BuiltinToolAskUserQuestions) || toolCall.ProviderExecuted {
-			// ProviderExecuted must be false (client-executed); mirrors TS's
-			// thrown Error for a misconfigured settings.askUserQuestions
-			// (acp-v1-harness.ts), which is caught and settles the turn
-			// with an error part, an abort command, and settle(error).
-			err := fmt.Errorf("%s ACP askUserQuestions.fromNativeRequest must return a client-executed askUserQuestions tool call", s.p.harnessID)
-			closeForwardedBlock()
-			forward(&harness.ErrorPart{Error: err.Error()})
-			_ = s.p.channel.Send(bridge.AbortCommand{})
-			settle(err)
-			return
-		}
-		withNative := *toolCall
-		if withNative.ProviderMetadata == nil {
-			withNative.ProviderMetadata = harness.ProviderMetadata{}
-		}
-		meta := map[string]any{}
-		for k, v := range withNative.ProviderMetadata[s.p.harnessID] {
-			meta[k] = v
-		}
-		meta["nativeRequest"] = nativeRequest
-		withNative.ProviderMetadata[s.p.harnessID] = meta
+		// Mirrors TS's try/catch around the whole handler: an error from
+		// the adapter's callbacks (a panic in Go) or a misconfigured
+		// fromNativeRequest settles the turn with an error part and an
+		// abort command.
+		err := func() (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = harness.ErrorFromValue(r)
+				}
+			}()
+			if s.p.askUserQuestions == nil {
+				_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
+				return nil
+			}
+			nativeRequest := rawJSONToAny(f.NativeRequest)
+			toolCall := s.p.askUserQuestions.FromNativeRequest(nativeRequest, f.NativeToolCall)
+			if toolCall == nil {
+				_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
+				return nil
+			}
+			if toolCall.ToolName != string(harness.BuiltinToolAskUserQuestions) || toolCall.ProviderExecuted || toolCall.ProviderExecutedOmitted {
+				// ProviderExecuted must be an explicit false (client-executed; TS
+				// checks `providerExecuted !== false`, so an undefined flag is
+				// rejected too, which Go signals with ProviderExecutedOmitted).
+				return fmt.Errorf("%s ACP askUserQuestions.fromNativeRequest must return a client-executed askUserQuestions tool call.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
+			}
+			// Mirrors TS `withNativeQuestionRequest`, which spreads into new
+			// objects: the adapter's returned metadata map must stay untouched.
+			withNative := *toolCall
+			metadata := harness.ProviderMetadata{}
+			for k, v := range toolCall.ProviderMetadata {
+				metadata[k] = v
+			}
+			meta := map[string]any{}
+			for k, v := range toolCall.ProviderMetadata[s.p.harnessID] {
+				meta[k] = v
+			}
+			meta["nativeRequest"] = nativeRequest
+			metadata[s.p.harnessID] = meta
+			withNative.ProviderMetadata = metadata
 
-		buffered, hasBuffered := s.takeBufferedQuestionResult(withNative.ToolCallID, nativeRequest)
+			buffered, hasBuffered := s.takeBufferedQuestionResult(withNative.ToolCallID, nativeRequest)
 
-		c.mu.Lock()
-		c.activeQuestions[withNative.ToolCallID] = activeQuestion{RequestID: f.RequestID, NativeRequest: f.NativeRequest}
-		c.questionToolCallByRequest[f.RequestID] = withNative.ToolCallID
-		c.mu.Unlock()
-		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "handled", "toolCallId": withNative.ToolCallID}})
+			c.mu.Lock()
+			c.activeQuestions[withNative.ToolCallID] = activeQuestion{RequestID: f.RequestID, NativeRequest: f.NativeRequest}
+			c.questionToolCallByRequest[f.RequestID] = withNative.ToolCallID
+			c.mu.Unlock()
+			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "handled", "toolCallId": withNative.ToolCallID}})
 
-		if !hasBuffered {
-			forward(&withNative)
-			return
-		}
-		var isErr bool
-		if buffered.IsError != nil {
-			isErr = *buffered.IsError
-		}
-		var tr types.ToolResultContent
-		if buffered.ToolResult != nil {
-			tr = *buffered.ToolResult
-		}
-		// A malformed buffered result makes the adapter panic (TS throws);
-		// TS's handler try/catch settles the turn with an error part and an
-		// abort, so it must not unwind the bridge's event goroutine.
-		output, err := c.toNativeResponse(nativeRequest, tr)
+			if !hasBuffered {
+				forward(&withNative)
+				return nil
+			}
+			var isErr bool
+			if buffered.IsError != nil {
+				isErr = *buffered.IsError
+			}
+			var tr types.ToolResultContent
+			if buffered.ToolResult != nil {
+				tr = *buffered.ToolResult
+			}
+			output := s.p.askUserQuestions.ToNativeResponse(nativeRequest, tr)
+			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: withNative.ToolCallID, Output: output, IsError: isErr, ToolResult: buffered.ToolResult})
+			return nil
+		}()
 		if err != nil {
 			closeForwardedBlock()
-			forward(&harness.ErrorPart{Error: err.Error()})
+			forward(&harness.ErrorPart{Error: err})
 			_ = s.p.channel.Send(bridge.AbortCommand{})
 			settle(err)
-			return
 		}
-		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: withNative.ToolCallID, Output: output, IsError: isErr, ToolResult: buffered.ToolResult})
 	}))
 
-	unsub = append(unsub, s.p.channel.On(TypeQuestionResolved, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(TypeQuestionResolved, func(e bridge.Event) {
 		f, ok := e.Message.(QuestionResolvedFrame)
 		if !ok {
 			return
@@ -478,7 +550,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		c.mu.Unlock()
 	}))
 
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeToolCall, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(harness.PartTypeToolCall, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -493,7 +565,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		c.mu.Unlock()
 		if hasErr {
 			closeForwardedBlock()
-			forward(&harness.ErrorPart{Error: classErr.Error()})
+			forward(&harness.ErrorPart{Error: classErr})
 			_ = s.p.channel.Send(bridge.AbortCommand{})
 			settle(classErr)
 			return
@@ -506,7 +578,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		}
 		forward(tc)
 	}))
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeToolResult, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(harness.PartTypeToolResult, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -531,7 +603,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 
 	for _, t := range acpEventTypes {
 		t := t
-		unsub = append(unsub, s.p.channel.On(t, func(e bridge.Event) {
+		addUnsub(s.p.channel.On(t, func(e bridge.Event) {
 			if t == harness.PartTypeFinishStep {
 				c.checkpoint.Record(e)
 			}
@@ -540,7 +612,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 			}
 		}))
 	}
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
 		s.mu.Lock()
 		s.turnInFlight = false
 		s.mu.Unlock()
@@ -548,9 +620,13 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			forward(f.Part)
 		}
+		if requested, err := abortState(); requested {
+			settle(err)
+			return
+		}
 		settle(nil)
 	}))
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		s.mu.Lock()
 		s.turnInFlight = false
 		s.mu.Unlock()
@@ -563,11 +639,18 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		errPart, _ := f.Part.(*harness.ErrorPart)
 		var err error
 		if errPart != nil {
-			err = deserializeBridgeError(errPart.Error, s.p.harnessID)
+			err = deserializeBridgePart(errPart, s.p.harnessID)
 		} else {
 			err = errors.New("acp: bridge reported an error")
 		}
-		forward(f.Part)
+		// Mirrors TS `forward({ ...event, error })`: the forwarded error part
+		// carries the deserialized error (e.g. the capability-unsupported
+		// error), not the raw wire object.
+		if errPart != nil {
+			forward(&harness.ErrorPart{Error: err})
+		} else {
+			forward(f.Part)
+		}
 		settle(err)
 	}))
 
@@ -580,52 +663,85 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 			return
 		}
 		closeForwardedBlock()
+		if requested, err := abortState(); requested && err != nil {
+			settle(err)
+			return
+		}
 		settle(fmt.Errorf("%s ACP bridge closed before turn end.", s.p.harnessID)) //nolint:staticcheck // matches TS SDK exact error text
 	})
 
 	if err := start(); err != nil {
-		for _, u := range unsub {
-			u()
-		}
+		unsubscribeAll()
 		return nil, err
 	}
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = s.p.channel.Send(bridge.AbortCommand{})
-			settle(ctx.Err())
-		case <-c.done:
+	go bridge.WatchAbort(ctx, c.done, func() {
+		abortMu.Lock()
+		abortRequested = true
+		abortErr = context.Cause(ctx)
+		abortMu.Unlock()
+		if err := s.p.channel.Send(bridge.AbortCommand{}); err != nil {
+			settle(context.Cause(ctx))
 		}
-	}()
+	})
 
 	return c, nil
+}
+
+// instructionsFingerprint mirrors TS `fingerprintValue({ value:
+// options.instructions ?? null })`. Go cannot tell absent instructions from
+// "", so "" fingerprints as null, the value TS persists when no instructions
+// are given.
+func instructionsFingerprint(instructions string) string {
+	if instructions == "" {
+		return fingerprintValue(nil)
+	}
+	return fingerprintValue(instructions)
 }
 
 // deserializeBridgeError mirrors TS `deserializeBridgeError`: it only
 // special-cases the "bridge capability unsupported" marker; every other
 // error passes through unchanged.
 func deserializeBridgeError(err any, harnessID string) error {
-	if m, ok := err.(map[string]any); ok {
+	return deserializeBridgePart(&harness.ErrorPart{Error: err}, harnessID)
+}
+
+// deserializeBridgePart is deserializeBridgeError for a decoded error part, so
+// an object error keeps its wire key order in the message text.
+func deserializeBridgePart(part *harness.ErrorPart, harnessID string) error {
+	if m, ok := part.Error.(map[string]any); ok {
 		if name, _ := m["name"].(string); name == "AI_HarnessBridgeCapabilityUnsupportedError" {
 			message, _ := m["message"].(string)
 			return unsupported(harnessID, message)
 		}
 	}
-	return fmt.Errorf("%v", err)
+	return part.AsError()
+}
+
+// withStreamStartModel fills in the configured fallback model on stream-start
+// parts that report none (Settings.StreamStartFallbackModelID).
+func (s *session) withStreamStartModel(emit harness.EmitFunc) harness.EmitFunc {
+	fallback := s.p.streamStartFallbackModelID
+	if fallback == "" || emit == nil {
+		return emit
+	}
+	return func(part harness.StreamPart) {
+		if start, ok := part.(*harness.StreamStartPart); ok && start.ModelID == "" {
+			filled := *start
+			filled.ModelID = fallback
+			part = &filled
+		}
+		emit(part)
+	}
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
-	s.mu.Lock()
-	replayOnly := s.replayOnly
-	s.mu.Unlock()
-	if replayOnly {
-		return nil, fmt.Errorf("%s recovered this turn through disk replay only and has no restored ACP process for a subsequent prompt.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
-	}
+	opts.Emit = s.withStreamStartModel(opts.Emit)
 	return s.doTurn(ctx, opts.Skills, opts.Instructions, opts.ResponseFormat, opts.Prompt, opts.Model, opts.Tools, opts.Emit, false)
 }
 
 func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnOptions) (harness.PromptControl, error) {
+	opts.Emit = s.withStreamStartModel(opts.Emit)
 	if err := validateSkills(opts.Skills); err != nil {
 		return nil, err
 	}
@@ -633,10 +749,10 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		Sandbox: s.p.sandbox, HomePath: s.p.homePath, SkillsDir: s.p.skillsDir, Skills: opts.Skills,
 		SkillNamePattern: SkillNamePattern,
 		InvalidSkillNameMessage: func(name string) string {
-			return fmt.Sprintf("Invalid ACP skill name %q: expected a kebab-case slug.", name)
+			return fmt.Sprintf("Invalid ACP skill name %s: expected a kebab-case slug.", jsonString(name))
 		},
 		InvalidSkillFilePathMessage: func(skillName, filePath string) string {
-			return fmt.Sprintf("Invalid ACP skill file path %q for skill %q: expected a relative POSIX path without traversal.", filePath, skillName)
+			return fmt.Sprintf("Invalid ACP skill file path %s for skill %s: expected a relative POSIX path without traversal.", jsonString(filePath), jsonString(skillName))
 		},
 	}); err != nil {
 		return nil, err
@@ -697,9 +813,11 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		}
 		if turnStartConfig.Model != "" {
 			msg.Model = turnStartConfig.Model
-			mm := *turnStartConfig.ModelMapping
-			msg.ModelMapping = &mm
 		}
+		// The bridge always receives the current model mapping, so it can read
+		// the resolved model from the session state (TS #23940).
+		mm := s.p.modelMapping
+		msg.ModelMapping = &mm
 		if s.p.instructionMapping != nil {
 			msg.InstructionMapping = s.p.instructionMapping
 			if opts.Instructions != "" {
@@ -724,10 +842,10 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		Sandbox: s.p.sandbox, HomePath: s.p.homePath, SkillsDir: s.p.skillsDir, Skills: skills,
 		SkillNamePattern: SkillNamePattern,
 		InvalidSkillNameMessage: func(name string) string {
-			return fmt.Sprintf("Invalid ACP skill name %q: expected a kebab-case slug.", name)
+			return fmt.Sprintf("Invalid ACP skill name %s: expected a kebab-case slug.", jsonString(name))
 		},
 		InvalidSkillFilePathMessage: func(skillName, filePath string) string {
-			return fmt.Sprintf("Invalid ACP skill file path %q for skill %q: expected a relative POSIX path without traversal.", filePath, skillName)
+			return fmt.Sprintf("Invalid ACP skill file path %s for skill %s: expected a relative POSIX path without traversal.", jsonString(filePath), jsonString(skillName))
 		},
 	}); err != nil {
 		return nil, err
@@ -748,7 +866,18 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		}
 	}
 
-	blocks, err := convertPromptToTextBlocks(prompt, s.p.harnessID)
+	// TS checks replayOnly after skills, instructions and the response format.
+	s.mu.Lock()
+	replayOnly := s.replayOnly
+	s.mu.Unlock()
+	if replayOnly {
+		return nil, fmt.Errorf("%s recovered this turn through disk replay only and has no restored ACP process for a subsequent prompt.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
+	}
+
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
+	blocks, err := convertPromptToContentBlocks(prompt, s.p.harnessID)
 	if err != nil {
 		return nil, err
 	}
@@ -758,8 +887,9 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		AuthenticationProfile: s.p.authenticationProfile, SessionMeta: s.p.sessionMeta,
 		InstructionMapping: s.p.instructionMapping, ResponseFormat: responseFormat,
 		OutputSchemaMapping: s.p.outputSchemaMapping, Model: model, ModelMapping: s.p.modelMapping,
+		Debug: s.p.debug,
 	})
-	nextFingerprint := fingerprintValue(instructions)
+	nextFingerprint := instructionsFingerprint(instructions)
 
 	return s.wireTurn(ctx, emit, func() error {
 		s.mu.Lock()
@@ -779,16 +909,18 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		}
 		msg := StartMessage{
 			StartBase: bridge.StartBase{
-				Tools: tools, PermissionMode: s.p.permissionMode, ResponseFormat: responseFormat,
+				Tools: tools, PermissionMode: s.p.permissionMode, ResponseFormat: responseFormat, Debug: s.p.debug,
 			},
 			Prompt: wirePrompt, BuiltinTools: s.p.builtinTools, PermissionModeMapping: s.p.permissionModeMapping,
 			MCPServers: s.p.mcpServers, TurnStartConfig: turnStartConfig,
+			// TS: `tools: options.tools == null ? undefined : turnStartConfig.tools`.
+			OmitTools: tools == nil,
 		}
 		if model != "" {
 			msg.Model = model
-			mm := s.p.modelMapping
-			msg.ModelMapping = &mm
 		}
+		mm := s.p.modelMapping
+		msg.ModelMapping = &mm
 		if s.p.instructionMapping != nil {
 			msg.InstructionMapping = s.p.instructionMapping
 			if instructions != "" {
@@ -825,10 +957,11 @@ func (s *session) DoCompact(context.Context, string) error {
 func (s *session) createLifecycleData(coords *bridgeCoords, includeTurnStartConfig bool) resumeStateData {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	guidanceApplied := s.initialGuidanceApplied
 	data := resumeStateData{
-		ImplementationIdentity: s.p.implementationIdentity, AuthenticationProfile: &s.p.authenticationProfile,
+		AgentIdentity: s.p.agentIdentity, AuthenticationProfile: &s.p.authenticationProfile,
 		SandboxCredentialEnvironment: s.p.sandboxCredentialEnvironment, ACPSessionID: s.latestACPSessionID,
-		Bridge: coords, InitialGuidanceApplied: s.initialGuidanceApplied,
+		Bridge: coords, InitialGuidanceApplied: &guidanceApplied,
 		InstructionsFingerprint: s.instructionsFingerprint, SkillsDirectory: s.p.skillsDirectory,
 		Recovery: s.recoveryStatus, Restoration: s.restoration,
 	}
@@ -917,6 +1050,13 @@ func (s *session) terminate(command string) error {
 		case <-time.After(5 * time.Second):
 		}
 		_ = s.p.proc.Kill()
+	} else {
+		// Attached to a bridge another process spawned: there is no process
+		// handle to wait on, so wait for the bridge to close the channel.
+		select {
+		case <-s.p.channel.Done():
+		case <-time.After(5 * time.Second):
+		}
 	}
 	s.p.channel.Close()
 	return nil
@@ -948,13 +1088,27 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 			return
 		}
 		settled = true
+		list := unsub
+		unsub = nil
 		mu.Unlock()
-		for _, u := range unsub {
+		for _, u := range list {
 			u()
 		}
 		done <- o
 	}
-	unsub = append(unsub, channel.On(harness.PartTypeRaw, func(e bridge.Event) {
+	// add registers a subscription under mu; once settled (a replayed
+	// terminal event during registration) it is removed at once.
+	add := func(u func()) {
+		mu.Lock()
+		if settled {
+			mu.Unlock()
+			u()
+			return
+		}
+		unsub = append(unsub, u)
+		mu.Unlock()
+	}
+	add(channel.On(harness.PartTypeRaw, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -975,13 +1129,13 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 			mu.Unlock()
 		}
 	}))
-	unsub = append(unsub, channel.On(harness.PartTypeFinish, func(bridge.Event) {
+	add(channel.On(harness.PartTypeFinish, func(bridge.Event) {
 		mu.Lock()
 		m := method
 		mu.Unlock()
 		settle(outcome{method: m})
 	}))
-	unsub = append(unsub, channel.On(harness.PartTypeError, func(e bridge.Event) {
+	add(channel.On(harness.PartTypeError, func(e bridge.Event) {
 		f, _ := e.Message.(bridge.StreamPartFrame)
 		var errPart *harness.ErrorPart
 		if f.Part != nil {
@@ -989,7 +1143,7 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 		}
 		var err error
 		if errPart != nil {
-			err = deserializeBridgeError(errPart.Error, harnessID)
+			err = deserializeBridgePart(errPart, harnessID)
 		} else {
 			err = errors.New("acp: bridge reported an error")
 		}
@@ -1017,7 +1171,7 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 }
 
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeData resumeStateData, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, error) {
-	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port, settings.HarnessID)
+	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, settings.HarnessID)
 	if err != nil {
 		return nil, err
 	}
@@ -1026,7 +1180,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 		return nil, err
 	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:                bridge.NewConnectFunc(endpoint, bridge.DialOptions{Name: settings.HarnessID + " ACP bridge"}),
+		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge"}),
 		Decode:                 decodeOutbound,
 		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic, Reconnect: settings.Reconnect,
 	})
@@ -1049,8 +1203,5 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	if resumeData.Restoration != nil {
 		p.restoration = &restorationInfo{Method: resumeData.Restoration.Method}
 	}
-	sess := newSession(p)
-	sess.initialGuidanceApplied = resumeData.InitialGuidanceApplied
-	sess.instructionsFingerprint = resumeData.InstructionsFingerprint
-	return sess, nil
+	return newSession(p), nil
 }

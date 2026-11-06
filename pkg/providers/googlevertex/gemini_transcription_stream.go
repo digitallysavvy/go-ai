@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/net/websocket"
@@ -63,10 +63,7 @@ func vertexModelResourcePath(project, location, modelID string) string {
 // Vertex Live transcription API only accepts 16kHz 16-bit PCM input audio.
 func validateLiveInputAudioFormat(format provider.AudioFormat) error {
 	if format.Type != "audio/pcm" || (format.Rate != nil && *format.Rate != 16000) {
-		return &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: "The Gemini Live transcription API only supports 16kHz 16-bit PCM input audio.",
-		}
+		return providererrors.NewArgumentError("inputAudioFormat", "The Gemini Live transcription API only supports 16kHz 16-bit PCM input audio.", nil)
 	}
 	return nil
 }
@@ -80,20 +77,30 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	}
 
 	if !isLiveGeminiTranscriptionModelID(m.modelID) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "modelId",
-			Message: fmt.Sprintf(
-				"Model '%s' does not support streaming transcription. Use a live model such as '%s'.",
-				m.modelID, ModelGemini35TranscribeLive,
-			),
-		}
+		return nil, providererrors.NewArgumentError("modelId", fmt.Sprintf(
+			"Model '%s' does not support streaming transcription. Use a live model such as '%s'.",
+			m.modelID, ModelGemini35TranscribeLive,
+		), nil)
 	}
 
+	transcriptionOpts, err := parseVertexGeminiTranscriptionOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateLiveInputAudioFormat(opts.InputAudioFormat); err != nil {
 		return nil, err
 	}
-
-	transcriptionOpts := parseVertexGeminiTranscriptionOptions(opts.ProviderOptions)
+	// The location becomes the WebSocket host and the bearer token rides the
+	// handshake, so validate it here too (TS validates it when the model is
+	// created; the exported constructor can bypass that).
+	location, err := m.provider.loadLocation()
+	if err != nil {
+		return nil, err
+	}
+	project, err := m.provider.loadProject()
+	if err != nil {
+		return nil, err
+	}
 	audioConfig := buildVertexAudioTranscriptionConfig(transcriptionOpts)
 	if audioConfig == nil {
 		audioConfig = map[string]interface{}{}
@@ -121,20 +128,6 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		wsHeaders[k] = v
 	}
 
-	location := m.provider.config.Location
-	if location == "" {
-		location = "global"
-	}
-	// The location becomes the WebSocket host and the bearer token rides the
-	// handshake, so it must be a single DNS label (TS validates it when the
-	// provider is created; an explicit baseURL skips that check here).
-	if !providerutils.IsValidHostnamePart(location) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "location",
-			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
-	}
-
 	// NOTE: Google's GA announcement shows the setup with
 	// `generationConfig: { responseModalities: ['TEXT'] }`, but sending it
 	// suppresses the final `inputTranscription` segments on the current
@@ -143,7 +136,7 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	// form (mirrors the TS comment in
 	// gemini-transcription/google-vertex-gemini-transcription-model.ts).
 	setup := map[string]interface{}{
-		"model":                   vertexModelResourcePath(m.provider.config.Project, location, m.modelID),
+		"model":                   vertexModelResourcePath(project, location, m.modelID),
 		"inputAudioTranscription": audioConfig,
 	}
 
@@ -261,15 +254,17 @@ type geminiLiveServerMessage struct {
 	InputTranscription *geminiLiveTranscription `json:"inputTranscription,omitempty"`
 	UsageMetadata      map[string]interface{}   `json:"usageMetadata,omitempty"`
 	Error              *struct {
-		Message string `json:"message,omitempty"`
+		// Message is a pointer: TS `message.error.message ?? default`
+		// keeps an empty message.
+		Message *string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
 }
 
 type geminiLiveTranscription struct {
-	Text         string `json:"text,omitempty"`
-	Finished     bool   `json:"finished,omitempty"`
-	LanguageCode string `json:"languageCode,omitempty"`
-	SpeakerLabel string `json:"speakerLabel,omitempty"`
+	Text         string  `json:"text,omitempty"`
+	Finished     bool    `json:"finished,omitempty"`
+	LanguageCode *string `json:"languageCode,omitempty"`
+	SpeakerLabel string  `json:"speakerLabel,omitempty"`
 }
 
 func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamConfig) {
@@ -295,7 +290,10 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		cfg.audio.Cancel(err)
 	}
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	// CloseInfo reads the close frame's code and reason off the raw
+	// connection (TS ws close event).
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
 		fail(err)
 		return
@@ -391,11 +389,28 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		cfg.audio.Cancel(nil)
 	}
 
+	// drainAudioEnded consumes an audio-ended signal that lost the select
+	// race against a clean close in the same tick (TS orders them).
+	drainAudioEnded := func() bool {
+		select {
+		case <-audioEndedCh:
+			audioEnded = true
+			audioEndedCh = nil
+			schedulePendingFinish()
+		default:
+		}
+		return false
+	}
+
 	for {
+		audioEndedSel := audioEndedCh
+		if testHideAudioEnded.Load() {
+			audioEndedSel = nil
+		}
 		select {
 		case <-s.Context().Done():
-			cause := s.Context().Err()
-			fail(cause)
+			// TS onAbort: finishWithError(abortSignal.reason).
+			fail(context.Cause(s.Context()))
 			return
 
 		case <-finishTimerC:
@@ -403,7 +418,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			finish()
 			return
 
-		case <-audioEndedCh:
+		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil
 			schedulePendingFinish()
@@ -421,11 +436,17 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 					return
 				}
 				if !wsutil.IsCleanClose(res.Err) {
-					fail(errors.New("Google Vertex Live transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-				} else if audioEnded {
+					fail(errors.New("Vertex Live transcription error.")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+				} else if drainAudioEnded() || audioEnded {
 					finish()
 				} else {
-					fail(fmt.Errorf("Google Vertex Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+					// TS: (code ${code}${reason ? `, reason: ${reason}` : ''}); ws
+					// reports 1006 when the connection ended without a close frame.
+					detail := " (code " + strconv.Itoa(closeInfo.Code())
+					if reason := closeInfo.Reason(); reason != "" {
+						detail += ", reason: " + reason
+					}
+					fail(errors.New("Vertex Live transcription WebSocket closed unexpectedly before finishing" + detail + ").")) //nolint:staticcheck // TS text
 				}
 				return
 			}
@@ -455,9 +476,9 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			}
 
 			if message.Error != nil {
-				msg := message.Error.Message
-				if msg == "" {
-					msg = "Google Vertex Live API error"
+				msg := "Vertex Live API error"
+				if message.Error.Message != nil {
+					msg = *message.Error.Message
 				}
 				fail(errors.New(msg))
 				return
@@ -478,8 +499,9 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				transcription = serverContent.InputTranscription
 			}
 			if transcription != nil {
-				if transcription.LanguageCode != "" {
-					language = transcription.LanguageCode
+				// TS `languageCode != null`: an empty string overwrites too.
+				if transcription.LanguageCode != nil {
+					language = *transcription.LanguageCode
 				}
 				if transcription.Text != "" {
 					schedulePendingFinish()
@@ -513,8 +535,8 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	}
 }
 
-func (s *geminiLiveTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
+func (s *geminiLiveTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: closeInfo.Wrap})
 }
 
 func (s *geminiLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {

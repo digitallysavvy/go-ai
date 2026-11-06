@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
@@ -60,7 +61,7 @@ func TestGetMCPAppToolMeta(t *testing.T) {
 	_, err = GetMCPAppResourceURI(MCPTool{
 		Meta: map[string]interface{}{"ui": map[string]interface{}{"resourceUri": "https://example.com/app.html"}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid MCP App resource URI") {
+	if err == nil || !strings.Contains(err.Error(), "Invalid MCP App resource URI") {
 		t.Fatalf("expected invalid URI error, got %v", err)
 	}
 }
@@ -244,5 +245,117 @@ func TestDetectMCPAppResourceDrift(t *testing.T) {
 	}
 	if DetectMCPAppResourceDrift("a", "a") {
 		t.Fatal("expected no drift between identical fingerprints")
+	}
+}
+
+// TS parseVisibility keeps an array even when filtering empties it, so a tool
+// whose visibility lists no known audience is hidden from both the model and
+// the app; a non-array visibility is ignored and the tool stays model-visible.
+func TestSplitMCPAppToolsEmptyVisibilityHidesTool(t *testing.T) {
+	mk := func(name string, visibility interface{}) MCPTool {
+		return MCPTool{Name: name, Meta: map[string]interface{}{"ui": map[string]interface{}{
+			"resourceUri": "ui://x/" + name,
+			"visibility":  visibility,
+		}}}
+	}
+	definitions := ListToolsResult{Tools: []MCPTool{
+		mk("empty", []interface{}{}),
+		mk("unknown", []interface{}{"other"}),
+		mk("notArray", "app"),
+		mk("model", []interface{}{"model"}),
+	}}
+	modelVisible, appVisible, err := SplitMCPAppTools(definitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tool := range modelVisible.Tools {
+		got = append(got, tool.Name)
+	}
+	if !reflect.DeepEqual(got, []string{"notArray", "model"}) {
+		t.Fatalf("model visible = %v", got)
+	}
+	if len(appVisible.Tools) != 0 {
+		t.Fatalf("app visible = %v", appVisible.Tools)
+	}
+	meta, err := GetMCPAppToolMeta(mk("unknown", []interface{}{"other"}))
+	if err != nil || meta == nil || meta.Visibility == nil || len(meta.Visibility) != 0 {
+		t.Fatalf("meta = %#v err=%v", meta, err)
+	}
+	encoded, _ := json.Marshal(meta)
+	if string(encoded) != `{"resourceUri":"ui://x/unknown","visibility":[]}` {
+		t.Fatalf("encoded = %s", encoded)
+	}
+}
+
+// TS `uiMeta?.resourceUri ?? tool._meta?.['ui/resourceUri']`: a null
+// ui.resourceUri falls back to the legacy key, and with no legacy key the tool
+// simply has no app resource.
+func TestGetMCPAppToolMetaNullResourceURIFallsBack(t *testing.T) {
+	uri, err := GetMCPAppResourceURI(MCPTool{Meta: map[string]interface{}{
+		"ui":                           map[string]interface{}{"resourceUri": nil},
+		MCPAppLegacyResourceURIMetaKey: "ui://legacy/app",
+	}})
+	if err != nil || uri != "ui://legacy/app" {
+		t.Fatalf("uri = %q err=%v", uri, err)
+	}
+	uri, err = GetMCPAppResourceURI(MCPTool{Meta: map[string]interface{}{
+		"ui": map[string]interface{}{"resourceUri": nil},
+	}})
+	if err != nil || uri != "" {
+		t.Fatalf("uri = %q err=%v, want no resource and no error", uri, err)
+	}
+}
+
+// TS getMCPAppResourceFromReadResult: a string text wins even when empty;
+// the blob is only used when text is not a string.
+func TestGetMCPAppResourceEmptyTextWinsOverBlob(t *testing.T) {
+	var res ReadResourceResult
+	body := `{"contents":[{"uri":"ui://a","mimeType":"text/html;profile=mcp-app","text":"","blob":"PGI+"}]}`
+	if err := json.Unmarshal([]byte(body), &res); err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetMCPAppResourceFromReadResult("ui://a", res)
+	if err != nil || got.HTML != "" {
+		t.Fatalf("got %+v, %v; want empty html", got, err)
+	}
+	body = `{"contents":[{"uri":"ui://a","mimeType":"text/html;profile=mcp-app","blob":"PGI-"}]}`
+	res = ReadResourceResult{}
+	if err := json.Unmarshal([]byte(body), &res); err != nil {
+		t.Fatal(err)
+	}
+	got, err = GetMCPAppResourceFromReadResult("ui://a", res)
+	if err != nil || got.HTML != "<b>" {
+		t.Fatalf("got %+v, %v; want blob decoded (url-safe, unpadded)", got, err)
+	}
+	out, _ := json.Marshal(res.Contents[0])
+	if string(out) != `{"uri":"ui://a","mimeType":"text/html;profile=mcp-app","blob":"PGI-"}` {
+		t.Fatalf("marshal %s", out)
+	}
+}
+
+func TestMCPAppResourceErrorTextAndEmptyMeta(t *testing.T) {
+	_, err := GetMCPAppResourceFromReadResult("ui://a", ReadResourceResult{Contents: []ResourceContent{{URI: "ui://a", MimeType: "text/plain", Text: "x"}}})
+	if err == nil || err.Error() != "Unsupported MCP App resource MIME type: text/plain" {
+		t.Fatalf("err = %v", err)
+	}
+	_, err = ReadMCPAppResource(context.Background(), nil, "http://x")
+	if err == nil || err.Error() != "Unsupported MCP App resource URI: http://x" {
+		t.Fatalf("err = %v", err)
+	}
+	b, _ := json.Marshal(MCPAppResource{URI: "u", MimeType: "m", HTML: "h", Meta: map[string]interface{}{}})
+	if string(b) != `{"uri":"u","mimeType":"m","html":"h","meta":{}}` {
+		t.Fatalf("json = %s", b)
+	}
+	b, _ = json.Marshal(MCPAppResource{URI: "u", MimeType: "m", HTML: "h"})
+	if string(b) != `{"uri":"u","mimeType":"m","html":"h"}` {
+		t.Fatalf("json = %s", b)
+	}
+}
+
+func TestGetMCPAppToolMetaInvalidURIErrorText(t *testing.T) {
+	_, err := GetMCPAppToolMeta(MCPTool{Meta: map[string]interface{}{"ui": map[string]interface{}{"resourceUri": "http://x"}}})
+	if err == nil || err.Error() != `Invalid MCP App resource URI: "http://x"` {
+		t.Fatalf("err = %v", err)
 	}
 }

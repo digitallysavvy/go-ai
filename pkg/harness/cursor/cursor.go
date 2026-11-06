@@ -1,5 +1,5 @@
 // Package cursor is the Go port of the TypeScript `@ai-sdk/harness-cursor`
-// package (pinned to ai@7.0.113, hashes ac1384b).
+// package (pinned to ai@7.0.162, TS 3fab50aa9b).
 //
 // Cursor is one of the "ACP-derived" harness adapters (see
 // state/parity/sep_23_2026/harness.md §2): TS `createCursor()` is a thin
@@ -26,12 +26,12 @@ import (
 )
 
 // ClientAppName / ClientAppVersion are the ai-sdk client-app identity Cursor
-// requests are made with. VERSION mirrors the TS package's own version; the
-// Go SDK does not (yet) stamp a package version into adapter packages, so it
-// is fixed to "0.0.0-go" until a release process defines one.
+// requests are made with. ClientAppVersion is TS VERSION, the
+// @ai-sdk/harness-cursor package version at the TS release this SDK tracks
+// (3fab50aa9b); bump it with the harness bridges.
 const (
-	ClientAppName    = "ai-sdk/harness-cursor"
-	ClientAppVersion = "0.0.0-go"
+	ClientAppName    = "ai-sdk-harness-cursor"
+	ClientAppVersion = "1.0.88"
 	HarnessID        = "cursor"
 )
 
@@ -91,6 +91,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		WarnAuthenticationConfiguration(settings.Auth.Mode)
 	}
 	cfg := acp.Settings{
+		NonTextContentTypes:              []acp.NonTextContentType{acp.NonTextContentImage},
 		HarnessID:                        HarnessID,
 		ClientApp:                        acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
 		Auth:                             settings.Auth,
@@ -99,6 +100,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		PortEndpoint:                     settings.PortEndpoint,
 		MCPServers:                       settings.MCPServers,
 		IsMcpToolCall:                    IsMCPToolCall,
+		ResolveHostToolCall:              ResolveHostToolCall,
 		MintBridgeToken:                  settings.MintBridgeToken,
 		BuiltinTools:                     BuiltinTools,
 		Source: acp.Source{
@@ -148,6 +150,38 @@ func IsMCPToolCall(call acp.ToolCall) bool {
 	}
 	_, ok = raw["args"].(map[string]any)
 	return ok
+}
+
+// ResolveHostToolCall resolves a Cursor ACP tool call to a host tool. Cursor
+// reports host tool calls with a `{providerIdentifier, toolName, args}` raw
+// input, where providerIdentifier is the MCP server name. Mirrors TS
+// `resolveCursorHostToolCall` (cursor-harness.ts, 03dac28304).
+func ResolveHostToolCall(opts acp.ResolveHostToolCallOptions) *acp.ResolvedHostToolCall {
+	raw, ok := opts.ToolCall.RawInput.(map[string]any)
+	if !ok || raw == nil {
+		return nil
+	}
+	if provider, ok := raw["providerIdentifier"].(string); !ok || provider != opts.ServerName {
+		return nil
+	}
+	toolName, ok := raw["toolName"].(string)
+	if !ok || !containsString(opts.ToolNames, toolName) {
+		return nil
+	}
+	args, ok := raw["args"].(map[string]any)
+	if !ok || args == nil {
+		return nil
+	}
+	return &acp.ResolvedHostToolCall{ToolName: toolName, Input: args}
+}
+
+func containsString(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // WarnAuthenticationConfiguration logs the TS

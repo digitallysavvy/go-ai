@@ -66,8 +66,11 @@ const (
 
 // TextUIPart is a text part of a message.
 type TextUIPart struct {
-	Text             string
-	State            UIPartState
+	Text  string
+	State UIPartState
+	// Citations are references supporting this text, separate from retrieved
+	// sources.
+	Citations        []types.Citation
 	ProviderMetadata map[string]interface{}
 }
 
@@ -154,6 +157,28 @@ type ToolUIPartApproval struct {
 	// InputSchemaInput is the tool input before schema parsing and input
 	// refinement (present only when it differs from Input).
 	InputSchemaInput interface{}
+
+	// inputSchemaInputNull records a decoded `"inputSchemaInput": null`
+	// (TS keeps the own property, so a null schema input is validated and
+	// serialized). Unexported so the struct's exported shape is unchanged.
+	inputSchemaInputNull bool
+	// reasonSet records a decoded `"reason"` string, an empty one included
+	// (TS `approval.reason ?? default` keeps ""). Unexported so the
+	// struct's exported shape is unchanged.
+	reasonSet bool
+}
+
+// hasReason reports whether the approval carries a response reason,
+// including a decoded empty string.
+func (a *ToolUIPartApproval) hasReason() bool {
+	return a != nil && (a.Reason != "" || a.reasonSet)
+}
+
+// hasInputSchemaInput reports whether the approval carries an
+// inputSchemaInput, including a JSON null (TS
+// `Object.prototype.hasOwnProperty.call(approval, 'inputSchemaInput')`).
+func (a *ToolUIPartApproval) hasInputSchemaInput() bool {
+	return a != nil && (a.InputSchemaInput != nil || a.inputSchemaInputNull)
 }
 
 // ToolUIPart is a tool invocation part. It represents both static tool parts
@@ -163,7 +188,13 @@ type ToolUIPart struct {
 	// Type is `tool-<name>` for static tools or `dynamic-tool`.
 	Type string
 	// ToolName is set (and serialized) for dynamic tools only.
-	ToolName         string
+	ToolName string
+	// Dynamic is non-nil (pointing at false) when a static tool part was
+	// normalized to a dynamic-tool part because its current tool schema was
+	// unavailable or incompatible. It preserves the static origin across
+	// persistence boundaries. Serialized as `"dynamic": false` for
+	// dynamic-tool parts only.
+	Dynamic          *bool
 	ToolCallID       string
 	State            ToolUIPartState
 	Title            string
@@ -181,12 +212,36 @@ type ToolUIPart struct {
 	//   - output-error: the deprecated raw input of an output-error part.
 	//
 	// Deprecated: for output-error, use Input instead.
-	RawInput               interface{}
+	RawInput interface{}
+	// InputEncoding is the encoding of RawInput on an input-streaming part:
+	// "json" (the default when empty) or "text" (raw text deltas, e.g. OpenAI
+	// custom tools).
+	InputEncoding          string
 	ErrorText              string
 	Preliminary            *bool
 	CallProviderMetadata   map[string]interface{}
 	ResultProviderMetadata map[string]interface{}
 	Approval               *ToolUIPartApproval
+
+	// inputNull records a decoded `"input": null` on a state where a nil
+	// Input otherwise means absent (input-streaming, output-error): TS keeps
+	// the null, validates it and serializes it.
+	inputNull bool
+	// inputAbsent records a decoded part without an "input" key on a state
+	// where a nil Input is otherwise serialized as null: TS keeps the key
+	// absent (a part that got its output or approval request before any
+	// input), so a decode/encode round trip and ReadUIMessages snapshots
+	// leave it out too.
+	inputAbsent bool
+	// rawInputNull records a decoded `"rawInput": null` (TS keeps the own
+	// property: it is serialized and logs the rawInput deprecation).
+	rawInputNull bool
+}
+
+// hasInput reports whether the part carries an input, including a JSON null
+// (TS `toolPart.input !== undefined`).
+func (p *ToolUIPart) hasInput() bool {
+	return p.Input != nil || p.inputNull
 }
 
 // DynamicToolUIPart is the TS name for a ToolUIPart whose Type is
@@ -266,7 +321,7 @@ func warnIfUIMessagesHaveDeprecatedRawInput(messages []UIMessage) {
 	for _, message := range messages {
 		for _, part := range message.Parts {
 			tool, ok := AsToolUIPart(part)
-			if ok && tool.State == ToolStateOutputError && tool.RawInput != nil {
+			if ok && tool.State == ToolStateOutputError && (tool.RawInput != nil || tool.rawInputNull) {
 				LogWarnings(LogWarningsOptions{Warnings: []types.Warning{rawInputDeprecationWarning}})
 				return
 			}
@@ -457,6 +512,9 @@ func (p TextUIPart) MarshalJSON() ([]byte, error) {
 	var o orderedJSON
 	o.field("type", "text")
 	o.field("text", p.Text)
+	if len(p.Citations) > 0 {
+		o.field("citations", p.Citations)
+	}
 	o.str("state", string(p.State))
 	o.mapField("providerMetadata", p.ProviderMetadata)
 	return o.bytes()
@@ -466,12 +524,41 @@ func (p *TextUIPart) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Text             string                 `json:"text"`
 		State            UIPartState            `json:"state"`
+		Citations        []types.Citation       `json:"citations"`
 		ProviderMetadata map[string]interface{} `json:"providerMetadata"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*p = TextUIPart(raw)
+	for i, c := range raw.Citations {
+		if err := validateUICitation(c); err != nil {
+			return fmt.Errorf("invalid citation at index %d: %w", i, err)
+		}
+	}
+	*p = TextUIPart{Text: raw.Text, State: raw.State, Citations: raw.Citations, ProviderMetadata: raw.ProviderMetadata}
+	return nil
+}
+
+// validateUICitation mirrors the TS citationSchema: a url source requires id
+// and url, a document source requires id, mediaType and title, and offsets
+// must be non-negative.
+func validateUICitation(c types.Citation) error {
+	s := c.Source
+	switch s.SourceType {
+	case "url":
+		if s.ID == "" || s.URL == "" {
+			return fmt.Errorf("url source requires id and url")
+		}
+	case "document":
+		if s.ID == "" || s.MediaType == "" || s.Title == "" {
+			return fmt.Errorf("document source requires id, mediaType and title")
+		}
+	default:
+		return fmt.Errorf("unsupported source type %q", s.SourceType)
+	}
+	if (c.StartIndex != nil && *c.StartIndex < 0) || (c.EndIndex != nil && *c.EndIndex < 0) {
+		return fmt.Errorf("startIndex and endIndex must be non-negative")
+	}
 	return nil
 }
 
@@ -654,12 +741,14 @@ func (a ToolUIPartApproval) MarshalJSON() ([]byte, error) {
 		o.field("descriptor", a.Descriptor)
 	}
 	o.str("requestReason", a.RequestReason)
-	o.str("reason", a.Reason)
+	if a.hasReason() {
+		o.field("reason", a.Reason)
+	}
 	if a.IsAutomatic != nil {
 		o.field("isAutomatic", *a.IsAutomatic)
 	}
 	o.str("signature", a.Signature)
-	if a.InputSchemaInput != nil {
+	if a.hasInputSchemaInput() {
 		o.field("inputSchemaInput", a.InputSchemaInput)
 	}
 	return o.bytes()
@@ -667,19 +756,35 @@ func (a ToolUIPartApproval) MarshalJSON() ([]byte, error) {
 
 func (a *ToolUIPartApproval) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID               string      `json:"id"`
-		Approved         *bool       `json:"approved"`
-		Descriptor       interface{} `json:"descriptor"`
-		RequestReason    string      `json:"requestReason"`
-		Reason           string      `json:"reason"`
-		IsAutomatic      *bool       `json:"isAutomatic"`
-		Signature        string      `json:"signature"`
-		InputSchemaInput interface{} `json:"inputSchemaInput"`
+		ID               string          `json:"id"`
+		Approved         *bool           `json:"approved"`
+		Descriptor       interface{}     `json:"descriptor"`
+		RequestReason    string          `json:"requestReason"`
+		Reason           *string         `json:"reason"`
+		IsAutomatic      *bool           `json:"isAutomatic"`
+		Signature        string          `json:"signature"`
+		InputSchemaInput json.RawMessage `json:"inputSchemaInput"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*a = ToolUIPartApproval(raw)
+	*a = ToolUIPartApproval{
+		ID:            raw.ID,
+		Approved:      raw.Approved,
+		Descriptor:    raw.Descriptor,
+		RequestReason: raw.RequestReason,
+		IsAutomatic:   raw.IsAutomatic,
+		Signature:     raw.Signature,
+	}
+	if raw.Reason != nil {
+		a.Reason, a.reasonSet = *raw.Reason, true
+	}
+	if raw.InputSchemaInput != nil {
+		if err := json.Unmarshal(raw.InputSchemaInput, &a.InputSchemaInput); err != nil {
+			return err
+		}
+		a.inputSchemaInputNull = a.InputSchemaInput == nil
+	}
 	return nil
 }
 
@@ -698,20 +803,26 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 	var o orderedJSON
 	o.field("type", p.Type)
 	if p.Type == "dynamic-tool" {
+		if p.Dynamic != nil {
+			o.field("dynamic", *p.Dynamic)
+		}
 		o.field("toolName", p.ToolName)
 	}
 	o.field("toolCallId", p.ToolCallID)
 	o.field("state", p.State)
 	o.str("title", p.Title)
 	o.mapField("toolMetadata", p.ToolMetadata)
-	if p.Input != nil || toolStateRequiresInput(p.State) {
+	if p.hasInput() || (toolStateRequiresInput(p.State) && !p.inputAbsent) {
 		o.field("input", p.Input)
 	}
 	if p.Output != nil || p.State == ToolStateOutputAvailable {
 		o.field("output", p.Output)
 	}
-	if p.RawInput != nil {
+	if p.RawInput != nil || p.rawInputNull {
 		o.field("rawInput", p.RawInput)
+	}
+	if p.InputEncoding != "" {
+		o.field("inputEncoding", p.InputEncoding)
 	}
 	if p.ErrorText != "" || p.State == ToolStateOutputError {
 		o.field("errorText", p.ErrorText)
@@ -733,15 +844,17 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Type                   string                 `json:"type"`
+		Dynamic                *bool                  `json:"dynamic"`
 		ToolName               string                 `json:"toolName"`
 		ToolCallID             string                 `json:"toolCallId"`
 		State                  ToolUIPartState        `json:"state"`
 		Title                  string                 `json:"title"`
 		ToolMetadata           map[string]interface{} `json:"toolMetadata"`
 		ProviderExecuted       *bool                  `json:"providerExecuted"`
-		Input                  interface{}            `json:"input"`
+		Input                  json.RawMessage        `json:"input"`
 		Output                 interface{}            `json:"output"`
-		RawInput               interface{}            `json:"rawInput"`
+		RawInput               json.RawMessage        `json:"rawInput"`
+		InputEncoding          string                 `json:"inputEncoding"`
 		ErrorText              string                 `json:"errorText"`
 		Preliminary            *bool                  `json:"preliminary"`
 		CallProviderMetadata   map[string]interface{} `json:"callProviderMetadata"`
@@ -751,9 +864,40 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*p = ToolUIPart(raw)
+	*p = ToolUIPart{
+		Type:                   raw.Type,
+		ToolName:               raw.ToolName,
+		Dynamic:                raw.Dynamic,
+		ToolCallID:             raw.ToolCallID,
+		State:                  raw.State,
+		Title:                  raw.Title,
+		ToolMetadata:           raw.ToolMetadata,
+		ProviderExecuted:       raw.ProviderExecuted,
+		Output:                 raw.Output,
+		InputEncoding:          raw.InputEncoding,
+		ErrorText:              raw.ErrorText,
+		Preliminary:            raw.Preliminary,
+		CallProviderMetadata:   raw.CallProviderMetadata,
+		ResultProviderMetadata: raw.ResultProviderMetadata,
+		Approval:               raw.Approval,
+	}
+	if raw.RawInput != nil {
+		if err := json.Unmarshal(raw.RawInput, &p.RawInput); err != nil {
+			return err
+		}
+		p.rawInputNull = p.RawInput == nil
+	}
+	if raw.Input != nil {
+		if err := json.Unmarshal(raw.Input, &p.Input); err != nil {
+			return err
+		}
+		p.inputNull = p.Input == nil
+	} else {
+		p.inputAbsent = true
+	}
 	if p.Type != "dynamic-tool" {
 		p.ToolName = ""
+		p.Dynamic = nil
 	}
 	return nil
 }

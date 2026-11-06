@@ -135,6 +135,15 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 fmt.Printf("Image bytes: %d\n", len(result.Images[0].Data))
 ```
 
+Model IDs without a version (`owner/model`) are called through
+`/models/{owner}/{model}/predictions`; `owner/model:version` uses
+`/predictions` with the version in the body. `AspectRatio`, `Seed`, `N`,
+`Files` (single `image` input, or `input_image`, `input_image_2`... for
+`black-forest-labs/flux-2-*`) and `Mask` map to the prediction input. Any
+other key under `ProviderOptions["replicate"]` is passed through as model
+input, except `maxWaitTimeInSeconds` (sent as `Prefer: wait=N`),
+`pollIntervalMillis` and `maxPollAttempts`. Every output image is downloaded.
+
 ## Best Practices
 
 1. **Model Discovery**

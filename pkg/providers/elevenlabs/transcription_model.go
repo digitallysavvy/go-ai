@@ -8,9 +8,14 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -38,7 +43,7 @@ func NewTranscriptionModel(p *Provider, modelID string) *TranscriptionModel {
 func (m *TranscriptionModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *TranscriptionModel) Provider() string { return "elevenlabs" }
+func (m *TranscriptionModel) Provider() string { return "elevenlabs.transcription" }
 
 // ModelID returns the model ID.
 func (m *TranscriptionModel) ModelID() string { return m.modelID }
@@ -46,12 +51,15 @@ func (m *TranscriptionModel) ModelID() string { return m.modelID }
 // DoTranscribe performs batch speech-to-text transcription.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if m.modelID == ModelScribeV2Realtime {
-		return nil, fmt.Errorf("%w: non-streaming transcription with %s (this model is realtime/WebSocket-only)", providererrors.ErrUnsupportedFeature, m.modelID)
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("non-streaming transcription with %s", m.modelID)}
 	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
 
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, contentType, warnings, err := m.buildMultipartBody(opts)
 	if err != nil {
 		return nil, err
@@ -60,10 +68,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	currentDate := time.Now()
 	var response elevenlabsTranscriptionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/speech-to-text",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaElevenLabsTr),
+		Method:           http.MethodPost,
+		Path:             "/v1/speech-to-text",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &response)
 	if err != nil {
 		return nil, handleTranscriptionError(err)
@@ -79,13 +88,29 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Start: start,
 			End:   end,
 		})
-		if word.End != nil {
-			e := *word.End
-			durationInSeconds = &e
+	}
+	// TS: response.audio_duration_secs ?? response.words?.at(-1)?.end ??
+	// undefined. The reported audio duration includes trailing silence and a
+	// reported zero is preserved; only the last word's end is the fallback.
+	if response.AudioDurationSecs != nil {
+		d := *response.AudioDurationSecs
+		durationInSeconds = &d
+	} else if n := len(response.Words); n > 0 && response.Words[n-1].End != nil {
+		e := *response.Words[n-1].End
+		durationInSeconds = &e
+	}
+
+	var providerMetadata map[string]interface{}
+	if response.Words != nil {
+		words := make([]interface{}, 0, len(response.Words))
+		for _, word := range response.Words {
+			words = append(words, schemaWord(word.Raw))
 		}
+		providerMetadata = map[string]interface{}{"elevenlabs": map[string]interface{}{"words": words}}
 	}
 
 	return &types.TranscriptionResult{
+		ProviderMetadata:  providerMetadata,
 		Text:              response.Text,
 		Segments:          segments,
 		Timestamps:        segments,
@@ -99,7 +124,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}, nil
 }
@@ -123,12 +148,32 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		return nil, "", nil, err
 	}
 
-	part, err := writer.CreateFormFile("file", "audio."+elevenLabsAudioExtension(opts.MimeType))
-	if err != nil {
-		return nil, "", nil, err
-	}
-	if _, err := part.Write(opts.Audio); err != nil {
-		return nil, "", nil, err
+	// ElevenLabs accepts exactly one of file or source_url (TS 8b2fa5ba00).
+	if present && elOpts.SourceURL != nil {
+		if err := writer.WriteField("source_url", *elOpts.SourceURL); err != nil {
+			return nil, "", nil, err
+		}
+		if len(opts.Audio) > 0 {
+			warnings = append(warnings, types.Warning{
+				Type:    "other",
+				Message: "ElevenLabs transcribes providerOptions.elevenlabs.sourceUrl; the audio input was ignored.",
+			})
+		}
+	} else {
+		fileHeader := textproto.MIMEHeader{}
+		fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, elevenLabsAudioExtension(opts.MimeType)))
+		contentType := opts.MimeType
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		fileHeader.Set("Content-Type", contentType)
+		part, err := writer.CreatePart(fileHeader)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		if _, err := part.Write(opts.Audio); err != nil {
+			return nil, "", nil, err
+		}
 	}
 
 	diarize := "true"
@@ -173,23 +218,9 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	return &buf, writer.FormDataContentType(), warnings, nil
 }
 
+// elevenLabsAudioExtension is TS provider-utils mediaTypeToExtension.
 func elevenLabsAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 func valueOrZero(v *float64) float64 {
@@ -207,39 +238,148 @@ func durationValue(duration *float64) float64 {
 }
 
 type elevenlabsTranscriptionResponse struct {
-	LanguageCode        string  `json:"language_code"`
-	LanguageProbability float64 `json:"language_probability"`
-	Text                string  `json:"text"`
-	Words               []struct {
-		Text      string   `json:"text"`
-		Type      string   `json:"type"`
-		Start     *float64 `json:"start"`
-		End       *float64 `json:"end"`
-		SpeakerID string   `json:"speaker_id"`
-	} `json:"words"`
+	AudioDurationSecs   *float64         `json:"audio_duration_secs"`
+	LanguageCode        string           `json:"language_code"`
+	LanguageProbability float64          `json:"language_probability"`
+	Text                string           `json:"text"`
+	Words               []elevenlabsWord `json:"words"`
+}
+
+// elevenlabsWord is one entry of the response "words" array. Raw keeps the
+// complete wire object so type and speaker_id are preserved in provider
+// metadata exactly as returned.
+type elevenlabsWord struct {
+	Text      string   `json:"text"`
+	Type      string   `json:"type"`
+	Start     *float64 `json:"start"`
+	End       *float64 `json:"end"`
+	SpeakerID string   `json:"speaker_id"`
+
+	Raw map[string]interface{} `json:"-"`
+}
+
+func (w *elevenlabsWord) UnmarshalJSON(data []byte) error {
+	type plain elevenlabsWord
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*w = elevenlabsWord(p)
+	return json.Unmarshal(data, &w.Raw)
+}
+
+// elevenlabsErrorDataSchema mirrors TS elevenlabsErrorDataSchema
+// (elevenlabs-error.ts, TS 7062ab6818): errors under `detail` (an API error
+// object, FastAPI's validation issue list, or a string), or the older
+// {"error":{"message","code"}} shape.
+var elevenlabsErrorDataSchema = zodlite.Union(
+	zodlite.Object(zodlite.F("detail", zodlite.Union(
+		zodlite.Object(
+			zodlite.F("message", zodlite.String),
+			zodlite.F("code", zodlite.Nullish(zodlite.String)),
+			zodlite.F("status", zodlite.Nullish(zodlite.String)),
+			zodlite.F("type", zodlite.Nullish(zodlite.String)),
+			zodlite.F("request_id", zodlite.Nullish(zodlite.String)),
+			zodlite.F("param", zodlite.Nullish(zodlite.String)),
+		),
+		zodlite.Array(zodlite.Object(
+			zodlite.F("msg", zodlite.String),
+			zodlite.F("loc", zodlite.Nullish(zodlite.Array(zodlite.Union(zodlite.String, zodlite.Number)))),
+			zodlite.F("type", zodlite.Nullish(zodlite.String)),
+		)),
+		zodlite.String,
+	))),
+	zodlite.Object(zodlite.F("error", zodlite.Object(
+		zodlite.F("message", zodlite.String),
+		zodlite.F("code", zodlite.Number),
+	))),
+)
+
+// elevenlabsErrorMessage is TS createJsonErrorResponseHandler with
+// elevenlabsErrorDataSchema and elevenlabsErrorToMessage: the message of a
+// body that matches the schema, else the HTTP status text. code is the
+// numeric error.code of the older shape (Go ProviderError.ErrorCode).
+func elevenlabsErrorMessage(statusCode int, body []byte) (message, code string) {
+	var data map[string]interface{}
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	body = []byte(textdecode.UTF8(body))
+	if json.Unmarshal(body, &data) != nil || elevenlabsErrorDataSchema(data, true, nil) != nil {
+		return http.StatusText(statusCode), ""
+	}
+	detail, hasDetail := data["detail"]
+	if !hasDetail {
+		return providerutils.NestedErrorMessage(statusCode, body)
+	}
+	switch d := detail.(type) {
+	case string:
+		return d, ""
+	case []interface{}:
+		parts := make([]string, 0, len(d))
+		for _, item := range d {
+			issue, _ := item.(map[string]interface{})
+			msg, _ := issue["msg"].(string)
+			if loc, ok := issue["loc"].([]interface{}); ok && len(loc) > 0 {
+				segs := make([]string, 0, len(loc))
+				for _, l := range loc {
+					if f, ok := l.(float64); ok {
+						segs = append(segs, providerutils.JSNumberString(f))
+					} else {
+						segs = append(segs, fmt.Sprint(l))
+					}
+				}
+				msg = strings.Join(segs, ".") + ": " + msg
+			}
+			parts = append(parts, msg)
+		}
+		return strings.Join(parts, "; "), ""
+	case map[string]interface{}:
+		msg, _ := d["message"].(string)
+		if c, ok := d["code"].(string); ok {
+			return msg + " (" + c + ")", ""
+		}
+		return msg, ""
+	}
+	return http.StatusText(statusCode), ""
 }
 
 // handleTranscriptionError converts an HTTP error into a ProviderError,
-// parsing ElevenLabs' `{"error":{"message","code"}}` error shape when present.
+// parsing the ElevenLabs error shapes (TS elevenlabsFailedResponseHandler).
 func handleTranscriptionError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    int    `json:"code"`
-			} `json:"error"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.Error.Message != "" {
-			message = payload.Error.Message
-			code = fmt.Sprintf("%d", payload.Error.Code)
-		}
-		providerErr := providererrors.NewProviderError("elevenlabs", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		message, code := elevenlabsErrorMessage(statusErr.StatusCode, statusErr.Body)
+		return providererrors.NewProviderErrorFromResponse("elevenlabs", 0, code, message, err)
 	}
-	return providererrors.NewProviderError("elevenlabs", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return internalhttp.UnwrapFetchRejection(err)
+}
+
+// schemaWord keeps only the keys of the TS response schema's word object
+// (zod strips unknown keys such as logprob).
+func schemaWord(raw map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for _, k := range []string{"text", "type", "start", "end", "speaker_id"} {
+		if v, ok := raw[k]; ok {
+			out[k] = v
+		}
+	}
+	if chars, ok := raw["characters"].([]interface{}); ok {
+		kept := make([]interface{}, 0, len(chars))
+		for _, c := range chars {
+			cm, _ := c.(map[string]interface{})
+			item := map[string]interface{}{}
+			for _, k := range []string{"text", "start", "end"} {
+				if v, ok := cm[k]; ok {
+					item[k] = v
+				}
+			}
+			kept = append(kept, item)
+		}
+		out["characters"] = kept
+	} else if v, ok := raw["characters"]; ok && v == nil {
+		out["characters"] = nil
+	}
+	return out
 }

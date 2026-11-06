@@ -16,6 +16,11 @@ type SpeechModelOptions struct {
 	// SampleRate is the sample rate for the output audio in Hz.
 	SampleRate *int `json:"sampleRate,omitempty"`
 
+	// sampleRate carries the exact TS z.number() value, which may be
+	// fractional (SampleRate cannot hold it). It is read from providerOptions
+	// by extractSpeechModelOptions and takes precedence over SampleRate.
+	sampleRate *float64
+
 	// Callback is the URL to which we'll make the callback request.
 	Callback string `json:"callback,omitempty"`
 

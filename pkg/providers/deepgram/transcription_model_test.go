@@ -28,7 +28,7 @@ func TestDeepgramRedactArraySerialization(t *testing.T) {
 func TestDeepgramTranscriptionModelMetadata(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewTranscriptionModel(p, "nova-2")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "deepgram" || m.ModelID() != "nova-2" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "deepgram.transcription" || m.ModelID() != "nova-2" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 }

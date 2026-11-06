@@ -3,6 +3,7 @@ package acp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -25,7 +26,7 @@ type BuiltinToolMapping struct {
 type TurnStartConfig struct {
 	Version                  int                     `json:"version"`
 	ConfigurationFingerprint string                  `json:"configurationFingerprint"`
-	Prompt                   []TextContentBlock      `json:"prompt"`
+	Prompt                   []ContentBlock          `json:"prompt"`
 	Tools                    []harness.ToolSpec      `json:"tools"`
 	BuiltinTools             []BuiltinToolMapping    `json:"builtinTools"`
 	PermissionMode           harness.PermissionMode  `json:"permissionMode"`
@@ -38,9 +39,7 @@ type TurnStartConfig struct {
 }
 
 // ColdSessionState is the subset of TurnStartConfig persisted for a cold ACP
-// session restore. Mirrors TS `ACPColdSessionState`. This port never
-// produces or consumes cold-restore lifecycle data (see the package doc);
-// the type exists so lifecycle JSON round-trips without data loss.
+// session restore. Mirrors TS `ACPColdSessionState`.
 type ColdSessionState struct {
 	Version                  int                     `json:"version"`
 	ConfigurationFingerprint string                  `json:"configurationFingerprint"`
@@ -52,9 +51,38 @@ type ColdSessionState struct {
 	PermissionModeMapping    *PermissionModeMapping  `json:"permissionModeMapping,omitempty"`
 }
 
+// UnmarshalJSON applies the zod `.default([])` of `tools` and `builtinTools`
+// (acpTurnStartConfigSchema), so a persisted configuration without them is
+// re-sent to the bridge with empty arrays rather than null.
+func (c *TurnStartConfig) UnmarshalJSON(data []byte) error {
+	type plain TurnStartConfig
+	var v plain
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*c = TurnStartConfig(v)
+	c.Tools = nonNilToolSpecs(c.Tools)
+	c.BuiltinTools = nonNilBuiltinTools(c.BuiltinTools)
+	return nil
+}
+
+// UnmarshalJSON applies the zod `.default([])` of `tools` and `builtinTools`
+// (acpColdSessionStateSchema).
+func (c *ColdSessionState) UnmarshalJSON(data []byte) error {
+	type plain ColdSessionState
+	var v plain
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*c = ColdSessionState(v)
+	c.Tools = nonNilToolSpecs(c.Tools)
+	c.BuiltinTools = nonNilBuiltinTools(c.BuiltinTools)
+	return nil
+}
+
 // createTurnStartConfigInput is the input of createTurnStartConfig.
 type createTurnStartConfigInput struct {
-	Prompt                []TextContentBlock
+	Prompt                []ContentBlock
 	Tools                 []harness.ToolSpec
 	BuiltinTools          []BuiltinToolMapping
 	PermissionMode        harness.PermissionMode
@@ -73,7 +101,7 @@ type createTurnStartConfigInput struct {
 // createTurnStartConfig mirrors TS `createACPTurnStartConfig`.
 func createTurnStartConfig(in createTurnStartConfigInput) TurnStartConfig {
 	fingerprintPayload := map[string]any{
-		"authenticationProfile": in.AuthenticationProfile,
+		"authenticationProfile": in.AuthenticationProfile.fingerprintPayload(),
 		"sessionMeta":           in.SessionMeta,
 		"modelMapping":          in.ModelMapping,
 		"builtinTools":          in.BuiltinTools,
@@ -86,7 +114,7 @@ func createTurnStartConfig(in createTurnStartConfigInput) TurnStartConfig {
 	if in.OutputSchemaMapping != nil {
 		fingerprintPayload["outputSchemaMapping"] = in.OutputSchemaMapping
 	}
-	sum := sha256.Sum256([]byte(stableStringify(fingerprintPayload)))
+	sum := sha256.Sum256([]byte(stableStringifyCodeUnit(fingerprintPayload)))
 
 	cfg := TurnStartConfig{
 		Version: 1, ConfigurationFingerprint: hex.EncodeToString(sum[:]),
@@ -135,14 +163,17 @@ type validateTurnStartConfigInput struct {
 // no longer matches, since the resumed turn must not silently change tool
 // catalogs, permission mapping, auth, etc.
 func validateTurnStartConfig(turnStartConfig TurnStartConfig, in validateTurnStartConfigInput) error {
-	current := createTurnStartConfig(createTurnStartConfigInput{
+	ci := createTurnStartConfigInput{
 		Prompt: turnStartConfig.Prompt, Tools: turnStartConfig.Tools, BuiltinTools: in.BuiltinTools,
 		PermissionMode: turnStartConfig.PermissionMode, PermissionModeMapping: in.PermissionModeMapping,
 		MCPServers: in.MCPServers, Debug: turnStartConfig.Debug, AuthenticationProfile: in.AuthenticationProfile,
 		SessionMeta: in.SessionMeta, InstructionMapping: in.InstructionMapping, ResponseFormat: turnStartConfig.ResponseFormat,
 		OutputSchemaMapping: in.OutputSchemaMapping, Model: turnStartConfig.Model, ModelMapping: in.ModelMapping,
-	})
-	if current.ConfigurationFingerprint != turnStartConfig.ConfigurationFingerprint {
+	}
+	current := createTurnStartConfig(ci)
+	// A v0.5.2 persisted fingerprint is accepted too (see legacy_digest.go).
+	if current.ConfigurationFingerprint != turnStartConfig.ConfigurationFingerprint &&
+		legacyConfigurationFingerprint(ci) != turnStartConfig.ConfigurationFingerprint {
 		return fmt.Errorf("The persisted ACP turn start configuration is incompatible with the current non-secret start configuration.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
@@ -174,14 +205,17 @@ type validateColdSessionConfigurationInput struct {
 // value — used verbatim as the cold-restore `start` frame's turnStartConfig
 // and as the session's remembered config for a future rerun/cold-restore).
 func validateColdSessionConfiguration(coldSession ColdSessionState, in validateColdSessionConfigurationInput) (TurnStartConfig, error) {
-	current := createTurnStartConfig(createTurnStartConfigInput{
+	ci := createTurnStartConfigInput{
 		Prompt: nil, Tools: coldSession.Tools, BuiltinTools: in.BuiltinTools,
 		PermissionMode: in.PermissionMode, PermissionModeMapping: in.PermissionModeMapping,
 		MCPServers: in.MCPServers, Debug: in.Debug, AuthenticationProfile: in.AuthenticationProfile,
 		SessionMeta: in.SessionMeta, InstructionMapping: in.InstructionMapping, ResponseFormat: coldSession.ResponseFormat,
 		OutputSchemaMapping: in.OutputSchemaMapping, Model: "", ModelMapping: in.ModelMapping,
-	})
-	if current.ConfigurationFingerprint != coldSession.ConfigurationFingerprint || coldSession.PermissionMode != in.PermissionMode {
+	}
+	current := createTurnStartConfig(ci)
+	fingerprintOK := current.ConfigurationFingerprint == coldSession.ConfigurationFingerprint ||
+		legacyConfigurationFingerprint(ci) == coldSession.ConfigurationFingerprint
+	if !fingerprintOK || coldSession.PermissionMode != in.PermissionMode {
 		return TurnStartConfig{}, fmt.Errorf("ACP cold-session state is incompatible with the current non-secret session configuration.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return current, nil
@@ -209,11 +243,11 @@ func fingerprintValue(value any) string {
 // `prompt`/`tools`/`builtinTools` wire fields to always be JSON arrays,
 // never `null`, matching TS's `z.array(...)` (with `.default([])` for the
 // two array fields that are optional at the call site).
-func nonNilBlocks(v []TextContentBlock) []TextContentBlock {
+func nonNilBlocks(v []ContentBlock) []ContentBlock {
 	if v == nil {
-		return []TextContentBlock{}
+		return []ContentBlock{}
 	}
-	return append(make([]TextContentBlock, 0, len(v)), v...)
+	return append(make([]ContentBlock, 0, len(v)), v...)
 }
 
 func nonNilToolSpecs(v []harness.ToolSpec) []harness.ToolSpec {

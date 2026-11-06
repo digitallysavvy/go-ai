@@ -193,6 +193,28 @@ type StreamRequestBody interface {
 	RequestBody() interface{}
 }
 
+// StreamRequestURL is an optional capability a TextStream implementation
+// can provide to report the HTTP endpoint it posted to (TS doStream()
+// {request: {url}}, 934100cad4). pkg/ai reduces it to its origin
+// (types.StepRequest.URL) before results, callbacks or telemetry see it, so
+// credentials, path, query and fragment never leave the provider. A stream
+// that doesn't implement it reports no request URL.
+type StreamRequestURL interface {
+	// RequestURL returns the URL the stream was opened with, or "".
+	RequestURL() string
+}
+
+// StreamResponseHeaders is an optional interface a TextStream can provide to
+// report the HTTP response headers of the call that opened it (TS doStream()
+// {response: {headers}}, returned beside the stream rather than as a stream
+// part). pkg/ai reads it for the step response; a response-metadata part that
+// carries headers still replaces them (v0.5 providers). Stream wrappers
+// forward it like RequestURL.
+type StreamResponseHeaders interface {
+	// ResponseHeaders returns the HTTP response headers, or nil.
+	ResponseHeaders() map[string]string
+}
+
 // StreamChunk represents a single chunk in a text stream
 type StreamChunk struct {
 	// Type of chunk
@@ -280,6 +302,10 @@ type StreamChunk struct {
 	// optional `providerMetadata?: SharedV4ProviderMetadata` field on those
 	// stream part types.
 	ProviderMetadata json.RawMessage
+
+	// Citations carries the references supporting the text block with this ID
+	// when Type is ChunkTypeTextEnd (TS text-end `citations`).
+	Citations []types.Citation
 
 	// ResponseMetadata is set when Type == ChunkTypeResponseMetadata.
 	// Carries the provider-level HTTP response metadata emitted early in the
@@ -491,6 +517,14 @@ const (
 	// ChunkTypeStreamFinish is a synthetic stream lifecycle marker emitted when
 	// the stream has been fully consumed.
 	ChunkTypeStreamFinish ChunkType = "ai.stream.finish"
+
+	// ChunkTypeDiscardStep is a synthetic marker consumed by
+	// ai.NewStreamTextResultFromParts: the content recorded for the step in
+	// progress is dropped from the result (the chunks already forwarded stay
+	// on the stream). It mirrors HarnessStreamTextResult
+	// .discardCurrentStepContent, used when a suspended turn closes its
+	// already-recorded step. It is never part of the public full stream.
+	ChunkTypeDiscardStep ChunkType = "ai.stream.discardStep"
 )
 
 // EmbedModelOptions contains options forwarded to the embedding provider on each call.
@@ -502,6 +536,13 @@ type EmbedModelOptions struct {
 
 	// Headers are additional HTTP headers to send with the request.
 	Headers map[string]string
+
+	// Dimensions is the requested number of output dimensions for the
+	// embeddings (the top-level `dimensions` setting). nil means unspecified.
+	// It is validated as a positive integer by ai.Embed / ai.EmbedMany; support
+	// and allowed values depend on the model and provider. Providers map it to
+	// their native setting; an explicit provider option takes precedence.
+	Dimensions *int
 }
 
 // EmbeddingModel represents an embedding model
@@ -633,6 +674,10 @@ type ImageFile struct {
 
 	// MediaType for type="file" (e.g., "image/png")
 	MediaType string
+
+	// ProviderOptions carries optional provider-specific options for the file
+	// part (TS ImageModelV4File.providerOptions).
+	ProviderOptions map[string]interface{}
 }
 
 // SpeechModel represents a speech synthesis model

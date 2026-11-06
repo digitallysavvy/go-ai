@@ -1,11 +1,13 @@
 package openresponses
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -35,8 +37,20 @@ type Config struct {
 	// Many local model servers don't require authentication
 	APIKey string
 
+	// APIKeyFunc resolves the optional API key for every request instead of
+	// APIKey (TS `apiKey` as a function, 7716e189ee). Its error fails the
+	// request; an empty result sends no Authorization header, like an empty
+	// APIKey. Setting both APIKey and APIKeyFunc fails every request with an
+	// InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// Headers are custom HTTP headers to include in requests
 	Headers map[string]string
+
+	// HeadersFunc, when set, resolves headers for every request (a lazily
+	// loaded API key, TS `headers: () => ...`); an error fails the request
+	// before it is sent. Used by wrappers such as QuiverAI.
+	HeadersFunc func() (map[string]string, error) `json:"-"`
 
 	// Name is the provider name for identification (default: "open-responses")
 	Name string
@@ -136,10 +150,44 @@ func New(cfg Config) *Provider {
 	}
 	headers = version.WithUserAgentSuffix(headers, userAgentSuffix)
 
+	headersFunc := cfg.HeadersFunc
+	var headersFuncCtx func(context.Context) (map[string]string, error)
+	if cfg.APIKeyFunc != nil {
+		inner, userHeaders, apiKey, keyFunc := cfg.HeadersFunc, cfg.Headers, cfg.APIKey, cfg.APIKeyFunc
+		headersFunc = nil
+		headersFuncCtx = func(ctx context.Context) (map[string]string, error) {
+			out := map[string]string{}
+			// TS `{...(apiKey && {Authorization: Bearer apiKey}),
+			// ...options.headers}`: the caller's own Authorization header
+			// wins. The key func gets the request's context.
+			auth, err := providerutils.RequestAuthHeaderFunc(ctx, userHeaders, providerutils.ResolveAPIKeyOptions{
+				APIKey: apiKey, APIKeyFunc: keyFunc, Optional: true,
+			}, "Authorization", "Bearer ")
+			if err != nil {
+				return nil, err
+			}
+			if v, ok := auth["Authorization"]; ok && v != "Bearer " {
+				out["Authorization"] = v
+			}
+			if inner != nil {
+				extra, err := inner()
+				if err != nil {
+					return nil, err
+				}
+				for k, v := range extra {
+					out[k] = v
+				}
+			}
+			return out, nil
+		}
+	}
+
 	// Create HTTP client
 	client := http.NewClient(http.Config{
-		BaseURL: cfg.BaseURL,
-		Headers: headers,
+		BaseURL:        cfg.BaseURL,
+		Headers:        headers,
+		HeadersFunc:    headersFunc,
+		HeadersFuncCtx: headersFuncCtx,
 	})
 
 	registry, err := NewExtensionRegistry(cfg.Extensions)
@@ -170,27 +218,27 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("%w: %s embeddingModel %q", providererrors.ErrModelNotFound, p.Name(), modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("%w: %s imageModel %q", providererrors.ErrModelNotFound, p.Name(), modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("open responses provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Open Responses provider does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Open Responses provider does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

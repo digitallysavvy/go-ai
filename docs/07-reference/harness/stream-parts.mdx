@@ -25,7 +25,7 @@ The adapter interface is in [Harness adapters](./adapters.mdx).
 | `harness.PartTypeToolInputStart` | `tool-input-start` | `*harness.ToolInputStartPart` | Tool input starts streaming. |
 | `harness.PartTypeToolInputDelta` | `tool-input-delta` | `*harness.ToolInputDeltaPart` | A piece of tool input. |
 | `harness.PartTypeToolInputEnd` | `tool-input-end` | `*harness.ToolInputEndPart` | Tool input is complete. |
-| `harness.PartTypeToolCall` | `tool-call` | `*harness.ToolCallPart` | A tool call. Carries `nativeName` and `stepToolCallCount` in addition to the model tool call fields. |
+| `harness.PartTypeToolCall` | `tool-call` | `*harness.ToolCallPart` | A tool call. Carries `nativeName` in addition to the model tool call fields. `stepToolCallCount` is deprecated and ignored by the host. |
 | `harness.PartTypeToolApprovalRequest` | `tool-approval-request` | `*harness.ToolApprovalRequestPart` | The runtime asks for approval. |
 | `harness.PartTypeToolResult` | `tool-result` | `*harness.ToolResultPart` | A tool result. |
 | `harness.PartTypeFinishStep` | `finish-step` | `*harness.FinishStepPart` | End of a step inside a turn. |
@@ -67,7 +67,8 @@ The adapter interface is in [Harness adapters](./adapters.mdx).
 | `Dynamic` | `bool` |  |
 | `ProviderMetadata` | `ProviderMetadata` |  |
 | `NativeName` | `string` | NativeName is the runtime's native name when it differs from ToolName. |
-| `StepToolCallCount` | `*int` | StepToolCallCount is the total tool calls in the current model step, when known up front. Must be a positive integer when set. |
+| `StepToolCallCount` | `*int` | StepToolCallCount is the total tool calls in the current model step, when known up front. Must be a positive integer when set. Deprecated: ignored by the host since TS #23260. Parallel approvals and client tool results are collected by pausing at the step's next finish-step instead, so adapters no longer need to populate it. |
+| `ProviderExecutedOmitted` | `bool` | ProviderExecutedOmitted is set by DecodeStreamPart when the wire frame carried no `providerExecuted` key. A Go bool cannot tell "absent" from false, but TS defaults a builtin approval's providerExecuted to true when the tool call left it undefined (`rawToolCall?.providerExecuted ?? true`). Never serialized. |
 
 {/* /gen:fields */}
 
@@ -161,7 +162,7 @@ The block parts all carry an `id`. Text and reasoning parts also carry `harnessM
 | --- | --- |
 | File change kinds | `harness.FileChangeCreate`, `harness.FileChangeModify`, `harness.FileChangeDelete` |
 | Compaction triggers | `harness.CompactionTriggerManual`, `harness.CompactionTriggerAuto` |
-| Finish reasons | `harness.FinishReasonStop`, `harness.FinishReasonLength`, `harness.FinishReasonContentFilter`, `harness.FinishReasonToolCalls`, `harness.FinishReasonError`, `harness.FinishReasonOther` |
+| Finish reasons | `harness.FinishReasonStop`, `harness.FinishReasonLength`, `harness.FinishReasonContentFilter`, `harness.FinishReasonToolCalls`, `harness.FinishReasonError`, `harness.FinishReasonInterrupted`, `harness.FinishReasonOther` |
 
 ### Usage
 
@@ -211,13 +212,14 @@ Converts one part to zero or more chunks. Most parts map one to one. These are t
 - `tool-call` is not translated here. `harness.Agent` validates it against the merged tool set first.
 - A failed `tool-result` from a provider-executed tool becomes a tool result with an error.
 - `file-change` and `compaction` have no chunk type of their own. Each becomes a dynamic, provider-executed tool call and tool result pair named `fileChange` or `compaction`, so the event stays visible.
-- `stream-start`, `finish-step` and `finish` return nil. `harness.Agent` owns step and turn boundaries.
+- `finish-step` and `finish` return nil. `harness.Agent` owns step and turn boundaries. `stream-start` returns nil when it carries no warnings; with warnings it becomes a stream-start chunk that records them on the step.
 
 {/* gen:fields harness.TranslateOptions */}
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `IsProviderExecuted` | `func(toolCallID string) bool` | IsProviderExecuted reports whether the tool call that produced a tool-result event ran inside the harness runtime. Host results are echoed back as tool-result events too, so the event alone cannot say who ran the tool — only the originating tool-call can, and correlating the two is the caller's job (run_prompt.go tracks it). A nil func treats every failure as provider-executed, matching TS's `?? true` default. |
+| `GetToolCall` | `func(toolCallID string) (ToolCallInfo, bool)` | GetToolCall returns the parsed tool call that produced a tool-result event. Harness tool-result events only carry the output, so the input and execution origin (providerExecuted) are restored from the originating call. Mirrors TS `translateStreamPart`'s `getToolCall` option (TS #23096). A nil func (or a missing call) leaves both unset. |
 
 {/* /gen:fields */}
 

@@ -48,11 +48,11 @@ func TestDeepseekDoGenerateAndStream(t *testing.T) {
 	p := newDeepseekProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
 		if r.Header.Get("Accept") == "text/event-stream" {
-			sse := `data: {"choices":[{"delta":{"reasoning_content":"think"},"finish_reason":""}]}
+			sse := `data: {"choices":[{"index":0,"delta":{"reasoning_content":"think"},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{"content":"hello"},"finish_reason":""}]}
+data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}
 
 data: [DONE]
 
@@ -70,7 +70,7 @@ data: [DONE]
 	})
 
 	m := NewLanguageModel(p, "deepseek-v4")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "deepseek" || m.ModelID() != "deepseek-v4" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "deepseek.chat" || m.ModelID() != "deepseek-v4" {
 		t.Fatalf("metadata mismatch")
 	}
 	if !m.SupportsTools() || !m.SupportsStructuredOutput() || !m.SupportsImageInput() {

@@ -31,11 +31,11 @@ func CreateContextualAuthenticationError(apiKeyProvided, oidcTokenProvided bool,
 	var message string
 	switch {
 	case apiKeyProvided:
-		message = "AI Gateway authentication failed: Invalid API key.\n\nCreate a new API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\n\nProvide via 'apiKey' option or 'AI_GATEWAY_API_KEY' environment variable."
+		message = "AI Gateway authentication failed: Invalid API key or token.\n\nCreate a new API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\n\nProvide an API key or Vercel access token via 'apiKey' option or 'AI_GATEWAY_API_KEY' environment variable."
 	case oidcTokenProvided:
-		message = "AI Gateway authentication failed: Invalid OIDC token.\n\nRun 'npx vercel link' to link your project, then 'vc env pull' to fetch the token.\n\nAlternatively, use an API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys"
+		message = "AI Gateway authentication failed: Invalid OIDC token.\n\nRun 'npx vercel link' to link your project, then 'vc env pull' to fetch the token.\n\nAlternatively, use an API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\nor pass a Vercel access token via the 'apiKey' option."
 	default:
-		message = "AI Gateway authentication failed: No authentication provided.\n\nOption 1 - API key:\nCreate an API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\nProvide via 'apiKey' option or 'AI_GATEWAY_API_KEY' environment variable.\n\nOption 2 - OIDC token:\nRun 'npx vercel link' to link your project, then 'vc env pull' to fetch the token."
+		message = "AI Gateway authentication failed: No authentication provided.\n\nOption 1 - API key:\nCreate an API key: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys\nProvide via 'apiKey' option or 'AI_GATEWAY_API_KEY' environment variable.\n\nOption 2 - Vercel access token:\nPass a Vercel personal access token or Vercel app access token via the 'apiKey' option.\n\nOption 3 - OIDC token:\nRun 'npx vercel link' to link your project, then 'vc env pull' to fetch the token."
 	}
 	return NewGatewayAuthenticationError(message, statusCode, cause, generationID)
 }

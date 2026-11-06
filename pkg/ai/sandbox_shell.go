@@ -4,15 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
+	"syscall"
+	"time"
 
-	"golang.org/x/text/encoding/htmlindex"
-	"golang.org/x/text/transform"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ShellSandbox executes commands through the local shell. It is the default
@@ -49,6 +50,10 @@ func (s *ShellSandbox) Description() string {
 	return s.description
 }
 
+// shellSandboxPipeGrace is how long Run waits, after its ctx is done, for the
+// command's output pipes to reach EOF before closing them.
+const shellSandboxPipeGrace = 500 * time.Millisecond
+
 // Run runs command in the configured shell.
 func (s *ShellSandbox) Run(ctx context.Context, opts SandboxProcessOptions) (SandboxRunResult, error) {
 	process, err := s.spawn(ctx, opts.Command, opts.WorkingDirectory, opts.Env)
@@ -73,7 +78,31 @@ func (s *ShellSandbox) Run(ctx context.Context, opts SandboxProcessOptions) (San
 	// against io.Copy and can truncate output under load (see
 	// https://pkg.go.dev/os/exec#Cmd.StdoutPipe: "it is incorrect to call
 	// Wait before all reads from the pipe have completed").
+	//
+	// A cancelled ctx kills only the shell; a child it forked (sh -c "a; b")
+	// keeps the pipes open, which would hold this call until that child
+	// exits. After ctx is done the pipes are closed following a short grace
+	// period, so Run returns promptly with whatever output was captured.
+	copied := make(chan struct{})
+	go func() {
+		select {
+		case <-copied:
+			return
+		case <-ctx.Done():
+		}
+		select {
+		case <-copied:
+			return
+		case <-time.After(shellSandboxPipeGrace):
+		}
+		for _, r := range []io.Reader{process.Stdout(), process.Stderr()} {
+			if c, ok := r.(io.Closer); ok {
+				_ = c.Close()
+			}
+		}
+	}()
 	copyWG.Wait()
+	close(copied)
 	waitResult, waitErr := process.Wait()
 	return SandboxRunResult{
 		Stdout:   stdout.String(),
@@ -155,22 +184,7 @@ func (s *ShellSandbox) ReadTextFile(ctx context.Context, opts SandboxReadTextFil
 	if err != nil {
 		return nil, err
 	}
-	if opts.StartLine != nil || opts.EndLine != nil {
-		lines := strings.Split(text, "\n")
-		start := 1
-		if opts.StartLine != nil && *opts.StartLine > 1 {
-			start = *opts.StartLine
-		}
-		end := len(lines)
-		if opts.EndLine != nil && *opts.EndLine < end {
-			end = *opts.EndLine
-		}
-		if start > end || start > len(lines) {
-			empty := ""
-			return &empty, nil
-		}
-		text = strings.Join(lines[start-1:end], "\n")
-	}
+	text = providerutils.ExtractLines(text, opts.StartLine, opts.EndLine)
 	return &text, nil
 }
 
@@ -190,8 +204,10 @@ func (s *ShellSandbox) WriteFile(ctx context.Context, path string, content io.Re
 	if err != nil {
 		return err
 	}
-	defer f.Close() //nolint:errcheck
 	_, err = io.Copy(f, content)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
 	return err
 }
 
@@ -209,31 +225,114 @@ func (s *ShellSandbox) WriteTextFile(ctx context.Context, opts SandboxWriteTextF
 	return s.WriteFile(ctx, opts.Path, bytes.NewReader(data))
 }
 
-func decodeSandboxText(data []byte, encodingLabel string) (string, error) {
-	if encodingLabel == "" || strings.EqualFold(encodingLabel, "utf-8") || strings.EqualFold(encodingLabel, "utf8") {
-		return string(data), nil
-	}
-	enc, err := htmlindex.Get(encodingLabel)
-	if err != nil {
-		return "", err
-	}
-	decoded, _, err := transform.Bytes(enc.NewDecoder(), data)
-	if err != nil {
-		return "", err
-	}
-	return string(decoded), nil
-}
+// The optional SandboxSession operations TS sandbox sessions implement
+// (just-bash stat / listDirectory / deleteFile). Paths are used as given, as
+// ReadFile and WriteFile do.
+var (
+	_ providerutils.SandboxStatter         = (*ShellSandbox)(nil)
+	_ providerutils.SandboxDirectoryLister = (*ShellSandbox)(nil)
+	_ providerutils.SandboxFileDeleter     = (*ShellSandbox)(nil)
+)
 
-func encodeSandboxText(text string, encodingLabel string) ([]byte, error) {
-	if encodingLabel == "" || strings.EqualFold(encodingLabel, "utf-8") || strings.EqualFold(encodingLabel, "utf8") {
-		return []byte(text), nil
+// Stat implements providerutils.SandboxStatter (TS SandboxSession.stat):
+// symbolic links are followed; a missing path (or one under a file) is
+// (nil, nil).
+func (s *ShellSandbox) Stat(ctx context.Context, path string) (*providerutils.SandboxFileStat, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	enc, err := htmlindex.Get(encodingLabel)
+	info, err := os.Stat(path)
+	if shellSandboxMissing(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	encoded, _, err := transform.Bytes(enc.NewEncoder(), []byte(text))
-	return encoded, err
+	typ := providerutils.SandboxPathTypeOther
+	switch {
+	case info.Mode().IsRegular():
+		typ = providerutils.SandboxPathTypeFile
+	case info.IsDir():
+		typ = providerutils.SandboxPathTypeDirectory
+	}
+	return &providerutils.SandboxFileStat{Type: typ, Size: info.Size()}, nil
+}
+
+// ListDirectory implements providerutils.SandboxDirectoryLister (TS
+// SandboxSession.listDirectory): entries are not followed, so a symbolic link
+// is reported as "symlink"; a missing directory is (nil, nil).
+func (s *ShellSandbox) ListDirectory(ctx context.Context, path string) ([]providerutils.SandboxDirectoryEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if shellSandboxMissing(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("Failed to list %s: Not a directory", path) //nolint:staticcheck // TS error text
+	}
+	dirEntries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]providerutils.SandboxDirectoryEntry, 0, len(dirEntries))
+	for _, e := range dirEntries {
+		typ := providerutils.SandboxPathTypeOther
+		switch mode := e.Type(); {
+		case mode&os.ModeSymlink != 0:
+			typ = providerutils.SandboxPathTypeSymlink
+		case mode.IsRegular():
+			typ = providerutils.SandboxPathTypeFile
+		case mode.IsDir():
+			typ = providerutils.SandboxPathTypeDirectory
+		}
+		entries = append(entries, providerutils.SandboxDirectoryEntry{Name: e.Name(), Type: typ})
+	}
+	return entries, nil
+}
+
+// DeleteFile implements providerutils.SandboxFileDeleter (TS
+// SandboxSession.deleteFile): a symbolic link is deleted itself, a missing
+// file is false, a directory is an error.
+func (s *ShellSandbox) DeleteFile(ctx context.Context, path string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(path)
+	if shellSandboxMissing(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() {
+		return false, fmt.Errorf("Cannot delete %s: it is a directory.", path) //nolint:staticcheck // TS error text
+	}
+	if err := os.Remove(path); err != nil {
+		if shellSandboxMissing(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// shellSandboxMissing reports a path that does not exist, including one under
+// a regular file (ENOTDIR), which TS treats as missing too.
+func shellSandboxMissing(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
+func decodeSandboxText(data []byte, encodingLabel string) (string, error) {
+	return providerutils.DecodeSandboxText(data, encodingLabel)
+}
+
+func encodeSandboxText(text string, encodingLabel string) ([]byte, error) {
+	return providerutils.EncodeSandboxText(text, encodingLabel)
 }
 
 type shellSandboxProcess struct {

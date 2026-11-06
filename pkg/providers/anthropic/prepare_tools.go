@@ -2,11 +2,12 @@ package anthropic
 
 import (
 	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
 // providerToolBetas maps Anthropic provider tool IDs to the beta flag the TS
@@ -29,6 +30,15 @@ var providerToolBetas = map[string]string{
 	"anthropic.advisor_20260301":        BetaHeaderAdvisorTool,
 }
 
+// ProviderToolBeta returns the anthropic-beta flag a provider-defined tool
+// (e.g. "anthropic.computer_20250124") requires, if any. Hosts that forward
+// Anthropic tools through another transport (Amazon Bedrock) use it to build
+// the equivalent anthropic_beta list.
+func ProviderToolBeta(toolName string) (string, bool) {
+	b, ok := providerToolBetas[toolName]
+	return b, ok
+}
+
 // BetaHeaderStructuredOutputs is added for function tools when the model
 // supports native structured output (strict tools).
 const BetaHeaderStructuredOutputs = "structured-outputs-2025-11-13"
@@ -45,6 +55,9 @@ type prepareToolsOptions struct {
 }
 
 type preparedTools struct {
+	// err is a validation failure of a provider tool's arguments (TS
+	// AI_TypeValidationError from validateTypes).
+	err        error
 	tools      []map[string]interface{}
 	toolChoice map[string]interface{}
 	warnings   []types.Warning
@@ -83,6 +96,8 @@ func toolOptionsOf(t types.Tool) *ToolOptions {
 			out.DeferLoading = &v
 		}
 		if v, ok := anth["allowedCallers"].([]interface{}); ok {
+			// A present list, even empty, is sent (TS allowedCallers != null).
+			out.AllowedCallers = make([]string, 0, len(v))
 			for _, c := range v {
 				if s, ok := c.(string); ok {
 					out.AllowedCallers = append(out.AllowedCallers, s)
@@ -116,8 +131,32 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 
 	wire := make([]map[string]interface{}, 0, len(o.tools))
 	for _, t := range o.tools {
+		t, err := restoreProviderToolOptions(t)
+		if err != nil {
+			out.err = err
+			return out
+		}
+		// TS selects provider tools by id; the Name is the caller's choice.
+		id := ProviderToolID(t)
+		// Self-serializing provider tools carry their own args (advisor model,
+		// max_uses, ... ) and win over the plain builtin table entry.
+		if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok && t.ProviderOptions != nil {
+			if _, builtin := anthropicBuiltinToolTypes[id]; builtin {
+				if v, ok := t.ProviderOptions.(interface{ Validate() error }); ok {
+					if err := v.Validate(); err != nil {
+						out.err = &providererrors.TypeValidationError{Field: "args", Message: err.Error(), Cause: err}
+						return out
+					}
+				}
+				wire = append(wire, mapper.ToAnthropicAPIMap())
+				if b, ok := providerToolBetas[id]; ok {
+					addBeta(b)
+				}
+				continue
+			}
+		}
 		// Simple builtin provider tools.
-		if def, ok := anthropicBuiltinToolTypes[t.Name]; ok {
+		if def, ok := anthropicBuiltinToolTypes[id]; ok {
 			m := map[string]interface{}{"type": def.apiType}
 			if def.name != "" {
 				m["name"] = def.name
@@ -125,7 +164,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			if cc := validator.GetCacheControl(toolCacheControlOptions(t), "tool definition", true); cc != nil {
 				m["cache_control"] = cc
 			}
-			if b, ok := providerToolBetas[t.Name]; ok {
+			if b, ok := providerToolBetas[id]; ok {
 				addBeta(b)
 			}
 			wire = append(wire, m)
@@ -133,23 +172,33 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		}
 		// Self-serializing provider tools.
 		if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok && t.ProviderOptions != nil {
+			if v, ok := t.ProviderOptions.(interface{ Validate() error }); ok {
+				if err := v.Validate(); err != nil {
+					out.err = &providererrors.TypeValidationError{Field: "args", Message: err.Error(), Cause: err}
+					return out
+				}
+			}
 			wire = append(wire, mapper.ToAnthropicAPIMap())
-			if b, ok := providerToolBetas[t.Name]; ok {
+			if b, ok := providerToolBetas[id]; ok {
 				addBeta(b)
 			}
 			continue
 		}
-		if t.Type == "provider" || (strings.HasPrefix(t.Name, "anthropic.") && t.ProviderExecuted) {
-			id := t.ProviderID
-			if id == "" {
-				id = t.Name
-			}
+		if t.Type == "provider" || (strings.HasPrefix(t.Name, "anthropic.")) {
+			// Anthropic function names cannot contain ".", so an
+			// "anthropic.*" name is always a provider tool id; unknown ids
+			// get exactly one warning, as in TS.
 			out.warnings = append(out.warnings, types.Warning{Type: "unsupported", Feature: "provider-defined tool " + id})
 			continue
 		}
 
 		// Function tool.
-		m := tool.ToAnthropicFormat([]types.Tool{t})[0]
+		// TS forwards the tool's inputSchema untouched (only the
+		// responseFormat schema is sanitized), so do the same.
+		m := map[string]interface{}{"name": t.Name, "input_schema": providerutils.ResponseFormatJSONSchemaOrdered(t.Parameters)}
+		if t.Description != "" {
+			m["description"] = t.Description
+		}
 		if cc := validator.GetCacheControl(toolCacheControlOptions(t), "tool definition", true); cc != nil {
 			m["cache_control"] = cc
 		}
@@ -161,12 +210,11 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		if eager {
 			m["eager_input_streaming"] = true
 		}
-		// TS anthropic-prepare-tools.ts checks `tool.strict != null`
-		// (specified at all, true OR false), not `=== true`: strictSet must
-		// distinguish "unset" from "explicitly false", matching
-		// types.Tool.Strict's tri-state *bool.
+		// strictSet distinguishes "unset" from "explicitly false" (tri-state
+		// *bool). The unsupported-strict warning only fires for strict ===
+		// true (TS #22300); strict: false is silently omitted.
 		strictSet := t.Strict != nil
-		if !o.supportsStrictTools && strictSet {
+		if !o.supportsStrictTools && strictSet && *t.Strict {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "strict",
@@ -182,11 +230,13 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 				m["defer_loading"] = *toolOpts.DeferLoading
 			}
 			allowedCallers = toolOpts.AllowedCallers
-			if len(allowedCallers) > 0 {
+			// TS sends allowed_callers and input_examples whenever they are
+			// given (!= null), an empty list included.
+			if allowedCallers != nil {
 				m["allowed_callers"] = allowedCallers
 			}
 		}
-		if len(t.InputExamples) > 0 {
+		if t.InputExamples != nil {
 			examples := make([]interface{}, len(t.InputExamples))
 			for j, ex := range t.InputExamples {
 				examples[j] = ex.Input
@@ -197,7 +247,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		if o.supportsStructuredOutput {
 			addBeta(BetaHeaderStructuredOutputs)
 		}
-		if len(t.InputExamples) > 0 || len(allowedCallers) > 0 {
+		if t.InputExamples != nil || allowedCallers != nil {
 			addBeta(BetaHeaderAdvancedToolUse)
 		}
 	}
@@ -226,7 +276,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "toolChoice",
-				Details: "toolChoice 'required' is not supported by this model because it rejects forced tool use. " +
+				Details: "toolChoice 'required' is not supported with this model or thinking configuration. " +
 					"Using 'auto' instead. Instruct the model to use a tool in the prompt and verify that a tool call was made.",
 			})
 			out.toolChoice = withDisable(map[string]interface{}{"type": "auto"})
@@ -234,31 +284,52 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.toolChoice = withDisable(map[string]interface{}{"type": "any"})
 		}
 	case types.ToolChoiceNone:
-		// Anthropic does not support 'none' tool choice, so the tools are removed.
-		out.tools = nil
-		out.toolChoice = nil
+		// Keep the tool definitions so server-tool history stays valid
+		// (TS #22440).
+		out.toolChoice = map[string]interface{}{"type": "none"}
 	case types.ToolChoiceTool:
+		choiceName := forcedToolWireName(o.tools, o.toolChoice.ToolName)
 		if o.rejectsForcedToolUse {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "toolChoice",
-				Details: fmt.Sprintf("toolChoice 'tool' is not supported by this model because it rejects forced tool use. "+
+				Details: fmt.Sprintf("toolChoice 'tool' is not supported with this model or thinking configuration. "+
 					"Only the '%s' tool is sent with 'auto' tool choice. "+
 					"Instruct the model to use the tool in the prompt and verify that a tool call was made.", o.toolChoice.ToolName),
 			})
 			var filtered []map[string]interface{}
 			for _, w := range out.tools {
-				if w["name"] == o.toolChoice.ToolName {
+				if w["name"] == choiceName {
 					filtered = append(filtered, w)
 				}
 			}
 			out.tools = filtered
 			out.toolChoice = withDisable(map[string]interface{}{"type": "auto"})
 		} else {
-			out.toolChoice = withDisable(map[string]interface{}{"type": "tool", "name": o.toolChoice.ToolName})
+			out.toolChoice = withDisable(map[string]interface{}{"type": "tool", "name": choiceName})
 		}
 	default:
-		out.toolChoice = withDisable(map[string]interface{}{"type": "auto"})
+		// TS exhaustive check: UnsupportedFunctionalityError
+		// "tool choice type: <type>".
+		out.err = prompt.ValidateToolChoiceType(o.tools, *o.toolChoice)
 	}
 	return out
+}
+
+// forcedToolWireName returns the tool_choice name for a forced tool choice.
+// TS sends toolChoice.toolName as given, which is the tools record key and,
+// for a provider tool, normally its wire name ("bash"). A Go provider tool
+// that keeps the constructor's id as its Name ("anthropic.bash_20250124") is
+// sent under its Anthropic wire name, so forcing it by that Name sends the
+// wire name; any other name is sent unchanged.
+func forcedToolWireName(tools []types.Tool, name string) string {
+	for _, t := range tools {
+		if t.Name != name || ProviderToolID(t) != name {
+			continue
+		}
+		if wire := prompt.AnthropicProviderToolName(name); wire != name {
+			return wire
+		}
+	}
+	return name
 }

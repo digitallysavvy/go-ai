@@ -1,5 +1,7 @@
 package bfl
 
+import "github.com/digitallysavvy/go-ai/pkg/providerutils"
+
 // VideoModelID identifies a Black Forest Labs video generation model.
 // https://docs.bfl.ai/api-reference/utility/generate-a-video-with-flux-3
 const VideoModelFlux3Video = "flux-3-video"
@@ -70,6 +72,10 @@ func parseVideoModelOptions(providerOptions map[string]interface{}) *VideoModelO
 	if !ok {
 		return nil
 	}
+	// TS parses the JSON value: Go-typed values ([]string keyframes,
+	// [][]interface{} timed keyframes) read like their JSON form (the
+	// validator accepted them, but they were dropped from the request).
+	raw = providerutils.NormalizeOptionsJSON(raw)
 
 	opts := &VideoModelOptions{}
 	if v, ok := raw["resolution"].(string); ok {

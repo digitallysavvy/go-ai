@@ -12,7 +12,9 @@
 package topaz
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -33,6 +35,12 @@ type Config struct {
 	// APIKey is the Topaz Labs API key.
 	// If empty, the TOPAZ_API_KEY environment variable is used.
 	APIKey string
+
+	// APIKeyFunc resolves the key per request instead of APIKey (TS
+	// `apiKey: Resolvable<string>`, 7716e189ee). The environment is not
+	// read when it is set; setting both is an InvalidArgumentError. The func
+	// gets the request's context.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the Topaz API (optional).
 	// Defaults to https://api.topazlabs.com
@@ -59,6 +67,8 @@ type Config struct {
 // If Config.APIKey is empty, the API key is loaded from the TOPAZ_API_KEY
 // environment variable.
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -66,7 +76,7 @@ func New(cfg Config) *Provider {
 	cfg.BaseURL = baseURL
 
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("TOPAZ_API_KEY")
 	}
 	cfg.APIKey = apiKey
@@ -79,6 +89,15 @@ func New(cfg Config) *Provider {
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: headers,
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "TOPAZ_API_KEY", Description: "Topaz Labs",
+				}, "X-API-Key", "")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "TOPAZ_API_KEY", "Topaz Labs", "X-API-Key", "")
+		},
 	})
 
 	return &Provider{
@@ -109,12 +128,12 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns an error: Topaz does not support language models.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("topaz does not support language models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "languageModel")
 }
 
 // EmbeddingModel returns an error: Topaz does not support embeddings.
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("topaz does not support embeddings")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image enhancement model by ID.
@@ -147,17 +166,17 @@ func (p *Provider) Video(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns an error: Topaz does not support speech synthesis.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("topaz does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns an error: Topaz does not support transcription.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("topaz does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns an error: Topaz does not support reranking.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("topaz does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests.

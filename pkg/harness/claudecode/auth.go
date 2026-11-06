@@ -6,10 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // CredentialEnvironmentVariables mirrors TS
@@ -49,7 +49,7 @@ func resolveAuthenticationMode(auth harness.Authentication, processEnv map[strin
 
 // resolveAuthenticationEnvironment mirrors TS `resolveClaudeCodeEnv`,
 // including the native-subscription fallback (`resolveClaudeCodeAuthentication`).
-func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) map[string]string {
+func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) (map[string]string, error) {
 	authEnv := processEnv
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
@@ -71,28 +71,34 @@ func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authenti
 	}
 	gw := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
 	if auth.Mode == harness.AuthModeAIGateway || gw.APIKey != "" {
-		return pickGateway(gw)
+		return pickGateway(gw), nil
 	}
 	return pickAnthropic(ctx, authEnv, readHelper, trySubscription, authModeString)
 }
 
-func pickAnthropic(ctx context.Context, env map[string]string, readHelper func() string, trySubscription bool, authModeString string) map[string]string {
+func pickAnthropic(ctx context.Context, env map[string]string, readHelper func() string, trySubscription bool, authModeString string) (map[string]string, error) {
 	if trySubscription {
 		hasDirect := env["ANTHROPIC_API_KEY"] != "" || env["ANTHROPIC_AUTH_TOKEN"] != "" || env["CLAUDE_CODE_OAUTH_TOKEN"] != ""
 		if harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
-			if subEnv, ok := readClaudeCodeSubscription(ctx); ok {
-				return subEnv
+			subEnv, ok, err := resolveClaudeCodeSubscription(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return subEnv, nil
 			}
 		}
 	}
 	out := map[string]string{}
 	helperKey := readHelper()
-	apiKey := env["ANTHROPIC_API_KEY"]
-	if apiKey == "" {
+	// TS uses `??`: a variable that is present but empty wins over the
+	// helper key (and then yields no credential at all).
+	apiKey, ok := env["ANTHROPIC_API_KEY"]
+	if !ok {
 		apiKey = helperKey
 	}
-	authToken := env["ANTHROPIC_AUTH_TOKEN"]
-	if authToken == "" {
+	authToken, ok := env["ANTHROPIC_AUTH_TOKEN"]
+	if !ok {
 		authToken = helperKey
 	}
 	if apiKey != "" {
@@ -107,7 +113,7 @@ func pickAnthropic(ctx context.Context, env map[string]string, readHelper func()
 	if v := env["ANTHROPIC_BASE_URL"]; v != "" {
 		out["ANTHROPIC_BASE_URL"] = v
 	}
-	return out
+	return out, nil
 }
 
 func pickGateway(gw harnessutil.AIGatewayAuth) map[string]string {
@@ -141,7 +147,7 @@ func readAPIKeyHelper() string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return providerutils.JSTrim(string(out))
 }
 
 func extractAPIKeyHelperCommand(raw []byte) string {
@@ -154,7 +160,8 @@ func extractAPIKeyHelperCommand(raw []byte) string {
 	return settings.APIKeyHelper
 }
 
-// requestTransformations mirrors TS `createClaudeCodeRequestTransformations`.
+// requestTransformations mirrors TS `createClaudeCodeRequestTransformations`
+// followed by `createClaudeCodeSubscriptionRequestTransformations`.
 // TS throws synchronously on an invalid matchUrl (`new URL(matchUrl)`),
 // failing the whole `doStart` call; the Go port propagates the same error
 // instead of silently dropping the transformation.
@@ -180,6 +187,19 @@ func requestTransformations(env, sandboxEnv map[string]string, authMode Resolved
 			MatchURL:         matchURL,
 			MatchHeaders:     map[string]string{"Authorization": "Bearer " + sandboxEnv["ANTHROPIC_AUTH_TOKEN"]},
 			TransformHeaders: map[string]string{"Authorization": "Bearer " + env["ANTHROPIC_AUTH_TOKEN"]},
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	// Mirrors TS `createClaudeCodeSubscriptionRequestTransformations`: the
+	// native-subscription OAuth token is brokered the same way.
+	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "" && sandboxEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
+		t, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
+			MatchURL:         matchURL,
+			MatchHeaders:     map[string]string{"Authorization": "Bearer " + sandboxEnv["CLAUDE_CODE_OAUTH_TOKEN"]},
+			TransformHeaders: map[string]string{"Authorization": "Bearer " + env["CLAUDE_CODE_OAUTH_TOKEN"]},
 		})
 		if err != nil {
 			return nil, err

@@ -8,6 +8,8 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -20,11 +22,10 @@ type InvalidToolInputError struct {
 }
 
 func (e *InvalidToolInputError) Error() string {
-	cause := "unknown error"
-	if e.Cause != nil {
-		cause = e.Cause.Error()
-	}
-	return fmt.Sprintf("Invalid input for tool %s: %s", e.ToolName, cause)
+	// TS: `Invalid input for tool ${toolName}: ${getErrorMessage(cause)}`,
+	// the cause's toString ("Error: <message>" for a plain error,
+	// "AI_TypeValidationError: ..." for a schema failure).
+	return fmt.Sprintf("Invalid input for tool %s: %s", e.ToolName, providerutils.ToolErrorText(e.Cause))
 }
 
 func (e *InvalidToolInputError) Unwrap() error { return e.Cause }
@@ -80,23 +81,25 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		toolsContext = map[string]interface{}{}
 	}
 
-	for _, approval := range opts.ApprovedToolApprovals {
+	for _, collected := range opts.ApprovedToolApprovals {
+		tool := findToolForCall(collected.ToolCall, opts.Tools)
+		approval := rebuildApprovalToolCall(collected, tool)
 		request := approval.ApprovalRequest
 		call := approval.ToolCall
-		tool := findToolForCall(call, opts.Tools)
 
 		if opts.ToolApprovalSecret != nil {
-			// TS only special-cases `approvalRequest.signature == null`
-			// (absent), which JS can distinguish from an explicit empty
-			// string. Go's Signature field is a plain string, so an absent
-			// signature and an empty one are the same zero value and cannot
-			// be told apart; treating "" as "missing" would also disagree
-			// with TS's reported reason for an explicit empty string, which
-			// falls through to verification and fails as "invalid
-			// signature". Always verifying (rather than special-casing "")
-			// matches that observable behavior for every input Go can
-			// represent, with no loss of safety: either way the call is
-			// rejected.
+			// TS reports "missing signature" for an absent (null/undefined)
+			// signature. Go's plain string field cannot tell absent from an
+			// explicit empty string, so "" is treated as absent: a stripped
+			// signature is the realistic case, and an explicit empty string
+			// is rejected either way (only the reason text differs).
+			if request.Signature == "" {
+				return ValidateApprovedToolApprovalsResult{}, &InvalidToolApprovalSignatureError{
+					ApprovalID: request.ApprovalID,
+					ToolCallID: call.ID,
+					Reason:     "missing signature",
+				}
+			}
 			valid, err := VerifyToolApprovalSignature(opts.ToolApprovalSecret, request.Signature, request.ApprovalID, call.ID, call.ToolName, approvalSignatureInput(call))
 			if err != nil || !valid {
 				return ValidateApprovedToolApprovalsResult{}, &InvalidToolApprovalSignatureError{
@@ -108,19 +111,22 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		}
 
 		if tool != nil && tool.Execute != nil {
-			if validator := toolInputValidator(tool); validator != nil {
-				if validationErr := revalidateApprovedInput(ctx, approval, tool, validator, opts); validationErr != nil {
-					inputJSON, _ := json.Marshal(call.Arguments)
-					result.InvalidToolApprovals = append(result.InvalidToolApprovals, InvalidToolApproval{
-						CollectedToolApproval: approval,
-						Error: &InvalidToolInputError{
-							ToolName:  call.ToolName,
-							ToolInput: string(inputJSON),
-							Cause:     validationErr,
-						},
-					})
-					continue
-				}
+			// TS revalidates every executable tool (inputSchema is required
+			// there): a tool without Parameters accepts any input, but the
+			// refiner and the approved-input comparison still run. A tool's
+			// own ValidateInput replaces the schema check (TS
+			// safeValidateTypes runs the jsonSchema validate function).
+			if validationErr := revalidateApprovedInput(ctx, approval, tool, toolInputValidator(tool), opts); validationErr != nil {
+				inputJSON, _ := jsonstr.Marshal(call.Arguments)
+				result.InvalidToolApprovals = append(result.InvalidToolApprovals, InvalidToolApproval{
+					CollectedToolApproval: approval,
+					Error: &InvalidToolInputError{
+						ToolName:  call.ToolName,
+						ToolInput: string(inputJSON),
+						Cause:     validationErr,
+					},
+				})
+				continue
 			}
 		}
 
@@ -133,6 +139,7 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 			denied.ApprovalResponse.Approved = false
 			if status.Reason != nil {
 				denied.ApprovalResponse.Reason = *status.Reason
+				denied.ApprovalResponse.ReasonSet = *status.Reason == ""
 			}
 			result.DeniedToolApprovals = append(result.DeniedToolApprovals, denied)
 			continue
@@ -142,6 +149,29 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 	return result, nil
 }
 
+// rebuildApprovalToolCall replaces the history-supplied ToolMetadata,
+// Dynamic and Title of an approved call with the values of the current
+// server-side tool, as parsing a new model tool call sets them. History can
+// omit or alter these fields, and approval policies, input refinement and
+// execution see them, so they never come from the client. Mirrors TS
+// validateApprovedToolApprovals (validate-tool-approvals.ts 67-84): a tool
+// that no longer exists clears all three.
+func rebuildApprovalToolCall(approval CollectedToolApproval, tool *types.Tool) CollectedToolApproval {
+	call := approval.ToolCall
+	call.ToolMetadata = nil
+	call.Dynamic = false
+	call.Title = ""
+	if tool != nil {
+		if tool.Metadata != nil {
+			call.ToolMetadata = cloneStringAnyMap(tool.Metadata)
+		}
+		call.Dynamic = tool.Type == types.ToolTypeDynamic
+		call.Title = tool.Title
+	}
+	approval.ToolCall = call
+	return approval
+}
+
 // approvalSignatureInput is the input value that was signed when the approval
 // request was issued (the tool call arguments).
 func approvalSignatureInput(call types.ToolCall) interface{} {
@@ -149,22 +179,12 @@ func approvalSignatureInput(call types.ToolCall) interface{} {
 }
 
 // toolInputValidator returns the validator for a tool's input schema, or nil
-// when the tool has no validatable schema.
+// when the tool has no input schema. It is the validator the call was parsed
+// with (toolCallInputValidator), so an approved input or a UI message part is
+// revalidated the way the call was validated, as TS revalidates with the
+// tool's inputSchema.
 func toolInputValidator(tool *types.Tool) schema.Validator {
-	switch s := tool.Parameters.(type) {
-	case schema.Schema:
-		if s == nil {
-			return nil
-		}
-		return s.Validator()
-	case map[string]interface{}:
-		if s == nil {
-			return nil
-		}
-		return schema.NewSimpleJSONSchema(s).Validator()
-	default:
-		return nil
-	}
+	return toolCallInputValidator(tool)
 }
 
 func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval, tool *types.Tool, validator schema.Validator, opts ValidateApprovedToolApprovalsOptions) error {
@@ -174,7 +194,9 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 		approvedInput = map[string]interface{}{}
 	}
 	var value interface{} = approvedInput
-	if approval.ApprovalRequest.InputSchemaInput != nil {
+	// TS hasOwnProperty(approvalRequest, 'inputSchemaInput'): a null schema
+	// input is validated as null.
+	if approval.ApprovalRequest.InputSchemaInput != nil || approval.ApprovalRequest.InputSchemaInputSet {
 		value = approval.ApprovalRequest.InputSchemaInput
 	}
 	// TS's safeValidateTypes performs a zod/standard-schema parse, which
@@ -183,9 +205,24 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 	// and the approved-input equality check below. Apply defaults before
 	// validating (not after), and use the defaulted value throughout, to
 	// match (see validate-tool-approvals.ts's use of `validation.value`).
-	value = applyDefaultsForValidator(value, validator)
-	if err := validator.Validate(value); err != nil {
-		return err
+	if tool.ValidateInput != nil {
+		// TS jsonSchema(schema, {validate}): the tool's validator decides, its
+		// value feeds the refiner and the equality check, and a failure is a
+		// TypeValidationError (as when the call was parsed).
+		validated, err := tool.ValidateInput(value)
+		if err != nil {
+			return approvalInputTypeValidationError(call, value, err)
+		}
+		value = validated
+	} else if validator != nil {
+		// TS safeValidateTypes: a TypeValidationError of the value before
+		// defaults.
+		original := value
+		// Audited provider tools strip undeclared keys (TS zod z.object).
+		value = applyDefaultsForValidator(stripUndeclaredProviderToolInput(tool, value), validator)
+		if err := validator.Validate(value); err != nil {
+			return approvalInputTypeValidationError(call, original, err)
+		}
 	}
 
 	revalidated := value
@@ -217,6 +254,23 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 	return nil
 }
 
+// approvalInputTypeValidationError is the TypeValidationError (TS
+// safeValidateTypes) of an approved input value that fails revalidation.
+func approvalInputTypeValidationError(call types.ToolCall, value interface{}, err error) error {
+	args, _ := value.(map[string]interface{})
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	typeCall := call
+	typeCall.RawArguments = ""
+	if _, ok := value.(map[string]interface{}); !ok {
+		if raw, mErr := jsonstr.Marshal(value); mErr == nil {
+			typeCall.RawArguments = string(raw)
+		}
+	}
+	return newToolInputTypeValidationError(typeCall, args, err)
+}
+
 func toArgumentsMap(value interface{}) (map[string]interface{}, error) {
 	if m, ok := value.(map[string]interface{}); ok {
 		return m, nil
@@ -243,3 +297,6 @@ func isDeepEqualJSONData(a, b interface{}) bool {
 	}
 	return bytes.Equal(ca, cb)
 }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *InvalidToolInputError) ErrorName() string { return "AI_InvalidToolInputError" }

@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -56,22 +55,23 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	headers = internalhttp.MergeHeaders(headers, opts.Headers)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewaySpeechResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/speech-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewaySpeech),
+		Method:           http.MethodPost,
+		Path:             "/speech-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, (&LanguageModel{provider: m.provider, modelID: m.modelID}).handleErrorWithContext(ctx, err)
 	}
 
-	audio, err := base64.StdEncoding.DecodeString(response.Audio)
+	// TS hands the base64 string to atob-based decoding, which accepts
+	// unpadded and base64url input.
+	audio, err := types.DecodeFileDataString(response.Audio)
 	if err != nil {
 		return nil, err
 	}

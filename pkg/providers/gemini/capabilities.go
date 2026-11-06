@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ModelCapabilities classifies a Gemini model ID. Mirrors the TS SDK
@@ -15,14 +17,18 @@ type ModelCapabilities struct {
 }
 
 var (
-	gemini1ModelPattern       = regexp.MustCompile(`(?i)(^|/)gemini-1(?:[.-]|$)`)
-	gemini2ModelPattern       = regexp.MustCompile(`(?i)(^|/)gemini-2(?:[.-]|$)`)
-	gemini25ModelPattern      = regexp.MustCompile(`(?i)(^|/)gemini-2\.5(?:[.-]|$)`)
-	geminiModelPattern        = regexp.MustCompile(`(?i)(^|/)gemini-`)
-	geminiProLegacyPattern    = regexp.MustCompile(`(?i)(^|/)gemini-pro(?:-vision)?$`)
-	geminiRoboticsER15Pattern = regexp.MustCompile(`(?i)(^|/)gemini-robotics-er-1\.5(?:[.-]|$)`)
+	gemini1ModelPattern       = regexp.MustCompile(`(?i)(^|[/.])gemini-1(?:[.-]|$)`)
+	gemini2ModelPattern       = regexp.MustCompile(`(?i)(^|[/.])gemini-2(?:[.-]|$)`)
+	gemini25ModelPattern      = regexp.MustCompile(`(?i)(^|[/.])gemini-2\.5(?:[.-]|$)`)
+	geminiModelPattern        = regexp.MustCompile(`(?i)(^|[/.])gemini-`)
+	geminiProLegacyPattern    = regexp.MustCompile(`(?i)(^|[/.])gemini-pro(?:-vision)?$`)
+	geminiRoboticsER15Pattern = regexp.MustCompile(`(?i)(^|[/.])gemini-robotics-er-1\.5(?:[.-]|$)`)
 	// Go regexp has no negative lookahead; the "-lite" exclusion is handled in code.
 	flashVersionPattern = regexp.MustCompile(`^gemini-(\d+)\.(\d+)-flash($|-.*)`)
+	// geminiModelNamePattern extracts the bare model name after an optional
+	// "/" or "." prefix (publisher path or regional prefix such as "eu.").
+	geminiModelNamePattern = regexp.MustCompile(`(?i)(?:^|[/.])(gemini-[^/]*)$`)
+	proVersionPattern      = regexp.MustCompile(`^gemini-(\d+)(?:\.\d+)?-pro(?:$|-)`)
 )
 
 func isKnownPreGemini2Model(modelID string) bool {
@@ -43,7 +49,7 @@ func GetModelCapabilities(modelID string) ModelCapabilities {
 
 	return ModelCapabilities{
 		SupportsGemini2Tools: (isGemini && !isKnownPreGemini2) ||
-			strings.Contains(strings.ToLower(modelID), "nano-banana"),
+			strings.Contains(providerutils.JSToLower(modelID), "nano-banana"),
 		SupportsFileSearch:  gemini25ModelPattern.MatchString(modelID) || usesGemini3Features,
 		UsesGemini3Features: usesGemini3Features,
 	}
@@ -56,14 +62,23 @@ func isGemini25Model(modelID string) bool {
 }
 
 // minimumThinkingLevelForGemini3Model returns the lowest thinkingLevel a
-// Gemini 3+ model accepts. Flash models from 3.7 on (and gemini-flash-latest)
-// no longer accept "minimal". Mirrors TS getMinimumThinkingLevelForGemini3Model.
+// Gemini 3+ model accepts. Pro models from 3 on, Flash models from 3.7 on (and
+// gemini-flash-latest) no longer accept "minimal". Mirrors TS getMinimumThinkingLevelForGemini3Model.
 func minimumThinkingLevelForGemini3Model(modelID string) string {
-	segments := strings.Split(modelID, "/")
-	modelName := strings.ToLower(segments[len(segments)-1])
+	modelName := ""
+	if m := geminiModelNamePattern.FindStringSubmatch(modelID); m != nil {
+		modelName = providerutils.JSToLower(m[1])
+	}
 
 	if modelName == "gemini-flash-latest" {
 		return "low"
+	}
+
+	// Gemini 3+ Pro models no longer accept "minimal" (TS #22394).
+	if m := proVersionPattern.FindStringSubmatch(modelName); m != nil {
+		if major, _ := strconv.Atoi(m[1]); major >= 3 {
+			return "low"
+		}
 	}
 
 	match := flashVersionPattern.FindStringSubmatch(modelName)

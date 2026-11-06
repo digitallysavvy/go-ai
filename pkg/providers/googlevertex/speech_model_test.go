@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,7 +57,7 @@ func TestVertexSpeechModelUsesVertexAuthAndOptions(t *testing.T) {
 	if capturedAuth != "Bearer vertex-token" {
 		t.Fatalf("Authorization = %q", capturedAuth)
 	}
-	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-google-vertex/0.5.3 ") {
+	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-google-vertex/"+sdkversion.Version+" ") {
 		t.Fatalf("User-Agent = %q", capturedUserAgent)
 	}
 	gen := capturedBody["generationConfig"].(map[string]interface{})

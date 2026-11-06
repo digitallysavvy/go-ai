@@ -12,7 +12,7 @@ import (
 func TestImageModelBuildRequestBodyAndConvertResponse(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewImageModel(p, "img-model")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "together" || m.ModelID() != "img-model" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "togetherai.image" || m.ModelID() != "img-model" {
 		t.Fatalf("unexpected model metadata")
 	}
 
@@ -65,9 +65,10 @@ func TestImageModelBuildRequestBodyAndConvertResponse(t *testing.T) {
 		t.Fatalf("expected provider options merged, got %+v", body)
 	}
 
-	_, err := m.convertResponse([]byte(`{"data":[]}`))
-	if err == nil {
-		t.Fatal("expected error when no images returned")
+	// TS returns an empty `images` array (core throws NoImageGeneratedError).
+	empty, err := m.convertResponse([]byte(`{"data":[]}`))
+	if err != nil || len(empty.Images) != 0 || empty.URL != "" {
+		t.Fatalf("empty data: res=%+v err=%v", empty, err)
 	}
 
 	res, err := m.convertResponse([]byte(`{"data":[{"url":"https://example.com/a.png"}]}`))
@@ -79,10 +80,10 @@ func TestImageModelBuildRequestBodyAndConvertResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("multi-image response conversion failed: %v", err)
 	}
-	if string(res.Image) != "Zmlyc3Q=" || res.Base64Image != "Zmlyc3Q=" {
+	if string(res.Image) != "first" || res.Base64Image != "Zmlyc3Q=" {
 		t.Fatalf("first image fields = image %q base64 %q", string(res.Image), res.Base64Image)
 	}
-	if len(res.Images) != 2 || string(res.Images[1]) != "c2Vjb25k" {
+	if len(res.Images) != 2 || string(res.Images[1]) != "second" {
 		t.Fatalf("images = %+v, want both returned images", res.Images)
 	}
 	if len(res.Base64Images) != 2 || res.Base64Images[1] != "c2Vjb25k" {
@@ -123,7 +124,7 @@ func TestImageModelDoGenerate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate success path error = %v", err)
 	}
-	if string(okRes.Image) != "Zm9v" || okRes.MimeType != "image/png" {
+	if string(okRes.Image) != "foo" || okRes.MimeType != "image/png" {
 		t.Fatalf("unexpected success response: %+v", okRes)
 	}
 	if okRes.Base64Image != "Zm9v" || len(okRes.Images) != 1 || len(okRes.Base64Images) != 1 {
@@ -145,5 +146,14 @@ func TestImageModelDoGenerate(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected mask unsupported error")
+	}
+}
+
+func TestImageModelMaskErrorTextMatchesTS(t *testing.T) {
+	m := NewImageModel(New(Config{APIKey: "k"}), "black-forest-labs/FLUX.1-kontext-pro")
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p", Mask: &provider.ImageFile{Type: "file", Data: []byte{1}}})
+	want := "Together AI does not support mask-based image editing. Use FLUX Kontext models (e.g., black-forest-labs/FLUX.1-kontext-pro) with a reference image and descriptive prompt instead."
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }

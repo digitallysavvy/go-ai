@@ -2,10 +2,13 @@ package codemode
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"reflect"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -27,11 +30,91 @@ import (
 // absent from the ledger executes for real (or applies resume semantics;
 // see resumePendings/resumeResolutions in toolBridge) regardless of
 // whether it is less than the highest recorded index.
+//
+// SettledOrder is the call's place in settlement order (TS run's
+// settledOrder): a resumed run delivers replayed outcomes in that order, so
+// a script whose later calls depend on which call settled first replays the
+// same way. Status is "rejected" for a call that failed (TS run records
+// rejected calls too and replays the rejection instead of running the tool
+// again), with the rejection's message in ErrorMessage. DateNowMs is the
+// host time (Unix ms) the call settled at; delivering the outcome resets the
+// guest clock to it (TS run's dateNowMs). Records written before these
+// fields existed have none of them and replay as fulfilled, in the order
+// they are started, without touching the guest clock.
 type replayRecord struct {
-	ToolName   string `json:"toolName"`
-	InputJSON  string `json:"inputJson"`
-	OutputJSON string `json:"outputJson"`
+	ToolName     string `json:"toolName"`
+	InputJSON    string `json:"inputJson"`
+	OutputJSON   string `json:"outputJson"`
+	Status       string `json:"status,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+	SettledOrder int    `json:"settledOrder,omitempty"`
+	DateNowMs    int64  `json:"dateNowMs,omitempty"`
 }
+
+// runDeterminism is TS run's determinism state: the guest clock's start time
+// (Unix ms) and the Math.random seed (32 hex digits). A run records it in
+// its continuation and every resumed run reuses it.
+type runDeterminism struct {
+	DateNowMs  int64  `json:"dateNowMs"`
+	RandomSeed string `json:"randomSeed"`
+}
+
+var randomSeedPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// newRunDeterminism is a fresh run's determinism (TS run: Date.now() and 16
+// random bytes as hex).
+func newRunDeterminism() runDeterminism {
+	seed := make([]byte, 16)
+	_, _ = rand.Read(seed)
+	return runDeterminism{DateNowMs: time.Now().UnixMilli(), RandomSeed: hex.EncodeToString(seed)}
+}
+
+// replayToken is Continuation.Token: the replay ledger and the run's
+// determinism. Tokens written before the determinism was recorded are the
+// bare ledger map, which decodeReplayToken still reads.
+type replayToken struct {
+	Ledger      map[string]replayRecord `json:"ledger"`
+	Determinism *runDeterminism         `json:"determinism"`
+}
+
+func encodeReplayToken(records map[int]replayRecord, determinism runDeterminism) (string, error) {
+	wire := make(map[string]replayRecord, len(records))
+	for idx, rec := range records {
+		wire[strconv.Itoa(idx)] = rec
+	}
+	data, err := json.Marshal(replayToken{Ledger: wire, Determinism: &determinism})
+	if err != nil {
+		return "", NewProtocolError("Failed to encode the code mode replay ledger.", nil)
+	}
+	return string(data), nil
+}
+
+// decodeReplayToken reads Continuation.Token. determinism is nil for a token
+// that did not record it.
+func decodeReplayToken(token string) (map[int]replayRecord, *runDeterminism, error) {
+	undecodable := NewProtocolError("Code mode continuation token could not be decoded by this implementation.", nil)
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(token), &probe); err != nil {
+		return nil, nil, undecodable
+	}
+	if _, ok := probe["ledger"]; !ok {
+		records, err := decodeReplayLedger(token)
+		return records, nil, err
+	}
+	var wire replayToken
+	if err := json.Unmarshal([]byte(token), &wire); err != nil || wire.Determinism == nil ||
+		wire.Determinism.DateNowMs < 0 || !randomSeedPattern.MatchString(wire.Determinism.RandomSeed) {
+		return nil, nil, undecodable
+	}
+	records, err := ledgerFromWire(wire.Ledger)
+	if err != nil {
+		return nil, nil, err
+	}
+	return records, wire.Determinism, nil
+}
+
+// replayStatusRejected marks a replayRecord for a call that failed.
+const replayStatusRejected = "rejected"
 
 func encodeReplayLedger(records map[int]replayRecord) (string, error) {
 	wire := make(map[string]replayRecord, len(records))
@@ -45,11 +128,17 @@ func encodeReplayLedger(records map[int]replayRecord) (string, error) {
 	return string(data), nil
 }
 
+// encodeReplayLedger and decodeReplayLedger read and write the bare ledger
+// map tokens were before the determinism was recorded.
 func decodeReplayLedger(token string) (map[int]replayRecord, error) {
 	var wire map[string]replayRecord
 	if err := json.Unmarshal([]byte(token), &wire); err != nil {
 		return nil, NewProtocolError("Code mode continuation token could not be decoded by this implementation.", nil)
 	}
+	return ledgerFromWire(wire)
+}
+
+func ledgerFromWire(wire map[string]replayRecord) (map[int]replayRecord, error) {
 	records := make(map[int]replayRecord, len(wire))
 	for key, rec := range wire {
 		idx, err := strconv.Atoi(key)
@@ -117,7 +206,7 @@ func asInterrupt(value interface{}, security ContinuationSecurityOptions) (*Inte
 	}
 	if interrupt.Type != InterruptTypeValue || interrupt.InterruptID == "" ||
 		interrupt.ToolCallID == "" || interrupt.ToolName == "" ||
-		interrupt.OuterToolCallID == "" || interrupt.Payload.Kind() == "" {
+		interrupt.Payload.Kind() == "" {
 		return nil, false
 	}
 	if verifyContinuation(interrupt.Continuation, security) != nil {

@@ -108,6 +108,8 @@ ToolApproval: types.GenericToolApprovalFunc(func(opts types.ToolApprovalOptions)
 }),
 ```
 
+The reason of a denial is included in the execution-denied result the model receives. An approval reason is kept in the message history only: it is not added to the model prompt, and tools do not receive it as an execution option. For provider-executed tools the approval response, including the reason, is forwarded to the provider.
+
 A denied status needs no user. The tool does not run, and the model receives an execution-denied result with your reason. In a per-tool map you can also use `types.SingleToolApprovalFunc`, which receives that tool's parsed arguments.
 
 To change the policy between steps, set `config.ToolApproval` in the agent's `PrepareCall` function. `ai.GenerateTextOptions` and `ai.StreamTextOptions` have the same `ToolApproval` field.
@@ -132,6 +134,8 @@ Handle the secret like any signing key:
 - Use the same secret on every instance. A request approved on one replica must verify on another.
 - A secret that changes, such as a new random value at every start, invalidates approvals that are still waiting. The demo generates a random secret per process unless `TOOL_APPROVAL_SECRET` is set, which is fine locally.
 - Without a secret, nothing is signed or verified. Set one for any endpoint that is reachable by users.
+
+During re-validation, the call's `ToolMetadata`, `Dynamic` and `Title` come from the current server-side tool definition (`types.Tool.Metadata`, `Type == types.ToolTypeDynamic`, `Title`), never from the message history. A server-side policy denial prevents execution even when the client supplies an approved response with a valid signature.
 
 The same field exists on `ai.GenerateTextOptions`, `ai.StreamTextOptions` and `PrepareCallConfig`. A signature failure returns an `*ai.InvalidToolApprovalSignatureError`; `ai.IsInvalidToolApprovalSignatureError` tests for it. Over HTTP it reaches the client as an `error` chunk, after the `200` status has gone out, so use `OnError` if you want to log or shape the message.
 
@@ -229,7 +233,7 @@ The first response ends at the approval request. The model's finish reason stays
 data: {"type":"start"}
 data: {"type":"start-step"}
 data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"deploy","input":{"env":"prod"}}
-data: {"type":"tool-approval-request","toolCallId":"call-1","approvalId":"982897cfe028b8ec","signature":"-oKB..."}
+data: {"type":"tool-approval-request","approvalId":"982897cfe028b8ec","toolCallId":"call-1","signature":"-oKB..."}
 data: {"type":"finish-step"}
 data: {"type":"finish","finishReason":"tool-calls"}
 data: [DONE]

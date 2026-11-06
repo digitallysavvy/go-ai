@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -610,13 +611,13 @@ func TestBuildRequestBody_ServiceTier(t *testing.T) {
 		Prompt: types.Prompt{Text: "Hello"},
 		ProviderOptions: map[string]interface{}{
 			"google": map[string]interface{}{
-				"serviceTier": "SERVICE_TIER_FLEX",
+				"serviceTier": "flex",
 			},
 		},
 	}
 	body := m.buildRequestBody(opts, false)
-	if body["serviceTier"] != "SERVICE_TIER_FLEX" {
-		t.Errorf("serviceTier = %v, want %q", body["serviceTier"], "SERVICE_TIER_FLEX")
+	if body["serviceTier"] != "flex" {
+		t.Errorf("serviceTier = %v, want %q", body["serviceTier"], "flex")
 	}
 }
 
@@ -639,7 +640,7 @@ func TestBuildRequest_VertexPayGoHeaders(t *testing.T) {
 			"vertex": map[string]interface{}{
 				"sharedRequestType": "priority",
 				"requestType":       "shared",
-				"serviceTier":       "SERVICE_TIER_FLEX",
+				"serviceTier":       "flex",
 			},
 		},
 	}
@@ -709,6 +710,24 @@ func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
 		t.Fatal("serviceTier should always be present in metadata (as null when absent from response)")
 	}
 	if string(raw) != "null" {
+		t.Errorf("serviceTier = %s, want null", raw)
+	}
+}
+
+// TS reads serviceTier from usageMetadata only: a top-level serviceTier in
+// the body leaves it null.
+func TestConvertResponse_TopLevelServiceTierIgnored(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"serviceTier":"SERVICE_TIER_PRIORITY","usageMetadata":{"promptTokenCount":1},"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponse(resp, nil)
+	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
+	if !ok {
+		t.Fatal("expected google providerMetadata")
+	}
+	if raw := googleMeta["serviceTier"]; string(raw) != "null" {
 		t.Errorf("serviceTier = %s, want null", raw)
 	}
 }
@@ -867,8 +886,188 @@ func TestConvertResponse_ServerToolCallAndResult(t *testing.T) {
 	}
 }
 
-// Parallel id-less calls to one function must not share an id (TS:
-// functionCall.id || generateId()).
+// TS puts a part's thoughtSignature in providerMetadata.google.thoughtSignature
+// for reasoning parts as well as text; an empty text part carrying a signature
+// attaches it to the previous content part.
+func TestConvertResponse_ThoughtSignatureInReasoningProviderMetadata(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{
+				{Text: "thinking...", Thought: true, ThoughtSignature: "sealed-token"},
+				{Text: "answer"},
+				{Text: "", ThoughtSignature: "trailing-sig"},
+			}},
+			FinishReason: "STOP",
+		}},
+	}
+	result := m.convertResponse(resp, nil)
+	rc, ok := result.Content[0].(types.ReasoningContent)
+	if !ok || rc.Signature != "sealed-token" {
+		t.Fatalf("content[0] = %#v", result.Content[0])
+	}
+	var meta map[string]map[string]string
+	if err := json.Unmarshal(rc.ProviderMetadata, &meta); err != nil || meta["google"]["thoughtSignature"] != "sealed-token" {
+		t.Fatalf("reasoning providerMetadata = %s (%v)", rc.ProviderMetadata, err)
+	}
+	tc, ok := result.Content[1].(types.TextContent)
+	if !ok {
+		t.Fatalf("content[1] = %#v", result.Content[1])
+	}
+	meta = nil
+	if err := json.Unmarshal(tc.ProviderMetadata, &meta); err != nil || meta["google"]["thoughtSignature"] != "trailing-sig" {
+		t.Fatalf("text providerMetadata = %s (%v)", tc.ProviderMetadata, err)
+	}
+}
+
+// TS sets the signature of an empty text part on whatever content is last
+// (tool calls and files included), not only on text and reasoning.
+func TestConvertResponse_EmptySignedTextAttachesToAnyLastContent(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[
+		{"functionCall":{"name":"lookup","id":"c1","args":{"q":"x"}}},
+		{"text":"","thoughtSignature":"sig-after-call"},
+		{"inlineData":{"mimeType":"image/png","data":"aGk="}},
+		{"text":"","thoughtSignature":"sig-after-file"}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponse(resp, nil)
+	sig := func(raw json.RawMessage) string {
+		var meta map[string]map[string]string
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			return ""
+		}
+		return meta["google"]["thoughtSignature"]
+	}
+	call, ok := result.Content[0].(types.ToolCallContent)
+	if !ok || sig(call.ProviderMetadata) != "sig-after-call" || call.ThoughtSignature != "sig-after-call" {
+		t.Fatalf("tool call content = %#v", result.Content[0])
+	}
+	if result.ToolCalls[0].ThoughtSignature != "sig-after-call" {
+		t.Fatalf("ToolCalls[0] = %#v", result.ToolCalls[0])
+	}
+	file, ok := result.Content[1].(types.GeneratedFileContent)
+	if !ok || sig(file.ProviderMetadata) != "sig-after-file" {
+		t.Fatalf("file content = %#v", result.Content[1])
+	}
+}
+
+func TestJSONResponseToolTextIsNotHTMLEscaped(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"functionCall":{"name":"json","args":{"html":"<b>&</b>"}}}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "json", nil)
+	if result.Text != `{"html":"<b>&</b>"}` {
+		t.Fatalf("text = %q", result.Text)
+	}
+}
+
+// TS counts only client-executed tool calls for the finish reason: a
+// provider-executed code execution call finishes with "stop".
+func TestProviderExecutedToolCallDoesNotMakeToolCallsFinish(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"executableCode":{"language":"PYTHON","code":"print(1)"}},{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "", nil)
+	if len(result.ToolCalls) == 0 || !result.ToolCalls[0].ProviderExecuted {
+		t.Fatalf("expected a provider-executed tool call, got %#v", result.ToolCalls)
+	}
+	if result.FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish reason = %q, want stop", result.FinishReason)
+	}
+}
+
+// TS puts an inlineData part's own thoughtSignature in providerMetadata.google
+// for both file and reasoning-file parts.
+func TestConvertResponse_InlineDataCarriesItsThoughtSignature(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[
+		{"inlineData":{"mimeType":"image/png","data":"aGk="},"thought":true,"thoughtSignature":"img_sig1"},
+		{"inlineData":{"mimeType":"image/jpeg","data":"aGk="},"thoughtSignature":"img_sig2"}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "", nil)
+	rf, ok := result.Content[0].(types.ReasoningFileContent)
+	if !ok || !strings.Contains(string(rf.ProviderMetadata), `"thoughtSignature":"img_sig1"`) {
+		t.Fatalf("reasoning file = %#v", result.Content[0])
+	}
+	f, ok := result.Content[1].(types.GeneratedFileContent)
+	if !ok || !strings.Contains(string(f.ProviderMetadata), `"thoughtSignature":"img_sig2"`) {
+		t.Fatalf("file = %#v", result.Content[1])
+	}
+}
+
+// TS stringifies function-call args and executableCode in wire/schema order.
+func TestConvertResponse_ToolInputKeepsKeyOrder(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[
+		{"functionCall":{"name":"lookup","id":"c1","args":{"zeta":1,"alpha":{"y":2,"x":3}}}},
+		{"executableCode":{"code":"print(1)","language":"PYTHON"}}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "", nil)
+	if got := result.ToolCalls[0].RawArguments; got != `{"zeta":1,"alpha":{"y":2,"x":3}}` {
+		t.Fatalf("function call input = %s", got)
+	}
+	if got := result.ToolCalls[1].RawArguments; got != `{"language":"PYTHON","code":"print(1)"}` {
+		t.Fatalf("code execution input = %s", got)
+	}
+	if c, ok := result.Content[0].(types.ToolCallContent); !ok || c.Input != result.ToolCalls[0].RawArguments {
+		t.Fatalf("content input = %#v", result.Content[0])
+	}
+}
+
+// TS stringifies part.toolCall.args as received, so the server tool call
+// input keeps the wire key order.
+func TestConvertResponse_ServerToolCallArgsKeepKeyOrder(t *testing.T) {
+	var resp Response
+	body := `{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"toolCall":{"toolType":"GOOGLE_SEARCH_WEB","id":"c1","args":{"zeta":1,"alpha":{"yy":1,"aa":2}}}}]}}]}`
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := makeTestModel("gemini-3-pro-preview").convertResponse(resp, nil)
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].RawArguments != `{"zeta":1,"alpha":{"yy":1,"aa":2}}` {
+		t.Fatalf("tool calls = %#v", result.ToolCalls)
+	}
+}
+
+// Ported from TS #14227: AUDIO is a valid responseModalities value, forwarded
+// to generationConfig, and audio inlineData parts surface as file content.
+func TestAudioResponseModalities(t *testing.T) {
+	m := makeTestModel("lyria-3-clip-preview")
+	opts := &provider.GenerateOptions{ProviderOptions: map[string]interface{}{
+		"google": map[string]interface{}{"responseModalities": []interface{}{"TEXT", "AUDIO"}},
+	}}
+	body := m.buildRequestBody(opts, false)
+	gen, _ := body["generationConfig"].(map[string]interface{})
+	if got := fmt.Sprint(gen["responseModalities"]); got != "[TEXT AUDIO]" {
+		t.Fatalf("responseModalities = %v", got)
+	}
+
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[
+		{"text":"Here is audio:"},{"inlineData":{"mimeType":"audio/wav","data":"YXVkaW8="}}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "", nil)
+	f, ok := result.Content[1].(types.GeneratedFileContent)
+	if !ok || f.MediaType != "audio/wav" || string(f.Data) != "audio" {
+		t.Fatalf("file = %#v", result.Content[1])
+	}
+}
+
+// A functionCall without an id gets a generated id, not the tool name, so
+// parallel calls to one tool do not collide (v0.5.3 regression test).
 func TestConvertResponse_IdlessFunctionCallsGetUniqueIDs(t *testing.T) {
 	m := makeTestModel("gemini-2.5-pro")
 	resp := Response{

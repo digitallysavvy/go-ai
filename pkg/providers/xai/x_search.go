@@ -32,11 +32,32 @@ type XSearchConfig struct {
 //	    AllowedXHandles: []string{"elonmusk"},
 //	})
 func XSearch(config XSearchConfig) types.Tool {
-	return types.Tool{
+	args := map[string]interface{}{}
+	if config.AllowedXHandles != nil {
+		args["allowedXHandles"] = config.AllowedXHandles
+	}
+	if config.ExcludedXHandles != nil {
+		args["excludedXHandles"] = config.ExcludedXHandles
+	}
+	if config.FromDate != nil {
+		args["fromDate"] = *config.FromDate
+	}
+	if config.ToDate != nil {
+		args["toDate"] = *config.ToDate
+	}
+	if config.EnableImageUnderstanding != nil {
+		args["enableImageUnderstanding"] = *config.EnableImageUnderstanding
+	}
+	if config.EnableVideoUnderstanding != nil {
+		args["enableVideoUnderstanding"] = *config.EnableVideoUnderstanding
+	}
+	return xaiProviderTool(types.Tool{
 		Name:             "xai.x_search",
 		Description:      "Search X (Twitter) posts for current information.",
+		Parameters:       xaiSchema(xaiEmptyInputSchemaJSON),
+		OutputSchema:     xaiSchema(xaiXSearchOutputSchemaJSON),
 		ProviderExecuted: true,
 		ProviderOptions:  config,
 		Execute:          providerExecutedNoop("xai.x_search"),
-	}
+	}, args)
 }

@@ -1,11 +1,11 @@
 ---
 title: Providers
-description: "Complete guide to the 49 AI providers supported by the Go AI SDK, covering provider categories, comparison, selection guidance, and configuration patterns."
+description: "Complete guide to the 50 AI providers supported by the Go AI SDK, covering provider categories, comparison, selection guidance, and configuration patterns."
 ---
 
 # Providers
 
-The Go AI SDK supports 49 AI providers (`pkg/providers/*`), giving you access to the latest language models, embedding models, image generation, video generation, speech synthesis, and transcription services. Five providers — **LMNT**, **Ollama**, **Stability AI**, **Vercel**, and **You.com** — are Go-only additions with no upstream TypeScript AI SDK equivalent.
+The Go AI SDK supports 50 AI providers (`pkg/providers/*`), giving you access to the latest language models, embedding models, image generation, video generation, speech synthesis, and transcription services. Five providers — **LMNT**, **Ollama**, **Stability AI**, **Vercel**, and **You.com** — are Go-only additions with no upstream TypeScript AI SDK equivalent.
 
 ## Provider Categories
 
@@ -62,6 +62,7 @@ Providers for specific use cases:
 - [Prodia](44-prodia.mdx) - Fast FLUX and Stable Diffusion image generation
 - [ByteDance](https://github.com/digitallysavvy/go-ai/tree/main/pkg/providers/bytedance) - Seedance/Seedream video and image (Volcengine Ark)
 - [Luma](22-luma.mdx) - Async image generation
+- [HeyGen](50-heygen.mdx) - Text, image, and reference-to-video generation with audio
 - Replicate video, xAI video - see their provider pages
 
 ### Speech, Transcription & Audio
@@ -86,7 +87,7 @@ Providers for specific use cases:
 - [Vercel](40-vercel.mdx) - OpenAI-compatible Vercel AI API (**Go-only**)
 - [OpenResponses](48-openresponses.mdx) - Open Responses API protocol (custom tools, QuiverAI's transport)
 - [OpenAI-compatible providers](47-openai-compatible.mdx) - shared request/response conventions
-- [TypeSafe AI](46-typesafeai.mdx) - Evaluation models for `ai.ExperimentalEvaluate`
+- [TypeSafe AI](46-typesafeai.mdx) - Decision models for `ai.ExperimentalDecide`
 - [You.com](youcom-tools.mdx) - Search, research, and contents tools (not a model provider) (**Go-only**)
 
 ## Quick Start
@@ -144,6 +145,7 @@ fmt.Println(result.Text)
 | Black Forest Labs | FLUX.1 Pro | Medium | Excellent | Photorealistic |
 | FAL | FLUX, SD | Very Fast | High | Video support |
 | Prodia | FLUX, SD | Very Fast | High | Image + video |
+| HeyGen | heygen-video-1 | Medium | High | Text/Image/Reference-to-video with audio |
 
 ### Speech & Audio
 
@@ -171,7 +173,7 @@ fmt.Println(result.Text)
 
 ### For Specialized Tasks
 
-**Video Generation**: KlingAI, Alibaba Cloud (Wan), FAL
+**Video Generation**: KlingAI, Alibaba Cloud (Wan), FAL, HeyGen
 **Image Generation**: Stability AI, Black Forest Labs, FAL, Prodia, QuiverAI
 **Speech Synthesis**: ElevenLabs
 **Transcription**: Deepgram, AssemblyAI

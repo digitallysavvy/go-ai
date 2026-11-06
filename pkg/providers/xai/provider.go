@@ -1,12 +1,13 @@
 package xai
 
 import (
-	"fmt"
+	"context"
 	"os"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -21,6 +22,13 @@ type Provider struct {
 type Config struct {
 	// APIKey is the xAI API key
 	APIKey string
+
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the xAI API (optional)
 	BaseURL string
@@ -44,7 +52,7 @@ func getAPIKey(apiKey string) string {
 // If Config.APIKey is empty, the API key is loaded from the XAI_API_KEY
 // environment variable.
 func New(cfg Config) *Provider {
-	realtimeBaseURL := strings.TrimRight(cfg.BaseURL, "/")
+	realtimeBaseURL := providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	if realtimeBaseURL == "" {
 		realtimeBaseURL = "https://api.x.ai/v1"
 	}
@@ -52,7 +60,10 @@ func New(cfg Config) *Provider {
 	baseURL := normalizeBaseURL(cfg.BaseURL)
 	cfg.BaseURL = baseURL
 
-	apiKey := getAPIKey(cfg.APIKey)
+	apiKey := cfg.APIKey
+	if cfg.APIKeyFunc == nil {
+		apiKey = getAPIKey(cfg.APIKey)
+	}
 	cfg.APIKey = apiKey
 
 	client := http.NewClient(http.Config{
@@ -61,6 +72,15 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("xai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "XAI_API_KEY", Description: "xAI API key",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "XAI_API_KEY", "xAI API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -74,7 +94,7 @@ func normalizeBaseURL(baseURL string) string {
 	if baseURL == "" {
 		baseURL = "https://api.x.ai/v1"
 	}
-	return strings.TrimRight(baseURL, "/")
+	return providerutils.WithoutTrailingSlash(baseURL) // TS withoutTrailingSlash: one "/"
 }
 
 // CreateXai creates a new xAI provider.
@@ -107,7 +127,8 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("xAI does not support embeddings")
+	// TS: provider.embeddingModel throws NoSuchModelError.
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
@@ -124,15 +145,18 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	return NewSpeechModel(p, ""), nil
 }
 
-// TranscriptionModel returns the xAI speech-to-text model. The TypeScript
-// provider has no transcription model ID parameter, so Go ignores modelID for parity.
+// TranscriptionModel returns the xAI speech-to-text model. When modelID is
+// empty, xAI's default transcription model is used; otherwise it is sent as
+// the `model` request parameter (e.g. "grok-voice-transcribe-2.0").
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return NewTranscriptionModel(p, ""), nil
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("xAI does not support reranking")
+	// The TS xAI provider has no rerankingModel, so the registry resolves it
+	// to NoSuchModelError.
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // VideoModel returns a video generation model by ID

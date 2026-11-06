@@ -9,7 +9,7 @@ import (
 func TestDeepInfraProviderWrappers(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	if p.Name() != "deepinfra" {
-		t.Fatalf("Name() = %q, want deepinfra", p.Name())
+		t.Fatalf("Name() = %q, want deepinfra.chat", p.Name())
 	}
 	if p.Provider == nil {
 		t.Fatal("embedded OpenAI provider should not be nil")
@@ -19,7 +19,7 @@ func TestDeepInfraProviderWrappers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LanguageModel() error = %v", err)
 	}
-	if model.Provider() != "deepinfra" {
+	if model.Provider() != "deepinfra.chat" {
 		t.Fatalf("LanguageModel.Provider() = %q", model.Provider())
 	}
 }
@@ -30,7 +30,7 @@ func TestNewLanguageModelWrapper(t *testing.T) {
 	if m == nil || m.LanguageModel == nil {
 		t.Fatal("NewLanguageModel() should wrap OpenAI language model")
 	}
-	if got := m.Provider(); got != "deepinfra" {
-		t.Fatalf("Provider() = %q, want deepinfra", got)
+	if got := m.Provider(); got != "deepinfra.chat" {
+		t.Fatalf("Provider() = %q, want deepinfra.chat", got)
 	}
 }

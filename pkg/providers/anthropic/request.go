@@ -2,7 +2,6 @@ package anthropic
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -50,13 +49,16 @@ type betaSet struct {
 	seen map[string]bool
 }
 
+// add appends each value not yet in the set, as given: TS keeps the betas in
+// a Set<string> and trims only the header values (getBetasFromHeaders), so
+// providerOptions.anthropic.anthropicBeta entries are neither trimmed nor
+// dropped when empty.
 func (b *betaSet) add(values ...string) {
 	if b.seen == nil {
 		b.seen = map[string]bool{}
 	}
 	for _, v := range values {
-		v = strings.TrimSpace(v)
-		if v == "" || b.seen[v] {
+		if b.seen[v] {
 			continue
 		}
 		b.seen[v] = true
@@ -71,8 +73,8 @@ func (m *LanguageModel) userSuppliedBetas(opts *provider.GenerateOptions) []stri
 	collect := func(headers map[string]string) {
 		for k, v := range headers {
 			if strings.EqualFold(k, "anthropic-beta") {
-				for _, b := range strings.Split(strings.ToLower(v), ",") {
-					if b = strings.TrimSpace(b); b != "" {
+				for _, b := range strings.Split(providerutils.JSToLower(v), ",") {
+					if b = providerutils.JSTrim(b); b != "" { // TS beta.trim()
 						out = append(out, b)
 					}
 				}
@@ -103,6 +105,14 @@ type effectiveThinking struct {
 // AnthropicLanguageModel.prepareRequest (anthropic-language-model.ts at
 // ai@7.0.113).
 func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bool) (*preparedRequest, error) {
+	return m.prepareRequestWithBetas(opts, stream, m.userSuppliedBetas(opts))
+}
+
+// prepareRequestWithBetas is prepareRequest with an explicit userSuppliedBetas
+// set: calls take them from the config and call headers, batches only from
+// providerOptions.anthropic.anthropicBeta on startBatch (TS passes
+// userSuppliedBetas: new Set(explicitBatchBetas)).
+func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, stream bool, userBetas []string) (*preparedRequest, error) {
 	if opts == nil {
 		opts = &provider.GenerateOptions{}
 	}
@@ -113,10 +123,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	}
 
 	if o.ContextManagement != nil && o.Compaction != nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "Anthropic provider options `compaction` and `contextManagement` cannot be used together.",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "Anthropic provider options `compaction` and `contextManagement` cannot be used together.", nil)
 	}
 
 	if opts.FrequencyPenalty != nil {
@@ -130,12 +137,18 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	}
 
 	temperature := opts.Temperature
-	if temperature != nil && *temperature > 1 {
-		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v exceeds anthropic maximum of 1.0. clamped to 1.0", *temperature))
-		one := 1.0
-		temperature = &one
+	maxTemperature := 1.0
+	temperatureProvider := "anthropic"
+	if m.provider.config.MaxTemperature != nil {
+		maxTemperature = *m.provider.config.MaxTemperature
+		temperatureProvider = m.providerOptionsName()
+	}
+	if temperature != nil && *temperature > maxTemperature {
+		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v exceeds %s maximum of %.1f. clamped to %.1f", *temperature, temperatureProvider, maxTemperature, maxTemperature))
+		clamped := maxTemperature
+		temperature = &clamped
 	} else if temperature != nil && *temperature < 0 {
-		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v is below anthropic minimum of 0. clamped to 0", *temperature))
+		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v is below %s minimum of 0. clamped to 0", *temperature, temperatureProvider))
 		zero := 0.0
 		temperature = &zero
 	}
@@ -181,8 +194,17 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	if o.StructuredOutputMode != "" {
 		mode = o.StructuredOutputMode
 	}
-	useStructuredOutput := mode == StructuredOutputFormat || (mode == StructuredOutputAuto && supportsStructuredOutput)
-	if !useStructuredOutput && caps.RejectsForcedToolUse && supportsStructuredOutput && jsonSchemaFormat {
+	// TS 2cd0a97424 / b0d51fecc0: auto mode uses native structured outputs
+	// only for a schema they can represent (no cycles, no open objects, at
+	// most 10 optional properties).
+	supportsResponseSchema := !jsonSchemaFormat || SupportsNativeStructuredOutputSchema(opts.ResponseFormat.Schema)
+	useStructuredOutput := mode == StructuredOutputFormat || (mode == StructuredOutputAuto && supportsStructuredOutput && supportsResponseSchema)
+	// The JSON response tool relies on forced tool use, which some models
+	// reject (e.g. Opus 5.5, Fable 5.1). Fall back to native structured
+	// outputs even when the provider disables them by default (Bedrock,
+	// Vertex), unless they would reject the schema or lose data from it
+	// (TS f4c5f1e959, b0d51fecc0).
+	if !useStructuredOutput && caps.RejectsForcedToolUse && caps.SupportsStructuredOutput && jsonSchemaFormat && supportsResponseSchema {
 		warnUnsupported(&warnings, "providerOptions.anthropic.structuredOutputMode", fmt.Sprintf(
 			"structuredOutputMode 'jsonTool' is not supported by %s because it rejects forced tool use. Using 'outputFormat' instead.", m.modelID))
 		useStructuredOutput = true
@@ -195,8 +217,9 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	}
 
 	// Shared cache control validator across the prompt and tool definitions.
-	validator := prompt.NewAnthropicCacheControlValidator()
-	toolsetNames := prompt.AnthropicToolsetNames(opts.Tools)
+	validator := prompt.NewAnthropicCacheControlValidatorFor(m.provider.config.CacheControlProviderOptionsName)
+	toolNames := newAnthropicToolNames(opts.Tools)
+	toolsetNames := toolNames.toolsets
 	sendReasoning := o.SendReasoning
 	if sendReasoning == nil {
 		sendReasoning = opts.SendReasoning
@@ -204,7 +227,9 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	promptInfo, err := convertCallPrompt(opts, prompt.AnthropicPromptOptions{
 		SendReasoning:         sendReasoning,
 		ToolsetNames:          toolsetNames,
+		ToProviderToolName:    toolNames.providerName,
 		CacheControlValidator: validator,
+		ConvertMediaPart:      m.provider.config.ConvertMediaPart,
 	})
 	if err != nil {
 		return nil, err
@@ -226,7 +251,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	}
 	effort := string(o.Effort)
 
-	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault && effort == "" {
+	if providerutils.IsCustomReasoning(opts.Reasoning) && effort == "" {
 		rTh, rEffort := resolveReasoningConfig(*opts.Reasoning, m.modelID, caps, &warnings)
 		if rTh != nil && !th.set {
 			th = *rTh
@@ -248,11 +273,19 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 					"thinking cannot be disabled for %s; it always uses adaptive thinking. The thinking setting has been removed. Lower 'effort' to reduce thinking.", m.modelID))
 				th = effectiveThinking{}
 			}
-		case ThinkingTypeEnabled:
-			warnUnsupported(&warnings, "providerOptions.anthropic.thinking", fmt.Sprintf(
-				"budget-based thinking is not supported by %s; it always uses adaptive thinking. Using adaptive thinking instead. Use 'effort' to control how much the model thinks.", m.modelID))
-			th = effectiveThinking{typ: ThinkingTypeAdaptive, set: true}
 		}
+	}
+
+	// Models that only support adaptive thinking reject budget-based thinking
+	// with a 400. Use adaptive thinking instead and let effort control how
+	// much the model thinks (TS #22239).
+	if caps.RejectsBudgetThinking && th.typ == ThinkingTypeEnabled {
+		details := fmt.Sprintf("budget-based thinking is not supported by %s. Using adaptive thinking instead. Use 'effort' to control how much the model thinks.", m.modelID)
+		if caps.RejectsThinkingDisabled {
+			details = fmt.Sprintf("budget-based thinking is not supported by %s; it always uses adaptive thinking. Using adaptive thinking instead. Use 'effort' to control how much the model thinks.", m.modelID)
+		}
+		warnUnsupported(&warnings, "providerOptions.anthropic.thinking", details)
+		th = effectiveThinking{typ: ThinkingTypeAdaptive, set: true}
 	}
 
 	if caps.RejectsThinkingDisabledAboveHighEffort && th.typ == ThinkingTypeDisabled && (effort == "xhigh" || effort == "max") {
@@ -299,7 +332,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	if topP != nil {
 		body["top_p"] = *topP
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil {
 		body["stop_sequences"] = opts.StopSequences
 	}
 
@@ -396,7 +429,11 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		body["safeguards"] = sg
 	}
 	if o.ContextManagement != nil {
-		body["context_management"] = o.ContextManagement
+		cm, err := wireContextManagement(o.ContextManagement)
+		if err != nil {
+			return nil, err
+		}
+		body["context_management"] = cm
 	}
 	if o.Compaction != nil {
 		body["compaction"] = o.Compaction
@@ -414,7 +451,8 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 			thinking := map[string]interface{}{"type": "enabled", "budget_tokens": budget}
 			body["thinking"] = thinking
 		}
-		if _, ok := body["temperature"]; ok {
+		keepSampling := m.provider.config.SupportsTemperatureAndTopPWithThinking
+		if _, ok := body["temperature"]; ok && !keepSampling {
 			delete(body, "temperature")
 			warnUnsupported(&warnings, "temperature", "temperature is not supported when thinking is enabled")
 		}
@@ -422,7 +460,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 			delete(body, "top_k")
 			warnUnsupported(&warnings, "topK", "topK is not supported when thinking is enabled")
 		}
-		if topP != nil {
+		if topP != nil && !keepSampling {
 			delete(body, "top_p")
 			warnUnsupported(&warnings, "topP", "topP is not supported when thinking is enabled")
 		}
@@ -454,7 +492,10 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	if len(o.Safeguards) > 0 {
 		betas.add(BetaHeaderDangerousToolUse)
 	}
-	if o.ContextManagement != nil && len(o.ContextManagement.Edits) > 0 {
+	if o.Compaction != nil {
+		betas.add(BetaHeaderCompaction)
+	}
+	if o.ContextManagement != nil {
 		betas.add(BetaHeaderContextManagement)
 		for _, edit := range o.ContextManagement.Edits {
 			if _, ok := edit.(*CompactEdit); ok {
@@ -462,9 +503,6 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 				break
 			}
 		}
-	}
-	if o.Compaction != nil {
-		betas.add(BetaHeaderCompaction)
 	}
 	if o.Container != nil && len(o.Container.Skills) > 0 {
 		betas.add(BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI)
@@ -497,10 +535,19 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 
 	var prepared preparedTools
 	if usesJSONResponseTool {
-		tools := append(append([]types.Tool{}, opts.Tools...), types.Tool{
+		// TS 2cd0a97424: toolChoice none drops the user tools and a named
+		// toolChoice keeps only that tool next to the JSON response tool.
+		var tools []types.Tool
+		for _, t := range opts.Tools {
+			if opts.ToolChoice.Type == types.ToolChoiceNone || (opts.ToolChoice.Type == types.ToolChoiceTool && t.Name != opts.ToolChoice.ToolName) {
+				continue
+			}
+			tools = append(tools, t)
+		}
+		tools = append(tools, types.Tool{
 			Name:        "json",
 			Description: "Respond with a JSON object.",
-			Parameters:  opts.ResponseFormat.Schema,
+			Parameters:  providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema),
 		})
 		disable := true
 		prepared = prepareTools(prepareToolsOptions{
@@ -511,7 +558,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 			supportsStructuredOutput:   false,
 			supportsStrictTools:        supportsStrictTools,
 			defaultEagerInputStreaming: defaultEager,
-			rejectsForcedToolUse:       caps.RejectsForcedToolUse,
+			rejectsForcedToolUse:       caps.RejectsForcedToolUse || th.typ == ThinkingTypeEnabled,
 		})
 	} else {
 		tc := opts.ToolChoice
@@ -523,8 +570,11 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 			supportsStructuredOutput:   supportsStructuredOutput,
 			supportsStrictTools:        supportsStrictTools,
 			defaultEagerInputStreaming: defaultEager,
-			rejectsForcedToolUse:       caps.RejectsForcedToolUse,
+			rejectsForcedToolUse:       caps.RejectsForcedToolUse || th.typ == ThinkingTypeEnabled,
 		})
+	}
+	if prepared.err != nil {
+		return nil, prepared.err
 	}
 	if prepared.tools != nil {
 		body["tools"] = prepared.tools
@@ -539,7 +589,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	warnings = append(warnings, validator.Warnings()...)
 
 	betas.add(prepared.betas...)
-	betas.add(m.userSuppliedBetas(opts)...)
+	betas.add(userBetas...)
 	betas.add(o.AnthropicBeta...)
 
 	return &preparedRequest{
@@ -566,6 +616,11 @@ func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps Mod
 		// support it: no upfront thinking, only short progress notes
 		// between tool calls (claude-sonnet-5-5+).
 		if caps.SupportsBetweenToolsThinking {
+			*warnings = append(*warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "reasoning",
+				Details: fmt.Sprintf("reasoning 'none' is not supported by %s; thinking cannot be disabled. Using 'between_tools' thinking, the lowest thinking setting, instead.", modelID),
+			})
 			return &effectiveThinking{typ: ThinkingTypeBetweenTools, set: true}, ""
 		}
 		if caps.RejectsThinkingDisabled {
@@ -579,42 +634,24 @@ func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps Mod
 		return &effectiveThinking{typ: ThinkingTypeDisabled, set: true}, ""
 	}
 	if caps.SupportsAdaptiveThinking {
+		// TS 61a315e333: only the supported efforts; the shared helper rounds
+		// an unsupported level down (minimal → low, xhigh → high).
 		effortMap := map[types.ReasoningLevel]string{
-			types.ReasoningMinimal: "low",
-			types.ReasoningLow:     "low",
-			types.ReasoningMedium:  "medium",
-			types.ReasoningHigh:    "high",
-			types.ReasoningXHigh:   "max",
+			types.ReasoningLow:    "low",
+			types.ReasoningMedium: "medium",
+			types.ReasoningHigh:   "high",
+			types.ReasoningMax:    "max",
 		}
 		if caps.SupportsXHighEffort {
 			effortMap[types.ReasoningXHigh] = "xhigh"
 		}
-		effort, ok := effortMap[level]
-		if !ok {
-			*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "reasoning", Details: fmt.Sprintf("reasoning %q is not supported by this model.", level)})
-		} else if effort != string(level) {
-			*warnings = append(*warnings, types.Warning{Type: "compatibility", Feature: "reasoning", Details: fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", level, effort)})
-		}
+		effort, _ := providerutils.MapReasoningToProviderEffort(&level, effortMap, nil, warnings)
 		return &effectiveThinking{typ: ThinkingTypeAdaptive, display: ThinkingDisplaySummarized, set: true}, effort
 	}
-	pct, ok := map[types.ReasoningLevel]float64{
-		types.ReasoningMinimal: 0.02,
-		types.ReasoningLow:     0.10,
-		types.ReasoningMedium:  0.30,
-		types.ReasoningHigh:    0.60,
-		types.ReasoningXHigh:   0.90,
-	}[level]
-	if !ok {
-		*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "reasoning", Details: fmt.Sprintf("reasoning %q is not supported by this model.", level)})
-		return nil, ""
-	}
-	budget := int(math.Round(float64(caps.MaxOutputTokens) * pct))
-	if budget < 1024 {
-		budget = 1024
-	}
-	if budget > caps.MaxOutputTokens {
-		budget = caps.MaxOutputTokens
-	}
+	budget := providerutils.MapReasoningToProviderBudget(level, providerutils.ReasoningBudgetOptions{
+		MaxOutputTokens:    caps.MaxOutputTokens,
+		MaxReasoningBudget: caps.MaxOutputTokens,
+	}, warnings)
 	return &effectiveThinking{typ: ThinkingTypeEnabled, budgetTokens: &budget, set: true}, ""
 }
 
@@ -631,15 +668,15 @@ func mcpServersWire(servers []MCPServerConfig) []map[string]interface{} {
 		}
 		if s.ToolConfiguration != nil {
 			tc := map[string]interface{}{}
-			if len(s.ToolConfiguration.AllowedTools) > 0 {
+			// TS maps an explicit empty allowedTools list ("no tools") as is and
+			// sends an empty tool_configuration object.
+			if s.ToolConfiguration.AllowedTools != nil {
 				tc["allowed_tools"] = s.ToolConfiguration.AllowedTools
 			}
 			if s.ToolConfiguration.Enabled != nil {
 				tc["enabled"] = *s.ToolConfiguration.Enabled
 			}
-			if len(tc) > 0 {
-				srv["tool_configuration"] = tc
-			}
+			srv["tool_configuration"] = tc
 		}
 		out[i] = srv
 	}

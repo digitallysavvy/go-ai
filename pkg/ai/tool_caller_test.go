@@ -139,11 +139,10 @@ func TestGenerateText_ToolCallers_DoesNotExecuteLocalOnlyCalleesCalledDirectly(t
 	}
 	// getInventory is caller-only (not model-visible), so the direct call the
 	// mock model emits is rejected as an unknown tool: Execute never runs,
-	// and the synthesized ToolResult carries the NoSuchToolError instead of
-	// a value (Go's ToolResult always has an entry per ToolCall; TS instead
-	// leaves toolResults empty for an invalid call).
-	if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil {
-		t.Fatalf("toolResults = %+v, want one entry with a NoSuchToolError", result.ToolResults)
+	// and the call is a tool-error content part carrying the
+	// NoSuchToolError; TS leaves toolResults empty for an invalid call.
+	if toolErrors := r71integToolErrors(result.Content); len(result.ToolResults) != 0 || len(toolErrors) != 1 || !strings.HasPrefix(toolErrors[0].ErrorText, "AI_NoSuchToolError:") {
+		t.Fatalf("toolResults = %+v, tool errors = %+v, want one NoSuchToolError tool-error", result.ToolResults, toolErrors)
 	}
 	if len(result.ToolCalls) != 1 || !result.ToolCalls[0].Invalid {
 		t.Fatalf("toolCalls = %+v, want one invalid call", result.ToolCalls)

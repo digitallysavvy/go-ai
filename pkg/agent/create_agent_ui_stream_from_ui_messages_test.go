@@ -3,6 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"reflect"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -383,5 +387,62 @@ func TestCreateAgentUIStreamFromUIMessages_IgnoresDataPartWithoutConverter(t *te
 	text, ok := content[0].(types.TextContent)
 	if !ok || text.Text != "Hello" {
 		t.Fatalf("content[0] = %#v, want text %q", content[0], "Hello")
+	}
+}
+
+// Ports TS create-agent-ui-stream.test.ts 'preserves generation callbacks and
+// UI continuations' (TS #22268): the UI step-end callback (UIMessageStream.OnStepEnd)
+// is independent from the agent's generation step callback, and both run
+// before the stream ends. A trailing assistant message is continued.
+func TestCreateAgentUIStreamFromUIMessages_UIStepEndSeparateFromGenerationStepEnd(t *testing.T) {
+	for _, continuation := range []bool{false, true} {
+		var mu sync.Mutex
+		var events []string
+		var uiEvent map[string]interface{}
+		a := NewToolLoopAgent(AgentConfig{Model: simpleStreamModel()})
+		history := `[{"id":"user-1","role":"user","parts":[{"type":"text","text":"Hello"}]}]`
+		if continuation {
+			history = `[{"id":"assistant-1","role":"assistant","parts":[{"type":"text","text":"Previous"}]}]`
+		}
+		chunks, errs, err := CreateAgentUIStreamFromUIMessages(context.Background(), a, CreateAgentUIStreamFromUIMessagesOptions{
+			UIMessages: json.RawMessage(history),
+			AgentOptions: AgentStreamOptions{AgentGenerateOptions: AgentGenerateOptions{
+				OnStepEnd: func(ctx context.Context, e ai.OnStepFinishEvent) {
+					mu.Lock()
+					defer mu.Unlock()
+					events = append(events, "generation")
+				},
+			}},
+			UIMessageStream: ai.UIMessageStreamResultOptions{
+				GenerateMessageID: func() string { return "assistant-new" },
+				OnStepEnd: func(e map[string]interface{}) {
+					mu.Lock()
+					defer mu.Unlock()
+					events = append(events, "ui")
+					uiEvent = e
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainUIChunks(t, chunks, errs)
+		mu.Lock()
+		sort.Strings(events)
+		if !reflect.DeepEqual(events, []string{"generation", "ui"}) {
+			t.Fatalf("continuation=%v: events = %v", continuation, events)
+		}
+		if uiEvent["isContinuation"] != continuation {
+			t.Fatalf("isContinuation = %v, want %v", uiEvent["isContinuation"], continuation)
+		}
+		b, _ := json.Marshal(uiEvent["responseMessage"])
+		wantID := `"id":"assistant-new"`
+		if continuation {
+			wantID = `"id":"assistant-1"`
+		}
+		if !strings.Contains(string(b), wantID) || !strings.Contains(string(b), `"response"`) {
+			t.Fatalf("continuation=%v: responseMessage = %s", continuation, b)
+		}
+		mu.Unlock()
 	}
 }

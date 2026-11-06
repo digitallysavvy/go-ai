@@ -1,7 +1,11 @@
 package moonshot
 
 import (
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
 // moonshotFunctionTool is the wire shape Moonshot expects for a function tool
@@ -30,8 +34,24 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 
 	var warnings []types.Warning
 	moonshotTools := make([]moonshotFunctionTool, 0, len(tools))
+	// A schema.Schema Parameters value is normalized as its JSON Schema (TS
+	// normalizeJsonSchemaForMFJS(tool.inputSchema)), as through
+	// tool.ToOpenAIFormat, instead of failing the MFJS root check.
+	tools = providertool.ResolveToolSchemas(tools)
 
 	for _, tool := range tools {
+		// TS: tool.type === 'provider' (the typed provider-defined tool).
+		if tool.Type == "provider" {
+			id := tool.ProviderID
+			if id == "" {
+				id = tool.Name
+			}
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "provider-defined tool " + id,
+			})
+			continue
+		}
 		if tool.ProviderExecuted {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -40,7 +60,7 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 			continue
 		}
 
-		normalized, err := NormalizeJSONSchemaForMFJS(moonshotDefaultObjectSchema(tool.Parameters))
+		normalized, err := normalizeMFJSKeepingOrder(tool.Parameters)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -86,13 +106,14 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 			"function": map[string]interface{}{"name": toolChoice.ToolName},
 		}, warnings, nil
 	default:
-		return moonshotTools, nil, warnings, nil
+		// TS exhaustive check: UnsupportedFunctionalityError "tool choice type: <type>".
+		return nil, nil, nil, prompt.ValidateToolChoiceType(tools, toolChoice)
 	}
 }
 
 // moonshotDefaultObjectSchema mirrors the tool package's defaultObjectSchema:
 // nil parameters become an empty object schema; a schema missing "type" gets
-// "object" injected so the MFJS root-object check passes.
+// "object" injected so the MFJS root-object check passes (root unions excluded).
 func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 	if parameters == nil {
 		return map[string]interface{}{
@@ -100,8 +121,28 @@ func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 			"properties": map[string]interface{}{},
 		}
 	}
+	if schema, ok := parameters.(*jsonorder.Object); ok && schema != nil {
+		_, hasType := schema.Get("type")
+		_, hasAnyOf := schema.Get("anyOf")
+		_, hasOneOf := schema.Get("oneOf")
+		if !hasType && !hasAnyOf && !hasOneOf {
+			copied := jsonorder.New()
+			for _, k := range schema.Keys() {
+				v, _ := schema.Get(k)
+				copied.Set(k, v)
+			}
+			copied.Set("type", "object")
+			return copied
+		}
+		return schema
+	}
 	if schema, ok := parameters.(map[string]interface{}); ok {
-		if _, hasType := schema["type"]; !hasType {
+		_, hasType := schema["type"]
+		_, hasAnyOf := schema["anyOf"]
+		_, hasOneOf := schema["oneOf"]
+		// A typeless root union is left for NormalizeJSONSchemaForMFJS: a union
+		// of objects gets type "object", any other union throws like TS.
+		if !hasType && !hasAnyOf && !hasOneOf {
 			copied := make(map[string]interface{}, len(schema)+1)
 			for key, value := range schema {
 				copied[key] = value
@@ -111,4 +152,30 @@ func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 		}
 	}
 	return parameters
+}
+
+// normalizeMFJSKeepingOrder normalizes tool parameters for MFJS. Raw JSON
+// (json.RawMessage) and *schema.OrderedSchema parameters are normalized as an
+// ordered object, so their source key order (and the TS placement of keys the
+// normalization adds) reaches the wire, like the JS object TS normalizes.
+func normalizeMFJSKeepingOrder(parameters interface{}) (interface{}, error) {
+	if ordered, ok := mfjsOrderedSource(parameters); ok {
+		parameters = ordered
+	}
+	return NormalizeJSONSchemaForMFJS(moonshotDefaultObjectSchema(parameters))
+}
+
+// mfjsOrderedSource parses a raw JSON or ordered schema value into an ordered
+// object (ok false for maps and other values).
+func mfjsOrderedSource(v interface{}) (*jsonorder.Object, bool) {
+	raw, ok := providerutils.RawJSONObject(v)
+	if !ok {
+		return nil, false
+	}
+	tree, ok := jsonorder.Parse(raw)
+	if !ok {
+		return nil, false
+	}
+	o, ok := tree.(*jsonorder.Object)
+	return o, ok
 }

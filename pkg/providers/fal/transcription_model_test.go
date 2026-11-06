@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // newTestTranscriptionModel builds a Provider whose queueHost points at an
@@ -400,25 +401,61 @@ func TestFalTranscriptionModel_ErrorResponse(t *testing.T) {
 	}
 }
 
-// TestFalTranscriptionModel_MissingRequestID verifies a queue submit
-// response without a request_id surfaces an error rather than polling a
-// malformed URL forever.
+// TestFalTranscriptionModel_MissingRequestID: TS reads
+// `queueResponse.request_id ?? ”`, so a queue submit response without a
+// request_id is not an error; the result is polled at `.../requests/`.
 func TestFalTranscriptionModel_MissingRequestID(t *testing.T) {
+	var polled bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fal-ai/wizper", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{}`))
 	})
+	mux.HandleFunc("/fal-ai/wizper/requests/", func(w http.ResponseWriter, r *http.Request) {
+		polled = r.URL.EscapedPath() == "/fal-ai/wizper/requests/"
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"text":"hi","chunks":[]}`))
+	})
 
 	m, srv := newTestTranscriptionModel(t, mux)
 	defer srv.Close()
 
-	_, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
 		Audio:    []byte("a"),
 		MimeType: "audio/wav",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing request_id")
+	if err != nil {
+		t.Fatalf("missing request_id must not error locally: %v", err)
+	}
+	if !polled || res.Text != "hi" {
+		t.Fatalf("polled=%v text=%q", polled, res.Text)
+	}
+}
+
+// TS throws AISDKError name TranscriptionRequestTimedOut; the Go ProviderError
+// carries that name as ErrorCode so callers can tell it from other failures.
+func TestFalTranscriptionModel_TimeoutErrorCode(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fal-ai/wizper", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"request_id":"test-id"}`))
+	})
+	mux.HandleFunc("/fal-ai/wizper/requests/test-id", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"detail":"Request is still in progress"}`))
+	})
+	m, srv := newTestTranscriptionModel(t, mux)
+	defer srv.Close()
+	oi, ot := falTranscriptionPollInterval, falTranscriptionPollTimeout
+	falTranscriptionPollInterval, falTranscriptionPollTimeout = time.Millisecond, 20*time.Millisecond
+	defer func() { falTranscriptionPollInterval, falTranscriptionPollTimeout = oi, ot }()
+
+	_, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.ErrorCode != "TranscriptionRequestTimedOut" || pe.Message != "Transcription request timed out after 60 seconds" {
+		t.Fatalf("err = %#v", err)
 	}
 }

@@ -31,7 +31,13 @@ type TranscribeOptions struct {
 	ProviderOptions map[string]interface{}
 	Headers         map[string]string
 	Download        URLDownloadFunction
-	MaxRetries      *int
+	// DownloadWithMetadata downloads AudioURL and also returns the response
+	// media type, which then takes precedence over magic-byte detection (TS
+	// transcribe: downloadedMediaType ?? detectMediaType(...) ?? 'audio/wav').
+	// Download wins when both are set. When neither is set, the default
+	// download (2 GiB limit) is used and its Content-Type is honored.
+	DownloadWithMetadata URLDownloadWithMetadataFunction
+	MaxRetries           *int
 
 	// Telemetry configures observability for this operation.
 	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
@@ -97,34 +103,65 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	callID := newCallID()
+	// TS fires the start event (without audio size/media type) and then the
+	// error event when the audio cannot be prepared (download or decode
+	// failure), before rethrowing.
+	failPreparation := func(err error) (*TranscribeResult, error) {
+		prepCtx := telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+			CallID:        callID,
+			OperationType: "ai.transcribe",
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			Settings:      opts.ExperimentalTelemetry,
+			Headers:       opts.Headers,
+		})
+		telemetry.FireOnError(prepCtx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
+		return nil, err
+	}
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
 		decoded, err := decodeTranscriptionAudioBase64(opts.AudioBase64)
 		if err != nil {
-			return nil, err
+			return failPreparation(err)
 		}
 		audio = decoded
 	}
+	var downloadedMediaType string
 	if len(audio) == 0 && opts.AudioURL != "" {
-		download := opts.Download
-		if download == nil {
-			download = CreateURLDownload(nil)
+		if opts.Download != nil {
+			data, err := opts.Download(ctx, opts.AudioURL)
+			if err != nil {
+				return failPreparation(err)
+			}
+			audio = data
+		} else {
+			download := opts.DownloadWithMetadata
+			if download == nil {
+				download = CreateURLDownloadWithMetadata(nil)
+			}
+			result, err := download(ctx, opts.AudioURL)
+			if err != nil {
+				return failPreparation(err)
+			}
+			if result != nil {
+				audio = result.Data
+				downloadedMediaType = result.MediaType
+			}
 		}
-		data, err := download(ctx, opts.AudioURL)
-		if err != nil {
-			return nil, err
-		}
-		audio = data
 	}
-	if len(audio) == 0 {
+	// TS does not reject empty audio; only a missing source is an error.
+	if audio == nil && opts.Audio == nil && opts.AudioBase64 == "" && opts.AudioURL == "" {
 		return nil, fmt.Errorf("audio is required")
 	}
 	mediaType := opts.MimeType
 	if mediaType == "" {
+		mediaType = downloadedMediaType
+	}
+	if mediaType == "" {
 		mediaType = detectTranscriptionMediaType(audio)
 	}
-	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
-	callID := newCallID()
 	audioByteLength := int64(len(audio))
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:          callID,
@@ -155,7 +192,6 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		err = retryutil.Do(ctx, retryutil.Config{
 			MaxRetries:   maxRetries,
 			InitialDelay: 2 * time.Second,
-			MaxDelay:     60 * time.Second,
 			Multiplier:   2,
 			Jitter:       false,
 			ShouldRetry:  isGatewayCallRetryable,
@@ -169,7 +205,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
-	if raw == nil || raw.Text == "" {
+	if raw == nil {
 		var responses []TranscriptionModelResponseMetadata
 		if raw != nil {
 			responses = []TranscriptionModelResponseMetadata{transcriptionResponseMetadata(raw.Response, opts.Model)}
@@ -240,6 +276,11 @@ func transcriptionResponseMetadata(response *types.ResponseMetadata, model provi
 //
 // Deprecated: use Transcribe.
 func ExperimentalTranscribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "experimental_transcribe",
+		Message: "Use transcribe instead.",
+	}}})
 	return Transcribe(ctx, opts)
 }
 

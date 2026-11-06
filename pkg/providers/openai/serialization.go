@@ -13,9 +13,13 @@ func init() {
 	provider.RegisterModelDeserializer("openai.completion", deserializeModel)
 	provider.RegisterModelDeserializer("openai.responses", deserializeModel)
 	provider.RegisterEmbeddingModelDeserializer("openai", deserializeEmbeddingModel)
+	provider.RegisterEmbeddingModelDeserializer("openai.embedding", deserializeEmbeddingModel)
 	provider.RegisterImageModelDeserializer("openai", deserializeImageModel)
+	provider.RegisterImageModelDeserializer("openai.image", deserializeImageModel)
 	provider.RegisterSpeechModelDeserializer("openai", deserializeSpeechModel)
+	provider.RegisterSpeechModelDeserializer("openai.speech", deserializeSpeechModel)
 	provider.RegisterTranscriptionModelDeserializer("openai", deserializeTranscriptionModel)
+	provider.RegisterTranscriptionModelDeserializer("openai.transcription", deserializeTranscriptionModel)
 	provider.RegisterSpeechTranslationModelDeserializer("openai.speech-translation", deserializeSpeechTranslationModel)
 }
 

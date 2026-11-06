@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"math"
 	"mime/multipart"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // maxDeepSeekFileSizeBytes is the largest file DeepSeek accepts for upload.
@@ -61,6 +64,24 @@ type FilesAPI struct {
 // UploadFile uploads a file to DeepSeek's Files API (POST /files) with
 // purpose=user_data.
 func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions) (*types.UploadFileResult, error) {
+	// TS parses the provider options first (parseProviderOptions with
+	// deepSeekFilesOptionsSchema: expiresAfter z.number().int().min(3600)
+	// .max(2592000).optional()), then converts and validates the file.
+	deepseekOpts, err := providerutils.ParseProviderOptions("deepseek", opts.ProviderOptions, providerutils.OptionSchema{
+		"expiresAfter": providerutils.OptInt(&deepSeekMinExpiresAfter, &deepSeekMaxExpiresAfter),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var expiresAfter *int
+	if raw, ok := deepseekOpts["expiresAfter"]; ok {
+		// OptInt checked an integer of any Go numeric kind.
+		if n, isNum := deepSeekOptionNumber(raw); isNum {
+			iv := int(n)
+			expiresAfter = &iv
+		}
+	}
+
 	fileBytes, err := deepSeekInlineFileBytes(opts.Data)
 	if err != nil {
 		return nil, err
@@ -70,31 +91,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
-	var expiresAfter *int
-	if opts.ProviderOptions != nil {
-		if deepseekOpts, ok := opts.ProviderOptions["deepseek"].(map[string]interface{}); ok {
-			switch v := deepseekOpts["expiresAfter"].(type) {
-			case int:
-				expiresAfter = &v
-			case int64:
-				iv := int(v)
-				expiresAfter = &iv
-			case float64:
-				iv := int(v)
-				expiresAfter = &iv
-			}
-		}
-	}
-	if expiresAfter != nil && (*expiresAfter < 3600 || *expiresAfter > 2592000) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.deepseek.expiresAfter",
-			Message: "expiresAfter must be between 3600 (1 hour) and 2592000 (30 days) seconds.",
-		}
-	}
-
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", deepSeekUploadFilename(opts.Filename))
+	part, err := providerutils.CreateTypedFormFile(writer, "file", deepSeekUploadFilename(opts.Filename), opts.MediaType)
 	if err != nil {
 		return nil, err
 	}
@@ -120,23 +119,27 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Method: "POST",
 		Path:   "/files",
 		Body:   &body,
-		Headers: map[string]string{
+		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{
 			"Content-Type": writer.FormDataContentType(),
-		},
+		}),
 	})
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("deepseek files upload failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("deepseek", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator("deepseek", providerutils.SchemaDeepSeekFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out struct {
 		ID        string   `json:"id"`
 		Object    string   `json:"object"`
 		Bytes     *float64 `json:"bytes"`
 		CreatedAt *float64 `json:"created_at"`
-		Filename  string   `json:"filename"`
+		Filename  *string  `json:"filename"`
 		Purpose   string   `json:"purpose"`
 		ExpiresAt *float64 `json:"expires_at"`
 	}
@@ -164,17 +167,19 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
-	filename := out.Filename
-	if filename == "" {
-		filename = opts.Filename
+	// TS `(response.filename ?? filename) ? {filename} : {}`: a returned
+	// "" filename wins over the request's and is then left out.
+	filename := opts.Filename
+	if out.Filename != nil {
+		filename = *out.Filename
 	}
 
 	meta := map[string]interface{}{}
 	if out.Object != "" {
 		meta["object"] = out.Object
 	}
-	if out.Filename != "" {
-		meta["filename"] = out.Filename
+	if out.Filename != nil {
+		meta["filename"] = *out.Filename
 	}
 	if out.Purpose != "" {
 		meta["purpose"] = out.Purpose
@@ -197,9 +202,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if filename != "" {
 		result.Filename = filename
 	}
-	if len(meta) > 0 {
-		result.ProviderMetadata = map[string]interface{}{"deepseek": meta}
-	}
+	// TS always returns providerMetadata.deepseek, empty when the response
+	// carried no optional metadata.
+	result.ProviderMetadata = map[string]interface{}{"deepseek": meta}
 	return result, nil
 }
 
@@ -247,23 +252,17 @@ func deepSeekUploadFilename(filename string) string {
 // extension) identifies a supported image format.
 func validateDeepSeekFileUpload(fileBytes []byte, mediaType string, filename string) error {
 	if len(fileBytes) > maxDeepSeekFileSizeBytes {
-		return &providererrors.InvalidArgumentError{
-			Field: "data",
-			Message: fmt.Sprintf(
-				"DeepSeek file uploads must not exceed 64 MiB (%d bytes). Received %d bytes.",
-				maxDeepSeekFileSizeBytes, len(fileBytes)),
-		}
+		return providererrors.NewArgumentError("data", fmt.Sprintf(
+			"DeepSeek file uploads must not exceed 64 MiB (%s bytes). Received %s bytes.",
+			deepSeekGroupThousands(maxDeepSeekFileSizeBytes), deepSeekGroupThousands(len(fileBytes))), nil)
 	}
 
 	if filename != "" {
 		filenameLength := utf8.RuneCountInString(filename)
 		if filenameLength > maxDeepSeekFilenameLength {
-			return &providererrors.InvalidArgumentError{
-				Field: "filename",
-				Message: fmt.Sprintf(
-					"DeepSeek filenames must not exceed %d characters. Received %d characters.",
-					maxDeepSeekFilenameLength, filenameLength),
-			}
+			return providererrors.NewArgumentError("filename", fmt.Sprintf(
+				"DeepSeek filenames must not exceed %d characters. Received %d characters.",
+				maxDeepSeekFilenameLength, filenameLength), nil)
 		}
 	}
 
@@ -271,12 +270,9 @@ func validateDeepSeekFileUpload(fileBytes []byte, mediaType string, filename str
 	detectedMediaType, detected := fileutil.DetectMediaTypeSignature(fileBytes, "")
 
 	if detected && !deepSeekSupportedFileMediaTypes[detectedMediaType] {
-		return &providererrors.InvalidArgumentError{
-			Field: "data",
-			Message: fmt.Sprintf(
-				"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Detected unsupported file content type %q.",
-				detectedMediaType),
-		}
+		return providererrors.NewArgumentError("data", fmt.Sprintf(
+			"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Detected unsupported file content type %q.",
+			detectedMediaType), nil)
 	}
 
 	if deepSeekSupportedFileMediaTypes[normalizedMediaType] {
@@ -284,31 +280,25 @@ func validateDeepSeekFileUpload(fileBytes []byte, mediaType string, filename str
 	}
 
 	if !deepSeekGenericFileMediaTypes[normalizedMediaType] {
-		return &providererrors.InvalidArgumentError{
-			Field: "mediaType",
-			Message: fmt.Sprintf(
-				"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Received unsupported media type %q.",
-				mediaType),
-		}
+		return providererrors.NewArgumentError("mediaType", fmt.Sprintf(
+			"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Received unsupported media type %q.",
+			mediaType), nil)
 	}
 
 	if detected || deepSeekHasSupportedFilenameExtension(filename) {
 		return nil
 	}
 
-	return &providererrors.InvalidArgumentError{
-		Field: "mediaType",
-		Message: fmt.Sprintf(
-			"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Provide a supported media type or a filename ending in .jpg, .jpeg, .png, .gif, or .webp. Received %q.",
-			mediaType),
-	}
+	return providererrors.NewArgumentError("mediaType", fmt.Sprintf(
+		"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Provide a supported media type or a filename ending in .jpg, .jpeg, .png, .gif, or .webp. Received %q.",
+		mediaType), nil)
 }
 
 func normalizeDeepSeekMediaType(mediaType string) string {
 	if idx := strings.IndexByte(mediaType, ';'); idx >= 0 {
 		mediaType = mediaType[:idx]
 	}
-	return strings.ToLower(strings.TrimSpace(mediaType))
+	return providerutils.JSToLower(providerutils.JSTrim(mediaType))
 }
 
 func deepSeekHasSupportedFilenameExtension(filename string) bool {
@@ -319,6 +309,40 @@ func deepSeekHasSupportedFilenameExtension(filename string) bool {
 	if idx == -1 {
 		return false
 	}
-	ext := strings.ToLower(strings.TrimSpace(filename[idx+1:]))
+	ext := providerutils.JSToLower(filename[idx+1:])
 	return deepSeekSupportedFilenameExtensions[ext]
+}
+
+// deepSeekGroupThousands mirrors Number#toLocaleString('en-US') for integers.
+func deepSeekGroupThousands(n int) string {
+	digits := fmt.Sprintf("%d", n)
+	var b strings.Builder
+	for i, r := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// deepSeekMinExpiresAfter and deepSeekMaxExpiresAfter are the TS
+// expiresAfter bounds (1 hour, 30 days).
+var (
+	deepSeekMinExpiresAfter = 3600
+	deepSeekMaxExpiresAfter = 2592000
+)
+
+// deepSeekOptionNumber reads a provider option given as any Go numeric kind.
+func deepSeekOptionNumber(v interface{}) (float64, bool) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return float64(rv.Uint()), true
+	}
+	return 0, false
 }

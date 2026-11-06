@@ -58,42 +58,43 @@
 // `run`'s job queue goes quiescent, TypeScript batches them into one
 // multi-item Interrupt instead of surfacing them one at a time.
 //
-// This Go port runs QuickJS in-process (no worker), but reaches the same
-// result. `tools.<name>(input)` dispatches through a genuine async host
-// function (qjs.Context.Function's isAsync parameter): calling it returns
-// a real JS Promise immediately, synchronously, without blocking on the
-// underlying bridge call's outcome -- so `tools.a(x)` and `tools.b(y)` in
-// a `Promise.all([...])` array literal are both dispatched to Go before
-// either Promise settles, exactly as native concurrent dispatch would be.
-// A call that needs approval (or that a host tool itself pauses via
-// RequestCodeModeInterrupt) deliberately leaves its Promise unresolved --
-// mirroring TypeScript's context.interrupt(payload), whose Promise also
-// never settles -- instead of rejecting or resolving it, so the sandboxed
-// script keeps making synchronous progress (e.g. dispatching the rest of
-// the same array) until nothing more can run. driveCodeModeExecution
-// (run_code_mode.go) detects that point by draining the job queue to
-// exhaustion with qjs.Context.RunPendingJobs and checking
-// Value.PromiseState on the script's top-level result: once RunPendingJobs
-// reports no more jobs ran and the top-level Promise is still pending, the
-// job queue is quiescent, and every call collected in toolBridge.pendingBatch
-// up to that point surfaces together as one Interrupt whose
-// Continuation.PendingInterruptions holds every entry -- the same
-// multi-item batch TypeScript produces for the same source. See
-// driveCodeModeExecution/bindCodeModeDispatch's doc comments for the full
-// mechanism, and pkg/internal/third_party/qjs/README.vendor.md /
+// This Go port runs QuickJS in-process (no worker) and ports `run@2.1.8`'s
+// bridge rules (dist/runtime/guest-sources.js and manager.js):
+//
+//   - `tools.<name>(input)` serializes its input and returns a frozen
+//     thenable (codeModeGuestSource in bridge_guest.go). The host call
+//     starts only once the script observes it (then/catch/finally, which
+//     `await` and Promise.all do), one microtask later; a call the script
+//     never observes never runs. Calls are numbered in the order they
+//     start, which is the order the `:tool-N` tool call IDs and the
+//     interruption IDs use.
+//   - Each started call runs on its own goroutine (toolBridge.start), so
+//     the calls of a Promise.all are in flight together, up to
+//     ExecutionPolicy.MaxInFlightBridgeRequests at once.
+//   - driveCodeModeExecution (run_code_mode.go) drains the job queue
+//     completely (qjs.Context.RunPendingJobs), then hands the guest one
+//     finished call's outcome in settlement order, and drains again; with
+//     nothing to hand over and calls still running it waits for one.
+//   - A call that needs approval (or that a host tool itself pauses via
+//     RequestCodeModeInterrupt) is never settled -- mirroring TypeScript's
+//     context.interrupt(payload), whose Promise also never settles -- so
+//     the script keeps going until nothing more can run. Once the job queue
+//     is idle, no call is in flight and one or more calls are pending, every
+//     pending call surfaces together, in call order, as one Interrupt whose
+//     Continuation.PendingInterruptions holds every entry -- the same
+//     multi-item batch TypeScript produces for the same source.
+//   - Once the script's result is serialized, the guest checks its calls in
+//     creation order (run's __runAssertNoDetachedBridgeCalls): one never
+//     observed, or one still pending, fails the invocation with
+//     *DetachedBridgeRequestError.
+//
+// See pkg/internal/third_party/qjs/README.vendor.md /
 // build/job-queue-quiescence.patch for the (rebuilt) qjs.wasm export this
 // relies on (QJS_RunPendingJobs/QJS_PromiseState/QJS_PromiseResult --
 // js_std_await/Value.Await, the only previously-exposed way to drive a
 // promise to settlement, blocks until ITS promise settles and cannot
 // safely be used to detect "no more progress possible, and at least one
 // call is still pending").
-//
-// A policy limit is enforced differently than in the single-in-process
-// call this package used to make before this batching existed:
-// MaxInFlightBridgeRequests now bounds how many calls may accumulate in
-// one pending-interruption batch at once, exceeding which fails the whole
-// invocation (mirrors TypeScript's RunBridgeLimitError, raised outside the
-// per-call promise machinery entirely for exactly this condition).
 //
 // # Deterministic replay
 //
@@ -106,19 +107,26 @@
 // custom kind or a skipped approval check for the approval kind) and then,
 // beyond that, genuinely fresh execution. This package implements the same
 // model on top of the bridge described above: every invocation's toolBridge
-// records each completed call's (tool name, input, output), keyed by its
-// 0-based call index rather than append order -- concurrent batching means
-// a later-dispatched call (e.g. one needing no approval, in the same
-// Promise.all as one that does) can settle before an earlier-dispatched one
-// still pending approval, so the ledger is sparse, not a "calls 0..N-1"
-// prefix. Continuation.Token is that sparse map, JSON-encoded, for every
-// call settled by the time the pending interruption batch was collected.
+// records each settled call's (tool name, input, output or rejection,
+// settlement order), keyed by its 0-based call index rather than append
+// order -- a later call (e.g. one needing no approval, in the same
+// Promise.all as one that does) can settle before an earlier one still
+// pending approval, so the ledger is sparse, not a "calls 0..N-1" prefix.
+// Continuation.Token is that sparse map, JSON-encoded, for every call
+// settled by the time the pending interruption batch was collected, with
+// the run's determinism (run's DETERMINISTIC_APIS_SOURCE: the guest clock's
+// start time, each settled call's host time, and the Math.random seed), so
+// a resumed script computes the same Date.now() and Math.random() values.
 // Resuming decodes it back into a replay ledger and re-runs the identical
-// source, short-circuiting whichever call indices are present in the
-// ledger, applying resume semantics (via each PendingInterruption's own
-// call index, recovered from its RunInterruptionID, not its position in
-// the batch) to the calls covering the continuation's PendingInterruptions,
-// and executing every other call for real.
+// source: a call present in the ledger gets its recorded outcome, delivered
+// in its recorded settlement order (TS run's queueBridgeResponse); a call
+// covering one of the continuation's PendingInterruptions (found by its own
+// call index, recovered from its RunInterruptionID, not its position in the
+// batch) gets resume semantics; every other call executes for real. As in
+// TS run, a resumed call that is not the recorded one ("Continuation replay
+// diverged from the recorded host function ledger.") and a script that
+// finishes before making every recorded call ("Continuation completed
+// before replaying the full host function ledger.") are protocol errors.
 package codemode
 
 import (

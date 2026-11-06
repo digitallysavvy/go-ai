@@ -46,8 +46,18 @@ func TestOutputDimensionValidation(t *testing.T) {
 			wantError: true,
 		},
 		{
-			name:      "invalid dimension 2048",
-			dimension: ptr(OutputDimension(2048)),
+			name:      "768 dimension (Embed 5)",
+			dimension: ptr(Dimension768),
+			wantError: false,
+		},
+		{
+			name:      "2048 dimension (Embed 5)",
+			dimension: ptr(Dimension2048),
+			wantError: false,
+		},
+		{
+			name:      "invalid dimension 1000",
+			dimension: ptr(OutputDimension(1000)),
 			wantError: true,
 		},
 	}
@@ -189,8 +199,8 @@ func TestTruncateModeValidation(t *testing.T) {
 func TestDefaultEmbeddingOptions(t *testing.T) {
 	opts := DefaultEmbeddingOptions()
 
-	if opts.InputType != InputTypeSearchDocument {
-		t.Errorf("DefaultEmbeddingOptions() InputType = %v, want %v", opts.InputType, InputTypeSearchDocument)
+	if opts.InputType != InputTypeSearchQuery {
+		t.Errorf("DefaultEmbeddingOptions() InputType = %v, want %v", opts.InputType, InputTypeSearchQuery)
 	}
 
 	if opts.OutputDimension != nil {

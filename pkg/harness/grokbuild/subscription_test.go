@@ -3,6 +3,7 @@ package grokbuild
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -137,5 +138,134 @@ func TestReadSubscription_RefreshesExpiring(t *testing.T) {
 	}
 	if !strings.Contains(string(persisted), "new-refresh") {
 		t.Errorf("persisted file missing new-refresh: %s", persisted)
+	}
+}
+
+// TS rewrites auth.json with JSON.stringify(spread records): scope and field
+// order are preserved, so the next read selects the same scope.
+func TestReadSubscription_RefreshPreservesKeyOrder(t *testing.T) {
+	grokHome := t.TempDir()
+	authPath := filepath.Join(grokHome, "auth.json")
+	exp := time.Now().Add(60 * time.Second).UnixMilli()
+	other := "https://other.example::not-xai"
+	text := fmt.Sprintf(`{"z-first":{"b":1,"a":2},%q:{"key":"k","refresh_token":"r","expires_at":%d,"zeta":true,"email":"<a&b>"},%q:{"x":1}}`, testScope, exp, other)
+	if err := os.WriteFile(authPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_, _ = w.Write([]byte(`{"token_endpoint":"https://auth.x.ai/oauth2/token"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`))
+	}))
+	defer server.Close()
+	if _, err := ReadSubscription(context.Background(), ReadSubscriptionOptions{
+		Env: map[string]string{"GROK_HOME": grokHome}, HTTPClient: rewriteHostClient(t, server.URL),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, _ := os.ReadFile(authPath)
+	s := string(persisted)
+	idx := func(sub string) int { return strings.Index(s, sub) }
+	if idx(`"z-first"`) >= idx(`"`+testScope+`"`) || idx(`"`+testScope+`"`) >= idx(`"`+other+`"`) {
+		t.Errorf("scope order not preserved:\n%s", s)
+	}
+	if idx(`"b": 1`) >= idx(`"a": 2`) || idx(`"key"`) >= idx(`"refresh_token"`) || idx(`"refresh_token"`) >= idx(`"expires_at"`) || idx(`"expires_at"`) >= idx(`"zeta"`) {
+		t.Errorf("field order not preserved:\n%s", s)
+	}
+	if !strings.Contains(s, `"email": "<a&b>"`) || !strings.Contains(s, "new-access") || !strings.HasSuffix(s, "}\n") {
+		t.Errorf("unexpected file:\n%s", s)
+	}
+}
+
+// TS `env.XAI_API_KEY != null`: a set-but-empty key is a direct credential,
+// so the native subscription is not consulted.
+func TestResolveSubscriptionEnvironment_EmptyKeyIsDirect(t *testing.T) {
+	env := map[string]string{"XAI_API_KEY": "", "GROK_HOME": t.TempDir()}
+	got, err := ResolveSubscriptionEnvironment(context.Background(), ResolveSubscriptionEnvironmentOptions{Env: env})
+	if err != nil || len(got) != len(env) {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}
+
+func TestCredentialBrokering_NullishSemantics(t *testing.T) {
+	trs, err := CredentialBrokeringErr(map[string]string{"XAI_API_KEY": "host", "GROK_CLI_CHAT_PROXY_BASE_URL": ""}, map[string]string{"XAI_API_KEY": "sbx"}, nil)
+	if err != nil || len(trs) != 1 {
+		t.Fatalf("%v %v", trs, err)
+	}
+	if trs[0].Transform.Headers["X-XAI-Token-Auth"] != "xai-grok-cli" {
+		t.Fatalf("set-but-empty proxy URL must still add the token header: %+v", trs[0].Transform.Headers)
+	}
+}
+
+// TS re-serializes the whole parsed file (JSON.stringify(authRecords, null, 2)),
+// so escapes, number spellings and integer-like key order normalize.
+func TestReadSubscription_RefreshReserializesLikeJSONStringify(t *testing.T) {
+	grokHome := t.TempDir()
+	authPath := filepath.Join(grokHome, "auth.json")
+	exp := time.Now().Add(60 * time.Second).UnixMilli()
+	text := fmt.Sprintf(`{"other":{"e":"<a&b>","n":1.0,"big":1e2},%q:{"key":"k","refresh_token":"r","expires_at":%d,"note":"<","b":1,"2":true}}`, testScope, exp)
+	if err := os.WriteFile(authPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_, _ = w.Write([]byte(`{"token_endpoint":"https://auth.x.ai/oauth2/token"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`))
+	}))
+	defer server.Close()
+	if _, err := ReadSubscription(context.Background(), ReadSubscriptionOptions{
+		Env: map[string]string{"GROK_HOME": grokHome}, HTTPClient: rewriteHostClient(t, server.URL),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, _ := os.ReadFile(authPath)
+	s := string(persisted)
+	for _, want := range []string{`"e": "<a&b>"`, `"n": 1,`, `"big": 100`, `"note": "<"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %s in:\n%s", want, s)
+		}
+	}
+	if strings.Index(s, `"2": true`) > strings.Index(s, `"key"`) {
+		t.Errorf("integer-like key must enumerate first:\n%s", s)
+	}
+}
+
+func TestReadSubscription_RejectsForbiddenPrototypeKey(t *testing.T) {
+	grokHome := t.TempDir()
+	text := fmt.Sprintf(`{%q:{"key":"k","refresh_token":"r","expires_at":%d},"__proto__":{}}`, testScope, time.Now().Add(time.Hour).UnixMilli())
+	if err := os.WriteFile(filepath.Join(grokHome, "auth.json"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadSubscription(context.Background(), ReadSubscriptionOptions{Env: map[string]string{"GROK_HOME": grokHome}})
+	if err != nil || got != nil {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}
+
+// TS normalizeExpiresAt reads a string with Date.parse.
+func TestNormalizeExpiresAtUsesDateParse(t *testing.T) {
+	cases := []struct {
+		in   any
+		want int64
+		ok   bool
+	}{
+		{"2026-10-27T10:00:00.000Z", 1793095200000, true},
+		{"2026-10-27T10:00:00+0200", 1793088000000, true},
+		{"Tue, 27 Oct 2026 10:00:00 GMT", 1793095200000, true},
+		{"2026-10-27T10:00:00.5+05:30", 1793075400500, true},
+		{"2026-10-27T10:00:00 Z", 0, false},
+		{float64(1793095200), 1793095200000, true},
+	}
+	for _, c := range cases {
+		got, ok := normalizeExpiresAt(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("normalizeExpiresAt(%v) = %d, %v; want %d, %v", c.in, got, ok, c.want, c.ok)
+		}
 	}
 }

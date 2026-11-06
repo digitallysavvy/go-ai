@@ -9,13 +9,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // UIMessageChunk is a lightweight JSON-compatible chunk shape.
@@ -139,6 +148,13 @@ type UIMessageStreamResultOptions struct {
 	// Deprecated: use OnEnd.
 	OnFinish UIMessageStreamOnFinishCallback
 	OnError  func(error) string
+	// PartialStream marks a source that may end without a finish or error
+	// chunk because the producer intentionally suspended it mid-step (a
+	// time-sliced harness turn). The converter then forwards what arrived and
+	// stops: it does not close open parts, invent a trailing `finish-step` or
+	// `finish`, or report an incomplete-stream error. TS forwards stream parts
+	// as they come and repairs nothing.
+	PartialStream bool
 }
 
 // UIMessageStreamResponseInit mirrors the TypeScript response init shape used by
@@ -152,16 +168,34 @@ type UIMessageStreamResponseInit struct {
 	// Header carries repeated header values (e.g. multiple Set-Cookie
 	// entries), which map[string]string cannot represent. Values here are
 	// added in addition to Headers, so both can be set together.
-	Header           http.Header
+	Header http.Header
+	// ConsumeSSEStream, when set, gets a copy of the SSE stream in its own
+	// goroutine. Nothing waits for it, as TS does not await
+	// consumeSseStream: its copy is buffered, a response body ends after the
+	// last event, and the Pipe* helpers return once the response is written.
+	// Its error is not returned; handle it inside the callback. The callback
+	// may outlive the HTTP handler, so it must not use the ResponseWriter or
+	// rely on the request's context (use context.WithoutCancel). The copy is
+	// dropped once the callback returns.
 	ConsumeSSEStream func(io.Reader) error
 	// KeepAliveMs, when set, makes the SSE pipeline flush an opening
 	// ": stream-open\n\n" comment immediately (so headers reach the client
 	// right away even if the first real chunk is slow) and send a
 	// ": keep-alive\n\n" comment whenever this duration elapses without any
 	// other write, resetting on every chunk. Must be a positive duration;
-	// zero or negative disables it the same as a nil value. Mirrors TS
-	// createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
+	// zero, a negative duration or one above 2147483647ms is an error, as in
+	// TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
 	KeepAliveMs *time.Duration //nolint:revive,staticcheck // name matches TS SDK field "keepAliveMs" for parity
+	// StreamErrors, when set, is the error channel returned with the chunks
+	// passed to PipeUIMessageChunksToResponse or CreateUIMessageChunksResponse
+	// (CreateUIMessageStreamWithOptions, CreateUIMessageStream,
+	// CreateAgentUIStreamFromUIMessages). Once the chunk channel closes, the
+	// helper reads one error from it without blocking; a failed stream then
+	// ends without "data: [DONE]", as TS ends an errored stream: the Pipe
+	// helper returns the error and the response body ends with it. The error
+	// is consumed. Nil keeps the v0.5 behavior (always "data: [DONE]"). The
+	// StreamTextResult helpers ignore it: they see their own failure.
+	StreamErrors <-chan error
 }
 
 const (
@@ -209,6 +243,32 @@ func resolveUIMessageStreamOnEnd(onEnd, onFinish UIMessageStreamOnEndCallback) U
 	return onFinish
 }
 
+func panicToError(r interface{}) error {
+	if err, ok := r.(error); ok {
+		return err
+	}
+	return fmt.Errorf("%v", r)
+}
+
+// reportUIStreamCallbackFailure fails the stream with what an onEnd callback
+// panicked with. errCh holds one error; the first failure wins.
+func reportUIStreamCallbackFailure(errCh chan<- error, r interface{}) {
+	select {
+	case errCh <- panicToError(r):
+	default:
+	}
+}
+
+// sendUIStreamErr fails the stream with err unless an earlier failure (for
+// example a step callback whose onError panicked) already filled errCh, so
+// the stream goroutine never blocks on the one-slot channel and out closes.
+func sendUIStreamErr(errCh chan<- error, err error) {
+	select {
+	case errCh <- err:
+	default:
+	}
+}
+
 // CreateUIMessageStreamWithOptions creates a UI message stream with writer callbacks.
 func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStreamOptions) (<-chan UIMessageChunk, <-chan error) {
 	out := make(chan UIMessageChunk)
@@ -237,6 +297,9 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			defer func() {
 				_ = recover()
 			}()
+			if ctx.Err() != nil {
+				return // a cancelled consumer wins over a ready reader
+			}
 			select {
 			case out <- part:
 			case <-ctx.Done():
@@ -260,25 +323,35 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			fatalErr = err
 		}
 
-		enqueueError := func(err error) {
-			failOutcome(err)
-			appendErrorChunk(onError, safeEnqueue, err)
-		}
-
 		generateID := options.GenerateMessageID
 		if generateID == nil {
-			generateID = newCallID
+			// TS default: the built-in generateId (16 alphanumerics, no prefix).
+			generateID = GenerateID
 		}
 		uiState := newUIMessageCallbackState(options.OriginalMessages, generateID())
+		// TS handleUIMessageStreamFinish fixes the injected id up front: the
+		// continued assistant message's id, else the generated one. A start
+		// chunk that carries its own id does not change it. The generated id
+		// is always defined (even when empty); a continued message without an
+		// id has none (TS `messageId != null`).
+		responseMessageID, hasResponseMessageID := uiState.message["id"].(string)
 
 		onEnd := resolveUIMessageStreamOnEnd(options.OnEnd, options.OnFinish)
+		// processingErr is the first chunk the callback state could not apply
+		// (TS processUIMessageStream throws a UIMessageStreamError). Only set
+		// on the consumer goroutine, read after it is done.
+		var processingErr error
 		callOnEnd := func() {
 			if onEnd == nil {
 				return
 			}
 			outcomeMu.Lock()
 			outcome := declaredOutcome
-			if hasFatalFailure {
+			if processingErr != nil {
+				// TS handleUIMessageStreamFinish: a processing failure is the
+				// outcome, whatever the stream owner declared.
+				outcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: processingErr}
+			} else if hasFatalFailure {
 				outcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: fatalErr}
 			} else if outcome.Status == UIMessageStreamOutcomeUnknown && uiState.isAborted {
 				outcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted}
@@ -286,7 +359,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			outcomeMu.Unlock()
 			isCancelled := ctx.Err() != nil && outcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"isAborted":       uiState.isAborted || outcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
@@ -296,8 +369,12 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			if isCancelled {
 				finishEvent["isCancelled"] = true
 			}
+			// TS handleUIMessageStreamFinish awaits onEnd in the transform's
+			// flush/cancel, so an error it throws fails the stream.
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					reportUIStreamCallbackFailure(errCh, r)
+				}
 			}()
 			onEnd(finishEvent)
 		}
@@ -308,19 +385,63 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				return
 			}
 			stepEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 			}
+			// TS callOnStepFinish catches what onStepEnd throws and reports it
+			// through the stream's onError; the stream keeps going.
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					defer func() {
+						if r2 := recover(); r2 != nil {
+							reportUIStreamCallbackFailure(errCh, r2)
+						}
+					}()
+					onError(panicToError(r))
+				}
 			}()
 			onStepEnd(stepEvent)
 		}
+		// TS handleUIMessageStreamFinish only processes the chunks (message
+		// state, step callbacks) when an end or step-end callback is set.
+		processing := onEnd != nil || onStepEnd != nil
 		processAndEnqueue := func(part UIMessageChunk) {
-			uiState.apply(part, onError)
-			if part["type"] == "finish-step" {
-				callOnStepFinish()
+			if processingErr != nil {
+				// TS: the processing failure errored the stream.
+				return
+			}
+			if ctx.Err() != nil {
+				// A cancelled consumer: TS discards the queued chunks and
+				// handleUIMessageStreamFinish's cancel calls onEnd without
+				// processing another one, so a chunk that reached chunkCh as
+				// the ctx was cancelled (an abort chunk from a source on the
+				// same ctx) does not change the message state or the outcome.
+				return
+			}
+			// TS handleUIMessageStreamFinish: a start chunk without a
+			// messageId gets the response message id (the continued
+			// assistant message's id, else the generated one).
+			if part["type"] == "start" {
+				// TS: `startChunk.messageId == null && messageId != null`.
+				if part["messageId"] == nil && hasResponseMessageID {
+					injected := make(UIMessageChunk, len(part)+1)
+					for k, v := range part {
+						injected[k] = v
+					}
+					injected["messageId"] = responseMessageID
+					part = injected
+				}
+			}
+			if processing {
+				if err := applyUIStateChunk(uiState, part, onError); err != nil {
+					processingErr = err
+					sendUIStreamErr(errCh, err)
+					return
+				}
+				if part["type"] == "finish-step" {
+					callOnStepFinish()
+				}
 			}
 			safeEnqueue(part)
 		}
@@ -349,7 +470,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		sendChunk := func(part UIMessageChunk) {
 			chunkMu.RLock()
 			defer chunkMu.RUnlock()
-			if chunkClosed {
+			if chunkClosed || ctx.Err() != nil {
 				return
 			}
 			select {
@@ -358,21 +479,57 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			}
 		}
 
-		var wg sync.WaitGroup
+		// enqueueError writes the error chunk through the same pipeline as
+		// every other chunk (TS handleError enqueues it on the stream that
+		// handleUIMessageStreamFinish processes).
+		enqueueError := func(err error) {
+			failOutcome(err)
+			// TS handleError: an onError that throws fails the stream with
+			// that error instead of writing an error chunk.
+			defer func() {
+				if r := recover(); r != nil {
+					onErrorErr := panicToError(r)
+					failOutcome(onErrorErr)
+					reportUIStreamCallbackFailure(errCh, r)
+				}
+			}()
+			appendErrorChunk(onError, sendChunk, err)
+		}
+
+		// activeMerges counts the running merge goroutines. The stream ends
+		// once Execute has returned and the count is zero (TS waits for
+		// every ongoing merge, so one merged while another is still open
+		// extends the stream); a later merge is dropped. The count and the
+		// end are guarded by one mutex, so a Merge from another goroutine as
+		// the last merge ends either registers before the end or is
+		// dropped (a sync.WaitGroup Add at zero concurrent with Wait is a
+		// misuse that panics).
+		var mergeMu sync.Mutex
+		mergeIdle := sync.NewCond(&mergeMu)
+		activeMerges := 0
+		mergesEnded := false
+		mergeDone := func() {
+			mergeMu.Lock()
+			activeMerges--
+			if activeMerges == 0 {
+				mergeIdle.Broadcast()
+			}
+			mergeMu.Unlock()
+		}
 		merge := func(stream <-chan UIMessageChunk) {
 			if stream == nil {
 				enqueueError(errors.New("merge stream is nil"))
 				return
 			}
-			chunkMu.RLock()
-			lateMerge := chunkClosed
-			chunkMu.RUnlock()
-			if lateMerge {
+			mergeMu.Lock()
+			if mergesEnded {
+				mergeMu.Unlock()
 				return
 			}
-			wg.Add(1)
+			activeMerges++
+			mergeMu.Unlock()
 			go func() {
-				defer wg.Done()
+				defer mergeDone()
 				defer func() {
 					if r := recover(); r != nil {
 						if err, ok := r.(error); ok {
@@ -431,7 +588,12 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			options.Execute(writer)
 		}()
 
-		wg.Wait()
+		mergeMu.Lock()
+		for activeMerges > 0 {
+			mergeIdle.Wait()
+		}
+		mergesEnded = true
+		mergeMu.Unlock()
 		chunkMu.Lock()
 		chunkClosed = true
 		close(chunkCh)
@@ -458,10 +620,47 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 		close(errCh)
 		return out, errCh
 	}
-	return ToUIMessageStream(ctx, result.Stream(), opts...)
+	return ToUIMessageStream(ctx, result.uiStream(), result.uiOptionsWithRequestTools(opts)...)
 }
 
-// ToUIMessageStream converts a provider text stream into UI message chunks.
+// uiOptionsWithRequestTools defaults the UI conversion's Tools to the tool set
+// the call was made with (TS toUIMessageStream passes `this.tools`), unless
+// the caller supplied its own.
+func (r *StreamTextResult) uiOptionsWithRequestTools(opts []UIMessageStreamResultOptions) []UIMessageStreamResultOptions {
+	if len(r.requestTools) == 0 || (len(opts) > 0 && len(opts[0].Tools) > 0) {
+		return opts
+	}
+	var options UIMessageStreamResultOptions
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+	options.Tools = r.requestTools
+	return append([]UIMessageStreamResultOptions{options}, opts[min(len(opts), 1):]...)
+}
+
+// uiConsumerCtxKey carries the context a UI stream's consumer was created
+// from, when the converter runs on a context derived from it (see
+// PipeUIMessageStreamToResponseWithInit).
+type uiConsumerCtxKey struct{}
+
+// uiConsumerErr is ctx.Err(), or the error of the consumer context ctx was
+// derived from: a cancelled context sets its error before it cancels its
+// children, so the consumer's cancellation is seen even while ctx itself is
+// still being cancelled.
+func uiConsumerErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if parent, ok := ctx.Value(uiConsumerCtxKey{}).(context.Context); ok {
+		return parent.Err()
+	}
+	return nil
+}
+
+// ToUIMessageStream converts a text stream into UI message chunks. A source
+// whose first part is ChunkTypeStart (StreamText-shaped parts) maps one to one
+// as TS toUIMessageStream; a raw provider stream is framed with start,
+// finish-step, finish and an incomplete-stream error chunk.
 func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
 	out := make(chan UIMessageChunk)
 	errCh := make(chan error, 1)
@@ -469,6 +668,20 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 	go func() {
 		defer close(out)
 		defer close(errCh)
+		// An OnError, MessageMetadata or conversion callback that panics
+		// fails the stream (TS: an error thrown in the transform errors the
+		// stream) instead of crashing the program from this goroutine, and
+		// OnEnd runs once with that error as the failed outcome (TS
+		// failOutcome, then handleUIMessageStreamFinish's cancel).
+		var endOnPanic func(error)
+		defer func() {
+			if r := recover(); r != nil {
+				reportUIStreamCallbackFailure(errCh, r)
+				if endOnPanic != nil {
+					endOnPanic(panicToError(r))
+				}
+			}
+		}()
 		if stream == nil {
 			errCh <- fmt.Errorf("stream is required")
 			return
@@ -484,10 +697,18 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		sendFinish := boolOption(options.SendFinish, true)
 		sendReasoning := boolOption(options.SendReasoning, true)
 
-		streamMessageID := responseUIMessageID(options)
-		callbackMessageID := streamMessageID
-		if callbackMessageID == "" && options.GenerateMessageID != nil {
-			callbackMessageID = options.GenerateMessageID()
+		// TS toUIMessageStream: the start chunk carries responseMessageId
+		// when it is defined; handleUIMessageStreamFinish's messageId is
+		// `responseMessageId ?? generateMessageId?.()`, replaced by the
+		// continued assistant message's id (undefined when it has none), and
+		// is injected into a start chunk without one.
+		streamMessageID, hasStreamMessageID := responseUIMessageIDOK(options)
+		callbackMessageID, hasCallbackMessageID := streamMessageID, hasStreamMessageID
+		if !hasCallbackMessageID && options.GenerateMessageID != nil {
+			callbackMessageID, hasCallbackMessageID = options.GenerateMessageID(), true
+		}
+		if last, ok := lastAssistantUIMessage(options.OriginalMessages); ok {
+			callbackMessageID, hasCallbackMessageID = last["id"].(string)
 		}
 
 		uiState := newUIMessageCallbackState(options.OriginalMessages, callbackMessageID)
@@ -513,17 +734,37 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 
 		onEnd := resolveUIMessageStreamOnEnd(options.OnEnd, options.OnFinish)
-		callOnEnd := func(finishReason types.FinishReason) {
-			if onEnd == nil {
+		// processingErr is the first chunk the callback state could not apply
+		// (TS processUIMessageStream throws a UIMessageStreamError, which
+		// errors the stream and becomes the outcome).
+		var processingErr error
+		endCalled := false
+		callOnEnd := func() {
+			if onEnd == nil || endCalled {
 				return
+			}
+			endCalled = true
+			// TS handleUIMessageStreamFinish passes state.finishReason: the
+			// reason of the last finish chunk the message state applied, so
+			// none when SendFinish is false or the stream failed before its
+			// finish chunk.
+			finishReason := types.FinishReason("")
+			switch reason := uiState.finishReason.(type) {
+			case string:
+				finishReason = types.FinishReason(reason)
+			case types.FinishReason:
+				finishReason = reason
+			}
+			if processingErr != nil {
+				sourceOutcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: processingErr}
 			}
 			// isCancelled reflects the consumer stopping (ctx cancelled) before
 			// the source stream itself declared an outcome; isAborted reflects
 			// the source stream's own abort part. Mirrors CreateUIMessageStream
 			// above and TS to-ui-message-stream.ts (audit row #10/#103).
-			isCancelled := ctx.Err() != nil && sourceOutcome.Status == UIMessageStreamOutcomeUnknown
+			isCancelled := uiConsumerErr(ctx) != nil && sourceOutcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"isAborted":       uiState.isAborted || sourceOutcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
@@ -533,10 +774,19 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			if isCancelled {
 				finishEvent["isCancelled"] = true
 			}
+			// TS handleUIMessageStreamFinish awaits onEnd in the transform's
+			// flush/cancel, so an error it throws fails the stream.
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					reportUIStreamCallbackFailure(errCh, r)
+				}
 			}()
 			onEnd(finishEvent)
+		}
+		finishReason := types.FinishReason("")
+		endOnPanic = func(err error) {
+			failSourceOutcome(err)
+			callOnEnd()
 		}
 
 		onStepEnd := resolveUIMessageStreamOnStepEnd(options.OnStepEnd, options.OnStepFinish)
@@ -545,17 +795,36 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				return
 			}
 			stepEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 			}
+			// TS callOnStepFinish catches what onStepEnd throws and reports it
+			// through the stream's onError; the stream keeps going.
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					defer func() {
+						if r2 := recover(); r2 != nil {
+							reportUIStreamCallbackFailure(errCh, r2)
+						}
+					}()
+					onError(panicToError(r))
+				}
 			}()
 			onStepEnd(stepEvent)
 		}
 
 		safeEnqueue := func(part UIMessageChunk) {
+			// A cancelled ctx wins over a ready reader (non-blocking check
+			// first, as the CreateUIMessageStream merge does): once the
+			// consumer is cancelled nothing more is written, so a part the
+			// source produced after the cancellation (StreamText's abort part
+			// when the same ctx drives both) is never written, instead of Go's
+			// select picking between the two ready cases at random. TS: a
+			// cancelled reader receives no further value.
+			if ctx.Err() != nil {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -563,10 +832,27 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 
+		// TS handleUIMessageStreamFinish only processes the chunks (message
+		// state, step callbacks) when an end or step-end callback is set.
+		processing := onEnd != nil || onStepEnd != nil
 		processChunk := func(chunk UIMessageChunk) {
-			uiState.apply(chunk, onError)
-			if chunk["type"] == "finish-step" {
-				callOnStepFinish()
+			if processingErr != nil {
+				return
+			}
+			if ctx.Err() != nil {
+				// A cancelled consumer: TS processes no further chunk (the
+				// message state and step callbacks stop with the stream).
+				return
+			}
+			if processing {
+				if err := applyUIStateChunk(uiState, chunk, onError); err != nil {
+					processingErr = err
+					sendUIStreamErr(errCh, err)
+					return
+				}
+				if chunk["type"] == "finish-step" {
+					callOnStepFinish()
+				}
 			}
 			safeEnqueue(chunk)
 		}
@@ -594,7 +880,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 		processMessageMetadata := func(part provider.StreamChunk) {
-			if options.MessageMetadata == nil {
+			// The start part's metadata was taken once, for the start chunk
+			// sent before the source is read: TS calls messageMetadata once per
+			// part, so the source's own start part does not call it again.
+			if options.MessageMetadata == nil || part.Type == provider.ChunkTypeStart {
 				return
 			}
 			input := messageMetadataInput(part, "")
@@ -608,19 +897,25 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 
-		var startMetadata map[string]interface{}
-		if options.MessageMetadata != nil {
-			startMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{Type: provider.ChunkType("start")}, "start"))
+		startMessageID, hasStartMessageID := streamMessageID, hasStreamMessageID
+		if !hasStartMessageID {
+			startMessageID, hasStartMessageID = callbackMessageID, hasCallbackMessageID
 		}
-		if sendStart {
+		// writeStart writes the UI "start" chunk for a start part (TS
+		// toUIMessageChunk 'start': messageMetadata, then messageId), calling
+		// messageMetadata once for it even when SendStart is false.
+		writeStart := func() {
+			var startMetadata map[string]interface{}
+			if options.MessageMetadata != nil {
+				startMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{Type: provider.ChunkType("start")}, "start"))
+			}
+			if !sendStart {
+				return
+			}
 			startEvent := map[string]interface{}{
 				"type": "start",
 			}
-			startMessageID := streamMessageID
-			if startMessageID == "" && options.GenerateMessageID != nil {
-				startMessageID = callbackMessageID
-			}
-			if startMessageID != "" {
+			if hasStartMessageID {
 				startEvent["messageId"] = startMessageID
 			}
 			if startMetadata != nil {
@@ -629,7 +924,36 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			processChunk(startEvent)
 		}
 
-		finishReason := types.FinishReason("")
+		// oneToOne: the source's first part is a ChunkTypeStart part, so it is
+		// a StreamText-shaped TextStreamPart sequence (StreamText,
+		// NewStreamTextResultFromParts, harness streams, or a caller's own
+		// part slice). TS toUIMessageStream maps such a source one to one:
+		// the start part writes the start chunk, the finish part writes the
+		// finish chunk where it occurs, and the end of the source adds
+		// nothing (no closing of open blocks, no finish-step or finish, no
+		// incomplete-stream error). A raw provider stream never starts with
+		// a start part and keeps Go's framing below (owner ruling
+		// 2026-10-30, option (a)).
+		oneToOne := false
+		var peeked *provider.StreamChunk
+		var peekedErr error
+		hasPeeked := false
+		select {
+		case <-ctx.Done():
+		default:
+			first, err := stream.Next()
+			hasPeeked = true
+			peekedErr = err
+			if err == nil && first != nil {
+				firstCopy := *first
+				peeked = &firstCopy
+				oneToOne = first.Type == provider.ChunkTypeStart
+			}
+		}
+		if !oneToOne {
+			writeStart()
+		}
+
 		sawTerminal := false
 		sawFinishChunk := false
 		sawOutput := false
@@ -670,8 +994,39 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// an earlier step's ChunkTypeFinishStep (see
 		// TestNewStreamTextResultFromParts_ToUIMessageStream).
 		sawStepFinishStep := false
-		activeTextIDs := map[string]bool{}
-		activeReasoningIDs := map[string]bool{}
+		// announcedApprovals holds the approval IDs whose tool-approval-request
+		// part the source already carried. StreamText sends the request and
+		// response parts itself, then the approved call's tool-result (which
+		// still records its ApprovalStatus); TS maps that result to the
+		// tool-output chunk only, so the result must not expand into a second
+		// request/response pair.
+		announcedApprovals := map[string]bool{}
+		// sawStartStepChunk marks a source that carries genuine
+		// ChunkTypeStartStep parts: a StreamText or NewStreamTextResultFromParts
+		// full stream, whose ChunkTypeFinish is always the TS call-level
+		// 'finish' part. TS to-ui-message-chunk.ts maps 'finish' to the UI
+		// "finish" part only: no "finish-step", and no closing of text or
+		// reasoning blocks (a harness turn suspended mid-step ends with a
+		// bare 'finish' after its open step was discarded, and leaves those
+		// blocks open for the next slice). Only a raw provider stream, which
+		// has no ChunkTypeStartStep, still treats ChunkTypeFinish as its
+		// step boundary.
+		sawStartStepChunk := false
+		endedWithCallFinish := false
+		// callFinishPart is the source's last ChunkTypeFinish: the TS 'finish'
+		// part messageMetadata sees carries the call's finishReason,
+		// rawFinishReason and totalUsage.
+		var callFinishPart *provider.StreamChunk
+		// lastPartErr is the error of the source's previous part when it was
+		// an error part carrying one, else nil (the value, not the part: a
+		// TextStream may reuse the chunk it returned).
+		var lastPartErr error
+		// lastPartAbort: the source's previous part was an abort part;
+		// sawAbortPart: any part was.
+		lastPartAbort := false
+		sawAbortPart := false
+		activeTextIDs := &orderedIDSet{}
+		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
 		reasoningID := ""
 		textSeq := 0
@@ -684,8 +1039,8 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				}
 				id = textID
 			}
-			if !activeTextIDs[id] {
-				activeTextIDs[id] = true
+			if !activeTextIDs.has(id) {
+				activeTextIDs.add(id)
 				processChunk(UIMessageChunk{"type": "text-start", "id": id})
 			}
 			return id
@@ -698,57 +1053,104 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				}
 				id = reasoningID
 			}
-			if !activeReasoningIDs[id] {
-				activeReasoningIDs[id] = true
+			if !activeReasoningIDs.has(id) {
+				activeReasoningIDs.add(id)
 				processChunk(UIMessageChunk{"type": "reasoning-start", "id": id})
 			}
 			return id
 		}
 		closeOpenParts := func() {
-			for id := range activeTextIDs {
+			for _, id := range activeTextIDs.snapshot() {
 				processChunk(UIMessageChunk{"type": "text-end", "id": id})
-				delete(activeTextIDs, id)
+				activeTextIDs.remove(id)
 			}
 			if sendReasoning {
-				for id := range activeReasoningIDs {
+				for _, id := range activeReasoningIDs.snapshot() {
 					processChunk(UIMessageChunk{"type": "reasoning-end", "id": id})
-					delete(activeReasoningIDs, id)
+					activeReasoningIDs.remove(id)
 				}
 			} else {
-				activeReasoningIDs = map[string]bool{}
+				activeReasoningIDs.clear()
 			}
 		}
 		for {
+			if processingErr != nil {
+				callOnEnd()
+				return
+			}
 			select {
 			case <-ctx.Done():
-				errCh <- ctx.Err()
-				callOnEnd(finishReason)
+				sendUIStreamErr(errCh, ctx.Err())
+				callOnEnd()
 				return
 			default:
 			}
-			chunk, err := stream.Next()
+			var chunk *provider.StreamChunk
+			var err error
+			if hasPeeked {
+				chunk, err = peeked, peekedErr
+				hasPeeked, peeked, peekedErr = false, nil, nil
+			} else {
+				chunk, err = stream.Next()
+			}
+			if consumerErr := uiConsumerErr(ctx); consumerErr != nil {
+				// The consumer was cancelled while the read was in flight:
+				// the part it returned (StreamText's abort part, or the ctx
+				// error of a source on the same ctx) is not processed, so
+				// OnEnd always reports the cancellation (isCancelled), not an
+				// abort that was never written. TS: a cancelled reader
+				// cancels the pipeline, and handleUIMessageStreamFinish's
+				// cancel calls onEnd without processing another chunk.
+				sendUIStreamErr(errCh, consumerErr)
+				callOnEnd()
+				return
+			}
 			if err != nil {
 				if err == io.EOF {
 					break
 				}
 				if isAbortErr(ctx, err) {
 					setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted})
+					if lastPartAbort {
+						// A StreamText run TS ends with an `abort` part closes
+						// its Go stream with the abort error after the part:
+						// TS's source ends normally there, so the part's own
+						// abort chunk is the only one.
+						callOnEnd()
+						return
+					}
 					abortPart := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 					abortChunk := UIMessageChunk{"type": "abort"}
-					if err.Error() != "" {
-						abortPart.AbortReason = err.Error()
-						abortChunk["reason"] = abortPart.AbortReason
+					if reason := abortReasonMessage(err); reason != "" {
+						abortPart.AbortReason = reason
+						abortChunk["reason"] = reason
 					}
 					processChunk(abortChunk)
 					processMessageMetadata(abortPart)
-					callOnEnd(finishReason)
+					callOnEnd()
 					return
 				}
-				failSourceOutcome(err)
-				errCh <- err
-				appendErrorChunk(onError, safeEnqueue, err)
-				callOnEnd(finishReason)
+				sendUIStreamErr(errCh, err)
+				// A StreamText run that TS ends with an `error` part (a model
+				// call that fails to open, a failed step preparation, a model
+				// stream without output) closes its Go stream with that same
+				// error after the part. TS's source stream ends normally
+				// there, so the part's own error chunk is the only one and
+				// the outcome stays the part's failed outcome.
+				if lastPartErr == nil || !errors.Is(err, lastPartErr) {
+					failSourceOutcome(err)
+					appendErrorChunk(onError, safeEnqueue, err)
+				}
+				callOnEnd()
 				return
+			}
+			lastPartErr = nil
+			if chunk.Type == provider.ChunkTypeError {
+				lastPartErr = chunk.Err
+			}
+			lastPartAbort = chunk.Type == provider.ChunkTypeAbort
+			if lastPartAbort {
+				sawAbortPart = true
 			}
 
 			if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
@@ -764,21 +1166,84 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// recorded as Failed.
 			if chunk.Type == provider.ChunkTypeFinish {
 				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+				finishPart := *chunk
+				callFinishPart = &finishPart
+			}
+			if chunk.Type == provider.ChunkTypeAbort {
+				// TS: part.type === 'abort' → setSourceOutcome aborted.
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted})
 			}
 			if chunk.Type == provider.ChunkTypeError {
 				sawTerminal = true
 				if finishReason == "" {
 					finishReason = types.FinishReasonError
 				}
-				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: errors.New(chunk.Text)})
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: streamChunkError(chunk)})
 			}
 			if isModelOutputChunkType(chunk.Type) {
 				sawOutput = true
 			}
-			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
+			// An empty text delta is a UI text-delta only when it carries
+			// provider metadata (e.g. a Gemini thought signature): StreamText
+			// forwards just those, and TS toUIMessageChunk maps every
+			// text-delta with its providerMetadata.
+			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" && len(chunk.ProviderMetadata) == 0 {
 				continue
 			}
+			if oneToOne && chunk.Type == provider.ChunkTypeStart {
+				writeStart()
+				continue
+			}
+			if oneToOne && chunk.Type == provider.ChunkTypeFinish {
+				// TS 'finish': the call-level finish chunk, where it occurs,
+				// with the messageMetadata of the finish part itself.
+				var metadata map[string]interface{}
+				if options.MessageMetadata != nil {
+					finishPart := *chunk
+					finishPart.Type = provider.ChunkType("finish")
+					metadata = options.MessageMetadata(messageMetadataInput(finishPart, "finish"))
+				}
+				allowStepStartUI = true
+				if sendFinish {
+					finishEvent := map[string]interface{}{
+						"type":         "finish",
+						"finishReason": string(chunk.FinishReason),
+					}
+					if metadata != nil {
+						finishEvent["messageMetadata"] = metadata
+					}
+					processChunk(finishEvent)
+				}
+				continue
+			}
+			if chunk.Type == provider.ChunkTypeStartStep {
+				sawStartStepChunk = true
+			}
+			callLevelFinish := chunk.Type == provider.ChunkTypeFinish && sawStartStepChunk
+			if callLevelFinish {
+				endedWithCallFinish = true
+			}
 			chunkForConversion := *chunk
+			if chunk.Type == provider.ChunkTypeToolApprovalRequest && chunk.ToolApprovalRequest != nil {
+				announcedApprovals[chunk.ToolApprovalRequest.ApprovalID] = true
+			}
+			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil &&
+				chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusApproved {
+				approvalID := chunk.ToolResult.ApprovalID
+				if approvalID == "" {
+					approvalID = chunk.ToolResult.ToolCallID
+				}
+				if announcedApprovals[approvalID] {
+					result := *chunk.ToolResult
+					result.ApprovalStatus = ""
+					// The locally executed output of an approved call has no
+					// providerExecuted flag in TS (it came from the call).
+					if !result.ProviderExecuted {
+						result.ProviderExecutedSet = false
+					}
+					chunkForConversion.ToolResult = &result
+				}
+			}
 			switch chunk.Type {
 			case provider.ChunkTypeTextStart:
 				id := chunk.ID
@@ -787,7 +1252,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					id = fmt.Sprintf("text-%d", textSeq)
 					textID = id
 				}
-				activeTextIDs[id] = true
+				activeTextIDs.add(id)
 				chunkForConversion.ID = id
 			case provider.ChunkTypeText:
 				chunkForConversion.ID = ensureTextStart(chunk.ID)
@@ -797,7 +1262,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					id = textID
 				}
 				chunkForConversion.ID = id
-				delete(activeTextIDs, id)
+				activeTextIDs.remove(id)
 				if id == textID {
 					textID = ""
 				}
@@ -811,7 +1276,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					id = fmt.Sprintf("reasoning-%d", reasoningSeq)
 					reasoningID = id
 				}
-				activeReasoningIDs[id] = true
+				activeReasoningIDs.add(id)
 				chunkForConversion.ID = id
 			case provider.ChunkTypeReasoning:
 				if sendReasoning {
@@ -826,12 +1291,14 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					id = reasoningID
 				}
 				chunkForConversion.ID = id
-				delete(activeReasoningIDs, id)
+				activeReasoningIDs.remove(id)
 				if id == reasoningID {
 					reasoningID = ""
 				}
 			case provider.ChunkTypeFinish, provider.ChunkTypeFinishStep:
-				closeOpenParts()
+				if !callLevelFinish {
+					closeOpenParts()
+				}
 			}
 
 			// Dedupe the "start-step" UI part within one step boundary (see
@@ -878,7 +1345,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				sawStepFinishStep = true
 			case provider.ChunkTypeFinish:
 				allowStepStartUI = true
-				if sawStepFinishStep {
+				if sawStepFinishStep || callLevelFinish {
 					skipStepBoundaryDup = true
 				}
 			case provider.ChunkTypeStreamFinish:
@@ -886,13 +1353,32 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 			if !skipStepBoundaryDup {
 				converted := toUIMessageChunks(chunkForConversion, options)
-				for _, uiChunk := range converted {
-					processChunk(uiChunk)
+				if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
+					// Apply step metadata before the finish-step boundary, so
+					// the OnStepEnd snapshot includes it (TS #22268).
+					processMessageMetadata(*chunk)
+					for _, uiChunk := range converted {
+						processChunk(uiChunk)
+					}
+				} else {
+					for _, uiChunk := range converted {
+						processChunk(uiChunk)
+					}
+					processMessageMetadata(*chunk)
 				}
-				processMessageMetadata(*chunk)
 			}
 		}
 
+		if oneToOne || (!sawTerminal && options.PartialStream) {
+			callOnEnd()
+			return
+		}
+		if !sawTerminal && sawAbortPart {
+			// TS writes the abort part's chunk and nothing after it: an
+			// aborted source is not an incomplete one, and has no finish.
+			callOnEnd()
+			return
+		}
 		if !sawTerminal {
 			if !sawOutput {
 				err := newIncompleteModelStreamError()
@@ -902,27 +1388,37 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					Type: provider.ChunkTypeError,
 					Text: err.Error(),
 				})
-				callOnEnd(finishReason)
+				callOnEnd()
 				return
 			}
 			finishReason = types.FinishReasonOther
 		}
-		closeOpenParts()
+		if !endedWithCallFinish {
+			closeOpenParts()
+		}
 		if !sawFinishChunk && finishReason != "" {
-			processChunk(UIMessageChunk{"type": "finish-step"})
 			processMessageMetadata(provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
 				FinishReason: finishReason,
 			})
+			processChunk(UIMessageChunk{"type": "finish-step"})
 		}
 		var finishMetadata map[string]interface{}
 		if options.MessageMetadata != nil {
-			finishMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{
-				Type:         provider.ChunkType("finish"),
-				FinishReason: finishReason,
-			}, "finish"))
+			finishPart := provider.StreamChunk{}
+			if callFinishPart != nil {
+				finishPart = *callFinishPart
+			}
+			finishPart.Type = provider.ChunkType("finish")
+			finishPart.FinishReason = finishReason
+			finishMetadata = options.MessageMetadata(messageMetadataInput(finishPart, "finish"))
 		}
-		if sendFinish {
+		// TS writes the finish chunk for the source's `finish` part only: a
+		// StreamText run that ends without one (a later step that failed to
+		// prepare or open ends with its error part) gets none. A raw
+		// provider stream has no call-level finish part, so its end writes
+		// one.
+		if sendFinish && (endedWithCallFinish || !sawStartStepChunk) {
 			finishEvent := map[string]interface{}{
 				"type":         "finish",
 				"finishReason": string(finishReason),
@@ -932,15 +1428,52 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 			processChunk(finishEvent)
 		}
-		callOnEnd(finishReason)
+		callOnEnd()
 	}()
 	return out, errCh
 }
 
-// ToUIMessageChunk converts a single provider stream chunk into a UI message
-// chunk. The boolean return is false for stream parts that do not produce UI
-// message chunks, matching TypeScript's undefined result.
+// ToUIMessageChunk converts a single StreamText part into a UI message chunk
+// (TS toUIMessageChunk): ChunkTypeStart and ChunkTypeFinish give the start and
+// finish chunks (none with SendStart / SendFinish false), ChunkTypeFinishStep
+// gives finish-step. The boolean return is false for stream parts that do not
+// produce UI message chunks, matching TypeScript's undefined result.
 func ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool) {
+	if part.Type == provider.ChunkTypeStart {
+		// TS toUIMessageChunk 'start': undefined when sendStart is false, else
+		// the start chunk with the message metadata and responseMessageId.
+		if !boolOption(opts.SendStart, true) {
+			return nil, false
+		}
+		chunk := UIMessageChunk{"type": "start"}
+		if opts.MessageMetadata != nil {
+			if metadata := opts.MessageMetadata(map[string]interface{}{"type": "start", "part": part}); metadata != nil {
+				chunk["messageMetadata"] = metadata
+			}
+		}
+		if opts.ResponseMessageID != "" {
+			chunk["messageId"] = opts.ResponseMessageID
+		}
+		return chunk, true
+	}
+	if part.Type == provider.ChunkTypeFinish {
+		// A single part is read in the StreamText part model, where
+		// ChunkTypeFinish is the call-level finish (the step end is
+		// ChunkTypeFinishStep), as TS toUIMessageChunk's 'finish': undefined
+		// when sendFinish is false, else the finish chunk with the finish
+		// reason and the message metadata. ToUIMessageStream keeps mapping a
+		// raw provider stream's finish to finish-step.
+		if !boolOption(opts.SendFinish, true) {
+			return nil, false
+		}
+		chunk := UIMessageChunk{"type": "finish", "finishReason": string(part.FinishReason)}
+		if opts.MessageMetadata != nil {
+			if metadata := opts.MessageMetadata(map[string]interface{}{"type": "finish", "part": part}); metadata != nil {
+				chunk["messageMetadata"] = metadata
+			}
+		}
+		return chunk, true
+	}
 	chunks := toUIMessageChunks(part, opts)
 	if len(chunks) == 0 {
 		return nil, false
@@ -986,34 +1519,64 @@ func toUIMessageChunks(part provider.StreamChunk, opts UIMessageStreamResultOpti
 }
 
 func responseUIMessageID(options UIMessageStreamResultOptions) string {
+	id, _ := responseUIMessageIDOK(options)
+	return id
+}
+
+// responseUIMessageIDOK is TS getResponseUIMessageId as toUIMessageStream
+// calls it (only when generateMessageId is set; the Go-only
+// ResponseMessageID wins): no original messages give no id, a last
+// assistant message gives its id (none when it has no id), otherwise the
+// generator's id. ok is false where TS has undefined, so an empty id is
+// still an id.
+func responseUIMessageIDOK(options UIMessageStreamResultOptions) (string, bool) {
 	if options.ResponseMessageID != "" {
-		return options.ResponseMessageID
+		return options.ResponseMessageID, true
 	}
 	if options.OriginalMessages == nil {
-		return ""
+		return "", false
 	}
-	if len(options.OriginalMessages) > 0 {
-		last := options.OriginalMessages[len(options.OriginalMessages)-1]
-		if role, _ := last["role"].(string); role == "assistant" {
-			id, _ := last["id"].(string)
-			return id
-		}
+	if last, ok := lastAssistantUIMessage(options.OriginalMessages); ok {
+		id, hasID := last["id"].(string)
+		return id, hasID
 	}
 	if options.GenerateMessageID != nil {
-		return options.GenerateMessageID()
+		return options.GenerateMessageID(), true
 	}
-	return ""
+	return "", false
+}
+
+// lastAssistantUIMessage returns the last original message when it is an
+// assistant message (the one a response continues).
+func lastAssistantUIMessage(original []UIMessageChunk) (UIMessageChunk, bool) {
+	if len(original) == 0 {
+		return nil, false
+	}
+	last := original[len(original)-1]
+	if role, _ := last["role"].(string); role == "assistant" {
+		return last, true
+	}
+	return nil, false
 }
 
 type uiMessageCallbackState struct {
 	originalMessages []UIMessageChunk
 	message          UIMessageChunk
 	isContinuation   bool
-	isAborted        bool
-	finishReason     interface{}
-	activeText       map[string]UIMessageChunk
-	activeReasoning  map[string]UIMessageChunk
-	partialTools     map[string]*uiPartialToolCall
+	// lastMessageID is the id of the continued assistant message.
+	lastMessageID   string
+	isAborted       bool
+	finishReason    interface{}
+	activeText      map[string]UIMessageChunk
+	activeReasoning map[string]UIMessageChunk
+	partialTools    map[string]*uiPartialToolCall
+
+	// resetOnMessageIDChange discards the seeded message (parts, metadata and
+	// in-flight part state) when a start chunk carries a different message
+	// ID, so a resumed stream for another response does not adopt content
+	// from an unrelated assistant turn. Mirrors TS processUIMessageStream's
+	// resetStateOnMessageIdChange.
+	resetOnMessageIDChange bool
 }
 
 type uiPartialToolCall struct {
@@ -1022,6 +1585,9 @@ type uiPartialToolCall struct {
 	dynamic      bool
 	title        interface{}
 	toolMetadata interface{}
+	// inputEncoding is "text" when the input deltas are raw text rather than
+	// partial JSON (TS partialToolCalls[].inputEncoding).
+	inputEncoding string
 }
 
 func newUIMessageCallbackState(original []UIMessageChunk, messageID string) *uiMessageCallbackState {
@@ -1040,6 +1606,7 @@ func newUIMessageCallbackState(original []UIMessageChunk, messageID string) *uiM
 		last := original[len(original)-1]
 		if role, _ := last["role"].(string); role == "assistant" {
 			state.isContinuation = true
+			state.lastMessageID = stringValue(last["id"])
 			state.message = cloneUIMessageChunk(last)
 			if _, ok := state.message["parts"]; !ok {
 				state.message["parts"] = []interface{}{}
@@ -1074,11 +1641,12 @@ func seedPartialToolCalls(message UIMessageChunk) map[string]*uiPartialToolCall 
 		}
 		toolName, dynamic := toolInfoFromPart(part)
 		partials[toolCallID] = &uiPartialToolCall{
-			text:         stringValue(part["rawInput"]),
-			toolName:     toolName,
-			dynamic:      dynamic,
-			title:        part["title"],
-			toolMetadata: part["toolMetadata"],
+			text:          stringValue(part["rawInput"]),
+			toolName:      toolName,
+			dynamic:       dynamic,
+			title:         part["title"],
+			toolMetadata:  part["toolMetadata"],
+			inputEncoding: stringValue(part["inputEncoding"]),
 		}
 	}
 	return partials
@@ -1088,9 +1656,16 @@ func (s *uiMessageCallbackState) responseMessage() UIMessageChunk {
 	return cloneUIMessageChunk(s.message)
 }
 
+// continuation reports whether the response continues the last original
+// assistant message: TS `state.message.id === lastMessage?.id`, so a start
+// chunk that gives the response another id ends the continuation.
+func (s *uiMessageCallbackState) continuation() bool {
+	return s.isContinuation && stringValue(s.message["id"]) == s.lastMessageID
+}
+
 func (s *uiMessageCallbackState) messages() []UIMessageChunk {
 	messages := append([]UIMessageChunk(nil), s.originalMessages...)
-	if s.isContinuation && len(messages) > 0 {
+	if s.continuation() && len(messages) > 0 {
 		messages = messages[:len(messages)-1]
 	}
 	messages = append(messages, s.responseMessage())
@@ -1101,12 +1676,21 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 	chunkType, _ := chunk["type"].(string)
 	switch chunkType {
 	case "start":
-		if id, _ := chunk["messageId"].(string); id != "" {
+		// TS `chunk.messageId != null`: an empty id is still applied.
+		if id, ok := chunk["messageId"].(string); ok {
+			if s.resetOnMessageIDChange && id != stringValue(s.message["id"]) {
+				s.message = UIMessageChunk{"id": id, "role": "assistant", "parts": []interface{}{}}
+				s.activeText = map[string]UIMessageChunk{}
+				s.activeReasoning = map[string]UIMessageChunk{}
+				s.partialTools = map[string]*uiPartialToolCall{}
+				s.finishReason = nil
+				s.isContinuation = false
+			}
 			s.message["id"] = id
 		}
 		s.mergeMetadata(chunk["messageMetadata"])
 	case "finish":
-		if reason, ok := chunk["finishReason"]; ok {
+		if reason := chunk["finishReason"]; reason != nil {
 			s.finishReason = reason
 		}
 		s.mergeMetadata(chunk["messageMetadata"])
@@ -1137,12 +1721,14 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		part["state"] = "done"
+		copyIfPresent(part, chunk, "citations", "citations")
 		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
 		delete(s.activeText, id)
 	case "reasoning-start":
 		id, _ := chunk["id"].(string)
 		part := UIMessageChunk{"type": "reasoning", "text": "", "state": "streaming"}
-		if id != "" {
+		// TS `id: chunk.id`: an empty id is kept.
+		if _, ok := chunk["id"].(string); ok {
 			part["id"] = id
 		}
 		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
@@ -1214,16 +1800,21 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		toolName := stringValue(chunk["toolName"])
 		dynamic, _ := chunk["dynamic"].(bool)
 		s.partialTools[toolCallID] = &uiPartialToolCall{
-			toolName:     toolName,
-			dynamic:      dynamic,
-			title:        chunk["title"],
-			toolMetadata: chunk["toolMetadata"],
+			toolName:      toolName,
+			dynamic:       dynamic,
+			title:         chunk["title"],
+			toolMetadata:  chunk["toolMetadata"],
+			inputEncoding: stringValue(chunk["inputEncoding"]),
 		}
-		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
+		startUpdate := UIMessageChunk{
 			"state":    "input-streaming",
 			"input":    uiOmitField,
 			"rawInput": uiOmitField,
-		}, chunk)
+		}
+		if enc := stringValue(chunk["inputEncoding"]); enc != "" {
+			startUpdate["inputEncoding"] = enc
+		}
+		s.updateToolPart(toolCallID, toolName, dynamic, startUpdate, chunk)
 	case "tool-input-delta":
 		toolCallID := stringValue(chunk["toolCallId"])
 		partial := s.partialTools[toolCallID]
@@ -1237,18 +1828,30 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		// message can later re-seed partialTools via seedPartialToolCalls and
 		// continue streaming after a disconnect. Mirrors TS
 		// process-ui-message-stream.ts's tool-input-delta handling (TS #21480).
-		s.updateToolPart(toolCallID, partial.toolName, partial.dynamic, UIMessageChunk{
+		// Text-encoded deltas (e.g. OpenAI custom tools) accumulate raw text;
+		// everything else is partial JSON (TS inputEncoding === 'text').
+		var partialInput interface{}
+		if partial.inputEncoding == "text" {
+			partialInput = partial.text
+		} else {
+			partialInput = parseToolInputPartial(partial.text)
+		}
+		deltaUpdate := UIMessageChunk{
 			"state":    "input-streaming",
-			"input":    parseToolInputPartial(partial.text),
+			"input":    partialInput,
 			"rawInput": partial.text,
-		}, UIMessageChunk{"title": partial.title, "toolMetadata": partial.toolMetadata})
+		}
+		if partial.inputEncoding != "" {
+			deltaUpdate["inputEncoding"] = partial.inputEncoding
+		}
+		s.updateToolPart(toolCallID, partial.toolName, partial.dynamic, deltaUpdate, UIMessageChunk{"title": partial.title, "toolMetadata": partial.toolMetadata})
 	case "tool-input-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		toolName := stringValue(chunk["toolName"])
 		dynamic, _ := chunk["dynamic"].(bool)
 		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
 			"state":    "input-available",
-			"input":    chunk["input"],
+			"input":    uiFieldOrOmit(chunk, "input"),
 			"rawInput": uiOmitField,
 		}, chunk)
 	case "tool-input-error":
@@ -1266,8 +1869,10 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		// deprecated field or warn about one. Persisted streams that already
 		// carry a legacy rawInput continue to go through the separate
 		// validate-ui-messages compatibility path.
-		update := UIMessageChunk{"state": "output-error", "errorText": chunk["errorText"], "input": chunk["input"]}
-		s.updateToolPart(toolCallID, toolName, dynamic, update, chunk)
+		update := UIMessageChunk{"state": "output-error", "errorText": chunk["errorText"], "input": uiFieldOrOmit(chunk, "input")}
+		// TS passes no title for tool-input-error (the chunk's title is not
+		// applied): a new part has none, an existing part keeps its own.
+		s.updateToolPart(toolCallID, toolName, dynamic, update, withoutTitle(chunk))
 	case "tool-output-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		part := s.findToolPart(toolCallID)
@@ -1278,10 +1883,10 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		toolName, dynamic := toolInfoFromPart(part)
 		s.updateExistingToolPart(part, toolName, dynamic, UIMessageChunk{
 			"state":       "output-available",
-			"input":       part["input"],
+			"input":       uiFieldOrOmit(part, "input"),
 			"output":      chunk["output"],
 			"preliminary": chunk["preliminary"],
-		}, chunk)
+		}, withoutTitle(chunk))
 	case "tool-output-error":
 		toolCallID := stringValue(chunk["toolCallId"])
 		part := s.findToolPart(toolCallID)
@@ -1290,12 +1895,16 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		toolName, dynamic := toolInfoFromPart(part)
-		s.updateExistingToolPart(part, toolName, dynamic, UIMessageChunk{
+		update := UIMessageChunk{
 			"state":     "output-error",
-			"input":     part["input"],
-			"rawInput":  part["rawInput"],
+			"input":     uiFieldOrOmit(part, "input"),
 			"errorText": chunk["errorText"],
-		}, chunk)
+		}
+		// TS keeps rawInput for static tool parts only.
+		if !dynamic {
+			update["rawInput"] = part["rawInput"]
+		}
+		s.updateExistingToolPart(part, toolName, dynamic, update, withoutTitle(chunk))
 	case "tool-output-denied":
 		toolCallID := stringValue(chunk["toolCallId"])
 		if part := s.findToolPart(toolCallID); part != nil {
@@ -1359,16 +1968,121 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 }
 
 func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
-	if metadata == nil {
+	// TS updateMessageMetadata skips `metadata == null`: a Go value that
+	// encodes as JSON null (a nil map or pointer, json.RawMessage("null")) is
+	// null too.
+	if isUIJSONNull(metadata) {
 		return
 	}
-	if existing, ok := asUIMap(s.message["metadata"]); ok {
-		if incoming, ok := asUIMap(metadata); ok {
-			s.message["metadata"] = mergeUIMaps(existing, incoming)
-			return
+	existing := s.message["metadata"]
+	if isUIJSONNull(existing) {
+		s.message["metadata"] = cloneUIValue(metadata)
+		return
+	}
+	s.message["metadata"] = jsMergeUIMetadata(existing, metadata)
+}
+
+// jsMergeUIMetadata is TS mergeObjects(base, incoming) for two non-null
+// JSON values: `{...base}` (an object's keys, a string's or array's index
+// keys, nothing for a number or boolean), then incoming's own keys (the same
+// rule), nested objects merged deeply. A Go value that encodes as a JSON
+// object (a struct, a typed map, json.RawMessage) is an object, like a
+// map[string]interface{}. TS evaluates `key in base` for each incoming key,
+// which throws a TypeError for a string, number or boolean base; v0.5.2
+// replaced the metadata there and the stream went on, so Go keeps that
+// (S6: a stream that works in v0.5.2 does not start failing).
+func jsMergeUIMetadata(base, incoming interface{}) interface{} {
+	baseKeys, basePrimitive := jsSpreadUIValue(base)
+	incomingKeys, _ := jsSpreadUIValue(incoming)
+	if basePrimitive && len(incomingKeys) > 0 {
+		return cloneUIValue(incoming)
+	}
+	return mergeUIMaps(baseKeys, incomingKeys)
+}
+
+// jsSpreadUIValue is the own enumerable keys of a JSON value as JS object
+// spread and for...in see them: an object's keys, a string's UTF-16 index
+// keys (one code unit each), an array's index keys, none for a number or
+// boolean. primitive reports a string, number or boolean (the bases `in`
+// rejects).
+func jsSpreadUIValue(v interface{}) (keys map[string]interface{}, primitive bool) {
+	if m, ok := uiJSONObject(v); ok {
+		return m, false
+	}
+	switch x := v.(type) {
+	case string:
+		units := utf16.Encode([]rune(x))
+		out := make(map[string]interface{}, len(units))
+		for i, unit := range units {
+			// A lone surrogate half has no Go string; it reads U+FFFD.
+			out[strconv.Itoa(i)] = string(rune(unit))
+		}
+		return out, true
+	case []interface{}:
+		out := make(map[string]interface{}, len(x))
+		for i, el := range x {
+			out[strconv.Itoa(i)] = el
+		}
+		return out, false
+	}
+	b, err := json.Marshal(v)
+	if err == nil && len(b) > 0 {
+		switch b[0] {
+		case '"':
+			var str string
+			if json.Unmarshal(b, &str) == nil {
+				return jsSpreadUIValue(str)
+			}
+		case '[':
+			var arr []interface{}
+			if json.Unmarshal(b, &arr) == nil {
+				return jsSpreadUIValue(arr)
+			}
 		}
 	}
-	s.message["metadata"] = cloneUIValue(metadata)
+	return map[string]interface{}{}, true
+}
+
+// isUIJSONNull reports whether v is nil or a Go value that encodes as JSON
+// null.
+func isUIJSONNull(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case map[string]interface{}:
+		return x == nil
+	case UIMessageChunk:
+		return x == nil
+	case []interface{}:
+		return x == nil
+	case string, bool, float64, json.Number:
+		return false
+	}
+	b, err := json.Marshal(v)
+	return err == nil && string(b) == "null"
+}
+
+// uiJSONObject returns v as a map when it encodes as a JSON object: a
+// map[string]interface{} or UIMessageChunk as is, any other Go value (a
+// struct, a typed map, json.RawMessage, a pointer to one of them) through
+// its JSON encoding. TS mergeObjects treats every such value as an object.
+func uiJSONObject(v interface{}) (map[string]interface{}, bool) {
+	if m, ok := asUIMap(v); ok {
+		return m, true
+	}
+	switch v.(type) {
+	case nil, string, bool, float64, json.Number, []interface{}, []UIMessageChunk:
+		return nil, false
+	}
+	b, err := json.Marshal(v)
+	if err != nil || len(b) == 0 || b[0] != '{' {
+		return nil, false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, false
+	}
+	return m, true
 }
 
 func (s *uiMessageCallbackState) appendPart(part UIMessageChunk) {
@@ -1385,8 +2099,9 @@ func (s *uiMessageCallbackState) appendPart(part UIMessageChunk) {
 }
 
 func (s *uiMessageCallbackState) upsertDataPart(chunk UIMessageChunk) {
+	// TS `dataChunk.id != null`: an empty id still names a part.
 	id, hasID := chunk["id"].(string)
-	if hasID && id != "" {
+	if hasID {
 		for _, raw := range uiParts(s.message) {
 			part, ok := raw.(UIMessageChunk)
 			if !ok {
@@ -1427,7 +2142,8 @@ func (s *uiMessageCallbackState) updateExistingToolPart(part UIMessageChunk, too
 var uiOmitField = struct{}{}
 
 func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCallID, toolName string, dynamic bool, update UIMessageChunk, source UIMessageChunk) {
-	if part == nil {
+	created := part == nil
+	if created {
 		if dynamic {
 			part = UIMessageChunk{"type": "dynamic-tool", "toolName": toolName, "toolCallId": toolCallID}
 		} else {
@@ -1437,13 +2153,34 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 	}
 	if toolName != "" && part["type"] == "dynamic-tool" {
 		part["toolName"] = toolName
+	} else if toolName != "" && !dynamic {
+		// A static part adopts the completed tool name (TS #23583): when
+		// repairToolCall renamed the tool after input started streaming, the
+		// part type must follow so convertToModelMessages rebuilds the
+		// repaired name and signed approvals keep verifying.
+		part["type"] = "tool-" + toolName
+	}
+	// TS updateToolPart/updateDynamicToolPart assign output, errorText, rawInput
+	// and preliminary on every update, so a field the update does not carry is
+	// cleared rather than left over from the previous state.
+	for _, key := range []string{"output", "errorText", "rawInput", "preliminary", "inputEncoding"} {
+		delete(part, key)
 	}
 	for key, value := range update {
 		if value == uiOmitField {
 			delete(part, key)
 			continue
 		}
+		// A nil rawInput/preliminary is TS undefined (absent), not JSON null.
+		if value == nil && (key == "rawInput" || key == "preliminary") {
+			continue
+		}
 		part[key] = value
+	}
+	if created && part["type"] == "dynamic-tool" {
+		// TS updateDynamicToolPart pushes a new part without rawInput (only
+		// an existing part is assigned it); updateToolPart includes it.
+		delete(part, "rawInput")
 	}
 	copyIfPresent(part, source, "providerExecuted", "providerExecuted")
 	copyIfPresent(part, source, "title", "title")
@@ -1455,6 +2192,53 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 	} else {
 		copyIfPresent(part, source, "providerMetadata", "callProviderMetadata")
 	}
+}
+
+// uiFieldOrOmit is m[key], or uiOmitField when m has no such key: TS copies
+// an undefined input as undefined (absent), not null.
+func uiFieldOrOmit(m UIMessageChunk, key string) interface{} {
+	if value, ok := m[key]; ok {
+		return value
+	}
+	return uiOmitField
+}
+
+// withoutTitle returns chunk without its title. TS passes no title for
+// tool-input-error and the invocation's own title for tool-output-available
+// and tool-output-error, so the chunk's title is never applied for them.
+func withoutTitle(chunk UIMessageChunk) UIMessageChunk {
+	source := make(UIMessageChunk, len(chunk))
+	for k, v := range chunk {
+		if k != "title" {
+			source[k] = v
+		}
+	}
+	return source
+}
+
+// applyUIStateChunk applies chunk to the callback state and returns the
+// processing failure TS processUIMessageStream throws (a delta, end or tool
+// chunk with no matching part), which errors the stream. An `error` chunk is
+// reported through onError and is not a failure.
+func applyUIStateChunk(state *uiMessageCallbackState, chunk UIMessageChunk, onError func(error) string) (failure error) {
+	// An onError that panics for an error chunk fails the processing too
+	// (TS: the error thrown in the transform errors the stream).
+	defer func() {
+		if r := recover(); r != nil {
+			failure = panicToError(r)
+		}
+	}()
+	isErrorChunk := chunk["type"] == "error"
+	state.apply(chunk, func(err error) string {
+		if isErrorChunk {
+			return onError(err)
+		}
+		if failure == nil {
+			failure = err
+		}
+		return ""
+	})
+	return failure
 }
 
 // findToolPart returns the tool invocation for toolCallID, preferring the
@@ -1603,22 +2387,25 @@ func stringValue(value interface{}) string {
 	return ""
 }
 
+// parseToolInputPartial is TS parsePartialJson(text).value: incomplete JSON
+// is repaired, so a streaming tool part shows the input received so far.
+// Text that cannot be parsed or repaired gives TS undefined, which
+// applyToolPartUpdate treats as no input key (uiOmitField).
 func parseToolInputPartial(text string) interface{} {
-	if text == "" {
-		return nil
+	result := jsonparser.ParsePartialJSON(text)
+	if result.State == jsonparser.ParseStateFailed {
+		return uiOmitField
 	}
-	var value interface{}
-	if err := json.Unmarshal([]byte(text), &value); err == nil {
-		return value
-	}
-	return nil
+	return result.Value
 }
 
-// UIMessageStreamError is the error reported (via onError) when a UI message
-// stream contains invalid or out-of-sequence chunks: a delta/end chunk
-// received without a corresponding start chunk, or a tool invocation/
-// approval response that can't be matched to a toolCallId/approvalId.
-// Mirrors TS's AI_UIMessageStreamError (error/ui-message-stream-error.ts).
+// UIMessageStreamError is the error a UI message stream fails with when it
+// contains invalid or out-of-sequence chunks: a delta/end chunk received
+// without a corresponding start chunk, or a tool invocation/approval
+// response that can't be matched to a toolCallId/approvalId. As in TS, the
+// stream checks this only while it builds the message for an OnEnd or
+// OnStepEnd callback; ReadUIMessages reports it through OnError. Mirrors TS's
+// AI_UIMessageStreamError (error/ui-message-stream-error.ts).
 type UIMessageStreamError struct {
 	// ChunkType is the type of chunk that caused the error (e.g. "text-delta", "reasoning-end").
 	ChunkType string
@@ -1640,6 +2427,8 @@ func IsUIMessageStreamError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// The report functions build TS's template-literal messages: the id is quoted
+// as is, not escaped.
 func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID string) {
 	if onError == nil {
 		return
@@ -1652,7 +2441,7 @@ func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID s
 	_ = onError(&UIMessageStreamError{
 		ChunkType: chunkType,
 		ChunkID:   chunkID,
-		Message:   fmt.Sprintf(`Received %s for missing %s part with ID %q. Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType),
+		Message:   fmt.Sprintf(`Received %s for missing %s part with ID "%s". Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType),
 	})
 }
 
@@ -1663,7 +2452,7 @@ func reportMissingToolInput(onError func(error) string, chunkType, toolCallID st
 	_ = onError(&UIMessageStreamError{
 		ChunkType: chunkType,
 		ChunkID:   toolCallID,
-		Message:   fmt.Sprintf(`Received %s for missing tool call with ID %q. Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType),
+		Message:   fmt.Sprintf(`Received %s for missing tool call with ID "%s". Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType),
 	})
 }
 
@@ -1674,7 +2463,7 @@ func reportMissingToolInvocation(onError func(error) string, toolCallID string) 
 	_ = onError(&UIMessageStreamError{
 		ChunkType: "tool-invocation",
 		ChunkID:   toolCallID,
-		Message:   fmt.Sprintf("No tool invocation found for tool call ID %q.", toolCallID),
+		Message:   fmt.Sprintf(`No tool invocation found for tool call ID "%s".`, toolCallID),
 	})
 }
 
@@ -1685,7 +2474,7 @@ func reportMissingApproval(onError func(error) string, approvalID string) {
 	_ = onError(&UIMessageStreamError{
 		ChunkType: "tool-approval-response",
 		ChunkID:   approvalID,
-		Message:   fmt.Sprintf("No tool invocation found for approval ID %q.", approvalID),
+		Message:   fmt.Sprintf(`No tool invocation found for approval ID "%s".`, approvalID),
 	})
 }
 
@@ -1743,8 +2532,8 @@ func mergeUIMaps(base, incoming map[string]interface{}) map[string]interface{} {
 		if key == "__proto__" || key == "constructor" || key == "prototype" {
 			continue
 		}
-		if existing, ok := asUIMap(out[key]); ok {
-			if next, ok := asUIMap(value); ok {
+		if existing, ok := uiJSONObject(out[key]); ok {
+			if next, ok := uiJSONObject(value); ok {
 				out[key] = mergeUIMaps(existing, next)
 				continue
 			}
@@ -1776,12 +2565,27 @@ func UIMessageStreamHeaders() http.Header {
 	return h
 }
 
+// validateUIMessageStreamKeepAlive rejects a KeepAliveMs that is not a
+// positive timer duration of at most 2147483647ms, as TS
+// createSseStreamWithKeepAlive throws before the response starts.
+func validateUIMessageStreamKeepAlive(init *UIMessageStreamResponseInit) error {
+	if init == nil || init.KeepAliveMs == nil {
+		return nil
+	}
+	if d := *init.KeepAliveMs; d <= 0 || d > 2147483647*time.Millisecond {
+		return errors.New("keepAliveMs must be a positive finite timer duration no greater than 2147483647")
+	}
+	return nil
+}
+
 // uiMessageStreamResponseHead resolves the status and headers for a UI
-// message stream response from the defaults and init.
+// message stream response from the defaults and init. As TS prepareHeaders, a
+// header the caller sets (in Headers or Header) replaces the default of the
+// same name, and the defaults fill only the names the caller left unset.
 func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string, http.Header) {
 	status := http.StatusOK
 	statusText := ""
-	headers := UIMessageStreamHeaders()
+	headers := http.Header{}
 	if init != nil {
 		if init.Status != 0 {
 			status = init.Status
@@ -1796,22 +2600,34 @@ func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string
 			}
 		}
 	}
+	for key, values := range UIMessageStreamHeaders() {
+		if len(headers.Values(key)) == 0 {
+			headers[key] = values
+		}
+	}
 	return status, statusText, headers
 }
 
 // CreateUIMessageStreamResponseWithInit writes UI chunks as SSE to an HTTP response
-// with optional status/statusText/headers.
+// with optional status/statusText/headers. A failed UI conversion ends the
+// body with that error, without "data: [DONE]" (TS: the body stream errors).
 func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
 	if result == nil {
 		return nil, fmt.Errorf("result is required")
+	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return nil, err
 	}
 
 	status, statusText, headers := uiMessageStreamResponseHead(init)
 
 	pr, pw := io.Pipe()
 	go func() {
-		defer func() { _ = pw.Close() }()
-		_ = PipeUIMessageStreamToResponseWithInit(ctx, result, pw, init, opts...)
+		// The body ends after the last SSE event, without waiting for a
+		// ConsumeSSEStream callback (TS does not await consumeSseStream). A
+		// failed UI conversion ends it with that error, without
+		// "data: [DONE]" (TS: the response body stream errors).
+		_ = pw.CloseWithError(PipeUIMessageStreamToResponseWithInit(ctx, result, pw, init, opts...))
 	}()
 	return &http.Response{
 		StatusCode: status,
@@ -1828,6 +2644,128 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 	return PipeUIMessageStreamToResponseWithInit(ctx, result, w, nil, opts...)
 }
 
+// writeUIMessageSSEChunk JSON-encodes and writes a single UI message chunk
+// as one SSE "data: ...\n\n" event, then flushes it.
+func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessageChunk) error {
+	event, err := uiSSEEventBytes(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := bw.Write(event); err != nil {
+		return err
+	}
+	return flush()
+}
+
+// uiSSEEventBytes is the SSE data event of one UI message chunk.
+func uiSSEEventBytes(chunk UIMessageChunk) ([]byte, error) {
+	b, err := marshalUIChunkInTSOrder(chunk)
+	if err != nil {
+		return nil, err
+	}
+	event := make([]byte, 0, len(b)+8)
+	event = append(event, "data: "...)
+	event = append(event, b...)
+	return append(event, "\n\n"...), nil
+}
+
+// uiChunkTSKeyOrders is the key order of each UI message chunk type as TS
+// builds it (to-ui-message-chunk.ts object literals, the start / finish
+// chunks of handle-ui-message-stream-finish.ts, the error chunk of
+// create-ui-message-stream.ts), so JSON.stringify in JsonToSseTransformStream
+// writes the keys in this order.
+var uiChunkTSKeyOrders = map[string][]string{
+	"text-start":             {"type", "id", "providerMetadata"},
+	"text-delta":             {"type", "id", "delta", "providerMetadata"},
+	"text-end":               {"type", "id", "citations", "providerMetadata"},
+	"reasoning-start":        {"type", "id", "providerMetadata"},
+	"reasoning-delta":        {"type", "id", "delta", "providerMetadata"},
+	"reasoning-end":          {"type", "id", "providerMetadata"},
+	"file":                   {"type", "mediaType", "url", "providerMetadata"},
+	"reasoning-file":         {"type", "mediaType", "url", "providerMetadata"},
+	"source-url":             {"type", "sourceId", "url", "title", "providerMetadata"},
+	"source-document":        {"type", "sourceId", "mediaType", "title", "filename", "providerMetadata"},
+	"custom":                 {"type", "kind", "providerMetadata"},
+	"tool-input-start":       {"type", "toolCallId", "toolName", "inputEncoding", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "title"},
+	"tool-input-delta":       {"type", "toolCallId", "inputTextDelta"},
+	"tool-input-available":   {"type", "toolCallId", "toolName", "input", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "title"},
+	"tool-input-error":       {"type", "toolCallId", "toolName", "input", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "errorText", "title"},
+	"tool-approval-request":  {"type", "approvalId", "toolCallId", "approvalDescriptor", "inputSchemaInput", "reason", "isAutomatic", "signature"},
+	"tool-approval-response": {"type", "approvalId", "approved", "reason", "providerExecuted"},
+	"tool-output-available":  {"type", "toolCallId", "output", "providerExecuted", "providerMetadata", "toolMetadata", "preliminary", "dynamic"},
+	"tool-output-error":      {"type", "toolCallId", "errorText", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic"},
+	"tool-output-denied":     {"type", "toolCallId"},
+	"error":                  {"type", "errorText"},
+	"start":                  {"type", "messageMetadata", "messageId"},
+	"finish":                 {"type", "finishReason", "messageMetadata"},
+	"abort":                  {"type", "reason"},
+	"message-metadata":       {"type", "messageMetadata"},
+}
+
+// uiDataChunkTSKeyOrder is the key order of a data-* chunk (the
+// uiMessageChunkSchema field order, the order writer.write callers use).
+var uiDataChunkTSKeyOrder = []string{"type", "id", "data", "transient"}
+
+// marshalUIChunkInTSOrder is JSON.stringify of a UI message chunk: its keys
+// in the order TS creates them (uiChunkTSKeyOrders), then any other key in
+// sorted order, with array-index keys first as a JS object enumerates them.
+// Nested objects (provider metadata, tool input and output) keep Go's
+// encoding of their values.
+func marshalUIChunkInTSOrder(chunk UIMessageChunk) ([]byte, error) {
+	if chunk == nil {
+		return []byte("null"), nil
+	}
+	typ, _ := chunk["type"].(string)
+	order, ok := uiChunkTSKeyOrders[typ]
+	if !ok {
+		if strings.HasPrefix(typ, "data-") {
+			order = uiDataChunkTSKeyOrder
+		} else {
+			order = []string{"type"}
+		}
+	}
+	keys := make([]string, 0, len(chunk))
+	for _, key := range order {
+		if _, present := chunk[key]; present {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) < len(chunk) {
+		known := make(map[string]bool, len(order))
+		for _, key := range order {
+			known[key] = true
+		}
+		rest := make([]string, 0, len(chunk)-len(keys))
+		for key := range chunk {
+			if !known[key] {
+				rest = append(rest, key)
+			}
+		}
+		sort.Strings(rest)
+		keys = append(keys, rest...)
+	}
+	keys = jsonorder.JSKeyOrder(keys)
+	buf := make([]byte, 0, 64)
+	buf = append(buf, '{')
+	for i, key := range keys {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		k, err := jsonstr.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		v, err := jsonstr.Marshal(chunk[key])
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, k...)
+		buf = append(buf, ':')
+		buf = append(buf, v...)
+	}
+	return append(buf, '}'), nil
+}
+
 // PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
 //
 // If writing to w fails (for example because the client disconnected), the
@@ -1836,26 +2774,21 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 // released instead of leaking (blocked forever trying to send a chunk to a
 // reader that has stopped listening). Mirrors TS
 // write-to-server-response.ts's client-disconnect handling, which cancels
-// the ReadableStream's reader on a premature close (TS #21578).
-// writeUIMessageSSEChunk JSON-encodes and writes a single UI message chunk
-// as one SSE "data: ...\n\n" event, then flushes it.
-func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessageChunk) error {
-	b, err := json.Marshal(chunk)
-	if err != nil {
-		return err
-	}
-	if _, err := bw.WriteString("data: "); err != nil {
-		return err
-	}
-	if _, err := bw.Write(b); err != nil {
-		return err
-	}
-	if _, err := bw.WriteString("\n\n"); err != nil {
-		return err
-	}
-	return flush()
-}
-
+// the ReadableStream's reader on a premature close (TS #21578). With an
+// init.ConsumeSSEStream callback that is still reading, the source keeps
+// running for the callback's copy instead (TS cancels only the response
+// branch of the tee) and is cancelled once the copy ends or the callback
+// returns.
+//
+// It returns once the response is written, without waiting for an
+// init.ConsumeSSEStream callback (TS pipeUIMessageStreamToResponse does not
+// await consumeSseStream); the callback keeps reading its buffered copy in its
+// own goroutine, and its error is not returned.
+//
+// A failed UI conversion (for example a callback that panics) ends the SSE
+// stream without "data: [DONE]" and is returned; the callback's copy ends
+// with that error too. TS's errored stream never reaches the
+// JsonToSseTransformStream flush that writes [DONE].
 func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) error {
 	if result == nil {
 		return fmt.Errorf("result is required")
@@ -1863,37 +2796,47 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return err
+	}
 
-	// streamCtx is cancelled on any write/flush failure (the deferred cancel
-	// runs as soon as writing stops) so the CreateUIMessageStream producer
-	// goroutine stops promptly instead of relying solely on the caller's ctx,
-	// which may never be cancelled.
+	// streamCtx is cancelled once the chunks are no longer read: when the
+	// writes end, or after a write failure once a ConsumeSSEStream callback
+	// stops reading its copy. So the CreateUIMessageStream producer
+	// goroutine stops promptly instead of relying solely on the caller's
+	// ctx, which may never be cancelled.
 	streamCtx, cancelStream := context.WithCancel(ctx)
-	defer cancelStream()
-
-	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
+	// The converter also checks ctx itself (uiConsumerErr): when ctx is
+	// cancelled, Go closes its Done channel before it cancels the derived
+	// contexts, in map order, so StreamText's own child of ctx can deliver
+	// its abort part while streamCtx still looks live. TS cancels the reader
+	// and aborts the request in the same tick, so the abort part is never
+	// read and OnEnd reports isCancelled.
+	chunks, errCh := CreateUIMessageStream(context.WithValue(streamCtx, uiConsumerCtxKey{}, ctx), result, opts...)
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
-	consumeErr, err := writeUIMessageChunksSSE(chunks, w, init)
-	if err != nil {
-		return err
+	// The UI conversion's failure is in errCh by the time chunks closes.
+	var failureOnce sync.Once
+	var conversionErr error
+	failure := func() error {
+		failureOnce.Do(func() {
+			select {
+			case conversionErr = <-errCh:
+			default:
+			}
+		})
+		return conversionErr
 	}
-	select {
-	case err := <-errCh:
-		if consumeErr != nil {
-			return fmt.Errorf("%v; consumeSSEStream error: %w", err, consumeErr)
-		}
-		return err
-	default:
-		return consumeErr
-	}
+	return writeUIMessageChunksSSE(chunks, w, init, cancelStream, failure)
 }
 
 // PipeUIMessageChunksToResponse writes any stream of UI message chunks to w
 // as Server-Sent Events, ending with "data: [DONE]". Use it for streams that
 // don't come from a single StreamTextResult, such as the output of
 // CreateUIMessageStreamWithOptions or CreateAgentUIStreamFromUIMessages.
-// Mirrors TS pipeUIMessageStreamToResponse({ response, stream }).
+// Mirrors TS pipeUIMessageStreamToResponse({ response, stream }). Pass the
+// stream's error channel as init.StreamErrors so a failed stream ends
+// without "data: [DONE]" and its error is returned, as in TS.
 //
 // When w is an http.ResponseWriter it first sets the UI message stream
 // headers (UIMessageStreamHeaders, overridden by init's) and writes the
@@ -1903,7 +2846,14 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 // If writing fails, PipeUIMessageChunksToResponse returns without draining
 // chunks. Create the stream with a ctx you cancel when this returns (an
 // http.Request's context is cancelled when the client disconnects) so its
-// producer stops instead of blocking.
+// producer stops instead of blocking. With an init.ConsumeSSEStream callback
+// that is still reading, chunks are drained into the callback's copy in the
+// background until they end or the callback returns (TS cancels only the
+// response branch of the tee).
+//
+// It returns once the response is written, without waiting for an
+// init.ConsumeSSEStream callback (TS does not await consumeSseStream), and
+// returns only write errors.
 func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit) error {
 	if chunks == nil {
 		return fmt.Errorf("stream is required")
@@ -1911,13 +2861,32 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
-	status, _, headers := uiMessageStreamResponseHead(init)
-	writeResponseHead(w, status, headers)
-	consumeErr, err := writeUIMessageChunksSSE(chunks, w, init)
-	if err != nil {
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
 		return err
 	}
-	return consumeErr
+	status, _, headers := uiMessageStreamResponseHead(init)
+	writeResponseHead(w, status, headers)
+	return writeUIMessageChunksSSE(chunks, w, init, nil, uiChunkStreamFailure(init))
+}
+
+// uiChunkStreamFailure reads the failure of a bare chunk stream from
+// init.StreamErrors (once, without blocking), or nil without one.
+func uiChunkStreamFailure(init *UIMessageStreamResponseInit) func() error {
+	if init == nil || init.StreamErrors == nil {
+		return nil
+	}
+	errs := init.StreamErrors
+	var once sync.Once
+	var failure error
+	return func() error {
+		once.Do(func() {
+			select {
+			case failure = <-errs:
+			default:
+			}
+		})
+		return failure
+	}
 }
 
 // CreateUIMessageChunksResponse returns an *http.Response that streams any
@@ -1928,11 +2897,17 @@ func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessage
 	if chunks == nil {
 		return nil, fmt.Errorf("stream is required")
 	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return nil, err
+	}
 	status, statusText, headers := uiMessageStreamResponseHead(init)
 	pr, pw := io.Pipe()
 	go func() {
-		err := PipeUIMessageChunksToResponse(chunks, pw, init)
-		_ = pw.CloseWithError(err)
+		// A failing or slow ConsumeSSEStream callback does not affect the
+		// response body (TS tees the stream and does not await
+		// consumeSseStream): the body ends after the last SSE event, and
+		// only a write failure ends it with an error.
+		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init, nil, uiChunkStreamFailure(init)))
 	}()
 	return &http.Response{
 		StatusCode: status,
@@ -1942,42 +2917,150 @@ func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessage
 	}, nil
 }
 
-// writeUIMessageChunksSSE is the shared SSE writer behind the Pipe*
-// helpers. It returns the ConsumeSSEStream callback's error separately from
-// a write error.
-func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit) (consumeErr error, err error) {
-	var (
-		teeWriter  = w
-		sideWriter *io.PipeWriter
-		closeSide  chan error
-	)
+// uiSSETeeBuffer is the ConsumeSSEStream branch of the SSE tee. Writes never
+// block: the bytes queue in memory until the consumer reads them, as each
+// branch of a TS ReadableStream tee() reads at its own pace, so a slow
+// consumer cannot hold up the response. Once the consumer returns, later
+// writes are dropped.
+type uiSSETeeBuffer struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	buf     []byte
+	closed  bool
+	discard bool
+	// err ends the consumer's stream instead of io.EOF (the source failed).
+	err error
+	// done is closed by stop.
+	done chan struct{}
+}
+
+func newUISSETeeBuffer() *uiSSETeeBuffer {
+	b := &uiSSETeeBuffer{done: make(chan struct{})}
+	b.cond = sync.NewCond(&b.mu)
+	return b
+}
+
+func (b *uiSSETeeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.discard && !b.closed {
+		b.buf = append(b.buf, p...)
+		b.cond.Broadcast()
+	}
+	return len(p), nil
+}
+
+func (b *uiSSETeeBuffer) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for len(b.buf) == 0 && !b.closed {
+		b.cond.Wait()
+	}
+	if len(b.buf) == 0 {
+		if b.err != nil {
+			return 0, b.err
+		}
+		return 0, io.EOF
+	}
+	n := copy(p, b.buf)
+	b.buf = b.buf[n:]
+	if len(b.buf) == 0 {
+		b.buf = nil
+	}
+	return n, nil
+}
+
+// Close ends the consumer's stream after the bytes already queued.
+func (b *uiSSETeeBuffer) Close() {
+	b.closeWithError(nil)
+}
+
+// closeWithError ends the consumer's stream after the bytes already queued;
+// a non-nil err is what its next Read returns instead of io.EOF.
+func (b *uiSSETeeBuffer) closeWithError(err error) {
+	b.mu.Lock()
+	if !b.closed {
+		b.closed = true
+		b.err = err
+	}
+	b.cond.Broadcast()
+	b.mu.Unlock()
+}
+
+// stop drops the queued bytes and every later write (the consumer returned).
+func (b *uiSSETeeBuffer) stop() {
+	b.mu.Lock()
+	if !b.discard {
+		b.discard = true
+		close(b.done)
+	}
+	b.buf = nil
+	b.mu.Unlock()
+}
+
+// stopped reports whether the consumer returned.
+func (b *uiSSETeeBuffer) stopped() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.discard
+}
+
+// writeUIMessageChunksSSE is the shared SSE writer behind the Pipe* and
+// response helpers and returns the first write error. A ConsumeSSEStream
+// callback runs in its own goroutine on a buffered copy (uiSSETeeBuffer);
+// nothing waits for it (TS calls consumeSseStream without awaiting it). Only
+// this function and the drain it starts write to w or the copy, so the
+// callback never touches w.
+//
+// The copy gets each SSE event before w does. When a write to w fails (the
+// client disconnected) while the callback is still reading, the function
+// returns the write error but keeps reading chunks into the copy in the
+// background until they end or the callback returns: TS tees the SSE stream,
+// and cancelling the response branch does not cancel the source while the
+// consumeSseStream branch still reads it. release is called once chunks are
+// no longer read (at return, or when that drain ends); it may be nil.
+//
+// failure, when set, reports whether the source of chunks failed once chunks
+// closes. A failed source ends the SSE stream without "data: [DONE]" (TS
+// JsonToSseTransformStream writes it only in flush, which an errored stream
+// skips), the copy's reader gets that error, and it is returned.
+func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit, release func(), failure func() error) error {
+	if release == nil {
+		release = func() {}
+	}
+	var side *uiSSETeeBuffer
 	if init != nil && init.ConsumeSSEStream != nil {
-		pr, pw := io.Pipe()
-		sideWriter = pw
-		closeSide = make(chan error, 1)
+		side = newUISSETeeBuffer()
+		consume := init.ConsumeSSEStream
 		go func() {
-			closeSide <- init.ConsumeSSEStream(pr)
+			// The callback's error is not returned (TS does not await it).
+			_ = consume(side)
+			// A consumer that stops reading early must not keep the rest
+			// of the response queued.
+			side.stop()
 		}()
-		defer func() { _ = pw.Close() }()
-		teeWriter = io.MultiWriter(w, pw)
 	}
 
-	var keepAliveDuration time.Duration
-	keepAliveEnabled := false
-	if init != nil && init.KeepAliveMs != nil && *init.KeepAliveMs > 0 {
-		keepAliveDuration = *init.KeepAliveMs
-		keepAliveEnabled = true
+	var keepAlive time.Duration
+	if init != nil && init.KeepAliveMs != nil {
+		keepAlive = *init.KeepAliveMs
 	}
 
-	bw := bufio.NewWriter(teeWriter)
-	// flush surfaces the bufio flush error instead of discarding it (TS
+	bw := bufio.NewWriter(w)
+	// The flush error is returned instead of discarded (TS
 	// write-to-server-response.ts's pipe helpers return a promise that
-	// rejects on a write/flush failure), and additionally calls the
-	// underlying writer's Flush when it implements http.Flusher so an SSE
-	// consumer receives each event immediately instead of in ~4KiB batches
-	// (audit rows #56/#76).
+	// rejects on a write/flush failure), and the underlying writer's Flush
+	// is called when it implements http.Flusher so an SSE consumer receives
+	// each event immediately instead of in ~4KiB batches (audit rows
+	// #56/#76).
 	flusher, _ := w.(http.Flusher)
-	flush := func() error {
+	emit := func(event []byte) error {
+		if side != nil {
+			_, _ = side.Write(event)
+		}
+		if _, err := bw.Write(event); err != nil {
+			return err
+		}
 		if err := bw.Flush(); err != nil {
 			return err
 		}
@@ -1986,97 +3069,138 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 		}
 		return nil
 	}
-	writeComment := func(comment string) error {
-		if _, err := bw.WriteString(comment); err != nil {
-			return err
-		}
-		return flush()
-	}
 
-	if keepAliveEnabled {
+	writeFailed, err := writeUISSEEvents(chunks, keepAlive, true, nil, failure, emit)
+	if !writeFailed || side == nil || side.stopped() {
+		if side != nil {
+			if writeFailed {
+				side.Close()
+			} else {
+				side.closeWithError(err)
+			}
+		}
+		release()
+		return err
+	}
+	go func() {
+		defer release()
+		_, drainErr := writeUISSEEvents(chunks, keepAlive, false, side.done, failure, func(event []byte) error {
+			_, _ = side.Write(event)
+			return nil
+		})
+		side.closeWithError(drainErr)
+	}()
+	return err
+}
+
+// writeUISSEEvents emits the SSE events of chunks: the opening comment (when
+// open and keep-alive is on), one data event per chunk, keep-alive comments
+// after keepAlive without a chunk (0 turns them off), and "data: [DONE]"
+// once chunks closes, unless failure reports that their source failed (that
+// error is returned instead). It stops early when stop closes. writeFailed
+// reports whether err came from emit rather than from the source or from
+// encoding a chunk.
+func writeUISSEEvents(chunks <-chan UIMessageChunk, keepAlive time.Duration, open bool, stop <-chan struct{}, failure func() error, emit func([]byte) error) (writeFailed bool, err error) {
+	if keepAlive > 0 && open {
 		// Flush an opening comment immediately, before the first real chunk
 		// is available, so a reverse proxy sees the response start right
 		// away instead of timing out an idle connection. Mirrors TS
 		// createSseStreamWithKeepAlive's STREAM_OPEN_COMMENT.
-		if err := writeComment(sseStreamOpenComment); err != nil {
-			return nil, err
+		if err := emit([]byte(sseStreamOpenComment)); err != nil {
+			return true, err
 		}
 	}
-
-	if !keepAliveEnabled {
-		for chunk := range chunks {
-			if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
-				return nil, err
-			}
-		}
-	} else {
-		timer := time.NewTimer(keepAliveDuration)
+	var tick <-chan time.Time
+	var timer *time.Timer
+	if keepAlive > 0 {
+		timer = time.NewTimer(keepAlive)
 		defer timer.Stop()
-	loop:
-		for {
-			select {
-			case chunk, ok := <-chunks:
-				if !ok {
-					break loop
+		tick = timer.C
+	}
+	for {
+		select {
+		case chunk, ok := <-chunks:
+			if !ok {
+				if failure != nil {
+					if err := failure(); err != nil {
+						return false, err
+					}
 				}
-				if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
-					return nil, err
+				if err := emit([]byte("data: [DONE]\n\n")); err != nil {
+					return true, err
 				}
-				timer.Reset(keepAliveDuration)
-			case <-timer.C:
-				if err := writeComment(sseKeepAliveComment); err != nil {
-					return nil, err
-				}
-				timer.Reset(keepAliveDuration)
+				return false, nil
 			}
+			event, err := uiSSEEventBytes(chunk)
+			if err != nil {
+				return false, err
+			}
+			if err := emit(event); err != nil {
+				return true, err
+			}
+			if timer != nil {
+				timer.Reset(keepAlive)
+			}
+		case <-tick:
+			if err := emit([]byte(sseKeepAliveComment)); err != nil {
+				return true, err
+			}
+			timer.Reset(keepAlive)
+		case <-stop:
+			return false, nil
 		}
 	}
-	if _, err := bw.WriteString("data: [DONE]\n\n"); err != nil {
-		return nil, err
-	}
-	if err := flush(); err != nil {
-		return nil, err
-	}
-	if sideWriter != nil {
-		_ = sideWriter.Close()
-		consumeErr = <-closeSide
-	}
-	return consumeErr, nil
 }
 
-// ReadUIMessageStream reads SSE data lines containing JSON UI chunks.
+// ReadUIMessageStream reads Server-Sent Events whose data are JSON UI
+// message chunks, as TS DefaultChatTransport does with parseJsonEventStream:
+// the bytes are decoded as UTF-8 the way TextDecoderStream decodes them (a
+// leading byte order mark dropped, each invalid subpart one U+FFFD), events
+// are framed like eventsource-parser (LF, CRLF and bare CR line endings,
+// multi-line data joined with "\n", an event dispatched only at a blank
+// line), and a `[DONE]` event is skipped. Data that is not valid JSON is an
+// error.
 func ReadUIMessageStream(r io.Reader) ([]UIMessageChunk, error) {
 	if r == nil {
 		return nil, fmt.Errorf("reader is required")
 	}
-	sc := bufio.NewScanner(r)
-	// UI message chunks can carry inline file/image data well over
-	// bufio.Scanner's default 64 KiB token limit on a single `data: ` line.
-	// Match the bound used for the shared SSEParser (R4-4).
-	sc.Buffer(make([]byte, 64*1024), 32*1024*1024)
+	// The parser drops one leading byte order mark, as TextDecoderStream
+	// (ignoreBOM false) does; a second one stays, so the first line is no
+	// data field (TS: eventsource-parser strips only the mis-decoded
+	// "\xEF\xBB\xBF" characters).
+	parser := streaming.NewSSEParser(r)
 	chunks := make([]UIMessageChunk, 0)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue
+	for {
+		event, err := parser.Next()
+		if err == io.EOF {
+			return chunks, nil
 		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
+		if err != nil {
+			return nil, err
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "[DONE]" {
+		data := decodeSSEDataUTF8(event.Data)
+		if data == "[DONE]" {
 			continue
 		}
 		var chunk UIMessageChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return nil, err
 		}
 		chunks = append(chunks, chunk)
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+}
+
+// decodeSSEDataUTF8 replaces invalid UTF-8 in one event's data as WHATWG
+// TextDecoder does (one U+FFFD per maximal invalid subpart). Line
+// terminators always end an incomplete sequence, so decoding the data of
+// each event equals decoding the whole stream. A byte order mark inside the
+// data is kept: prompt.DecodeUTF8Text drops a leading one, so it decodes the
+// data behind one ASCII byte.
+func decodeSSEDataUTF8(data string) string {
+	if utf8.ValidString(data) {
+		return data
 	}
-	return chunks, nil
+	return prompt.DecodeUTF8Text(append([]byte{' '}, data...))[1:]
 }
 
 type resultChunkConversionOptions struct {
@@ -2098,16 +3222,17 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			part["providerMetadata"] = providerMetadata
 		}
 	}
+	// Mirrors TS toUIMessageChunk isDynamic: a registered tool decides on its
+	// own type (so an invalid call to a static tool stays a static UI part);
+	// only tools missing from the tool set (provider-executed dynamic tools,
+	// NoSuchTool calls) fall back to the part's own dynamic flag.
 	isDynamicTool := func(toolName string, dynamic bool) bool {
-		if dynamic {
-			return true
-		}
 		for _, tool := range opts.Tools {
-			if tool.Name == toolName && tool.Type == types.ToolTypeDynamic {
-				return true
+			if tool.Name == toolName {
+				return tool.Type == types.ToolTypeDynamic
 			}
 		}
-		return false
+		return dynamic
 	}
 
 	switch chunk.Type {
@@ -2125,6 +3250,16 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		out = append(out, part)
 	case provider.ChunkTypeTextEnd:
 		part := map[string]interface{}{"type": "text-end", "id": chunk.ID}
+		if len(chunk.Citations) > 0 {
+			// Round-trip through JSON so the chunk holds the same generic
+			// shape as a decoded wire chunk.
+			if raw, err := json.Marshal(chunk.Citations); err == nil {
+				var citations []interface{}
+				if json.Unmarshal(raw, &citations) == nil {
+					part["citations"] = citations
+				}
+			}
+		}
 		withMeta(part)
 		out = append(out, part)
 	case provider.ChunkTypeReasoningStart:
@@ -2156,6 +3291,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.SourceContent == nil || !opts.SendSources {
 			break
 		}
+		// TS part.providerMetadata is the source's own metadata; providers
+		// keep it on SourceContent (a chunk-level copy wins).
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = chunk.SourceContent.ProviderMetadata
+		}
 		if chunk.SourceContent.SourceType == "url" {
 			part := map[string]interface{}{
 				"type":     "source-url",
@@ -2170,13 +3310,13 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			break
 		}
 		if chunk.SourceContent.SourceType == "document" {
+			// A document source's title is a required string (TS writes
+			// it even when empty; the UI message schema requires it).
 			part := map[string]interface{}{
 				"type":      "source-document",
 				"sourceId":  chunk.SourceContent.ID,
 				"mediaType": chunk.SourceContent.MediaType,
-			}
-			if chunk.SourceContent.Title != "" {
-				part["title"] = chunk.SourceContent.Title
+				"title":     chunk.SourceContent.Title,
 			}
 			if chunk.SourceContent.Filename != "" {
 				part["filename"] = chunk.SourceContent.Filename
@@ -2188,6 +3328,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		fileContent := chunk.GeneratedFileContent
 		if fileContent == nil {
 			break
+		}
+		// TS part.providerMetadata is the file's own metadata (as for a
+		// source, a chunk-level copy wins).
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = fileContent.ProviderMetadata
 		}
 		part := map[string]interface{}{
 			"type":      "file",
@@ -2201,6 +3346,12 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			break
 		}
 		fileContent := chunk.ReasoningFileContent
+		if fileContent == nil {
+			break
+		}
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = fileContent.ProviderMetadata
+		}
 		part := map[string]interface{}{
 			"type":      "reasoning-file",
 			"mediaType": fileContent.MediaType,
@@ -2211,6 +3362,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	case provider.ChunkTypeCustom:
 		if chunk.CustomContent == nil {
 			break
+		}
+		// TS part.providerMetadata is the custom part's own metadata;
+		// providers keep it on CustomContent (a chunk-level copy wins).
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = chunk.CustomContent.ProviderMetadata
 		}
 		part := map[string]interface{}{
 			"type": "custom",
@@ -2227,11 +3383,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				"type":       "tool-input-error",
 				"toolCallId": chunk.ToolCall.ID,
 				"toolName":   chunk.ToolCall.ToolName,
-				"input":      chunk.ToolCall.Arguments,
+				"input":      invalidToolCallInput(*chunk.ToolCall),
 				"errorText":  opts.OnError(chunk.ToolCall.Error),
 			}
-			if chunk.ToolCall.ProviderExecuted {
-				part["providerExecuted"] = true
+			if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
+				part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 			}
 			if len(chunk.ToolCall.ToolMetadata) > 0 {
 				part["toolMetadata"] = chunk.ToolCall.ToolMetadata
@@ -2255,8 +3411,10 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"toolName":   chunk.ToolCall.ToolName,
 			"input":      chunk.ToolCall.Arguments,
 		}
-		if chunk.ToolCall.ProviderExecuted {
-			part["providerExecuted"] = true
+		// TS forwards providerExecuted whenever it is not undefined, so an
+		// explicit false (ProviderExecutedSet) is kept.
+		if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
+			part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 		}
 		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
@@ -2281,14 +3439,27 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"toolCallId": chunk.ToolCall.ID,
 			"toolName":   chunk.ToolCall.ToolName,
 		}
-		if chunk.ToolCall.ProviderExecuted {
-			part["providerExecuted"] = true
+		if chunk.ToolCall.InputEncoding != "" {
+			part["inputEncoding"] = chunk.ToolCall.InputEncoding
+		}
+		// TS forwards providerExecuted whenever it is not undefined, so an
+		// explicit false (ProviderExecutedSet) is kept.
+		if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
+			part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 		}
 		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
-		if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
-			part["dynamic"] = true
+		// TS streamText gives every tool-input-start a boolean dynamic
+		// (`chunk.dynamic ?? tool?.type === 'dynamic'`), and toUIMessageChunk
+		// copies it for a tool missing from the tool set, so an unknown or
+		// provider-executed tool that is not in the set writes dynamic: false.
+		if hasUITool(opts.Tools, chunk.ToolCall.ToolName) {
+			if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
+				part["dynamic"] = true
+			}
+		} else {
+			part["dynamic"] = chunk.ToolCall.Dynamic
 		}
 		if chunk.ToolCall.Title != "" {
 			part["title"] = chunk.ToolCall.Title
@@ -2325,8 +3496,10 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolApprovalRequest.Signature != "" {
 			part["signature"] = chunk.ToolApprovalRequest.Signature
 		}
-		if chunk.ToolApprovalRequest.InputSchemaInput != nil {
-			part["inputSchemaInput"] = chunk.ToolApprovalRequest.InputSchemaInput
+		// TS: only when the schema input differs from the (transformed)
+		// tool call input.
+		if input := chunk.ToolApprovalRequest.InputSchemaInput; input != nil && !isDeepEqualJSONData(input, chunk.ToolApprovalRequest.ToolCall.Arguments) {
+			part["inputSchemaInput"] = input
 		}
 		if chunk.ToolApprovalRequest.Reason != "" {
 			part["reason"] = chunk.ToolApprovalRequest.Reason
@@ -2341,11 +3514,13 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"approvalId": chunk.ToolApprovalResponse.ApprovalID,
 			"approved":   chunk.ToolApprovalResponse.Approved,
 		}
-		if chunk.ToolApprovalResponse.Reason != "" {
+		if chunk.ToolApprovalResponse.HasReason() {
 			part["reason"] = chunk.ToolApprovalResponse.Reason
 		}
-		if chunk.ToolApprovalResponse.ProviderExecuted {
-			part["providerExecuted"] = true
+		// TS forwards providerExecuted when it is not undefined, so an
+		// explicit false (ProviderExecutedSet) is kept.
+		if chunk.ToolApprovalResponse.ProviderExecuted || chunk.ToolApprovalResponse.ProviderExecutedSet {
+			part["providerExecuted"] = chunk.ToolApprovalResponse.ProviderExecuted
 		}
 		out = append(out, part)
 	case provider.ChunkTypeToolOutputDenied:
@@ -2395,8 +3570,8 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			if chunk.ToolResult.ApprovalReason != nil {
 				response["reason"] = *chunk.ToolResult.ApprovalReason
 			}
-			if chunk.ToolResult.ProviderExecuted {
-				response["providerExecuted"] = true
+			if chunk.ToolResult.ProviderExecuted || chunk.ToolResult.ProviderExecutedSet {
+				response["providerExecuted"] = chunk.ToolResult.ProviderExecuted
 			}
 			out = append(out, response)
 			if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusDenied {
@@ -2430,7 +3605,18 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolResult.Error != nil {
 			errorText := opts.OnError(chunk.ToolResult.Error)
 			if chunk.ToolResult.ProviderExecuted {
+				// TS: typeof error === 'string' ? error : JSON.stringify(error).
+				// A structured provider error travels in Result.
 				errorText = chunk.ToolResult.Error.Error()
+				switch v := chunk.ToolResult.Result.(type) {
+				case nil:
+				case string:
+					errorText = v
+				default:
+					if b, err := jsonstr.Marshal(v); err == nil {
+						errorText = string(b)
+					}
+				}
 			}
 			partType = "tool-output-error"
 			part = map[string]interface{}{
@@ -2438,12 +3624,22 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				"toolCallId": chunk.ToolResult.ToolCallID,
 				"errorText":  errorText,
 			}
+			if chunk.ToolResult.ProviderExecuted && chunk.ToolResult.Result == nil && errors.Is(chunk.ToolResult.Error, errProviderToolNoValue) {
+				// TS JSON.stringify(undefined) for a provider tool error
+				// without a value: the chunk has no errorText.
+				delete(part, "errorText")
+			}
 			if len(chunk.ToolResult.ToolMetadata) > 0 {
 				part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 			}
 		}
+		// TS forwards providerExecuted when it is not undefined. An approved
+		// result's flag came from its tool call (for the approval response);
+		// the locally executed output itself has none in TS.
 		if chunk.ToolResult.ProviderExecuted {
 			part["providerExecuted"] = true
+		} else if chunk.ToolResult.ProviderExecutedSet && chunk.ToolResult.ApprovalStatus != types.ToolApprovalStatusApproved {
+			part["providerExecuted"] = false
 		}
 		if isDynamicTool(chunk.ToolResult.ToolName, chunk.ToolResult.Dynamic) {
 			part["dynamic"] = true
@@ -2459,7 +3655,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	case provider.ChunkTypeError:
 		out = append(out, map[string]interface{}{
 			"type":      "error",
-			"errorText": opts.OnError(errors.New(chunk.Text)),
+			"errorText": opts.OnError(streamChunkError(&chunk)),
 		})
 	// ChunkTypeFinish is handled by toUIMessageChunks' own switch (alongside
 	// ChunkTypeFinishStep) before this function is ever reached, so it is
@@ -2481,61 +3677,120 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	return out
 }
 
+// hasUITool reports whether the UI conversion's tool set has a tool named
+// toolName (TS `tools?.[toolName] != null`).
+func hasUITool(tools []types.Tool, toolName string) bool {
+	for _, tool := range tools {
+		if tool.Name == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+// deriveFileURL is the UI file part url: TS `data:${mediaType};base64,${file.base64}`.
+// StreamText downloads URL-backed files first, so they carry bytes; a file
+// that still holds only a URL (a raw provider stream passed straight to
+// ToUIMessageStream) keeps that URL rather than embedding it in a data URL.
 func deriveFileURL(mediaType string, file *types.GeneratedFileContent) string {
 	if file == nil {
 		return ""
 	}
-	return "data:" + mediaType + ";base64," + generatedFileBase64Data(file)
-}
-
-func generatedFileBase64Data(file *types.GeneratedFileContent) string {
-	if file == nil {
-		return ""
+	if data, ok := inlineFileBase64(file.FileData, file.Data); ok {
+		return "data:" + mediaType + ";base64," + data
+	}
+	if file.FileData.Type == types.FileDataTypeURL && file.FileData.URL != "" {
+		return file.FileData.URL
 	}
 	if file.URL != "" {
 		return file.URL
 	}
-	if file.FileData.Type == "url" && file.FileData.URL != "" {
-		return file.FileData.URL
-	}
-	if file.FileData.Type == "data" {
-		if file.FileData.DataString != "" {
-			return file.FileData.DataString
+	return "data:" + mediaType + ";base64,"
+}
+
+// inlineFileBase64 returns the base64 of a file's inline bytes, if any.
+func inlineFileBase64(fileData types.FileData, data []byte) (string, bool) {
+	if fileData.Type == types.FileDataTypeData {
+		if fileData.DataString != "" {
+			return fileData.DataString, true
 		}
-		if len(file.FileData.Data) > 0 {
-			return base64.StdEncoding.EncodeToString(file.FileData.Data)
+		if len(fileData.Data) > 0 {
+			return base64.StdEncoding.EncodeToString(fileData.Data), true
 		}
 	}
-	if len(file.Data) > 0 {
-		return base64.StdEncoding.EncodeToString(file.Data)
+	if len(data) > 0 {
+		return base64.StdEncoding.EncodeToString(data), true
 	}
-	return ""
+	return "", false
 }
 
 func deriveFileURLFromReasoning(file *types.ReasoningFileContent, mediaType string) string {
 	if file == nil {
 		return ""
 	}
-	return "data:" + mediaType + ";base64," + reasoningFileBase64Data(file)
-}
-
-func reasoningFileBase64Data(file *types.ReasoningFileContent) string {
-	if file == nil {
-		return ""
+	if data, ok := inlineFileBase64(file.FileData, file.Data); ok {
+		return "data:" + mediaType + ";base64," + data
 	}
-	if file.FileData.Type == "url" && file.FileData.URL != "" {
+	if file.FileData.Type == types.FileDataTypeURL && file.FileData.URL != "" {
 		return file.FileData.URL
 	}
-	if file.FileData.Type == "data" {
-		if file.FileData.DataString != "" {
-			return file.FileData.DataString
-		}
-		if len(file.FileData.Data) > 0 {
-			return base64.StdEncoding.EncodeToString(file.FileData.Data)
-		}
-	}
-	if len(file.Data) > 0 {
-		return base64.StdEncoding.EncodeToString(file.Data)
-	}
-	return ""
+	return "data:" + mediaType + ";base64,"
 }
+
+// streamChunkError returns the error carried by an error chunk: chunk.Err when
+// the provider set it (keeping its type for errors.As in onError handlers),
+// else an error built from chunk.Text.
+func streamChunkError(chunk *provider.StreamChunk) error {
+	if chunk.Err != nil {
+		return chunk.Err
+	}
+	return errors.New(chunk.Text)
+}
+
+// invalidToolCallInput is the input of an invalid tool call as TS reports it
+// in a tool-input-error chunk: the parsed value when the model's input text
+// parsed, the text itself otherwise (parseToolCall's catch block).
+func invalidToolCallInput(call types.ToolCall) interface{} {
+	if call.Arguments != nil {
+		return call.Arguments
+	}
+	// TS toolCall.input is always text: "" when the model sent none.
+	return call.RawArguments
+}
+
+// orderedIDSet is a set of open block ids that remembers insertion order, so
+// the text-end/reasoning-end parts synthesized when a step closes come out in
+// the order the blocks were opened instead of in random map order.
+type orderedIDSet struct {
+	order []string
+	set   map[string]bool
+}
+
+func (s *orderedIDSet) has(id string) bool { return s.set[id] }
+
+func (s *orderedIDSet) add(id string) {
+	if s.set == nil {
+		s.set = map[string]bool{}
+	}
+	if !s.set[id] {
+		s.set[id] = true
+		s.order = append(s.order, id)
+	}
+}
+
+func (s *orderedIDSet) remove(id string) {
+	if !s.set[id] {
+		return
+	}
+	delete(s.set, id)
+	for i, v := range s.order {
+		if v == id {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+func (s *orderedIDSet) snapshot() []string { return append([]string(nil), s.order...) }
+
+func (s *orderedIDSet) clear() { s.order, s.set = nil, nil }

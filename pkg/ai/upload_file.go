@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"strings"
+	"io"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -25,7 +25,18 @@ type UploadFileOptions struct {
 	Headers map[string]string
 }
 
-func UploadFile(ctx context.Context, opts UploadFileOptions) (*types.UploadFileResult, error) {
+func UploadFile(ctx context.Context, opts UploadFileOptions) (result *types.UploadFileResult, err error) {
+	// Ownership guarantee (TS uploadFile): a failed upload releases a stream
+	// the caller handed over, even when the provider never consumed it.
+	if fd, ok := opts.Data.(types.FileData); ok && fd.Type == types.FileDataTypeStream {
+		defer func() {
+			if err != nil {
+				if c, ok := fd.Stream.(io.Closer); ok {
+					_ = c.Close()
+				}
+			}
+		}()
+	}
 	filesAPI, err := resolveFilesAPI(opts.API)
 	if err != nil {
 		return nil, err
@@ -105,11 +116,9 @@ func normalizeUploadFileData(data interface{}) (types.FileData, error) {
 }
 
 func detectUploadMediaType(data []byte) string {
-	detected := http.DetectContentType(data)
-	if strings.HasPrefix(detected, "text/plain") {
-		return "text/plain"
-	}
-	if detected != "" && detected != "application/octet-stream" {
+	// TS detectMediaType: magic-number signatures only; anything else is
+	// text/plain when it looks like text (so HTML/XML stay text/plain).
+	if detected, ok := fileutil.DetectMediaTypeSignature(data, ""); ok && detected != "" {
 		return detected
 	}
 	if isLikelyUploadText(data) {

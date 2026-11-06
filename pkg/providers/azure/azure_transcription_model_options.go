@@ -1,10 +1,9 @@
 package azure
 
 import (
-	"strings"
-
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // AzureTranscriptionAPI selects which backend handles an azure.Transcription
@@ -74,7 +73,7 @@ type azureMAITranscribeModel struct {
 // getMAITranscribeModel reports the Azure Speech model name for modelID,
 // mirroring TS getMAITranscribeModel. ok is false for any other model ID.
 func getMAITranscribeModel(modelID string) (azureMAITranscribeModel, bool) {
-	m, ok := azureTranscribeModelsByLowercaseID[strings.ToLower(modelID)]
+	m, ok := azureTranscribeModelsByLowercaseID[providerutils.JSToLower(modelID)]
 	if !ok {
 		return azureMAITranscribeModel{}, false
 	}
@@ -84,7 +83,7 @@ func getMAITranscribeModel(modelID string) (azureMAITranscribeModel, bool) {
 // isMAITranscribeStreaming reports whether modelID is
 // MAI-Transcribe-2-Streaming, mirroring TS isMAITranscribeStreaming.
 func isMAITranscribeStreaming(modelID string) bool {
-	return strings.EqualFold(modelID, "mai-transcribe-2-streaming")
+	return providerutils.JSToLower(modelID) == "mai-transcribe-2-streaming"
 }
 
 // parseAzureTranscriptionProviderOptions parses and strictly validates
@@ -105,6 +104,10 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 	if !ok {
 		return result, invalidAzureOption("providerOptions.azure", "must be an object")
 	}
+	// Validate Go-typed values ([]string locales and phrases,
+	// map[string]bool diarization, ...) in their JSON form, the form TS
+	// parses; they failed as "must be an array" / "must be an object".
+	m = providerutils.NormalizeOptionsJSON(m)
 
 	allowed := map[string]bool{
 		"api": true, "timestamps": true, "transcribeStyle": true,

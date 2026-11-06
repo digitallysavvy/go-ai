@@ -6,11 +6,27 @@ import (
 	"testing"
 )
 
+// stripCompact runs the stripper but joins the kept tokens, dropping the
+// erased spans, so the table below states what was erased without counting
+// the blanks that stripTypeScriptAnnotations leaves in their place (see
+// TestStripTypeScriptAnnotationsBlanksLikeNode for those).
+func stripCompact(src string) (string, error) {
+	kept, err := stripTSTokens(tokenizeTS(src))
+	if err != nil {
+		return src, err
+	}
+	var b strings.Builder
+	for _, t := range kept {
+		b.WriteString(t.text)
+	}
+	return b.String(), nil
+}
+
 // strip mirrors calling stripTypeScriptAnnotations and failing the test on
 // an unexpected error, to keep the table below concise.
 func strip(t *testing.T, src string) string {
 	t.Helper()
-	got, err := stripTypeScriptAnnotations(src)
+	got, err := stripCompact(src)
 	if err != nil {
 		t.Fatalf("stripTypeScriptAnnotations(%q) returned unexpected error: %v", src, err)
 	}
@@ -36,7 +52,7 @@ func TestStripTypeScriptAnnotations_TSCoreTests(t *testing.T) {
 	t.Run("strips interface and satisfies syntax from snippets", func(t *testing.T) {
 		src := "interface Item { value: number }\nconst item = { value: 12 } satisfies Item;\nreturn item;"
 		got := strip(t, src)
-		want := "\nconst item = { value: 12 } ;\nreturn item;"
+		want := "\nconst item = { value: 12 };\nreturn item;"
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
@@ -96,17 +112,17 @@ func TestStripTypeScriptAnnotations_ErasableSyntax(t *testing.T) {
 		{
 			"as assertion",
 			"const x = (1 as number); return x;",
-			"const x = (1 ); return x;",
+			"const x = (1); return x;",
 		},
 		{
 			"chained as assertions",
 			"const x = (1 as unknown) as string; return x;",
-			"const x = (1 ) ; return x;",
+			"const x = (1); return x;",
 		},
 		{
 			"as const",
 			"const x = [1,2,3] as const; return x;",
-			"const x = [1,2,3] ; return x;",
+			"const x = [1,2,3]; return x;",
 		},
 		{
 			"generic call",
@@ -152,16 +168,6 @@ func TestStripTypeScriptAnnotations_ErasableSyntax(t *testing.T) {
 			"arrow function typed param and return type",
 			"const isFoo = (x: unknown): x is string => typeof x === \"string\"; return isFoo(1);",
 			"const isFoo = (x) => typeof x === \"string\"; return isFoo(1);",
-		},
-		{
-			"import type statement",
-			"import type { Foo } from \"bar\";\nconst x = 1; return x;",
-			"\nconst x = 1; return x;",
-		},
-		{
-			"export type statement",
-			"const x = 1; export type Foo = number;",
-			"const x = 1; ",
 		},
 		{
 			"readonly class field",
@@ -351,6 +357,11 @@ func TestStripTypeScriptAnnotations_UnsupportedSyntax(t *testing.T) {
 		name string
 		src  string
 	}{
+		// import/export cannot appear in the function body code-mode wraps
+		// the snippet in, so Node rejects them (type-only forms too).
+		{"import type", "import type { Foo } from \"bar\";\nconst x = 1; return x;"},
+		{"export type", "const x = 1; export type Foo = number;"},
+		{"static import", "import { a } from \"b\"; return a;"},
 		{"enum", "enum Color { Red, Green } return Color.Red;"},
 		{"const enum", "const enum Color { Red, Green } return Color.Red;"},
 		{"namespace", "namespace NS { export const x = 1; } return NS.x;"},
@@ -362,7 +373,7 @@ func TestStripTypeScriptAnnotations_UnsupportedSyntax(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := stripTypeScriptAnnotations(c.src)
+			got, err := stripCompact(c.src)
 			if err == nil {
 				t.Fatalf("expected an error for %q, got none", c.src)
 			}
@@ -500,7 +511,7 @@ func TestStripTypeScriptAnnotations_WrapperParity(t *testing.T) {
 		t.Run(src, func(t *testing.T) {
 			unwrapped := strip(t, src)
 
-			wrapped, err := stripTypeScriptAnnotations(prefix + src + suffix)
+			wrapped, err := stripCompact(prefix + src + suffix)
 			if err != nil {
 				t.Fatalf("stripping the wrapped snippet returned unexpected error: %v", err)
 			}
@@ -580,7 +591,7 @@ func TestStripTypeScriptAnnotations_FuzzPlainJS(t *testing.T) {
 	}
 	for _, src := range snippets {
 		t.Run(src, func(t *testing.T) {
-			got, err := stripTypeScriptAnnotations(src)
+			got, err := stripCompact(src)
 			if err != nil {
 				t.Fatalf("stripTypeScriptAnnotations(%q) returned unexpected error: %v", src, err)
 			}

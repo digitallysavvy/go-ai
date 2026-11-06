@@ -56,7 +56,7 @@ func TestFireworksEmbeddingModelDoEmbedMany(t *testing.T) {
 		}, nil
 	})
 	m := NewEmbeddingModel(p, "nomic-embed")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "fireworks" || m.ModelID() != "nomic-embed" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "fireworks.embedding" || m.ModelID() != "nomic-embed" {
 		t.Fatalf("metadata mismatch")
 	}
 	if m.MaxEmbeddingsPerCall() != 2048 || !m.SupportsParallelCalls() {
@@ -95,7 +95,7 @@ data: [DONE]
 		}, nil
 	})
 	m := NewLanguageModel(p, "accounts/fireworks/models/mixtral-8x7b-instruct")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "fireworks" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "fireworks.chat" {
 		t.Fatalf("metadata mismatch")
 	}
 	if !m.SupportsTools() || !m.SupportsStructuredOutput() || m.SupportsImageInput() {

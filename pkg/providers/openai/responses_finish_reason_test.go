@@ -52,11 +52,11 @@ func streamFinishReason(t *testing.T, sse string) types.FinishReason {
 // Streaming used to report "stop" after a function call because the
 // tool-call flag was never passed to the mapping.
 func TestResponsesStream_FinishReasonToolCallsAfterFunctionCall(t *testing.T) {
-	got := streamFinishReason(t, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather"}}
+	got := streamFinishReason(t, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":""}}
 
-data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"}
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{}"}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":"{}"}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":"{}","status":"completed"}}
 
 data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}
 
@@ -69,7 +69,7 @@ data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens"
 func TestResponsesStream_FinishReasonStopWithoutFunctionCall(t *testing.T) {
 	got := streamFinishReason(t, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}
 
-data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"hi"}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}
 

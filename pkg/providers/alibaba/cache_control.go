@@ -22,6 +22,59 @@ func NewEphemeralCacheControl() *MessageCacheControl {
 type CacheControlValidator struct {
 	breakpointCount int
 	warnings        []types.Warning
+	// perPart selects the TS behavior: cache markers come from each
+	// message's / part's providerOptions.alibaba.cacheControl. The default
+	// (NewCacheControlValidator) is the older Go call-level mode, where a
+	// providerOptions.alibaba.cacheControl on the call marks every message.
+	perPart bool
+}
+
+// NewPartCacheControlValidator creates a validator for TS-style per-message and
+// per-part cache control (providerOptions.alibaba.cacheControl on a message,
+// content part or tool result).
+func NewPartCacheControlValidator() *CacheControlValidator {
+	return &CacheControlValidator{perPart: true}
+}
+
+// GetCacheControlFromOptions mirrors TS CacheControlValidator.getCacheControl:
+// it reads alibaba.cacheControl (or alibaba.cache_control) from the given
+// provider options and passes the value through. A falsy value (null, false,
+// 0, "") means no marker. Every marker beyond the fourth adds a warning.
+func (v *CacheControlValidator) GetCacheControlFromOptions(providerOptions map[string]interface{}) interface{} {
+	alibaba, _ := providerOptions["alibaba"].(map[string]interface{})
+	value, ok := alibaba["cacheControl"]
+	if !ok || value == nil {
+		value = alibaba["cache_control"]
+	}
+	if !jsTruthy(value) {
+		return nil
+	}
+	v.breakpointCount++
+	if v.breakpointCount > maxCacheBreakpoints {
+		v.warnings = append(v.warnings, types.Warning{
+			Type:    "other",
+			Message: "Max breakpoint limit exceeded. Only the last 4 cache markers will take effect.",
+		})
+	}
+	return value
+}
+
+func jsTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	}
+	return true
 }
 
 // NewCacheControlValidator creates a new validator for a single request.

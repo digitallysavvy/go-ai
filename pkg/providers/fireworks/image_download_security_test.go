@@ -25,7 +25,7 @@ func TestDownloadImage_SameOriginSendsCredentials(t *testing.T) {
 	defer srv.Close()
 
 	p := New(Config{APIKey: "secret", BaseURL: srv.URL, Headers: map[string]string{"X-Custom": "c"}})
-	m := NewImageModel(p, "accounts/fireworks/models/flux-kontext-dev")
+	m := NewImageModel(p, "accounts/fireworks/models/flux-kontext-pro")
 	res, err := m.downloadImage(context.Background(), srv.URL+"/image.jpg")
 	if err != nil {
 		t.Fatalf("downloadImage: %v", err)
@@ -46,7 +46,7 @@ func TestDownloadImage_RejectsPrivateForeignURL(t *testing.T) {
 	defer foreign.Close()
 
 	p := New(Config{APIKey: "secret", BaseURL: "https://api.fireworks.ai/inference"})
-	m := NewImageModel(p, "accounts/fireworks/models/flux-kontext-dev")
+	m := NewImageModel(p, "accounts/fireworks/models/flux-kontext-pro")
 	for _, u := range []string{foreign.URL + "/image.png", "http://169.254.169.254/latest/meta-data"} {
 		_, err := m.downloadImage(context.Background(), u)
 		var de *providererrors.DownloadError
@@ -71,7 +71,7 @@ func TestDownloadImage_TrustedOriginRedirectToPrivateBlocked(t *testing.T) {
 	defer base.Close()
 
 	p := New(Config{APIKey: "secret", BaseURL: base.URL})
-	m := NewImageModel(p, "accounts/fireworks/models/flux-kontext-dev")
+	m := NewImageModel(p, "accounts/fireworks/models/flux-kontext-pro")
 	if _, err := m.downloadImage(context.Background(), base.URL+"/image.png"); err == nil {
 		t.Fatal("expected redirect to private foreign origin to be blocked")
 	}

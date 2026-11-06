@@ -208,13 +208,13 @@ func TestChatPromptCacheOptionsForwarded(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewLanguageModel(p, "gpt-5.6")
 
-	opts := map[string]interface{}{"mode": "manual", "ttl": "24h"}
+	opts := map[string]interface{}{"mode": "explicit", "ttl": "30m"}
 	body, _, _ := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt:          types.Prompt{Text: "hi"},
 		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"promptCacheOptions": opts}},
 	}, false)
 	got, ok := body["prompt_cache_options"].(map[string]interface{})
-	if !ok || got["mode"] != "manual" || got["ttl"] != "24h" {
+	if !ok || got["mode"] != "explicit" || got["ttl"] != "30m" {
 		t.Fatalf("prompt_cache_options = %#v", body["prompt_cache_options"])
 	}
 }
@@ -279,24 +279,23 @@ func TestChatReasoningEffortMaxAcceptedForGpt6(t *testing.T) {
 // TestChatReasoningEffortRejectedWhenUnsupportedForGpt6 covers 34c53c0: an
 // effort not in SupportedReasoningEfforts is dropped with a warning.
 func TestChatReasoningEffortRejectedWhenUnsupportedForGpt6(t *testing.T) {
+	// TS 61a315e333: a providerOptions.openai.reasoningEffort is sent
+	// unchanged, without validation or warnings, even when the model's
+	// effort list does not contain it.
 	p := New(Config{APIKey: "k"})
 	m := NewLanguageModel(p, "gpt-6-astra")
 
 	body, warnings, _ := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt:          types.Prompt{Text: "hi"},
-		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningEffort": "disabled"}},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningEffort": "minimal"}},
 	}, false)
-	if _, ok := body["reasoning_effort"]; ok {
-		t.Fatalf("reasoning_effort should be dropped, got %#v", body["reasoning_effort"])
+	if body["reasoning_effort"] != "minimal" {
+		t.Fatalf("reasoning_effort = %#v, want minimal (provider option sent unchanged)", body["reasoning_effort"])
 	}
-	var found bool
 	for _, w := range warnings {
-		if w.Type == "unsupported" && w.Feature == "reasoningEffort" {
-			found = true
+		if w.Feature == "reasoningEffort" || w.Feature == "reasoning" {
+			t.Fatalf("unexpected reasoning warning %#v", w)
 		}
-	}
-	if !found {
-		t.Fatalf("expected unsupported reasoningEffort warning, got %#v", warnings)
 	}
 }
 

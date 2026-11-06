@@ -42,12 +42,11 @@ func TestPrepareTools_StrictExplicitFalseForwardedWhenSupported(t *testing.T) {
 	}
 }
 
-// TestPrepareTools_StrictExplicitFalseWarnsWhenUnsupported verifies that an
-// explicit Strict=false (not just Strict=true) triggers the "not supported"
-// warning when the model doesn't support strict tools at all, matching TS's
-// `!supportsStrictTools && tool.strict != null` (checks "was set", not "was
-// set to true").
-func TestPrepareTools_StrictExplicitFalseWarnsWhenUnsupported(t *testing.T) {
+// TestPrepareTools_StrictExplicitFalseOmittedSilentlyWhenUnsupported verifies
+// that an explicit Strict=false is omitted without a warning when the model
+// doesn't support strict tools, matching TS #22300 (`tool.strict === true`
+// gates the warning).
+func TestPrepareTools_StrictExplicitFalseOmittedSilentlyWhenUnsupported(t *testing.T) {
 	t.Parallel()
 
 	toolDef := types.Tool{
@@ -62,11 +61,8 @@ func TestPrepareTools_StrictExplicitFalseWarnsWhenUnsupported(t *testing.T) {
 		supportsStrictTools: false,
 	})
 
-	if len(result.warnings) != 1 {
-		t.Fatalf("expected 1 warning for an explicit strict setting on an unsupported model, got %d: %+v", len(result.warnings), result.warnings)
-	}
-	if result.warnings[0].Feature != "strict" {
-		t.Errorf("warning feature = %q, want %q", result.warnings[0].Feature, "strict")
+	if len(result.warnings) != 0 {
+		t.Fatalf("expected no warnings for strict:false on an unsupported model, got %+v", result.warnings)
 	}
 	if _, ok := result.tools[0]["strict"]; ok {
 		t.Error("strict should not be forwarded when the model doesn't support strict tools")
@@ -94,5 +90,24 @@ func TestPrepareTools_StrictUnsetNoWarningNoForward(t *testing.T) {
 	}
 	if _, ok := result.tools[0]["strict"]; ok {
 		t.Error("strict should not be forwarded when unset")
+	}
+}
+
+// TS #22440: toolChoice "none" keeps the tool definitions (server-tool
+// history stays valid) and sends tool_choice {type: "none"}.
+func TestPrepareTools_ToolChoiceNonePreservesTools(t *testing.T) {
+	t.Parallel()
+
+	result := prepareTools(prepareToolsOptions{
+		tools:               []types.Tool{{Name: "testFunction", Description: "Test", Parameters: map[string]interface{}{}}},
+		toolChoice:          &types.ToolChoice{Type: types.ToolChoiceNone},
+		validator:           prompt.NewAnthropicCacheControlValidator(),
+		supportsStrictTools: true,
+	})
+	if len(result.tools) != 1 || result.tools[0]["name"] != "testFunction" {
+		t.Fatalf("tools = %+v, want the function tool preserved", result.tools)
+	}
+	if result.toolChoice["type"] != "none" || len(result.toolChoice) != 1 {
+		t.Fatalf("toolChoice = %+v, want {type: none}", result.toolChoice)
 	}
 }

@@ -51,7 +51,7 @@ var kinds = []kind{
 	{File: "speech", TSType: "GatewaySpeechModelId", GoName: "Speech"},
 	{File: "transcription", TSType: "GatewayTranscriptionModelId", GoName: "Transcription"},
 	{File: "realtime", TSType: "GatewayRealtimeModelId", GoName: "Realtime"},
-	{File: "evaluation", TSType: "GatewayEvaluationModelId", GoName: "Evaluation", Optional: true},
+	{File: "decision", TSType: "GatewayDecisionModelId", GoName: "Decision", Optional: true},
 }
 
 func main() {

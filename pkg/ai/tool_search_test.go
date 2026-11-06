@@ -1049,3 +1049,10 @@ func TestToolSearchState_CustomSearchErrorPropagatesWithoutDiscovery(t *testing.
 		t.Fatalf("next = %v, want %v", got, want)
 	}
 }
+
+func TestToolSearchUnboundExecuteErrorText(t *testing.T) {
+	_, err := ToolSearch().Execute(context.Background(), map[string]interface{}{"query": "x"}, types.ToolExecutionOptions{})
+	if err == nil || err.Error() != "toolSearch must be bound by an AI SDK generation." {
+		t.Fatalf("err = %v", err)
+	}
+}

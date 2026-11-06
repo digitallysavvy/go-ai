@@ -122,3 +122,27 @@ func TestResolveFilesAPIAndTypeDetectionHelpers(t *testing.T) {
 		t.Fatal("isLikelyText(binary) = true, want false")
 	}
 }
+
+func TestUploadFile_HTMLIsTextPlain(t *testing.T) {
+	api := &mockFilesAPI{res: &types.UploadFileResult{}}
+	if _, err := UploadFile(context.Background(), api, UploadFileOptions{Data: []byte("<!DOCTYPE html><html></html>")}); err != nil {
+		t.Fatal(err)
+	}
+	if api.last.MediaType != "text/plain" {
+		t.Fatalf("MediaType = %q", api.last.MediaType)
+	}
+}
+
+func TestUploadFile_ForwardsHeaders(t *testing.T) {
+	api := &mockFilesAPI{res: &types.UploadFileResult{ProviderReference: types.ProviderReference{"mock": "file_1"}, Warnings: []types.Warning{}}}
+	_, err := UploadFile(context.Background(), api, UploadFileOptions{
+		Data:    []byte("hello"),
+		Headers: map[string]string{"X-Test": "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if api.last.Headers["X-Test"] != "1" {
+		t.Fatalf("headers = %v", api.last.Headers)
+	}
+}

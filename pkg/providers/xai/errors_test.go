@@ -1,6 +1,9 @@
 package xai
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestModerationErrorFormatting(t *testing.T) {
 	withCode := (&ModerationError{Code: "blocked", Message: "content policy"}).Error()
@@ -72,5 +75,12 @@ func TestXAIStreamFailedFormatting(t *testing.T) {
 				t.Fatalf("Error() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewXAIProviderErrorSpeechShape(t *testing.T) {
+	err := newXAIProviderError("xai.transcription", 400, []byte(`{"error":"speed must be between 0.7 and 1.5"}`))
+	if !strings.Contains(err.Error(), "speed must be between 0.7 and 1.5") || strings.Contains(err.Error(), `{"error"`) {
+		t.Fatalf("message must be the speech error string, got %q", err.Error())
 	}
 }

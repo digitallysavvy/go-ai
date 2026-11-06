@@ -159,6 +159,15 @@ func TestGetBootstrapShipsBridgeFilesAndInstallCommand(t *testing.T) {
 	if !strings.Contains(commands, "pnpm install --frozen-lockfile --store-dir .pnpm-store") {
 		t.Fatalf("commands = %q, missing pnpm install", commands)
 	}
+	// TS #23344: ripgrep is an npm dependency of the bridge, not a curl install.
+	if len(b.Commands) != 1 || strings.Contains(commands, "ripgrep") {
+		t.Fatalf("commands = %q, want only pnpm install (no ripgrep download)", commands)
+	}
+	for _, f := range b.Files {
+		if strings.HasSuffix(f.Path, "/package.json") && !strings.Contains(f.Content, "@vscode/ripgrep") {
+			t.Fatalf("bridge package.json lacks the @vscode/ripgrep dependency")
+		}
+	}
 	if strings.Contains(commands, "mkdir -p .harness-bootstrap/deepagents") {
 		t.Fatalf("commands = %q, should not mkdir the bootstrap dir itself", commands)
 	}
@@ -181,13 +190,14 @@ func TestGetBootstrapCachesAcrossCalls(t *testing.T) {
 
 // TS: "passes the harness client app to the bridge environment"
 func TestDoStartSpawnsBridgeWithClientAppAndToken(t *testing.T) {
-	srv := newServer(t, "", func(*bridgetest.Turn, map[string]any) {})
+	// The default random token is unknown to the test, so the server accepts any.
+	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	h := CreateDeepAgents()
 	// No MintBridgeToken override: exercise the default random-token path.
-	// The fake server's fixed Token ("") never matches, so the dial itself
-	// may fail — this test only checks what the adapter did *before*
-	// connecting (the spawn command and environment), which happen first.
+	// This test only checks what the adapter did *before* connecting (the
+	// spawn command and environment), which happen first.
 	_, _ = h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/deepagents-test-session",
 		SandboxSession: sandbox,
@@ -199,7 +209,7 @@ func TestDoStartSpawnsBridgeWithClientAppAndToken(t *testing.T) {
 		t.Fatal("expected the bridge to be spawned")
 	}
 	env := sandbox.spawnEnvs[0]
-	if env["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk/harness-deepagents/"+Version {
+	if env["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk-harness-deepagents/"+Version {
 		t.Fatalf("AI_SDK_HARNESS_CLIENT_APP = %q", env["AI_SDK_HARNESS_CLIENT_APP"])
 	}
 	if len(env[bridge.EnvChannelToken]) != 64 {
@@ -555,8 +565,38 @@ func TestResolveAuthenticationModeAndEnv(t *testing.T) {
 	}
 }
 
-func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
-	if _, err := extractUserText(harness.TextPrompt("hi")); err != nil {
-		t.Fatalf("extractUserText(text) error = %v", err)
+// TS #22367: SubmitToolResult forwards the full tool-result part as
+// `toolResult` alongside output/isError.
+func TestSubmitToolResult_ForwardsToolResult(t *testing.T) {
+	const token = "tr-token"
+	got := make(chan map[string]any, 1)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: token,
+		OnStart:      func(*bridgetest.Turn, map[string]any) {},
+		OnToolResult: func(f map[string]any) { got <- f },
+	})
+	t.Cleanup(srv.Close)
+	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := map[string]any{"type": "tool-result", "toolCallId": "call-1"}
+	if err := control.SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "call-1", Output: "ok", ToolResult: part}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case f := <-got:
+		if tr, ok := f["toolResult"].(map[string]any); !ok || tr["toolCallId"] != "call-1" {
+			t.Fatalf("tool-result frame = %v, want toolResult forwarded", f)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge never received tool-result")
 	}
 }

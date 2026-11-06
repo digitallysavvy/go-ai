@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"sort"
+	"slices"
 	"strings"
+	"unicode/utf16"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // FingerprintMCPAppResource returns a stable SHA-256 digest (base64url,
@@ -21,6 +24,17 @@ func FingerprintMCPAppResource(resource MCPAppResource) string {
 	if resource.Meta != nil {
 		csp = resource.Meta["csp"]
 		permissions = resource.Meta["permissions"]
+	}
+	if cspMap, ok := csp.(map[string]interface{}); ok && len(resource.cspUndefined) > 0 {
+		// A malformed csp field stays on the Zod-parsed object as undefined,
+		// which canonicalJSON hashes as null.
+		withUndefined := copyMap(cspMap)
+		for _, key := range resource.cspUndefined {
+			if _, kept := withUndefined[key]; !kept {
+				withUndefined[key] = nil
+			}
+		}
+		csp = withUndefined
 	}
 	canonical := canonicalMCPAppJSON(map[string]interface{}{
 		"html":        resource.HTML,
@@ -66,10 +80,14 @@ func canonicalizeNormalizedJSON(value interface{}) string {
 		for k := range v {
 			keys = append(keys, k)
 		}
-		sort.Strings(keys)
+		// JS sorts keys by UTF-16 code unit, which orders astral characters
+		// before U+E000..U+FFFF; byte order does not.
+		slices.SortFunc(keys, func(a, b string) int {
+			return slices.Compare(utf16.Encode([]rune(a)), utf16.Encode([]rune(b)))
+		})
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
-			keyJSON, _ := json.Marshal(k)
+			keyJSON, _ := jsonstr.Marshal(k)
 			parts = append(parts, string(keyJSON)+":"+canonicalizeNormalizedJSON(v[k]))
 		}
 		return "{" + strings.Join(parts, ",") + "}"
@@ -80,7 +98,9 @@ func canonicalizeNormalizedJSON(value interface{}) string {
 		}
 		return "[" + strings.Join(parts, ",") + "]"
 	default:
-		data, err := json.Marshal(v)
+		// JSON.stringify of a scalar: no HTML escaping of <, > and & (the
+		// digest covers the resource's html), U+2028/2029 written as is.
+		data, err := jsonstr.Marshal(v)
 		if err != nil {
 			return "null"
 		}

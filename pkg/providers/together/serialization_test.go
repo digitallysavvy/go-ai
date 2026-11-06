@@ -13,7 +13,7 @@ func TestTogetherSerializeAndDeserializeImageModel(t *testing.T) {
 		t.Fatalf("ImageModel error = %v", err)
 	}
 	serialized := modelAny.(*ImageModel).Serialize()
-	if serialized.Provider != "together" || serialized.ModelID != "black-forest-labs/FLUX.1-schnell" {
+	if serialized.Provider != "togetherai.image" || serialized.ModelID != "black-forest-labs/FLUX.1-schnell" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -24,7 +24,7 @@ func TestTogetherSerializeAndDeserializeImageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeImageModel error = %v", err)
 	}
-	if restored.Provider() != "together" || restored.ModelID() != "black-forest-labs/FLUX.1-schnell" {
+	if restored.Provider() != "togetherai.image" || restored.ModelID() != "black-forest-labs/FLUX.1-schnell" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 

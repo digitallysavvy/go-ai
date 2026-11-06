@@ -1,10 +1,13 @@
 package telemetry
 
 import (
+	"encoding/json"
 	"math"
 	"regexp"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -41,12 +44,13 @@ func normalizeUsageKey(key string) string {
 	transformed := usageCamelBoundary.ReplaceAllString(key, "${1}_${2}")
 	transformed = usageNonAlnum.ReplaceAllString(transformed, "_")
 	transformed = strings.Trim(transformed, "_")
-	return strings.ToLower(transformed)
+	return jscase.ToLower(transformed)
 }
 
 // usageNumericValue converts common numeric JSON representations (float64
-// from encoding/json, plain int/int64 from hand-built provider maps) to a
-// float64, mirroring TS's `typeof value === 'number'` check.
+// from encoding/json, json.Number from a UseNumber or ordered decode, plain
+// Go integers from hand-built provider maps) to a float64, mirroring TS's
+// `typeof value === 'number'` check.
 func usageNumericValue(v interface{}) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
@@ -59,12 +63,58 @@ func usageNumericValue(v interface{}) (float64, bool) {
 		return float64(n), true
 	case int32:
 		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int8:
+		return float64(n), true
 	case uint:
 		return float64(n), true
 	case uint64:
 		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			// A json.Number that does not parse is not a JSON number; a
+			// value out of float64 range parses to +/-Inf (skipped below).
+			if math.IsInf(f, 0) {
+				return f, true
+			}
+			return 0, false
+		}
+		return f, true
 	default:
 		return 0, false
+	}
+}
+
+// usageEntries returns an object's entries in the order a JS Object.entries
+// call would visit them. An ordered object (*jsonorder.Object, from an
+// ordered decode) keeps its wire order. A Go map has no order, so its keys
+// are visited in the order Go serializes the same map in ai.response.usage
+// (sorted, with array-index keys first as JS enumerates them): when two keys
+// normalize to the same attribute, the later of them in that order wins,
+// like the later key wins in TS.
+func usageEntries(v interface{}) ([]string, func(string) interface{}, bool) {
+	switch obj := v.(type) {
+	case map[string]interface{}:
+		ordered := jsonorder.FromMap(obj)
+		return ordered.Keys(), func(k string) interface{} { return obj[k] }, true
+	case *jsonorder.Object:
+		if obj == nil {
+			return nil, nil, false
+		}
+		return obj.Keys(), func(k string) interface{} {
+			val, _ := obj.Get(k)
+			return val
+		}, true
+	default:
+		return nil, nil, false
 	}
 }
 
@@ -74,28 +124,40 @@ func usageNumericValue(v interface{}) (float64, bool) {
 // (otel/src/provider-usage-attributes.ts). Non-finite numbers and
 // non-numeric/non-object values are skipped, matching TS's
 // `Number.isFinite(value) && path.length > 0` guard.
+//
+// TS writes into one attributes object, so two keys that normalize to the
+// same attribute (inputTokens and input_tokens) yield one attribute: the
+// later key's value, at the position the first one took. Go returns the same
+// single attribute per name, visiting keys in usageEntries order.
 func getProviderUsageAttributes(usage map[string]interface{}, prefix string) []attribute.KeyValue {
 	if len(usage) == 0 {
 		return nil
 	}
 	var attrs []attribute.KeyValue
+	index := map[string]int{}
 	var addValue func(v interface{}, path []string)
 	addValue = func(v interface{}, path []string) {
 		if n, ok := usageNumericValue(v); ok {
 			if len(path) == 0 || math.IsNaN(n) || math.IsInf(n, 0) {
 				return
 			}
-			attrs = append(attrs, attribute.Float64(prefix+"."+strings.Join(path, "."), n))
+			name := prefix + "." + strings.Join(path, ".")
+			if i, seen := index[name]; seen {
+				attrs[i] = attribute.Float64(name, n)
+				return
+			}
+			index[name] = len(attrs)
+			attrs = append(attrs, attribute.Float64(name, n))
 			return
 		}
-		nested, ok := v.(map[string]interface{})
+		keys, get, ok := usageEntries(v)
 		if !ok {
 			return
 		}
-		for key, nestedValue := range nested {
+		for _, key := range keys {
 			normalizedKey := normalizeUsageKey(key)
 			if normalizedKey != "" {
-				addValue(nestedValue, append(append([]string{}, path...), normalizedKey))
+				addValue(get(key), append(append([]string{}, path...), normalizedKey))
 			}
 		}
 	}

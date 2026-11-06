@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/google/uuid"
 )
@@ -208,6 +209,10 @@ func mergeHeaders(base, extra map[string]string) map[string]string {
 	return out
 }
 
+// errorBodyLimit caps how much of a failed response's body goes into the
+// error, as WorkflowChatTransport does.
+const errorBodyLimit = 4096
+
 // SendMessages POSTs chat messages to the configured API and returns parsed SSE events.
 func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMessagesOptions) ([]*streaming.SSEEvent, error) {
 	body := map[string]interface{}{}
@@ -259,21 +264,24 @@ func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMess
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// TS WorkflowChatTransport rejects a failed POST before it calls
+	// onChatSendMessage, which only sees a sent request.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
+		return nil, fmt.Errorf("workflow chat transport: POST %s returned %d: %s", api, resp.StatusCode, string(payload))
+	}
 	if t.OnChatSendMessage != nil {
 		if err := t.OnChatSendMessage(resp, opts); err != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			// Closed by the deferred Close without reading the rest of the
+			// run's stream.
 			return nil, err
 		}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("workflow chat transport: POST %s returned %d: %s", api, resp.StatusCode, string(payload))
 	}
 	events, err := streaming.ParseSSEStream(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-	runID := resp.Header.Get("X-Workflow-Run-ID")
+	runID := providerutils.FetchHeaderText(resp.Header, "X-Workflow-Run-ID") // TS response.headers.get
 	if t.OnChatEnd != nil {
 		if err := t.OnChatEnd(ChatEndEvent{ChatID: opts.ChatID, ChunkIndex: len(events), RunID: runID, Events: events}); err != nil {
 			return events, err
@@ -303,12 +311,23 @@ func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMess
 	return events, nil
 }
 
+// containsFinishEvent reports whether a run's stream ended. TS
+// WorkflowChatTransport ignores SSE event names and ends on a UI message
+// chunk whose type is "finish"; an event named "done" is an ordinary event.
+// This multiplexer's own server (ServeHTTP/Resume) also ends a run with an
+// event named "finish" and a `[DONE]` data line, which count as well.
 func containsFinishEvent(events []*streaming.SSEEvent) bool {
 	for _, event := range events {
 		if event == nil {
 			continue
 		}
-		if event.Event == "finish" || event.Event == "done" || event.Data == "[DONE]" {
+		if event.Event == "finish" || event.Data == "[DONE]" {
+			return true
+		}
+		var chunk struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(event.Data), &chunk) == nil && chunk.Type == "finish" {
 			return true
 		}
 	}
@@ -357,7 +376,7 @@ func (t *WorkflowRunMultiplexer) ReconnectToStream(ctx context.Context, opts Rec
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(resp.Body)
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
 		return nil, fmt.Errorf("workflow chat transport: GET %s returned %d: %s", api, resp.StatusCode, string(payload))
 	}
 	events, err := streaming.ParseSSEStream(resp.Body)

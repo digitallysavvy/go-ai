@@ -89,8 +89,8 @@ func TestAgentSession_ReadHistory_RejectsOnceInactive(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	if got := err.Error(); got == "" {
-		t.Fatal("expected a non-empty error message")
+	if got, want := err.Error(), "Harness session "+session.SessionID()+" is not active and cannot read history."; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 

@@ -9,7 +9,10 @@ import (
 	"reflect"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -59,19 +62,26 @@ var (
 )
 
 func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	if m.provider.config.APIKey == "" {
-		return provider.ClientSecretResult{}, fmt.Errorf("xAI API key API key is missing. Pass it using the 'apiKey' parameter or the XAI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
-	}
 	body := map[string]interface{}{}
 	if opts.ExpiresAfterSeconds != nil {
 		body["expires_after"] = map[string]interface{}{"seconds": *opts.ExpiresAfterSeconds}
 	}
+	// TS loadApiKey runs for the client-secret request: a missing key is a
+	// LoadAPIKeyError (and XAI_API_KEY is read now, not at construction).
+	userHeaders, userKey := m.provider.config.Headers, m.provider.config.APIKey
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: m.provider.realtimeBaseURL,
 		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + m.provider.config.APIKey,
-			"Content-Type":  "application/json",
+			"Content-Type": "application/json",
 		}, m.provider.config.Headers), version.ProviderUserAgent("xai")),
+		HeadersFunc: func() (map[string]string, error) {
+			if keyFunc := m.provider.config.APIKeyFunc; keyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, userHeaders, providerutils.ResolveAPIKeyOptions{
+					APIKey: userKey, APIKeyFunc: keyFunc, EnvVar: "XAI_API_KEY", Description: "xAI API key",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(userHeaders, userKey, "XAI_API_KEY", "xAI API key", "Authorization", "Bearer ")
+		},
 		HTTPClient: m.provider.client.HTTPClient(),
 	})
 	resp, err := client.Do(ctx, internalhttp.Request{
@@ -84,19 +94,23 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 		return provider.ClientSecretResult{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return provider.ClientSecretResult{}, fmt.Errorf("xAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body))
+		// TS: `xAI realtime client secret request failed: ${status} ${text}`.
+		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+		return provider.ClientSecretResult{}, providererrors.NewProviderError("xai", 0, "",
+			fmt.Sprintf("xAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body)), cause)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	var data struct {
 		Value     string `json:"value"`
 		ExpiresAt *int64 `json:"expires_at"`
 	}
-	if err := json.Unmarshal(resp.Body, &data); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	u, _ := url.Parse(m.provider.realtimeBaseURL)
 	return provider.ClientSecretResult{
 		Token:     data.Value,
-		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", u.Host, url.QueryEscape(m.modelID)),
+		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", u.Host, providerutils.EncodeURIComponent(m.modelID)), // TS encodeURIComponent
 		ExpiresAt: data.ExpiresAt,
 	}, nil
 }

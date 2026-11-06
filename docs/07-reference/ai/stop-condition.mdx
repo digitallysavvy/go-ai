@@ -67,8 +67,9 @@ stopOnError := func(state ai.StopConditionState) string {
         return ""
     }
     last := state.Steps[len(state.Steps)-1]
-    for _, result := range last.ToolResults {
-        if result.Error != nil {
+    // Failed tool calls are tool-error content parts, not ToolResults.
+    for _, part := range last.Content {
+        if _, ok := part.(types.ToolErrorContent); ok {
             return "tool returned an error"
         }
     }

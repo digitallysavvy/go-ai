@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -34,7 +36,9 @@ const (
 )
 
 var knownGatewayModelTypes = map[string]struct{}{
-	"embedding":     {},
+	"decision":  {},
+	"embedding": {},
+	// Keep "evaluation" until Gateway migrates its model catalog to "decision".
 	"evaluation":    {},
 	"image":         {},
 	"language":      {},
@@ -55,8 +59,16 @@ type Provider struct {
 	metadataCache    *MetadataResponse
 	metadataMutex    sync.RWMutex
 	lastFetchTime    time.Time
-	pendingMetadata  *sync.Once
+	pendingMetadata  *metadataFetch
 	cacheRefreshTime time.Duration
+	nowFn            func() time.Time
+}
+
+// metadataFetch is an in-flight (or settled) metadata refresh shared by callers.
+type metadataFetch struct {
+	done chan struct{}
+	meta *MetadataResponse
+	err  error
 }
 
 type gatewayAuthResolver func(ctx context.Context) (token string, authMethod string, err error)
@@ -64,17 +76,41 @@ type gatewayAuthResolver func(ctx context.Context) (token string, authMethod str
 type gatewayAuthTransport struct {
 	base     http.RoundTripper
 	resolver gatewayAuthResolver
+	// custom is set when the caller's HTTPClient brings its own
+	// RoundTripper (the TS `fetch` option); see customFetchError.
+	custom bool
 }
 
 func (t *gatewayAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *gatewayAuthTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	token, authMethod, err := t.resolver(req.Context())
 	if err != nil {
 		return nil, err
 	}
 	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	clone.Header.Set("ai-gateway-auth-method", authMethod)
-	return t.base.RoundTrip(clone)
+	// TS spreads options.headers after the auth headers, so a caller-supplied
+	// Authorization or ai-gateway-auth-method header wins over the resolved
+	// credential.
+	if clone.Header.Get("Authorization") == "" {
+		clone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+	if clone.Header.Get("ai-gateway-auth-method") == "" {
+		clone.Header.Set("ai-gateway-auth-method", authMethod)
+	}
+	resp, err := t.base.RoundTrip(clone)
+	if err != nil && t.custom {
+		return nil, customFetchError(err)
+	}
+	return resp, err
 }
 
 func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver) *http.Client {
@@ -86,8 +122,11 @@ func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver)
 		httpClient = &http.Client{}
 	}
 	baseTransport := http.RoundTripper(http.DefaultTransport)
+	custom := false
 	if httpClient.Transport != nil {
 		baseTransport = httpClient.Transport
+		_, std := baseTransport.(*http.Transport)
+		custom = !std
 	}
 	if transport, ok := baseTransport.(*http.Transport); ok {
 		baseTransport = transport.Clone()
@@ -95,6 +134,7 @@ func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver)
 	httpClient.Transport = &gatewayAuthTransport{
 		base:     baseTransport,
 		resolver: resolver,
+		custom:   custom,
 	}
 	return httpClient
 }
@@ -114,12 +154,31 @@ func gatewayRequestID(ctx context.Context) string {
 
 // Config contains configuration for the AI Gateway provider
 type Config struct {
+	// BatchResultDownloads configures JSON Lines batch result downloads, e.g.
+	// the maximum bytes per result row (TS `batchResultDownloads`).
+	BatchResultDownloads providerutils.BatchResultDownloads
+
 	// APIKey is the AI Gateway API key
 	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
 	APIKey string
 
+	// APIKeyFunc resolves the API key or Vercel access token before each
+	// request (TS apiKey given as a function, 7716e189ee). It must return a
+	// non-empty key: an empty one (or an error) fails the request with a
+	// GatewayAuthenticationError whose cause is a LoadAPIKeyError "AI Gateway
+	// API key must be a non-empty string." (or the error). It wins over
+	// AI_GATEWAY_API_KEY and OIDC and cannot be combined with APIKey.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// TeamIDOrSlug scopes Vercel access-token requests to a team.
 	TeamIDOrSlug string
+
+	// OIDCTokenFunc resolves the Vercel OIDC token used when no API key is
+	// configured (TS getGatewayAuthToken's getVercelOidcToken()). Use
+	// VercelOIDCTokenFunc for the TS lookup with token refresh. When nil,
+	// VERCEL_OIDC_TOKEN is read as is. An error (or an empty token) fails the
+	// request with a GatewayAuthenticationError whose cause is that error.
+	OIDCTokenFunc func(ctx context.Context) (string, error) `json:"-"`
 
 	// BaseURL is the base URL for the AI Gateway API
 	// Default: https://ai-gateway.vercel.sh/v4/ai
@@ -191,6 +250,15 @@ type GatewayProviderOptions struct {
 	// Caching enables automatic caching behavior when supported by the
 	// Gateway. The only valid value is GatewayCachingAuto ("auto").
 	Caching string `json:"caching,omitempty"`
+
+	// ExperimentalStreamingImageDecoding (experimental, image models only)
+	// decodes large base64 images while the response is read, to reduce peak
+	// memory (TS experimental_streamingImageDecoding, 89aff56165). Extracted
+	// images are returned as bytes (ImageResult.Images, with Base64Images
+	// empty); if a result mixes extracted and small images, all are returned
+	// as bytes. Defaults to false. Image models remove this client option
+	// from requests.
+	ExperimentalStreamingImageDecoding *bool `json:"experimental_streamingImageDecoding,omitempty"`
 }
 
 // Gateway `has` capability tags. See GatewayProviderOptions.Has.
@@ -279,6 +347,9 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	if o.Caching != "" {
 		out["caching"] = o.Caching
 	}
+	if o.ExperimentalStreamingImageDecoding != nil {
+		out[gatewayStreamingImageDecodingKey] = *o.ExperimentalStreamingImageDecoding
+	}
 	return out
 }
 
@@ -362,7 +433,7 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 
 	authResolver := func(ctx context.Context) (string, string, error) {
 		return resolveGatewayAuthToken(ctx, cfg)
@@ -371,6 +442,12 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	// Create headers with authentication
 	headers := map[string]string{
 		"ai-gateway-protocol-version": AIGatewayProtocolVersion,
+	}
+
+	// TS: the team header precedes options.headers, so a custom header of the
+	// same name wins.
+	if cfg.TeamIDOrSlug != "" {
+		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
 	}
 
 	// Add custom headers
@@ -386,9 +463,6 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	// Inject project ID header when explicitly configured
 	if cfg.ProjectID != nil {
 		headers["ai-o11y-project-id"] = *cfg.ProjectID
-	}
-	if cfg.TeamIDOrSlug != "" {
-		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
 	}
 	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("gateway"))
 
@@ -414,7 +488,6 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		headers:          headers,
 		authResolver:     authResolver,
 		cacheRefreshTime: cacheRefreshTime,
-		pendingMetadata:  &sync.Once{},
 	}, nil
 }
 
@@ -434,12 +507,34 @@ func CreateGatewayProvider(cfg Config, opts ...func(*Config)) (*Provider, error)
 }
 
 func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, authMethod string, err error) {
+	if cfg.APIKeyFunc != nil {
+		key, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, Description: "AI Gateway", RequireNonEmpty: true,
+		})
+		if err != nil {
+			// TS getHeaders wraps every credential failure in the contextual
+			// authentication error.
+			return "", "", gatewayerrors.CreateContextualAuthenticationError(false, false, http.StatusUnauthorized, err, "")
+		}
+		return key, "api-key", nil
+	}
 	apiKey := cfg.APIKey
 	if apiKey == "" {
 		apiKey = os.Getenv("AI_GATEWAY_API_KEY")
 	}
 	if apiKey != "" {
 		return apiKey, "api-key", nil
+	}
+
+	if cfg.OIDCTokenFunc != nil {
+		token, err := cfg.OIDCTokenFunc(ctx)
+		if err == nil && token == "" {
+			err = &VercelOIDCTokenError{Message: vercelOIDCMissingMessage}
+		}
+		if err != nil {
+			return "", "", gatewayerrors.CreateContextualAuthenticationError(false, false, http.StatusUnauthorized, err, "")
+		}
+		return token, "oidc", nil
 	}
 
 	if oidcToken := strings.TrimSpace(os.Getenv("VERCEL_OIDC_TOKEN")); oidcToken != "" {
@@ -521,17 +616,50 @@ func (p *Provider) Reranking(modelID string) (provider.RerankingModel, error) {
 	return p.RerankingModel(modelID)
 }
 
-// GetAvailableModels returns available providers and models from the gateway
+// GetAvailableModels returns available providers and models from the gateway.
+//
+// Mirrors TS getAvailableModels: once the refresh window has elapsed a refresh
+// is started in the background, but an existing (stale) cache is still returned
+// immediately; only the first call waits for the fetch.
 func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, error) {
-	// Check if we have cached metadata and it's still fresh
-	p.metadataMutex.RLock()
-	if p.metadataCache != nil && time.Since(p.lastFetchTime) < p.cacheRefreshTime {
-		cached := p.metadataCache
-		p.metadataMutex.RUnlock()
+	p.metadataMutex.Lock()
+	now := p.now()
+	if p.pendingMetadata == nil || now.Sub(p.lastFetchTime) > p.cacheRefreshTime {
+		p.lastFetchTime = now
+		f := &metadataFetch{done: make(chan struct{})}
+		p.pendingMetadata = f
+		go func() {
+			defer close(f.done)
+			f.meta, f.err = p.fetchMetadata(context.WithoutCancel(ctx))
+			if f.err == nil {
+				p.metadataMutex.Lock()
+				p.metadataCache = f.meta
+				p.metadataMutex.Unlock()
+			}
+		}()
+	}
+	cached := p.metadataCache
+	pending := p.pendingMetadata
+	p.metadataMutex.Unlock()
+	if cached != nil {
 		return cached, nil
 	}
-	p.metadataMutex.RUnlock()
+	select {
+	case <-pending.done:
+		return pending.meta, pending.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
+func (p *Provider) now() time.Time {
+	if p.nowFn != nil {
+		return p.nowFn()
+	}
+	return time.Now()
+}
+
+func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error) {
 	// Fetch fresh metadata
 	resp, err := p.client.Get(ctx, "/config")
 	if err != nil {
@@ -540,8 +668,12 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	var wire metadataResponseWire
 	if err := json.Unmarshal(resp.Body, &wire); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
+	if err := validateMetadataResponse(resp.Body); err != nil {
 		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
@@ -575,12 +707,6 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 		})
 	}
 
-	// Update cache
-	p.metadataMutex.Lock()
-	p.metadataCache = &metadata
-	p.lastFetchTime = time.Now()
-	p.metadataMutex.Unlock()
-
 	return &metadata, nil
 }
 
@@ -595,16 +721,21 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 // the same team header works for model calls and getSpendReport.
 func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
 	path := "/v1/credits"
-	if teamIDOrSlug := gatewayTeamFromHeaders(p.headers); teamIDOrSlug != "" {
+	// TS getTeamIdOrSlug: value?.trim() || undefined, then
+	// url.searchParams.set (URLSearchParams escaping).
+	if teamIDOrSlug := providerutils.JSTrim(gatewayTeamFromHeaders(p.headers)); teamIDOrSlug != "" {
 		key := "slug"
 		if strings.HasPrefix(teamIDOrSlug, "team_") {
 			key = "teamId"
 		}
-		path += "?" + key + "=" + url.QueryEscape(teamIDOrSlug)
+		path += "?" + internalhttp.EncodeQuery(map[string]string{key: teamIDOrSlug})
 	}
 	body, err := p.doOriginRequest(ctx, path)
 	if err != nil {
 		return nil, err
+	}
+	if err := providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayCredits)(http.StatusOK, http.Header{}, body); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	var wire struct {
 		Balance   string `json:"balance"`
@@ -635,11 +766,18 @@ func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error 
 	if err == nil {
 		return nil
 	}
+	// Caller cancellation is not a gateway failure (TS 9ca8bcf731).
+	if isGatewayCallerCancellation(ctx, err) {
+		return err
+	}
 	if gatewayerrors.IsTimeoutError(err) {
 		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
-	if gatewayerrors.IsGatewayError(err) {
-		return err
+	if ge, ok := gatewayErrorIn(err); ok {
+		return ge
+	}
+	if converted, ok := p.gatewayInvalidJSONError(ctx, err); ok {
+		return converted
 	}
 	if providererrors.IsProviderError(err) {
 		return err
@@ -668,7 +806,7 @@ func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, er
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
-	return resp.Body, nil
+	return []byte(textdecode.UTF8(resp.Body)), nil // TS response.text() before JSON.parse
 }
 
 func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, authMethod string) error {
@@ -743,13 +881,12 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 	if resp == nil {
 		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
 	}
-	authMethod := ""
-	if p.authResolver != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		_, authMethod, _ = p.authResolver(ctx)
-	}
+	authMethod := p.requestAuthMethod(ctx)
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	decoded := *resp
+	decoded.Body = []byte(textdecode.UTF8(resp.Body))
+	resp = &decoded
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
@@ -759,6 +896,34 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 		Data:            gatewayErrorData(resp.Body),
 	}
 	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
+}
+
+// gatewayInvalidJSONError converts a successful body that failed its response
+// schema (TS createJsonResponseHandler APICallError "Invalid JSON response")
+// the way TS asGatewayError does for any APICallError: the body is parsed as
+// a gateway error response (which fails for a normal body, giving a
+// GatewayResponseError "Invalid error response format: Gateway request
+// failed" with the original status), with the APICallError as the cause.
+func (p *Provider) gatewayInvalidJSONError(ctx context.Context, err error) (error, bool) {
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != providererrors.InvalidJSONResponseMessage {
+		return nil, false
+	}
+	authMethod := p.requestAuthMethod(ctx)
+	return gatewayerrors.CreateGatewayErrorFromResponse([]byte(pe.ResponseBody), pe.StatusCode, "Gateway request failed", pe, authMethod), true
+}
+
+// isGatewayCallerCancellation mirrors TS asGatewayError's first check (TS
+// 9ca8bcf731): an AbortError or TimeoutError of the caller is rethrown
+// unchanged instead of becoming a retryable 500. In Go that is a
+// context.Canceled, or the error of the caller's ctx once it is done (its
+// deadline included); a transport timeout while ctx is still live stays a
+// GatewayTimeoutError.
+func isGatewayCallerCancellation(ctx context.Context, err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return ctx != nil && ctx.Err() != nil && errors.Is(err, ctx.Err())
 }
 
 func (p *Provider) gatewayUnknownError(err error) error {
@@ -771,6 +936,11 @@ func (p *Provider) gatewayUnknownError(err error) error {
 	// decode failure is a permanent error (the body will never parse
 	// differently on retry); a transient network/body-read error is
 	// retryable. See 90192f1.
+	if rejected, ok := internalhttp.FetchRejectionCause(err); ok {
+		err = rejected // TS: `Gateway request failed: ${error.message}`
+	} else if converted, ok := gatewayConnectError(err); ok {
+		return converted
+	}
 	retryable := !isGatewayJSONDecodeError(err)
 	return gatewayerrors.NewGatewayResponseErrorWithRetryable(
 		fmt.Sprintf("Invalid error response format: Gateway request failed: %s", err.Error()),
@@ -849,6 +1019,18 @@ func (t *Tools) BrowserbaseFetch(config tools.BrowserbaseFetchConfig) tools.Brow
 	return tools.NewBrowserbaseFetch(config)
 }
 
+// DeepSeekSearch creates a DeepSeek search tool with the given configuration
+// (TS gatewayTools.deepseekSearch, 2099d455e4).
+func (t *Tools) DeepSeekSearch(config tools.DeepSeekSearchConfig) tools.DeepSeekSearchTool {
+	return tools.NewDeepSeekSearch(config)
+}
+
+// DeepSeekFetch creates a DeepSeek fetch tool with the given configuration
+// (TS gatewayTools.deepseekFetch, 2099d455e4).
+func (t *Tools) DeepSeekFetch(config tools.DeepSeekFetchConfig) tools.DeepSeekFetchTool {
+	return tools.NewDeepSeekFetch(config)
+}
+
 // NewTools creates a new Tools instance for accessing gateway-specific tools
 func NewTools() *Tools {
 	return &Tools{}
@@ -891,6 +1073,16 @@ func GetO11yHeaders(ctx context.Context) O11yHeaders {
 	}
 }
 
+// gatewayRequestHeaders merges the per-call headers, the model's own headers
+// and the observability headers in the TS order (later wins):
+// combineHeaders(config, options.headers, model headers, o11y). The client's
+// own headers are applied by the HTTP client underneath.
+func gatewayRequestHeaders(ctx context.Context, call, model map[string]string) map[string]string {
+	headers := internalhttp.MergeHeaders(call, model)
+	AddO11yHeaders(headers, GetO11yHeaders(ctx))
+	return headers
+}
+
 // AddO11yHeaders adds observability headers to the request headers
 func AddO11yHeaders(headers map[string]string, o11y O11yHeaders) {
 	if o11y.DeploymentID != "" {
@@ -917,4 +1109,53 @@ func MarshalJSONField(v interface{}) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// validateMetadataResponse applies the required-field checks of TS
+// gatewayAvailableModelsResponseSchema that the lenient wire struct cannot
+// see: `models` must be an array and every model needs id, name and a
+// specification of version "v4" with provider and modelId.
+func validateMetadataResponse(body []byte) error {
+	var raw struct {
+		Models *[]struct {
+			ID            *string `json:"id"`
+			Name          *string `json:"name"`
+			Specification *struct {
+				SpecificationVersion *string `json:"specificationVersion"`
+				Provider             *string `json:"provider"`
+				ModelID              *string `json:"modelId"`
+			} `json:"specification"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return err
+	}
+	if raw.Models == nil {
+		return errors.New("Invalid JSON response: models must be an array") //nolint:staticcheck // mirrors TS wording
+	}
+	for i, m := range *raw.Models {
+		spec := m.Specification
+		if m.ID == nil || m.Name == nil || spec == nil || spec.Provider == nil || spec.ModelID == nil ||
+			spec.SpecificationVersion == nil || *spec.SpecificationVersion != "v4" {
+			return fmt.Errorf("Invalid JSON response: models[%d] does not match the gateway model schema", i) //nolint:staticcheck // mirrors TS wording
+		}
+	}
+	return nil
+}
+
+// requestAuthMethod is the auth method of the headers a failed request was
+// sent with (TS parseAuthMethod(resolvedHeaders)). A key func is not called
+// again: its requests always use "api-key".
+func (p *Provider) requestAuthMethod(ctx context.Context) string {
+	if p.config.APIKeyFunc != nil {
+		return "api-key"
+	}
+	if p.authResolver == nil {
+		return ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, authMethod, _ := p.authResolver(ctx)
+	return authMethod
 }

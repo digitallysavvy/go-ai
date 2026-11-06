@@ -2,9 +2,13 @@ package workflow
 
 import (
 	"context"
+	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 func TestSerializableSchemaRoundTrip(t *testing.T) {
@@ -105,5 +109,211 @@ func TestValidateSerializableToolInputAppliesDefaultsBeforeValidating(t *testing
 	// A field with no default is still required.
 	if _, err := ValidateSerializableToolInput(def, map[string]interface{}{"unit": "celsius"}); err == nil {
 		t.Fatal("expected validation error for a missing field with no schema default")
+	}
+}
+
+func objSchema(props map[string]interface{}, required ...string) map[string]interface{} {
+	s := map[string]interface{}{"type": "object", "properties": props}
+	if len(required) > 0 {
+		r := make([]interface{}, len(required))
+		for i, v := range required {
+			r[i] = v
+		}
+		s["required"] = r
+	}
+	return s
+}
+
+// TS #22080: formats, annotations, union types and JSON Schema 2020-12 are
+// accepted; formats are annotations and not assertions.
+func TestValidateSerializableToolInputAcceptsFormatsAnnotationsUnionsAnd2020(t *testing.T) {
+	formatted := SerializableToolDef{Name: "formatted", InputSchema: objSchema(map[string]interface{}{
+		"email": map[string]interface{}{"type": "string", "format": "email"},
+		"id":    map[string]interface{}{"type": "string", "format": "uuid"},
+		"x":     map[string]interface{}{"type": "string", "format": "made-up"},
+	})}
+	if _, err := ValidateSerializableToolInput(formatted, map[string]interface{}{"email": "nope", "id": "nope", "x": "y"}); err != nil {
+		t.Fatalf("formats must not be asserted: %v", err)
+	}
+	annotated := SerializableToolDef{Name: "annotated", InputSchema: objSchema(map[string]interface{}{
+		"value": map[string]interface{}{"type": []interface{}{"string", "number"}, "example": "example", "x-order": 1},
+	})}
+	if _, err := ValidateSerializableToolInput(annotated, map[string]interface{}{"value": 1.0}); err != nil {
+		t.Fatalf("annotations and union types must be accepted: %v", err)
+	}
+	modern := objSchema(map[string]interface{}{
+		"creditCard":     map[string]interface{}{"type": "number"},
+		"billingAddress": map[string]interface{}{"type": "string"},
+	})
+	modern["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+	modern["dependentRequired"] = map[string]interface{}{"creditCard": []interface{}{"billingAddress"}}
+	def := SerializableToolDef{Name: "modern", InputSchema: modern}
+	if _, err := ValidateSerializableToolInput(def, map[string]interface{}{"creditCard": 1234.0}); err == nil {
+		t.Fatal("expected 2020-12 dependentRequired violation")
+	}
+	if _, err := ValidateSerializableToolInput(def, map[string]interface{}{"creditCard": 1234.0, "billingAddress": "x"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TS #22392: validation errors name allowed enum values, unexpected property
+// names, and every invalid array location.
+func TestValidateSerializableToolInputReportsActionableDetails(t *testing.T) {
+	interaction := SerializableToolDef{Name: "interaction", InputSchema: objSchema(map[string]interface{}{
+		"action": map[string]interface{}{"enum": []interface{}{"click", "type", "scroll"}},
+	}, "action")}
+	_, err := ValidateSerializableToolInput(interaction, map[string]interface{}{"action": "press"})
+	if err == nil || !strings.Contains(err.Error(), `data/action must be one of "click", "type", "scroll"`) {
+		t.Fatalf("enum error = %v", err)
+	}
+
+	edit := SerializableToolDef{Name: "edit", InputSchema: objSchema(map[string]interface{}{
+		"edits": map[string]interface{}{
+			"type": "array",
+			"items": map[string]interface{}{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]interface{}{
+					"oldText": map[string]interface{}{"type": "string"},
+					"newText": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"oldText", "newText"},
+			},
+		},
+	}, "edits")}
+	_, err = ValidateSerializableToolInput(edit, map[string]interface{}{"edits": []interface{}{
+		map[string]interface{}{"oldText": "a", "newText": "b", "path": "a.ts"},
+		map[string]interface{}{"oldText": "c", "newText": "d", "path": "b.ts"},
+	}})
+	want := `data/edits/0 has unexpected property "path", data/edits/1 has unexpected property "path"`
+	if err == nil || !strings.HasSuffix(err.Error(), want) {
+		t.Fatalf("additionalProperties error = %v, want suffix %q", err, want)
+	}
+
+	req := SerializableToolDef{Name: "req", InputSchema: objSchema(map[string]interface{}{
+		"mode": map[string]interface{}{"const": "fast"},
+	}, "mode", "name")}
+	_, err = ValidateSerializableToolInput(req, map[string]interface{}{"mode": "slow"})
+	if err == nil || !strings.Contains(err.Error(), `data is missing required property "name"`) || !strings.Contains(err.Error(), `data/mode must equal "fast"`) {
+		t.Fatalf("required/const error = %v", err)
+	}
+}
+
+type ownValidatorSchema struct{}
+
+func (ownValidatorSchema) Validator() schema.Validator { return ownValidator{} }
+
+type ownValidator struct{}
+
+func (ownValidator) Validate(interface{}) error { return errors.New("own validator rejects") }
+func (ownValidator) JSONSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "number"}}}
+}
+
+// TS #22397: tools whose schema has its own validator are flagged and not
+// re-validated against the lossy JSON Schema copy.
+func TestSerializeToolSetRecordsOwnValidator(t *testing.T) {
+	serialized, err := SerializeToolSet([]types.Tool{
+		{Name: "validated", Parameters: ownValidatorSchema{}},
+		{Name: "jsonOnly", Parameters: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})},
+		{Name: "plain", Parameters: map[string]interface{}{"type": "object"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !serialized["validated"].HasOwnValidator {
+		t.Fatal("validated: HasOwnValidator = false, want true")
+	}
+	if serialized["validated"].InputSchema["type"] != "object" {
+		t.Fatalf("validated: schema = %v", serialized["validated"].InputSchema)
+	}
+	if serialized["jsonOnly"].HasOwnValidator || serialized["plain"].HasOwnValidator {
+		t.Fatal("JSON-only schemas must not set HasOwnValidator")
+	}
+	if serialized["jsonOnly"].InputSchema["type"] != "object" {
+		t.Fatalf("jsonOnly schema lost: %v", serialized["jsonOnly"].InputSchema)
+	}
+	in := map[string]interface{}{"value": "42", "extra": true}
+	got, err := ValidateSerializableToolInput(serialized["validated"], in)
+	if err != nil || !reflect.DeepEqual(got, in) {
+		t.Fatalf("own-validator tool must defer validation: got %v, %v", got, err)
+	}
+	if _, err := ValidateSerializableToolInput(serialized["jsonOnly"], map[string]interface{}{"value": "x"}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+}
+
+func TestResolveSerializableToolsOrderIsStable(t *testing.T) {
+	defs := map[string]SerializableToolDef{}
+	for _, n := range []string{"zeta", "alpha", "mid", "beta", "omega", "gamma"} {
+		defs[n] = SerializableToolDef{Name: n}
+	}
+	want := []string{"alpha", "beta", "gamma", "mid", "omega", "zeta"}
+	for i := 0; i < 20; i++ {
+		var got []string
+		for _, tool := range ResolveSerializableTools(defs) {
+			got = append(got, tool.Name)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("tool order = %v, want %v", got, want)
+		}
+	}
+}
+
+// TS formatAjvError reports every Ajv error (allErrors), so type and bound
+// failures appear next to the enum/required ones as `data/<path> <message>`.
+func TestValidateSerializableToolInputReportsTypeAndBoundErrors(t *testing.T) {
+	def := SerializableToolDef{Name: "w", InputSchema: map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"a":    map[string]interface{}{"type": "string", "minLength": 2.0},
+			"n":    map[string]interface{}{"type": "number", "minimum": 5.0},
+			"tags": map[string]interface{}{"type": "array", "maxItems": 1.0},
+			"a/b":  map[string]interface{}{"type": "integer"},
+		},
+		"required": []interface{}{"a", "b"},
+	}}
+	_, err := ValidateSerializableToolInput(def, map[string]interface{}{"a": 1, "n": 2, "tags": []interface{}{1, 2}, "a/b": 1.5})
+	want := `workflow: invalid input for w: data is missing required property "b", data/a must be string, data/a~1b must be integer, data/n must be >= 5, data/tags must NOT have more than 1 items`
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v\nwant    %s", err, want)
+	}
+	_, err = ValidateSerializableToolInput(def, map[string]interface{}{"a": "x", "b": true})
+	if err == nil || !strings.HasSuffix(err.Error(), "data/a must NOT have fewer than 2 characters") {
+		t.Fatalf("minLength error = %v", err)
+	}
+}
+
+// TS keeps provider and dynamic tool identity (type, id, args), providerOptions,
+// metadata and the input-callback flags across the step boundary.
+func TestSerializeToolSetKeepsProviderIdentityAndFlags(t *testing.T) {
+	tools := []types.Tool{
+		{Name: "search", Type: "provider", ProviderID: "google.google_search", ProviderArgs: map[string]interface{}{"mode": "grounded"},
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"x": 1.0}}, Metadata: map[string]interface{}{"m": "v"},
+			Parameters: map[string]interface{}{"type": "object"}},
+		{Name: "dyn", Type: "dynamic", Parameters: map[string]interface{}{"type": "object"},
+			OnInputStart: func(context.Context, types.OnInputStartOptions) error { return nil }},
+	}
+	defs, err := SerializeToolSet(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := defs["search"]; d.Type != "provider" || d.ID != "google.google_search" || d.Args["mode"] != "grounded" || d.ProviderOptions["google"] == nil || d.Metadata["m"] != "v" {
+		t.Fatalf("provider def = %+v", d)
+	}
+	if d := defs["dyn"]; d.Type != "dynamic" || !d.HasOnInputStart || d.HasOnInputDelta {
+		t.Fatalf("dynamic def = %+v", d)
+	}
+	resolved := ResolveSerializableTools(defs)
+	byName := map[string]types.Tool{}
+	for _, r := range resolved {
+		byName[r.Name] = r
+	}
+	s := byName["search"]
+	if s.Type != "provider" || s.ProviderID != "google.google_search" || s.ProviderArgs["mode"] != "grounded" || s.Metadata["m"] != "v" || s.ProviderOptions == nil {
+		t.Fatalf("resolved provider tool = %+v", s)
+	}
+	if byName["dyn"].Type != "dynamic" {
+		t.Fatalf("resolved dynamic tool = %+v", byName["dyn"])
 	}
 }

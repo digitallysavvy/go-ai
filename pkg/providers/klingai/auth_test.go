@@ -375,3 +375,20 @@ func base64urlDecode(encoded string) ([]byte, error) {
 
 	return base64.StdEncoding.DecodeString(encoded)
 }
+
+// TS builds the payload as { iss, exp, nbf }; the token text carries that
+// key order.
+func TestGenerateJWTTokenPayloadKeyOrder(t *testing.T) {
+	token, err := generateJWTToken("ak", "sk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := base64urlDecode(strings.Split(token, ".")[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(payload)
+	if !strings.HasPrefix(s, `{"iss":"ak","exp":`) || strings.Index(s, `"exp"`) > strings.Index(s, `"nbf"`) {
+		t.Errorf("payload = %s, want iss, exp, nbf order", s)
+	}
+}

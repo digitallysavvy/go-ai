@@ -55,7 +55,7 @@ func TestResponsesLanguageModel_DoStream_RawFinishReason(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		events := []string{
-			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.created","response":{"id":"resp_stream","created_at":1,"model":"gpt-4o"}}`,
 			`{"type":"response.incomplete","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3},"incomplete_details":{"reason":"max_output_tokens"}}}`,
 		}
 		for _, e := range events {

@@ -93,3 +93,23 @@ func TestGetTextFromDataURL_QuotedCharset(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, "hi")
 	}
 }
+
+// atob is forgiving: whitespace is ignored and padding may be omitted; only
+// the segment before a second comma is decoded (TS dataUrl.split(',')).
+func TestGetTextFromDataURL_ForgivingBase64(t *testing.T) {
+	for _, in := range []string{
+		"data:text/plain;base64,aGk",
+		"data:text/plain;base64,a G\nk=",
+		"data:text/plain;base64,aGk=,ignored",
+	} {
+		got, err := GetTextFromDataURL(in)
+		if err != nil || got != "hi" {
+			t.Errorf("%q: got %q, %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"data:text/plain;base64,a", "data:text/plain;base64,aG=k"} {
+		if _, err := GetTextFromDataURL(in); err == nil {
+			t.Errorf("%q: expected error", in)
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // LanguageModel applies Cerebras-specific parity fixes on top of the
@@ -14,7 +15,7 @@ type LanguageModel struct {
 }
 
 func (m *LanguageModel) SpecificationVersion() string { return m.base.SpecificationVersion() }
-func (m *LanguageModel) Provider() string             { return "cerebras" }
+func (m *LanguageModel) Provider() string             { return "cerebras.chat" }
 func (m *LanguageModel) ModelID() string              { return m.base.ModelID() }
 func (m *LanguageModel) SupportsTools() bool          { return m.base.SupportsTools() }
 func (m *LanguageModel) SupportsStructuredOutput() bool {
@@ -23,12 +24,19 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 func (m *LanguageModel) SupportsImageInput() bool { return m.base.SupportsImageInput() }
 
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	ctx, warnings := m.withCerebrasOptions(ctx, opts)
+	// The option warnings (the deprecated openai-compatible key) are the
+	// base model's own; TS reports them once.
+	ctx, _ = m.withCerebrasOptions(ctx, opts)
 	result, err := m.base.DoGenerate(ctx, opts)
 	if err != nil || result == nil {
 		return result, parseCerebrasProviderError(err)
 	}
-	result.Warnings = append(warnings, result.Warnings...)
+	// TS request.body is the transformed body (transformRequestBody), so
+	// the per-call extras cerebrasTransformTransport merged on the wire are
+	// in the reported request too.
+	if extras, ok := ctx.Value(cerebrasOptionsContextKey{}).(cerebrasRequestExtras); ok {
+		applyCerebrasRequestExtras(result.RawRequest, extras)
+	}
 	if cerebrasJSONMode(opts) && result.Text != "" && result.FinishReason == types.FinishReasonToolCalls {
 		result.ToolCalls = nil
 		result.FinishReason = types.FinishReasonStop
@@ -41,6 +49,11 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream, err := m.base.DoStream(ctx, opts)
 	if err != nil {
 		return nil, parseCerebrasProviderError(err)
+	}
+	if extras, ok := ctx.Value(cerebrasOptionsContextKey{}).(cerebrasRequestExtras); ok {
+		if rb, ok := stream.(provider.StreamRequestBody); ok {
+			applyCerebrasRequestExtras(rb.RequestBody(), extras)
+		}
 	}
 	if !cerebrasJSONMode(opts) {
 		return stream, nil
@@ -61,8 +74,10 @@ func (m *LanguageModel) withCerebrasOptions(ctx context.Context, opts *provider.
 	return context.WithValue(ctx, cerebrasOptionsContextKey{}, extras), warnings
 }
 
+// cerebrasJSONMode is TS `responseFormat?.type === 'json'` (a text response
+// format, or none, never triggers the structured-output normalization).
 func cerebrasJSONMode(opts *provider.GenerateOptions) bool {
-	return opts != nil && opts.ResponseFormat != nil && opts.ResponseFormat.Type != ""
+	return opts != nil && providerutils.IsJSONResponseFormat(opts.ResponseFormat)
 }
 
 type cerebrasStream struct {
@@ -87,6 +102,16 @@ func (s *cerebrasStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			return chunk, nil
+		case provider.ChunkTypeFinish:
+			// TS: a `tool_calls` finish after structured-output text is the
+			// final answer, so the unified reason becomes `stop` (the raw
+			// reason is kept).
+			if s.seenText && chunk.RawFinishReason == "tool_calls" {
+				fixed := *chunk
+				fixed.FinishReason = types.FinishReasonStop
+				return &fixed, nil
+			}
+			return chunk, nil
 		default:
 			return chunk, nil
 		}
@@ -102,6 +127,24 @@ func (s *cerebrasStream) Err() error   { return s.inner.Err() }
 func (s *cerebrasStream) RequestBody() interface{} {
 	if rb, ok := s.inner.(provider.StreamRequestBody); ok {
 		return rb.RequestBody()
+	}
+	return nil
+}
+
+// RequestURL implements provider.StreamRequestURL by delegating to the
+// wrapped stream.
+func (s *cerebrasStream) RequestURL() string {
+	if ru, ok := s.inner.(provider.StreamRequestURL); ok {
+		return ru.RequestURL()
+	}
+	return ""
+}
+
+// ResponseHeaders implements provider.StreamResponseHeaders by delegating to
+// the wrapped stream (TS doStream response.headers, review round 87e).
+func (s *cerebrasStream) ResponseHeaders() map[string]string {
+	if rh, ok := s.inner.(provider.StreamResponseHeaders); ok {
+		return rh.ResponseHeaders()
 	}
 	return nil
 }

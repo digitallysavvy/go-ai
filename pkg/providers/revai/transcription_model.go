@@ -3,7 +3,6 @@ package revai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -14,8 +13,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // pollTimeout and pollInterval mirror RevaiTranscriptionModel.doGenerate's
@@ -49,10 +50,42 @@ type revaiJobResponse struct {
 }
 
 type revaiTranscriptElement struct {
-	Type  string   `json:"type"`
-	Value string   `json:"value"`
-	TS    *float64 `json:"ts"`
-	EndTS *float64 `json:"end_ts"`
+	Type string `json:"type"`
+	// Value is the element text. TS (`z.string().nullish()`) lets it be
+	// null or absent; `+=` on it then yields "null" / "undefined" in segment
+	// text, while Array.join treats both as "" in the monologue text.
+	Value revaiNullableString `json:"value"`
+	TS    *float64            `json:"ts"`
+	EndTS *float64            `json:"end_ts"`
+}
+
+// revaiNullableString records whether a JSON string was a string, null or
+// absent.
+type revaiNullableString struct {
+	Str  string
+	Null bool // explicit JSON null
+	Set  bool // present as a string
+}
+
+// UnmarshalJSON implements json.Unmarshaler (only called when present).
+func (s *revaiNullableString) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		s.Null = true
+		return nil
+	}
+	s.Set = true
+	return json.Unmarshal(b, &s.Str)
+}
+
+// concat is the JS `"" + value` rendering.
+func (s revaiNullableString) concat() string {
+	switch {
+	case s.Set:
+		return s.Str
+	case s.Null:
+		return "null"
+	}
+	return "undefined"
 }
 
 type revaiTranscriptMonologue struct {
@@ -69,6 +102,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 
 	body, contentType, err := m.buildMultipartBody(opts)
@@ -78,28 +114,35 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var submission revaiJobResponse
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/speechtotext/v1/jobs",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaRevAIJob),
+		Method:           http.MethodPost,
+		Path:             "/speechtotext/v1/jobs",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &submission)
 	if err != nil {
 		return nil, handleError(err)
 	}
 	if submission.Status == "failed" {
-		return nil, fmt.Errorf("revai: failed to submit transcription job")
+		// TS AISDKError TranscriptionJobSubmissionFailed (cause: the response).
+		failure := providererrors.NewProviderError("revai", 0, "", "Failed to submit transcription job to Rev.ai", nil)
+		failure.Data = submission
+		return nil, failure
 	}
 
-	jobStatus, err := m.pollJobStatus(ctx, submission.ID, opts.Headers)
-	if err != nil {
-		return nil, err
+	// TS polls only while the job is not yet "transcribed".
+	if submission.Status != "transcribed" {
+		if _, err := m.pollJobStatus(ctx, submission.ID, opts.Headers); err != nil {
+			return nil, err
+		}
 	}
 
 	var transcript revaiTranscriptResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    fmt.Sprintf("/speechtotext/v1/jobs/%s/transcript", submission.ID),
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaRevAITranscript),
+		Method:           http.MethodGet,
+		Path:             fmt.Sprintf("/speechtotext/v1/jobs/%s/transcript", providerutils.EncodePathSegment(submission.ID)),
+		Headers:          opts.Headers,
 	}, &transcript)
 	if err != nil {
 		return nil, handleError(err)
@@ -108,10 +151,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	text, segments, durationInSeconds := convertRevaiTranscript(transcript)
 
 	return &types.TranscriptionResult{
-		Text:              text,
-		Segments:          segments,
-		Timestamps:        segments,
-		Language:          jobStatus.Language,
+		Text:       text,
+		Segments:   segments,
+		Timestamps: segments,
+		// TS reports the submission response's language, not the polled one.
+		Language:          submission.Language,
 		DurationInSeconds: &durationInSeconds,
 		Warnings:          []types.Warning{},
 		Usage:             types.TranscriptionUsage{DurationSeconds: durationInSeconds},
@@ -119,7 +163,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
-			Body:      transcript,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}, nil
 }
@@ -132,9 +176,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 // against a compromised or misbehaving redirect hop.
 func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, headers map[string]string) (*revaiJobResponse, error) {
 	pollOpts := fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport)
-	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + m.provider.config.APIKey}, headers)
+	pollOpts.Headers = version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + providerutils.APIKeyOrEnv(m.provider.config.APIKey, "REVAI_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("revai"))
 
-	pollURL := m.provider.config.BaseURL + "/speechtotext/v1/jobs/" + jobID
+	pollURL := m.provider.config.BaseURL + "/speechtotext/v1/jobs/" + providerutils.EncodePathSegment(jobID)
 	start := time.Now()
 	for {
 		select {
@@ -143,19 +187,31 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, he
 		default:
 		}
 		if time.Since(start) > pollTimeout {
-			return nil, fmt.Errorf("revai: transcription job polling timed out")
+			// TS AISDKError TranscriptionJobPollingTimedOut.
+			return nil, providererrors.NewProviderError("revai", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
 		}
 
-		var status revaiJobResponse
-		if _, err := fileutil.PollJSON(ctx, pollURL, pollOpts, &status); err != nil {
+		download, err := fileutil.DownloadWithMetadata(ctx, pollURL, pollOpts)
+		if err != nil {
 			return nil, handleError(err)
+		}
+		// TS createJsonResponseHandler(revaiTranscriptionJobResponseSchema).
+		if err := providerutils.MediaResponseValidator("revai.transcription", providerutils.SchemaRevAIJob)(http.StatusOK, http.Header(download.Headers), download.Data); err != nil {
+			return nil, err
+		}
+		var status revaiJobResponse
+		if err := json.Unmarshal(download.Data, &status); err != nil {
+			return nil, fmt.Errorf("revai: failed to decode job status: %w", err)
 		}
 
 		switch status.Status {
 		case "transcribed":
 			return &status, nil
 		case "failed":
-			return nil, fmt.Errorf("revai: transcription job failed")
+			// TS AISDKError TranscriptionJobFailed (cause: the job response).
+			failure := providererrors.NewProviderError("revai", 0, "", "Transcription job failed", nil)
+			failure.Data = status
+			return nil, failure
 		}
 
 		select {
@@ -171,7 +227,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("revai: failed to decode base64 audio: %w", err)
 		}
@@ -181,7 +237,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	part, err := writer.CreateFormFile("media", "audio."+revaiAudioExtension(opts.MimeType))
+	part, err := providerutils.CreateTypedFormFile(writer, "media", "audio."+revaiAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -190,18 +246,8 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	config := map[string]interface{}{"transcriber": m.modelID}
-	if revaiOpts != nil {
-		b, err := json.Marshal(revaiOpts)
-		if err != nil {
-			return nil, "", err
-		}
-		var fields map[string]interface{}
-		if err := json.Unmarshal(b, &fields); err != nil {
-			return nil, "", err
-		}
-		for k, v := range fields {
-			config[k] = v
-		}
+	for k, v := range revaiOpts {
+		config[k] = v
 	}
 	configBytes, err := json.Marshal(config)
 	if err != nil {
@@ -218,22 +264,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 }
 
 func revaiAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 // convertRevaiTranscript mirrors RevaiTranscriptionModel.doGenerate's
@@ -246,7 +277,7 @@ func convertRevaiTranscript(transcript revaiTranscriptResponse) (string, []types
 	for _, monologue := range transcript.Monologues {
 		var monologueText string
 		for _, el := range monologue.Elements {
-			monologueText += el.Value
+			monologueText += el.Value.Str
 		}
 		textParts = append(textParts, monologueText)
 
@@ -255,7 +286,7 @@ func convertRevaiTranscript(transcript revaiTranscriptResponse) (string, []types
 		hasStartedSegment := false
 
 		for _, el := range monologue.Elements {
-			currentSegmentText += el.Value
+			currentSegmentText += el.Value.concat()
 
 			if el.Type != "text" {
 				continue
@@ -268,7 +299,7 @@ func convertRevaiTranscript(transcript revaiTranscriptResponse) (string, []types
 				hasStartedSegment = true
 			}
 			if el.EndTS != nil && hasStartedSegment {
-				if trimmed := strings.TrimSpace(currentSegmentText); trimmed != "" {
+				if trimmed := providerutils.JSTrim(currentSegmentText); trimmed != "" {
 					segments = append(segments, types.TranscriptionTimestamp{
 						Text:  trimmed,
 						Start: segmentStart,
@@ -281,7 +312,7 @@ func convertRevaiTranscript(transcript revaiTranscriptResponse) (string, []types
 		}
 
 		if hasStartedSegment {
-			if trimmed := strings.TrimSpace(currentSegmentText); trimmed != "" {
+			if trimmed := providerutils.JSTrim(currentSegmentText); trimmed != "" {
 				end := segmentStart + 1
 				if durationInSeconds > segmentStart {
 					end = durationInSeconds

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -105,5 +106,45 @@ func TestReadWindowsCredentialManagerPassword(t *testing.T) {
 	stubExec(t, "", nil)
 	if ReadWindowsCredentialManagerPassword(context.Background(), "t") != "" {
 		t.Fatal("empty")
+	}
+}
+
+func TestWriteMacOSKeychainPasswordKeepsSecretOutOfArgs(t *testing.T) {
+	old := ExecFileInput
+	t.Cleanup(func() { ExecFileInput = old })
+	var gotName string
+	var gotArgs []string
+	var gotInput string
+	ExecFileInput = func(_ context.Context, name string, args []string, input string, _ []string) error {
+		gotName, gotArgs, gotInput = name, args, input
+		return nil
+	}
+	if err := WriteMacOSKeychainPassword(context.Background(), "Claude Code-credentials", `us"er`, "s3cret"); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "/usr/bin/security" || len(gotArgs) != 1 || gotArgs[0] != "-i" {
+		t.Fatalf("cmd = %s %v", gotName, gotArgs)
+	}
+	want := "add-generic-password -U -s \"Claude Code-credentials\" -a \"us\\\"er\" -X 733363726574\n"
+	if gotInput != want {
+		t.Fatalf("input = %q, want %q", gotInput, want)
+	}
+}
+
+// Node's execFile fails (and kills the child) once stdout passes maxBuffer.
+func TestExecFileCapsStdoutLikeNodeMaxBuffer(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("needs /bin/sh")
+	}
+	out, err := ExecFile(context.Background(), "/bin/sh", []string{"-c", "head -c 3000000 /dev/zero"}, nil)
+	if err == nil {
+		t.Fatalf("expected a max-buffer error, got %d bytes", len(out))
+	}
+	if len(out) > MaxBuffer {
+		t.Fatalf("collected %d bytes, over the %d cap", len(out), MaxBuffer)
+	}
+	ok, err := ExecFile(context.Background(), "/bin/sh", []string{"-c", "printf hello"}, nil)
+	if err != nil || ok != "hello" {
+		t.Fatalf("small output = %q, %v", ok, err)
 	}
 }

@@ -62,6 +62,23 @@ type Question struct {
 	AllowFreeForm *AllowFreeForm   `json:"allowFreeForm,omitempty"`
 }
 
+// MarshalJSON keeps an explicitly empty (non-nil) options array on the wire
+// as TS does (`options: []`); only a nil slice is omitted.
+func (q Question) MarshalJSON() ([]byte, error) {
+	wire := struct {
+		ID            string            `json:"id"`
+		Question      string            `json:"question"`
+		Header        string            `json:"header,omitempty"`
+		Options       *[]QuestionOption `json:"options,omitempty"`
+		AllowMultiple *bool             `json:"allowMultiple,omitempty"`
+		AllowFreeForm *AllowFreeForm    `json:"allowFreeForm,omitempty"`
+	}{ID: q.ID, Question: q.Question, Header: q.Header, AllowMultiple: q.AllowMultiple, AllowFreeForm: q.AllowFreeForm}
+	if q.Options != nil {
+		wire.Options = &q.Options
+	}
+	return json.Marshal(wire)
+}
+
 // QuestionsToolInput is the askUserQuestions input. Mirrors TS
 // `HarnessV1QuestionsToolInput`.
 type QuestionsToolInput struct {

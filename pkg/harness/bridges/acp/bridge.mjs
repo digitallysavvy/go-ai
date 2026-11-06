@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { argv, env, execPath, pid, stdout } from "node:process";
@@ -13,6 +13,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 //#region ../harness/dist/bridge/index.js
 const name = "AI_HarnessBridgeCapabilityUnsupportedError";
 /**
@@ -31,6 +32,54 @@ var HarnessBridgeCapabilityUnsupportedError = class extends Error {
 		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
 	}
 };
+function getNormalizedInlineImage(part) {
+	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
+		data: part.data.data,
+		mediaType: part.mediaType
+	};
+}
+function convertHarnessToolModelOutput({ output }) {
+	switch (output.type) {
+		case "text":
+		case "error-text": return {
+			content: [{
+				type: "text",
+				text: output.value
+			}],
+			isError: output.type === "error-text"
+		};
+		case "json":
+		case "error-json": return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output.value)
+			}],
+			isError: output.type === "error-json"
+		};
+		case "execution-denied": return {
+			content: [{
+				type: "text",
+				text: output.reason ?? "Tool execution denied."
+			}],
+			isError: true
+		};
+		case "content": return {
+			content: output.value.map((part) => {
+				if (part.type === "text") return {
+					type: "text",
+					text: part.text
+				};
+				const image = getNormalizedInlineImage(part);
+				if (image != null) return {
+					type: "image",
+					...image
+				};
+				throw new HarnessBridgeCapabilityUnsupportedError({ message: `Harnesses support only text and inline images in tool model output; unsupported content '${part.type}'.` });
+			}),
+			isError: false
+		};
+	}
+}
 const DEBUG_LEVEL_WEIGHT = {
 	error: 0,
 	warn: 1,
@@ -179,6 +228,7 @@ async function runBridge(options) {
 	* between turns. A new `start` fences on this so turns never overlap.
 	*/
 	let activeTurn;
+	let lastStartId;
 	let debugConfig;
 	let consoleCaptureInstalled = false;
 	const envDebugEnabled = ENV_TRUTHY.has((env.HARNESS_DEBUG ?? "").toLowerCase());
@@ -322,6 +372,11 @@ async function runBridge(options) {
 	const handleInbound = async (msg, ws) => {
 		switch (msg.type) {
 			case "start": {
+				const startId = msg.startId;
+				if (startId != null) {
+					if (startId === lastStartId) return;
+					lastStartId = startId;
+				}
 				for (;;) {
 					const pendingTurn = activeTurn;
 					if (pendingTurn == null) break;
@@ -539,7 +594,10 @@ async function runBridge(options) {
 			type: "bridge-hello",
 			state: currentTurnState,
 			lastSeq: seqCounter,
-			capabilities: { experimental_userMessageResponses: true }
+			capabilities: {
+				idempotentStart: true,
+				experimental_userMessageResponses: true
+			}
 		});
 		ws.on("message", (raw) => {
 			let parsed;
@@ -637,20 +695,25 @@ const providerAuthenticationSchema = z.discriminatedUnion("type", [z.object({ ty
 	type: z.literal("ai-gateway"),
 	env: profileRecordSchema
 })]);
+const agentLaunchSchema = z.object({
+	command: z.string(),
+	args: z.array(z.string()),
+	home: z.string().optional()
+});
 const bridgeConfigurationSchema = z.object({
+	agent: agentLaunchSchema,
 	authentication: authenticationSchema.optional(),
 	providerAuthentication: providerAuthenticationSchema.optional(),
 	providerEnvironment: z.record(z.string(), z.string()).optional(),
 	sessionMeta: serializableRecordSchema$1.optional(),
 	clientCapabilities: serializableRecordSchema$1.optional(),
 	askUserQuestionsRequestMethod: z.string().optional(),
-	hostToolMcpTransport: hostToolMcpTransportSchema.optional()
+	hostToolMcpTransport: hostToolMcpTransportSchema.optional(),
+	nonTextContentTypes: z.array(z.literal("image")).optional()
 });
 async function readACPBridgeEnvironment({ env }) {
-	const serialized = env[ACP_BRIDGE_CONFIGURATION_ENV];
-	if (serialized == null) return {};
 	try {
-		const result = bridgeConfigurationSchema.safeParse(JSON.parse(serialized));
+		const result = bridgeConfigurationSchema.safeParse(JSON.parse(env["AI_SDK_ACP_BRIDGE_CONFIGURATION"] ?? ""));
 		if (result.success) return result.data;
 	} catch {}
 	throw new Error("ACP bridge configuration environment is invalid.");
@@ -700,6 +763,10 @@ function resolveSource({ source, gateway }) {
 }
 //#endregion
 //#region src/v1/bridge/protocol-configuration.ts
+function isACPImagePromptSupported({ initialization, nonTextContentTypes }) {
+	const promptCapabilities = initialization.agentCapabilities?.promptCapabilities;
+	return isRecord$8(promptCapabilities) && promptCapabilities.image === true || nonTextContentTypes?.includes("image") === true;
+}
 function createACPInitializeRequest({ protocolVersion, clientApp, authentication, clientCapabilities: configuredClientCapabilities, supportsBooleanSessionConfigOptions = false }) {
 	let clientCapabilities = mergeRecords({
 		left: authentication?.clientCapabilities ?? {},
@@ -736,7 +803,7 @@ function mergeRecords({ left, right }) {
 	const result = { ...left };
 	for (const [key, value] of Object.entries(right)) {
 		const previous = result[key];
-		result[key] = isRecord$7(previous) && isRecord$7(value) ? mergeRecords({
+		result[key] = isRecord$8(previous) && isRecord$8(value) ? mergeRecords({
 			left: previous,
 			right: value
 		}) : value;
@@ -748,10 +815,10 @@ function requireGateway({ gateway }) {
 	return gateway;
 }
 function asRecord(value) {
-	if (!isRecord$7(value)) throw new Error("ACP profile data must resolve to an object.");
+	if (!isRecord$8(value)) throw new Error("ACP profile data must resolve to an object.");
 	return value;
 }
-function isRecord$7(value) {
+function isRecord$8(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
@@ -817,27 +884,27 @@ function captureACPStream({ stream }) {
 }
 function getRawSessionUpdate({ message }) {
 	const record = message;
-	if (record.method !== "session/update" || !isRecord$6(record.params)) return { isSessionUpdate: false };
+	if (record.method !== "session/update" || !isRecord$7(record.params)) return { isSessionUpdate: false };
 	const params = record.params;
 	return {
 		isSessionUpdate: true,
 		value: params.update,
-		canFilterUnknown: typeof params.sessionId === "string" && isRecord$6(params.update)
+		canFilterUnknown: typeof params.sessionId === "string" && isRecord$7(params.update)
 	};
 }
 function sessionUpdatesMatch({ rawUpdate, update }) {
-	if (!isRecord$6(rawUpdate)) return false;
+	if (!isRecord$7(rawUpdate)) return false;
 	if (rawUpdate.sessionUpdate !== update.sessionUpdate) return false;
 	if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") return rawUpdate.toolCallId === update.toolCallId;
 	if (update.sessionUpdate === "user_message_chunk" || update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk") return rawUpdate.messageId === update.messageId;
 	return true;
 }
 function getStringProperty$1({ value, property }) {
-	if (!isRecord$6(value)) return void 0;
+	if (!isRecord$7(value)) return void 0;
 	const propertyValue = value[property];
 	return typeof propertyValue === "string" ? propertyValue : void 0;
 }
-function isRecord$6(value) {
+function isRecord$7(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
@@ -958,7 +1025,7 @@ function createACPStreamTranslator({ emit, emitToolCallCandidate, builtinTools =
 		emit({
 			type: "finish-step",
 			finishReason,
-			usage: unknownUsage$1(),
+			usage: unknownUsage$2(),
 			harnessMetadata: { acp: { inferredStep: true } }
 		});
 		stepOpen = false;
@@ -1055,6 +1122,15 @@ function createACPStreamTranslator({ emit, emitToolCallCandidate, builtinTools =
 		});
 		stepOpen = true;
 		pendingToolCallIds.add(toolCallId);
+		emit({
+			type: "finish-step",
+			finishReason: {
+				unified: "tool-calls",
+				raw: "host-input"
+			},
+			usage: unknownUsage$2(),
+			harnessMetadata: { acp: { inferredStep: true } }
+		});
 	};
 	const hostToolResult = ({ toolCallId, toolName, output, isError }) => {
 		closeBlock();
@@ -1223,10 +1299,10 @@ function resolveBuiltinTool({ programmaticName, metadata, title, kind, rawInput,
 	});
 }
 function findMostSpecificSchemaMatch({ rawInput, schemaMatches }) {
-	if (!isRecord$5(rawInput)) return void 0;
+	if (!isRecord$6(rawInput)) return void 0;
 	const rawInputKeys = Object.keys(rawInput);
 	const coverageOf = (tool) => {
-		const properties = isRecord$5(tool.inputSchema) ? isRecord$5(tool.inputSchema.properties) ? tool.inputSchema.properties : {} : {};
+		const properties = isRecord$6(tool.inputSchema) ? isRecord$6(tool.inputSchema.properties) ? tool.inputSchema.properties : {} : {};
 		return rawInputKeys.filter((key) => key in properties).length;
 	};
 	const highestCoverage = Math.max(...schemaMatches.map(coverageOf));
@@ -1275,7 +1351,7 @@ function findBuiltinToolsInMetadata({ metadata, builtinToolsByName }) {
 	};
 }
 function matchesBuiltinToolInput({ rawInput, inputSchema }) {
-	if (!isRecord$5(rawInput) || !isRecord$5(inputSchema)) return false;
+	if (!isRecord$6(rawInput) || !isRecord$6(inputSchema)) return false;
 	if (inputSchema.type !== "object") return false;
 	const required = inputSchema.required;
 	if (!Array.isArray(required) || required.length === 0 || !required.every((property) => typeof property === "string")) return false;
@@ -1283,7 +1359,7 @@ function matchesBuiltinToolInput({ rawInput, inputSchema }) {
 		rawInput,
 		inputSchema
 	})) return false;
-	const properties = isRecord$5(inputSchema.properties) ? inputSchema.properties : {};
+	const properties = isRecord$6(inputSchema.properties) ? inputSchema.properties : {};
 	return Object.entries(properties).filter(([, schema]) => isJSONSchemaDiscriminator({ schema })).every(([property, schema]) => {
 		if (!Object.prototype.hasOwnProperty.call(rawInput, property)) return false;
 		return matchesJSONSchemaValue({
@@ -1293,12 +1369,12 @@ function matchesBuiltinToolInput({ rawInput, inputSchema }) {
 	});
 }
 function hasRequiredBuiltinToolInput({ rawInput, inputSchema }) {
-	if (!isRecord$5(inputSchema) || inputSchema.type !== "object") return true;
-	if (!isRecord$5(rawInput)) return false;
+	if (!isRecord$6(inputSchema) || inputSchema.type !== "object") return true;
+	if (!isRecord$6(rawInput)) return false;
 	const required = inputSchema.required;
 	if (!Array.isArray(required) || required.length === 0) return true;
 	if (!required.every((property) => typeof property === "string")) return true;
-	const properties = isRecord$5(inputSchema.properties) ? inputSchema.properties : {};
+	const properties = isRecord$6(inputSchema.properties) ? inputSchema.properties : {};
 	return required.every((property) => {
 		if (!Object.prototype.hasOwnProperty.call(rawInput, property)) return false;
 		return matchesJSONSchemaValue({
@@ -1308,11 +1384,11 @@ function hasRequiredBuiltinToolInput({ rawInput, inputSchema }) {
 	});
 }
 function isJSONSchemaDiscriminator({ schema }) {
-	return isRecord$5(schema) && ("const" in schema || Array.isArray(schema.enum) && schema.enum.length === 1);
+	return isRecord$6(schema) && ("const" in schema || Array.isArray(schema.enum) && schema.enum.length === 1);
 }
 function matchesJSONSchemaValue({ value, schema }) {
 	if (schema === true) return true;
-	if (schema === false || !isRecord$5(schema)) return false;
+	if (schema === false || !isRecord$6(schema)) return false;
 	if ("const" in schema && !Object.is(value, schema.const)) return false;
 	if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => Object.is(value, candidate))) return false;
 	for (const alternatives of [schema.anyOf, schema.oneOf]) if (Array.isArray(alternatives) && !alternatives.some((alternative) => matchesJSONSchemaValue({
@@ -1327,7 +1403,7 @@ function matchesJSONSchemaValue({ value, schema }) {
 		case "number": return typeof value === "number" && Number.isFinite(value);
 		case "string": return typeof value === "string";
 		case "array": return Array.isArray(value);
-		case "object": return isRecord$5(value);
+		case "object": return isRecord$6(value);
 		default: return true;
 	}
 }
@@ -1373,7 +1449,7 @@ function createACPToolCall({ state }) {
 		...Array.isArray(state.values.locations) ? { locations: state.values.locations } : {},
 		...Object.prototype.hasOwnProperty.call(state.values, "rawInput") ? { rawInput: state.values.rawInput } : {},
 		...Object.prototype.hasOwnProperty.call(state.values, "rawOutput") ? { rawOutput: state.values.rawOutput } : {},
-		...state.values._meta === null || isRecord$5(state.values._meta) ? { _meta: state.values._meta } : {}
+		...state.values._meta === null || isRecord$6(state.values._meta) ? { _meta: state.values._meta } : {}
 	};
 }
 function isACPToolKind(value) {
@@ -1385,7 +1461,7 @@ function isACPToolCallStatus(value) {
 function emitFileChanges({ state, emit }) {
 	const content = Array.isArray(state.values.content) ? state.values.content : [];
 	for (const item of content) {
-		if (!isRecord$5(item) || item.type !== "diff") continue;
+		if (!isRecord$6(item) || item.type !== "diff") continue;
 		const path = getStringProperty({
 			value: item,
 			property: "path"
@@ -1476,15 +1552,15 @@ function toSafeJSONValue({ value, fallback, seen = /* @__PURE__ */ new Set() }) 
 	return result;
 }
 function getStringProperty({ value, property }) {
-	if (!isRecord$5(value)) return void 0;
+	if (!isRecord$6(value)) return void 0;
 	const propertyValue = value[property];
 	return typeof propertyValue === "string" ? propertyValue : void 0;
 }
-function isRecord$5(value) {
+function isRecord$6(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 function mapACPUsage({ usage }) {
-	if (usage == null) return unknownUsage$1();
+	if (usage == null) return unknownUsage$2();
 	const raw = mapACPUsageMetadata({ usage });
 	return {
 		inputTokens: {
@@ -1511,7 +1587,7 @@ function mapACPUsageMetadata({ usage }) {
 		...usage.cachedWriteTokens == null ? {} : { cachedWriteTokens: usage.cachedWriteTokens }
 	};
 }
-function unknownUsage$1() {
+function unknownUsage$2() {
 	return {
 		inputTokens: {
 			total: void 0,
@@ -1538,10 +1614,27 @@ function canonicalizeJSON({ value }) {
 	return Object.fromEntries(Object.keys(record).sort().filter((key) => record[key] !== void 0).map((key) => [key, canonicalizeJSON({ value: record[key] })]));
 }
 //#endregion
+//#region src/v1/bridge/merge-observed-tool-call.ts
+function mergeObservedToolCall({ previous, update }) {
+	return {
+		...previous,
+		toolCallId: update.toolCallId,
+		...(update.name ?? previous?.name) == null ? {} : { name: update.name ?? previous?.name },
+		title: update.title ?? previous?.title ?? `Tool ${update.toolCallId}`,
+		...update.kind === void 0 ? {} : { kind: update.kind ?? void 0 },
+		...update.status === void 0 ? {} : { status: update.status ?? void 0 },
+		...update.content === void 0 ? {} : { content: update.content ?? void 0 },
+		...update.locations === void 0 ? {} : { locations: update.locations ?? void 0 },
+		...update.rawInput === void 0 ? {} : { rawInput: update.rawInput },
+		...update.rawOutput === void 0 ? {} : { rawOutput: update.rawOutput },
+		...update._meta === void 0 ? {} : { _meta: update._meta }
+	};
+}
+//#endregion
 //#region src/v1/bridge/host-tool-correlation.ts
 const CORRELATION_WINDOW_MS = 1e3;
 const MAX_BUFFERED_UPDATES = 128;
-function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostToolServerName, hostTools }) {
+function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostToolServerName, hostTools, hostToolCallResolver }) {
 	const invocations = /* @__PURE__ */ new Map();
 	const candidates = /* @__PURE__ */ new Map();
 	const suppressedToolCallIds = /* @__PURE__ */ new Set();
@@ -1550,7 +1643,10 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 	let nextCandidateOrder = 0;
 	let buffered = [];
 	let flushTimer;
+	let flushHolds = 0;
+	let flushPending = false;
 	const flush = () => {
+		flushPending = false;
 		if (flushTimer != null) {
 			clearTimeout(flushTimer);
 			flushTimer = void 0;
@@ -1568,21 +1664,31 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 	};
 	const scheduleFlush = () => {
 		if (flushTimer != null) return;
-		flushTimer = setTimeout(flush, CORRELATION_WINDOW_MS);
+		flushTimer = setTimeout(() => {
+			flushTimer = void 0;
+			if (flushHolds > 0) {
+				flushPending = true;
+				return;
+			}
+			flush();
+		}, CORRELATION_WINDOW_MS);
 		flushTimer.unref?.();
+	};
+	const suppressBufferedToolCall = ({ toolCallId }) => {
+		suppressedToolCallIds.add(toolCallId);
+		candidates.delete(toolCallId);
+		buffered = buffered.filter((item) => !isToolUpdate(item.message) || item.message.update.toolCallId !== toolCallId);
 	};
 	const suppressCandidate = ({ candidate, invocation }) => {
 		invocation.toolCallId = candidate.toolCallId;
-		suppressedToolCallIds.add(candidate.toolCallId);
-		candidates.delete(candidate.toolCallId);
+		suppressBufferedToolCall({ toolCallId: candidate.toolCallId });
 		deleteInvocation({
 			invocations,
 			token: invocation.token
 		});
 	};
 	const suppressToolCallUpdate = ({ toolCallId }) => {
-		suppressedToolCallIds.add(toolCallId);
-		candidates.delete(toolCallId);
+		suppressBufferedToolCall({ toolCallId });
 		if (candidates.size === 0) flush();
 	};
 	const reconcile = () => {
@@ -1602,7 +1708,7 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 		if (candidates.size === 0) flush();
 	};
 	return {
-		update: ({ message, rawUpdate }) => {
+		update: ({ message, rawUpdate, hostToolCall }) => {
 			const preservedUpdate = rawUpdate === void 0 ? message.update : rawUpdate;
 			emitRawUpdate({ rawUpdate: preservedUpdate });
 			if (!isToolUpdate(message)) {
@@ -1624,6 +1730,7 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 				previous: observedToolCalls.get(toolCallId),
 				update: message.update
 			}));
+			if (!releasedToolCallIds.has(toolCallId) && hostToolCall != null) suppressToolCallUpdate({ toolCallId });
 			if (suppressedToolCallIds.has(toolCallId)) {
 				if (isTerminalToolUpdate(message)) {
 					suppressedToolCallIds.delete(toolCallId);
@@ -1689,32 +1796,64 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 			});
 			reconcile();
 		},
-		claimHostToolPermission: ({ toolCall }) => {
+		applyHostToolCall: ({ toolCallId, hostToolCall }) => {
+			if (hostToolCall == null || releasedToolCallIds.has(toolCallId)) return;
+			if (suppressedToolCallIds.has(toolCallId)) return;
+			suppressToolCallUpdate({ toolCallId });
+		},
+		claimHostToolPermission: async ({ toolCall }) => {
+			const observedBeforeResolution = observedToolCalls.get(toolCall.toolCallId);
+			if (toolCall.status === "completed" || toolCall.status === "failed" || observedBeforeResolution?.status === "completed" || observedBeforeResolution?.status === "failed" || observedBeforeResolution?.rawInput === null) return;
+			const [observedHostCall, permissionCall] = await Promise.all([hostToolCallResolver.getResolution({ toolCallId: toolCall.toolCallId }), hostToolCallResolver.resolveToolCall({ toolCall })]);
 			const candidate = candidates.get(toolCall.toolCallId);
-			if (hostTools.filter(({ name }) => {
-				const permission = resolvePermissionHostTool({
+			const observed = observedToolCalls.get(toolCall.toolCallId);
+			if (observed != null && observedHostCall != null) {
+				if (hasConflictingHostToolPermission({
 					toolCall,
+					observed,
+					call: observedHostCall,
+					permissionCall,
+					serverName: hostToolServerName
+				})) return;
+				suppressToolCallUpdate({ toolCallId: toolCall.toolCallId });
+				return observedHostCall;
+			}
+			const matches = [];
+			for (const permission of resolvePermissionHostToolCandidates({
+				toolCall,
+				permissionCall,
+				serverName: hostToolServerName,
+				toolNames: hostTools.map((tool) => tool.name)
+			})) if (candidate == null ? permission.hasRequestIdentity : hasPortableEvidence({
+				candidate,
+				invocation: {
+					token: "",
 					serverName: hostToolServerName,
-					toolName: name
-				});
-				if (permission == null) return false;
-				if (candidate == null) return permission.hasRequestIdentity;
-				return hasPortableEvidence({
-					candidate,
-					invocation: {
-						token: "",
-						serverName: hostToolServerName,
-						toolName: name,
-						inputFingerprint: canonicalFingerprint({ value: permission.input }),
-						order: 0
-					}
-				});
-			}).length !== 1) return false;
+					toolName: permission.toolName,
+					inputFingerprint: canonicalFingerprint({ value: permission.input }),
+					order: 0
+				}
+			})) matches.push({
+				toolName: permission.toolName,
+				input: permission.input
+			});
+			if (matches.length !== 1) return void 0;
 			suppressToolCallUpdate({ toolCallId: toolCall.toolCallId });
-			return true;
+			return matches[0];
 		},
 		suppressToolCall: suppressToolCallUpdate,
 		getToolCall: ({ toolCallId }) => observedToolCalls.get(toolCallId),
+		isToolCallReleased: ({ toolCallId }) => releasedToolCallIds.has(toolCallId),
+		deferFlush: () => {
+			flushHolds += 1;
+			let released = false;
+			return { release: () => {
+				if (released) return;
+				released = true;
+				flushHolds -= 1;
+				if (flushHolds === 0 && flushPending) flush();
+			} };
+		},
 		flush,
 		removeInvocation: ({ token }) => {
 			deleteInvocation({
@@ -1733,19 +1872,17 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 		}
 	};
 }
-function mergeObservedToolCall({ previous, update }) {
-	return {
-		toolCallId: update.toolCallId,
-		...(update.name ?? previous?.name) == null ? {} : { name: update.name ?? previous?.name },
-		title: update.title ?? previous?.title ?? `Tool ${update.toolCallId}`,
-		...update.kind == null ? {} : { kind: update.kind },
-		...update.status == null ? {} : { status: update.status },
-		...update.content == null ? {} : { content: update.content },
-		...update.locations == null ? {} : { locations: update.locations },
-		...update.rawInput === void 0 ? {} : { rawInput: update.rawInput },
-		...update.rawOutput === void 0 ? {} : { rawOutput: update.rawOutput },
-		...update._meta === void 0 ? {} : { _meta: update._meta }
-	};
+function hasConflictingHostToolPermission({ toolCall, observed, call, permissionCall, serverName }) {
+	if (permissionCall != null) return permissionCall.toolName !== call.toolName || canonicalFingerprint({ value: permissionCall.input }) !== canonicalFingerprint({ value: call.input });
+	if (toolCall.name != null && toolCall.name !== observed.name && toolCall.name !== call.toolName && !hasDelimitedPair({
+		value: toolCall.name,
+		serverName,
+		toolName: call.toolName
+	})) return true;
+	if (toolCall.rawInput === void 0) return false;
+	if (!isRecord$5(toolCall.rawInput)) return true;
+	const fingerprint = canonicalFingerprint({ value: toolCall.rawInput });
+	return fingerprint !== canonicalFingerprint({ value: observed.rawInput }) && fingerprint !== canonicalFingerprint({ value: call.input });
 }
 function hasPortableEvidence({ candidate, invocation }) {
 	let hasServerIdentity = false;
@@ -1765,14 +1902,6 @@ function hasPortableEvidence({ candidate, invocation }) {
 			property: "name"
 		});
 		if (programmaticName === invocation.toolName) hasToolName = true;
-		const deferredToolName = getProperty({
-			value: rawInput,
-			property: "tool_name"
-		});
-		const deferredToolInput = getProperty({
-			value: rawInput,
-			property: "tool_input"
-		});
 		if (containsCombinedIdentity({
 			value: [metadata, programmaticName],
 			serverName: invocation.serverName,
@@ -1780,15 +1909,6 @@ function hasPortableEvidence({ candidate, invocation }) {
 		})) {
 			hasServerIdentity = true;
 			hasToolName = true;
-		}
-		if (typeof deferredToolName === "string" && isRecord$4(deferredToolInput) && hasDelimitedPair({
-			value: deferredToolName,
-			serverName: invocation.serverName,
-			toolName: invocation.toolName
-		})) {
-			hasServerIdentity = true;
-			hasToolName = true;
-			if (canonicalFingerprint({ value: deferredToolInput }) === invocation.inputFingerprint) hasInput = true;
 		}
 		if (containsExactValue({
 			value: [metadata, rawInput],
@@ -1805,35 +1925,16 @@ function hasPortableEvidence({ candidate, invocation }) {
 	}
 	return hasServerIdentity && hasToolName && hasInput;
 }
-function resolvePermissionHostTool({ toolCall, serverName, toolName }) {
-	if (!isRecord$4(toolCall.rawInput)) return void 0;
-	const deferredToolName = getProperty({
-		value: toolCall.rawInput,
-		property: "tool_name"
-	});
-	const deferredToolInput = getProperty({
-		value: toolCall.rawInput,
-		property: "tool_input"
-	});
-	if (hasOwnProperty({
-		value: toolCall.rawInput,
-		property: "tool_name"
-	}) && hasOwnProperty({
-		value: toolCall.rawInput,
-		property: "tool_input"
-	})) {
-		if (typeof deferredToolName !== "string" || !isRecord$4(deferredToolInput) || !hasDelimitedPair({
-			value: deferredToolName,
-			serverName,
-			toolName
-		})) return;
-		return {
-			input: deferredToolInput,
-			hasRequestIdentity: true
-		};
-	}
-	return {
-		input: toolCall.rawInput,
+function resolvePermissionHostToolCandidates({ toolCall, permissionCall, serverName, toolNames }) {
+	if (permissionCall != null) return [{
+		...permissionCall,
+		hasRequestIdentity: true
+	}];
+	const rawInput = toolCall.rawInput;
+	if (!isRecord$5(rawInput)) return [];
+	return toolNames.map((toolName) => ({
+		toolName,
+		input: rawInput,
 		hasRequestIdentity: containsCombinedIdentity({
 			value: [
 				getProperty({
@@ -1852,7 +1953,7 @@ function resolvePermissionHostTool({ toolCall, serverName, toolName }) {
 			serverName,
 			toolName
 		})
-	};
+	}));
 }
 function containsCombinedIdentity({ value, serverName, toolName }) {
 	return containsString({
@@ -1938,10 +2039,7 @@ function getProperty({ value, property }) {
 	if (value == null || typeof value !== "object" || Array.isArray(value)) return;
 	return Reflect.get(value, property);
 }
-function hasOwnProperty({ value, property }) {
-	return Object.prototype.hasOwnProperty.call(value, property);
-}
-function isRecord$4(value) {
+function isRecord$5(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 function isTerminalToolUpdate(message) {
@@ -1949,7 +2047,7 @@ function isTerminalToolUpdate(message) {
 }
 //#endregion
 //#region src/v1/bridge/create-emit-stream-event.ts
-function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, hostToolServerName, hostTools }) {
+function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, hostToolServerName, hostTools, hostToolCallResolver }) {
 	const translator = createACPStreamTranslator({
 		emit,
 		emitToolCallCandidate,
@@ -1967,10 +2065,11 @@ function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, host
 			translator.raw({ rawValue: rawUpdate });
 		},
 		hostToolServerName,
-		hostTools
+		hostTools,
+		hostToolCallResolver
 	});
 	return {
-		message: ({ message, rawUpdate }) => {
+		message: ({ message, rawUpdate, hostToolCall }) => {
 			if (message.kind === "stop") {
 				correlation.close();
 				translator.finish(message.response);
@@ -1978,7 +2077,8 @@ function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, host
 			}
 			correlation.update({
 				message,
-				rawUpdate
+				rawUpdate,
+				hostToolCall
 			});
 			return false;
 		},
@@ -1990,17 +2090,96 @@ function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, host
 		permissionToolCall: ({ toolCall }) => {
 			translator.permissionToolCall({ toolCall: {
 				sessionUpdate: "tool_call_update",
-				...toolCall
+				...toolCall,
+				rawInput: toolCall.rawInput === void 0 ? correlation.getToolCall({ toolCallId: toolCall.toolCallId })?.rawInput : toolCall.rawInput
 			} });
 		},
 		claimHostToolPermission: correlation.claimHostToolPermission,
+		applyHostToolCall: correlation.applyHostToolCall,
 		hostToolCall: translator.hostToolCall,
 		hostToolResult: translator.hostToolResult,
 		registerHostToolCorrelationInvocation: correlation.registerInvocation,
 		removeHostToolCorrelationInvocation: correlation.removeInvocation,
 		suppressToolCall: correlation.suppressToolCall,
-		getToolCall: ({ toolCallId }) => correlation.getToolCall({ toolCallId }) ?? translator.getToolCall({ toolCallId })
+		getToolCall: ({ toolCallId }) => correlation.getToolCall({ toolCallId }) ?? translator.getToolCall({ toolCallId }),
+		isToolCallReleased: correlation.isToolCallReleased,
+		deferFlush: correlation.deferFlush
 	};
+}
+//#endregion
+//#region src/v1/bridge/host-tool-call-resolver.ts
+function createHostToolCallResolver({ turn, serverName, toolNames }) {
+	const snapshots = /* @__PURE__ */ new Map();
+	const resolutions = /* @__PURE__ */ new Map();
+	let closed = false;
+	let resolveClosed;
+	const closedPromise = new Promise((resolve) => {
+		resolveClosed = () => resolve(void 0);
+	});
+	const abortedPromise = abortPromise({ abortSignal: turn.abortSignal });
+	const request = async ({ toolCall }) => {
+		if (closed || turn.abortSignal.aborted) return void 0;
+		const requestId = crypto.randomUUID();
+		turn.emit({
+			type: "acp-host-tool-call-resolution-request",
+			requestId,
+			toolCall,
+			serverName,
+			toolNames: [...toolNames]
+		});
+		const result = await Promise.race([
+			turn.requestToolResult(requestId),
+			closedPromise,
+			abortedPromise
+		]);
+		if (result == null || closed) return void 0;
+		return parseHostToolCall({
+			output: result.output,
+			toolNames
+		});
+	};
+	return {
+		resolveUpdate: ({ update }) => {
+			const toolCall = mergeObservedToolCall({
+				previous: snapshots.get(update.toolCallId),
+				update
+			});
+			snapshots.set(update.toolCallId, toolCall);
+			const resolution = request({ toolCall });
+			resolutions.set(update.toolCallId, resolution);
+			return resolution;
+		},
+		resolveToolCall: ({ toolCall }) => request({ toolCall: mergeObservedToolCall({
+			previous: void 0,
+			update: toolCall
+		}) }),
+		getResolution: async ({ toolCallId }) => resolutions.get(toolCallId),
+		close: () => {
+			if (closed) return;
+			closed = true;
+			resolveClosed();
+			snapshots.clear();
+			resolutions.clear();
+		}
+	};
+}
+function abortPromise({ abortSignal }) {
+	if (abortSignal.aborted) return Promise.resolve(void 0);
+	return new Promise((resolve) => {
+		abortSignal.addEventListener("abort", () => resolve(void 0), { once: true });
+	});
+}
+function parseHostToolCall({ output, toolNames }) {
+	if (!isRecord$4(output)) return void 0;
+	const hostToolCall = output.hostToolCall;
+	if (!isRecord$4(hostToolCall) || typeof hostToolCall.toolName !== "string" || !toolNames.includes(hostToolCall.toolName) || !isRecord$4(hostToolCall.input)) return;
+	return {
+		toolName: hostToolCall.toolName,
+		input: hostToolCall.input
+	};
+}
+function isRecord$4(value) {
+	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
 //#region src/v1/bridge/instruction-mapping.ts
@@ -2075,7 +2254,7 @@ function isRecord$3(value) {
 }
 //#endregion
 //#region src/v1/bridge/host-tool-mcp-server.ts
-const VERSION = "1.0.77";
+const VERSION = "1.0.113";
 function createHostToolMCPServer({ tools, revision = 1, invoke, onListTools }) {
 	let catalog = createCatalog({
 		revision,
@@ -2140,12 +2319,17 @@ function requireObjectSchema({ toolName, schema }) {
 	return schema;
 }
 function toCallToolResult({ result }) {
+	const converted = result.toolResult == null ? void 0 : convertHarnessToolModelOutput({ output: result.toolResult.output });
 	return {
-		content: [{
+		content: converted == null ? [{
 			type: "text",
 			text: stringifyOutput({ output: result.output })
-		}],
-		...result.isError ? { isError: true } : {},
+		}] : converted.content.map((part) => part.type === "text" ? part : {
+			type: "image",
+			data: part.data,
+			mimeType: part.mediaType
+		}),
+		...result.isError === true || converted?.isError === true ? { isError: true } : {},
 		_meta: { "ai-sdk-harness-acp-correlation": result.correlationToken }
 	};
 }
@@ -2271,7 +2455,7 @@ function respondWithJSONRPCError({ response, status, code, message }) {
 }
 //#endregion
 //#region src/v1/bridge/host-tool-relay.ts
-async function startHostToolRelay({ tools, serverName, mcpTransport = "stdio" }) {
+async function startHostToolRelay({ tools, serverName, mcpTransport = "stdio", nonTextContentTypes = [] }) {
 	const state = {
 		tools: [...tools],
 		fingerprint: catalogFingerprint({ tools }),
@@ -2297,6 +2481,7 @@ async function startHostToolRelay({ tools, serverName, mcpTransport = "stdio" })
 			},
 			state,
 			serverName,
+			nonTextContentTypes,
 			turn: activeTurn,
 			nextInvocationOrder: () => ++invocationOrder
 		}),
@@ -2329,6 +2514,7 @@ async function startHostToolRelay({ tools, serverName, mcpTransport = "stdio" })
 				credential,
 				state,
 				serverName,
+				nonTextContentTypes,
 				turn: activeTurn,
 				nextInvocationOrder: () => ++invocationOrder
 			});
@@ -2397,7 +2583,7 @@ async function startHostToolRelay({ tools, serverName, mcpTransport = "stdio" })
 		}
 	};
 }
-async function handleRequest({ request, credential, state, serverName, turn, nextInvocationOrder }) {
+async function handleRequest({ request, credential, state, serverName, nonTextContentTypes, turn, nextInvocationOrder }) {
 	if (request.method !== "POST") throw new RelayRequestError({
 		status: 404,
 		message: "Unknown host tool relay endpoint."
@@ -2422,6 +2608,7 @@ async function handleRequest({ request, credential, state, serverName, turn, nex
 		body,
 		state,
 		serverName,
+		nonTextContentTypes,
 		turn,
 		nextInvocationOrder
 	});
@@ -2464,7 +2651,7 @@ function acknowledgeCatalog({ state, revision }) {
 		closing: false
 	});
 }
-async function handleInvocation({ body, state, serverName, turn, nextInvocationOrder }) {
+async function handleInvocation({ body, state, serverName, nonTextContentTypes, turn, nextInvocationOrder }) {
 	if (turn == null) throw new RelayRequestError({
 		status: 409,
 		message: "No ACP prompt turn is active."
@@ -2509,6 +2696,21 @@ async function handleInvocation({ body, state, serverName, turn, nextInvocationO
 		turn.removeCorrelationInvocation({ token: correlationToken });
 		throw error;
 	}
+	let toolResult = result.toolResult;
+	if (toolResult?.output.type === "content" && !nonTextContentTypes.includes("image")) {
+		const original = toolResult.output.value;
+		const value = original.filter((part) => !(part.type === "file" && part.mediaType.startsWith("image/")));
+		if (value.length !== original.length) {
+			toolResult = {
+				...toolResult,
+				output: {
+					...toolResult.output,
+					value
+				}
+			};
+			turn.emitWarning({ message: `Image content in tool model output for '${tool.name}' was omitted because this ACP harness does not declare image support.` });
+		}
+	}
 	turn.emitToolResult({
 		toolCallId: body.requestId,
 		toolName: tool.name,
@@ -2517,6 +2719,7 @@ async function handleInvocation({ body, state, serverName, turn, nextInvocationO
 	});
 	return {
 		output: result.output,
+		...toolResult == null ? {} : { toolResult },
 		...result.isError ? { isError: true } : {},
 		correlationToken
 	};
@@ -2624,25 +2827,35 @@ var RelayRequestError = class extends Error {
 //#endregion
 //#region src/v1/bridge/host-tool-relay-authorization.ts
 const DEFAULT_AUTHORIZATION_WAIT_MS = 1e4;
-function createHostToolRelayAuthorization({ serverName, toolNames, ttlMs = DEFAULT_AUTHORIZATION_WAIT_MS }) {
+function createHostToolRelayAuthorization({ ttlMs = DEFAULT_AUTHORIZATION_WAIT_MS } = {}) {
 	const observedCalls = /* @__PURE__ */ new Map();
 	const authorizations = /* @__PURE__ */ new Map();
 	const pendingRequests = [];
 	let closed = false;
-	const observe = ({ toolCall }) => {
+	const authorizeCall = ({ toolCallId, call, observed }) => {
+		const key = callKey(call);
+		authorizations.set(toolCallId, key);
+		const pendingIndex = pendingRequests.findIndex((request) => request.key === key);
+		if (pendingIndex !== -1) {
+			const [pending] = pendingRequests.splice(pendingIndex, 1);
+			clearTimeout(pending.timeout);
+			authorizations.delete(toolCallId);
+			observed.consumed = true;
+			pending.resolve(true);
+		}
+	};
+	const observe = ({ toolCall, hostToolCall }) => {
 		if (closed) return;
 		const previous = observedCalls.get(toolCall.toolCallId);
 		if (previous?.consumed || previous?.terminal) return;
-		const merged = {
-			...previous?.toolCall,
-			...toolCall,
-			...toolCall.name == null && previous?.toolCall.name != null ? { name: previous.toolCall.name } : {},
-			...toolCall.rawInput === void 0 && previous?.toolCall.rawInput !== void 0 ? { rawInput: previous.toolCall.rawInput } : {},
-			...toolCall.title == null && previous?.toolCall.title != null ? { title: previous.toolCall.title } : {},
-			...toolCall._meta == null && previous?.toolCall._meta != null ? { _meta: previous.toolCall._meta } : {}
-		};
+		const merged = mergeObservedToolCall({
+			previous: previous?.toolCall,
+			update: toolCall
+		});
+		const permissionCall = toolCall.name == null && toolCall.rawInput === void 0 && toolCall._meta === void 0 ? previous?.permissionCall : void 0;
 		const observed = {
 			toolCall: merged,
+			permissionCall,
 			consumed: false,
 			terminal: merged.status === "completed" || merged.status === "failed"
 		};
@@ -2651,31 +2864,41 @@ function createHostToolRelayAuthorization({ serverName, toolNames, ttlMs = DEFAU
 			authorizations.delete(toolCall.toolCallId);
 			return;
 		}
-		const call = resolveHostToolCall({
-			toolCall: merged,
-			serverName,
-			toolNames
-		});
+		const call = permissionCall ?? hostToolCall;
 		if (call == null) {
 			authorizations.delete(toolCall.toolCallId);
 			return;
 		}
-		const key = callKey(call);
-		authorizations.set(toolCall.toolCallId, key);
-		const pendingIndex = pendingRequests.findIndex((request) => request.key === key);
-		if (pendingIndex !== -1) {
-			const [pending] = pendingRequests.splice(pendingIndex, 1);
-			clearTimeout(pending.timeout);
-			authorizations.delete(toolCall.toolCallId);
-			observed.consumed = true;
-			pending.resolve(true);
-		}
+		authorizeCall({
+			toolCallId: toolCall.toolCallId,
+			call,
+			observed
+		});
 	};
 	return {
-		observeUpdate: ({ update }) => {
-			if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") observe({ toolCall: update });
+		observeUpdate: ({ update, hostToolCall }) => {
+			if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") observe({
+				toolCall: update,
+				hostToolCall
+			});
 		},
-		observeAllowedPermission: ({ toolCall }) => observe({ toolCall }),
+		authorizePermission: ({ toolCallId, call }) => {
+			if (closed) return;
+			const previous = observedCalls.get(toolCallId);
+			if (previous?.consumed || previous?.terminal) return;
+			const observed = {
+				toolCall: previous?.toolCall,
+				permissionCall: call,
+				consumed: false,
+				terminal: false
+			};
+			observedCalls.set(toolCallId, observed);
+			authorizeCall({
+				toolCallId,
+				call,
+				observed
+			});
+		},
 		waitForToolCallAuthorization: ({ toolName, input }) => {
 			if (closed) return Promise.resolve(false);
 			const key = callKey({
@@ -2713,56 +2936,8 @@ function createHostToolRelayAuthorization({ serverName, toolNames, ttlMs = DEFAU
 		}
 	};
 }
-function resolveHostToolCall({ toolCall, serverName, toolNames }) {
-	const rawInput = toolCall.rawInput;
-	if (!isRecord$1(rawInput)) return void 0;
-	const isDeferred = "tool_name" in rawInput;
-	const isProvider = "providerIdentifier" in rawInput && "toolName" in rawInput && "args" in rawInput;
-	const isOrigin = "origin" in rawInput && "operation" in rawInput && "arguments" in rawInput;
-	const isCodex = "server" in rawInput && "tool" in rawInput && "arguments" in rawInput;
-	if ([
-		isDeferred,
-		isProvider,
-		isOrigin,
-		isCodex
-	].filter(Boolean).length > 1) return;
-	const matches = [];
-	for (const toolName of toolNames) {
-		const qualifiedNames = [
-			`mcp__${serverName}__${toolName}`,
-			`${serverName}__${toolName}`,
-			`mcp_${serverName}_${toolName}`
-		];
-		const isQualified = (value) => typeof value === "string" && qualifiedNames.includes(value);
-		const isDirect = toolCall.name === toolName && isRecord$1(toolCall._meta) && toolCall._meta.serverName === serverName;
-		if (isDeferred && isQualified(rawInput.tool_name) && isRecord$1(rawInput.tool_input) && (toolCall.name == null || toolCall.name === "use_tool" || isQualified(toolCall.name))) matches.push({
-			toolName,
-			input: rawInput.tool_input
-		});
-		else if (isProvider && rawInput.providerIdentifier === serverName && rawInput.toolName === toolName && isRecord$1(rawInput.args) && (toolCall.name == null || isQualified(toolCall.name))) matches.push({
-			toolName,
-			input: rawInput.args
-		});
-		else if (isCodex && rawInput.server === serverName && rawInput.tool === toolName && isRecord$1(rawInput.arguments) && (toolCall.name == null || isQualified(toolCall.name))) matches.push({
-			toolName,
-			input: rawInput.arguments
-		});
-		else if (isOrigin && rawInput.origin === serverName && rawInput.operation === toolName && isRecord$1(rawInput.arguments) && (toolCall.name == null || toolCall.name === toolName || isQualified(toolCall.name))) matches.push({
-			toolName,
-			input: rawInput.arguments
-		});
-		else if (!isDeferred && !isProvider && !isOrigin && !isCodex && (isDirect || isQualified(toolCall.name) || toolCall.name == null && (isQualified(toolCall.title) || toolCall.title === `${serverName}-${toolName}`))) matches.push({
-			toolName,
-			input: rawInput
-		});
-	}
-	return matches.length === 1 ? matches[0] : void 0;
-}
 function callKey({ toolName, input }) {
 	return `${toolName}\0${canonicalFingerprint({ value: input })}`;
-}
-function isRecord$1(value) {
-	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
 //#region src/v1/bridge/host-tool-mcp-definition.ts
@@ -2821,14 +2996,56 @@ async function refreshHostToolCatalog({ relay, tools, harnessId, timeoutMs }) {
 	})) return;
 	throw new HarnessBridgeCapabilityUnsupportedError({
 		harnessId,
-		message: `The ACP implementation did not load the active harness-owned MCP tool catalog to revision ${catalog.revision} before the next prompt, so host tools cannot be exposed safely.`
+		message: `The ACP agent did not load the active harness-owned MCP tool catalog to revision ${catalog.revision} before the next prompt, so host tools cannot be exposed safely.`
 	});
+}
+//#endregion
+//#region src/v1/bridge/permission-locations.ts
+async function areACPToolLocationsTrusted({ toolCall, workDir }) {
+	const locations = toolCall.locations;
+	if (locations == null || locations.length === 0) return toolCall.kind === "think" || toolCall.kind === "fetch";
+	try {
+		const canonicalWorkDir = await realpath(workDir);
+		for (const location of locations) {
+			if (typeof location.path !== "string" || location.path.trim().length === 0) return false;
+			if (!isInsidePath(canonicalWorkDir, await resolvePermissionPath(path.posix.isAbsolute(location.path) ? location.path : `${workDir}/${location.path}`))) return false;
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function resolvePermissionPath(inputPath) {
+	let existingPath = inputPath;
+	const missingSegments = [];
+	while (!await entryExists(existingPath)) {
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === ".." || segment === ".") throw new Error(`Unable to resolve path ${JSON.stringify(inputPath)}.`);
+		missingSegments.unshift(segment);
+		existingPath = parent;
+	}
+	return path.posix.join(await realpath(existingPath), ...missingSegments);
+}
+async function entryExists(entryPath) {
+	try {
+		await lstat(entryPath);
+		return true;
+	} catch (error) {
+		if (error != null && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
+		throw error;
+	}
+}
+function isInsidePath(parent, candidate) {
+	const relative = path.posix.relative(parent, candidate);
+	return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
 }
 //#endregion
 //#region src/v1/bridge/permission-controller.ts
 let permissionRequestCounter = 0;
-function createACPPermissionController({ turn, sessionId, permissionMode, hasPermissionModeMapping, emitToolCall, claimHostToolPermission, onHostToolPermissionAllowed }) {
+function createACPPermissionController({ turn, sessionId, workDir, permissionMode, hasPermissionModeMapping, emitToolCall, claimHostToolPermission, onHostToolPermissionAllowed }) {
 	const pendingPermissions = /* @__PURE__ */ new Map();
+	let cancellationGeneration = 0;
 	return {
 		async requestPermission(request) {
 			if (request.sessionId !== sessionId) {
@@ -2842,17 +3059,28 @@ function createACPPermissionController({ turn, sessionId, permissionMode, hasPer
 				turn.emitWarning({ message: `ACP permission request for tool call ${JSON.stringify(request.toolCall.toolCallId)} was cancelled because it did not advertise ${missing.join(" and ")}.` });
 				return cancelled();
 			}
-			if (claimHostToolPermission({ toolCall: request.toolCall })) {
-				onHostToolPermissionAllowed?.({ toolCall: request.toolCall });
+			const generation = cancellationGeneration;
+			const call = await claimHostToolPermission({ toolCall: request.toolCall });
+			if (generation !== cancellationGeneration) return cancelled();
+			if (call != null) {
+				onHostToolPermissionAllowed?.({
+					toolCallId: request.toolCall.toolCallId,
+					call
+				});
 				return { outcome: {
 					outcome: "selected",
 					optionId: allowOnce.optionId
 				} };
 			}
-			if (!hasPermissionModeMapping && shouldAutoApprove({
+			const autoApprove = !hasPermissionModeMapping && shouldAutoApprove({
 				permissionMode,
 				kind: request.toolCall.kind
-			})) return { outcome: {
+			}) && (permissionMode === "allow-all" || await areACPToolLocationsTrusted({
+				toolCall: request.toolCall,
+				workDir
+			}));
+			if (generation !== cancellationGeneration) return cancelled();
+			if (autoApprove) return { outcome: {
 				outcome: "selected",
 				optionId: allowOnce.optionId
 			} };
@@ -2869,6 +3097,15 @@ function createACPPermissionController({ turn, sessionId, permissionMode, hasPer
 				approvalId,
 				toolCallId: request.toolCall.toolCallId
 			});
+			turn.emit({
+				type: "finish-step",
+				finishReason: {
+					unified: "tool-calls",
+					raw: "host-input"
+				},
+				usage: unknownUsage$1(),
+				harnessMetadata: { acp: { inferredStep: true } }
+			});
 			try {
 				const response = await Promise.race([approval, cancellation]);
 				if (response == null) return cancelled();
@@ -2881,6 +3118,7 @@ function createACPPermissionController({ turn, sessionId, permissionMode, hasPer
 			}
 		},
 		cancelAll() {
+			cancellationGeneration += 1;
 			for (const pending of pendingPermissions.values()) pending.cancel();
 			pendingPermissions.clear();
 		}
@@ -2893,6 +3131,21 @@ function shouldAutoApprove({ permissionMode, kind }) {
 }
 function cancelled() {
 	return { outcome: { outcome: "cancelled" } };
+}
+function unknownUsage$1() {
+	return {
+		inputTokens: {
+			total: void 0,
+			noCache: void 0,
+			cacheRead: void 0,
+			cacheWrite: void 0
+		},
+		outputTokens: {
+			total: void 0,
+			text: void 0,
+			reasoning: void 0
+		}
+	};
 }
 //#endregion
 //#region src/v1/bridge/permission-mode.ts
@@ -2974,22 +3227,58 @@ function unsupported({ harnessId, message }) {
 	});
 }
 //#endregion
+//#region src/v1/bridge/resolve-acp-model-id.ts
+/**
+* Reads the model an ACP agent reports as currently selected for a session.
+*
+* `sessionState` is a raw `session/new`, `session/load`, `session/resume`,
+* `session/set_config_option`, or `session/set_model` response, or a
+* `config_option_update` session update. It is read without schema parsing
+* because some agents (GitHub Copilot, Grok Build) report the model through
+* the non-standard `models.currentModelId` field, which the ACP SDK types do
+* not include.
+*/
+function resolveACPModelId({ sessionState, modelMapping }) {
+	if (!isRecord$1(sessionState)) return void 0;
+	const fromConfigOption = () => {
+		const configOptions = Array.isArray(sessionState.configOptions) ? sessionState.configOptions.filter(isRecord$1) : [];
+		return nonEmptyString(((modelMapping?.type === "session-config-option" ? configOptions.find((candidate) => candidate.id === modelMapping.path) : void 0) ?? configOptions.find((candidate) => candidate.category === "model"))?.currentValue);
+	};
+	const fromSessionModel = () => isRecord$1(sessionState.models) ? nonEmptyString(sessionState.models.currentModelId) : void 0;
+	return modelMapping?.type === "session-model" ? fromSessionModel() ?? fromConfigOption() : fromConfigOption() ?? fromSessionModel();
+}
+function nonEmptyString(value) {
+	return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function isRecord$1(value) {
+	return value != null && typeof value === "object" && !Array.isArray(value);
+}
+//#endregion
 //#region src/v1/bridge/model-mapping.ts
+/**
+* Applies the requested model to the ACP session and returns the model the
+* agent reports as selected afterwards, falling back to the requested model
+* when the agent's response does not report one. Returns `undefined` when no
+* model is requested.
+*/
 async function configureACPModel({ agent, sessionId, model, mapping }) {
-	if (model == null) return;
+	if (model == null) return void 0;
 	if (mapping == null) throw new Error("ACP model mapping is required when a model is set.");
-	if (mapping.type === "session-model") {
-		await agent.request("session/set_model", {
+	if (mapping.type === "session-model") return resolveACPModelId({
+		sessionState: await agent.request("session/set_model", {
 			sessionId,
 			[mapping.path]: model
-		});
-		return;
-	}
-	await agent.request(acp.methods.agent.session.setConfigOption, {
-		sessionId,
-		configId: mapping.path,
-		value: model
-	});
+		}),
+		modelMapping: mapping
+	}) ?? model;
+	return resolveACPModelId({
+		sessionState: await agent.request(acp.methods.agent.session.setConfigOption, {
+			sessionId,
+			configId: mapping.path,
+			value: model
+		}),
+		modelMapping: mapping
+	}) ?? model;
 }
 //#endregion
 //#region src/v1/bridge/recovered-session.ts
@@ -3143,15 +3432,10 @@ const bridgeStateDir = requireArg({
 	value: args.bridgeStateDir,
 	name: "--bridge-state-dir"
 });
-const implementationDir = requireArg({
-	value: args.implementationDir,
-	name: "--implementation-dir"
-});
 const bridgeType = requireArg({
 	value: args.bridgeType,
 	name: "--bridge-type"
 });
-const implementation = await readImplementationDescriptor({ path: `${implementationDir}/implementation.json` });
 const bridgeConfiguration = await readACPBridgeEnvironment({ env });
 let child;
 let agentResponseStreamFailure;
@@ -3159,6 +3443,7 @@ let connection;
 let session;
 let recoveredSessionUpdates;
 let recoveredSessionId;
+let sessionSupportsImagePrompts = false;
 let sessionConfigurationFingerprint;
 let streamCapture;
 let initializationDiagnostic;
@@ -3167,6 +3452,7 @@ let catalogRefreshError;
 let sessionConfigurationFailure;
 let historicalUpdatesSuppressed = false;
 let coldRestorationMethod;
+let currentModelId;
 let activePermissionController;
 let activeQuestionRequest;
 await runBridge({
@@ -3203,6 +3489,10 @@ async function runTurn(start, turn) {
 			start,
 			turn
 		}));
+		if (!sessionSupportsImagePrompts && start.prompt.some((part) => part.type === "image")) throw new HarnessBridgeCapabilityUnsupportedError({
+			harnessId: bridgeType,
+			message: "The ACP agent does not advertise support for image prompts."
+		});
 	} catch (error) {
 		if (HarnessBridgeCapabilityUnsupportedError.isInstance(error)) throw error;
 		throw createACPBridgeError({
@@ -3269,12 +3559,13 @@ async function runTurn(start, turn) {
 		});
 		return;
 	}
-	await configureACPModel({
+	const configuredModelId = await configureACPModel({
 		agent: connection.agent,
 		sessionId: activeSession.sessionId,
 		model: start.model,
 		mapping: start.modelMapping
 	});
+	if (configuredModelId != null) currentModelId = configuredModelId;
 	let rejectCancellationFailure;
 	const cancellationFailure = new Promise((_, reject) => {
 		rejectCancellationFailure = reject;
@@ -3282,7 +3573,9 @@ async function runTurn(start, turn) {
 	cancellationFailure.catch(() => {});
 	let cancellationRequested = false;
 	let cancellationFailureError;
-	const hostToolAuthorization = createHostToolRelayAuthorization({
+	const hostToolAuthorization = createHostToolRelayAuthorization();
+	const hostToolCallResolver = createHostToolCallResolver({
+		turn,
 		serverName: HOST_TOOL_MCP_SERVER_NAME,
 		toolNames: (start.tools ?? []).map((tool) => tool.name)
 	});
@@ -3290,6 +3583,7 @@ async function runTurn(start, turn) {
 		if (cancellationRequested) return;
 		cancellationRequested = true;
 		hostToolAuthorization.close();
+		hostToolCallResolver.close();
 		activePermissionController?.cancelAll();
 		try {
 			if (connection == null) throw new Error("ACP connection closed before cancellation.");
@@ -3302,7 +3596,11 @@ async function runTurn(start, turn) {
 			rejectCancellationFailure(cancellationFailureError);
 		}
 	};
-	turn.emit({ type: "stream-start" });
+	const streamStartModelId = currentModelId ?? start.model;
+	turn.emit({
+		type: "stream-start",
+		...streamStartModelId ? { modelId: streamStartModelId } : {}
+	});
 	const emitStreamEvent = createEmitStreamEvent({
 		emit: (event) => turn.emit(event),
 		emitToolCallCandidate: ({ toolCall }) => {
@@ -3318,7 +3616,8 @@ async function runTurn(start, turn) {
 		},
 		builtinTools: start.builtinTools,
 		hostToolServerName: HOST_TOOL_MCP_SERVER_NAME,
-		hostTools: start.tools ?? []
+		hostTools: start.tools ?? [],
+		hostToolCallResolver
 	});
 	if (bridgeConfiguration.askUserQuestionsRequestMethod != null) activeQuestionRequest = {
 		method: bridgeConfiguration.askUserQuestionsRequestMethod,
@@ -3328,17 +3627,19 @@ async function runTurn(start, turn) {
 	const permissionController = createACPPermissionController({
 		turn,
 		sessionId: activeSession.sessionId,
+		workDir,
 		permissionMode: start.permissionMode ?? "allow-all",
 		hasPermissionModeMapping: start.permissionModeMapping != null,
 		emitToolCall: emitStreamEvent.permissionToolCall,
 		claimHostToolPermission: emitStreamEvent.claimHostToolPermission,
-		onHostToolPermissionAllowed: hostToolAuthorization.observeAllowedPermission
+		onHostToolPermissionAllowed: hostToolAuthorization.authorizePermission
 	});
 	activePermissionController = permissionController;
 	const relayTurn = {
 		waitForToolCallAuthorization: hostToolAuthorization.waitForToolCallAuthorization,
 		emitToolCall: emitStreamEvent.hostToolCall,
 		emitToolResult: emitStreamEvent.hostToolResult,
+		emitWarning: turn.emitWarning,
 		requestToolResult: (toolCallId) => turn.requestToolResult(toolCallId),
 		registerCorrelationInvocation: emitStreamEvent.registerHostToolCorrelationInvocation,
 		removeCorrelationInvocation: emitStreamEvent.removeHostToolCorrelationInvocation
@@ -3368,6 +3669,7 @@ async function runTurn(start, turn) {
 		else startPrompt();
 		if (turn.abortSignal.aborted) await cancel();
 		else turn.abortSignal.addEventListener("abort", () => void cancel(), { once: true });
+		let pendingHostToolResolutions = Promise.resolve();
 		for (;;) {
 			let message;
 			try {
@@ -3386,20 +3688,47 @@ async function runTurn(start, turn) {
 				});
 			}
 			if (message.kind === "session_update") {
+				if (message.update.sessionUpdate === "config_option_update") currentModelId = resolveACPModelId({
+					sessionState: message.update,
+					modelMapping: start.modelMapping
+				}) ?? currentModelId;
 				const captured = streamCapture?.takeForUpdate({ update: message.update });
-				hostToolAuthorization.observeUpdate({ update: message.update });
+				const update = message.update;
+				const isToolUpdate = update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update";
 				for (const rawValue of captured?.precedingRawValues ?? []) emitStreamEvent.raw({ rawValue });
+				if (!isToolUpdate) {
+					hostToolAuthorization.observeUpdate({ update });
+					emitStreamEvent.message({
+						message,
+						rawUpdate: captured?.rawUpdate
+					});
+					continue;
+				}
+				const flushHold = emitStreamEvent.deferFlush();
+				const resolution = hostToolCallResolver.resolveUpdate({ update });
 				emitStreamEvent.message({
 					message,
 					rawUpdate: captured?.rawUpdate
 				});
+				pendingHostToolResolutions = pendingHostToolResolutions.then(() => resolution).catch(() => void 0).then((hostToolCall) => {
+					hostToolAuthorization.observeUpdate({
+						update,
+						hostToolCall
+					});
+					emitStreamEvent.applyHostToolCall({
+						toolCallId: update.toolCallId,
+						hostToolCall
+					});
+				}).finally(() => flushHold.release());
 				continue;
 			}
+			await pendingHostToolResolutions;
 			for (const rawValue of streamCapture?.drainRawValues() ?? []) emitStreamEvent.raw({ rawValue });
 			if (emitStreamEvent.message({ message })) return;
 		}
 	} finally {
 		hostToolAuthorization.close();
+		hostToolCallResolver.close();
 		if (activeQuestionRequest?.turn === turn) activeQuestionRequest = void 0;
 		permissionController.cancelAll();
 		activePermissionController = void 0;
@@ -3448,11 +3777,10 @@ async function ensureSession({ start, turn }) {
 		sessionMeta: bridgeConfiguration.sessionMeta,
 		environment: { ...createChildEnvironment({
 			launchEnv,
-			implementationDir,
-			privateHome: implementation.privateHome
+			home: bridgeConfiguration.agent.home
 		}) }
 	});
-	child = spawn(`${implementationDir}/${implementation.executablePath}`, [...implementation.args], {
+	child = spawn(bridgeConfiguration.agent.command, [...bridgeConfiguration.agent.args], {
 		cwd: workDir,
 		env: instructionConfiguration.environment,
 		shell: false,
@@ -3501,6 +3829,15 @@ async function ensureSession({ start, turn }) {
 			const classification = (await active.turn.requestToolResult(requestId)).output;
 			if (classification?.type !== "handled") throw acp.RequestError.methodNotFound(method);
 			active.emitStreamEvent.suppressToolCall({ toolCallId: nativeToolCallId ?? classification.toolCallId });
+			active.turn.emit({
+				type: "finish-step",
+				finishReason: {
+					unified: "tool-calls",
+					raw: "host-input"
+				},
+				usage: unknownUsage(),
+				harnessMetadata: { acp: { inferredStep: true } }
+			});
 			try {
 				return (await active.turn.requestToolResult(classification.toolCallId)).output;
 			} finally {
@@ -3524,6 +3861,10 @@ async function ensureSession({ start, turn }) {
 		requested: acp.PROTOCOL_VERSION,
 		initialization
 	});
+	sessionSupportsImagePrompts = isACPImagePromptSupported({
+		initialization,
+		nonTextContentTypes: bridgeConfiguration.nonTextContentTypes
+	});
 	if (authentication != null) await authenticate({
 		agent: connection.agent,
 		initialization,
@@ -3540,7 +3881,8 @@ async function ensureSession({ start, turn }) {
 	hostToolRelay = await startHostToolRelay({
 		tools,
 		serverName: HOST_TOOL_MCP_SERVER_NAME,
-		mcpTransport
+		mcpTransport,
+		nonTextContentTypes: bridgeConfiguration.nonTextContentTypes
 	});
 	const mcpServers = [...externalMcpServers, createHostToolMcpServerDefinition({
 		mcpTransport,
@@ -3616,6 +3958,10 @@ async function ensureSession({ start, turn }) {
 		throw error;
 	}
 	session = createdSession;
+	currentModelId = resolveACPModelId({
+		sessionState: createdSession.newSessionResponse,
+		modelMapping: start.modelMapping
+	});
 	initializationDiagnostic = createACPInitializationDiagnostic({
 		initialization,
 		sessionId: createdSession.sessionId
@@ -3693,7 +4039,7 @@ function resolveGatewayValues({ clientApp }) {
 		clientAppVersion: clientApp.version
 	};
 }
-function createChildEnvironment({ launchEnv, implementationDir, privateHome }) {
+function createChildEnvironment({ launchEnv, home }) {
 	const blocked = /* @__PURE__ */ new Set([
 		"BRIDGE_CHANNEL_TOKEN",
 		"BRIDGE_WS_PORT",
@@ -3707,8 +4053,7 @@ function createChildEnvironment({ launchEnv, implementationDir, privateHome }) {
 		...Object.fromEntries(Object.entries(env).filter(([key, value]) => !blocked.has(key) && value != null)),
 		...launchEnv
 	};
-	if (!privateHome) return environment;
-	const home = `${implementationDir}/home`;
+	if (home == null) return environment;
 	const inheritedPath = environment.PATH;
 	return {
 		...environment,
@@ -3755,17 +4100,6 @@ function promptActiveSession({ session, agent, prompt, meta }) {
 	}, (error) => updates.reject(error));
 	return response;
 }
-async function readImplementationDescriptor({ path }) {
-	const text = await readFile(path, "utf8");
-	const value = await new Response(text, { headers: { "content-type": "application/json" } }).json();
-	if (!isRecord(value) || typeof value.executablePath !== "string" || typeof value.privateHome !== "boolean" || !Array.isArray(value.args) || !value.args.every((item) => typeof item === "string") || !Array.isArray(value.envKeys) || !value.envKeys.every((item) => typeof item === "string")) throw new Error("Invalid ACP implementation descriptor.");
-	return {
-		executablePath: value.executablePath,
-		privateHome: value.privateHome,
-		args: value.args,
-		envKeys: value.envKeys
-	};
-}
 function parseArgs({ args }) {
 	const result = {};
 	for (let index = 0; index < args.length; index++) {
@@ -3773,7 +4107,6 @@ function parseArgs({ args }) {
 		if (value == null) continue;
 		if (args[index] === "--workdir") result.workDir = value;
 		else if (args[index] === "--bridge-state-dir") result.bridgeStateDir = value;
-		else if (args[index] === "--implementation-dir") result.implementationDir = value;
 		else if (args[index] === "--bridge-type") result.bridgeType = value;
 	}
 	return result;

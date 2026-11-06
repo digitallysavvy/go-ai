@@ -1,9 +1,8 @@
 package azure
 
 import (
-	"strings"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // AzureSpeechModelSpeechOptions is providerOptions.azure for the Azure
@@ -35,7 +34,7 @@ var azureVoiceModelsByLowercaseID = map[string]string{
 // getMAIVoiceModel returns the Azure voice-name suffix for modelID,
 // mirroring TS getMAIVoiceModel. ok is false for any other model ID.
 func getMAIVoiceModel(modelID string) (string, bool) {
-	name, ok := azureVoiceModelsByLowercaseID[strings.ToLower(modelID)]
+	name, ok := azureVoiceModelsByLowercaseID[providerutils.JSToLower(modelID)]
 	return name, ok
 }
 

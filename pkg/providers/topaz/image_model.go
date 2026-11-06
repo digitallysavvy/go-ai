@@ -12,10 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -58,6 +60,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	var warnings []types.Warning
 
@@ -83,8 +88,14 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if err != nil {
 		return nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazSubmit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	var submit topazImageSubmitResponse
@@ -113,7 +124,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		// path above already cancels on its own internal deadline; this
 		// additionally covers the caller's own ctx/AbortSignal firing mid-poll.
 		if ctx.Err() != nil || (opts.AbortSignal != nil && opts.AbortSignal.Err() != nil) {
-			m.cancelQuietly(context.Background(), submit.ProcessID, opts.Headers)
+			m.cancelQuietly(context.WithoutCancel(ctx), submit.ProcessID, opts.Headers)
 		}
 		return nil, err
 	}
@@ -204,7 +215,7 @@ func addImageUnsupportedWarnings(opts *provider.ImageGenerateOptions, warnings *
 // request (TS TopazImageModel#buildFormData).
 func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpts *ImageModelOptions, warnings *[]types.Warning) (io.Reader, string, error) {
 	if len(opts.Files) == 0 {
-		return nil, "", providererrors.NewValidationError("files",
+		return nil, "", invalidArgument("files",
 			"Topaz image models enhance an existing image. Pass the input image via `prompt.images`.", nil)
 	}
 
@@ -231,7 +242,7 @@ func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpt
 			return nil, "", err
 		}
 	} else {
-		part, err := writer.CreateFormFile("image", "image"+topazImageExtension(file.MediaType))
+		part, err := providerutils.CreateTypedFormFile(writer, "image", "image."+providerutils.MediaTypeToExtension(file.MediaType), file.MediaType)
 		if err != nil {
 			return nil, "", err
 		}
@@ -326,7 +337,7 @@ func writeFloatField(w *multipart.Writer, key string, value *float64) error {
 	if value == nil {
 		return nil
 	}
-	return w.WriteField(key, strconv.FormatFloat(*value, 'g', -1, 64))
+	return w.WriteField(key, providerutils.JSNumberString(*value))
 }
 
 // parseSize parses a "{width}x{height}" call option.
@@ -339,19 +350,6 @@ func parseSize(size string) (width, height *int) {
 		return nil, nil
 	}
 	return &w, &h
-}
-
-// topazImageExtension picks a file extension for the uploaded image part
-// from its media type. Topaz only processes JPEG, PNG and TIFF.
-func topazImageExtension(mediaType string) string {
-	switch strings.ToLower(mediaType) {
-	case "image/jpeg", "image/jpg":
-		return ".jpg"
-	case "image/tiff", "image/tif":
-		return ".tiff"
-	default:
-		return ".png"
-	}
 }
 
 // imageMimeType derives the result's MIME type from the status response's
@@ -381,13 +379,16 @@ func imageMimeType(outputFormat *string, data []byte) string {
 // is in flight.
 func (m *ImageModel) waitForCompletion(ctx context.Context, processID string, headers map[string]string, pollInterval, pollTimeout time.Duration) (*topazImageStatusResponse, error) {
 	deadline := time.Now().Add(pollTimeout)
-	lastStatus := "unknown"
+	var lastStatus string
 
 	for {
 		status, err := m.getStatus(ctx, processID, headers)
 		if err != nil {
 			return nil, err
 		}
+		// TS reports the current poll's `status ?? 'unknown'`, not the last
+		// non-empty one.
+		lastStatus = "unknown"
 		if status.Status != "" {
 			lastStatus = status.Status
 		}
@@ -396,11 +397,11 @@ func (m *ImageModel) waitForCompletion(ctx context.Context, processID string, he
 			return status, nil
 		}
 		if status.Status == "Failed" || status.Status == "Cancelled" {
-			return nil, fmt.Errorf("Topaz image enhancement %s for process %s.", strings.ToLower(status.Status), processID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("Topaz image enhancement %s for process %s.", providerutils.JSToLower(status.Status), processID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 
 		if time.Now().Add(pollInterval).After(deadline) {
-			m.cancelQuietly(context.Background(), processID, headers)
+			m.cancelQuietly(context.WithoutCancel(ctx), processID, headers)
 			return nil, fmt.Errorf( //nolint:staticcheck // matches TS SDK's exact error text
 				"Topaz image enhancement did not finish within %dms (process %s, last status %s). Increase the `pollTimeoutMillis` provider option if the job needs longer.",
 				pollTimeout.Milliseconds(), processID, lastStatus)
@@ -423,8 +424,14 @@ func (m *ImageModel) getStatus(ctx context.Context, processID string, headers ma
 	if err != nil {
 		return nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 	var status topazImageStatusResponse
 	if err := json.Unmarshal(resp.Body, &status); err != nil {
@@ -458,10 +465,16 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 	if err != nil {
 		return nil, nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazDownload)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, nil, err
+	}
 	var downloadResp topazImageDownloadResponse
 	if err := json.Unmarshal(resp.Body, &downloadResp); err != nil {
 		return nil, nil, fmt.Errorf("topaz: failed to decode download response: %w", err)
@@ -478,7 +491,13 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		// the per-call headers already passed through client.Do for the
 		// earlier calls in this method, which merges in the client's own
 		// defaults automatically.
-		downloadOpts.Headers = internalhttp.MergeHeaders(m.prov.client.Headers(), headers)
+		// TS resolves config.headers() inside the call, so an APIKeyFunc
+		// gets the caller's ctx here too (not context.Background()).
+		providerHeaders, err := m.prov.client.RequestHeadersCtx(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		downloadOpts.Headers = internalhttp.MergeHeaders(providerHeaders, headers)
 	}
 
 	result, err := fileutil.DownloadWithMetadata(ctx, downloadResp.DownloadURL, downloadOpts)
@@ -486,13 +505,8 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		return nil, nil, err
 	}
 
-	responseHeaders := make(map[string]string, len(result.Headers))
-	for k, vs := range result.Headers {
-		if len(vs) > 0 {
-			responseHeaders[k] = vs[0]
-		}
-	}
-	return result.Data, responseHeaders, nil
+	// TS response headers: repeated lines joined with ", ".
+	return result.Data, providerutils.ExtractHeaders(result.Headers), nil
 }
 
 type topazImageSubmitResponse struct {

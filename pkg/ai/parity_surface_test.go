@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -59,8 +62,8 @@ func TestGenerateImage_AppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateImage() error = %v", err)
 	}
-	if capturedHeaders["user-agent"] != "ai/0.5.3" {
-		t.Fatalf("user-agent = %q, want ai/0.5.3", capturedHeaders["user-agent"])
+	if capturedHeaders["user-agent"] != "ai/"+sdkversion.Version {
+		t.Fatalf("user-agent = %q, want ai/<sdk version>", capturedHeaders["user-agent"])
 	}
 }
 
@@ -105,15 +108,21 @@ func TestGenerateImage_Base64ImagesDecodeToGeneratedFiles(t *testing.T) {
 }
 
 func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.T) {
+	// GenerateImage runs the model calls in parallel (TS Promise.all), so the
+	// mock guards its state and the test does not assume a call order.
+	var mu sync.Mutex
 	var callNs []int
 	m := &testutil.MockImageModel{
 		MaxImages: 2,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 			if opts.N == nil {
-				t.Fatal("call N is nil")
+				t.Error("call N is nil")
+				return nil, errors.New("call N is nil")
 			}
+			mu.Lock()
 			callNs = append(callNs, *opts.N)
 			callIndex := len(callNs)
+			mu.Unlock()
 			images := make([][]byte, 0, *opts.N)
 			metadata := make([]map[string]interface{}, 0, *opts.N)
 			for i := 0; i < *opts.N; i++ {
@@ -153,8 +162,9 @@ func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.
 	if err != nil {
 		t.Fatalf("GenerateImage() error = %v", err)
 	}
-	if !reflect.DeepEqual(callNs, []int{2, 2, 1}) {
-		t.Fatalf("call Ns = %+v, want [2 2 1]", callNs)
+	sort.Ints(callNs)
+	if !reflect.DeepEqual(callNs, []int{1, 2, 2}) {
+		t.Fatalf("call Ns = %+v, want [1 2 2]", callNs)
 	}
 	if len(got.Images) != 5 {
 		t.Fatalf("len(images) = %d, want 5", len(got.Images))
@@ -162,7 +172,7 @@ func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.
 	if len(got.Warnings) != 3 {
 		t.Fatalf("len(warnings) = %d, want 3", len(got.Warnings))
 	}
-	if len(got.Responses) != 3 || got.Responses[2].ID != "resp-3" {
+	if len(got.Responses) != 3 || got.Responses[2].ID == "" {
 		t.Fatalf("responses = %+v, want three aggregated responses", got.Responses)
 	}
 	if got.Usage.ImageCount != 5 {
@@ -180,11 +190,15 @@ func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.
 // string gateway cost fields must be summed across split multi-call requests,
 // not overwritten by the last call's metadata.
 func TestGenerateImage_SumsGatewayCostAcrossSplitCalls(t *testing.T) {
+	var mu sync.Mutex
 	callIndex := 0
 	m := &testutil.MockImageModel{
 		MaxImages: 2,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			mu.Lock()
 			callIndex++
+			callIndex := callIndex
+			mu.Unlock()
 			images := make([][]byte, *opts.N)
 			for i := range images {
 				images[i] = []byte{byte(callIndex), byte(i)}
@@ -454,8 +468,8 @@ func TestGenerateSpeechAndTranscribe_Basic(t *testing.T) {
 			if opts.MimeType != "audio/wav" {
 				t.Fatalf("transcription media type = %q, want audio/wav", opts.MimeType)
 			}
-			if opts.Headers["user-agent"] != "ai/0.5.3" {
-				t.Fatalf("transcription user-agent = %q, want ai/0.5.3", opts.Headers["user-agent"])
+			if opts.Headers["user-agent"] != "ai/"+sdkversion.Version {
+				t.Fatalf("transcription user-agent = %q, want ai/<sdk version>", opts.Headers["user-agent"])
 			}
 			if opts.ProviderOptions == nil || len(opts.ProviderOptions) != 0 {
 				t.Fatalf("provider options = %#v, want empty map", opts.ProviderOptions)
@@ -571,7 +585,7 @@ func TestTranscribe_AudioURLCustomDownloadMatchesTypeScript(t *testing.T) {
 			if opts.MimeType != "audio/wav" {
 				t.Fatalf("media type = %q, want detected audio/wav", opts.MimeType)
 			}
-			if opts.Headers["user-agent"] != "custom-agent ai/0.5.3" {
+			if opts.Headers["user-agent"] != "custom-agent ai/"+sdkversion.Version {
 				t.Fatalf("user-agent = %q", opts.Headers["user-agent"])
 			}
 			return &types.TranscriptionResult{
@@ -663,18 +677,10 @@ func TestTranscribeInvalidAudioBase64AndNegativeMaxRetries(t *testing.T) {
 	}
 }
 
-func TestTranscribeNoTranscriptGeneratedErrorWithResponses(t *testing.T) {
+func TestTranscribeNoTranscriptGeneratedErrorWhenResultMissing(t *testing.T) {
 	model := &testutil.MockTranscriptionModel{
 		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
-			return &types.TranscriptionResult{
-				Text: "",
-				Response: &types.ResponseMetadata{
-					ModelID: "test-model-id",
-					Headers: map[string]string{
-						"custom-response-header": "response-header-value",
-					},
-				},
-			}, nil
+			return nil, nil
 		},
 	}
 
@@ -689,24 +695,25 @@ func TestTranscribeNoTranscriptGeneratedErrorWithResponses(t *testing.T) {
 	if noTranscript.Error() != "No transcript generated." {
 		t.Fatalf("error message = %q", noTranscript.Error())
 	}
-	if len(noTranscript.Responses) != 1 || noTranscript.Responses[0].Headers["custom-response-header"] != "response-header-value" {
-		t.Fatalf("responses = %#v", noTranscript.Responses)
-	}
+}
 
-	fallbackModel := &testutil.MockTranscriptionModel{
+// Ports TS #22059: a successful silent-audio transcription returns an empty
+// transcript instead of NoTranscriptGeneratedError.
+func TestTranscribeReturnsEmptyTranscript(t *testing.T) {
+	model := &testutil.MockTranscriptionModel{
 		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
-			return &types.TranscriptionResult{Text: ""}, nil
+			return &types.TranscriptionResult{Text: "", Language: "en"}, nil
 		},
 	}
-	_, err = Transcribe(context.Background(), TranscribeOptions{
-		Model: fallbackModel,
+	result, err := Transcribe(context.Background(), TranscribeOptions{
+		Model: model,
 		Audio: []byte("audio"),
 	})
-	if !errors.As(err, &noTranscript) {
-		t.Fatalf("Transcribe fallback error = %T %v, want NoTranscriptGeneratedError", err, err)
+	if err != nil {
+		t.Fatalf("Transcribe error = %v, want nil", err)
 	}
-	if len(noTranscript.Responses) != 1 || noTranscript.Responses[0].ModelID != fallbackModel.ModelID() || noTranscript.Responses[0].Timestamp.IsZero() {
-		t.Fatalf("fallback responses = %#v, want model/timestamp metadata", noTranscript.Responses)
+	if result.Text != "" || len(result.Segments) != 0 {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

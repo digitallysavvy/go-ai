@@ -4,7 +4,6 @@ import (
 	"context"
 	stdhttp "net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -111,7 +110,7 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 
 	outputFormat := azureDefaultOutputFormat
 	if opts.OutputFormat != "" {
-		format := strings.ToLower(opts.OutputFormat)
+		format := providerutils.JSToLower(opts.OutputFormat)
 		if shorthand, ok := azureOutputFormatShorthands[format]; ok {
 			outputFormat = shorthand
 		} else if azureNativeOutputFormatPattern.MatchString(format) {
@@ -173,6 +172,9 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -182,8 +184,8 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 
-	if resp.StatusCode != stdhttp.StatusOK {
-		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, true)
 	}
 
 	if warnings == nil {
@@ -209,7 +211,7 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 func azureResolveVoice(voice, language string) (resolved string, languageWarning string) {
 	code := ""
 	if language != "" {
-		code = strings.ToLower(strings.SplitN(language, "-", 2)[0])
+		code = providerutils.JSToLower(strings.SplitN(language, "-", 2)[0])
 	}
 	if voice == "" {
 		if code == "" {
@@ -225,7 +227,7 @@ func azureResolveVoice(voice, language string) (resolved string, languageWarning
 	}
 	voiceLanguage := ""
 	if match := azureVoiceLanguagePattern.FindStringSubmatch(voice); match != nil {
-		voiceLanguage = strings.ToLower(match[1])
+		voiceLanguage = providerutils.JSToLower(match[1])
 	}
 	if code != "" && code != "auto" && voiceLanguage != "" && code != voiceLanguage {
 		return voice, "The voice " + voice + " selects the language. Language \"" + language + "\" was ignored."
@@ -247,12 +249,12 @@ type azureSSMLOptions struct {
 func buildAzureSSML(opts azureSSMLOptions) string {
 	content := azureEscapeXML(opts.text)
 	if opts.speed != nil {
-		content = `<prosody rate="` + strconv.FormatFloat(*opts.speed, 'g', -1, 64) + `">` + content + `</prosody>`
+		content = `<prosody rate="` + providerutils.JSNumberString(*opts.speed) + `">` + content + `</prosody>`
 	}
 	if opts.style != "" {
 		degree := ""
 		if opts.styleDegree != nil {
-			degree = ` styledegree="` + strconv.FormatFloat(*opts.styleDegree, 'g', -1, 64) + `"`
+			degree = ` styledegree="` + providerutils.JSNumberString(*opts.styleDegree) + `"`
 		}
 		content = `<mstts:express-as style="` + azureEscapeXML(opts.style) + `"` + degree + `>` + content + `</mstts:express-as>`
 	}

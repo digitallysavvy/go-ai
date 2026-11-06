@@ -90,6 +90,23 @@ func mergeGenerateOptions(defaults, overrides *provider.GenerateOptions) *provid
 	}
 	if result.ResponseFormat == nil {
 		result.ResponseFormat = defaults.ResponseFormat
+	} else if defaults.ResponseFormat != nil {
+		// mergeObjects deep-merges two objects: keys the call leaves unset
+		// still come from the default response format.
+		merged := *result.ResponseFormat
+		if merged.Type == "" {
+			merged.Type = defaults.ResponseFormat.Type
+		}
+		if merged.Schema == nil {
+			merged.Schema = defaults.ResponseFormat.Schema
+		}
+		if merged.Name == "" {
+			merged.Name = defaults.ResponseFormat.Name
+		}
+		if merged.Description == "" {
+			merged.Description = defaults.ResponseFormat.Description
+		}
+		result.ResponseFormat = &merged
 	}
 	if result.MaxSteps == nil {
 		result.MaxSteps = defaults.MaxSteps

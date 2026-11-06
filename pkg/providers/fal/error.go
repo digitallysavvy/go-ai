@@ -1,20 +1,16 @@
 package fal
 
-import "encoding/json"
+import "github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 // parseFalErrorMessage extracts the message from a fal.ai error response
-// body shaped like {"error":{"message":...,"code":...}}, matching the TS
-// SDK's falErrorDataSchema / falFailedResponseHandler
-// (fal-error.ts). Falls back to fallback when the body doesn't match the
-// expected shape.
+// body, matching the TS SDK's falErrorDataSchema / falFailedResponseHandler
+// (fal-error.ts): {"error":{"message":string,"code":number}} gives its
+// message, any other body gives fallback (callers pass the HTTP status text,
+// which is what createJsonErrorResponseHandler uses).
 func parseFalErrorMessage(body []byte, fallback string) string {
-	var parsed struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
+	message, code := providerutils.NestedErrorMessage(0, body)
+	if code == "" && message == "" {
+		return fallback
 	}
-	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error.Message != "" {
-		return parsed.Error.Message
-	}
-	return fallback
+	return message
 }

@@ -102,15 +102,14 @@ func diffFrameLines(previous, next []string) string {
 		lineCount = len(next)
 	}
 	for i := 0; i < lineCount; i++ {
-		line := ""
-		if i < len(next) {
+		// TS compares lines[index] === line where a missing line is
+		// undefined: a frame that is shorter than the previous one clears the
+		// trailing lines even when they were empty strings.
+		line, hasNext := "", i < len(next)
+		if hasNext {
 			line = next[i]
 		}
-		prev := ""
-		if i < len(previous) {
-			prev = previous[i]
-		}
-		if prev == line {
+		if i < len(previous) && hasNext && previous[i] == line {
 			continue
 		}
 		_, _ = fmt.Fprintf(&out, "%s[%d;1H%s%s", escape, i+1, clearLine, line)

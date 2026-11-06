@@ -39,9 +39,11 @@ type OAuthClientMetadata struct {
 	TosURI                  string   `json:"tos_uri,omitempty"`
 	PolicyURI               string   `json:"policy_uri,omitempty"`
 	JWKSURI                 string   `json:"jwks_uri,omitempty"`
-	SoftwareID              string   `json:"software_id,omitempty"`
-	SoftwareVersion         string   `json:"software_version,omitempty"`
-	SoftwareStatement       string   `json:"software_statement,omitempty"`
+	// JWKS is the client's inline JSON Web Key Set (TS `jwks: z.any()`).
+	JWKS              interface{} `json:"jwks,omitempty"`
+	SoftwareID        string      `json:"software_id,omitempty"`
+	SoftwareVersion   string      `json:"software_version,omitempty"`
+	SoftwareStatement string      `json:"software_statement,omitempty"`
 }
 
 // OAuthClientInformation is the client credential half of a registered OAuth
@@ -107,14 +109,21 @@ type OAuthClientProvider interface {
 	ClientMetadata() OAuthClientMetadata
 	// ClientInformation returns previously stored (pre-registered or
 	// dynamically registered) client credentials, or nil if none exist yet.
+	//
+	// Pre-registered confidential clients (a ClientSecret, or a provider that
+	// implements OAuthClientAuthenticator) must be bound to their
+	// authorization server: set Issuer, or store authorization server
+	// information. Auth otherwise fails with an authorization server mismatch
+	// instead of sending the secret to a server the MCP server chose.
 	ClientInformation(ctx context.Context) (*OAuthClientInformation, error)
 }
 
 // OAuthClientAuthenticator lets a provider fully customize how client
 // credentials are added to token requests (TS
-// OAuthClientProvider.addClientAuthentication, hash 78e0023).
+// OAuthClientProvider.addClientAuthentication, hash 78e0023). As in TS, the
+// string argument is the authorization server URL (not the token endpoint).
 type OAuthClientAuthenticator interface {
-	AddClientAuthentication(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error
+	AddClientAuthentication(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error
 }
 
 // OAuthCredentialInvalidationScope selects which stored credentials

@@ -32,11 +32,20 @@ func main() {
 
 	// Create computer use tool
 	// Configure for a standard 1920x1080 display with zoom enabled
-	computerTool := tools.Computer20251124(tools.Computer20251124Args{
-		DisplayWidthPx:  1920,
-		DisplayHeightPx: 1080,
-		EnableZoom:      true,
-	})
+	// The computer tool runs on your machine, not on Anthropic's servers:
+	// install an executor with tools.WithExecute. Without one, the model's
+	// tool call is returned to you and the loop stops (as in the TS SDK).
+	computerTool := tools.WithExecute(
+		tools.Computer20251124(tools.Computer20251124Args{
+			DisplayWidthPx:  1920,
+			DisplayHeightPx: 1080,
+			EnableZoom:      true,
+		}),
+		func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			// Replace with real screen control (screenshots, clicks, typing).
+			return fmt.Sprintf("action %v is not implemented in this example", input["action"]), nil
+		},
+	)
 
 	// Generate text with computer use tool
 	ctx := context.Background()

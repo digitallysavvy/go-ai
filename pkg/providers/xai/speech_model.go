@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -76,10 +79,13 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		Headers: opts.Headers,
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 	// xAI returns a trace id on every response, success and error.
-	traceID := resp.Headers.Get("x-trace-id")
+	traceID := providerutils.FetchHeaderText(http.Header(resp.Headers), "x-trace-id")
 	if resp.StatusCode >= 400 {
 		message := parseXAIErrorMessage(resp.Body)
 		if traceID != "" {
@@ -100,6 +106,10 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	audio := resp.Body
 	var envelope *xaiSpeechTimestampsResponse
 	if withTimestamps {
+		resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+		if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaXAISpeechTimestamps)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return nil, err
+		}
 		var parsed xaiSpeechTimestampsResponse
 		if err := json.Unmarshal(resp.Body, &parsed); err != nil {
 			return nil, providererrors.NewProviderError(m.Provider(), 0, "",
@@ -138,9 +148,13 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			}
 		}
 	}
-	var providerMetadata map[string]interface{}
-	if len(xaiMetadata) > 0 {
-		providerMetadata = map[string]interface{}{"xai": xaiMetadata}
+	// TS always returns providerMetadata.xai, even when empty.
+	providerMetadata := map[string]interface{}{"xai": xaiMetadata}
+	// createBinaryResponseHandler yields no raw value: the response body is
+	// only reported for the JSON envelope returned with `with_timestamps`.
+	var responseBody interface{}
+	if envelope != nil {
+		responseBody = providerutils.RawJSONBody(resp.Body)
 	}
 
 	return &types.SpeechResult{
@@ -154,7 +168,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: timestamp,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(resp.Headers),
-			Body:      resp.Body,
+			Body:      responseBody,
 		},
 	}, nil
 }

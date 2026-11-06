@@ -140,3 +140,20 @@ func TestConvertToPerplexityInput_RejectsPDF(t *testing.T) {
 		t.Fatalf("error = %v (%T), want UnsupportedFunctionalityError", err, err)
 	}
 }
+
+func TestConvertToPerplexityInputLegacyImageContent(t *testing.T) {
+	input, _, err := convertToPerplexityInput([]types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{
+			types.TextContent{Text: "look"},
+			types.ImageContent{URL: "https://example.com/a.png", MimeType: "image/png"},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, ok := input[0]["content"].([]map[string]interface{})
+	if !ok || len(parts) != 2 || parts[1]["type"] != "input_image" || parts[1]["image_url"] != "https://example.com/a.png" {
+		t.Fatalf("content = %#v, want input_text + input_image", input[0]["content"])
+	}
+}

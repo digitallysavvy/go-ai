@@ -6,6 +6,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -355,8 +357,10 @@ func TestWorkflowStructuredOutputGenerateAndToolSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate error: %v", err)
 	}
-	if model.opts[0].Prompt.System != "system message" {
-		t.Fatalf("unexpected system instructions: %q", model.opts[0].Prompt.System)
+	// Instructions given as system messages reach the model as system
+	// messages (their providerOptions survive), not as a flattened string.
+	if sys := systemMessagesOf(model.opts[0]); len(sys) != 1 || sys[0].Content[0].(types.TextContent).Text != "system message" {
+		t.Fatalf("unexpected system instructions: %+v", model.opts[0].Prompt)
 	}
 	if len(model.opts[0].Tools) != 1 || model.opts[0].Tools[0].Name != "lookup" {
 		t.Fatalf("tool set was not converted: %+v", model.opts[0].Tools)
@@ -443,14 +447,9 @@ func TestWorkflowRejectsSystemMessagesByDefault(t *testing.T) {
 	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: messages, AllowSystemInMessages: true}); err != nil {
 		t.Fatalf("allowSystemInMessages generate error: %v", err)
 	}
-	// ai.StreamText (which WorkflowAgent.StreamWithOptions delegates to)
-	// returns immediately and normalizes the prompt in the background, so
-	// the rejection surfaces through ReadAll()/Err(), not the return value.
-	streamResult, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages})
-	if err != nil {
-		t.Fatalf("unexpected error starting stream: %v", err)
-	}
-	if _, err := streamResult.ReadAll(); err == nil {
+	// TS WorkflowAgent standardizes the prompt before the run, so stream()
+	// itself rejects (TestR70WorkflowRejectsSystemMessagesBeforeTheRun).
+	if _, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages}); err == nil {
 		t.Fatal("expected stream system message rejection by default")
 	}
 	if _, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages, AllowSystemInMessages: true}); err != nil {
@@ -515,7 +514,8 @@ func TestWorkflowForwardsApprovedProviderExecutedApprovalOnResume(t *testing.T) 
 	}
 	responses := collectWorkflowApprovalResponses(model.opts[0].Prompt.Messages)
 	response, ok := approvalResponseByID(responses, "approval-call-1")
-	if !ok || !response.Approved || !response.ProviderExecuted {
+	// TS prompt part {approvalId, approved, reason}: no providerExecuted (r73 gen CR-1).
+	if !ok || !response.Approved || response.ProviderExecuted {
 		t.Fatalf("provider approval response = %+v, ok=%v; want forwarded approved provider-executed response", response, ok)
 	}
 }
@@ -548,7 +548,7 @@ func TestWorkflowForwardsDeniedProviderExecutedApprovalOnResume(t *testing.T) {
 	}
 	responses := collectWorkflowApprovalResponses(model.opts[0].Prompt.Messages)
 	response, ok := approvalResponseByID(responses, "approval-call-1")
-	if !ok || response.Approved || !response.ProviderExecuted {
+	if !ok || response.Approved || response.ProviderExecuted {
 		t.Fatalf("provider approval response = %+v, ok=%v; want forwarded denied provider-executed response", response, ok)
 	}
 }
@@ -600,7 +600,7 @@ func TestWorkflowExecutesLocalApprovalAndForwardsProviderExecutedApprovalOnResum
 		t.Fatal("expected provider call")
 	}
 	responses := collectWorkflowApprovalResponses(model.opts[0].Prompt.Messages)
-	if response, ok := approvalResponseByID(responses, "approval-provider-1"); !ok || !response.Approved || !response.ProviderExecuted {
+	if response, ok := approvalResponseByID(responses, "approval-provider-1"); !ok || !response.Approved || response.ProviderExecuted {
 		t.Fatalf("provider approval response = %+v, ok=%v; want forwarded provider-executed response", response, ok)
 	}
 	if response, ok := approvalResponseByID(responses, "approval-local-1"); ok {
@@ -1376,5 +1376,372 @@ func TestWorkflowAgentDeferredToolDiscovery(t *testing.T) {
 	}
 	if result.FinishReason != types.FinishReasonStop {
 		t.Fatalf("FinishReason = %v, want stop", result.FinishReason)
+	}
+}
+
+func TestWorkflowResumeReusesExistingDenialResultAndStillEmitsDenialEvent(t *testing.T) {
+	model := &wfMockModel{}
+	executions := 0
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name:         "deleteFile",
+			ToolApproval: true,
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				executions++
+				return nil, nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent error: %v", err)
+	}
+	var mu sync.Mutex
+	var chunks []provider.StreamChunk
+	stream, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Delete /etc/passwd."}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "call-1", ToolName: "deleteFile", Arguments: map[string]interface{}{"path": "/etc/passwd"}},
+				types.ToolApprovalRequestContent{ApprovalID: "approval-call-1", ToolCallID: "call-1"},
+			}},
+			{Role: types.RoleTool, Content: []types.ContentPart{
+				types.ToolApprovalResponseContent{ApprovalID: "approval-call-1", Approved: false, Reason: "Too dangerous"},
+				types.ToolResultContent{ToolCallID: "call-1", ToolName: "deleteFile", Output: &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: "Too dangerous"}},
+			}},
+		},
+		OnChunk: func(c provider.StreamChunk) { mu.Lock(); chunks = append(chunks, c); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatalf("StreamWithOptions error: %v", err)
+	}
+	if _, err := stream.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("executions = %d, want 0", executions)
+	}
+	results := 0
+	for _, msg := range model.opts[0].Prompt.Messages {
+		for _, part := range msg.Content {
+			if r, ok := part.(types.ToolResultContent); ok && r.ToolCallID == "call-1" {
+				results++
+			}
+		}
+	}
+	if results != 1 {
+		t.Fatalf("tool results for call-1 in prompt = %d, want exactly 1: %+v", results, model.opts[0].Prompt.Messages)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	denied := 0
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolOutputDenied && c.ToolResult != nil && c.ToolResult.ToolCallID == "call-1" {
+			denied++
+		}
+	}
+	if denied != 1 {
+		t.Fatalf("tool-output-denied chunks = %d, want 1", denied)
+	}
+}
+
+// TS #20833: approval requests are created and signed by the shared execution
+// path, so they are returned from generate and from stream consumed without a
+// writable, not only emitted as stream chunks.
+func TestWorkflowApprovalRequestsAreTransportIndependent(t *testing.T) {
+	secret := []byte("test-secret")
+	newAgent := func(model provider.LanguageModel) *WorkflowAgent {
+		a, err := NewWorkflowAgent(WorkflowAgent{
+			Model: model,
+			Tools: []types.Tool{{
+				Name:         "t1",
+				ToolApproval: true,
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					t.Fatal("tool must not run before approval")
+					return nil, nil
+				},
+			}},
+			ExperimentalToolApprovalSecret: secret,
+		})
+		if err != nil {
+			t.Fatalf("NewWorkflowAgent error: %v", err)
+		}
+		return a
+	}
+	check := func(t *testing.T, steps []types.StepResult) {
+		t.Helper()
+		var found *types.ToolApprovalRequestContent
+		for _, step := range steps {
+			for _, part := range step.Content {
+				if req, ok := part.(types.ToolApprovalRequestContent); ok && req.ToolCallID == "1" {
+					found = &req
+				}
+			}
+		}
+		if found == nil {
+			t.Fatalf("no approval request in step content: %+v", steps)
+		}
+		if found.Signature == "" {
+			t.Fatalf("approval request is unsigned: %+v", found)
+		}
+		inMessages := false
+		for _, step := range steps {
+			for _, msg := range step.Response.Messages {
+				for _, part := range msg.Content {
+					if req, ok := part.(types.ToolApprovalRequestContent); ok && req.ToolCallID == "1" && req.Signature == found.Signature {
+						inMessages = true
+					}
+				}
+			}
+		}
+		if !inMessages {
+			t.Fatalf("signed approval request missing from step response messages: %+v", steps)
+		}
+		if ok, err := ai.VerifyToolApprovalSignature(secret, found.Signature, found.ApprovalID, found.ToolCallID, found.ToolCall.ToolName, found.ToolCall.Arguments); err != nil || !ok {
+			t.Fatalf("signature does not verify: ok=%v err=%v", ok, err)
+		}
+	}
+	t.Run("generate", func(t *testing.T) {
+		res, err := newAgent(&wfMockModel{}).GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "go"})
+		if err != nil {
+			t.Fatalf("Generate error: %v", err)
+		}
+		check(t, res.Steps)
+	})
+	t.Run("stream", func(t *testing.T) {
+		model := &wfStreamToolCallModel{}
+		res, err := newAgent(model).StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "go"})
+		if err != nil {
+			t.Fatalf("Stream error: %v", err)
+		}
+		for {
+			if _, e := res.Stream().Next(); e != nil {
+				if e != io.EOF {
+					t.Fatalf("stream error: %v", e)
+				}
+				break
+			}
+		}
+		check(t, res.Steps())
+	})
+}
+
+// wfStreamToolCallModel streams a single call to tool "t1" with id "1".
+type wfStreamToolCallModel struct{ wfMockModel }
+
+func (m *wfStreamToolCallModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+	call := types.ToolCall{ID: "1", ToolName: "t1", Arguments: map[string]interface{}{}}
+	return testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &call},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	}), nil
+}
+
+func approvedResumeMessages(ids ...string) []types.Message {
+	assistant := []types.ContentPart{}
+	responses := []types.ContentPart{}
+	for _, id := range ids {
+		assistant = append(assistant,
+			types.ToolCallContent{ToolCallID: id, ToolName: "slow", Arguments: map[string]interface{}{}},
+			types.ToolApprovalRequestContent{ApprovalID: "approval-" + id, ToolCallID: id})
+		responses = append(responses, types.ToolApprovalResponseContent{ApprovalID: "approval-" + id, Approved: true})
+	}
+	return []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "go"}}},
+		{Role: types.RoleAssistant, Content: assistant},
+		{Role: types.RoleTool, Content: responses},
+	}
+}
+
+// TS #22135 (workflow half): approved calls resumed by the agent honor
+// ToolCallConcurrency; the default runs them concurrently.
+func TestWorkflowResumeApprovedToolCallConcurrency(t *testing.T) {
+	run := func(t *testing.T, limit *int) (maxActive int) {
+		t.Helper()
+		var mu sync.Mutex
+		active := 0
+		agent, err := NewWorkflowAgent(WorkflowAgent{
+			Model:               &wfMockModel{},
+			ToolCallConcurrency: limit,
+			Tools: []types.Tool{{
+				Name:         "slow",
+				ToolApproval: true,
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					mu.Lock()
+					active++
+					if active > maxActive {
+						maxActive = active
+					}
+					mu.Unlock()
+					time.Sleep(40 * time.Millisecond)
+					mu.Lock()
+					active--
+					mu.Unlock()
+					return "ok", nil
+				},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: approvedResumeMessages("a", "b", "c")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res
+		mu.Lock()
+		defer mu.Unlock()
+		return maxActive
+	}
+	one, two := 1, 2
+	if got := run(t, &one); got != 1 {
+		t.Fatalf("limit 1: max concurrent = %d, want 1", got)
+	}
+	if got := run(t, &two); got != 2 {
+		t.Fatalf("limit 2: max concurrent = %d, want 2", got)
+	}
+	if got := run(t, nil); got != 3 {
+		t.Fatalf("default: max concurrent = %d, want 3", got)
+	}
+}
+
+func TestWorkflowRejectsInvalidToolCallConcurrency(t *testing.T) {
+	zero := 0
+	agent, err := NewWorkflowAgent(WorkflowAgent{Model: &wfMockModel{}, ToolCallConcurrency: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"}); err == nil || !strings.Contains(err.Error(), "toolCallConcurrency must be >= 1") {
+		t.Fatalf("generate error = %v", err)
+	}
+	if _, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"}); err == nil || !strings.Contains(err.Error(), "toolCallConcurrency must be >= 1") {
+		t.Fatalf("stream error = %v", err)
+	}
+}
+
+// TS #22135: approved calls resumed concurrently still yield results and
+// stream events in model order, regardless of completion order.
+func TestWorkflowResumeApprovedToolResultsStayInCallOrder(t *testing.T) {
+	delays := map[string]time.Duration{"a": 60 * time.Millisecond, "b": 30 * time.Millisecond, "c": 0}
+	tool := types.Tool{
+		Name:         "slow",
+		ToolApproval: true,
+		Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			time.Sleep(delays[o.ToolCallID])
+			return "result-" + o.ToolCallID, nil
+		},
+	}
+	two := 2
+	for name, limit := range map[string]int{"unbounded": 0, "limit 2": two} {
+		limit := limit
+		t.Run(name, func(t *testing.T) {
+			messages, chunks, err := processWorkflowApprovalResume(context.Background(), workflowApprovalResumeOptions{
+				messages:            approvedResumeMessages("a", "b", "c"),
+				tools:               []types.Tool{tool},
+				toolCallConcurrency: limit,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := messages[len(messages)-1]
+			var gotMsg []string
+			for _, p := range last.Content {
+				if r, ok := p.(types.ToolResultContent); ok {
+					gotMsg = append(gotMsg, r.ToolCallID)
+				}
+			}
+			var gotChunks []string
+			for _, c := range chunks {
+				if c.Type == provider.ChunkTypeToolResult {
+					gotChunks = append(gotChunks, c.ToolResult.ToolCallID)
+				}
+			}
+			want := []string{"a", "b", "c"}
+			if !reflect.DeepEqual(gotMsg, want) || !reflect.DeepEqual(gotChunks, want) {
+				t.Fatalf("message order %v, chunk order %v, want %v", gotMsg, gotChunks, want)
+			}
+		})
+	}
+}
+
+// TS mapWithConcurrency: once the context is cancelled, queued approved calls
+// are not started.
+func TestWorkflowResumeDoesNotStartQueuedApprovedCallsAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var started []string
+	tool := types.Tool{
+		Name:         "slow",
+		ToolApproval: true,
+		Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			mu.Lock()
+			started = append(started, o.ToolCallID)
+			mu.Unlock()
+			cancel()
+			return "ok", nil
+		},
+	}
+	_, _, err := processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
+		messages:            approvedResumeMessages("a", "b", "c"),
+		tools:               []types.Tool{tool},
+		toolCallConcurrency: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(started, []string{"a"}) {
+		t.Fatalf("started = %v, want only [a]", started)
+	}
+}
+
+// TS resolveToolContext: an approved tool resumed from history sees its
+// context normalized by the tool's context schema (defaults applied), the
+// same value the start/end callbacks report; an invalid context fails the
+// resume instead of becoming a tool result.
+func TestWorkflowResumeApprovedToolUsesSchemaNormalizedContext(t *testing.T) {
+	ctxSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"region": map[string]interface{}{"type": "string", "default": "eu"}},
+		"required":   []interface{}{"region"},
+	})
+	var executed, started, ended interface{}
+	tool := types.Tool{
+		Name:          "slow",
+		ToolApproval:  true,
+		ContextSchema: ctxSchema,
+		Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			executed = o.ToolContext
+			return "ok", nil
+		},
+	}
+	_, _, err := processWorkflowApprovalResume(context.Background(), workflowApprovalResumeOptions{
+		messages:     approvedResumeMessages("a"),
+		tools:        []types.Tool{tool},
+		toolsContext: map[string]interface{}{"slow": map[string]interface{}{}},
+		onToolStart:  func(_ context.Context, e ai.OnToolCallStartEvent) { started = e.ToolContext },
+		onToolEnd:    func(_ context.Context, e ai.OnToolCallFinishEvent) { ended = e.ToolContext },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"region": "eu"}
+	if !reflect.DeepEqual(executed, want) || !reflect.DeepEqual(started, want) || !reflect.DeepEqual(ended, want) {
+		t.Fatalf("execute=%v start=%v end=%v, want %v", executed, started, ended, want)
+	}
+
+	bad := tool
+	bad.ContextSchema = schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object", "properties": map[string]interface{}{"region": map[string]interface{}{"type": "string"}}, "required": []interface{}{"region"},
+	})
+	_, _, err = processWorkflowApprovalResume(context.Background(), workflowApprovalResumeOptions{
+		messages:     approvedResumeMessages("a"),
+		tools:        []types.Tool{bad},
+		toolsContext: map[string]interface{}{"slow": map[string]interface{}{}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid tool context for slow") {
+		t.Fatalf("err = %v, want invalid tool context failure", err)
 	}
 }

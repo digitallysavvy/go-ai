@@ -19,8 +19,8 @@ func TestVideoModel_Metadata(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewVideoModel(prov, "grok-imagine-video")
 
-	assert.Equal(t, "v3", model.SpecificationVersion())
-	assert.Equal(t, "xai", model.Provider())
+	assert.Equal(t, "v4", model.SpecificationVersion())
+	assert.Equal(t, "xai.video", model.Provider())
 	assert.Equal(t, "grok-imagine-video", model.ModelID())
 	assert.NotNil(t, model.MaxVideosPerCall())
 	assert.Equal(t, 1, *model.MaxVideosPerCall())

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -38,12 +40,19 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
+//
+// Mirrors TS config.provider: "deepseek.chat" by default; a host that
+// supplies its own Config.Name (for example azure's "azure.deepseek")
+// provides the full identifier.
 func (m *LanguageModel) Provider() string {
-	return m.provider.Name()
+	if m.provider.config.Name != "" {
+		return m.provider.config.Name
+	}
+	return "deepseek.chat"
 }
 
 // ModelID returns the model ID
@@ -77,9 +86,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	var response deepseekResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   m.provider.chatCompletionsPath(),
-		Body:   reqBody,
+		Method:           http.MethodPost,
+		Path:             m.provider.chatCompletionsPath(),
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindDeepSeek),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -90,7 +101,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
-	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, 0)
+	if response.Created != nil {
+		// TS createLanguageModelResponseMetadata: created != null, so 0 is the epoch.
+		responseMetadata.Timestamp = deepseekCreatedTimestamp(*response.Created)
+	}
 	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata
 	return result, nil
@@ -103,12 +124,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, err
 	}
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   m.provider.chatCompletionsPath(),
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    m.provider.chatCompletionsPath(),
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -126,6 +145,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 }
 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	// TS parseProviderOptions: an invalid provider option fails the call.
+	if err := m.validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	var warnings []types.Warning
 	body := map[string]interface{}{
 		"model": m.modelID,
@@ -145,12 +168,40 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		systemMsg := types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: opts.Prompt.System}}}
 		messages = append([]types.Message{systemMsg}, messages...)
 	}
+	// TS convertToDeepSeekChatMessages: JSON mode without a schema is
+	// steered by a leading system message; a schema is injected the same way
+	// when the endpoint cannot take json_schema.
+	if rf := opts.ResponseFormat; rf != nil && rf.Type == "json" {
+		var instruction string
+		if rf.Schema == nil {
+			instruction = "Return JSON."
+		} else if !m.provider.supportsStructuredOutputs() {
+			schemaJSON, _ := jsonstr.Marshal(rf.Schema)
+			instruction = "Return JSON that conforms to the following schema: " + string(schemaJSON)
+			warnings = append(warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "responseFormat JSON schema",
+				Details: "JSON response schema is injected into the system message.",
+			})
+		}
+		if instruction != "" {
+			messages = append([]types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: instruction}}}}, messages...)
+		}
+	}
 	convertedMessages, msgWarnings, err := m.convertMessages(messages)
 	if err != nil {
 		return nil, nil, err
 	}
 	warnings = append(warnings, msgWarnings...)
 	body["messages"] = convertedMessages
+
+	// TS getArgs: topK and seed are not supported by DeepSeek.
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
 
 	if opts.MaxTokens != nil {
 		body["max_tokens"] = *opts.MaxTokens
@@ -169,7 +220,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if err != nil {
 		return nil, nil, err
 	}
-	warnings = append(warnings, toolWarnings...)
+	// TS appends the tool warnings last: [...allWarnings, ...toolWarnings].
 	if deepseekTools != nil {
 		body["tools"] = deepseekTools
 	}
@@ -240,41 +291,52 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				"type":        "json_schema",
 				"json_schema": jsonSchema,
 			}
-		case opts.ResponseFormat.Type != "":
-			responseFormatType := opts.ResponseFormat.Type
-			if responseFormatType == "json" {
-				responseFormatType = "json_object"
-			}
-			body["response_format"] = map[string]interface{}{
-				"type": responseFormatType,
-			}
+		case opts.ResponseFormat.Type == "json":
+			body["response_format"] = map[string]interface{}{"type": "json_object"}
 		}
+		// TS: `responseFormat?.type === 'json' ? ... : undefined` -- a text
+		// response format sends no response_format at all.
 	}
 	_, hasProviderReasoningEffort := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort")
+	// TS computes the reasoning-effort warnings after the thinking, temperature
+	// and topP warnings.
+	var effortWarnings []types.Warning
 
-	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS parity).
-	// TS effort map: minimal/low -> low, medium/high -> high, xhigh -> max.
-	if opts.Reasoning != nil {
+	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS
+	// parity). Without a provider reasoningEffort, the level is rounded onto
+	// DeepSeek's {low, high, max} (TS 61a315e333: medium -> low, xhigh ->
+	// high, minimal -> low, each with a compatibility warning).
+	if providerutils.IsCustomReasoning(opts.Reasoning) {
 		if *opts.Reasoning == types.ReasoningNone {
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "disabled"}
 			}
-		} else if effort, ok := deepseekTopLevelReasoningEffort(*opts.Reasoning); ok {
+		} else {
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "enabled"}
 			}
-			body["reasoning_effort"] = effort
-			if effort != string(*opts.Reasoning) && !hasProviderReasoningEffort {
-				warnings = append(warnings, reasoningCompatibilityWarning(string(*opts.Reasoning), effort))
+			if !hasProviderReasoningEffort {
+				n := len(effortWarnings)
+				if effort, ok := providerutils.MapReasoningToProviderEffort(opts.Reasoning, map[types.ReasoningLevel]string{
+					types.ReasoningLow: "low", types.ReasoningHigh: "high", types.ReasoningMax: "max",
+				}, nil, &effortWarnings); ok {
+					body["reasoning_effort"] = effort
+				}
+				// v0.5 also set Message on this warning.
+				for i := n; i < len(effortWarnings); i++ {
+					effortWarnings[i].Message = effortWarnings[i].Details
+				}
 			}
 		}
 	}
 
-	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok && m.provider.supportsThinking() {
+	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok {
 		if thinkingType, ok := providerutils.OpenAICompatibleStringOption(thinking, "type"); ok {
 			mappedType := thinkingType
 			if thinkingType == "adaptive" {
 				mappedType = "enabled"
+				// TS warns whether or not the endpoint accepts `thinking`
+				// (Azure sets supportsThinking: false).
 				warnings = append(warnings, types.Warning{
 					Type:    "compatibility",
 					Feature: "thinking.type",
@@ -282,14 +344,16 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 					Message: `thinking.type "adaptive" is not a canonical DeepSeek value. mapped to "enabled".`,
 				})
 			}
-			body["thinking"] = map[string]interface{}{"type": mappedType}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": mappedType}
+			}
 		}
 	}
 	if effort, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort"); ok {
 		mapped, remapped := deepseekProviderReasoningEffort(effort)
 		if remapped {
 			details := fmt.Sprintf("reasoningEffort %q is not a canonical DeepSeek value. mapped to %q.", effort, mapped)
-			warnings = append(warnings, types.Warning{Type: "compatibility", Feature: "reasoningEffort", Details: details, Message: details})
+			effortWarnings = append(effortWarnings, types.Warning{Type: "compatibility", Feature: "reasoningEffort", Details: details, Message: details})
 		}
 		body["reasoning_effort"] = mapped
 	}
@@ -329,6 +393,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 
+	warnings = append(warnings, effortWarnings...)
+	warnings = append(warnings, toolWarnings...)
+
 	// userId (providerOptions.deepseek.userId): opaque end-user identifier.
 	if userID, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "userId"); ok {
 		if !deepseekUserIDPattern.MatchString(userID) {
@@ -365,23 +432,6 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	return body, warnings, nil
 }
 
-// deepseekTopLevelReasoningEffort maps a top-level ReasoningLevel to
-// DeepSeek's reasoning_effort values, mirroring the TypeScript SDK's
-// mapReasoningToProviderEffort({minimal:'low', low:'low', medium:'high',
-// high:'high', xhigh:'max'}). ReasoningDefault (and any other unmapped level)
-// returns ok=false.
-func deepseekTopLevelReasoningEffort(level types.ReasoningLevel) (effort string, ok bool) {
-	switch level {
-	case types.ReasoningMinimal, types.ReasoningLow:
-		return "low", true
-	case types.ReasoningMedium, types.ReasoningHigh:
-		return "high", true
-	case types.ReasoningXHigh:
-		return "max", true
-	}
-	return "", false
-}
-
 // deepseekProviderReasoningEffort remaps legacy providerOptions.deepseek.reasoningEffort
 // values to DeepSeek's canonical set ({low, high, max}), mirroring the
 // TypeScript SDK's mapDeepSeekProviderReasoningEffort. remapped is true when
@@ -397,16 +447,6 @@ func deepseekProviderReasoningEffort(effort string) (mapped string, remapped boo
 	}
 }
 
-func reasoningCompatibilityWarning(reasoning, effort string) types.Warning {
-	details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", reasoning, effort)
-	return types.Warning{
-		Type:    "compatibility",
-		Feature: "reasoning",
-		Details: details,
-		Message: details,
-	}
-}
-
 func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.GenerateResult, error) {
 	if len(response.Choices) == 0 {
 		return nil, providererrors.NewInvalidResponseDataError(response, "Response did not contain any choices.")
@@ -414,7 +454,7 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
 		Text:            choice.Message.Content,
-		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		FinishReason:    mapDeepSeekFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
 		Usage:           convertDeepseekUsage(response.Usage),
 		RawResponse:     response,
@@ -441,6 +481,8 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
+				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
+				RawArguments: tc.Function.Arguments,
 			}
 		}
 	}
@@ -456,32 +498,33 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	if response.Object != "" {
 		meta["responseObject"] = response.Object
 	}
-	meta["choiceIndex"] = choice.Index
+	// TS: `choice.index != null` (the schema makes index nullish).
+	if choice.Index != nil {
+		meta["choiceIndex"] = *choice.Index
+	}
 	if choice.Message.Role != "" {
 		meta["messageRole"] = choice.Message.Role
 	}
-	if len(choice.Message.ToolCalls) > 0 {
+	// TS: `choice.message.tool_calls != null` keeps toolCallTypes (possibly
+	// empty) and `choice.logprobs != null` keeps the logprobs object.
+	if choice.Message.ToolCalls != nil {
 		toolCallTypes := make([]string, 0, len(choice.Message.ToolCalls))
 		for _, tc := range choice.Message.ToolCalls {
 			if tc.Type != "" {
 				toolCallTypes = append(toolCallTypes, tc.Type)
 			}
 		}
-		if len(toolCallTypes) > 0 {
-			meta["toolCallTypes"] = toolCallTypes
-		}
+		meta["toolCallTypes"] = toolCallTypes
 	}
 	if choice.Logprobs != nil {
 		lp := map[string]interface{}{}
-		if len(choice.Logprobs.Content) > 0 {
+		if choice.Logprobs.Content != nil {
 			lp["content"] = choice.Logprobs.Content
 		}
-		if len(choice.Logprobs.ReasoningContent) > 0 {
+		if choice.Logprobs.ReasoningContent != nil {
 			lp["reasoning_content"] = choice.Logprobs.ReasoningContent
 		}
-		if len(lp) > 0 {
-			meta["logprobs"] = lp
-		}
+		meta["logprobs"] = lp
 	}
 	if response.SystemFingerprint != "" {
 		meta["systemFingerprint"] = response.SystemFingerprint
@@ -492,6 +535,15 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError("deepseek", 0, "", err.Error(), err)
 }
 
@@ -524,7 +576,8 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 	var usage deepseekUsage
 	_ = json.Unmarshal(raw, &usage)
 
-	p, c, t := int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens)
+	p, c := int64(usage.PromptTokens), int64(usage.CompletionTokens)
+	t := p + c // TS core: input total + output total
 	result := types.Usage{InputTokens: &p, OutputTokens: &c, TotalTokens: &t}
 	// Prefer DeepSeek's native prompt_cache_hit_tokens; fall back to the
 	// OpenAI-compatible prompt_tokens_details.cached_tokens when the native
@@ -551,19 +604,16 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoning = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cached > 0 || textTokens != nil || imageTokens != nil {
-		noCache := p - cached
-		result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
+	// TS convertDeepSeekUsage always reports the breakdown (zeros included).
+	noCache := p - cached
+	result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
+	// Clamp at 0: a provider-reported reasoning token count that exceeds
+	// completion_tokens must not produce a negative text token count.
+	text := c - reasoning
+	if text < 0 {
+		text = 0
 	}
-	if reasoning > 0 {
-		// Clamp at 0: a provider-reported reasoning token count that exceeds
-		// completion_tokens must not produce a negative text token count.
-		text := c - reasoning
-		if text < 0 {
-			text = 0
-		}
-		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
-	}
+	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
 
 	var rawMap map[string]interface{}
 	_ = json.Unmarshal(raw, &rawMap)
@@ -573,13 +623,13 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 }
 
 type deepseekResponse struct {
-	ID                string `json:"id"`
-	Object            string `json:"object"`
-	Created           int64  `json:"created"`
-	Model             string `json:"model"`
-	SystemFingerprint string `json:"system_fingerprint"`
+	ID                string   `json:"id"`
+	Object            string   `json:"object"`
+	Created           *float64 `json:"created"`
+	Model             string   `json:"model"`
+	SystemFingerprint string   `json:"system_fingerprint"`
 	Choices           []struct {
-		Index        int    `json:"index"`
+		Index        *int   `json:"index"`
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
 			Role             string `json:"role"`
@@ -640,13 +690,13 @@ type deepseekUsage struct {
 type deepseekStreamChunk struct {
 	ID                string          `json:"id"`
 	Object            string          `json:"object"`
-	Created           int64           `json:"created"`
+	Created           *float64        `json:"created"`
 	Model             string          `json:"model"`
 	SystemFingerprint string          `json:"system_fingerprint"`
 	Error             json.RawMessage `json:"error,omitempty"`
 	Choices           []struct {
-		Index        int    `json:"index"`
-		FinishReason string `json:"finish_reason"`
+		Index        *int    `json:"index"`
+		FinishReason *string `json:"finish_reason"`
 		Delta        struct {
 			Role             string `json:"role"`
 			Content          string `json:"content"`
@@ -656,8 +706,8 @@ type deepseekStreamChunk struct {
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
+					Name      streaming.WireName `json:"name"`
+					Arguments *string            `json:"arguments"`
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
@@ -673,16 +723,20 @@ type deepseekStream struct {
 	toolCallTracker     *streaming.StreamingToolCallTracker
 	flushQueue          []*provider.StreamChunk
 	isActiveReasoning   bool
+	isActiveText        bool // TS isActiveText: a "txt-0" text block is open
 	includeRawChunks    bool
 	responseHeaders     map[string]string
 	metadataEmitted     bool
 	providerOptionsName string
 
-	// pendingFinish holds the Finish chunk built when finish_reason arrives.
-	// Emission is deferred until the stream actually ends (the [DONE]
-	// marker) so a trailing usage-only chunk (stream_options.include_usage)
-	// can still be attached to it.
-	pendingFinish *provider.StreamChunk
+	// The Finish chunk is only built when the body ends (a [DONE] frame is skipped,
+	// as in TS) so a trailing usage-only chunk (stream_options.include_usage)
+	// is attached to it. finishRaw is the last finish_reason seen; finishErrored is set by a
+	// parse/error chunk after it; endQueued guards queueEnd.
+	finishRaw     string
+	finishSeen    bool // a non-null finish_reason arrived (TS != null: "" counts)
+	finishErrored bool
+	endQueued     bool
 
 	// State accumulated across the stream for the Finish chunk's
 	// providerMetadata and usage.
@@ -745,26 +799,20 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		}
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF && s.queueEnd() {
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
+		// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+		// flush() runs at the end of the body (the io.EOF branch above).
 		if streaming.IsStreamDone(event) {
-			if s.pendingFinish != nil {
-				finish := s.pendingFinish
-				s.pendingFinish = nil
-				s.attachFinishMetadata(finish)
-				s.err = io.EOF
-				return finish, nil
-			}
-			s.err = io.EOF
-			return nil, io.EOF
+			continue
 		}
 		rawQueued := false
 		if s.includeRawChunks {
-			var raw interface{}
-			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-				raw = event.Data
-			}
+			raw := streaming.RawChunkValue(event.Data)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeRaw,
 				Raw:  raw,
@@ -772,10 +820,20 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			rawQueued = true
 		}
 		var chunkData deepseekStreamChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+		// TS deepseekChatChunkSchema: invalid JSON or a schema mismatch is an error part
+		// carrying a typed error; the error envelope is routed below.
+		msg, perr := providerutils.CheckChatChunk(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindDeepSeek})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunkData); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			}
 			if rawQueued {
 				s.flushQueue = append(s.flushQueue, errorChunk)
@@ -784,6 +842,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			return errorChunk, nil
 		}
 		if len(chunkData.Error) > 0 {
+			s.finishErrored = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: deepseekStreamErrorText(chunkData.Error),
@@ -807,14 +866,15 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		if chunkData.SystemFingerprint != "" {
 			s.systemFingerprint = chunkData.SystemFingerprint
 		}
-		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+		// TS isFirstChunk: the first valid chunk always yields response-metadata.
+		if !s.metadataEmitted {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,
 				ModelID: chunkData.Model,
 				Headers: s.responseHeaders,
 			}
-			if chunkData.Created != 0 {
-				metadata.Timestamp = time.Unix(chunkData.Created, 0)
+			if chunkData.Created != nil { // TS created != null: 0 is the epoch
+				metadata.Timestamp = deepseekCreatedTimestamp(*chunkData.Created)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
@@ -825,8 +885,10 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		if len(chunkData.Choices) > 0 {
 			choice := chunkData.Choices[0]
 
-			idx := choice.Index
-			s.choiceIndex = &idx
+			if choice.Index != nil {
+				idx := *choice.Index
+				s.choiceIndex = &idx
+			}
 			if choice.Delta.Role != "" {
 				s.messageRole = choice.Delta.Role
 			}
@@ -840,61 +902,58 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 
-			// Handle reasoning content (emitted before text in DeepSeek thinking mode).
+			// TS records finish_reason before inspecting the delta.
+			if choice.FinishReason != nil {
+				s.finishRaw, s.finishSeen = *choice.FinishReason, true
+				s.finishErrored = false
+			}
+
+			// TS handles reasoning, content and tool calls independently, in
+			// that order; chunks are appended behind anything already queued
+			// for this event (response-metadata).
 			if choice.Delta.ReasoningContent != "" {
 				if !s.isActiveReasoning {
 					s.isActiveReasoning = true
-					s.flushQueue = append([]*provider.StreamChunk{
-						{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-						{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.ReasoningContent, ID: "reasoning-0"},
-					}, s.flushQueue...)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
 				}
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type:      provider.ChunkTypeReasoning,
 					Reasoning: choice.Delta.ReasoningContent,
 					ID:        "reasoning-0",
 				})
-				if ok {
-					return chunk, nil
-				}
-				continue
 			}
-
-			// End reasoning block when text content arrives.
 			if choice.Delta.Content != "" {
+				// TS opens the "txt-0" text block before it ends the
+				// reasoning block (deepseek-chat-language-model.ts).
+				if !s.isActiveText {
+					s.isActiveText = true
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "txt-0"})
+				}
 				if s.isActiveReasoning {
 					s.isActiveReasoning = false
-					s.flushQueue = append([]*provider.StreamChunk{
-						{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-						{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-					}, s.flushQueue...)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
-				if ok {
-					return chunk, nil
-				}
-				continue
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content, ID: "txt-0"})
 			}
-			// Tool call delta — accumulate partial arguments by index.
-			// Finalize only when finish_reason is received, never mid-stream.
+			// Tool call deltas accumulate by index; the tracker finalizes them
+			// at stream end (TS flush()).
 			if len(choice.Delta.ToolCalls) > 0 {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				}
 				for _, tc := range choice.Delta.ToolCalls {
-					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					for _, chunk := range s.toolCallTracker.TrackWirePtr(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 						c := chunk
 						s.flushQueue = append(s.flushQueue, &c)
 					}
+					if s.toolCallTracker.Failed() {
+						// TS processDelta threw: the stream ends with the
+						// error (no later part, tool call or finish).
+						s.err = io.EOF
+						break
+					}
 				}
-				if choice.FinishReason != "" {
-					s.flushDeepseekToolCalls(choice.FinishReason)
-					continue
-				}
-				continue
-			}
-			if choice.FinishReason != "" {
-				s.flushDeepseekToolCalls(choice.FinishReason)
-				continue
 			}
 		}
 		continue
@@ -903,11 +962,13 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 }
 
 func deepseekStreamErrorText(raw json.RawMessage) string {
+	// TS deepSeekErrorSchema: error.message is a required string, so an
+	// empty one is the message.
 	var withMessage struct {
-		Message string `json:"message"`
+		Message *string `json:"message"`
 	}
-	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
-		return withMessage.Message
+	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != nil {
+		return *withMessage.Message
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
@@ -916,26 +977,39 @@ func deepseekStreamErrorText(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func (s *deepseekStream) flushDeepseekToolCalls(finishReason string) {
+// queueEnd mirrors TS flush(): close the reasoning block, finalize tool calls
+// and enqueue the terminal finish part (reason "interrupted" when no finish_reason
+// arrived, "error" after a parse/error chunk). It reports whether it queued
+// anything; it queues at most once.
+func (s *deepseekStream) queueEnd() bool {
+	if s.endQueued {
+		return false
+	}
+	s.endQueued = true
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
-		s.flushQueue = append([]*provider.StreamChunk{
-			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-		}, s.flushQueue...)
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+	}
+	if s.isActiveText {
+		s.isActiveText = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "txt-0"})
 	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	// Defer the Finish chunk itself: a stream_options.include_usage request
-	// delivers usage in a trailing chunk after finish_reason, so the chunk is
-	// only actually emitted once the stream ends (see the IsStreamDone
-	// handling in Next()).
-	s.pendingFinish = &provider.StreamChunk{
-		Type:            provider.ChunkTypeFinish,
-		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
-		RawFinishReason: finishReason,
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted}
+	if s.finishSeen {
+		finish.FinishReason = mapDeepSeekFinishReason(s.finishRaw)
+		finish.RawFinishReason = s.finishRaw
 	}
+	if s.finishErrored {
+		finish.FinishReason = types.FinishReasonError
+		finish.RawFinishReason = ""
+	}
+	s.attachFinishMetadata(finish)
+	s.flushQueue = append(s.flushQueue, finish)
+	return true
 }
 
 // attachFinishMetadata populates usage and providerMetadata on the deferred
@@ -989,9 +1063,8 @@ func (s *deepseekStream) attachFinishMetadata(chunk *provider.StreamChunk) {
 	if s.systemFingerprint != "" {
 		meta["systemFingerprint"] = s.systemFingerprint
 	}
-	if len(meta) == 0 {
-		return
-	}
+	// TS always attaches providerMetadata[name] to the finish part, even when
+	// every entry is undefined.
 	providerOptionsName := s.providerOptionsName
 	if providerOptionsName == "" {
 		providerOptionsName = "deepseek"
@@ -1006,4 +1079,35 @@ func (s *deepseekStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// mapDeepSeekFinishReason mirrors TS mapDeepSeekFinishReason: no legacy
+// function_call, and insufficient_system_resource maps to error.
+func mapDeepSeekFinishReason(reason string) types.FinishReason {
+	switch reason {
+	case "stop":
+		return types.FinishReasonStop
+	case "length":
+		return types.FinishReasonLength
+	case "content_filter":
+		return types.FinishReasonContentFilter
+	case "tool_calls":
+		return types.FinishReasonToolCalls
+	case "insufficient_system_resource":
+		return types.FinishReasonError
+	default:
+		return types.FinishReasonOther
+	}
+}
+
+// deepseekCreatedTimestamp converts a response's `created` (unix seconds, TS z.number()) as
+// TS createLanguageModelResponseMetadata does: new Date(created * 1000), so a
+// fractional value keeps its milliseconds (truncated) and 0 is the epoch. A
+// value outside the JS Date range is an Invalid Date in TS: no timestamp.
+func deepseekCreatedTimestamp(created float64) time.Time {
+	ms := created * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(ms))
 }

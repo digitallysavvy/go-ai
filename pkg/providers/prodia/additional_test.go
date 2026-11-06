@@ -25,8 +25,8 @@ func TestProdiaProvider_ResolvedDefaultsAndUnsupported(t *testing.T) {
 	if p.effectiveBaseURL() != "https://inference.prodia.com/v2" {
 		t.Fatalf("effectiveBaseURL() mismatch: %q", p.effectiveBaseURL())
 	}
-	if p.effectiveAPIKey() != "env-token" {
-		t.Fatalf("effectiveAPIKey() = %q", p.effectiveAPIKey())
+	if key, err := p.effectiveAPIKey(); err != nil || key != "env-token" {
+		t.Fatalf("effectiveAPIKey() = %q, %v", key, err)
 	}
 
 	if _, err := p.EmbeddingModel("x"); err == nil {
@@ -59,18 +59,18 @@ func TestProdiaProvider_ModelRoutingAndMetadata(t *testing.T) {
 		t.Fatalf("image spec version = %q", im.SpecificationVersion())
 	}
 
-	if _, err := p.LanguageModel("bad-model"); err == nil {
-		t.Fatal("LanguageModel should reject unsupported model prefix")
+	if _, err := p.LanguageModel("any-model"); err != nil {
+		t.Fatalf("LanguageModel accepts any id (TS (string & {})): %v", err)
 	}
-	if _, err := p.VideoModel("bad-model"); err == nil {
-		t.Fatal("VideoModel should reject unsupported model prefix")
+	if _, err := p.VideoModel("any-model"); err != nil {
+		t.Fatalf("VideoModel accepts any id (TS (string & {})): %v", err)
 	}
 }
 
 func TestProdiaLanguageModel_DoStreamAndStreamHelpers(t *testing.T) {
 	t.Parallel()
 
-	body, contentType := buildTestMultipartBody(`{"id":"job-1","config":{"seed":42},"price":{"dollars":0.01}}`, []byte("hello"), "text/plain")
+	body, contentType := buildTestMultipartBody(`{"id":"job-1","config":{"seed":42},"price":{"product":"p","dollars":0.01}}`, []byte("hello"), "text/plain")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/job") {
 			http.NotFound(w, r)
@@ -137,7 +137,7 @@ func TestProdiaAPIHelpers_PostMultipartAndMediaTypeExt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildMultipartJobRequest() error = %v", err)
 	}
-	respBody, headers, err := postMultipartToProdia(context.Background(), srv.URL, "k", buf, ct, "multipart/form-data")
+	respBody, headers, err := postMultipartToProdia(context.Background(), New(Config{APIKey: "k", BaseURL: srv.URL}).client, buf, ct, "multipart/form-data", nil)
 	if err != nil {
 		t.Fatalf("postMultipartToProdia() error = %v", err)
 	}

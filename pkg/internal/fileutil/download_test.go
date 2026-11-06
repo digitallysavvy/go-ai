@@ -118,10 +118,10 @@ func TestDownloadWithMetadataReturnsDataURLMediaType(t *testing.T) {
 func TestDownload_DefaultLimit2GiB(t *testing.T) {
 	opts := insecureDownloadOptions()
 	if opts.MaxSize != DefaultMaxDownloadSize {
-		t.Fatalf("expected default max size %d, got %d", DefaultMaxDownloadSize, opts.MaxSize)
+		t.Fatalf("expected default max size %d, got %d", int64(DefaultMaxDownloadSize), opts.MaxSize)
 	}
 	if opts.MaxSize != 2*1024*1024*1024 {
-		t.Fatalf("expected 2 GiB (%d), got %d", 2*1024*1024*1024, opts.MaxSize)
+		t.Fatalf("expected 2 GiB (%d), got %d", int64(2*1024*1024*1024), opts.MaxSize)
 	}
 }
 
@@ -441,6 +441,16 @@ func TestValidateDownloadURLBlocksUnsafeHosts(t *testing.T) {
 		"http://localhost./file",
 		"http://app.localhost/file",
 		"http://example.local/file",
+		"http://metadata.google.internal/file",
+		"https://service.namespace.internal/file",
+		"https://SERVICE.INTERNAL/file",
+		"https://service.internal./file",
+		"http://service.internal:8080/file",
+		"http://metadata.google.internal/file",
+		"https://service.namespace.internal/file",
+		"https://SERVICE.INTERNAL/file",
+		"https://service.internal./file",
+		"http://service.internal:8080/file",
 		"http://127.0.0.1/file",
 		"http://10.0.0.1/file",
 		"http://172.16.0.1/file",
@@ -502,6 +512,10 @@ func TestValidateDownloadURLBlocksUnsafeHosts(t *testing.T) {
 	allowed := []string{
 		"https://example.com/image.png",
 		"http://example.com:8080/file",
+		"https://internal.example.com/file",
+		"https://service.internal.example.com/file",
+		"https://service.notinternal/file",
+		"https://example.com/service.internal",
 		"data:text/plain;base64,aGVsbG8=",
 		"http://172.15.0.1/file",
 		"http://172.32.0.1/file",
@@ -839,5 +853,99 @@ func TestDownloadError_ErrorMessage(t *testing.T) {
 				t.Fatalf("expected error message to contain URL, got: %s", errMsg)
 			}
 		})
+	}
+}
+
+// A data: URL download follows the fetch data URL processor (TS download is a
+// fetch): '+' in a percent-encoded payload stays '+', base64 tolerates
+// whitespace and missing padding, parameters stay in the media type and an
+// empty type defaults to text/plain.
+func TestDownloadDataURLFetchSemantics(t *testing.T) {
+	cases := []struct {
+		url, data, mediaType string
+	}{
+		{"data:text/plain,a+b%20c", "a+b c", "text/plain"},
+		// fetch gives an absent or unparseable type text/plain;charset=US-ASCII.
+		{"data:,hi", "hi", "text/plain;charset=US-ASCII"},
+		{"data:;base64,aGk=", "hi", "text/plain;charset=US-ASCII"},
+		{"data:foo,hi", "hi", "text/plain;charset=US-ASCII"},
+		{"data:/x,y", "y", "text/plain;charset=US-ASCII"},
+		{"data:;charset=utf-8,hi", "hi", "text/plain;charset=utf-8"},
+		{"data:TEXT/Plain;Charset=UTF-8,hi", "hi", "text/plain;charset=UTF-8"},
+		{"data:text/plain ; base64 ,aGk=", "hi", "text/plain"},
+		{`data:text/plain;charset="a b",x`, "x", `text/plain;charset="a b"`},
+		{`data:text/plain;a=b;a=c;d="",x`, "x", `text/plain;a=b;d=""`},
+		{"data:text/plain;charset=utf-8;base64,aGVs bG8", "hello", "text/plain;charset=utf-8"},
+		{"data:image/png;base64,AQI", "\x01\x02", "image/png"},
+	}
+	for _, c := range cases {
+		result, err := DownloadWithMetadata(context.Background(), c.url, insecureDownloadOptions())
+		if err != nil {
+			t.Fatalf("%s: %v", c.url, err)
+		}
+		if string(result.Data) != c.data || result.ContentType != c.mediaType {
+			t.Errorf("%s: data=%q mediaType=%q, want %q %q", c.url, result.Data, result.ContentType, c.data, c.mediaType)
+		}
+	}
+}
+
+// The fetch data: URL processor percent-decodes every valid escape and keeps
+// malformed ones literal; base64 follows forgiving-base64 (no stray padding).
+func TestDownloadDataURLPercentAndForgivingBase64(t *testing.T) {
+	ok := map[string]string{
+		"data:,%41%zz":                      "A%zz",
+		"data:,100%":                        "100%",
+		"data:,%4":                          "%4",
+		"data:text/plain;base64,aGk":        "hi",
+		"data:text/plain;base64,aGk=":       "hi",
+		"data:text/plain;base64,%61GVsbG8=": "hello",
+	}
+	for u, want := range ok {
+		res, err := DownloadWithMetadata(context.Background(), u, insecureDownloadOptions())
+		if err != nil || string(res.Data) != want {
+			t.Errorf("%s: %q %v, want %q", u, res.Data, err, want)
+		}
+	}
+	for _, u := range []string{"data:;base64,aGk===", "data:;base64,a", "data:;base64,aG=k"} {
+		if _, err := DownloadWithMetadata(context.Background(), u, insecureDownloadOptions()); err == nil {
+			t.Errorf("%s: want a download error", u)
+		}
+	}
+}
+
+func TestValidateDownloadURLBlocksIDNInternalForms(t *testing.T) {
+	for _, u := range []string{
+		"https://a.internal。/x",
+		"https://a.ｉｎｔｅｒｎａｌ/x",
+		"https://a.internal．/x",
+		"https://ＬＯＣＡＬＨＯＳＴ/x",
+		"https://a.INTERNAL./x",
+	} {
+		if err := ValidateDownloadURL(u); err == nil {
+			t.Errorf("%q should be rejected", u)
+		}
+	}
+	if err := ValidateDownloadURL("https://internal.example.com/x"); err != nil {
+		t.Errorf("unexpected: %v", err)
+	}
+}
+
+// TS validateDownloadUrl throws "Invalid URL" for hosts that end in a number
+// but are not IPv4 addresses (new URL rejects them), and allows hosts whose
+// last label is not numeric.
+func TestValidateDownloadURLEndsInANumberHosts(t *testing.T) {
+	for _, raw := range []string{"http://foo.1/", "http://foo.0x/", "http://09.1/", "http://1.2.3.4.5/"} {
+		err := ValidateDownloadURL(raw)
+		if err == nil || !strings.Contains(err.Error(), "Invalid URL: "+raw) {
+			t.Errorf("%s: err = %v, want Invalid URL", raw, err)
+		}
+	}
+	for _, raw := range []string{"http://1.foo/", "http://foo.0x1g/", "http://[64:ff9b::8.8.8.8]/"} {
+		if err := ValidateDownloadURL(raw); err != nil {
+			t.Errorf("%s: err = %v, want allowed", raw, err)
+		}
+	}
+	if got, ok, invalid := CanonicalIPHost("0x8.0x8.010.8"); !ok || invalid || got != "8.8.8.8" {
+		t.Errorf("CanonicalIPHost = %q, %v, %v", got, ok, invalid)
 	}
 }

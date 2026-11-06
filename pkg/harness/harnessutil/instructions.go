@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -44,7 +45,7 @@ func WriteInstructions(ctx context.Context, opts WriteInstructionsOptions) (*Wri
 		return nil, err
 	}
 	sandbox := opts.Sandbox
-	trimmed := strings.TrimSpace(opts.Instructions)
+	trimmed := providerutils.JSTrim(opts.Instructions)
 	hasInstructions := trimmed != ""
 
 	currentDisk, err := sandbox.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: targetPath})
@@ -59,7 +60,7 @@ func WriteInstructions(ctx context.Context, opts WriteInstructionsOptions) (*Wri
 	if hasInstructions {
 		original := deriveOriginalContent(currentDisk, existing)
 		var target string
-		if original != nil && strings.TrimSpace(*original) != "" {
+		if original != nil && providerutils.JSTrim(*original) != "" {
 			target = trimTrailingNewlines(*original) + "\n\n" + trimmed + "\n"
 		} else {
 			target = trimmed + "\n"
@@ -156,7 +157,7 @@ func deriveRestoredContent(currentDisk *string, meta *instructionsMetadata) *str
 		return nil
 	}
 	if *currentDisk == meta.AppliedContent {
-		if meta.OriginalContent != nil && strings.TrimSpace(*meta.OriginalContent) != "" {
+		if meta.OriginalContent != nil && providerutils.JSTrim(*meta.OriginalContent) != "" {
 			return meta.OriginalContent
 		}
 		return nil
@@ -189,7 +190,7 @@ func readInstructionsMetadata(ctx context.Context, sandbox providerutils.Sandbox
 	}
 	invalid := fmt.Errorf("Invalid AI SDK harness instructions metadata: %s", metadataPath) //nolint:staticcheck // matches TS SDK's exact error text
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(*content), &raw); err != nil || raw == nil {
+	if err := securejson.Unmarshal([]byte(*content), &raw); err != nil || raw == nil {
 		return nil, invalid
 	}
 	isString := func(key string) bool {
@@ -197,7 +198,7 @@ func readInstructionsMetadata(ctx context.Context, sandbox providerutils.Sandbox
 		return json.Unmarshal(raw[key], &s) == nil && raw[key] != nil && string(raw[key]) != "null"
 	}
 	var m instructionsMetadata
-	if err := json.Unmarshal([]byte(*content), &m); err != nil || m.Version != instructionsMetadataVersion ||
+	if err := securejson.Unmarshal([]byte(*content), &m); err != nil || m.Version != instructionsMetadataVersion ||
 		raw["originalContent"] == nil || (string(raw["originalContent"]) != "null" && !isString("originalContent")) ||
 		!isString("instructions") || !isString("appliedContent") {
 		return nil, invalid

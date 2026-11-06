@@ -144,6 +144,8 @@ func TestValidateFormat(t *testing.T) {
 		{name: "ipv4 invalid", schema: fmtSchema("ipv4"), value: "::1", wantErr: true, errSubstr: "format"},
 		{name: "ipv6 valid", schema: fmtSchema("ipv6"), value: "2001:db8::1"},
 		{name: "ipv6 invalid", schema: fmtSchema("ipv6"), value: "192.168.1.1", wantErr: true, errSubstr: "format"},
+		{name: "ipv6 v4-mapped valid", schema: fmtSchema("ipv6"), value: "::ffff:1.2.3.4"},
+		{name: "ipv4 v4-mapped invalid", schema: fmtSchema("ipv4"), value: "::ffff:1.2.3.4", wantErr: true, errSubstr: "format"},
 		{name: "unrecognized format is a non-validating annotation", schema: fmtSchema("made-up-format"), value: "anything"},
 	})
 }
@@ -626,5 +628,41 @@ func TestValidateUniqueItemsLargeArrayIsNotQuadratic(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Validate() with %d unique elements did not finish within 5s (suggests O(n^2) uniqueItems)", n)
+	}
+}
+
+func TestDependentRequired(t *testing.T) {
+	sch := map[string]interface{}{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type":    "object",
+		"properties": map[string]interface{}{
+			"creditCard":     map[string]interface{}{"type": "number"},
+			"billingAddress": map[string]interface{}{"type": "string"},
+		},
+		"dependentRequired": map[string]interface{}{
+			"creditCard": []interface{}{"billingAddress"},
+		},
+	}
+	v := NewJSONSchema(sch)
+	if err := v.Validate(map[string]interface{}{"creditCard": 1234.0}); err == nil {
+		t.Fatal("expected dependentRequired violation")
+	}
+	if err := v.Validate(map[string]interface{}{"creditCard": 1234.0, "billingAddress": "x"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := v.Validate(map[string]interface{}{"billingAddress": "x"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDependentRequiredIgnoredWithoutModernDialect(t *testing.T) {
+	sch := map[string]interface{}{
+		"type": "object",
+		"dependentRequired": map[string]interface{}{
+			"creditCard": []interface{}{"billingAddress"},
+		},
+	}
+	if err := NewJSONSchema(sch).Validate(map[string]interface{}{"creditCard": 1.0}); err != nil {
+		t.Fatalf("draft-07 style schema must ignore dependentRequired: %v", err)
 	}
 }

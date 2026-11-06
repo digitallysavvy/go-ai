@@ -29,52 +29,64 @@ func (c *bootstrapCache) getBootstrap(ctx context.Context, harnessID string, imp
 
 func bootstrapDir(harnessID string) string { return ".harness-bootstrap/" + harnessID }
 
+// pnpmInstallCommand is the bridge installation command. Mirrors TS
+// `PNPM_INSTALL_COMMAND`.
+const pnpmInstallCommand = "pnpm install --frozen-lockfile --prod --store-dir .pnpm-store"
+
+// buildBootstrap mirrors TS `createACPBootstrap`'s recipe. A locked source is
+// the complete bridge installation and therefore replaces the bridge manifest.
+// An install-command source installs the agent outside of pnpm, so the bridge
+// manifest only provides the bridge's own runtime dependencies.
 func buildBootstrap(harnessID string, impl implementation) (*harness.Bootstrap, error) {
 	files, err := bridges.Files(bridges.ACP)
 	if err != nil {
 		return nil, err
 	}
 	dir := bootstrapDir(harnessID)
-	bridgeFiles := []harness.BootstrapFile{}
-	for _, name := range []string{"package.json", "pnpm-lock.yaml"} {
+	asset := func(name string) (string, error) {
 		content, ok := files[name]
 		if !ok {
-			return nil, fmt.Errorf("acp: embedded bridge asset %q is missing", name)
+			return "", fmt.Errorf("acp: embedded bridge asset %q is missing", name)
 		}
-		bridgeFiles = append(bridgeFiles, harness.BootstrapFile{Path: dir + "/" + name, Content: string(content)})
+		return string(content), nil
 	}
-	bridgeEntry, ok := files["bridge.mjs"]
-	if !ok {
-		return nil, fmt.Errorf("acp: embedded bridge asset \"bridge.mjs\" is missing")
+	bridgeEntry, err := asset("bridge.mjs")
+	if err != nil {
+		return nil, err
 	}
-	bridgeFiles = append(bridgeFiles, harness.BootstrapFile{Path: dir + "/bridge.mjs", Content: string(bridgeEntry)})
-	hostToolMCP, ok := files["host-tool-mcp.mjs"]
-	if !ok {
-		return nil, fmt.Errorf("acp: embedded bridge asset \"host-tool-mcp.mjs\" is missing")
+	hostToolMCP, err := asset("host-tool-mcp.mjs")
+	if err != nil {
+		return nil, err
 	}
-	bridgeFiles = append(bridgeFiles, harness.BootstrapFile{Path: dir + "/host-tool-mcp.mjs", Content: string(hostToolMCP)})
-
-	bridgeFiles = append(bridgeFiles, harness.BootstrapFile{
-		Path: dir + "/implementation/implementation.json", Content: createImplementationDescriptor(impl),
-	})
-	if manifest := createImplementationManifest(impl); manifest != nil {
-		bridgeFiles = append(bridgeFiles, harness.BootstrapFile{Path: dir + "/implementation/package.json", Content: *manifest})
+	bridgeFiles := []harness.BootstrapFile{
+		{Path: dir + "/bridge.mjs", Content: bridgeEntry},
+		{Path: dir + "/host-tool-mcp.mjs", Content: hostToolMCP},
 	}
-	if lock := getImplementationLockfile(impl); lock != nil {
-		bridgeFiles = append(bridgeFiles, harness.BootstrapFile{Path: dir + "/implementation/pnpm-lock.yaml", Content: *lock})
+	src := effectiveSource(impl.Source)
+	commands := []harness.BootstrapCommand{{Command: pnpmInstallCommand}}
+	if src.Type == SourceNPMLocked {
+		bridgeFiles = append(bridgeFiles,
+			harness.BootstrapFile{Path: dir + "/package.json", Content: src.PackageJSON},
+			harness.BootstrapFile{Path: dir + "/pnpm-lock.yaml", Content: src.PnpmLockYAML},
+		)
+		if src.PnpmWorkspaceYAML != "" {
+			bridgeFiles = append(bridgeFiles, harness.BootstrapFile{Path: dir + "/pnpm-workspace.yaml", Content: src.PnpmWorkspaceYAML})
+		}
+	} else {
+		packageJSON, err := asset("package.json")
+		if err != nil {
+			return nil, err
+		}
+		lock, err := asset("pnpm-lock.yaml")
+		if err != nil {
+			return nil, err
+		}
+		bridgeFiles = append(bridgeFiles,
+			harness.BootstrapFile{Path: dir + "/package.json", Content: packageJSON},
+			harness.BootstrapFile{Path: dir + "/pnpm-lock.yaml", Content: lock},
+			harness.BootstrapFile{Path: dir + "/install.sh", Content: createInstallScript(src.Command)},
+		)
+		commands = append(commands, harness.BootstrapCommand{Command: "bash install.sh"})
 	}
-	if workspace := getImplementationWorkspaceFile(impl); workspace != nil {
-		bridgeFiles = append(bridgeFiles, harness.BootstrapFile{Path: dir + "/implementation/pnpm-workspace.yaml", Content: *workspace})
-	}
-	if script := getImplementationInstallScript(impl); script != nil {
-		bridgeFiles = append(bridgeFiles, harness.BootstrapFile{Path: dir + "/implementation/install.sh", Content: *script})
-	}
-
-	return &harness.Bootstrap{
-		HarnessID: harnessID, BootstrapDir: dir, Files: bridgeFiles,
-		Commands: []harness.BootstrapCommand{
-			{Command: "pnpm install --frozen-lockfile --store-dir .pnpm-store"},
-			{Command: createImplementationInstallCommand("implementation", "../.pnpm-store", impl)},
-		},
-	}, nil
+	return &harness.Bootstrap{HarnessID: harnessID, BootstrapDir: dir, Files: bridgeFiles, Commands: commands}, nil
 }

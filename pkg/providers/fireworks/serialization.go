@@ -8,7 +8,9 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("fireworks", deserializeModel)
+	provider.RegisterModelDeserializer("fireworks.chat", deserializeModel)
 	provider.RegisterImageModelDeserializer("fireworks", deserializeImageModel)
+	provider.RegisterImageModelDeserializer("fireworks.image", deserializeImageModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

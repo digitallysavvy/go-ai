@@ -235,6 +235,23 @@ func TestHTTPPolicyClient(t *testing.T) {
 	}
 }
 
+// OPA answers an undefined decision with `{}`; the client returns the missing
+// `result` as nil (TS: undefined), which normalizes to not-applicable.
+func TestHTTPPolicyClientUndefinedDecisionIsNotApplicable(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	raw, err := HTTPPolicyClient(server.URL).Evaluate(context.Background(), "p", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := NormalizeOPADecision(raw); got.Type != types.ToolApprovalStatusNotApplicable {
+		t.Fatalf("decision = %+v, want not-applicable", got)
+	}
+}
+
 func TestHTTPPolicyClientNon2xxRejects(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -614,5 +631,17 @@ func TestDefaultOPACapabilityInputJSONIncludesEmptyProviderOptions(t *testing.T)
 	providerOptions, ok := got["providerOptions"].(map[string]any)
 	if !ok || len(providerOptions) != 0 {
 		t.Fatalf("json = %s, want empty providerOptions object", data)
+	}
+}
+
+// TS passes the parsed tool input ({} for a call without arguments); a nil Go
+// map must reach OPA as {} and not as JSON null.
+func TestOPAPolicyDefaultInputArgsIsEmptyObjectForNilArguments(t *testing.T) {
+	t.Parallel()
+	client := &stubClient{result: map[string]any{"decision": "allow"}}
+	OPAPolicy(client, OPAPolicyOptions{Path: "p"})(approvalArgs("git", nil))
+	b, err := json.Marshal(client.calls[0].input)
+	if err != nil || !strings.Contains(string(b), `"args":{}`) {
+		t.Fatalf("input = %s err=%v, want args:{}", b, err)
 	}
 }

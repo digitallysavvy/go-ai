@@ -47,8 +47,8 @@ func main() {
 	// Generate image with portrait aspect ratio
 	fmt.Println("Generating image with Vertex AI Gemini 2.5 Flash...")
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "A whimsical forest scene with magical creatures and glowing mushrooms",
-		Size:   "1080x1920", // Portrait 9:16 aspect ratio
+		Prompt:      "A whimsical forest scene with magical creatures and glowing mushrooms",
+		AspectRatio: "9:16", // Portrait; Gemini image models do not support Size
 	})
 	if err != nil {
 		fmt.Printf("Error generating image: %v\n", err)

@@ -70,7 +70,7 @@ type interactionsResponse struct {
 	Agent                 string                     `json:"agent,omitempty"`
 	Steps                 []interactionsContentBlock `json:"steps,omitempty"`
 	Usage                 *interactionsUsage         `json:"usage,omitempty"`
-	ServiceTier           string                     `json:"service_tier,omitempty"`
+	ServiceTier           *string                    `json:"service_tier,omitempty"` // TS `service_tier != null` keeps ""
 	PreviousInteractionID string                     `json:"previous_interaction_id,omitempty"`
 	ResponseModalities    []string                   `json:"response_modalities,omitempty"`
 	Raw                   map[string]json.RawMessage `json:"-"`
@@ -83,7 +83,7 @@ type interactionsContentBlock struct {
 	MimeType    string                     `json:"mime_type,omitempty"`
 	URI         string                     `json:"uri,omitempty"`
 	Resolution  string                     `json:"resolution,omitempty"`
-	Signature   string                     `json:"signature,omitempty"`
+	Signature   *string                    `json:"signature,omitempty"` // TS keeps "" (signature != null)
 	Summary     []interactionsContentBlock `json:"summary,omitempty"`
 	ContentRaw  json.RawMessage            `json:"content,omitempty"`
 	ID          string                     `json:"id,omitempty"`
@@ -96,6 +96,72 @@ type interactionsContentBlock struct {
 	Annotations []interactionsAnnotation   `json:"annotations,omitempty"`
 	SearchType  string                     `json:"search_type,omitempty"`
 	Raw         map[string]interface{}     `json:"-"`
+
+	// nameSet is true when the wire block had a non-null "name" (TS
+	// `name ?? fallback` keeps an empty name).
+	nameSet bool
+	// mimeTypeSet is true when the wire block had a non-null "mime_type"
+	// (TS `mime_type ?? default` keeps ""); resultSet when it had a
+	// "result" key, null included (TS `result !== undefined`).
+	mimeTypeSet bool
+	resultSet   bool
+	// textAbsent is true when the block was decoded from JSON whose "text"
+	// was missing or not a string (TS `typeof item.text === 'string'`). A
+	// hand-built block keeps the zero value.
+	textAbsent bool
+}
+
+// UnmarshalJSON decodes the block and records whether "name" was present.
+func (b *interactionsContentBlock) UnmarshalJSON(data []byte) error {
+	type plain interactionsContentBlock
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*b = interactionsContentBlock(p)
+	b.afterLooseDecode(data)
+	return nil
+}
+
+// afterLooseDecode records whether "name" and "text" were strings on the wire.
+func (b *interactionsContentBlock) afterLooseDecode(data []byte) {
+	var probe struct {
+		Name     *string         `json:"name"`
+		MimeType *string         `json:"mime_type"`
+		Result   json.RawMessage `json:"result"`
+	}
+	ok := json.Unmarshal(data, &probe) == nil
+	b.nameSet = ok && probe.Name != nil
+	b.mimeTypeSet = ok && probe.MimeType != nil
+	b.resultSet = ok && len(probe.Result) > 0
+	var textProbe struct {
+		Text json.RawMessage `json:"text"`
+	}
+	var text string
+	b.textAbsent = json.Unmarshal(data, &textProbe) != nil || len(textProbe.Text) == 0 || string(textProbe.Text) == "null" || json.Unmarshal(textProbe.Text, &text) != nil
+}
+
+// mimeTypeOr is TS `mime_type ?? fallback`: a present "" is kept.
+func (b interactionsContentBlock) mimeTypeOr(fallback string) string {
+	return mediaTypeOr(b.MimeType, b.mimeTypeSet, fallback)
+}
+
+// mediaTypeOr returns mimeType when it is present ("" included, or any
+// non-empty value), else fallback.
+func mediaTypeOr(mimeType string, present bool, fallback string) string {
+	if present || mimeType != "" {
+		return mimeType
+	}
+	return fallback
+}
+
+// nameOr returns the block's name, or fallback when the wire had none (TS
+// `name ?? fallback`).
+func (b interactionsContentBlock) nameOr(fallback string) string {
+	if b.nameSet || b.Name != "" {
+		return b.Name
+	}
+	return fallback
 }
 
 type interactionsAnnotation struct {
@@ -126,6 +192,35 @@ type interactionsUsage struct {
 	CachedTokensByModality  []interactionsModalityTokens `json:"cached_tokens_by_modality,omitempty"`
 	ToolUseTokensByModality []interactionsModalityTokens `json:"tool_use_tokens_by_modality,omitempty"`
 	GroundingToolCount      []map[string]interface{}     `json:"grounding_tool_count,omitempty"`
+
+	// raw is the usage object exactly as the API sent it (TS passes it through
+	// as usage.raw).
+	raw map[string]interface{}
+}
+
+// UnmarshalJSON keeps the wire object next to the typed fields.
+func (u *interactionsUsage) UnmarshalJSON(b []byte) error {
+	type plain interactionsUsage
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = interactionsUsage(p)
+	u.raw = nil
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.raw = raw
+	}
+	return nil
+}
+
+// afterLooseDecode keeps the wire usage object after a loose decode.
+func (u *interactionsUsage) afterLooseDecode(b []byte) {
+	u.raw = nil
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.raw = raw
+	}
 }
 
 type interactionsModalityTokens struct {
@@ -144,8 +239,8 @@ type interactionsEvent struct {
 	Content       *interactionsContentBlock `json:"content,omitempty"`
 	Delta         *interactionsContentBlock `json:"delta,omitempty"`
 	Error         *struct {
-		Code    string `json:"code,omitempty"`
-		Message string `json:"message,omitempty"`
+		Code    string  `json:"code,omitempty"`
+		Message *string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
 }
 

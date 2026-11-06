@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"runtime/debug"
 )
 
 var (
@@ -127,14 +126,14 @@ func newJsStringifyErr(kind string, err error) error {
 
 func newProxyErr(id uint64, r any) error {
 	if err, ok := r.(error); ok {
-		return fmt.Errorf("functionProxy [%d]: %w\n%s", id, err, debug.Stack())
+		return fmt.Errorf("functionProxy [%d]: %w", id, err)
 	}
 
 	if str, ok := r.(string); ok {
-		return fmt.Errorf("functionProxy [%d]: %s\n%s", id, str, debug.Stack())
+		return fmt.Errorf("functionProxy [%d]: %s", id, str)
 	}
 
-	return fmt.Errorf("functionProxy [%d]: %v\n%s", id, r, debug.Stack())
+	return fmt.Errorf("functionProxy [%d]: %v", id, r)
 }
 
 func newInvokeErr(input *Value, err error) error {

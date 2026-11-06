@@ -319,8 +319,8 @@ data: [DONE]
 }
 
 // TestMoonshotStream_ErrorEnvelope verifies a mid-stream {"error":{...}}
-// frame surfaces as a rich *providererrors.ProviderError carrying the
-// Moonshot error code, and also emits a lightweight error chunk immediately.
+// frame surfaces as an error chunk carrying a structured stream error and the
+// stream still finishes (reason error), like TS.
 func TestMoonshotStream_ErrorEnvelope(t *testing.T) {
 	sseData := `data: {"error":{"message":"Internal server error","type":"server_error","code":"upstream_failure"}}
 
@@ -352,21 +352,30 @@ data: [DONE]
 		t.Error("chunk.Err.IsRetryable = false, want true for server_error")
 	}
 
-	_, err = stream.Next()
-	if err == nil {
-		t.Fatal("expected the stream to terminate with a rich provider error")
+	// TS keeps reading after an error chunk; flush() ends the stream with a
+	// finish chunk whose reason is error.
+	fin, err := stream.Next()
+	if err != nil || fin.Type != provider.ChunkTypeFinish || fin.FinishReason != types.FinishReasonError {
+		t.Fatalf("expected finish(error) after the error chunk, got %#v, %v", fin, err)
 	}
-	var provErr *providererrors.ProviderError
-	if !errors.As(err, &provErr) {
-		t.Fatalf("expected a *providererrors.ProviderError, got %T: %v", err, err)
+	if _, err = stream.Next(); err != io.EOF {
+		t.Fatalf("expected EOF after finish, got %v", err)
 	}
-	if provErr.ErrorCode != "upstream_failure" {
-		t.Errorf("expected error code 'upstream_failure', got %q", provErr.ErrorCode)
+}
+
+// TS flush() runs when the stream ends, with or without a [DONE] marker: a
+// stream that ends after content still closes the text block and finishes.
+func TestMoonshotStream_FinalizesAtEOFWithoutDone(t *testing.T) {
+	sseData := "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"
+	stream := newMoonshotStream(io.NopCloser(strings.NewReader(sseData)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := drainMoonshotStream(t, stream)
+	if len(moonshotChunksOfType(chunks, provider.ChunkTypeTextEnd)) != 1 {
+		t.Fatalf("expected a text-end chunk, got %#v", chunks)
 	}
-	if provErr.StatusCode != 500 {
-		t.Errorf("expected status code 500 for server_error, got %d", provErr.StatusCode)
-	}
-	if !provErr.IsRetryable() {
-		t.Error("expected a server_error to be retryable")
+	finishes := moonshotChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 || finishes[0].FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("expected one finish chunk with reason interrupted, got %#v", finishes)
 	}
 }

@@ -1,5 +1,5 @@
 // Package opencode is the Go host-side port of the TypeScript
-// `@ai-sdk/harness-opencode` adapter (pinned to ai@7.0.113): it wraps
+// `@ai-sdk/harness-opencode` adapter (pinned to ai@7.0.162, TS 3fab50aa9b): it wraps
 // `@opencode-ai/sdk`'s `opencode serve` HTTP+SSE server, which runs inside
 // the embedded in-sandbox Node bridge (pkg/harness/bridges.OpenCode). The Go
 // host never runs the vendor SDK: it spawns the unchanged bridge, speaks the

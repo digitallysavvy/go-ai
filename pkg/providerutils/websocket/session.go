@@ -122,10 +122,18 @@ func (s *Session[T]) CloseParts() { close(s.parts) }
 func (s *Session[T]) CancelContext() { s.cancel() }
 
 // SetConn records the active WebSocket connection so Close can close it.
+//
+// When the session was already closed (Close ran before the dial finished and
+// found no connection to tear down), conn is closed immediately instead of
+// being leaked with a read loop that nothing can interrupt.
 func (s *Session[T]) SetConn(conn *websocket.Conn) {
 	s.connMu.Lock()
 	s.conn = conn
+	closed := s.ctx.Err() != nil
 	s.connMu.Unlock()
+	if closed && conn != nil {
+		_ = conn.Close()
+	}
 }
 
 // ReportError delivers err on errCh, falling back to ctx.Done() so a send

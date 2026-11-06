@@ -3,11 +3,13 @@ package cerebras
 import (
 	"bytes"
 	"encoding/json"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Provider implements the provider.Provider interface for Cerebras
@@ -24,31 +26,48 @@ type Config struct {
 	// BaseURL is the base URL for the Cerebras API (optional)
 	BaseURL string
 
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
+
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *http.Client
+
+	// APIKeyFunc resolves the API key before each request with the
+	// request's context (TS `apiKey: Resolvable<string>`, 7716e189ee).
+	// CEREBRAS_API_KEY is not read when it is set; setting both APIKey and
+	// APIKeyFunc fails every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 }
 
 // New creates a new Cerebras provider
 // Cerebras uses OpenAI-compatible API
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the CEREBRAS_API_KEY environment variable.
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "CEREBRAS_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.cerebras.ai/v1"
 	}
 
+	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
-		APIKey: cfg.APIKey,
-		// Never fall back to OPENAI_API_KEY (it would be sent to Cerebras).
-		APIKeyEnvVar: "CEREBRAS_API_KEY",
-		Name:         "cerebras",
-		BaseURL:      baseURL,
-		HTTPClient:   withCerebrasTransform(cfg.HTTPClient),
+		APIKey:            cfg.APIKey,
+		APIKeyFunc:        cfg.APIKeyFunc,
+		APIKeyEnvVar:      "CEREBRAS_API_KEY",
+		APIKeyDescription: "Cerebras API key",
+		Name:              "cerebras",
+		BaseURL:           baseURL,
+		Headers:           cfg.Headers,
+		HTTPClient:        withCerebrasTransform(cfg.HTTPClient),
 		// TS CerebrasChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:    true,
-		UserAgentName: "cerebras",
-		// TS sends stream_options only when includeUsage is set (it is not).
-		OmitStreamUsage: true,
+		AllowVideo:                true,
+		OpenAICompatible:          true,
+		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
+		UserAgentName:             "cerebras",
 		// TransformRequestBody applies the structural (provider-options-
 		// independent) half of TS transformCerebrasRequestBody: renaming
 		// max_tokens -> max_completion_tokens and reasoning_content ->
@@ -119,11 +138,13 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 		// transport to rewrite.
 		return t.base.RoundTrip(req)
 	}
+	// A RoundTripper must close the request body, also on error, and must
+	// not modify the caller's request: the rewritten body goes on a clone.
 	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		return nil, err
-	}
 	_ = req.Body.Close()
+	if err != nil {
+		return nil, internalhttp.RejectFetch(err)
+	}
 	var payload interface{}
 	if err := json.Unmarshal(body, &payload); err == nil {
 		applyCerebrasRequestExtras(payload, extras)
@@ -131,9 +152,11 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 			body = transformed
 		}
 	}
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.ContentLength = int64(len(body))
-	return t.base.RoundTrip(req)
+	clone := req.Clone(req.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	clone.ContentLength = int64(len(body))
+	return t.base.RoundTrip(clone)
 }
 
 // cerebrasOptionsContextKey is the context key LanguageModel uses to hand
@@ -155,6 +178,13 @@ type cerebrasOptionsContextKey struct{}
 func transformCerebrasRequestBody(body map[string]interface{}) map[string]interface{} {
 	renameReasoningContent(body)
 	renameMaxTokens(body)
+	// The shared chat model forwards unknown providerOptions.cerebras keys
+	// verbatim (TS passthrough); TS's transform destructures these camelCase
+	// keys out again and re-adds them as snake_case, which
+	// cerebrasTransformTransport does per call.
+	for _, k := range []string{"parallelToolCalls", "topLogprobs", "logitBias", "serviceTier", "reasoningFormat", "promptCacheKey"} {
+		delete(body, k)
+	}
 	return body
 }
 

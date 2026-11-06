@@ -21,11 +21,14 @@ Control computers through mouse, keyboard, and screenshot capabilities.
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 
-computerTool := tools.Computer20251124(tools.Computer20251124Args{
-    DisplayWidthPx:  1920,
-    DisplayHeightPx: 1080,
-    EnableZoom:      true,
-})
+computerTool := tools.WithExecute(
+    tools.Computer20251124(tools.Computer20251124Args{
+        DisplayWidthPx:  1920,
+        DisplayHeightPx: 1080,
+        EnableZoom:      true,
+    }),
+    runComputerAction, // your executor: the tool runs on your machine
+)
 ```
 
 ### 2. Bash (`bash_20250124`)
@@ -57,9 +60,12 @@ View and modify text files with editor commands.
 **Example:**
 ```go
 maxChars := 100000
-editorTool := tools.TextEditor20250728(tools.TextEditor20250728Args{
-    MaxCharacters: &maxChars,
-})
+editorTool := tools.WithExecute(
+    tools.TextEditor20250728(tools.TextEditor20250728Args{
+        MaxCharacters: &maxChars,
+    }),
+    runEditorCommand, // your executor: the tool runs on your machine
+)
 ```
 
 ### 4. Code Execution (`code_execution_20250825`)
@@ -120,6 +126,7 @@ searchTool := tools.ToolSearchRegex20251119()
 ### Provider Execution
 Most tools in this package are executed by the Anthropic API, not locally:
 - Server-executed tools set `ProviderExecuted: true`
+- Computer, computer toolset, text editor and memory tools run on the caller's machine: `ProviderExecuted` is false, `Execute` is nil, and `WithExecute(tool, fn)` installs your executor (TS parity)
 - Bash tools are provider-defined and can execute locally through `ExperimentalSandbox`
 - Server-executed tool implementations return errors if called locally
 

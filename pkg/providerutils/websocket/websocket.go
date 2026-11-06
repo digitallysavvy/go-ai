@@ -23,13 +23,20 @@ package websocket
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"golang.org/x/net/websocket"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 )
 
 // DialOptions configures Dial. Both fields are optional.
@@ -42,6 +49,12 @@ type DialOptions struct {
 	// Protocols are the WebSocket subprotocols offered in the handshake
 	// (Sec-WebSocket-Protocol), mirroring TS's `protocols` option.
 	Protocols []string
+
+	// WrapConn, when set, wraps the raw network connection (after TLS for
+	// wss) before the WebSocket handshake. It lets a caller observe bytes
+	// x/net/websocket does not expose, such as a close frame's status code.
+	// Reads on the wrapper happen on the connection's reading goroutine.
+	WrapConn func(net.Conn) net.Conn
 }
 
 // Dial opens a client WebSocket connection to rawURL, mirroring TS
@@ -79,7 +92,12 @@ func Dial(ctx context.Context, rawURL string, opts DialOptions) (*websocket.Conn
 		}
 	}
 
-	conn, err := wsConfig.DialContext(ctx)
+	var conn *websocket.Conn
+	if opts.WrapConn != nil {
+		conn, err = dialWrapped(ctx, wsConfig, opts.WrapConn)
+	} else {
+		conn, err = wsConfig.DialContext(ctx)
+	}
 	if err != nil {
 		return nil, redactDialError(rawURL, err)
 	}
@@ -136,7 +154,9 @@ func deriveOrigin(rawURL string) (string, error) {
 	case "ws":
 		origin.Scheme = "http"
 	}
+	origin.User = nil // an origin has no userinfo (never echo credentials)
 	origin.Path = "/"
+	origin.RawPath = ""
 	origin.RawQuery = ""
 	origin.Fragment = ""
 	return origin.String(), nil
@@ -156,8 +176,7 @@ type Message struct {
 // callbacks off of.
 func ReceiveLoop(ctx context.Context, conn *websocket.Conn, out chan<- Message) {
 	for {
-		var msg string
-		err := websocket.Message.Receive(conn, &msg)
+		msg, err := receiveText(conn)
 		select {
 		case out <- Message{Text: msg, Err: err}:
 		case <-ctx.Done():
@@ -176,8 +195,7 @@ func ReceiveLoop(ctx context.Context, conn *websocket.Conn, out chan<- Message) 
 func Receive(ctx context.Context, conn *websocket.Conn) (string, error) {
 	done := make(chan Message, 1)
 	go func() {
-		var msg string
-		err := websocket.Message.Receive(conn, &msg)
+		msg, err := receiveText(conn)
 		done <- Message{Text: msg, Err: err}
 	}()
 	select {
@@ -206,6 +224,59 @@ func Send(ctx context.Context, conn *websocket.Conn, v interface{}) error {
 	}
 }
 
+// ErrInvalidUTF8Text is the receive error for a text frame that is not valid
+// UTF-8. Node's WebSocket (undici) fails the connection: it sends a close
+// frame with status 1007 and reason "Received invalid UTF-8 in text frame."
+// and reports a socket error (TS connectToWebSocket onSocketError). Receive
+// and ReceiveLoop do the same: the close frame is sent and this error (not a
+// clean close) ends the loop. The caller still closes the connection.
+var ErrInvalidUTF8Text = errors.New("Received invalid UTF-8 in text frame.") //nolint:staticcheck // Node (undici) reason text
+
+// frame is one received data frame and its opcode.
+type frame struct {
+	data       []byte
+	binaryType bool
+}
+
+// frameCodec receives a frame with its opcode, which websocket.Message hides.
+var frameCodec = websocket.Codec{
+	Marshal: func(v interface{}) ([]byte, byte, error) {
+		b, _ := v.([]byte)
+		return b, websocket.CloseFrame, nil
+	},
+	Unmarshal: func(data []byte, payloadType byte, v interface{}) error {
+		f := v.(*frame)
+		f.data, f.binaryType = data, payloadType == websocket.BinaryFrame
+		return nil
+	},
+}
+
+// receiveText reads one frame as TS readWebSocketMessageText (websocket.ts
+// 49) sees it: a text frame's leading BOM is dropped and invalid UTF-8 fails
+// the connection (close 1007, ErrInvalidUTF8Text); a binary frame goes
+// through TextDecoder (BOM dropped, one U+FFFD per maximal invalid subpart).
+func receiveText(conn *websocket.Conn) (string, error) {
+	var f frame
+	if err := frameCodec.Receive(conn, &f); err != nil {
+		return "", err
+	}
+	if !f.binaryType && !utf8.Valid(f.data) {
+		closeFrame := append([]byte{0x03, 0xef}, ErrInvalidUTF8Text.Error()...) // status 1007
+		_ = frameCodec.Send(conn, closeFrame)
+		return "", ErrInvalidUTF8Text
+	}
+	return frameText(string(f.data)), nil
+}
+
+// frameText drops a leading BOM and decodes invalid UTF-8 (binary frames)
+// with TextDecoder replacement.
+func frameText(msg string) string {
+	if !utf8.ValidString(msg) || strings.HasPrefix(msg, "\ufeff") {
+		return textdecode.UTF8([]byte(msg))
+	}
+	return msg
+}
+
 // IsCleanClose reports whether err represents a clean WebSocket close (TS
 // connectToWebSocket's onClose) rather than an abnormal disconnection (TS's
 // onSocketError). golang.org/x/net/websocket surfaces both as a plain error
@@ -214,4 +285,66 @@ func Send(ctx context.Context, conn *websocket.Conn, v interface{}) error {
 // error that must fail the stream rather than finish it silently.
 func IsCleanClose(err error) bool {
 	return errors.Is(err, io.EOF)
+}
+
+// dialWrapped mirrors websocket.Config.DialContext, but hands the raw
+// connection to wrap before the handshake. Errors are *websocket.DialError,
+// like DialContext's.
+func dialWrapped(ctx context.Context, config *websocket.Config, wrap func(net.Conn) net.Conn) (*websocket.Conn, error) {
+	if config.Location == nil {
+		return nil, &websocket.DialError{Config: config, Err: websocket.ErrBadWebSocketLocation}
+	}
+	if config.Origin == nil {
+		return nil, &websocket.DialError{Config: config, Err: websocket.ErrBadWebSocketOrigin}
+	}
+	dialer := config.Dialer
+	if dialer == nil {
+		dialer = &net.Dialer{}
+	}
+	var raw net.Conn
+	var err error
+	addr := config.Location.Host
+	switch config.Location.Scheme {
+	case "ws":
+		if config.Location.Port() == "" {
+			addr = net.JoinHostPort(config.Location.Hostname(), "80")
+		}
+		raw, err = dialer.DialContext(ctx, "tcp", addr)
+	case "wss":
+		if config.Location.Port() == "" {
+			addr = net.JoinHostPort(config.Location.Hostname(), "443")
+		}
+		raw, err = (&tls.Dialer{NetDialer: dialer, Config: config.TlsConfig}).DialContext(ctx, "tcp", addr)
+	default:
+		err = websocket.ErrBadScheme
+	}
+	if err != nil {
+		return nil, &websocket.DialError{Config: config, Err: err}
+	}
+	client := wrap(raw)
+
+	var ws *websocket.Conn
+	var wsErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var e error
+		ws, e = websocket.NewClient(config, client)
+		if e != nil {
+			wsErr = &websocket.DialError{Config: config, Err: e}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = client.SetDeadline(time.Now())
+		<-done
+		_ = client.Close()
+		return nil, &websocket.DialError{Config: config, Err: ctx.Err()}
+	case <-done:
+		if wsErr != nil {
+			_ = client.Close()
+			return nil, wsErr
+		}
+		return ws, nil
+	}
 }

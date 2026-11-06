@@ -216,9 +216,10 @@ func TestCreateNetworkSandboxSessionWithTemplateDerivesReusableSnapshot(t *testi
 	}
 }
 
-// Ports utils.test.ts "prepares and publishes a named template once when a
-// cache is supplied": a template sandbox with no snapshot yet is stopped to
-// produce one, and the result is cached by template name.
+// Ports utils.test.ts "prepares and manually snapshots a named template once
+// when a cache is supplied" (TS #23529): the template is prepared in a
+// non-persistent builder, snapshotted manually after onCreate, and the result
+// is cached by template name.
 func TestEnsureTemplateSnapshotUsesStopFallbackAndCache(t *testing.T) {
 	f := newFakeServer()
 	defer f.Close()
@@ -253,10 +254,17 @@ func TestEnsureTemplateSnapshotUsesStopFallbackAndCache(t *testing.T) {
 	if len(f.createRequests) != 1 {
 		t.Fatalf("expected exactly one create request (cache skips the second GetOrCreate), got %d", len(f.createRequests))
 	}
+	if p := f.createRequests[0].Persistent; p == nil || *p {
+		t.Fatalf("template builder must be non-persistent, got %v", p)
+	}
+	if f.snapshotReqs != 1 {
+		t.Fatalf("expected one manual snapshot request, got %d", f.snapshotReqs)
+	}
 }
 
 // Ports utils.test.ts "forks a live sandbox with the derived snapshot and its
-// own name": runtime/image/source/persistent are stripped from baseParams.
+// own name": runtime/image/source are stripped from baseParams; persistent
+// is passed through (TS ea39523ce9).
 func TestCreateLiveSandboxFromSnapshotStripsEnvironmentFields(t *testing.T) {
 	f := newFakeServer()
 	defer f.Close()
@@ -273,8 +281,11 @@ func TestCreateLiveSandboxFromSnapshotStripsEnvironmentFields(t *testing.T) {
 		t.Fatalf("expected one create request, got %d", len(f.createRequests))
 	}
 	req := f.createRequests[0]
-	if req.Image != "" || req.Runtime != "" || req.Persistent != nil {
-		t.Fatalf("expected image/runtime/persistent stripped, got %#v", req)
+	if req.Image != "" || req.Runtime != "" {
+		t.Fatalf("expected image/runtime stripped, got %#v", req)
+	}
+	if req.Persistent == nil || !*req.Persistent {
+		t.Fatalf("expected persistent passed through, got %#v", req.Persistent)
 	}
 	if req.Source == nil || req.Source.Type != "snapshot" || req.Source.SnapshotID != "snap_derived" {
 		t.Fatalf("expected snapshot source snap_derived, got %#v", req.Source)
@@ -340,7 +351,37 @@ func TestDeriveTemplateNameIsDeterministicAndInjective(t *testing.T) {
 	if got := deriveTemplateName("recipe-two", p); got == a {
 		t.Fatalf("expected a different name for a different identity, got the same %q", got)
 	}
-	if len(a) <= len("ai-sdk-harness-v2-") {
+	if len(a) <= len("ai-sdk-harness-v3-") {
 		t.Fatalf("expected a hashed suffix, got %q", a)
+	}
+}
+
+func TestR25NilTemplatePrepareReturnsError(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	_, err := CreateNetworkSandboxSession(context.Background(), CreateSessionOptions{
+		Credentials: testCreds(), BaseURL: f.URL(), Template: &Template{Identity: "x"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// Values from node: "ai-sdk-harness-v3-" + sha256(JSON.stringify([3,
+// identity, selection])).subarray(0, 12).hex (TS TEMPLATE_VERSION 3,
+// 177291adce).
+func TestR42DeriveTemplateNameMatchesTS(t *testing.T) {
+	for _, tc := range []struct {
+		identity string
+		params   CreateParams
+		want     string
+	}{
+		{"recipe <a&b>", CreateParams{Runtime: "node24"}, "ai-sdk-harness-v3-5ea2db961e34935c4829ea28"},
+		{"r x", CreateParams{Image: "img"}, "ai-sdk-harness-v3-d3db85af2b831b768b4dc6f2"},
+		{"plain", CreateParams{Source: &SnapshotSource{Type: "snapshot", SnapshotID: "snap_1"}}, "ai-sdk-harness-v3-534cd1856fad5aa8f08fa722"},
+	} {
+		if got := deriveTemplateName(tc.identity, tc.params); got != tc.want {
+			t.Errorf("%q: %s, want %s", tc.identity, got, tc.want)
+		}
 	}
 }

@@ -3,14 +3,17 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestGoogleRealtimeParseSingleMessageToMultipleEvents(t *testing.T) {
@@ -202,7 +205,8 @@ func TestGoogleRealtimeBuildSessionAndSerialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SerializeClientEvent: %v", err)
 	}
-	if !strings.Contains(string(raw), `"responseModalities":["TEXT","AUDIO"]`) || strings.Contains(string(raw), `"$schema"`) {
+	// TS keeps the JSON Schema untouched in parametersJsonSchema.
+	if !strings.Contains(string(raw), `"responseModalities":["TEXT","AUDIO"]`) || !strings.Contains(string(raw), `"parametersJsonSchema":{"$schema":"http://json-schema.org/draft-07/schema#","type":"object"}`) {
 		t.Fatalf("session raw = %s", raw)
 	}
 	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
@@ -245,52 +249,45 @@ func TestGoogleRealtimeSerializeUnsupportedClientEventReturnsNullLikeTypeScript(
 	}
 }
 
-func TestGoogleRealtimeToolSchemaConversionMatchesTypeScript(t *testing.T) {
+func TestGoogleRealtimeToolSchemaIsPassedThroughAsParametersJsonSchema(t *testing.T) {
 	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+	schema := map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"value"},
+		"properties": map[string]interface{}{
+			"value": map[string]interface{}{"anyOf": []interface{}{map[string]interface{}{"type": "string"}, map[string]interface{}{"type": "null"}}},
+		},
+	}
+	desc := "Look something up"
 	session := model.BuildSessionConfig(provider.RealtimeSessionConfig{
 		Tools: []provider.RealtimeToolDefinition{
-			{
-				Type:       "function",
-				Name:       "empty",
-				Parameters: map[string]interface{}{"type": "object", "$schema": "http://json-schema.org/draft-07/schema#"},
-			},
-			{
-				Type: "function",
-				Name: "nullable",
-				Parameters: map[string]interface{}{
-					"type":     "object",
-					"required": []interface{}{"value"},
-					"properties": map[string]interface{}{
-						"value": map[string]interface{}{
-							"anyOf": []map[string]interface{}{
-								{"type": "string"},
-								{"type": "null"},
-							},
-						},
-						"nested": map[string]interface{}{
-							"type":       "object",
-							"properties": map[string]interface{}{},
-						},
-					},
-				},
-			},
+			{Type: "function", Name: "empty"},
+			{Type: "function", Name: "nullable", Description: &desc, Parameters: schema},
 		},
 	}).(map[string]interface{})
 
-	tools := session["tools"].([]map[string]interface{})
-	decls := tools[0]["functionDeclarations"].([]map[string]interface{})
-	if _, ok := decls[0]["parameters"]; ok {
-		t.Fatalf("empty root parameters should be omitted, decl = %#v", decls[0])
+	decls := session["tools"].([]map[string]interface{})[0]["functionDeclarations"].([]map[string]interface{})
+	if _, ok := decls[0]["parametersJsonSchema"]; ok {
+		t.Fatalf("a tool without parameters has no parametersJsonSchema, decl = %#v", decls[0])
 	}
-	params := decls[1]["parameters"].(map[string]interface{})
-	props := params["properties"].(map[string]interface{})
-	value := props["value"].(map[string]interface{})
-	if value["nullable"] != true || value["type"] != "string" {
-		t.Fatalf("nullable property = %#v", value)
+	if _, ok := decls[1]["parameters"]; ok {
+		t.Fatalf("the OpenAPI conversion is gone, decl = %#v", decls[1])
 	}
-	nested := props["nested"].(map[string]interface{})
-	if nested["type"] != "object" {
-		t.Fatalf("nested empty object = %#v", nested)
+	if !reflect.DeepEqual(decls[1]["parametersJsonSchema"], schema) || decls[1]["description"] != desc {
+		t.Fatalf("decl = %#v", decls[1])
+	}
+}
+
+// A raw providerOptions.generationConfig replaces the default one (TS
+// Object.assign(setup, restProviderOptions)): no default responseModalities.
+func TestGoogleRealtimeRawGenerationConfigReplacesTheDefault(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{"generationConfig": map[string]interface{}{"temperature": 0.2}},
+	}).(map[string]interface{})
+	generation := setup["generationConfig"].(map[string]interface{})
+	if _, ok := generation["responseModalities"]; ok || generation["temperature"] != 0.2 {
+		t.Fatalf("generationConfig = %#v", generation)
 	}
 }
 
@@ -777,4 +774,101 @@ func TestGoogleRealtimeLifecycleCustomEvents(t *testing.T) {
 	t.Run("waitingForInput", func(t *testing.T) {
 		assertCustom(t, `{"serverContent":{"waitingForInput":true}}`, "waitingForInput")
 	})
+}
+
+// Ports the remaining doCreateClientSecret cases of TS
+// realtime/google-realtime-model.test.ts (the recorded TS calls have no HTTP
+// exchange: the tests inject a mock fetch).
+func TestGoogleRealtimeClientSecretTSCases(t *testing.T) {
+	var body map[string]interface{}
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte("Forbidden"))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "projects/123/locations/us/accessTokens/abc"})
+	}))
+	defer srv.Close()
+	newModel := func(modelID string) *GoogleRealtimeModel {
+		return NewRealtimeModel(New(Config{APIKey: "test-key", BaseURL: srv.URL + "/v1beta"}), modelID)
+	}
+	instructions, voice := "Be helpful", "Puck"
+
+	// payload: setup model, system instruction and voice
+	if _, err := newModel("gemini-2.0-flash-live-001").DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{
+		SessionConfig: &provider.RealtimeSessionConfig{Instructions: &instructions, Voice: &voice},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setup, _ := body["bidiGenerateContentSetup"].(map[string]interface{})
+	if setup["model"] != "models/gemini-2.0-flash-live-001" {
+		t.Fatalf("setup model = %v", setup["model"])
+	}
+	if b, _ := json.Marshal(setup["systemInstruction"]); string(b) != `{"parts":[{"text":"Be helpful"}]}` {
+		t.Fatalf("systemInstruction = %s", b)
+	}
+	if b, _ := json.Marshal(setup["generationConfig"]); !strings.Contains(string(b), `"voiceName":"Puck"`) {
+		t.Fatalf("generationConfig = %s", b)
+	}
+
+	// newSessionExpireTime from expiresAfterSeconds; expireTime outlasts it
+	before := time.Now()
+	seconds := 120
+	if _, err := newModel("gemini-2.0-flash-live-001").DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{ExpiresAfterSeconds: &seconds}); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	newSession, _ := time.Parse(time.RFC3339Nano, body["newSessionExpireTime"].(string))
+	expire, _ := time.Parse(time.RFC3339Nano, body["expireTime"].(string))
+	if newSession.Before(before.Add(120*time.Second).Add(-time.Second)) || newSession.After(after.Add(120*time.Second).Add(time.Second)) {
+		t.Fatalf("newSessionExpireTime = %v", newSession)
+	}
+	if !expire.After(newSession) {
+		t.Fatalf("expireTime %v must outlast newSessionExpireTime %v", expire, newSession)
+	}
+
+	// output audio transcription is enabled as an empty object
+	if _, err := newModel("gemini-2.0-flash-live-001").DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{
+		SessionConfig: &provider.RealtimeSessionConfig{OutputAudioTranscription: &provider.RealtimeAudioTranscriptionConfig{}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setup, _ = body["bidiGenerateContentSetup"].(map[string]interface{})
+	if v, ok := setup["outputAudioTranscription"]; !ok || len(v.(map[string]interface{})) != 0 {
+		t.Fatalf("outputAudioTranscription = %v", setup["outputAudioTranscription"])
+	}
+}
+
+func TestGoogleRealtimeClientSecretErrorsAndURLs(t *testing.T) {
+	status := http.StatusForbidden
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte("Forbidden"))
+	}))
+	defer srv.Close()
+	_, err := NewRealtimeModel(New(Config{APIKey: "test-key", BaseURL: srv.URL + "/v1beta"}), "gemini-2.0-flash-live-001").
+		DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
+	if err == nil || !strings.Contains(err.Error(), "403 Forbidden") {
+		t.Fatalf("err = %v, want 403 Forbidden", err)
+	}
+
+	t.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", "")
+	_, err = NewRealtimeModel(New(Config{BaseURL: srv.URL + "/v1beta"}), "gemini-2.0-flash-live-001").
+		DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
+	var loadErr *providererrors.LoadAPIKeyError
+	if !errors.As(err, &loadErr) {
+		t.Fatalf("err = %v, want LoadAPIKeyError (TS getHeaders loads the key first)", err)
+	}
+
+	for base, want := range map[string]string{
+		"https://proxy.example.com/google/v1beta": "wss://proxy.example.com/google/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+		"http://localhost:8787/v1beta":            "ws://localhost:8787/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+	} {
+		if got := googleWebSocketURL(base); got != want {
+			t.Fatalf("googleWebSocketURL(%q) = %q, want %q", base, got, want)
+		}
+	}
 }

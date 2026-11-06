@@ -17,35 +17,59 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
 
+// xaiInputAudioFormatEncodings maps a recognized inputAudioFormat.type to
+// xAI's `encoding` query parameter, in the order TS lists them
+// (inputAudioFormatEncodings).
+var xaiInputAudioFormatEncodings = []struct{ typ, encoding string }{
+	{"audio/pcm", "pcm"},
+	{"audio/pcmu", "mulaw"},
+	{"audio/pcma", "alaw"},
+	{"audio/opus", "opus"},
+}
+
 // isKnownXAIInputAudioFormatType reports whether typ is one of xAI's
-// recognized raw input audio encodings, mirroring TS
-// isKnownInputAudioFormat.
+// recognized input audio encodings, mirroring TS
+// inputAudioFormatEncodings.has.
 func isKnownXAIInputAudioFormatType(typ string) bool {
-	return typ == "audio/pcm" || typ == "audio/pcmu" || typ == "audio/pcma"
+	for _, e := range xaiInputAudioFormatEncodings {
+		if e.typ == typ {
+			return true
+		}
+	}
+	return false
 }
 
 // xaiEncodingFromInputAudioFormat maps an inputAudioFormat.type to xAI's
-// `encoding` query parameter, mirroring TS encodingFromInputAudioFormat.
+// `encoding` query parameter, falling back to "pcm" for unrecognized types.
 func xaiEncodingFromInputAudioFormat(typ string) string {
-	switch typ {
-	case "audio/pcmu":
-		return "mulaw"
-	case "audio/pcma":
-		return "alaw"
-	default:
-		return "pcm"
+	for _, e := range xaiInputAudioFormatEncodings {
+		if e.typ == typ {
+			return e.encoding
+		}
 	}
+	return "pcm"
+}
+
+// xaiInputAudioFormatTypesList is the comma-separated list of recognized
+// inputAudioFormat types used in the unrecognized-format warning.
+func xaiInputAudioFormatTypesList() string {
+	types := make([]string, len(xaiInputAudioFormatEncodings))
+	for i, e := range xaiInputAudioFormatEncodings {
+		types[i] = e.typ
+	}
+	return strings.Join(types, ", ")
 }
 
 // buildXAIStreamingTranscriptionURL builds the wss:// streaming
 // transcription URL with query parameters, mirroring TS
 // buildXaiStreamingTranscriptionUrl.
-func buildXAIStreamingTranscriptionURL(baseURL string, inputAudioFormat provider.AudioFormat, opts XAITranscriptionProviderOptions) (*url.URL, error) {
-	full := strings.TrimRight(baseURL, "/") + "/stt"
+func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat provider.AudioFormat, opts XAITranscriptionProviderOptions) (*url.URL, error) {
+	full := baseURL + "/stt" // TS `${baseURL}/stt`; New removed one trailing "/"
 	u, err := url.Parse(full)
 	if err != nil {
 		return nil, err
@@ -57,56 +81,61 @@ func buildXAIStreamingTranscriptionURL(baseURL string, inputAudioFormat provider
 		u.Scheme = "ws"
 	}
 
-	q := u.Query()
+	// TS appendXaiSttParams appends to url.searchParams in object order
+	// (getXaiSttParams, then encoding and the streaming options), skips
+	// null values, and URLSearchParams re-serializes the whole query with
+	// form escaping ("~" -> %7E, "*" literal, space "+"), keeping the order
+	// and any query of the base URL first.
+	params := internalhttp.ParseSearchParams(u.RawQuery)
+	add := params.Append
+	addBool := func(k string, b *bool) {
+		if b != nil {
+			add(k, strconv.FormatBool(*b))
+		}
+	}
+	addInt := func(k string, n *int) {
+		if n != nil {
+			add(k, strconv.Itoa(*n))
+		}
+	}
+	addNum := func(k string, f *float64) {
+		if f != nil {
+			add(k, providerutils.JSNumberString(*f)) // TS String(number)
+		}
+	}
 
+	if modelID != "" {
+		add("model", modelID)
+	}
 	sampleRate := opts.SampleRate
 	if sampleRate == nil {
 		sampleRate = inputAudioFormat.Rate
 	}
-	if sampleRate != nil {
-		q.Set("sample_rate", strconv.Itoa(*sampleRate))
+	addInt("sample_rate", sampleRate)
+	if opts.Language != nil {
+		add("language", *opts.Language)
 	}
-
+	addBool("multichannel", opts.Multichannel)
+	addInt("channels", opts.Channels)
+	addBool("diarize", opts.Diarize)
+	addBool("filler_words", opts.FillerWords)
+	addNum("vad_threshold", opts.VadThreshold)
+	for _, kt := range xaiKeyterms(opts.Keyterm) {
+		add("keyterm", kt)
+	}
 	encoding := xaiEncodingFromInputAudioFormat(inputAudioFormat.Type)
 	if opts.AudioFormat != nil {
 		encoding = *opts.AudioFormat
 	}
-	q.Set("encoding", encoding)
-
-	if opts.Language != nil {
-		q.Set("language", *opts.Language)
-	}
-	if opts.Diarize != nil {
-		q.Set("diarize", strconv.FormatBool(*opts.Diarize))
-	}
-	if opts.FillerWords != nil {
-		q.Set("filler_words", strconv.FormatBool(*opts.FillerWords))
-	}
-	if opts.Multichannel != nil {
-		q.Set("multichannel", strconv.FormatBool(*opts.Multichannel))
-	}
-	if opts.Channels != nil {
-		q.Set("channels", strconv.Itoa(*opts.Channels))
-	}
+	add("encoding", encoding)
 	if opts.Streaming != nil {
-		if opts.Streaming.InterimResults != nil {
-			q.Set("interim_results", strconv.FormatBool(*opts.Streaming.InterimResults))
-		}
-		if opts.Streaming.Endpointing != nil {
-			q.Set("endpointing", strconv.Itoa(*opts.Streaming.Endpointing))
-		}
-		if opts.Streaming.SmartTurn != nil {
-			q.Set("smart_turn", strconv.FormatFloat(*opts.Streaming.SmartTurn, 'f', -1, 64))
-		}
-		if opts.Streaming.SmartTurnTimeout != nil {
-			q.Set("smart_turn_timeout", strconv.Itoa(*opts.Streaming.SmartTurnTimeout))
-		}
-	}
-	for _, kt := range xaiKeyterms(opts.Keyterm) {
-		q.Add("keyterm", kt)
+		addBool("interim_results", opts.Streaming.InterimResults)
+		addInt("endpointing", opts.Streaming.Endpointing)
+		addNum("smart_turn", opts.Streaming.SmartTurn)
+		addInt("smart_turn_timeout", opts.Streaming.SmartTurnTimeout)
 	}
 
-	u.RawQuery = q.Encode()
+	u.RawQuery = params.Encode()
 	return u, nil
 }
 
@@ -123,10 +152,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 
 	if xaiOpts.Multichannel != nil && *xaiOpts.Multichannel && xaiOpts.Channels == nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "providerOptions.xai.channels is required when providerOptions.xai.multichannel is true",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "providerOptions.xai.channels is required when providerOptions.xai.multichannel is true", nil)
 	}
 
 	warnings := []types.Warning{}
@@ -142,13 +168,13 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 			Type: "other",
 			Message: fmt.Sprintf(
 				"Unrecognized inputAudioFormat.type %q; falling back to raw PCM encoding. "+
-					"Use audio/pcm, audio/pcmu, or audio/pcma, or set providerOptions.xai.audioFormat explicitly.",
-				opts.InputAudioFormat.Type,
+					"Use %s, or set providerOptions.xai.audioFormat explicitly.",
+				opts.InputAudioFormat.Type, xaiInputAudioFormatTypesList(),
 			),
 		})
 	}
 
-	wsURL, err := buildXAIStreamingTranscriptionURL(m.provider.config.BaseURL, opts.InputAudioFormat, xaiOpts)
+	wsURL, err := buildXAIStreamingTranscriptionURL(m.provider.config.BaseURL, m.modelID, opts.InputAudioFormat, xaiOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +183,11 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// headers, and the `ai-sdk-xai/VERSION` User-Agent tag) instead of
 	// rebuilding an untagged set, mirroring TS xai-transcription-model.ts's
 	// doStream, which reuses `this.config.headers()`.
-	headers := internalhttp.MergeHeaders(m.provider.client.Headers(), opts.Headers)
+	baseHeaders, err := m.provider.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 
 	expectedDoneCount := 1
 	if xaiOpts.Multichannel != nil && *xaiOpts.Multichannel && xaiOpts.Channels != nil {
@@ -231,7 +261,7 @@ type xaiStreamingTranscriptionEvent struct {
 	Start        *float64 `json:"start,omitempty"`
 	Duration     *float64 `json:"duration,omitempty"`
 	ChannelIndex *int     `json:"channel_index,omitempty"`
-	Message      string   `json:"message,omitempty"`
+	Message      *string  `json:"message,omitempty"`
 }
 
 // pumpAudio forwards raw audio chunks as binary WebSocket frames (xAI reads
@@ -472,9 +502,11 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 			case "error":
 				// xAI STT errors are terminal: surface the server message
 				// instead of letting the socket close mask it.
-				msg := raw.Message
-				if msg == "" {
-					msg = "xAI STT error"
+				// TS `raw.message ?? 'xAI STT error'`: a present empty message
+				// is kept.
+				msg := "xAI STT error"
+				if raw.Message != nil {
+					msg = *raw.Message
 				}
 				fail(errors.New(msg))
 				return

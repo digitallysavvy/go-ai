@@ -81,6 +81,7 @@ func fireObjectLanguageModelCallEnd(
 	content []types.ContentPart,
 	responseID string,
 	providerMetadata map[string]interface{},
+	requestURL string,
 ) {
 	perf := stepPerformance(step.start, usage, nil, nil)
 	telemetry.FireOnLanguageModelCallEnd(step.modelCallCtx, telemetry.LanguageModelCallEndEvent{
@@ -94,6 +95,7 @@ func fireObjectLanguageModelCallEnd(
 		ResponseID:       responseID,
 		ProviderMetadata: providerMetadata,
 		Performance:      languageModelCallPerformance(perf),
+		RequestURL:       requestURL, // already the origin (TS open-telemetry.ts 890)
 	})
 }
 

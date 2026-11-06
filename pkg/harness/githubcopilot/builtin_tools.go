@@ -13,7 +13,7 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 		ToolUseKind: harness.BuiltinToolUseKindBash,
 		InputSchema: obj([]string{"command"}, props(
 			"command", str(), "description", str(), "shellId", str(),
-			"mode", str(), "detach", boolean(), "initial_wait", number(),
+			"mode", enumStr("sync", "async"), "detach", boolean(), "initial_wait", number(),
 		)),
 	}),
 	"read_bash": titled(tool("read_bash", harness.BuiltinToolUseKindReadonly,
@@ -35,23 +35,23 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 	))), "Fetching "),
 	"skill": titled(tool("skill", "", obj([]string{"skill"}, props("skill", str()))), "Using skill: "),
 	"sql": tool("sql", "", obj([]string{"description", "query"}, props(
-		"description", str(), "query", str(), "database", str(),
+		"description", str(), "query", str(), "database", enumStr("session", "session_store"),
 	))),
 	"read_agent": titled(tool("read_agent", harness.BuiltinToolUseKindReadonly, obj([]string{"agent_id"}, props(
-		"agent_id", str(), "wait", boolean(), "timeout", number(), "since_turn", number(),
+		"agent_id", str(), "wait", boolean(), "timeout", number(), "since_turn", nonNegInt(),
 	))), "read_agent"),
 	"list_agents": titled(tool("list_agents", harness.BuiltinToolUseKindReadonly, obj(nil, props(
-		"include_completed", boolean(), "scope", str(),
+		"include_completed", boolean(), "scope", enumStr("siblings", "children", "all"),
 	))), "list_agents"),
 	"write_agent": titled(tool("write_agent", "", obj([]string{"message"}, props(
-		"message", str(), "agent_id", str(), "agent_ids", arr(str()), "scope", str(),
+		"message", str(), "agent_id", str(), "agent_ids", arr(str()), "scope", enumStr("siblings", "children"),
 	))), "write_agent"),
 	"grep": titled(harness.CommonTool(harness.BuiltinToolGrep, harness.CommonToolOptions{
 		NativeName:  "grep",
 		ToolUseKind: harness.BuiltinToolUseKindReadonly,
 		InputSchema: obj([]string{"pattern"}, props(
 			"pattern", str(), "path", str(), "paths", arr(str()), "glob", str(),
-			"output_mode", str(), "case_insensitive", boolean(), "multiline", boolean(),
+			"output_mode", enumStr("content", "files_with_matches", "count"), "case_insensitive", boolean(), "multiline", boolean(),
 			"head_limit", number(), "context", number(), "before_context", number(), "after_context", number(),
 		)),
 	}), "Searching for "),
@@ -61,8 +61,8 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 		InputSchema: obj([]string{"pattern"}, props("pattern", str(), "paths", arr(str()))),
 	}), "Finding files matching "),
 	"task": tool("task", "", obj([]string{"name", "prompt", "agent_type", "description"}, props(
-		"name", str(), "prompt", str(), "agent_type", str(), "description", str(),
-		"model", str(), "context_tier", str(), "mode", str(),
+		"name", str(), "prompt", str(), "agent_type", enumStr("explore", "task", "general-purpose", "code-review", "research", "security-review"), "description", str(),
+		"model", str(), "context_tier", enumStr("default", "long_context"), "mode", enumStr("sync", "background"),
 	))),
 }
 
@@ -102,3 +102,15 @@ func boolean() map[string]any { return map[string]any{"type": "boolean"} }
 func arr(items map[string]any) map[string]any {
 	return map[string]any{"type": "array", "items": items}
 }
+
+// enumStr mirrors zod `z.enum([...])`.
+func enumStr(values ...string) map[string]any {
+	anyValues := make([]any, len(values))
+	for i, v := range values {
+		anyValues[i] = v
+	}
+	return map[string]any{"type": "string", "enum": anyValues}
+}
+
+// nonNegInt mirrors zod `z.number().int().nonnegative()`.
+func nonNegInt() map[string]any { return map[string]any{"type": "integer", "minimum": 0} }

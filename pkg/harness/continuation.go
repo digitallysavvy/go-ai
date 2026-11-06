@@ -19,11 +19,38 @@ func CollectToolResultContinuations(messages []types.Message) []types.ToolResult
 	}
 	var out []types.ToolResultContent
 	for _, part := range last.Content {
-		if tr, ok := part.(types.ToolResultContent); ok {
+		if tr, ok := continuationToolResult(part); ok {
 			out = append(out, tr)
 		}
 	}
 	return out
+}
+
+// The continuation helpers accept a content part as a value or a non-nil
+// pointer, as the core approval resume does (ai.CollectToolApprovals).
+
+func continuationToolResult(part types.ContentPart) (types.ToolResultContent, bool) {
+	switch p := part.(type) {
+	case types.ToolResultContent:
+		return p, true
+	case *types.ToolResultContent:
+		if p != nil {
+			return *p, true
+		}
+	}
+	return types.ToolResultContent{}, false
+}
+
+func continuationApprovalResponse(part types.ContentPart) (types.ToolApprovalResponseContent, bool) {
+	switch p := part.(type) {
+	case types.ToolApprovalResponseContent:
+		return p, true
+	case *types.ToolApprovalResponseContent:
+		if p != nil {
+			return *p, true
+		}
+	}
+	return types.ToolApprovalResponseContent{}, false
 }
 
 // CollectToolApprovalContinuations extracts approval decisions that should
@@ -55,22 +82,34 @@ func CollectToolApprovalContinuations(messages []types.Message) ([]types.ToolApp
 			switch p := part.(type) {
 			case types.ToolCallContent:
 				toolCallIDs[p.ToolCallID] = struct{}{}
+			case *types.ToolCallContent:
+				if p != nil {
+					toolCallIDs[p.ToolCallID] = struct{}{}
+				}
 			case types.ToolApprovalRequestContent:
 				approvalRequestsByID[p.ApprovalID] = p
+			case *types.ToolApprovalRequestContent:
+				if p != nil {
+					approvalRequestsByID[p.ApprovalID] = *p
+				}
 			}
 		}
 	}
 
 	toolResultIDs := map[string]struct{}{}
 	for _, part := range last.Content {
-		if tr, ok := part.(types.ToolResultContent); ok {
+		// An execution-denied result is synthesized for a newly denied
+		// approval; it does not mean the harness has received the decision,
+		// so that approval response must still continue the turn (TS #23260).
+		if tr, ok := continuationToolResult(part); ok &&
+			(tr.Output == nil || tr.Output.Type != types.ToolResultOutputExecutionDenied) {
 			toolResultIDs[tr.ToolCallID] = struct{}{}
 		}
 	}
 
 	var continuations []types.ToolApprovalResponseContent
 	for _, part := range last.Content {
-		response, ok := part.(types.ToolApprovalResponseContent)
+		response, ok := continuationApprovalResponse(part)
 		if !ok {
 			continue
 		}

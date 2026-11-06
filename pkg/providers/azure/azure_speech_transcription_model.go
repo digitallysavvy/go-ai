@@ -3,7 +3,6 @@ package azure
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"mime/multipart"
 	stdhttp "net/http"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -124,29 +124,37 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		timestamps = "segment"
 	}
 
-	definition := map[string]interface{}{
-		"enhancedMode": map[string]interface{}{
-			"enabled": true,
-			"model":   modelName,
-			"modelOptions": map[string]interface{}{
-				"timestamps":      nilIfEmptyString(timestamps),
-				"transcribeStyle": nilIfEmptyString(azureOpts.TranscribeStyle),
-			},
+	// TS JSON.stringify drops undefined members, so unset options are omitted
+	// rather than sent as null.
+	modelOptions := map[string]interface{}{}
+	if timestamps != "" {
+		modelOptions["timestamps"] = timestamps
+	}
+	if azureOpts.TranscribeStyle != "" {
+		modelOptions["transcribeStyle"] = azureOpts.TranscribeStyle
+	}
+	// Struct field order is TS's JSON.stringify member order: enhancedMode,
+	// locales, diarization, phraseList.
+	definition := azureSpeechDefinition{
+		EnhancedMode: map[string]interface{}{
+			"enabled":      true,
+			"model":        modelName,
+			"modelOptions": modelOptions,
 		},
 	}
 	if azureOpts.Locales != nil {
-		definition["locales"] = azureOpts.Locales
+		definition.Locales = azureOpts.Locales
 	}
 	if azureOpts.Diarization != nil {
-		definition["diarization"] = map[string]interface{}{"enabled": azureOpts.Diarization.Enabled}
+		definition.Diarization = map[string]interface{}{"enabled": azureOpts.Diarization.Enabled}
 	}
 	if azureOpts.PhraseList != nil {
-		definition["phraseList"] = map[string]interface{}{"phrases": azureOpts.PhraseList.Phrases}
+		definition.PhraseList = map[string]interface{}{"phrases": azureOpts.PhraseList.Phrases}
 	}
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
 		if err != nil {
 			return nil, &providererrors.InvalidArgumentError{Field: "audio", Message: "invalid base64 audio: " + err.Error()}
 		}
@@ -178,6 +186,9 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -187,12 +198,17 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		return nil, err
 	}
 
-	if resp.StatusCode != stdhttp.StatusOK {
-		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody)
+	// TS postFormDataToApi treats any 2xx (response.ok) as success.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, false)
 	}
 
+	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAzureSpeechTr)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	var parsed azureSpeechTranscribeResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	if err := providerutils.UnmarshalChunk(respBody, &parsed); err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", "failed to parse Azure Speech transcription response: "+err.Error(), err)
 	}
 
@@ -215,8 +231,11 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		locale := ""
 		if phrase.Locale != nil {
 			locale = *phrase.Locale
-			base := strings.ToLower(strings.SplitN(locale, "-", 2)[0])
-			languages[base] = true
+			// TS: `phrase.locale ? [...] : []` -- an empty locale adds no language.
+			if locale != "" {
+				base := providerutils.JSToLower(strings.SplitN(locale, "-", 2)[0])
+				languages[base] = true
+			}
 		}
 		words := make([]AzureSpeechWord, 0, len(phrase.Words))
 		for _, w := range phrase.Words {
@@ -239,7 +258,8 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	reportedLanguage := ""
 	if len(languages) == 1 {
 		for lang := range languages {
-			if len(lang) == 2 {
+			// TS: /^[a-z]{2}$/
+			if len(lang) == 2 && lang[0] >= 'a' && lang[0] <= 'z' && lang[1] >= 'a' && lang[1] <= 'z' {
 				reportedLanguage = lang
 			}
 		}
@@ -251,6 +271,11 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		durationInSeconds = &d
 	}
 
+	// TS exposes the parsed JSON body; a []byte would marshal as base64.
+	var rawBody interface{}
+	if json.Unmarshal(respBody, &rawBody) != nil {
+		rawBody = string(respBody)
+	}
 	return &types.TranscriptionResult{
 		Text:              strings.Join(textParts, " "),
 		Segments:          segments,
@@ -264,27 +289,28 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 			Timestamp: timestamp,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Header),
-			Body:      respBody,
+			Body:      rawBody,
 		},
 	}, nil
 }
 
-func nilIfEmptyString(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
+// azureSpeechDefinition is the multipart `definition` JSON of a transcription
+// request.
+type azureSpeechDefinition struct {
+	EnhancedMode map[string]interface{} `json:"enhancedMode"`
+	Locales      []string               `json:"locales,omitempty"`
+	Diarization  map[string]interface{} `json:"diarization,omitempty"`
+	PhraseList   map[string]interface{} `json:"phraseList,omitempty"`
 }
 
-func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definition map[string]interface{}) (*bytes.Buffer, string, error) {
+func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definition azureSpeechDefinition) (*bytes.Buffer, string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
 	extension := mediaTypeToExtension(mimeType)
-	if extension == "" {
-		extension = "bin"
-	}
-	part, err := writer.CreateFormFile("audio", "audio."+extension)
+	// TS: new Blob([...], {type: mediaType}) named `audio.${ext}`; the part
+	// carries the media type and an empty extension is kept as-is.
+	part, err := providerutils.CreateTypedFormFile(writer, "audio", "audio."+extension, mimeType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -306,35 +332,52 @@ func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definiti
 	return &buf, writer.FormDataContentType(), nil
 }
 
-// azureSpeechErrorBody mirrors the two shapes Azure Speech error bodies take:
-// {"error":{"message":...}} or {"message":...}.
+// azureSpeechErrorBody decodes the error shapes of Azure Speech failures.
+// Message pointers keep an explicit empty string distinct from an absent key,
+// as the zod schemas in TS do.
 type azureSpeechErrorBody struct {
 	Error *struct {
-		Message string `json:"message"`
+		Message *string `json:"message"`
 	} `json:"error"`
-	Message string `json:"message"`
+	Message *string `json:"message"`
 }
 
 // azureSpeechAPIError builds a *providererrors.ProviderError for a non-200
-// Azure Speech response, mirroring TS's failedResponseHandler: a parsed JSON
-// error message is used as-is; an empty 400 body (Azure's common failure
-// mode for a bad voice, style, or option) gets an actionable message instead
-// of a blank one.
-func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte) error {
-	message := ""
+// Azure Speech response, mirroring the TS failedResponseHandler of each
+// backend.
+//
+// Speech synthesis (speechSynthesis, TS azure-speech-speech-model.ts) only
+// accepts {"error":{"message"}}; anything else gets a status-specific
+// message. Every status, a 502 included, keeps its code and default
+// retryability (TS c3b6fef1ff removed the "reset reason: protocol error" 502
+// to non-retryable 400 special case of #21944: Azure now answers an unknown
+// voice or unsupported style with a 400).
+//
+// Transcription uses TS createJsonErrorResponseHandler with a union of
+// {"error":{"message"}} and {"message"}; an empty or unparseable body gets the
+// HTTP status text as its message.
+func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte, speechSynthesis bool) error {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var parsed azureSpeechErrorBody
-	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil {
-		if parsed.Error != nil && parsed.Error.Message != "" {
-			message = parsed.Error.Message
-		} else if parsed.Message != "" {
-			message = parsed.Message
-		}
-	}
-	if message == "" {
-		if statusCode == stdhttp.StatusBadRequest {
+	parseOK := json.Unmarshal(body, &parsed) == nil
+	var message string
+	if speechSynthesis {
+		switch {
+		case parseOK && parsed.Error != nil && parsed.Error.Message != nil:
+			message = *parsed.Error.Message
+		case statusCode == stdhttp.StatusBadRequest:
 			message = "Azure Speech request failed with status 400. Check the voice name, style, and output format."
-		} else {
+		default:
 			message = "Azure Speech request failed with status " + strconv.Itoa(statusCode) + "."
+		}
+	} else {
+		switch {
+		case parseOK && parsed.Error != nil && parsed.Error.Message != nil:
+			message = *parsed.Error.Message
+		case parseOK && parsed.Message != nil:
+			message = *parsed.Message
+		default:
+			message = stdhttp.StatusText(statusCode)
 		}
 	}
 	return &providererrors.ProviderError{

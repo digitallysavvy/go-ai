@@ -2,7 +2,6 @@ package google
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -11,12 +10,15 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -96,7 +98,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
 	}
-	requestBody, outputFormat, warnings, err := m.buildRequestBody(opts)
+	requestBody, outputFormat, usesStructured, warnings, err := m.buildRequestBody(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -104,10 +106,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 
 	var response googleSpeechResponse
 	httpResp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    m.cfg.GeneratePath(m.modelID),
-		Body:    requestBody,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleSpeech),
+		Method:           http.MethodPost,
+		Path:             m.cfg.GeneratePath(m.modelID),
+		Body:             requestBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -116,7 +119,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	base64Audio, mimeType := firstGoogleSpeechAudio(response)
 	pcm := []byte{}
 	if base64Audio != "" {
-		pcm, err = base64.StdEncoding.DecodeString(base64Audio)
+		pcm, err = fileutil.ConvertBase64ToBytes(base64Audio)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode Gemini TTS audio: %w", err)
 		}
@@ -125,10 +128,14 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if sampleRate == 0 {
 		sampleRate = defaultGeminiTTSSampleRate
 	}
+	// Older models return raw PCM, which needs a container for the default WAV
+	// output. Gemini 3.8 returns WAV itself; another header would corrupt it.
+	isPCM := geminiPCMMimeRE.MatchString(mimeType) || (mimeType == "" && !usesStructured)
 	audio := pcm
-	if outputFormat != "pcm" && len(pcm) > 0 {
+	if outputFormat == "AUDIO_WAV" && isPCM && len(pcm) > 0 {
 		audio = addGeminiWAVHeader(pcm, sampleRate)
-	} else if outputFormat == "pcm" && len(pcm) > 0 {
+	}
+	if outputFormat == "AUDIO_L16" && len(pcm) > 0 && !usesStructured {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "outputFormat",
@@ -136,7 +143,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		})
 	}
 
-	requestBytes, err := json.Marshal(requestBody)
+	requestBytes, err := json.Marshal(googleSpeechOrderedBody(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Gemini TTS request metadata: %w", err)
 	}
@@ -176,41 +183,49 @@ func parseGoogleSpeechRawBody(body []byte) (interface{}, error) {
 }
 
 func (m *SpeechModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload struct {
-			Error struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-				Status  string `json:"status"`
-			} `json:"error"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil {
-			if payload.Error.Message != "" {
-				message = payload.Error.Message
-			}
-			code = payload.Error.Status
-		}
-		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		return providerErr
+		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
 	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
-func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, string, []types.Warning, error) {
+var geminiPCMMimeRE = regexp.MustCompile(`(?i)^audio/(?:l16|pcm)(?:;|$)`)
+
+// buildRequestBody ports TS GoogleSpeechModel.getArgs: structured speech
+// (turns, speechMetadata, response formats) for Gemini 3.8 and later, prompt
+// based directions for the 2.5 / 3.1 families. It returns the request body,
+// the API output format enum (AUDIO_WAV, AUDIO_L16, ...), whether the model
+// uses structured speech, and any warnings.
+func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, string, bool, []types.Warning, error) {
 	warnings := []types.Warning{}
 	googleOpts, err := m.extractProviderOptions(opts.ProviderOptions)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", false, nil, err
 	}
 
 	voice := opts.Voice
 	if voice == "" {
 		voice = defaultGeminiTTSVoice
 	}
+	// Older Gemini families require prompt-based directions. Newer and custom
+	// model IDs default to structured speech.
+	usesStructured := !strings.HasPrefix(m.modelID, "gemini-2.5-") && !strings.HasPrefix(m.modelID, "gemini-3.1-")
+
+	if strings.HasPrefix(voice, "voice_") || strings.HasPrefix(voice, "voicekey_") {
+		return nil, "", false, nil, providererrors.NewArgumentError("voice", "Custom voices are not supported. Use a prebuilt voice instead.", nil)
+	}
+
 	var speechConfig map[string]interface{}
 	if googleOpts.MultiSpeakerVoiceConfig != nil {
 		speechConfig = map[string]interface{}{"multiSpeakerVoiceConfig": googleOpts.MultiSpeakerVoiceConfig}
@@ -223,7 +238,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	}
 
 	promptText := opts.Text
-	if opts.Instructions != "" {
+	if opts.Instructions != "" && !usesStructured {
 		if googleOpts.MultiSpeakerVoiceConfig != nil {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -234,6 +249,67 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 			promptText = opts.Instructions + ": " + opts.Text
 		}
 	}
+
+	parts := []interface{}{map[string]interface{}{"text": promptText}}
+	if usesStructured {
+		if len(googleOpts.Turns) > 0 && googleOpts.SpeechMetadata != nil {
+			return nil, "", false, nil, providererrors.NewArgumentError("providerOptions", "Set speechMetadata on each turn when using turns.", nil)
+		}
+		if len(googleOpts.Turns) > 0 && opts.Text != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "text",
+				Details: "Google TTS turns replace the top-level text.",
+			})
+		}
+		turns := googleOpts.Turns
+		if len(turns) == 0 {
+			turns = []GoogleSpeechTurn{{Text: opts.Text, SpeechMetadata: googleOpts.SpeechMetadata}}
+		}
+		parts = parts[:0]
+		for _, turn := range turns {
+			var style *string
+			speaker := ""
+			if turn.SpeechMetadata != nil {
+				style = turn.SpeechMetadata.Style
+				speaker = turn.SpeechMetadata.Speaker
+			}
+			if style == nil && opts.Instructions != "" {
+				instructions := opts.Instructions
+				style = &instructions
+			}
+			if googleOpts.MultiSpeakerVoiceConfig != nil && !googleSpeechHasSpeaker(googleOpts.MultiSpeakerVoiceConfig, speaker) {
+				return nil, "", false, nil, providererrors.NewArgumentError("speechMetadata.speaker", "Every multi-speaker turn must specify a speechMetadata.speaker matching a configured speaker.", nil)
+			}
+			part := map[string]interface{}{"text": turn.Text}
+			if style != nil || speaker != "" {
+				meta := map[string]interface{}{}
+				if style != nil {
+					meta["style"] = *style
+				}
+				if speaker != "" {
+					meta["speaker"] = speaker
+				}
+				part["speechMetadata"] = meta
+			}
+			parts = append(parts, part)
+		}
+	} else if len(googleOpts.Turns) > 0 || googleOpts.SpeechMetadata != nil {
+		return nil, "", false, nil, providererrors.NewArgumentError("providerOptions", "Structured speech metadata and turns require Gemini 3.8 TTS.", nil)
+	}
+
+	transcript := opts.Text
+	if len(googleOpts.Turns) > 0 {
+		var sb strings.Builder
+		for _, turn := range googleOpts.Turns {
+			sb.WriteString(turn.Text)
+		}
+		transcript = sb.String()
+	}
+	if transcript == "" {
+		return nil, "", false, nil, providererrors.NewArgumentError("text", "Speech input must contain a non-empty transcript.", nil)
+	}
+
 	if opts.Speed != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
@@ -249,12 +325,19 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		})
 	}
 
-	outputFormat := "wav"
-	switch opts.OutputFormat {
-	case "", "wav":
-	case "pcm":
-		outputFormat = "pcm"
-	default:
+	formats := map[string]string{"wav": "AUDIO_WAV", "pcm": "AUDIO_L16"}
+	if usesStructured {
+		formats = map[string]string{
+			"wav": "AUDIO_WAV", "audio/wav": "AUDIO_WAV",
+			"pcm": "AUDIO_L16", "audio/l16": "AUDIO_L16",
+			"mulaw": "AUDIO_MULAW", "audio/mulaw": "AUDIO_MULAW",
+			"alaw": "AUDIO_ALAW", "audio/alaw": "AUDIO_ALAW",
+		}
+	}
+	resolved := "wav"
+	if _, ok := formats[opts.OutputFormat]; ok && opts.OutputFormat != "" {
+		resolved = opts.OutputFormat
+	} else if opts.OutputFormat != "" {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "outputFormat",
@@ -262,20 +345,68 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		})
 	}
 
+	generationConfig := map[string]interface{}{
+		"responseModalities": []string{"AUDIO"},
+		"speechConfig":       speechConfig,
+	}
+	if usesStructured && opts.OutputFormat != "" {
+		generationConfig["responseFormat"] = map[string]interface{}{
+			"audio": map[string]interface{}{"mimeType": formats[resolved]},
+		}
+	}
+
 	return map[string]interface{}{
 		"contents": []interface{}{
-			map[string]interface{}{
-				"role": "user",
-				"parts": []interface{}{
-					map[string]interface{}{"text": promptText},
-				},
-			},
+			map[string]interface{}{"role": "user", "parts": parts},
 		},
-		"generationConfig": map[string]interface{}{
-			"responseModalities": []string{"AUDIO"},
-			"speechConfig":       speechConfig,
-		},
-	}, outputFormat, warnings, nil
+		"generationConfig": generationConfig,
+	}, formats[resolved], usesStructured, warnings, nil
+}
+
+// googleSpeechOrderedBody gives request.body the key order of the TS
+// requestBody literal ({contents: [{role, parts: [{text, speechMetadata:
+// {style, speaker}}]}], generationConfig: {responseModalities, speechConfig,
+// responseFormat}}), which JSON.stringify keeps and a Go map sorts.
+func googleSpeechOrderedBody(body map[string]interface{}) interface{} {
+	ordered := func(m map[string]interface{}, keys ...string) interface{} {
+		if m == nil {
+			return nil
+		}
+		return providerutils.OrderedMap{Keys: keys, Vals: m}
+	}
+	contents, _ := body["contents"].([]interface{})
+	orderedContents := make([]interface{}, len(contents))
+	for i, c := range contents {
+		content, _ := c.(map[string]interface{})
+		parts, _ := content["parts"].([]interface{})
+		orderedParts := make([]interface{}, len(parts))
+		for j, raw := range parts {
+			part, _ := raw.(map[string]interface{})
+			vals := map[string]interface{}{"text": part["text"]}
+			if meta, ok := part["speechMetadata"].(map[string]interface{}); ok {
+				vals["speechMetadata"] = ordered(meta, "style", "speaker")
+			}
+			orderedParts[j] = ordered(vals, "text", "speechMetadata")
+		}
+		orderedContents[i] = ordered(map[string]interface{}{"role": content["role"], "parts": orderedParts}, "role", "parts")
+	}
+	generationConfig, _ := body["generationConfig"].(map[string]interface{})
+	return ordered(map[string]interface{}{
+		"contents":         orderedContents,
+		"generationConfig": ordered(generationConfig, "responseModalities", "speechConfig", "responseFormat"),
+	}, "contents", "generationConfig")
+}
+
+// googleSpeechHasSpeaker reports whether speaker names one of the configured
+// multi-speaker voices.
+func googleSpeechHasSpeaker(config map[string]interface{}, speaker string) bool {
+	speakers, _ := config["speakerVoiceConfigs"].([]interface{})
+	for _, raw := range speakers {
+		if c, ok := raw.(map[string]interface{}); ok && c["speaker"] == speaker && speaker != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *SpeechModel) extractProviderOptions(providerOptions map[string]interface{}) (GoogleSpeechModelOptions, error) {
@@ -289,11 +420,7 @@ func (m *SpeechModel) extractProviderOptions(providerOptions map[string]interfac
 		}
 		opts, err := parseGoogleSpeechOptions(raw)
 		if err != nil {
-			return GoogleSpeechModelOptions{}, &providererrors.InvalidArgumentError{
-				Field:   "providerOptions",
-				Message: fmt.Sprintf("invalid %s provider options", key),
-				Cause:   err,
-			}
+			return GoogleSpeechModelOptions{}, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", key), err)
 		}
 		return opts, nil
 	}
@@ -311,6 +438,20 @@ func parseGoogleSpeechOptions(raw interface{}) (GoogleSpeechModelOptions, error)
 		return validateGoogleSpeechModelOptions(*v)
 	case map[string]interface{}:
 		out := GoogleSpeechModelOptions{}
+		if rawMeta, ok := v["speechMetadata"]; ok && rawMeta != nil {
+			meta, err := parseGoogleSpeechMetadata(rawMeta)
+			if err != nil {
+				return GoogleSpeechModelOptions{}, err
+			}
+			out.SpeechMetadata = meta
+		}
+		if rawTurns, ok := v["turns"]; ok && rawTurns != nil {
+			turns, err := parseGoogleSpeechTurns(rawTurns)
+			if err != nil {
+				return GoogleSpeechModelOptions{}, err
+			}
+			out.Turns = turns
+		}
 		if rawConfig, ok := v["multiSpeakerVoiceConfig"]; ok {
 			m, ok := rawConfig.(map[string]interface{})
 			if !ok {
@@ -328,7 +469,94 @@ func parseGoogleSpeechOptions(raw interface{}) (GoogleSpeechModelOptions, error)
 	}
 }
 
+func parseGoogleSpeechMetadata(raw interface{}) (*GoogleSpeechMetadata, error) {
+	switch v := raw.(type) {
+	case GoogleSpeechMetadata:
+		return validateGoogleSpeechMetadata(v)
+	case *GoogleSpeechMetadata:
+		if v == nil {
+			return nil, nil
+		}
+		return validateGoogleSpeechMetadata(*v)
+	case map[string]interface{}:
+		out := GoogleSpeechMetadata{}
+		if sp, ok := v["speaker"]; ok && sp != nil {
+			s, ok := sp.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid google speech speechMetadata.speaker: expected string")
+			}
+			out.Speaker = s
+			if s == "" {
+				return nil, fmt.Errorf("invalid google speech speechMetadata.speaker: expected a non-empty string")
+			}
+		}
+		if st, ok := v["style"]; ok && st != nil {
+			s, ok := st.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid google speech speechMetadata.style: expected string")
+			}
+			out.Style = &s
+		}
+		return &out, nil
+	default:
+		return nil, fmt.Errorf("invalid google speech speechMetadata: expected object")
+	}
+}
+
+func validateGoogleSpeechMetadata(m GoogleSpeechMetadata) (*GoogleSpeechMetadata, error) {
+	return &m, nil
+}
+
+func parseGoogleSpeechTurns(raw interface{}) ([]GoogleSpeechTurn, error) {
+	var list []interface{}
+	switch v := raw.(type) {
+	case []GoogleSpeechTurn:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("invalid google speech turns: expected at least one turn")
+		}
+		return v, nil
+	case []interface{}:
+		list = v
+	case []map[string]interface{}:
+		for _, t := range v {
+			list = append(list, t)
+		}
+	default:
+		return nil, fmt.Errorf("invalid google speech turns: expected array")
+	}
+	if len(list) == 0 {
+		return nil, fmt.Errorf("invalid google speech turns: expected at least one turn")
+	}
+	turns := make([]GoogleSpeechTurn, 0, len(list))
+	for i, item := range list {
+		switch t := item.(type) {
+		case GoogleSpeechTurn:
+			turns = append(turns, t)
+		case map[string]interface{}:
+			text, ok := t["text"].(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid google speech turns[%d].text: expected string", i)
+			}
+			turn := GoogleSpeechTurn{Text: text}
+			if rawMeta, ok := t["speechMetadata"]; ok && rawMeta != nil {
+				meta, err := parseGoogleSpeechMetadata(rawMeta)
+				if err != nil {
+					return nil, err
+				}
+				turn.SpeechMetadata = meta
+			}
+			turns = append(turns, turn)
+		default:
+			return nil, fmt.Errorf("invalid google speech turns[%d]: expected object", i)
+		}
+	}
+	return turns, nil
+}
+
 func validateGoogleSpeechModelOptions(opts GoogleSpeechModelOptions) (GoogleSpeechModelOptions, error) {
+	if len(opts.Turns) == 0 {
+		opts.Turns = nil
+	}
 	if opts.MultiSpeakerVoiceConfig != nil {
 		normalized, err := normalizeGoogleMultiSpeakerVoiceConfig(opts.MultiSpeakerVoiceConfig)
 		if err != nil {
@@ -369,6 +597,9 @@ func normalizeGoogleMultiSpeakerVoiceConfig(config map[string]interface{}) (map[
 		voiceConfig, ok := speakerConfig["voiceConfig"].(map[string]interface{})
 		if !ok {
 			return nil, fmt.Errorf("invalid google speech multiSpeakerVoiceConfig.speakerVoiceConfigs[%d].voiceConfig: expected object", i)
+		}
+		if v, present := voiceConfig["voice"]; present && v != nil {
+			return nil, fmt.Errorf("invalid google speech multiSpeakerVoiceConfig.speakerVoiceConfigs[%d].voiceConfig.voice: not supported; use prebuiltVoiceConfig", i)
 		}
 		prebuilt, ok := voiceConfig["prebuiltVoiceConfig"].(map[string]interface{})
 		if !ok {
@@ -430,7 +661,7 @@ func parseGeminiSampleRate(mimeType string) int {
 	// int, so an out-of-range value must be rejected explicitly instead of
 	// being treated as a real sample rate.
 	rate, err := strconv.Atoi(match[1])
-	if err != nil || rate < 0 || rate > math.MaxUint32 {
+	if err != nil || rate < 0 || int64(rate) > math.MaxUint32 {
 		return 0
 	}
 	return rate
@@ -448,7 +679,7 @@ func addGeminiWAVHeader(pcm []byte, sampleRate int) []byte {
 	// math.MaxInt64). Guard the narrowing conversion below explicitly so an
 	// out-of-range value can't silently truncate into a bogus WAV header
 	// field instead of being treated as "unknown".
-	if sampleRate < 0 || sampleRate > math.MaxUint32 {
+	if sampleRate < 0 || int64(sampleRate) > math.MaxUint32 {
 		sampleRate = 0
 	}
 	blockAlign := numChannels * bitsPerSample / 8
