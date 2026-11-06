@@ -339,3 +339,49 @@ func TestR87eintegDecideTelemetryNilRounding(t *testing.T) {
 		t.Fatalf("got %#v %#v %#v", integ.decideEnd.Rounding, integ.decisionModelEnd.Rounding, integ.decisionModelEnd.Response)
 	}
 }
+
+// Coordinator ruling "Undeclared tool input keys": TS zod z.object input
+// schemas of provider-defined tools strip undeclared keys (bash_20250124:
+// z.object({command, restart})); user JSON-schema tools keep them like TS
+// jsonSchema() tools, and unaudited provider tools keep them (S7).
+func TestR87eintegProviderToolInputStripsUndeclaredKeys(t *testing.T) {
+	var got []map[string]interface{}
+	exec := func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		got = append(got, in)
+		return "ok", nil
+	}
+	params := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}, "restart": map[string]interface{}{"type": "boolean"}}, "required": []interface{}{"command"}}
+	tools := []types.Tool{
+		{Name: "bash", Type: "provider", ProviderID: "anthropic.bash_20250124", Parameters: params, Execute: exec},
+		{Name: "user", Parameters: params, Execute: exec},
+		{Name: "mem", Type: "provider", ProviderID: "anthropic.memory_20250818", Parameters: params, Execute: exec},
+	}
+	calls := 0
+	model := &testutil.MockLanguageModel{ToolSupport: true, DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		calls++
+		if calls > 1 {
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		}
+		in := func(id, name string) types.ToolCall {
+			return types.ToolCall{ID: id, ToolName: name, Arguments: map[string]interface{}{"command": "ls", "extra": 1}}
+		}
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{in("1", "bash"), in("2", "user"), in("3", "mem")}}, nil
+	}}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", Tools: tools, StopWhen: []StopCondition{StepCountIs(2)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("executions = %v", got)
+	}
+	byKeys := map[int]int{}
+	for _, in := range got {
+		byKeys[len(in)]++
+	}
+	if byKeys[1] != 1 || byKeys[2] != 2 {
+		t.Fatalf("inputs = %v, want the bash input stripped to {command} and the others kept", got)
+	}
+	if args := res.Steps[0].ToolCalls[0].Arguments; len(args) != 1 || args["command"] != "ls" {
+		t.Fatalf("step tool call input = %v", args)
+	}
+}

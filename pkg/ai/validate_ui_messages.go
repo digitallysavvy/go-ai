@@ -235,7 +235,8 @@ func validateUIToolInput(ctx context.Context, tool *types.Tool, toolPart *ToolUI
 		// SafeValidateUIMessages for why): a missing field with a default
 		// must not fail validation, and the defaulted value is what gets
 		// parsed on.
-		defaulted := applyDefaultsForValidator(value, validator)
+		// Audited provider tools strip undeclared keys (TS zod z.object).
+		defaulted := applyDefaultsForValidator(stripUndeclaredProviderToolInput(tool, value), validator)
 		if err := validator.Validate(defaulted); err != nil {
 			return uiValidationError(value, err, field, toolName, toolPart.ToolCallID)
 		}

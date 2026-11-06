@@ -218,7 +218,8 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 		// TS safeValidateTypes: a TypeValidationError of the value before
 		// defaults.
 		original := value
-		value = applyDefaultsForValidator(value, validator)
+		// Audited provider tools strip undeclared keys (TS zod z.object).
+		value = applyDefaultsForValidator(stripUndeclaredProviderToolInput(tool, value), validator)
 		if err := validator.Validate(value); err != nil {
 			return approvalInputTypeValidationError(call, original, err)
 		}

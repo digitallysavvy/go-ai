@@ -358,6 +358,11 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, m
 	}
 	// The validator may fill or transform values in place: keep a copy.
 	rawArgs := cloneSchemaMap(args)
+	// TS zod z.object input schemas of audited provider tools strip
+	// undeclared keys while parsing.
+	if stripped, ok := stripUndeclaredProviderToolInput(tool, args).(map[string]interface{}); ok {
+		args = stripped
+	}
 	if tool.ValidateInput != nil {
 		// TS jsonSchema(schema, {validate}): the tool's own validator replaces
 		// the schema check, and its value is the input the call carries.
