@@ -25,10 +25,23 @@ func nextNonMeta(t *testing.T, stream provider.TextStream) *provider.StreamChunk
 		if err != nil {
 			t.Fatalf("stream.Next failed: %v", err)
 		}
-		if chunk.Type != provider.ChunkTypeResponseMetadata && chunk.Type != provider.ChunkTypeStreamStart {
-			return chunk
+		// Text block boundaries are skipped too; TestR87eintegChatStreamTextBlocks
+		// checks them.
+		switch chunk.Type {
+		case provider.ChunkTypeResponseMetadata, provider.ChunkTypeStreamStart, provider.ChunkTypeTextStart, provider.ChunkTypeTextEnd:
+			continue
 		}
+		return chunk
 	}
+}
+
+// nextAfterTextStart returns the next chunk, skipping one text-start part.
+func nextAfterTextStart(stream provider.TextStream) (*provider.StreamChunk, error) {
+	chunk, err := stream.Next()
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		return stream.Next()
+	}
+	return chunk, err
 }
 
 func nextChunkOfType(t *testing.T, stream provider.TextStream, chunkType provider.ChunkType) *provider.StreamChunk {
@@ -872,7 +885,7 @@ data: [DONE]
 		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
 	}
 
-	chunk, err = stream.Next()
+	chunk, err = nextAfterTextStart(stream)
 	if err != nil {
 		t.Fatalf("third chunk error: %v", err)
 	}
@@ -976,8 +989,9 @@ data: [DONE]
 		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
 	}
 
-	// Second chunk: the text delta that sets outputStarted.
-	chunk, err = stream.Next()
+	// Second chunk: the text delta that sets outputStarted (after the
+	// text-start part).
+	chunk, err = nextAfterTextStart(stream)
 	if err != nil {
 		t.Fatalf("second chunk error: %v", err)
 	}
@@ -1029,7 +1043,7 @@ data: [DONE]
 	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), false)
 	defer stream.Close() //nolint:errcheck
 
-	chunk, err := stream.Next()
+	chunk, err := nextAfterTextStart(stream)
 	if err != nil {
 		t.Fatalf("first chunk error: %v", err)
 	}

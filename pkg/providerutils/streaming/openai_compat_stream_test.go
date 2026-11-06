@@ -50,6 +50,17 @@ func collectStreamChunks(t *testing.T, stream provider.TextStream) []*provider.S
 	return chunks
 }
 
+// dropCompatTextBlocks removes text-start / text-end parts.
+func dropCompatTextBlocks(chunks []*provider.StreamChunk) []*provider.StreamChunk {
+	var out []*provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type != provider.ChunkTypeTextStart && c.Type != provider.ChunkTypeTextEnd {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func compatChunksOfType(chunks []*provider.StreamChunk, chunkType provider.ChunkType) []*provider.StreamChunk {
 	var filtered []*provider.StreamChunk
 	for _, chunk := range chunks {
@@ -75,9 +86,12 @@ data: [DONE]
 
 	chunks := collectStreamChunks(t, stream)
 
-	if len(chunks) != 3 {
-		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	// TS openai-compatible: one "txt-0" text block around the deltas.
+	if len(chunks) != 5 || chunks[0].Type != provider.ChunkTypeTextStart || chunks[0].ID != "txt-0" ||
+		chunks[3].Type != provider.ChunkTypeTextEnd || chunks[3].ID != "txt-0" || chunks[1].ID != "txt-0" {
+		t.Fatalf("expected text-start, 2 deltas, text-end, finish; got %d chunks", len(chunks))
 	}
+	chunks = dropCompatTextBlocks(chunks)
 	if chunks[0].Type != provider.ChunkTypeText || chunks[0].Text != "Hello" {
 		t.Errorf("chunk[0]: got type=%v text=%q", chunks[0].Type, chunks[0].Text)
 	}
@@ -105,8 +119,10 @@ data: [DONE]
 	wantTypes := []provider.ChunkType{
 		provider.ChunkTypeRaw,
 		provider.ChunkTypeResponseMetadata, // first event carries an id
+		provider.ChunkTypeTextStart,
 		provider.ChunkTypeText,
 		provider.ChunkTypeRaw,
+		provider.ChunkTypeTextEnd,
 		provider.ChunkTypeFinish,
 	}
 	if len(chunks) != len(wantTypes) {
@@ -125,8 +141,8 @@ data: [DONE]
 		encoded, _ := json.Marshal(raw)
 		t.Fatalf("raw chunk = %s, want id raw-1", encoded)
 	}
-	if chunks[2].Text != "Hello" {
-		t.Fatalf("text chunk = %q, want Hello", chunks[2].Text)
+	if chunks[3].Text != "Hello" {
+		t.Fatalf("text chunk = %q, want Hello", chunks[3].Text)
 	}
 }
 
@@ -522,7 +538,9 @@ data: [DONE]
 
 	chunks := collectStreamChunks(t, stream)
 	wantTypes := []provider.ChunkType{
+		provider.ChunkTypeTextStart,
 		provider.ChunkTypeText,
+		provider.ChunkTypeTextEnd,
 		provider.ChunkTypeFinish,
 	}
 	if len(chunks) != len(wantTypes) {
@@ -649,8 +667,11 @@ data: {"choices":[{"delta":{"content":" world"},"finish_reason":null}]}
 
 	chunks := collectStreamChunks(t, stream)
 	wantTypes := []provider.ChunkType{
+		provider.ChunkTypeTextStart,
 		provider.ChunkTypeText,
 		provider.ChunkTypeText,
+		// TS flush ends the text block before the missing-finish error.
+		provider.ChunkTypeTextEnd,
 		provider.ChunkTypeError,
 		provider.ChunkTypeFinish,
 	}
@@ -662,14 +683,14 @@ data: {"choices":[{"delta":{"content":" world"},"finish_reason":null}]}
 			t.Fatalf("chunk[%d] = %v, want %v (full: %#v)", i, chunks[i].Type, want, chunks)
 		}
 	}
-	errChunk := chunks[2]
+	errChunk := chunks[4]
 	if errChunk.Text != "Response stream ended without a finish reason." {
 		t.Fatalf("error text = %q", errChunk.Text)
 	}
 	if errChunk.Err == nil || !providererrors.IsInvalidResponseDataError(errChunk.Err) {
 		t.Fatalf("error chunk Err = %#v, want *InvalidResponseDataError", errChunk.Err)
 	}
-	finish := chunks[3]
+	finish := chunks[5]
 	if finish.FinishReason != types.FinishReasonError {
 		t.Fatalf("finish reason = %v, want error", finish.FinishReason)
 	}
@@ -993,6 +1014,10 @@ func runOpenAICompatStreamRecursionChild() {
 
 	s := newTestStream(sb.String())
 	chunk, err := s.Next()
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		// TS opens the "txt-0" text block before the first delta.
+		chunk, err = s.Next()
+	}
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return

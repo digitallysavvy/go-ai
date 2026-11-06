@@ -112,8 +112,12 @@ data: [DONE]
 		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
 	}
 	chunk, err = stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeTextStart || chunk.ID != "txt-0" {
+		t.Fatalf("third chunk = %#v, %v, want text-start txt-0", chunk, err)
+	}
+	chunk, err = stream.Next()
 	if err != nil {
-		t.Fatalf("third chunk error: %v", err)
+		t.Fatalf("fourth chunk error: %v", err)
 	}
 	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
 		t.Fatalf("third chunk = %#v, want text Hello", chunk)
@@ -180,6 +184,10 @@ func TestLanguageModelDoGenerateAndDoStream(t *testing.T) {
 		t.Fatalf("first chunk type = %v, want stream-start", chunk.Type)
 	}
 	chunk, err = stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeTextStart {
+		t.Fatalf("text-start chunk = %+v err=%v", chunk, err)
+	}
+	chunk, err = stream.Next()
 	if err != nil || chunk.Text != "hello " {
 		t.Fatalf("second stream chunk = %+v err=%v", chunk, err)
 	}
@@ -192,6 +200,10 @@ func TestLanguageModelDoGenerateAndDoStream(t *testing.T) {
 	// response.headers, round 87e).
 	if rh, ok := stream.(provider.StreamResponseHeaders); !ok || rh.ResponseHeaders()["Content-Type"] != "text/event-stream" {
 		t.Fatalf("stream %T reports no Content-Type header", stream)
+	}
+	chunk, err = stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeTextEnd {
+		t.Fatalf("text-end chunk = %+v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
 	if err != nil || chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonStop {

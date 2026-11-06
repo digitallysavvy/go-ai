@@ -45,19 +45,27 @@ data: [DONE]
 	}
 
 	// TS emits response-metadata on the first valid chunk, even without
-	// id/model/created.
-	if len(chunks) != 4 || chunks[0].Type != provider.ChunkTypeResponseMetadata {
-		t.Fatalf("expected response-metadata + 3 chunks, got %d", len(chunks))
+	// id/model/created, then text-start / text-delta / text-end with id
+	// "txt-0" (groq-chat-language-model.ts; cr-r87e-stream-to-prova 1).
+	if len(chunks) != 6 || chunks[0].Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("expected response-metadata + 5 chunks, got %d", len(chunks))
 	}
 	chunks = chunks[1:]
-	if chunks[0].Type != provider.ChunkTypeText || chunks[0].Text != "Hello" {
-		t.Errorf("chunk[0]: got type=%v text=%q", chunks[0].Type, chunks[0].Text)
+	want := []struct {
+		typ  provider.ChunkType
+		id   string
+		text string
+	}{
+		{provider.ChunkTypeTextStart, "txt-0", ""},
+		{provider.ChunkTypeText, "txt-0", "Hello"},
+		{provider.ChunkTypeText, "txt-0", " world"},
+		{provider.ChunkTypeTextEnd, "txt-0", ""},
+		{provider.ChunkTypeFinish, "", ""},
 	}
-	if chunks[1].Type != provider.ChunkTypeText || chunks[1].Text != " world" {
-		t.Errorf("chunk[1]: got type=%v text=%q", chunks[1].Type, chunks[1].Text)
-	}
-	if chunks[2].Type != provider.ChunkTypeFinish {
-		t.Errorf("chunk[2]: expected finish, got %v", chunks[2].Type)
+	for i, w := range want {
+		if chunks[i].Type != w.typ || chunks[i].ID != w.id || chunks[i].Text != w.text {
+			t.Errorf("chunk[%d]: got type=%v id=%q text=%q, want %v %q %q", i, chunks[i].Type, chunks[i].ID, chunks[i].Text, w.typ, w.id, w.text)
+		}
 	}
 }
 
@@ -94,8 +102,12 @@ data: [DONE]
 		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
 	}
 	chunk, err = stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeTextStart {
+		t.Fatalf("third chunk = %#v, %v, want text-start", chunk, err)
+	}
+	chunk, err = stream.Next()
 	if err != nil {
-		t.Fatalf("third chunk error: %v", err)
+		t.Fatalf("fourth chunk error: %v", err)
 	}
 	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
 		t.Fatalf("third chunk = %#v, want text Hello", chunk)

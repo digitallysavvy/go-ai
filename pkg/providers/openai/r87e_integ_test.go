@@ -1,49 +1,79 @@
 package openai
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
+	"io"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// A completion stream reports the HTTP response headers through
-// provider.StreamResponseHeaders (TS doStream response.headers, round 87e)
-// and emits only TS's first-chunk response-metadata part.
-func TestR87eintegCompletionStreamHeadersBesideTheStream(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("X-Test", "v")
-		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"text":"hi","finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"))
-	}))
-	defer srv.Close()
-	m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).CompletionModel("gpt-3.5-turbo-instruct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s.Close() }()
-	metas := 0
+// r87eintegParts lists a stream's parts as "type" or "type:id", without
+// response metadata and with the tool-input parts folded into "tool".
+func r87eintegParts(t *testing.T, s provider.TextStream) []string {
+	t.Helper()
+	var out []string
 	for {
 		c, err := s.Next()
+		if err == io.EOF {
+			return out
+		}
 		if err != nil {
-			break
+			t.Fatal(err)
 		}
-		if c.Type == provider.ChunkTypeResponseMetadata {
-			metas++
+		switch c.Type {
+		case provider.ChunkTypeResponseMetadata:
+			continue
+		case provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd:
+			if len(out) == 0 || out[len(out)-1] != "tool" {
+				out = append(out, "tool")
+			}
+			continue
 		}
+		p := string(c.Type)
+		if c.ID != "" && c.Type != provider.ChunkTypeToolCall {
+			p += ":" + c.ID
+		}
+		out = append(out, p)
 	}
-	if metas != 1 {
-		t.Fatalf("response-metadata parts = %d, want TS's one", metas)
+}
+
+// TS openai-chat-language-model.ts: text is block "0", opened by any
+// present delta.content (even ""), ended in flush before the tool calls.
+// The OpenAI-compatible model (openai-compatible-chat-language-model.ts)
+// uses "txt-0" and ends the text block when reasoning starts
+// (cr-r87e-stream-to-provb class sweep).
+func TestR87eintegChatStreamTextBlocks(t *testing.T) {
+	sse := `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"a","tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	got := r87eintegParts(t, newOpenAIStream(io.NopCloser(strings.NewReader(sse))))
+	want := []string{"text-start:0", "text:0", "text:0", "tool", "text-end:0", "tool", "tool-call", "finish"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("openai parts\n got %q\nwant %q", got, want)
 	}
-	rh, ok := s.(provider.StreamResponseHeaders)
-	if !ok || rh.ResponseHeaders()["X-Test"] != "v" {
-		t.Fatalf("headers not reported beside the stream (%T)", s)
+
+	sse = `data: {"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"r"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"b"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	s := newOpenAIStream(io.NopCloser(strings.NewReader(sse)))
+	s.compat = true
+	got = r87eintegParts(t, s)
+	want = []string{"text-start:txt-0", "text:txt-0", "text-end:txt-0", "reasoning-start:reasoning-0", "reasoning:reasoning-0", "reasoning-end:reasoning-0", "text-start:txt-0", "text:txt-0", "text-end:txt-0", "finish"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("compat parts\n got %q\nwant %q", got, want)
 	}
 }

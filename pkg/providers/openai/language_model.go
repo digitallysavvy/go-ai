@@ -1399,8 +1399,11 @@ type openAIStream struct {
 	finishErrored     bool // TS finishReason={unified:'error'} after an unparsable/error chunk
 	finished          bool
 	isActiveReasoning bool
-	usage             *openAIUsage
-	logprobs          json.RawMessage
+	// isActiveText: TS isActiveText, the open text block ("0" for OpenAI,
+	// "txt-0" for the OpenAI-compatible model).
+	isActiveText bool
+	usage        *openAIUsage
+	logprobs     json.RawMessage
 }
 
 // newOpenAIStream creates a new OpenAI stream
@@ -1671,6 +1674,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					reasoning = choice.Delta.Reasoning
 				}
 				if reasoning != nil && *reasoning != "" {
+					s.endText(emit)
 					if !s.isActiveReasoning {
 						s.isActiveReasoning = true
 						emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
@@ -1683,6 +1687,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			// parts as TS convertOpenAICompatibleContent reads it.
 			for _, part := range s.contentParts(choice.Delta.Content) {
 				if part.Reasoning {
+					// TS openai-compatible enqueueReasoningDelta ends the
+					// text block first.
+					s.endText(emit)
 					if !s.isActiveReasoning {
 						s.isActiveReasoning = true
 						emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
@@ -1694,9 +1701,14 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					s.isActiveReasoning = false
 					emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
+				if !s.isActiveText {
+					s.isActiveText = true
+					emit(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: s.textID()})
+				}
 				emit(&provider.StreamChunk{
 					Type: provider.ChunkTypeText,
 					Text: part.Text,
+					ID:   s.textID(),
 				})
 			}
 
@@ -1873,6 +1885,23 @@ func (s *openAIStream) Err() error {
 	return s.err
 }
 
+// textID is the TS text block id: "0" (openai-chat-language-model.ts) or
+// "txt-0" for the OpenAI-compatible model.
+func (s *openAIStream) textID() string {
+	if s.compat {
+		return "txt-0"
+	}
+	return "0"
+}
+
+// endText closes an open text block (TS text-end).
+func (s *openAIStream) endText(emit func(*provider.StreamChunk)) {
+	if s.isActiveText {
+		s.isActiveText = false
+		emit(&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: s.textID()})
+	}
+}
+
 // closeBlocksAndToolCalls ends an open reasoning block and emits the finalized
 // tool calls (TS flush(): tool-call parts are emitted when the stream ends).
 // It reports whether the tracker failed (a tool call whose function.name
@@ -1883,6 +1912,7 @@ func (s *openAIStream) closeBlocksAndToolCalls() (toolCallErrored bool) {
 		s.isActiveReasoning = false
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 	}
+	s.endText(func(c *provider.StreamChunk) { s.flushQueue = append(s.flushQueue, c) })
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)

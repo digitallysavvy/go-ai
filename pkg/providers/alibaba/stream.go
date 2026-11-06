@@ -29,6 +29,7 @@ type alibabaStream struct {
 	// Tool calls are enqueued here only when finish_reason is received (flush).
 	flushQueue        []*provider.StreamChunk
 	isActiveReasoning bool
+	isActiveText      bool // TS activeText: the text block "0" is open
 	endQueued         bool
 	includeRawChunks  bool
 	responseHeaders   map[string]string
@@ -191,6 +192,8 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 	// order. Chunks are appended behind anything already queued for this event.
 	if delta.ReasoningContent != "" {
 		if !s.isActiveReasoning {
+			// TS ends an open text block before a reasoning block starts.
+			s.endText()
 			s.isActiveReasoning = true
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
 		}
@@ -205,7 +208,12 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 			s.isActiveReasoning = false
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: delta.Content})
+		// TS: text-start / text-delta / text-end with id "0".
+		if !s.isActiveText {
+			s.isActiveText = true
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: delta.Content, ID: "0"})
 	}
 	// Tool call deltas only accumulate; the tracker finalizes at stream end
 	// (TS flush()).
@@ -214,6 +222,7 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 			s.isActiveReasoning = false
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 		}
+		s.endText()
 		for _, tc := range delta.ToolCalls {
 			s.accumulateToolCall(tc)
 			if s.toolCallTracker.Failed() {
@@ -225,6 +234,14 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 		}
 	}
 	return nil, false
+}
+
+// endText closes the open text block "0" (TS text-end).
+func (s *alibabaStream) endText() {
+	if s.isActiveText {
+		s.isActiveText = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "0"})
+	}
 }
 
 // accumulateToolCall accumulates tool call data from a delta chunk.
@@ -247,6 +264,7 @@ func (s *alibabaStream) queueEnd() bool {
 		s.isActiveReasoning = false
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 	}
+	s.endText()
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)

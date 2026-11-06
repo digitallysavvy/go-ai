@@ -81,11 +81,14 @@ data: [DONE]
 	want := []string{
 		string(provider.ChunkTypeRaw) + ":",
 		string(provider.ChunkTypeResponseMetadata) + ":",
+		string(provider.ChunkTypeTextStart) + ":",
 		string(provider.ChunkTypeText) + ":",
 		string(provider.ChunkTypeRaw) + ":",
 		string(provider.ChunkTypeText) + ":hi",
 		string(provider.ChunkTypeRaw) + ":",
 		string(provider.ChunkTypeError) + ":overloaded",
+		// TS flush() still ends the text block before the finish part.
+		string(provider.ChunkTypeTextEnd) + ":",
 		string(provider.ChunkTypeFinish) + ":",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {

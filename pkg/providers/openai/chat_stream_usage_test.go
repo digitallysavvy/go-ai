@@ -107,7 +107,7 @@ func TestChatStreamCompatReasoningAndUsageOptIn(t *testing.T) {
 			kinds = append(kinds, c.Type)
 		}
 	}
-	want := []provider.ChunkType{provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, provider.ChunkTypeText, provider.ChunkTypeFinish}
+	want := []provider.ChunkType{provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, provider.ChunkTypeFinish}
 	if len(kinds) != len(want) {
 		t.Fatalf("chunks = %v", kinds)
 	}

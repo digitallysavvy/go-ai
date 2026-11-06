@@ -60,6 +60,10 @@ func runMistralStreamRecursionChild() {
 		// TS emits response-metadata on the first valid chunk.
 		chunk, err = s.Next()
 	}
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		// TS opens the text block "0" before the first delta.
+		chunk, err = s.Next()
+	}
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return

@@ -623,6 +623,7 @@ type groqStream struct {
 	toolCallTracker   *streaming.StreamingToolCallTracker
 	flushQueue        []*provider.StreamChunk
 	isActiveReasoning bool
+	isActiveText      bool       // TS isActiveText: a "txt-0" text block is open
 	pendingUsage      *groqUsage // captured from x_groq.usage
 	includeRawChunks  bool
 	responseHeaders   map[string]string
@@ -781,7 +782,12 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 					s.isActiveReasoning = false
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
+				// TS: text-start / text-delta / text-end with id "txt-0".
+				if !s.isActiveText {
+					s.isActiveText = true
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "txt-0"})
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content, ID: "txt-0"})
 			}
 			// Tool call delta: accumulate partial arguments by index; the
 			// tracker finalizes at stream end (TS flush()).
@@ -834,6 +840,10 @@ func (s *groqStream) queueFinishAtEnd() bool {
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+	}
+	if s.isActiveText {
+		s.isActiveText = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "txt-0"})
 	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk

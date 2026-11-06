@@ -117,8 +117,8 @@ func runOpenAIStreamRecursionChild() {
 
 	s := newOpenAIStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per choices-less event -- 300,000 deep
-	// -- before reaching the real text chunk.
-	chunk, err := s.Next()
+	// -- before reaching the real text chunk (after its text-start part).
+	chunk, err := nextAfterTextStart(s)
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return

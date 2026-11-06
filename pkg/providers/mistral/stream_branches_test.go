@@ -98,8 +98,12 @@ data: [DONE]
 	}
 
 	chunk, err = stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeTextStart || chunk.ID != "0" {
+		t.Fatalf("third chunk = %#v, %v, want text-start 0", chunk, err)
+	}
+	chunk, err = stream.Next()
 	if err != nil {
-		t.Fatalf("third chunk error: %v", err)
+		t.Fatalf("fourth chunk error: %v", err)
 	}
 	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
 		t.Fatalf("third chunk = %#v, want text Hello", chunk)

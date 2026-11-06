@@ -680,6 +680,7 @@ type mistralStream struct {
 	toolCallTracker         *streaming.StreamingToolCallTracker
 	flushQueue              []*provider.StreamChunk
 	isActiveReasoning       bool
+	isActiveText            bool // TS activeText: the text block "0" is open
 	includeRawChunks        bool
 	responseHeaders         map[string]string
 	responseMetadataEmitted bool
@@ -863,6 +864,8 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 						continue
 					}
 					if !s.isActiveReasoning {
+						// TS ends an open text block before reasoning starts.
+						s.endText()
 						s.isActiveReasoning = true
 						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
 					}
@@ -879,22 +882,14 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 					}
 				}
 				if text.Len() > 0 {
-					if s.isActiveReasoning {
-						s.isActiveReasoning = false
-						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
-					}
-					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text.String()})
+					s.queueText(text.String())
 				}
 			}
 		} else if len(contentRaw) > 0 && contentRaw[0] == '"' {
 			// Plain string content.
 			var text string
 			if err := json.Unmarshal(contentRaw, &text); err == nil && text != "" {
-				if s.isActiveReasoning {
-					s.isActiveReasoning = false
-					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
-				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text})
+				s.queueText(text)
 			}
 		}
 
@@ -931,11 +926,34 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
+// queueText queues a text delta in the text block "0": TS ends an open
+// reasoning block and starts the text block when no text block is open.
+func (s *mistralStream) queueText(text string) {
+	if !s.isActiveText {
+		if s.isActiveReasoning {
+			s.isActiveReasoning = false
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+		}
+		s.isActiveText = true
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
+	}
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text, ID: "0"})
+}
+
+// endText closes the open text block "0" (TS text-end).
+func (s *mistralStream) endText() {
+	if s.isActiveText {
+		s.isActiveText = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "0"})
+	}
+}
+
 func (s *mistralStream) closeReasoningAndTools() {
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 	}
+	s.endText()
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)

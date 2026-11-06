@@ -44,7 +44,9 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: response metadata + 2 text chunks + 1 finish
@@ -96,8 +98,19 @@ data: [DONE]
 
 	chunk, err = stream.Next()
 	require.NoError(t, err)
+	assert.Equal(t, provider.ChunkTypeTextStart, chunk.Type)
+
+	chunk, err = stream.Next()
+	require.NoError(t, err)
 	assert.Equal(t, provider.ChunkTypeText, chunk.Type)
 	assert.Equal(t, "Hello", chunk.Text)
+}
+
+// isAlibabaTextBlockPart reports a text-start / text-end part; the tests
+// that count deltas skip them (TestR87eintegAlibabaStreamTextBlocks checks
+// the block parts).
+func isAlibabaTextBlockPart(c *provider.StreamChunk) bool {
+	return c != nil && (c.Type == provider.ChunkTypeTextStart || c.Type == provider.ChunkTypeTextEnd)
 }
 
 // TestAlibabaStream_ProcessReasoningChunks tests reasoning content (thinking mode)
@@ -123,7 +136,9 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: reasoning-start + reasoning + reasoning + reasoning-end + text + finish
@@ -261,7 +276,9 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: text + finish
@@ -304,7 +321,9 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should skip empty chunks and have: text + finish
@@ -342,7 +361,9 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: error + text + finish
@@ -464,7 +485,9 @@ data: [DONE]
 			break
 		}
 		require.NoError(t, err)
-		chunks = append(chunks, chunk)
+		if !isAlibabaTextBlockPart(chunk) {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	// Should have: reasoning-start + reasoning + reasoning-end + 2 text + finish

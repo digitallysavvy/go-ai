@@ -79,6 +79,9 @@ type OpenAICompatStream struct {
 
 	// isActiveReasoning tracks whether we are inside a reasoning block.
 	isActiveReasoning bool
+	// isActiveText tracks whether the "txt-0" text block is open (TS
+	// isActiveText).
+	isActiveText bool
 
 	// finishPending is set once a finish_reason has been observed. The actual
 	// ChunkTypeFinish chunk is not enqueued until the SSE stream truly ends
@@ -373,6 +376,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				// queued for this event (e.g. response-metadata) drain first,
 				// then keep processing the same event: TS also handles
 				// content and tool_calls carried next to the reasoning delta.
+				s.endText()
 				if !s.isActiveReasoning {
 					s.isActiveReasoning = true
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
@@ -401,6 +405,8 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			}
 			for _, part := range parts {
 				if part.Reasoning {
+					// TS enqueueReasoningDelta ends the text block first.
+					s.endText()
 					if !s.isActiveReasoning {
 						s.isActiveReasoning = true
 						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
@@ -412,7 +418,12 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 					s.isActiveReasoning = false
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: part.Text})
+				// TS enqueueTextDelta: text-start / text-delta with id "txt-0".
+				if !s.isActiveText {
+					s.isActiveText = true
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "txt-0"})
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: part.Text, ID: "txt-0"})
 			}
 
 			// Tool call delta — accumulate arguments by index, never emit yet.
@@ -481,6 +492,14 @@ func rawStreamErrorText(raw json.RawMessage) string {
 	return string(raw)
 }
 
+// endText closes the open "txt-0" text block (TS text-end).
+func (s *OpenAICompatStream) endText() {
+	if s.isActiveText {
+		s.isActiveText = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "txt-0"})
+	}
+}
+
 func (s *OpenAICompatStream) enqueueChunks(chunks []ToolCallChunk) {
 	for _, chunk := range chunks {
 		c := chunk
@@ -546,6 +565,10 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 		pending = append(pending, &provider.StreamChunk{
 			Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0",
 		})
+	}
+	if s.isActiveText {
+		s.isActiveText = false
+		pending = append(pending, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "txt-0"})
 	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk

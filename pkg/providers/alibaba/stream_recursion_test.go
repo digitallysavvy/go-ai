@@ -69,6 +69,14 @@ func runAlibabaStreamRecursionChild() {
 			return
 		}
 	}
+	if chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		// TS opens the text block "0" before the first delta.
+		chunk, err = s.Next()
+		if err != nil {
+			fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
+			return
+		}
+	}
 	if chunk == nil || chunk.Type != provider.ChunkTypeText || chunk.Text != "hello" {
 		fmt.Printf("BF5_CHILD_FAIL: unexpected chunk: %+v\n", chunk)
 		return

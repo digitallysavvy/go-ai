@@ -723,6 +723,7 @@ type deepseekStream struct {
 	toolCallTracker     *streaming.StreamingToolCallTracker
 	flushQueue          []*provider.StreamChunk
 	isActiveReasoning   bool
+	isActiveText        bool // TS isActiveText: a "txt-0" text block is open
 	includeRawChunks    bool
 	responseHeaders     map[string]string
 	metadataEmitted     bool
@@ -922,11 +923,17 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 				})
 			}
 			if choice.Delta.Content != "" {
+				// TS opens the "txt-0" text block before it ends the
+				// reasoning block (deepseek-chat-language-model.ts).
+				if !s.isActiveText {
+					s.isActiveText = true
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "txt-0"})
+				}
 				if s.isActiveReasoning {
 					s.isActiveReasoning = false
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content, ID: "txt-0"})
 			}
 			// Tool call deltas accumulate by index; the tracker finalizes them
 			// at stream end (TS flush()).
@@ -982,6 +989,10 @@ func (s *deepseekStream) queueEnd() bool {
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+	}
+	if s.isActiveText {
+		s.isActiveText = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "txt-0"})
 	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
