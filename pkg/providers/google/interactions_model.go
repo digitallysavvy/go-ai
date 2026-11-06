@@ -466,17 +466,15 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 		headers = providerutils.ExtractHeaders(httpResp.Headers)
 		rawBody = json.RawMessage(httpResp.Body)
 	}
-	serviceTier := response.ServiceTier
-	if serviceTier == "" {
-		serviceTier = headerServiceTier(headers)
-	}
 	googleMeta := pruneMap(map[string]interface{}{
 		"interactionId":          emptyToNil(normalizedInteractionID(response.ID)),
-		"serviceTier":            emptyToNil(serviceTier),
 		"outputTokensByModality": outputTokensByModalityMap(response.Usage),
 	})
 	if googleMeta == nil {
 		googleMeta = map[string]interface{}{}
+	}
+	if st := interactionsServiceTier(response.ServiceTier, headerServiceTier(headers)); st != nil {
+		googleMeta["serviceTier"] = *st
 	}
 	providerMeta := map[string]interface{}{"google": googleMeta}
 	created, _ := time.Parse(time.RFC3339, response.Created)
@@ -1102,6 +1100,18 @@ func nonEmptyStrings(v []string) interface{} {
 		return nil
 	}
 	return v
+}
+
+// interactionsServiceTier is TS `response.service_tier ?? headerServiceTier`:
+// a body value ("" included) wins, else the header's (nil when absent).
+func interactionsServiceTier(body *string, header string) *string {
+	if body != nil {
+		return body
+	}
+	if header != "" {
+		return &header
+	}
+	return nil
 }
 
 func emptyToNil(v string) interface{} {

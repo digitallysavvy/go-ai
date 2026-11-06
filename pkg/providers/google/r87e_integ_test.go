@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/sha1" //nolint:gosec // WebSocket accept key
 	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -86,5 +89,96 @@ func TestR87eintegLiveCloseCodeAndReason(t *testing.T) {
 				t.Fatalf("err = %v\nwant %s", err, want)
 			}
 		})
+	}
+}
+
+// TS build-google-interactions-stream-transform.ts: `mime_type ?? default`
+// keeps a present "", `delta.result !== undefined` stores a present null
+// (the tool result is then null), and `service_tier != null` keeps ""
+// (cr-r87e-provb-to-prova 3).
+func TestR87eintegInteractionsStreamEmptyValues(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}`,
+		`data: {"event_type":"step.delta","index":0,"delta":{"type":"image","data":"aGk=","mime_type":""}}`,
+		`data: {"event_type":"step.stop","index":0}`,
+		`data: {"event_type":"step.start","index":1,"step":{"type":"google_search_result","call_id":"c1","result":[{"url":"https://a.example"}]}}`,
+		`data: {"event_type":"step.delta","index":1,"delta":{"type":"google_search_result","result":null}}`,
+		`data: {"event_type":"step.stop","index":1}`,
+		`data: {"event_type":"interaction.completed","interaction":{"id":"v1","status":"completed","service_tier":""}}`,
+		``,
+	}, "\n\n")
+	s := newInteractionsEventStream(context.Background(), New(Config{APIKey: "k"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, map[string]string{"X-Gemini-Service-Tier": "standard"}, 0)
+	var file, result, finish *provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		switch c.Type {
+		case provider.ChunkTypeFile:
+			file = c
+		case provider.ChunkTypeToolResult:
+			result = c
+		case provider.ChunkTypeFinish:
+			finish = c
+		}
+	}
+	if file == nil || file.GeneratedFileContent.MediaType != "" {
+		t.Fatalf("file = %+v", file)
+	}
+	if result == nil || result.ToolResult.Result != nil {
+		t.Fatalf("tool result = %+v", result)
+	}
+	var meta map[string]map[string]interface{}
+	if finish == nil || json.Unmarshal(finish.ProviderMetadata, &meta) != nil {
+		t.Fatalf("finish = %+v", finish)
+	}
+	if st, ok := meta["google"]["serviceTier"]; !ok || st != "" {
+		t.Fatalf("serviceTier = %#v (present %v), want \"\"", st, ok)
+	}
+}
+
+// TS google-interactions-language-model.ts `response.service_tier ??
+// headerServiceTier`: a body "" wins over the header.
+func TestR87eintegInteractionsServiceTierPrecedence(t *testing.T) {
+	empty := ""
+	if got := interactionsServiceTier(&empty, "standard"); got == nil || *got != "" {
+		t.Fatalf("body \"\" = %v", got)
+	}
+	if got := interactionsServiceTier(nil, "standard"); got == nil || *got != "standard" {
+		t.Fatalf("header = %v", got)
+	}
+	if got := interactionsServiceTier(nil, ""); got != nil {
+		t.Fatalf("none = %v", *got)
+	}
+}
+
+// TS build-google-interactions-stream-transform.ts resets its interactionId
+// on an interaction.created with an empty id (store: false), so later
+// metadata has none; the id the stream reconnects to (stream-google-
+// interactions.ts) is a separate value (cr-r87e-provb-to-prova 4).
+func TestR87eintegInteractionsCreatedEmptyIDResetsMetadataID(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"event_type":"interaction.created","interaction":{"id":"v1","status":"in_progress"}}`,
+		`data: {"event_type":"interaction.created","interaction":{"id":"","status":"in_progress"}}`,
+		`data: {"event_type":"interaction.completed","interaction":{"status":"completed"}}`,
+		``,
+	}, "\n\n")
+	st := newInteractionsEventStream(context.Background(), New(Config{APIKey: "k"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
+	var finish *provider.StreamChunk
+	for {
+		c, err := st.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finish = c
+		}
+	}
+	if finish == nil || strings.Contains(string(finish.ProviderMetadata), "interactionId") {
+		t.Fatalf("finish = %+v", finish)
+	}
+	if id := st.(*interactionsStream).interactionID; id != "v1" {
+		t.Fatalf("reconnect id = %q, want v1", id)
 	}
 }

@@ -530,17 +530,17 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				case "image":
 					if inner.Data != "" {
 						data, _ := fileutil.ConvertBase64ToBytes(inner.Data)
-						content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(inner.MimeType, "image/png"), Data: data, ProviderMetadata: meta})
+						content = append(content, types.GeneratedFileContent{MediaType: inner.mimeTypeOr("image/png"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
-						mediaType := firstNonEmpty(inner.MimeType, "image/png")
+						mediaType := inner.mimeTypeOr("image/png")
 						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
 					}
 				case "video":
 					if inner.Data != "" {
 						data, _ := fileutil.ConvertBase64ToBytes(inner.Data)
-						content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(inner.MimeType, "video/mp4"), Data: data, ProviderMetadata: meta})
+						content = append(content, types.GeneratedFileContent{MediaType: inner.mimeTypeOr("video/mp4"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
-						mediaType := firstNonEmpty(inner.MimeType, "video/mp4")
+						mediaType := inner.mimeTypeOr("video/mp4")
 						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
 					}
 				}

@@ -28,22 +28,26 @@ type interactionsStream struct {
 	reader           io.ReadCloser
 	parser           *streaming.SSEParser
 	interactionID    string
-	headers          map[string]string
-	responseHeaders  map[string]string
-	warnings         []types.Warning
-	timeoutMs        int
-	err              error
-	buffer           []*provider.StreamChunk
-	open             map[int]*interactionOpenBlock
-	startEmitted     bool
-	completed        bool
+	// transformID is the TS stream transform's interactionId (metadata and
+	// block ids): an interaction.created with an empty id resets it, while
+	// interactionID keeps the id the stream reconnects to and cancels.
+	transformID     string
+	headers         map[string]string
+	responseHeaders map[string]string
+	warnings        []types.Warning
+	timeoutMs       int
+	err             error
+	buffer          []*provider.StreamChunk
+	open            map[int]*interactionOpenBlock
+	startEmitted    bool
+	completed       bool
 	// hasCompletionEvent is set only by interaction.completed (TS
 	// hasCompletionEvent); a stream that ends without it and without a
 	// terminal status is reported as interrupted (TS #23814).
 	hasCompletionEvent bool
 	finishStatus       string
 	usage              *interactionsUsage
-	serviceTier        string
+	serviceTier        *string
 	hasFunction        bool
 	lastEventID        string
 	resumable          bool
@@ -98,6 +102,7 @@ type interactionOpenBlock struct {
 	signature    *string
 	data         string
 	mimeType     string
+	mimeTypeSet  bool
 	uri          string
 	result       interface{}
 	callID       string
@@ -110,13 +115,14 @@ func newInteractionsStream(ctx context.Context, client *internalhttp.Client, int
 		ctx:             ctx,
 		client:          client,
 		interactionID:   interactionID,
+		transformID:     interactionID,
 		headers:         headers,
 		responseHeaders: responseHeaders,
 		warnings:        warnings,
 		timeoutMs:       timeoutMs,
 		open:            map[int]*interactionOpenBlock{},
 		resumable:       true,
-		serviceTier:     headerServiceTier(responseHeaders),
+		serviceTier:     interactionsServiceTier(nil, headerServiceTier(responseHeaders)),
 	}
 	if err := s.openWithRetry(); err != nil {
 		return nil, err
@@ -131,12 +137,13 @@ func newInteractionsEventStream(ctx context.Context, client *internalhttp.Client
 		reader:          reader,
 		parser:          streaming.NewSSEParser(reader),
 		interactionID:   interactionID,
+		transformID:     interactionID,
 		headers:         headers,
 		responseHeaders: responseHeaders,
 		warnings:        warnings,
 		timeoutMs:       timeoutMs,
 		open:            map[int]*interactionOpenBlock{},
-		serviceTier:     headerServiceTier(responseHeaders),
+		serviceTier:     interactionsServiceTier(nil, headerServiceTier(responseHeaders)),
 	}
 }
 
@@ -238,7 +245,7 @@ func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response
 	}
 	// The synthesized finish carries no outputTokensByModality (TS only reads
 	// it from the streamed interaction.completed usage).
-	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), RawFinishReason: response.Status, Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, firstNonEmpty(response.ServiceTier, headerServiceTier(providerutils.ExtractHeaders(headers))), nil)})
+	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), RawFinishReason: response.Status, Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, interactionsServiceTier(response.ServiceTier, headerServiceTier(providerutils.ExtractHeaders(headers))), nil)})
 	return &sliceTextStream{chunks: chunks}
 }
 
@@ -548,6 +555,9 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if event.Interaction.ID != "" {
 				s.interactionID = event.Interaction.ID
 			}
+			// TS: `id.length > 0 ? id : undefined` (store: false streams
+			// send "").
+			s.transformID = event.Interaction.ID
 			// TS reads service_tier only from interaction.completed (and
 			// the response header), never from interaction.created.
 			s.buffer = append(s.buffer, &provider.StreamChunk{
@@ -566,8 +576,8 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		}
 		idx := *event.Index
 		block := event.Step
-		id := fmt.Sprintf("%s:%d", firstNonEmpty(s.interactionID, "interaction"), idx)
-		open := &interactionOpenBlock{kind: block.Type, id: id, blockType: block.Type, toolCallID: firstNonEmpty(block.ID, id), toolName: block.Name, signature: block.Signature, data: block.Data, mimeType: block.MimeType, uri: block.URI, callID: firstNonEmpty(block.CallID, id), result: block.Result, isError: block.IsError != nil && *block.IsError}
+		id := fmt.Sprintf("%s:%d", firstNonEmpty(s.transformID, "interaction"), idx)
+		open := &interactionOpenBlock{kind: block.Type, id: id, blockType: block.Type, toolCallID: firstNonEmpty(block.ID, id), toolName: block.Name, signature: block.Signature, data: block.Data, mimeType: block.MimeType, mimeTypeSet: block.mimeTypeSet, uri: block.URI, callID: firstNonEmpty(block.CallID, id), result: block.Result, isError: block.IsError != nil && *block.IsError}
 		s.open[idx] = open
 		switch block.Type {
 		case "thought":
@@ -603,7 +613,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 					s.emitSources(annotationsToSources(initial.Annotations, s.newID))
 				case "image":
 					open.kind = "image"
-					open.data, open.mimeType, open.uri = initial.Data, initial.MimeType, initial.URI
+					open.data, open.mimeType, open.mimeTypeSet, open.uri = initial.Data, initial.MimeType, initial.mimeTypeSet, initial.URI
 				}
 			}
 		case "function_call":
@@ -651,14 +661,14 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		// file part inline, whether or not a text block is open at the same
 		// index (a model_output step can interleave text and files).
 		if delta.Type == "image" && (open.kind == "pending_model_output" || open.kind == "text" || open.kind == "image") {
-			s.emitFile(delta.Data, delta.URI, delta.MimeType, "image/png")
+			s.emitFile(delta.Data, delta.URI, delta.mimeTypeOr("image/png"))
 			if open.kind == "image" {
 				open.data, open.uri = "", ""
 			}
 			return
 		}
 		if delta.Type == "video" && (open.kind == "pending_model_output" || open.kind == "text") {
-			s.emitFile(delta.Data, delta.URI, delta.MimeType, "video/mp4")
+			s.emitFile(delta.Data, delta.URI, delta.mimeTypeOr("video/mp4"))
 			return
 		}
 		switch {
@@ -720,7 +730,8 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if delta.CallID != "" {
 				open.callID = delta.CallID
 			}
-			if delta.Result != nil {
+			// TS `result !== undefined`: a present null replaces the result.
+			if delta.resultSet || delta.Result != nil {
 				open.result = delta.Result
 			}
 			if delta.IsError != nil {
@@ -761,11 +772,13 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if event.Interaction.Usage != nil {
 				s.usage = event.Interaction.Usage
 			}
-			if event.Interaction.ServiceTier != "" {
+			// TS `service_tier != null`: a present "" wins over the header.
+			if event.Interaction.ServiceTier != nil {
 				s.serviceTier = event.Interaction.ServiceTier
 			}
 			if event.Interaction.ID != "" {
 				s.interactionID = event.Interaction.ID
+				s.transformID = event.Interaction.ID
 			}
 		}
 	case "error":
@@ -799,16 +812,16 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 	switch open.kind {
 	case "text":
-		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: open.id, ProviderMetadata: providerMetaRaw(nil, s.interactionID)})
+		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: open.id, ProviderMetadata: providerMetaRaw(nil, s.transformID)})
 	case "thought":
-		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: open.id, ProviderMetadata: providerMetaRaw(open.signature, s.interactionID)})
+		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: open.id, ProviderMetadata: providerMetaRaw(open.signature, s.transformID)})
 	case "image":
-		s.emitFile(open.data, open.uri, open.mimeType, "image/png")
+		s.emitFile(open.data, open.uri, mediaTypeOr(open.mimeType, open.mimeTypeSet, "image/png"))
 	case "processing_call":
-		meta := processingMeta(open.signature, s.interactionID, open.toolCallID, "")
+		meta := processingMeta(open.signature, s.transformID, open.toolCallID, "")
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "google.processing_call", ProviderMetadata: meta}, ProviderMetadata: meta})
 	case "processing_result":
-		meta := processingMeta(open.signature, s.interactionID, "", open.callID)
+		meta := processingMeta(open.signature, s.transformID, "", open.callID)
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "google.processing_result", ProviderMetadata: meta}, ProviderMetadata: meta})
 	case "function_call":
 		var args map[string]interface{}
@@ -824,7 +837,7 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 		}
 		s.buffer = append(s.buffer,
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: open.toolCallID}},
-			&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName, Arguments: args, RawArguments: argsJSON, ThoughtSignature: signatureText(open.signature), ProviderMetadata: providerMetaMap(open.signature, s.interactionID)}, ProviderMetadata: providerMetaRaw(open.signature, s.interactionID)},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName, Arguments: args, RawArguments: argsJSON, ThoughtSignature: signatureText(open.signature), ProviderMetadata: providerMetaMap(open.signature, s.transformID)}, ProviderMetadata: providerMetaRaw(open.signature, s.transformID)},
 		)
 	case "pending_model_output":
 		// step ended before any delta revealed the content type — no output to emit
@@ -854,7 +867,7 @@ func (s *interactionsStream) appendFinish() {
 		FinishReason:     finishReason,
 		RawFinishReason:  rawFinishReason,
 		Usage:            usagePtr(convertInteractionsUsage(s.usage)),
-		ProviderMetadata: finishMetadata(s.interactionID, s.serviceTier, s.usage),
+		ProviderMetadata: finishMetadata(s.transformID, s.serviceTier, s.usage),
 	})
 }
 
@@ -862,14 +875,16 @@ func usagePtr(u types.Usage) *types.Usage {
 	return &u
 }
 
-func finishMetadata(interactionID, serviceTier string, usage *interactionsUsage) json.RawMessage {
+func finishMetadata(interactionID string, serviceTier *string, usage *interactionsUsage) json.RawMessage {
 	google := pruneMap(map[string]interface{}{
 		"interactionId":          emptyToNil(interactionID),
-		"serviceTier":            emptyToNil(serviceTier),
 		"outputTokensByModality": outputTokensByModalityMap(usage),
 	})
 	if google == nil {
 		google = map[string]interface{}{}
+	}
+	if serviceTier != nil {
+		google["serviceTier"] = *serviceTier
 	}
 	raw, _ := json.Marshal(map[string]interface{}{"google": google})
 	return raw
@@ -950,9 +965,8 @@ func (s *interactionsStream) emitSources(parts []types.ContentPart) {
 
 // emitFile queues a generated file from inline data or a URI (TS: data wins
 // over uri, neither emits nothing).
-func (s *interactionsStream) emitFile(data, uri, mimeType, defaultMime string) {
-	meta := providerMetaRaw(nil, s.interactionID)
-	mediaType := firstNonEmpty(mimeType, defaultMime)
+func (s *interactionsStream) emitFile(data, uri, mediaType string) {
+	meta := providerMetaRaw(nil, s.transformID)
 	switch {
 	case data != "":
 		decoded, _ := fileutil.ConvertBase64ToBytes(data)
