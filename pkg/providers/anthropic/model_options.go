@@ -372,6 +372,11 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{SendReasoning: &disabled}
 	SendReasoning *bool `json:"sendReasoning,omitempty"`
 
+	// IncludePings emits the API's streaming heartbeats as
+	// provider.ChunkTypePing parts (TS includePings). Disabled by default;
+	// it has no effect on non-streaming calls.
+	IncludePings *bool `json:"includePings,omitempty"`
+
 	// Metadata to include with the request (TS anthropicLanguageModelOptions.metadata).
 	//
 	// Example:

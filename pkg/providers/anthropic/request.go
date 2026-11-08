@@ -36,6 +36,8 @@ type preparedRequest struct {
 	// anthropicTools), kept for the toolset member checks even when the wire
 	// request omits them.
 	preparedTools []map[string]interface{}
+	// includePings is TS `stream && includePings === true`.
+	includePings bool
 	// providerOptionsName / usedCustomProviderKey mirror TS prepareRequest's
 	// return fields of the same name: providerOptionsName is the wrapper's
 	// own providerOptions key (e.g. "minimax", "bedrock"), and
@@ -604,6 +606,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		markCodeExecutionDynamic: HasDynamicFilteringWebToolWithoutCodeExecution(prepared.tools),
 		toolsetNames:             toolsetNames,
 		preparedTools:            prepared.tools,
+		includePings:             stream && o.IncludePings != nil && *o.IncludePings,
 		providerOptionsName:      m.providerOptionsName(),
 		usedCustomProviderKey:    usedCustomProviderKey,
 	}, nil

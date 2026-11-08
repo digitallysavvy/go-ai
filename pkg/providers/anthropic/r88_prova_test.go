@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -349,10 +350,106 @@ func r88provaWithPending(skips map[string]string) map[string]string {
 	for k, v := range skips {
 		out[k] = v
 	}
+	if os.Getenv("R88PROVA_NO_PENDING") != "" {
+		return out
+	}
 	for k, v := range r88provaPending {
 		if _, ok := out[k]; !ok {
 			out[k] = v
 		}
 	}
 	return out
+}
+
+// TS 9754014925 'only emits typed pings when enabled' (includePings x raw
+// chunks x provider key) and 'ignores typed ping opt-in for non-streaming
+// requests'.
+func TestR88provaIncludePings(t *testing.T) {
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_01KfpJoAEabmH2iHRRFjQMAG","type":"message","role":"assistant","content":[],"model":"claude-3-haiku-20240307","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":17,"output_tokens":1}}}`,
+		`{"type":"ping"}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`,
+		`{"type":"message_stop"}`,
+	}
+	for _, includePings := range []interface{}{nil, false, true} {
+		for _, raw := range []bool{false, true} {
+			for _, key := range []string{"anthropic", "vertex"} {
+				s := r88provaNewServer(t, "", events)
+				name := "anthropic"
+				if key == "vertex" {
+					name = "vertex.anthropic"
+				}
+				m, err := New(Config{APIKey: "k", BaseURL: s.srv.URL, Name: name}).LanguageModel("claude-3-haiku-20240307")
+				if err != nil {
+					t.Fatal(err)
+				}
+				po := map[string]interface{}{}
+				if includePings != nil {
+					po["includePings"] = includePings
+				}
+				stream, err := m.DoStream(context.Background(), &provider.GenerateOptions{
+					Prompt: types.Prompt{Text: "hi"}, IncludeRawChunks: raw,
+					ProviderOptions: map[string]interface{}{key: po},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				parts, err := r88provaDrain(stream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pings, rawPings := 0, 0
+				for _, p := range parts {
+					if p.Type == provider.ChunkTypePing {
+						pings++
+					}
+					if p.Type == provider.ChunkTypeRaw && strings.Contains(r88provaJSON(p.Raw), `"type":"ping"`) {
+						rawPings++
+					}
+				}
+				wantPings, wantRaw := 0, 0
+				if includePings == true {
+					wantPings = 1
+				}
+				if raw {
+					wantRaw = 1
+				}
+				if pings != wantPings || rawPings != wantRaw {
+					t.Fatalf("%v raw=%v %s: pings %d raw pings %d", includePings, raw, key, pings, rawPings)
+				}
+				if _, ok := s.body(0)["includePings"]; ok {
+					t.Fatal("includePings sent on the wire")
+				}
+			}
+		}
+	}
+	s := r88provaNewServer(t, `{"id":"m","type":"message","role":"assistant","model":"claude-3-haiku-20240307","content":[{"type":"text","text":"Hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`, nil)
+	res, err := r88provaModel(t, s, "claude-3-haiku-20240307").DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"}, ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"includePings": true}},
+	})
+	if err != nil || res.Text != "Hello" {
+		t.Fatalf("generate: %v %v", err, res)
+	}
+	if _, ok := s.body(0)["includePings"]; ok {
+		t.Fatal("includePings sent on the wire")
+	}
+}
+
+// TS 9754014925 'preserves startup error handling after pings': pings
+// before a first-event error do not hide it from DoStream.
+func TestR88provaPingsBeforeStartupError(t *testing.T) {
+	for _, raw := range []bool{false, true} {
+		s := r88provaNewServer(t, "", []string{`{"type":"ping"}`, `{"type":"ping"}`, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`})
+		_, err := r88provaModel(t, s, "claude-3-haiku-20240307").DoStream(context.Background(), &provider.GenerateOptions{
+			Prompt: types.Prompt{Text: "hi"}, IncludeRawChunks: raw,
+			ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"includePings": true}},
+		})
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || !pe.IsRetryable() || pe.Message != "Overloaded" {
+			t.Fatalf("raw=%v: err = %#v", raw, err)
+		}
+	}
 }

@@ -379,6 +379,9 @@ func applyModelOptionsOverlay(dst *ModelOptions, overlay *ModelOptions) {
 	if overlay.SendReasoning != nil {
 		dst.SendReasoning = overlay.SendReasoning
 	}
+	if overlay.IncludePings != nil {
+		dst.IncludePings = overlay.IncludePings
+	}
 	if overlay.Metadata != nil {
 		dst.Metadata = overlay.Metadata
 	}

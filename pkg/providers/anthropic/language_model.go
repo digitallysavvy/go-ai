@@ -201,6 +201,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, opts.Tools, req.warnings)
 	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
 	stream.preparedTools = req.preparedTools
+	stream.includePings = req.includePings
 	stream.providerOptionsName = req.providerOptionsName
 	stream.usedCustomProviderKey = req.usedCustomProviderKey
 	// TS doStream reports `request: {body}` with the args before
@@ -221,12 +222,12 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
-// failOnFirstStreamError peeks the stream's first part (past the stream-start and one raw chunk)
+// failOnFirstStreamError peeks the stream's first part (past the stream-start, raw and ping parts)
 // and converts an error part into a *ProviderError, mirroring doStream's
 // "first chunk is an error" check. Peeked parts are replayed to the consumer.
 func (m *LanguageModel) failOnFirstStreamError(stream *anthropicStream, headers http.Header, body interface{}) error {
 	var peeked []*provider.StreamChunk
-	for len(peeked) < 3 {
+	for {
 		chunk, err := stream.Next()
 		if err != nil {
 			// A response-data error the stream raised rejects the first-chunk
@@ -239,7 +240,9 @@ func (m *LanguageModel) failOnFirstStreamError(stream *anthropicStream, headers 
 			break
 		}
 		peeked = append(peeked, chunk)
-		if chunk.Type == provider.ChunkTypeRaw || chunk.Type == provider.ChunkTypeStreamStart {
+		// TS skips the stream-start part, then the transport-only raw and
+		// ping parts, before checking the first provider event.
+		if chunk.Type == provider.ChunkTypeRaw || chunk.Type == provider.ChunkTypeStreamStart || chunk.Type == provider.ChunkTypePing {
 			continue
 		}
 		if chunk.Type == provider.ChunkTypeError {
@@ -1662,6 +1665,8 @@ type anthropicStream struct {
 	// preparedTools are the request's prepared tool definitions; toolset
 	// member calls are validated against them (TS preparedTools).
 	preparedTools []map[string]interface{}
+	// includePings emits ping events as ChunkTypePing parts.
+	includePings bool
 	// failed is a response-data error the stream raised (TS throws inside
 	// the transform): every later Next returns it.
 	failed error
@@ -1934,7 +1939,10 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 		// Anthropic uses different event types
 		switch event.Event {
 		case "ping":
-			// No-op: keep alive signal, get next chunk
+			// Keep-alive: a ping part only with includePings (TS).
+			if s.includePings {
+				return &provider.StreamChunk{Type: provider.ChunkTypePing}, nil
+			}
 			continue
 
 		case "content_block_start":
