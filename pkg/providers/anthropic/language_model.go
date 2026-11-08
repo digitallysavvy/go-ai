@@ -403,6 +403,11 @@ type convertOptions struct {
 	// document ordering to normalize page_location/char_location citations
 	// against (citationDocuments is left empty in that case).
 	rawBatchCitations bool
+	// batchResult is true for batch result conversion: TS
+	// convertAnthropicBatchResponse emits toolset member calls as plain
+	// tool calls named by the member (there are no prepared tools to check
+	// the member against).
+	batchResult bool
 	// customToolNames, when set, is the wire name -> custom tool name map
 	// used instead of the one derived from tools (batch results, which have
 	// no tool list; see batchToolNameStore).
@@ -662,7 +667,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				byBlock[blockIdx] = append(byBlock[blockIdx], types.TextContent{Text: jsonText})
 				jsonToolBlocks[blockIdx] = true
 				isJsonResponseFromTool = true
-			} else if content.ToolsetName != "" {
+			} else if content.ToolsetName != "" && !co.batchResult {
 				// Toolset member calls (e.g. the computer toolset) map to the
 				// toolset tool with the member name as the action.
 				meta := map[string]interface{}{"toolsetName": content.ToolsetName}

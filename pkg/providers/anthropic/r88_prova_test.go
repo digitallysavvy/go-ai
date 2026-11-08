@@ -1598,3 +1598,18 @@ func TestR88provaPrepareToolsNativeOutputOnly(t *testing.T) {
 		t.Fatalf("betas %v warnings %v tool %v", p.betas, p.warnings, p.tools[0])
 	}
 }
+
+// TS convertAnthropicBatchResponse has no toolset mapping: a toolset member
+// tool_use is a plain tool call named by the member (no computer tool call
+// that skipped the member checks).
+func TestR88provaBatchToolsetMemberIsPlainToolCall(t *testing.T) {
+	s := &anthropicBatchResultsStream{provider: New(Config{APIKey: "k"})}
+	got := s.convertResult(anthropicBatchResultLineWire{CustomID: "r1", Result: []byte(`{"type":"succeeded","message":{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t1","name":"screenshot","toolset_name":"computer","input":{"action":"type","text":"x"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}}`)})
+	if got.TextResult == nil || len(got.TextResult.ToolCalls) != 1 {
+		t.Fatalf("result = %+v", got)
+	}
+	tc := got.TextResult.ToolCalls[0]
+	if tc.ToolName != "screenshot" || tc.RawArguments != `{"action":"type","text":"x"}` || tc.ProviderMetadata != nil {
+		t.Fatalf("tool call = %+v", tc)
+	}
+}

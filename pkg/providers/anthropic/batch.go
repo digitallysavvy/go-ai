@@ -894,6 +894,7 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 			// rawBatchCitations doc comment), matching TS
 			// convertAnthropicBatchResponse.
 			rawBatchCitations: true,
+			batchResult:       true,
 			// Id-named provider tools of a batch this provider started come
 			// back under the tool's Name, as in DoGenerate.
 			customToolNames: s.toolNames.forRequest(wire.CustomID),
