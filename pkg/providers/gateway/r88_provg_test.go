@@ -5,8 +5,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 // TestR88provgAuthTransportRedirectHopGetsNoCredentials covers the
@@ -56,5 +59,35 @@ func TestR88provgAuthTransportRedirectHopGetsNoCredentials(t *testing.T) {
 	}
 	if resolverCalls != 1 {
 		t.Fatalf("resolver calls = %d, want 1", resolverCalls)
+	}
+}
+
+// cr-r88-stream-to-provg 1 (TS 9754014925): a forwarded {"type":"ping"}
+// part is a ChunkTypePing chunk, not dropped.
+func TestR88provgGatewayStreamForwardsPing(t *testing.T) {
+	stream := &gatewayTextStream{
+		parser: streamingParser(strings.Join([]string{
+			`data: {"type":"stream-start","warnings":[]}`, "",
+			`data: {"type":"ping"}`, "",
+			`data: {"type":"finish","finishReason":"stop"}`, "", "",
+		}, "\n")),
+		body: io.NopCloser(strings.NewReader("")),
+	}
+	var types []provider.ChunkType
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		types = append(types, c.Type)
+	}
+	pings := 0
+	for _, ty := range types {
+		if ty == provider.ChunkTypePing {
+			pings++
+		}
+	}
+	if pings != 1 {
+		t.Fatalf("chunk types = %v, want one ping", types)
 	}
 }
