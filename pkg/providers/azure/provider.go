@@ -647,7 +647,10 @@ func (t azureTokenTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response,
 
 func (t azureTokenTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	clone := req.Clone(req.Context())
-	if clone.Header.Get("Authorization") == "" {
+	// A redirect hop to another origin gets no token: net/http drops
+	// Authorization on such a hop, and re-adding it here would send the
+	// Entra token to that origin (S2; the r88 credential transport class).
+	if clone.Header.Get("Authorization") == "" && !providerutils.IsCrossOriginRedirectHop(req) {
 		token, err := t.tokenProvider(req.Context())
 		if err != nil {
 			return nil, http.RejectFetch(err)
