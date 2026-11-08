@@ -227,7 +227,7 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 	if !isSubscriptionProvider(providerID) {
 		return nil, nil
 	}
-	store, err := readAuthStore(env, opts.HomeDirectory, opts.GOOS)
+	store, err := readAuthStore(providerID, env, opts.HomeDirectory, opts.GOOS)
 	if err != nil || store == nil {
 		return nil, nil
 	}
@@ -684,7 +684,7 @@ type authStore struct {
 // readAuthStore mirrors TS `readStore`. homeDirectoryOverride and
 // goosOverride default to the real host (os.UserHomeDir, runtime.GOOS) when
 // empty; tests supply them to avoid touching the real host's auth.json.
-func readAuthStore(env map[string]string, homeDirectoryOverride, goosOverride string) (*authStore, error) {
+func readAuthStore(providerID string, env map[string]string, homeDirectoryOverride, goosOverride string) (*authStore, error) {
 	if content, ok := env["OPENCODE_AUTH_CONTENT"]; ok {
 		var parsed map[string]any
 		if err := securejson.Unmarshal([]byte(content), &parsed); err != nil {
@@ -702,24 +702,36 @@ func readAuthStore(env map[string]string, homeDirectoryOverride, goosOverride st
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	var authPath string
-	switch {
-	case hasKey(env, "XDG_DATA_HOME"):
-		authPath = filepath.Join(env["XDG_DATA_HOME"], "opencode", "auth.json")
-	case harnessutil.IsWindows(goos):
-		authPath = filepath.Join(homeDirectory, ".opencode", "auth.json")
-	default:
-		authPath = filepath.Join(homeDirectory, ".local", "share", "opencode", "auth.json")
+	// OpenCode keeps auth.json in its XDG data directory on every platform,
+	// including Windows. The GitLab auth plugin (before v3) writes to
+	// ~/.opencode on Windows instead, so that store is checked as a
+	// fallback (TS 89e6bc94d7). A store is used only when it holds an
+	// object for providerID; the write goes back to the store that matched.
+	var authPaths []string
+	if hasKey(env, "XDG_DATA_HOME") {
+		authPaths = []string{filepath.Join(env["XDG_DATA_HOME"], "opencode", "auth.json")}
+	} else {
+		authPaths = []string{filepath.Join(homeDirectory, ".local", "share", "opencode", "auth.json")}
+		if harnessutil.IsWindows(goos) {
+			authPaths = append(authPaths, filepath.Join(homeDirectory, ".opencode", "auth.json"))
+		}
 	}
-	data, err := os.ReadFile(authPath)
-	if err != nil {
-		return nil, nil
+	for _, authPath := range authPaths {
+		data, err := os.ReadFile(authPath)
+		if err != nil {
+			continue
+		}
+		var parsed map[string]any
+		if err := securejson.Unmarshal(data, &parsed); err != nil || parsed == nil {
+			continue
+		}
+		if _, ok := parsed[providerID].(map[string]any); !ok {
+			continue
+		}
+		authPath := authPath
+		return &authStore{Value: parsed, Write: func(value map[string]any) error { return writeAuthStore(authPath, value) }}, nil
 	}
-	var parsed map[string]any
-	if err := securejson.Unmarshal(data, &parsed); err != nil {
-		return nil, nil
-	}
-	return &authStore{Value: parsed, Write: func(value map[string]any) error { return writeAuthStore(authPath, value) }}, nil
+	return nil, nil
 }
 
 // writeAuthStore mirrors TS `writeStore`: write-then-rename so a concurrent

@@ -2,6 +2,8 @@ package opencode
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -161,5 +163,35 @@ func TestR88toolsOpenCodeDirectAuthSubscription(t *testing.T) {
 		if err != nil || got.AuthenticationMode != AuthAIGateway || !reflect.DeepEqual(got.Environment, want) {
 			t.Fatalf("%q: %+v, %v", auth.Mode, got, err)
 		}
+	}
+}
+
+// TS 89e6bc94d7 opencode-subscription.test.ts: on Windows the XDG data
+// directory store is read first, and the GitLab plugin store under
+// ~/.opencode is a fallback for providers missing from it.
+func TestR88toolsOpenCodeWindowsAuthStores(t *testing.T) {
+	home := t.TempDir()
+	data := filepath.Join(home, ".local", "share", "opencode")
+	plugin := filepath.Join(home, ".opencode")
+	for _, dir := range []string{data, plugin} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(data, "auth.json"), []byte(`{"xai":{"type":"api","key":"xai-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plugin, "auth.json"), []byte(`{"gitlab":{"type":"api","key":"gitlab-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for provider, want := range map[string]string{"xai": "xai-key", "gitlab": "gitlab-key"} {
+		sub, err := readOpenCodeSubscriptionWithOptions(context.Background(), provider, map[string]string{}, subscriptionReadOptions{HomeDirectory: home, GOOS: "windows"})
+		if err != nil || sub == nil || sub.AccessToken != want {
+			t.Fatalf("%s: %+v, %v", provider, sub, err)
+		}
+	}
+	// Not on Linux: the plugin store is Windows-only.
+	if sub, _ := readOpenCodeSubscriptionWithOptions(context.Background(), "gitlab", map[string]string{}, subscriptionReadOptions{HomeDirectory: home, GOOS: "linux"}); sub != nil {
+		t.Fatalf("linux read the plugin store: %+v", sub)
 	}
 }
