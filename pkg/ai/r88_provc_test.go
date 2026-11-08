@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -305,3 +306,93 @@ type r88provcRoundTrip func(*http.Request) (*http.Response, error)
 func (f r88provcRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 var _ = fileutil.IsFullMediaType
+
+// TS generate-video.test.ts (2e44144812): uploaded video outcomes.
+func TestR88provcGenerateVideoUploadedOutcome(t *testing.T) {
+	t.Run("upload confirmations are counted, not downloaded", func(t *testing.T) {
+		downloads := 0
+		model := &mockVideoModel{generateFn: func(context.Context, *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+			return &provider.VideoModelV3Response{
+				Videos:           []provider.VideoModelV3VideoData{{Type: provider.VideoDataTypeUploaded, MediaType: "video/mp4"}},
+				Warnings:         []types.Warning{{Type: "other", Message: "upload warning"}},
+				ProviderMetadata: map[string]interface{}{"testProvider": map[string]interface{}{"requestId": "uploaded-1"}},
+				Response:         provider.VideoModelV3ResponseInfo{ModelID: "mock-video"},
+			}, nil
+		}}
+		res, err := GenerateVideo(context.Background(), GenerateVideoOptions{Model: model, Prompt: VideoPrompt{Text: "a cat"},
+			Download: func(context.Context, string) ([]byte, error) { downloads++; return nil, nil }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Video != nil || len(res.Videos) != 0 || res.Videos == nil || res.UploadedVideos != 1 || downloads != 0 || len(res.Responses) != 1 {
+			t.Fatalf("result = %+v", res)
+		}
+		if !reflect.DeepEqual(res.ProviderMetadata, map[string]interface{}{"testProvider": map[string]interface{}{"requestId": "uploaded-1"}}) {
+			t.Fatalf("metadata = %v", res.ProviderMetadata)
+		}
+		if len(res.Warnings) != 1 || res.Warnings[0].Message != "upload warning" {
+			t.Fatalf("warnings = %v", res.Warnings)
+		}
+		b, _ := json.Marshal(res)
+		if !strings.Contains(string(b), `"video":null,"videos":[],"uploadedVideos":1`) {
+			t.Fatalf("json = %s", b)
+		}
+	})
+
+	t.Run("uploads alongside downloadable videos across calls", func(t *testing.T) {
+		one := 1
+		call := 0
+		var mu sync.Mutex
+		model := &mockVideoModel{maxPerCall: &one, generateFn: func(context.Context, *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+			mu.Lock()
+			call++
+			n := call
+			mu.Unlock()
+			video := provider.VideoModelV3VideoData{Type: "binary", Binary: []byte("v"), MediaType: "video/mp4"}
+			if n == 1 {
+				video = provider.VideoModelV3VideoData{Type: provider.VideoDataTypeUploaded, MediaType: "video/mp4"}
+			}
+			return &provider.VideoModelV3Response{Videos: []provider.VideoModelV3VideoData{video}, Response: provider.VideoModelV3ResponseInfo{ModelID: "mock-video"}}, nil
+		}}
+		res, err := GenerateVideo(context.Background(), GenerateVideoOptions{Model: model, Prompt: VideoPrompt{Text: "a cat"}, N: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.UploadedVideos != 1 || len(res.Videos) != 1 || res.Video != res.Videos[0] || len(res.Responses) != 2 {
+			t.Fatalf("result = %+v", res)
+		}
+	})
+
+	t.Run("uploaded outcomes through the start/status flow", func(t *testing.T) {
+		zero := 0
+		model := &mockAsyncVideoModel{
+			startFn: func(context.Context, *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+				return &provider.VideoModelV3OperationStartResult{Operation: json.RawMessage(`{"requestId":"uploaded-1"}`), Response: defaultVideoResponseInfo()}, nil
+			},
+			statusFn: func(context.Context, *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+				return &provider.VideoModelV3OperationStatusResult{
+					Status:   provider.VideoOperationStatusCompleted,
+					Videos:   []provider.VideoModelV3VideoData{{Type: provider.VideoDataTypeUploaded, MediaType: "video/mp4"}},
+					Response: defaultVideoResponseInfo(),
+				}, nil
+			},
+		}
+		res, err := GenerateVideo(context.Background(), GenerateVideoOptions{Model: model, Prompt: VideoPrompt{Text: "a cat"}, Poll: &VideoPollOptions{IntervalMs: &zero}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.UploadedVideos != 1 || len(res.Videos) != 0 || res.Video != nil {
+			t.Fatalf("result = %+v", res)
+		}
+	})
+
+	t.Run("no videos at all is still NoVideoGeneratedError", func(t *testing.T) {
+		model := &mockVideoModel{generateFn: func(context.Context, *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+			return &provider.VideoModelV3Response{Response: provider.VideoModelV3ResponseInfo{ModelID: "mock-video"}}, nil
+		}}
+		_, err := GenerateVideo(context.Background(), GenerateVideoOptions{Model: model, Prompt: VideoPrompt{Text: "a cat"}})
+		if !IsNoVideoGeneratedError(err) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}

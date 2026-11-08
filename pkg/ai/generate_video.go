@@ -129,19 +129,19 @@ func parallelGenerate(ctx context.Context, opts GenerateVideoOptions, maxPerCall
 	}
 
 	var videos []*types.GeneratedFile
+	uploadedVideos := 0
 	warnings := append([]types.Warning{}, normalized.Warnings...)
 	var responses []VideoModelResponseMetadata
 	var providerMetadata []map[string]interface{}
 
 	for _, response := range orderedResponses {
 		// Convert video data
-		for _, videoData := range response.Videos {
-			file, err := convertVideoData(ctx, videoData, opts.Download, opts.DownloadWithMetadata)
-			if err != nil {
-				return nil, err
-			}
-			videos = append(videos, file)
+		files, uploaded, err := convertVideoList(ctx, response.Videos, opts.Download, opts.DownloadWithMetadata)
+		if err != nil {
+			return nil, err
 		}
+		videos = append(videos, files...)
+		uploadedVideos += uploaded
 
 		// Collect warnings
 		warnings = append(warnings, response.Warnings...)
@@ -155,20 +155,56 @@ func parallelGenerate(ctx context.Context, opts GenerateVideoOptions, maxPerCall
 		}
 	}
 
-	// Check if any videos were generated
-	if len(videos) == 0 {
+	// Check if any videos were generated (TS 2e44144812: videos delivered to
+	// the upload destination count too).
+	if len(videos) == 0 && uploadedVideos == 0 {
 		return nil, &NoVideoGeneratedError{Responses: responses}
 	}
 
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 
+	return newGenerateVideoResult(videos, uploadedVideos, warnings, responses, mergeProviderMetadata(providerMetadata)), nil
+}
+
+// newGenerateVideoResult builds the result; Video is the first video
+// available to the SDK, nil for an upload-only result (TS throws from the
+// video getter; known difference).
+func newGenerateVideoResult(videos []*types.GeneratedFile, uploaded int, warnings []types.Warning, responses []VideoModelResponseMetadata, providerMetadata map[string]interface{}) *GenerateVideoResult {
+	if videos == nil {
+		videos = []*types.GeneratedFile{}
+	}
+	var first *types.GeneratedFile
+	if len(videos) > 0 {
+		first = videos[0]
+	}
 	return &GenerateVideoResult{
-		Video:            videos[0],
+		Video:            first,
 		Videos:           videos,
+		UploadedVideos:   uploaded,
 		Warnings:         warnings,
 		Responses:        responses,
-		ProviderMetadata: mergeProviderMetadata(providerMetadata),
-	}, nil
+		ProviderMetadata: providerMetadata,
+	}
+}
+
+// convertVideoList converts the provider's videos, counting (not
+// downloading) those the provider delivered to the caller's upload
+// destination (type "uploaded").
+func convertVideoList(ctx context.Context, data []provider.VideoModelV3VideoData, download URLDownloadFunction, downloadWithMetadata URLDownloadWithMetadataFunction) ([]*types.GeneratedFile, int, error) {
+	files := make([]*types.GeneratedFile, 0, len(data))
+	uploaded := 0
+	for _, videoData := range data {
+		if videoData.Type == provider.VideoDataTypeUploaded {
+			uploaded++
+			continue
+		}
+		file, err := convertVideoData(ctx, videoData, download, downloadWithMetadata)
+		if err != nil {
+			return nil, 0, err
+		}
+		files = append(files, file)
+	}
+	return files, uploaded, nil
 }
 
 // runVideoCall executes a single provider call for n videos, either via
@@ -867,13 +903,9 @@ func convertToGenerateVideoResult(ctx context.Context, response *provider.VideoM
 		return nil, &NoVideoGeneratedError{Responses: responses}
 	}
 
-	videos := make([]*types.GeneratedFile, 0, len(response.Videos))
-	for _, videoData := range response.Videos {
-		file, err := convertVideoData(ctx, videoData, download, downloadWithMetadata)
-		if err != nil {
-			return nil, err
-		}
-		videos = append(videos, file)
+	videos, uploaded, err := convertVideoList(ctx, response.Videos, download, downloadWithMetadata)
+	if err != nil {
+		return nil, err
 	}
 	warnings := response.Warnings
 	if warnings == nil {
@@ -881,13 +913,7 @@ func convertToGenerateVideoResult(ctx context.Context, response *provider.VideoM
 	}
 	logModelWarnings(warnings, model.Provider(), model.ModelID())
 
-	return &GenerateVideoResult{
-		Video:            videos[0],
-		Videos:           videos,
-		Warnings:         warnings,
-		Responses:        responses,
-		ProviderMetadata: mergeProviderMetadata([]map[string]interface{}{response.ProviderMetadata}),
-	}, nil
+	return newGenerateVideoResult(videos, uploaded, warnings, responses, mergeProviderMetadata([]map[string]interface{}{response.ProviderMetadata})), nil
 }
 
 func downloadVideoURL(ctx context.Context, url string, download URLDownloadFunction, downloadWithMetadata URLDownloadWithMetadataFunction) ([]byte, string, error) {
