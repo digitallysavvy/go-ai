@@ -114,6 +114,7 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		CredentialBrokering:    CredentialBrokering,
 		CredentialBrokeringErr: CredentialBrokeringErr,
 		CredentialForwarding:   settings.CredentialForwarding,
+		PrepareSandbox:         PrepareSandbox,
 		ProviderAuthentication: &acp.ProviderAuthentication{
 			GatewayEnv: map[string]any{
 				"GROK_CLIENT_NAME":      map[string]any{"$source": "client-app-name"},

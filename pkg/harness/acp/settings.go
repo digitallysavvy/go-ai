@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // SourceType discriminates Source. Mirrors TS `ACPSource`.
@@ -334,8 +335,15 @@ type Settings struct {
 	// the session start. Configure at most one of the two.
 	CredentialBrokeringErr CredentialBrokeringErr
 	AuthenticationFiles    AuthenticationFilesFunc
-	CredentialForwarding   harness.CredentialForwarding
-	Env                    map[string]string
+	// PrepareSandbox prepares runtime-specific sandbox configuration before
+	// a bridge process starts, after authentication files have been
+	// written. It receives only the restricted sandbox session and is not
+	// invoked when reattaching to a live bridge. An error rejects startup
+	// without launching the bridge. Mirrors TS `prepareSandbox`
+	// (deeb2bfb62); ctx replaces its abortSignal.
+	PrepareSandbox       func(ctx context.Context, opts PrepareSandboxOptions) error
+	CredentialForwarding harness.CredentialForwarding
+	Env                  map[string]string
 
 	Authentication         *Authentication
 	ClientCapabilities     map[string]any
@@ -361,6 +369,15 @@ type Settings struct {
 	PermissionModeMapping *PermissionModeMapping
 	SessionMeta           map[string]any
 	MintBridgeToken       harness.MintBridgeTokenCallback
+}
+
+// PrepareSandboxOptions is passed to Settings.PrepareSandbox. Mirrors the TS
+// `prepareSandbox` options.
+type PrepareSandboxOptions struct {
+	// Sandbox is the restricted sandbox session.
+	Sandbox providerutils.SandboxSession
+	// WorkDir is the session working directory.
+	WorkDir string
 }
 
 // ClientApp identifies the harness adapter to the ACP implementation and

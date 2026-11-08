@@ -655,6 +655,17 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			return nil, err
 		}
 	}
+	if settings.PrepareSandbox != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := settings.PrepareSandbox(ctx, PrepareSandboxOptions{Sandbox: toolSafeSandboxSession, WorkDir: workDir}); err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 
 	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, settings.HarnessID)
 	if err != nil {
