@@ -1,10 +1,18 @@
 package providers_test
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gmicloud"
 	"github.com/digitallysavvy/go-ai/pkg/providers/ollama"
@@ -62,5 +70,39 @@ func TestR88provbCompatRefusalTSCases(t *testing.T) {
 				return m
 			}, nil)
 		})
+	}
+}
+
+// TS 5f19ea5c61: an inline text file of a text/* media type is sent to an
+// OpenAI-compatible provider as a text part instead of failing; other media
+// types keep the "text file parts" error.
+func TestR88provbCompatInlineTextFile(t *testing.T) {
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		_, _ = w.Write([]byte(`{"id":"c","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+	m, err := fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("accounts/fireworks/models/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := func(mediaType string) types.Prompt {
+		return types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeText, Text: "Résumé: café"}},
+		}}}}
+	}
+	if _, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: msg("text/plain")}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(body["messages"])
+	if want := `[{"content":[{"text":"Résumé: café","type":"text"}],"role":"user"}]`; string(got) != want {
+		t.Fatalf("messages = %s, want %s", got, want)
+	}
+	_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: msg("application/json")})
+	var uf *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &uf) || uf.Functionality != "text file parts" {
+		t.Fatalf("err = %v, want the text file parts error", err)
 	}
 }
