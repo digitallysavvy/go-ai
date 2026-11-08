@@ -7,22 +7,32 @@ import (
 	"testing"
 )
 
-// TS `?? undefined` keeps an empty string, so these free-form options are sent as "".
+// TS `?? undefined` keeps an empty string: language "" becomes
+// language_config.languages [""] (TS c8875b71a3 resolveLanguageConfig),
+// contextPrompt is no longer sent (unsupported warning) and
+// translationConfig.model "" is kept.
 func TestR33_EmptyStringOptionsAreSent(t *testing.T) {
-	provOpts := map[string]interface{}{"gladia": map[string]interface{}{
+	g := map[string]interface{}{
 		"contextPrompt": "", "language": "",
 		"translationConfig": map[string]interface{}{"targetLanguages": []interface{}{"fr"}, "model": ""},
-	}}
-	body := buildRequestBody(extractOptions(provOpts))
-	keepEmptyStringOptions(body, provOpts)
-	for _, k := range []string{"context_prompt", "language"} {
-		if v, ok := body[k]; !ok || v != "" {
-			t.Errorf("%s = %v (present %v)", k, v, ok)
-		}
+	}
+	body, warnings := (&TranscriptionModel{modelID: "default"}).getArgs(g)
+	if _, ok := body["context_prompt"]; ok {
+		t.Errorf("context_prompt sent: %v", body)
+	}
+	if _, ok := body["language"]; ok {
+		t.Errorf("language sent: %v", body)
+	}
+	lc, _ := body["language_config"].(map[string]interface{})
+	if langs, _ := lc["languages"].([]interface{}); len(langs) != 1 || langs[0] != "" {
+		t.Errorf("language_config = %v", body["language_config"])
 	}
 	tc, _ := body["translation_config"].(map[string]interface{})
 	if v, ok := tc["model"]; !ok || v != "" {
 		t.Errorf("translation_config.model = %v", tc)
+	}
+	if len(warnings) != 2 || warnings[0].Feature != "contextPrompt" || warnings[1].Setting != "language" {
+		t.Errorf("warnings = %#v", warnings)
 	}
 }
 
@@ -69,12 +79,11 @@ func TestR33_PollHeadersWithheldFromForeignOrigin(t *testing.T) {
 
 // Unset options stay absent (only an explicit "" is forwarded).
 func TestR33_UnsetStringOptionsOmitted(t *testing.T) {
-	provOpts := map[string]interface{}{"gladia": map[string]interface{}{
+	g := map[string]interface{}{
 		"translationConfig": map[string]interface{}{"targetLanguages": []interface{}{"fr"}},
-	}}
-	body := buildRequestBody(extractOptions(provOpts))
-	keepEmptyStringOptions(body, provOpts)
-	for _, k := range []string{"context_prompt", "language"} {
+	}
+	body, _ := (&TranscriptionModel{modelID: "default"}).getArgs(g)
+	for _, k := range []string{"context_prompt", "language", "language_config"} {
 		if v, ok := body[k]; ok {
 			t.Errorf("%s = %v sent although the option is unset", k, v)
 		}

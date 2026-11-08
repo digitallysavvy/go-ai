@@ -51,7 +51,13 @@ var gladiaOptionsSchema = providerutils.OptionSchema{
 	"enableCodeSwitching": nullBool,
 	"codeSwitchingConfig": opt(providerutils.OptObject(providerutils.OptionSchema{"languages": opt(strArray)})),
 	"language":            nullStr,
-	"callback":            nullBool,
+	// languageConfig, piiRedaction and piiRedactionConfig are .optional():
+	// null is rejected (TS c8875b71a3).
+	"languageConfig": providerutils.OptObject(providerutils.OptionSchema{
+		"languages":     strArray,
+		"codeSwitching": providerutils.OptBool,
+	}),
+	"callback": nullBool,
 	"callbackConfig": opt(providerutils.OptObjectWith(providerutils.OptionSchema{
 		"url":    providerutils.OptString,
 		"method": opt(providerutils.OptEnum("POST", "PUT")),
@@ -72,8 +78,12 @@ var gladiaOptionsSchema = providerutils.OptionSchema{
 	"translation": nullBool,
 	"translationConfig": opt(providerutils.OptObjectWith(providerutils.OptionSchema{
 		"targetLanguages":         strArray,
-		"model":                   opt(providerutils.OptEnum("base", "enhanced")),
+		"model":                   opt(providerutils.OptEnum("base", "batch", "enhanced")),
 		"matchOriginalUtterances": nullBool,
+		"lipsync":                 providerutils.OptBool,
+		"contextAdaptation":       providerutils.OptBool,
+		"context":                 providerutils.OptString,
+		"informal":                providerutils.OptBool,
 	}, "targetLanguages")),
 	"summarization": nullBool,
 	"summarizationConfig": opt(providerutils.OptObject(providerutils.OptionSchema{
@@ -95,7 +105,13 @@ var gladiaOptionsSchema = providerutils.OptionSchema{
 	"audioToLlm":        nullBool,
 	"audioToLlmConfig": opt(providerutils.OptObjectWith(providerutils.OptionSchema{
 		"prompts": strArray,
+		"model":   providerutils.OptString,
 	}, "prompts")),
+	"piiRedaction": providerutils.OptBool,
+	"piiRedactionConfig": providerutils.OptObject(providerutils.OptionSchema{
+		"entityTypes":       strArray,
+		"processedTextType": providerutils.OptEnum("MARKER", "MASK"),
+	}),
 	"customMetadata":      opt(providerutils.OptRecord(nil, nil)),
 	"sentences":           nullBool,
 	"displayMode":         nullBool,

@@ -3,6 +3,8 @@
 package gladia
 
 import (
+	"strings"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -40,8 +42,11 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
-			"x-gladia-key": config.APIKey,
+		// TS c8875b71a3: x-gladia-version goes out with the provider
+		// headers, before the caller's headers so a caller header wins.
+		Headers: version.WithUserAgentSuffix(mergeHeadersFold(map[string]string{
+			"x-gladia-key":     config.APIKey,
+			"x-gladia-version": version.SDKUserAgent(),
 		}, config.Headers), version.ProviderUserAgent("gladia")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
@@ -96,4 +101,22 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 // RerankingModel returns a reranking model (not supported by Gladia)
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
+}
+
+// mergeHeadersFold merges header maps left to right like TS object spread
+// over Headers: a later name replaces an earlier one regardless of case, so
+// a caller's X-Gladia-Version wins over the default x-gladia-version.
+func mergeHeadersFold(headers ...map[string]string) map[string]string {
+	merged := map[string]string{}
+	for _, h := range headers {
+		for k, v := range h {
+			for existing := range merged {
+				if existing != k && strings.EqualFold(existing, k) {
+					delete(merged, existing)
+				}
+			}
+			merged[k] = v
+		}
+	}
+	return merged
 }

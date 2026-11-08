@@ -14,8 +14,7 @@ import (
 )
 
 // TS getArgs rebuilds vocabulary objects as {value, intensity,
-// pronunciations, language} (null/unknown keys dropped) and sends
-// code_switching_config without `languages` when it is unset.
+// pronunciations, language} (null/unknown keys dropped).
 func TestGladiaRequestBodyMatchesTSMapping(t *testing.T) {
 	var body map[string]interface{}
 	var pollUA string
@@ -47,8 +46,13 @@ func TestGladiaRequestBodyMatchesTSMapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cs, _ := body["code_switching_config"].(map[string]interface{}); cs == nil || len(cs) != 0 {
-		t.Errorf("code_switching_config = %#v, want {}", body["code_switching_config"])
+	// TS c8875b71a3: the v1 code_switching_config is no longer sent; an
+	// empty codeSwitchingConfig resolves to no language_config.
+	if _, ok := body["code_switching_config"]; ok {
+		t.Errorf("code_switching_config sent: %#v", body["code_switching_config"])
+	}
+	if _, ok := body["language_config"]; ok {
+		t.Errorf("language_config sent: %#v", body["language_config"])
 	}
 	vocab := body["custom_vocabulary_config"].(map[string]interface{})["vocabulary"].([]interface{})
 	entry := vocab[1].(map[string]interface{})
