@@ -256,6 +256,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 
 	command := "node " + harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs") +
 		" --workdir " + harnessutil.ShellQuote(workDir) +
+		" --home-dir " + harnessutil.ShellQuote(homeDir) +
 		" --bridge-state-dir " + harnessutil.ShellQuote(bridgeStateDir) +
 		" --bootstrap-dir " + harnessutil.ShellQuote(bootstrapDir)
 	if isResume {

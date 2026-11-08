@@ -1,5 +1,5 @@
 // Package cursor is the Go port of the TypeScript `@ai-sdk/harness-cursor`
-// package (pinned to ai@7.0.162, TS 3fab50aa9b).
+// package (pinned to ai@7.0.165, TS 0f3a85f92d).
 //
 // Cursor is one of the "ACP-derived" harness adapters (see
 // state/parity/sep_23_2026/harness.md §2): TS `createCursor()` is a thin
@@ -28,10 +28,10 @@ import (
 // ClientAppName / ClientAppVersion are the ai-sdk client-app identity Cursor
 // requests are made with. ClientAppVersion is TS VERSION, the
 // @ai-sdk/harness-cursor package version at the TS release this SDK tracks
-// (3fab50aa9b); bump it with the harness bridges.
+// (0f3a85f92d); bump it with the harness bridges.
 const (
 	ClientAppName    = "ai-sdk-harness-cursor"
-	ClientAppVersion = "1.0.88"
+	ClientAppVersion = "1.0.91"
 	HarnessID        = "cursor"
 )
 

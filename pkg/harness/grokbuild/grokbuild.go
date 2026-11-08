@@ -1,6 +1,6 @@
 // Package grokbuild is the Go port of the TypeScript
 // `@ai-sdk/harness-grok-build` package (pinned to
-// ai@7.0.162, TS 3fab50aa9b).
+// ai@7.0.165, TS 0f3a85f92d).
 //
 // Like pkg/harness/cursor, Grok Build is an "ACP-derived" adapter: TS
 // `createGrokBuild()` is a thin configuration layer over `createACP()`
@@ -29,7 +29,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-grok-build"
-	ClientAppVersion = "1.0.112" // TS VERSION: the bridge manifest's source version
+	ClientAppVersion = "1.0.115" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "grok-build"
 )
 

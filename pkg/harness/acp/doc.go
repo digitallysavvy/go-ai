@@ -1,5 +1,5 @@
 // Package acp is the Go host-side port of the TypeScript
-// `@ai-sdk/harness-acp` v1 meta adapter (pinned to ai@7.0.162, TS 3fab50aa9b): it wraps any
+// `@ai-sdk/harness-acp` v1 meta adapter (pinned to ai@7.0.165, TS 0f3a85f92d): it wraps any
 // implementation of the Agent Client Protocol (agentclientprotocol.com), a
 // documented, versioned JSON-RPC 2.0 protocol. CreateACP is generic over the
 // concrete ACP-speaking CLI (Cursor, fx, GitHub Copilot, Grok Build, ...);

@@ -200,6 +200,12 @@ const WS_OPEN = 1;
 async function runBridge(options) {
 	const { bridgeType, bridgeStateDir, onStart, onStop, onDestroy } = options;
 	const teardownGraceMs = options.turnTeardownGraceMs ?? 1e4;
+	const hostDisconnectTimeoutMs = options.hostDisconnectTimeoutMs != null && Number.isFinite(options.hostDisconnectTimeoutMs) && options.hostDisconnectTimeoutMs > 0 ? Math.min(options.hostDisconnectTimeoutMs, 2147483647) : void 0;
+	let hostDisconnectTimer;
+	const clearHostDisconnectTimer = () => {
+		clearTimeout(hostDisconnectTimer);
+		hostDisconnectTimer = void 0;
+	};
 	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
@@ -387,6 +393,7 @@ async function runBridge(options) {
 				const thisTurn = new Promise((resolve) => turnFinished = resolve);
 				activeTurn = thisTurn;
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				const firstTurn = isFirstTurn;
 				isFirstTurn = false;
 				eventLog = [];
@@ -453,6 +460,7 @@ async function runBridge(options) {
 						activeTurn = void 0;
 						currentTurnState = "waiting";
 						writeBridgeMeta("waiting");
+						clearHostDisconnectTimer();
 					}
 					turnFinished();
 				}
@@ -519,6 +527,7 @@ async function runBridge(options) {
 				return;
 			case "resume":
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				replay(ws, msg.lastSeenEventId);
 				return;
 			case "destroy":
@@ -606,8 +615,18 @@ async function runBridge(options) {
 			}
 			handleInbound(parsed, ws);
 		});
-		ws.on("close", () => {
-			if (activeSocket === ws) activeSocket = void 0;
+		ws.on("close", (_code, reason) => {
+			if (activeSocket === ws) {
+				activeSocket = void 0;
+				if (hostDisconnectTimeoutMs != null && activeTurn != null && reason.toString() !== "suspended") {
+					clearHostDisconnectTimer();
+					hostDisconnectTimer = setTimeout(() => {
+						hostDisconnectTimer = void 0;
+						if (activeSocket == null) turnAbort?.abort();
+					}, hostDisconnectTimeoutMs);
+					hostDisconnectTimer.unref?.();
+				}
+			}
 		});
 		ws.on("error", () => {});
 	});
@@ -2129,6 +2148,7 @@ const appServer = createCodexAppServerRuntime();
 await runBridge({
 	bridgeType: "codex",
 	bridgeStateDir,
+	...args.hostDisconnectTimeoutMs !== void 0 ? { hostDisconnectTimeoutMs: args.hostDisconnectTimeoutMs } : {},
 	onStart: runTurn,
 	onStop: async () => {
 		const data = threadState.id ? { threadId: threadState.id } : {};
@@ -2181,17 +2201,16 @@ async function runTurn(start, turn) {
 	});
 }
 function resolveCodexRuntime({ start }) {
-	const codexConfig = {
-		...start.codexConfig,
-		developer_instructions: [start.instructions, "Only respond with your `final` message once you have fully addressed the user request."].filter((instruction) => Boolean(instruction)).join("\n\n"),
-		model_reasoning_summary: "detailed"
-	};
 	const gatewayBaseUrl = env.AI_GATEWAY_BASE_URL;
 	const hasGatewayAuth = Boolean(env.AI_GATEWAY_API_KEY || gatewayBaseUrl);
 	if (hasGatewayAuth && !gatewayBaseUrl) throw new Error("AI Gateway auth was selected but AI_GATEWAY_BASE_URL is missing from the Codex bridge environment.");
 	const apiBaseUrl = hasGatewayAuth ? gatewayBaseUrl : env.OPENAI_BASE_URL ?? (env.CODEX_API_KEY != null || start.headers != null ? "https://api.openai.com/v1" : void 0);
 	const codexModel = start.model && hasGatewayAuth && !start.model.includes("/") ? `openai/${start.model}` : start.model;
-	if (hasGatewayAuth && codexModel?.startsWith("openai/")) codexConfig.model_supports_reasoning_summaries = true;
+	const codexConfig = {
+		model_reasoning_summary: "detailed",
+		...start.codexConfig,
+		developer_instructions: [start.instructions, "Only respond with your `final` message once you have fully addressed the user request."].filter((instruction) => Boolean(instruction)).join("\n\n")
+	};
 	if (apiBaseUrl) {
 		codexConfig.preferred_auth_method = "apikey";
 		codexConfig.model_provider = "agent_bridge_openai";
@@ -2221,6 +2240,7 @@ function parseArgs(args) {
 	const out = {};
 	for (let i = 0; i < args.length; i++) if (args[i] === "--workdir" && i + 1 < args.length) out.workdir = args[++i];
 	else if (args[i] === "--bridge-state-dir" && i + 1 < args.length) out.bridgeStateDir = args[++i];
+	else if (args[i] === "--host-disconnect-timeout-ms" && i + 1 < args.length) out.hostDisconnectTimeoutMs = Number(args[++i]);
 	return out;
 }
 function emitFatal(message) {
