@@ -111,6 +111,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		mcpToolTitlePrefixes = append(mcpToolTitlePrefixes, name+"-")
 	}
 
+	// GitHub Copilot CLI does not expose an option to disable project-level
+	// configuration. This ACP integration cannot isolate repository-owned
+	// configuration, so working directory contents must be trusted.
 	args := []string{"--acp", "--stdio", "--no-auto-update"}
 	if settings.ReasoningEffort != "" {
 		args = append(args, "--reasoning-effort="+string(settings.ReasoningEffort))

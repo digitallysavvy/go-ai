@@ -109,6 +109,14 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
+		// Repository-owned Claude / Cursor hooks and MCP servers in the work
+		// dir are not loaded (TS e4a6112776).
+		Env: map[string]string{
+			"GROK_CLAUDE_HOOKS_ENABLED": "false",
+			"GROK_CURSOR_HOOKS_ENABLED": "false",
+			"GROK_CLAUDE_MCPS_ENABLED":  "false",
+			"GROK_CURSOR_MCPS_ENABLED":  "false",
+		},
 		ForwardEnv:             []string{"GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL", "GROK_CLI_CHAT_PROXY_BASE_URL"},
 		CredentialEnv:          []string{"XAI_API_KEY"},
 		CredentialBrokering:    CredentialBrokering,

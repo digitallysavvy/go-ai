@@ -92,7 +92,7 @@ var _ harness.NetworkSandboxSession = (*e2eFakeSandbox)(nil)
 
 // TestCreateCursor_E2ERoundTrip drives CreateCursor's harness.Harness through
 // a fake ACP bridge end to end: DoStart launches the bridge process (spawning
-// the exact `agent --disable-auto-update acp` command BuildConfig
+// the exact `agent --disable-auto-update --disable-project-configs acp` command BuildConfig
 // configures), and a prompt turn streams a text delta back through the real
 // ACP session/channel machinery.
 func TestCreateCursor_E2ERoundTrip(t *testing.T) {

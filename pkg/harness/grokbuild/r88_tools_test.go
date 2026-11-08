@@ -333,3 +333,23 @@ func TestR88toolsGrokBuildPrepareCancellationAndResolution(t *testing.T) {
 		t.Fatalf("writes = %v", s.writes)
 	}
 }
+
+// TS e4a6112776 grok-build-harness.test.ts: repository-owned hooks and MCP
+// servers are disabled through the agent environment, and the settings
+// pass the acp ForwardEnv / CredentialEnv / Env overlap validation.
+func TestR88toolsGrokBuildDisablesRepositoryHooksAndMCPs(t *testing.T) {
+	cfg, err := BuildConfig(Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"GROK_CLAUDE_HOOKS_ENABLED": "false", "GROK_CURSOR_HOOKS_ENABLED": "false",
+		"GROK_CLAUDE_MCPS_ENABLED": "false", "GROK_CURSOR_MCPS_ENABLED": "false",
+	}
+	if !reflect.DeepEqual(cfg.Env, want) {
+		t.Fatalf("Env = %v", cfg.Env)
+	}
+	if _, err := CreateGrokBuild(); err != nil {
+		t.Fatalf("CreateGrokBuild: %v", err)
+	}
+}

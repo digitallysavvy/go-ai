@@ -108,7 +108,7 @@ func BuildConfig(settings Settings) acp.Settings {
 			Command: "curl https://cursor.com/install -fsS | bash",
 		},
 		Executable: "agent",
-		Args:       []string{"--disable-auto-update", "acp"},
+		Args:       []string{"--disable-auto-update", "--disable-project-configs", "acp"},
 		ModelMapping: acp.ModelMapping{
 			Type: acp.ModelMappingSessionConfigOption,
 			Path: "model",

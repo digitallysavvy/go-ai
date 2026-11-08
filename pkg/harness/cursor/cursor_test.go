@@ -23,7 +23,7 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.Executable != "agent" {
 		t.Errorf("Executable = %q, want agent", cfg.Executable)
 	}
-	if !reflect.DeepEqual(cfg.Args, []string{"--disable-auto-update", "acp"}) {
+	if !reflect.DeepEqual(cfg.Args, []string{"--disable-auto-update", "--disable-project-configs", "acp"}) {
 		t.Errorf("Args = %v", cfg.Args)
 	}
 	if cfg.Source.Type != acp.SourceInstallCommand || cfg.Source.Command != "curl https://cursor.com/install -fsS | bash" {
