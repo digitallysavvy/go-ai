@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -21,9 +22,19 @@ import (
 
 const realtimeWebSocketPath = "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
 
+// realtimeServerWebSocketPath is the unconstrained Bidi endpoint used by
+// server-side connections: a trusted server holds the API key and sends the
+// session setup over the socket (TS 892af4dab7).
+const realtimeServerWebSocketPath = "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+
 type GoogleRealtimeModel struct {
 	provider *Provider
 	modelID  string
+	// mapperMu guards mapper: the model-level ParseServerEvent /
+	// SerializeClientEvent share one stateful mapper (TS this.mapper), so
+	// concurrent direct callers must not race on it. Sessions should use
+	// NewServerEventParser, which gives each connection its own mapper.
+	mapperMu sync.Mutex
 	mapper   *googleRealtimeEventMapper
 }
 
@@ -66,7 +77,65 @@ var (
 	_ provider.Experimental_RealtimeModelV4    = (*GoogleRealtimeModel)(nil)
 	_ provider.RealtimeClientSecretCreator     = (*GoogleRealtimeModel)(nil)
 	_ provider.RealtimeWebSocketConfigProvider = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeServerEventParserFactory = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeServerConnectionProvider = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeIntentCodec              = (*GoogleRealtimeModel)(nil)
 )
+
+// googleRealtimeAssertConversationIntent mirrors TS assertConversationIntent:
+// Gemini Live exposes only the conversational endpoint, so another intent
+// fails fast instead of silently downgrading. The empty intent is
+// conversation.
+func googleRealtimeAssertConversationIntent(intent provider.RealtimeSessionIntent) error {
+	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
+		return fmt.Errorf("Google realtime does not support the '%s' session intent.", intent) //nolint:staticcheck // matches the TS error text
+	}
+	return nil
+}
+
+// GetServerConnection returns the server-side WebSocket connection (TS
+// getServerWebSocketConfig, 892af4dab7): the unconstrained v1beta Bidi
+// endpoint with the provider's resolved headers (x-goog-api-key, custom
+// headers, user agent). Conversation intent only. ConnectRealtime uses it
+// only when RealtimeSessionOptions.Intent is set (coordinator ruling 1).
+func (m *GoogleRealtimeModel) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	if err := googleRealtimeAssertConversationIntent(opts.Intent); err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	headers, err := m.provider.authHeaders(ctx)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: googleServerWebSocketURL(m.provider.config.BaseURL), Headers: headers}, nil
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent
+// (conversation only).
+func (m *GoogleRealtimeModel) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	if err := googleRealtimeAssertConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.BuildSessionConfig(config), nil
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent
+// (conversation only).
+func (m *GoogleRealtimeModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	if err := googleRealtimeAssertConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.SerializeClientEvent(event)
+}
+
+// NewServerEventParser returns a parser with its own event mapper, so each
+// connection keeps its turn and transcription state apart (TS
+// createServerEventParser, 892af4dab7).
+func (m *GoogleRealtimeModel) NewServerEventParser() func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	mapper := &googleRealtimeEventMapper{inputAudioRate: 16000}
+	return func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+		return mapper.parseServerEvent(raw), nil
+	}
+}
 
 func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	apiKey, err := m.googleRealtimeAPIKey(ctx)
@@ -283,10 +352,14 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 }
 
 func (m *GoogleRealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	m.mapperMu.Lock()
+	defer m.mapperMu.Unlock()
 	return m.mapper.parseServerEvent(raw), nil
 }
 
 func (m *GoogleRealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent) (json.RawMessage, error) {
+	m.mapperMu.Lock()
+	defer m.mapperMu.Unlock()
 	return m.mapper.serializeClientEvent(event, m.modelID)
 }
 
@@ -381,7 +454,129 @@ func googleOptionalBool(m map[string]interface{}, key string) *bool {
 	return &b
 }
 
+// parseServerEvent ports TS parseServerEvent (892af4dab7): the frame's
+// usageMetadata goes on the response-done event of the same frame, or else
+// into a custom "usageMetadata" event (only a shared frame associates usage
+// with a completion).
 func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
+	events := m.parseEvent(raw)
+	var data struct {
+		UsageMetadata *googleRealtimeUsageMetadata `json:"usageMetadata"`
+	}
+	_ = json.Unmarshal(raw, &data)
+	usage := mapGoogleRealtimeUsage(data.UsageMetadata)
+	if usage == nil {
+		return events
+	}
+	hasDone := false
+	for _, ev := range events {
+		if ev.Type == "response-done" {
+			hasDone = true
+		}
+	}
+	if hasDone {
+		out := make([]provider.RealtimeServerEvent, len(events))
+		for i, ev := range events {
+			if ev.Type == "response-done" {
+				u := *usage
+				ev.Usage = &u
+			}
+			out[i] = ev
+		}
+		return out
+	}
+	update := provider.RealtimeServerEvent{Type: "custom", RawType: "usageMetadata", Usage: usage, Raw: raw}
+	if len(events) == 1 && events[0].Type == "custom" && events[0].RawType == "usageMetadata" {
+		return []provider.RealtimeServerEvent{update}
+	}
+	return append(events, update)
+}
+
+type googleRealtimeTokenDetail struct {
+	Modality   *string  `json:"modality"`
+	TokenCount *float64 `json:"tokenCount"`
+}
+
+// googleRealtimeUsageMetadata is the Gemini Live usageMetadata (Live uses
+// responseTokenCount / responseTokensDetails for output, not the candidates*
+// fields of generateContent).
+type googleRealtimeUsageMetadata struct {
+	PromptTokenCount        *float64                    `json:"promptTokenCount"`
+	ResponseTokenCount      *float64                    `json:"responseTokenCount"`
+	ToolUsePromptTokenCount *float64                    `json:"toolUsePromptTokenCount"`
+	ThoughtsTokenCount      *float64                    `json:"thoughtsTokenCount"`
+	CachedContentTokenCount *float64                    `json:"cachedContentTokenCount"`
+	PromptTokensDetails     []googleRealtimeTokenDetail `json:"promptTokensDetails"`
+	ResponseTokensDetails   []googleRealtimeTokenDetail `json:"responseTokensDetails"`
+}
+
+// mapGoogleRealtimeUsage ports TS mapGoogleUsage: gross totals include tool
+// use prompt tokens (input) and thoughts (output); per-modality TEXT / AUDIO
+// sums; nil when nothing is observable. A text/audio split is never guessed.
+func mapGoogleRealtimeUsage(u *googleRealtimeUsageMetadata) *provider.RealtimeUsage {
+	if u == nil {
+		return nil
+	}
+	count := func(v float64) *int { n := int(v); return &n }
+	usage := &provider.RealtimeUsage{}
+	seen := false
+	if u.PromptTokenCount != nil {
+		v := *u.PromptTokenCount
+		if u.ToolUsePromptTokenCount != nil {
+			v += *u.ToolUsePromptTokenCount
+		}
+		usage.InputTokens, seen = count(v), true
+	}
+	if u.ResponseTokenCount != nil {
+		v := *u.ResponseTokenCount
+		if u.ThoughtsTokenCount != nil {
+			v += *u.ThoughtsTokenCount
+		}
+		usage.OutputTokens, seen = count(v), true
+	}
+	if u.CachedContentTokenCount != nil {
+		usage.CachedInputTokens, seen = count(*u.CachedContentTokenCount), true
+	}
+	sum := func(details []googleRealtimeTokenDetail) (text, audio *int) {
+		var t, a float64
+		hasT, hasA := false, false
+		for _, d := range details {
+			if d.TokenCount == nil {
+				continue
+			}
+			modality := ""
+			if d.Modality != nil {
+				modality = providerutils.JSToUpper(*d.Modality)
+			}
+			switch modality {
+			case "AUDIO":
+				a += *d.TokenCount
+				hasA = true
+			case "TEXT":
+				t += *d.TokenCount
+				hasT = true
+			}
+		}
+		if hasT {
+			text = count(t)
+		}
+		if hasA {
+			audio = count(a)
+		}
+		return text, audio
+	}
+	usage.InputTextTokens, usage.InputAudioTokens = sum(u.PromptTokensDetails)
+	usage.OutputTextTokens, usage.OutputAudioTokens = sum(u.ResponseTokensDetails)
+	if usage.InputTextTokens != nil || usage.InputAudioTokens != nil || usage.OutputTextTokens != nil || usage.OutputAudioTokens != nil {
+		seen = true
+	}
+	if !seen {
+		return nil
+	}
+	return usage
+}
+
+func (m *googleRealtimeEventMapper) parseEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
 	var data map[string]interface{}
 	_ = json.Unmarshal(raw, &data)
 	if value, ok := data["setupComplete"]; ok && value != nil {
@@ -573,6 +768,17 @@ func googleWebSocketURL(base string) string {
 	baseURL := googleRealtimeBaseURL(base)
 	baseURL.Scheme = strings.Replace(baseURL.Scheme, "http", "ws", 1)
 	baseURL.Path = strings.TrimSuffix(baseURL.Path, "/") + "/ws/" + realtimeWebSocketPath
+	return baseURL.String()
+}
+
+func googleServerWebSocketURL(base string) string {
+	baseURL := googleRealtimeBaseURL(base)
+	if baseURL.Scheme == "https" {
+		baseURL.Scheme = "wss"
+	} else {
+		baseURL.Scheme = "ws"
+	}
+	baseURL.Path = strings.TrimSuffix(baseURL.Path, "/") + "/ws/" + realtimeServerWebSocketPath
 	return baseURL.String()
 }
 

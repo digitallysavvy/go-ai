@@ -119,3 +119,103 @@ func TestR88provgInteractionsLabels(t *testing.T) {
 		t.Fatal("non-string label: want error")
 	}
 }
+
+// Ports the google-realtime-model.test.ts server connection tests (TS
+// 892af4dab7): the unconstrained v1beta Bidi endpoint with the resolved
+// x-goog-api-key header, and conversation intent only.
+func TestR88provgRealtimeServerConnection(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "test-key", BaseURL: "https://generativelanguage.googleapis.com/v1beta"}), "gemini-2.0-flash-live-001")
+	cfg, err := m.GetServerConnection(context.Background(), provider.RealtimeServerConnectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.URL != "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent" {
+		t.Fatalf("url = %s", cfg.URL)
+	}
+	if cfg.Headers["x-goog-api-key"] != "test-key" {
+		t.Fatalf("headers = %v", cfg.Headers)
+	}
+	for k, v := range cfg.Headers {
+		if v == "" {
+			t.Fatalf("empty header %q sent", k)
+		}
+	}
+	if _, err := m.GetServerConnection(context.Background(), provider.RealtimeServerConnectionOptions{Intent: provider.RealtimeSessionIntentConversation}); err != nil {
+		t.Fatal(err)
+	}
+	const want = "Google realtime does not support the 'transcription' session intent."
+	if _, err := m.GetServerConnection(context.Background(), provider.RealtimeServerConnectionOptions{Intent: provider.RealtimeSessionIntentTranscription}); err == nil || err.Error() != want {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := m.SerializeClientEventForIntent(provider.RealtimeClientEvent{Type: "response-create"}, provider.RealtimeSessionIntentTranscription); err == nil || err.Error() != want {
+		t.Fatalf("serialize err = %v", err)
+	}
+	if _, err := m.BuildSessionConfigForIntent(provider.RealtimeSessionConfig{}, provider.RealtimeSessionIntentTranscription); err == nil || err.Error() != want {
+		t.Fatalf("build err = %v", err)
+	}
+	if _, err := m.BuildSessionConfigForIntent(provider.RealtimeSessionConfig{}, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TS "isolates usage and turn state between server connections"
+// (892af4dab7): each NewServerEventParser has its own mapper, and the
+// model-level parser is safe for concurrent use (go test -race).
+func TestR88provgRealtimeParserIsolation(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-3.8-live")
+	first, second := m.NewServerEventParser(), m.NewServerEventParser()
+	parse := func(p func(json.RawMessage) ([]provider.RealtimeServerEvent, error), raw string) []provider.RealtimeServerEvent {
+		evs, err := p(json.RawMessage(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return evs
+	}
+	firstUsage := parse(first, `{"usageMetadata":{"promptTokensDetails":[{"modality":"TEXT","tokenCount":12}]}}`)
+	if len(firstUsage) != 1 || firstUsage[0].Type != "custom" || firstUsage[0].RawType != "usageMetadata" || firstUsage[0].Usage == nil || *firstUsage[0].Usage.InputTextTokens != 12 {
+		t.Fatalf("first usage = %+v", firstUsage)
+	}
+	b, _ := json.Marshal(firstUsage[0].Usage)
+	if string(b) != `{"inputTextTokens":12}` {
+		t.Fatalf("usage json = %s", b)
+	}
+	secondDone := parse(second, `{"serverContent":{"turnComplete":true}}`)
+	found := false
+	for _, ev := range secondDone {
+		if ev.Type == "response-done" && ev.ResponseID == "google-resp-0" {
+			found = true
+		}
+		if ev.Usage != nil {
+			t.Fatalf("usage leaked into the second connection: %+v", ev)
+		}
+	}
+	if !found {
+		t.Fatalf("second done = %+v", secondDone)
+	}
+	parse(first, `{"serverContent":{"turnComplete":true}}`)
+	parse(first, `{"serverContent":{"modelTurn":{"parts":[{"text":"next"}]},"turnComplete":true}}`)
+	parse(first, `{"serverContent":{"modelTurn":{"parts":[{"text":"third"}]}}}`)
+	secondTurn := parse(second, `{"serverContent":{"modelTurn":{"parts":[{"text":"independent"}]}}}`)
+	found = false
+	for _, ev := range secondTurn {
+		if ev.Type == "text-delta" && ev.ResponseID == "google-resp-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("second turn = %+v", secondTurn)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_, _ = m.ParseServerEvent(json.RawMessage(`{"serverContent":{"modelTurn":{"parts":[{"text":"x"}]},"turnComplete":true}}`))
+				_, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "response-create"})
+			}
+		}()
+	}
+	wg.Wait()
+}
