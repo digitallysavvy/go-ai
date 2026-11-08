@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -698,7 +699,7 @@ func isBFLTaskNotFoundError(err error) bool {
 		return false
 	}
 	var raw map[string]json.RawMessage
-	if json.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &raw) != nil || raw == nil {
+	if securejson.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &raw) != nil || raw == nil {
 		return false
 	}
 	if m, ok := raw["message"]; ok {
