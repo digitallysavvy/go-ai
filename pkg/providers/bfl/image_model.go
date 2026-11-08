@@ -1,9 +1,11 @@
 package bfl
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -136,7 +138,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	// TS createJsonResponseHandler(bflSubmitSchema).
-	if err := validateBFLSubmitBody(resp.Body); err != nil {
+	if err := validateBFLImageSubmitBody(resp.Body); err != nil {
 		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, resp.Body, err)
 	}
 	var createResp bflCreateResponse
@@ -554,14 +556,41 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 	if pollTimeout <= 0 {
 		pollTimeout = 60 * time.Second
 	}
+	// TS eded4b8ed0: BFL answers a submit that registered a webhook with a
+	// webhook-shaped object (no polling_url). The task is then polled at the
+	// documented get_result endpoint of the configured base URL, and a
+	// transient "Task not found" counts as pending.
 	pollURL := createResp.PollingURL
-	if pollURL == "" {
-		pollURL = fmt.Sprintf("/get_result?id=%s", createResp.ID)
+	allowTaskNotFound := pollURL == ""
+	if allowTaskNotFound {
+		pollURL = m.provider.baseURL() + "/get_result"
 	}
 	if strings.HasPrefix(pollURL, "http://") || strings.HasPrefix(pollURL, "https://") {
 		if withID, err := ensurePollingURLHasID(pollURL, createResp.ID); err == nil {
 			pollURL = withID
 		}
+	}
+	taskNotFoundErr := func() error {
+		return fmt.Errorf("Black Forest Labs task %s was not found via get_result before timing out", createResp.ID) //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	timeoutErr := func(lastStatus string) error {
+		if lastStatus == "Task not found" {
+			return taskNotFoundErr()
+		}
+		return fmt.Errorf("Black Forest Labs generation timed out.") //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	lastStatus := ""
+	taskNotFoundAttempts := 0
+	// trackTaskNotFound records a "Task not found" answer; the 20th fails
+	// (TS MAX_TASK_NOT_FOUND_ATTEMPTS), so a task that never registers is
+	// reported as such instead of a generic timeout.
+	trackTaskNotFound := func() error {
+		lastStatus = "Task not found"
+		taskNotFoundAttempts++
+		if taskNotFoundAttempts >= bflMaxTaskNotFoundAttempts {
+			return taskNotFoundErr()
+		}
+		return nil
 	}
 
 	// A wall-clock deadline (TS pollForImageUrl's AbortController + setTimeout),
@@ -579,12 +608,35 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 	})
 	defer timer.Stop()
 
+	wait := func() error {
+		select {
+		case <-pollCtx.Done():
+			if timedOut.Load() {
+				return timeoutErr(lastStatus)
+			}
+			return pollCtx.Err()
+		case <-time.After(pollInterval):
+			return nil
+		}
+	}
+
 	for {
 		rawBody, err := m.getPollBody(pollCtx, pollURL, headers)
 		body := []byte(textdecode.UTF8(rawBody))
 		if err != nil {
 			if timedOut.Load() {
-				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.") //nolint:staticcheck // matches TS SDK's exact error text
+				return bflResult{}, timeoutErr(lastStatus)
+			}
+			// Webhook jobs register asynchronously: get_result can briefly
+			// answer HTTP 404 "Task not found" after the submit.
+			if allowTaskNotFound && isBFLTaskNotFoundError(err) {
+				if err := trackTaskNotFound(); err != nil {
+					return bflResult{}, err
+				}
+				if err := wait(); err != nil {
+					return bflResult{}, err
+				}
+				continue
 			}
 			return bflResult{}, err
 		}
@@ -601,6 +653,7 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 		if result.Status == "" {
 			result.Status = result.State
 		}
+		lastStatus = result.Status
 
 		if result.Status == "Ready" {
 			if result.Result.Sample == "" {
@@ -609,6 +662,15 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 			return result, nil
 		}
 
+		if result.Status == "Task not found" && allowTaskNotFound {
+			if err := trackTaskNotFound(); err != nil {
+				return bflResult{}, err
+			}
+			if err := wait(); err != nil {
+				return bflResult{}, err
+			}
+			continue
+		}
 		if result.Status == "Error" || result.Status == "Failed" {
 			return bflResult{}, fmt.Errorf("Black Forest Labs generation failed.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
@@ -616,15 +678,58 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 			return bflResult{}, fmt.Errorf("Black Forest Labs generation failed: %s.", result.Status) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 
-		select {
-		case <-pollCtx.Done():
-			if timedOut.Load() {
-				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.") //nolint:staticcheck // matches TS SDK's exact error text
-			}
-			return bflResult{}, pollCtx.Err()
-		case <-time.After(pollInterval):
+		if err := wait(); err != nil {
+			return bflResult{}, err
 		}
 	}
+}
+
+// bflMaxTaskNotFoundAttempts is TS MAX_TASK_NOT_FOUND_ATTEMPTS: about 10 s at
+// the default 500 ms interval for a webhook job to register.
+const bflMaxTaskNotFoundAttempts = 20
+
+// isBFLTaskNotFoundError is TS isTaskNotFoundError: an HTTP 404 whose JSON
+// body parses as bflErrorSchema ({message?: string, detail?: any, status?:
+// string | null, state?: string | null}) with (status ?? state) equal to
+// "Task not found".
+func isBFLTaskNotFoundError(err error) bool {
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusNotFound {
+		return false
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &raw) != nil || raw == nil {
+		return false
+	}
+	if m, ok := raw["message"]; ok {
+		var s string
+		if string(bytes.TrimSpace(m)) == "null" || json.Unmarshal(m, &s) != nil {
+			return false // message is z.string().optional(): null or a non-string fails
+		}
+	}
+	nullishString := func(key string) (*string, bool) {
+		v, ok := raw[key]
+		if !ok || string(bytes.TrimSpace(v)) == "null" {
+			return nil, true
+		}
+		var s string
+		if json.Unmarshal(v, &s) != nil {
+			return nil, false
+		}
+		return &s, true
+	}
+	status, ok := nullishString("status")
+	if !ok {
+		return false
+	}
+	state, ok := nullishString("state")
+	if !ok {
+		return false
+	}
+	if status == nil {
+		status = state
+	}
+	return status != nil && *status == "Task not found"
 }
 
 // getPollBody fetches the poll status body. pollURL is provider-response
