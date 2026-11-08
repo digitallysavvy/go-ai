@@ -899,6 +899,9 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, fmt.Errorf("model is required")
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	// The object callback events published on the diagnostic channel are
+	// filtered by these settings (TS 8da48db187).
+	ctx = withCallbackTelemetry(ctx, opts.ExperimentalTelemetry)
 	// TS: system is `instructions ?? system` everywhere.
 	opts.System = effectiveSystem(opts.System, opts.Instructions)
 
@@ -1866,6 +1869,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		return nil, fmt.Errorf("model is required")
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	// The object callback events published on the diagnostic channel are
+	// filtered by these settings (TS 8da48db187).
+	ctx = withCallbackTelemetry(ctx, opts.ExperimentalTelemetry)
 	// TS: system is `instructions ?? system` everywhere.
 	opts.System = effectiveSystem(opts.System, opts.Instructions)
 	if opts.OutputMode == "" {
