@@ -495,8 +495,10 @@ func oauthAuthenticatorFunc(provider OAuthClientProvider) func(context.Context, 
 }
 
 // SelectOAuthResourceURL validates and selects the RFC 8707 resource value
-// sent to the authorization server, matching TS selectResourceURL (oauth.ts).
-// A nil result (with a nil error) means no resource parameter should be sent.
+// sent to the authorization server, matching TS selectResourceURL (oauth.ts,
+// 0f3a85f92d). The resource is always sent: without protected-resource
+// metadata, or when a validator returns "", it is the canonical server URL
+// (fragment removed), so tokens stay bound to this MCP server (TS ae13fcea03).
 func SelectOAuthResourceURL(ctx context.Context, serverURL string, provider OAuthClientProvider, resourceMetadata *OAuthProtectedResourceMetadata) (*url.URL, error) {
 	defaultResource, err := resourceURLFromServerURL(serverURL)
 	if err != nil {
@@ -513,13 +515,13 @@ func SelectOAuthResourceURL(ctx context.Context, serverURL string, provider OAut
 			return nil, err
 		}
 		if selected == "" {
-			return nil, nil
+			return defaultResource, nil
 		}
 		return url.Parse(selected)
 	}
 
 	if resourceMetadata == nil {
-		return nil, nil
+		return defaultResource, nil
 	}
 
 	allowed, err := checkOAuthResourceAllowed(defaultResource.String(), resourceMetadata.Resource)
