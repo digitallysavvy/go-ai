@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +19,24 @@ import (
 func TestMain(m *testing.M) {
 	// Never touch the developer machine's real Keychain from tests.
 	claudeGOOS = "linux"
-	os.Exit(m.Run())
+	// Isolate every suite from the developer's real ~/.claude login and
+	// apiKeyHelper and from ambient credentials (TS 600209cce8).
+	home, err := os.MkdirTemp("", "claudecode-test-home-")
+	if err == nil {
+		_ = os.Setenv("HOME", home)
+		_ = os.Setenv("USERPROFILE", home)
+		_ = os.Setenv("CLAUDE_CONFIG_DIR", home+"/.claude")
+	}
+	for _, kv := range os.Environ() {
+		if name, _, ok := strings.Cut(kv, "="); ok && (strings.HasPrefix(name, "ANTHROPIC_") || strings.HasPrefix(name, "AI_GATEWAY_") || name == "CLAUDE_CODE_OAUTH_TOKEN" || name == "VERCEL_OIDC_TOKEN") {
+			_ = os.Unsetenv(name)
+		}
+	}
+	code := m.Run()
+	if err == nil {
+		_ = os.RemoveAll(home)
+	}
+	os.Exit(code)
 }
 
 // TS claude-code-subscription.test.ts: no credential file present.
