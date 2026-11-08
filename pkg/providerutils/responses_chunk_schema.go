@@ -196,6 +196,11 @@ var (
 	zRespModeled = map[string]zNode{
 		"response.output_text.delta": zObj(fl("type", zLit("response.output_text.delta")), fl("item_id", zStr), fl("output_index", nNum), fl("delta", zStr),
 			fl("logprobs", zNullish(zArr(zObj(fl("token", zStr), fl("logprob", zNum), fl("top_logprobs", zArr(zObj(fl("token", zStr), fl("logprob", zNum))))))))),
+		// TS 6b97088662: refusal events are modeled.
+		"response.refusal.delta": zObj(fl("type", zLit("response.refusal.delta")), fl("item_id", zStr), fl("output_index", nNum),
+			fl("content_index", nNum), fl("delta", zStr)),
+		"response.refusal.done": zObj(fl("type", zLit("response.refusal.done")), fl("item_id", zStr), fl("output_index", nNum),
+			fl("content_index", nNum), fl("refusal", zStr)),
 		"response.completed":  zObj(fl("type", zEnum("response.completed", "response.incomplete")), fl("response", zObj(zRespCommonResponse...))),
 		"response.incomplete": zObj(fl("type", zEnum("response.completed", "response.incomplete")), fl("response", zObj(zRespCommonResponse...))),
 		"response.failed": zObj(fl("type", zLit("response.failed")), fl("sequence_number", zNum), fl("response", zObj(append([]zFld{

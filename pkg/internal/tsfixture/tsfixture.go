@@ -484,6 +484,9 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				resultMap["warnings"] = WarningsToTS(res.Warnings)
 				resultMap["providerMetadata"] = res.ProviderMetadata
 				resultMap["request"] = generateRequestToTS(res)
+				if res.StructuredOutputText != nil { // TS result.structuredOutputText
+					resultMap["structuredOutputText"] = *res.StructuredOutputText
+				}
 				resp := map[string]interface{}{"headers": lowerHeaders(res.ResponseHeaders, keepContentLength)}
 				if m := res.ResponseMetadata; m != nil {
 					if m.ID != "" {

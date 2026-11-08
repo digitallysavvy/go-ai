@@ -125,9 +125,6 @@ func TestTSCasesChat(t *testing.T) {
 // user agent.
 const tsProviderHeaders = "the TS test builds a provider with organization, project and headers and checks the TS test user agent (ai-sdk-openai/0.0.0-test); the harness builds a default provider"
 
-// r88provbRefusalSchemaSkip: remove once the provg response schema CR lands.
-const r88provbRefusalSchemaSkip = "needs the Responses message content refusal member in providerutils/response_schema.go (cr-r88-provb-to-provg 1)"
-
 func TestTSCasesResponses(t *testing.T) {
 	tsfixture.ProviderToolHook = tsProviderTool
 	cases := tsfixture.LoadCases(t, "testdata/tscases/responses.json.gz")
@@ -147,12 +144,5 @@ func TestTSCasesResponses(t *testing.T) {
 		`should use "azure" as providerMetadata key when provider includes "azure"`:                               "the TS test builds an azure.responses model; the harness builds a default openai provider (the azure key is covered by the azure provider cases)",
 		"should return helpful error when Chat Completions stream is received":                                    "the Go error text names the Go API (Provider.ChatModel) where TS names openai.chat; the rest of the message is TS's (chatCompletionsMismatchMessage)",
 		`should use "azure" as providerMetadata key in streaming reasoning events when provider includes "azure"`: "the TS test builds an azure.responses model; the harness builds a default openai provider (the azure key is covered by the azure provider cases)",
-		// TS 6b97088662: the refusal member of the message content union is in
-		// providerutils/response_schema.go (provg, cr-r88-provb-to-provg 1);
-		// TestR88provbResponsesRefusalParts covers the conversion until then.
-		"should surface a refusal content part as text and map the finish reason to content-filter":     r88provbRefusalSchemaSkip,
-		"should surface output_text and refusal parts from the same message":                            r88provbRefusalSchemaSkip,
-		"should include a refusal in structuredOutputText for a final answer":                           r88provbRefusalSchemaSkip,
-		"should prefer tool-calls over content-filter when a refusal is accompanied by a function call": r88provbRefusalSchemaSkip,
 	})
 }

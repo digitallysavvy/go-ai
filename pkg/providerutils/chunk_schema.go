@@ -112,16 +112,19 @@ var (
 			fl("delta", zNullish(zObj(
 				fl("role", zNullish(zLit("assistant"))),
 				fl("content", nStr),
+				// set instead of content when the model refuses (TS f6dbf04b5d)
+				fl("refusal", nStr),
 				fl("tool_calls", zOpenAIToolCalls),
 				fl("annotations", zNullish(zArr(zObj(
 					fl("type", zLit("url_citation")),
 					fl("url_citation", zObj(fl("start_index", zNum), fl("end_index", zNum), fl("url", zStr), fl("title", zStr))),
 				)))),
 			))),
-			fl("logprobs", zNullish(zObj(fl("content", zNullish(zArr(zObj(
-				fl("token", zStr), fl("logprob", zNum),
-				fl("top_logprobs", zArr(zObj(fl("token", zStr), fl("logprob", zNum)))),
-			))))))),
+			fl("logprobs", zNullish(zObj(
+				fl("content", zNullish(zArr(zOpenAIChatLogprob))),
+				// refusal token logprobs (TS 646a7e3c2e)
+				fl("refusal", zNullish(zArr(zOpenAIChatLogprob))),
+			))),
 			fl("finish_reason", nStr),
 			fl("index", zNum),
 		))),

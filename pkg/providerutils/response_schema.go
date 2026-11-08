@@ -47,12 +47,21 @@ var (
 			fl("reasoning_tokens", nNum), fl("accepted_prediction_tokens", nNum), fl("rejected_prediction_tokens", nNum)))),
 	))
 
+	// zOpenAIChatLogprob is one entry of openaiChatResponseSchema / chunk
+	// logprobs.content and logprobs.refusal.
+	zOpenAIChatLogprob = zObj(
+		fl("token", zStr), fl("logprob", zNum),
+		fl("top_logprobs", zArr(zObj(fl("token", zStr), fl("logprob", zNum)))),
+	)
+
 	zOpenAIChatResponse = zObj(
 		fl("id", nStr), fl("created", nNum), fl("model", nStr),
 		fl("choices", zArr(zObj(
 			fl("message", zObj(
 				fl("role", zNullish(zLit("assistant"))),
 				fl("content", nStr),
+				// set instead of content when the model refuses (TS f6dbf04b5d)
+				fl("refusal", nStr),
 				fl("audio", zNullish(zObj(fl("transcript", nStr)))),
 				fl("tool_calls", zNullish(zArr(zObj(
 					fl("id", nStr), fl("type", zLit("function")),
@@ -64,10 +73,11 @@ var (
 				)))),
 			)),
 			fl("index", zNum),
-			fl("logprobs", zNullish(zObj(fl("content", zNullish(zArr(zObj(
-				fl("token", zStr), fl("logprob", zNum),
-				fl("top_logprobs", zArr(zObj(fl("token", zStr), fl("logprob", zNum)))),
-			))))))),
+			fl("logprobs", zNullish(zObj(
+				fl("content", zNullish(zArr(zOpenAIChatLogprob))),
+				// refusal token logprobs (TS 646a7e3c2e)
+				fl("refusal", zNullish(zArr(zOpenAIChatLogprob))),
+			))),
 			fl("finish_reason", nStr),
 		))),
 		fl("usage", zOpenAIUsage),
@@ -379,12 +389,16 @@ func IsInvalidJSONResponse(err error) bool {
 var (
 	zRespAssistantMessage = zObj(
 		fl("type", zLit("message")), fl("role", zLit("assistant")), fl("id", zStr), fl("phase", zRespPhase),
-		fl("content", zArr(zObj(
-			fl("type", zLit("output_text")), fl("text", zStr),
-			fl("logprobs", zNullish(zArr(zObj(fl("token", zStr), fl("logprob", zNum),
-				fl("top_logprobs", zArr(zObj(fl("token", zStr), fl("logprob", zNum)))))))),
-			fl("annotations", zArr(zRespAnnotation)),
-		))),
+		// The API returns text or a refusal as content parts (TS 6b97088662).
+		fl("content", zArr(zDiscType(map[string]zNode{
+			"output_text": zObj(
+				fl("type", zLit("output_text")), fl("text", zStr),
+				fl("logprobs", zNullish(zArr(zObj(fl("token", zStr), fl("logprob", zNum),
+					fl("top_logprobs", zArr(zObj(fl("token", zStr), fl("logprob", zNum)))))))),
+				fl("annotations", zArr(zRespAnnotation)),
+			),
+			"refusal": zObj(fl("type", zLit("refusal")), fl("refusal", zStr)),
+		}))),
 	)
 
 	// openaiResponsesResponseSchema output items: the output_item.done
