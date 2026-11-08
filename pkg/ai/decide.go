@@ -662,10 +662,10 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 		if !isSerializableDecisionJSON(q.Instructions) || !isSerializableDecisionJSON(q.Criteria) {
 			return invalidDecisionInput(field, invalidDecisionQuestionJSONMessage)
 		}
-		// Instructions may be omitted (nil) for choice, score and boolean
-		// questions when the provider supports criteria-only questions; a box
-		// question always needs them (TS #23470).
-		if (q.Type == "box" || q.Instructions != nil) && !isDecisionInput(q.Instructions) {
+		// Instructions may be omitted (nil) for every question type when the
+		// provider supports it (TS #23470; box since c70adf670b, whose
+		// DecisionModelV4Question types box instructions `?: ... | null`).
+		if q.Instructions != nil && !isDecisionInput(q.Instructions) {
 			return invalidDecisionInput(field, "instructions must be a JSON-compatible string, object, or array")
 		}
 

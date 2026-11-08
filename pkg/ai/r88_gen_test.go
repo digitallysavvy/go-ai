@@ -1,9 +1,11 @@
 package ai
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -66,5 +68,48 @@ func TestR88genSteeringResolveOnlySentWithIDs(t *testing.T) {
 	}
 	if steeringDeliveredMessages(nil) != nil {
 		t.Fatal("no delivered messages must stay nil")
+	}
+}
+
+// TS decide.test.ts "forwards optional Box instructions: %j" (c70adf670b):
+// `{}`, `{instructions: undefined}` and `{instructions: null}` are all a nil
+// Instructions in Go and reach the model unchanged.
+func TestR88genDecideForwardsOptionalBoxInstructions(t *testing.T) {
+	want := provider.DecisionBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}
+	model := boxMock(&want)
+	questions := map[string]provider.DecisionQuestion{"target": {Type: "box"}}
+	res, err := ExperimentalDecide(context.Background(), DecideOptions{Model: model, State: "", Questions: questions})
+	if err != nil {
+		t.Fatalf("box without instructions: %v", err)
+	}
+	if len(model.calls) != 1 || !reflect.DeepEqual(model.calls[0].Questions, questions) {
+		t.Fatalf("questions sent = %+v", model.calls)
+	}
+	if got := res.Answers["target"]; got.Type != "box" || got.Box == nil || *got.Box != want {
+		t.Fatalf("answer = %#v", got)
+	}
+}
+
+// TS decide.test.ts "forwards null Boolean criteria with instructions"
+// (c70adf670b).
+func TestR88genDecideForwardsNullBooleanCriteria(t *testing.T) {
+	p := 0.9
+	answer := provider.DecisionAnswer{Type: "boolean", Probability: &p}
+	model := &mockDecisionModel{
+		providerName: "test", modelID: "m",
+		doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+			return &provider.DecisionResult{Answers: map[string]provider.DecisionAnswer{"refund": answer}}, nil
+		},
+	}
+	questions := map[string]provider.DecisionQuestion{"refund": {Type: "boolean", Instructions: "Refund?", Criteria: nil}}
+	res, err := ExperimentalDecide(context.Background(), DecideOptions{Model: model, State: "text", Questions: questions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.calls) != 1 || !reflect.DeepEqual(model.calls[0].Questions, questions) {
+		t.Fatalf("questions sent = %+v", model.calls)
+	}
+	if got := res.Answers["refund"]; !reflect.DeepEqual(got, answer) {
+		t.Fatalf("answer = %#v", got)
 	}
 }
