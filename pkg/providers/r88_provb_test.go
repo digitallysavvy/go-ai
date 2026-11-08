@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gmicloud"
+	"github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
 	"github.com/digitallysavvy/go-ai/pkg/providers/ollama"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
@@ -104,5 +105,19 @@ func TestR88provbCompatInlineTextFile(t *testing.T) {
 	var uf *providererrors.UnsupportedFunctionalityError
 	if !errors.As(err, &uf) || uf.Functionality != "text file parts" {
 		t.Fatalf("err = %v, want the text file parts error", err)
+	}
+}
+
+// Model ID constants for together, fireworks and huggingface (TS model ID
+// types at 0f3a85f92d; triage providers B §5).
+func TestR88provbModelIDConstants(t *testing.T) {
+	for got, want := range map[string]string{
+		together.ModelMetaLlamaLlama3_3_70BInstructTurbo: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+		fireworks.ModelKimiK2p6:                          "accounts/fireworks/models/kimi-k2p6",
+		huggingface.ModelDeepseekAiDeepSeekV3_0324:       "deepseek-ai/DeepSeek-V3-0324",
+	} {
+		if got != want {
+			t.Errorf("constant = %q, want %q", got, want)
+		}
 	}
 }
