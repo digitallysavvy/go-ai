@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -214,6 +215,46 @@ func TestR88toolsUnboundTokenThatCannotBeCleared(t *testing.T) {
 			}
 			if len(f.savedClientInfo) != 0 || f.asInfo != nil || len(f.redirectedTo) != 0 || c.posts != 0 {
 				t.Fatalf("saved client %d, AS info %v, redirects %d, POSTs %d", len(f.savedClientInfo), f.asInfo, len(f.redirectedTo), c.posts)
+			}
+		})
+	}
+}
+
+// --- TS f608c056a2 (mcp half): HTTPS to HTTP discovery redirects ---
+
+// oauth.test.ts "rejects protected resource / authorization server
+// discovery redirects to $location".
+func TestR88toolsDiscoveryRejectsDowngradeRedirects(t *testing.T) {
+	for _, tc := range []struct {
+		name, location, want string
+	}{
+		{"prm private", "https://169.254.169.254/latest/meta-data", "169.254.169.254"},
+		{"prm downgrade", "http://resource.example.com/.well-known/oauth-protected-resource", "Redirect from HTTPS to HTTP was blocked"},
+		{"as private", "https://127.0.0.1:4000/.well-known/openid-configuration", "127.0.0.1"},
+		{"as downgrade", "http://auth.example.com/.well-known/oauth-authorization-server", "Redirect from HTTPS to HTTP was blocked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			client := oauthTestClient(func(req *http.Request) (*http.Response, error) {
+				mu.Lock()
+				calls++
+				mu.Unlock()
+				resp := jsonResponse(http.StatusFound, ``)
+				resp.Header.Set("Location", tc.location)
+				return resp, nil
+			})
+			var err error
+			if strings.HasPrefix(tc.name, "prm") {
+				_, err = DiscoverOAuthProtectedResourceMetadata(context.Background(), "https://resource.example.com/mcp", OAuthDiscoveryOptions{HTTPClient: client})
+			} else {
+				_, err = DiscoverAuthorizationServerMetadata(context.Background(), "https://auth.example.com", OAuthDiscoveryOptions{HTTPClient: client})
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if calls != 1 {
+				t.Fatalf("fetch calls = %d, want 1", calls)
 			}
 		})
 	}
