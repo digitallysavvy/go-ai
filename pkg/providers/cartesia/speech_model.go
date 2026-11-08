@@ -12,6 +12,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -151,9 +152,10 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 // (cartesia-speech-model.ts) and its output_format object, which
 // JSON.stringify keeps.
 var cartesiaSpeechBodyOrder = map[string][]string{
-	"":              {"model_id", "transcript", "voice", "output_format", "language", "generation_config"},
-	"voice":         {"mode", "id"},
-	"output_format": {"container", "encoding", "sample_rate", "bit_rate"},
+	"":                  {"model_id", "transcript", "voice", "output_format", "locale", "language", "normalization", "pronunciation_dict_id", "generation_config"},
+	"voice":             {"mode", "id"},
+	"output_format":     {"container", "encoding", "sample_rate", "bit_rate"},
+	"generation_config": {"speed", "volume", "emotion"},
 }
 
 // DoGenerate performs text-to-speech synthesis.
@@ -170,7 +172,10 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 	currentDate := time.Now()
 
-	requestBody, warnings := m.buildRequestBody(opts)
+	requestBody, warnings, err := m.buildRequestBody(opts)
+	if err != nil {
+		return nil, err
+	}
 	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, cartesiaSpeechBodyOrder))
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
@@ -200,9 +205,10 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}, nil
 }
 
-func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {
+func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning, error) {
 	warnings := []types.Warning{}
 	cartesiaOpts := extractSpeechModelOptions(opts.ProviderOptions)
+	rawOpts := rawSpeechOptions(opts.ProviderOptions)
 
 	outputFormat := resolveOutputFormat(opts.OutputFormat, cartesiaOpts, &warnings)
 
@@ -216,23 +222,48 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		"output_format": outputFormat,
 	}
 
-	if opts.Language != "" {
+	// TS 47b666b6c7: locale and the provider language are exclusive
+	// (`!= null`, so "" counts); a locale wins over the generic language
+	// with a warning; otherwise the provider language, then the generic one.
+	locale, hasLocale := rawOpts["locale"].(string)
+	lang, hasLang := speechLanguageOption(opts.ProviderOptions, cartesiaOpts)
+	if hasLocale && hasLang {
+		return nil, nil, providererrors.NewArgumentError("providerOptions",
+			"providerOptions.cartesia.locale cannot be combined with providerOptions.cartesia.language", nil)
+	}
+	switch {
+	case hasLocale:
+		body["locale"] = locale
+		if opts.Language != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "language",
+				Details: "Cartesia does not support both locale and language. The language option was ignored in favor of providerOptions.cartesia.locale.",
+			})
+		}
+	case hasLang:
+		body["language"] = lang
+	case opts.Language != "":
 		body["language"] = opts.Language
 	}
-	// Provider-specific options override the corresponding generic options.
-	// TS `cartesiaOptions.language != null`: an empty string that is present
-	// still overrides.
-	if lang, ok := speechLanguageOption(opts.ProviderOptions, cartesiaOpts); ok {
-		body["language"] = lang
+
+	if v, ok := rawOpts["normalization"].(string); ok {
+		body["normalization"] = v
+	}
+	if v, ok := rawOpts["pronunciationDictionaryId"].(string); ok {
+		body["pronunciation_dict_id"] = v
 	}
 
+	// TS 392d2fa3a4: generation_config collects speed, volume and emotion
+	// and is sent only when non-empty.
+	generationConfig := map[string]interface{}{}
 	resolvedSpeed := opts.Speed
 	if cartesiaOpts != nil && cartesiaOpts.Speed != nil {
 		resolvedSpeed = cartesiaOpts.Speed
 	}
 	if resolvedSpeed != nil {
 		if *resolvedSpeed >= 0.6 && *resolvedSpeed <= 1.5 {
-			body["generation_config"] = map[string]interface{}{"speed": *resolvedSpeed}
+			generationConfig["speed"] = *resolvedSpeed
 		} else {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -240,6 +271,15 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 				Details: "Cartesia speed must be between 0.6 and 1.5. The speed option was ignored.",
 			})
 		}
+	}
+	if v, ok := rawOpts["volume"]; ok && v != nil {
+		generationConfig["volume"] = v
+	}
+	if v, ok := rawOpts["emotion"].(string); ok {
+		generationConfig["emotion"] = v
+	}
+	if len(generationConfig) > 0 {
+		body["generation_config"] = generationConfig
 	}
 
 	if opts.Instructions != "" {
@@ -250,7 +290,29 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		})
 	}
 
-	return body, warnings
+	return body, warnings, nil
+}
+
+// rawSpeechOptions returns providerOptions["cartesia"] as a JSON object
+// (a typed SpeechModelOptions value through its JSON form), so option
+// presence follows TS `!= null`.
+func rawSpeechOptions(providerOptions map[string]interface{}) map[string]interface{} {
+	raw, ok := providerOptions["cartesia"]
+	if !ok || raw == nil {
+		return nil
+	}
+	if m, ok := raw.(map[string]interface{}); ok {
+		return m
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var m map[string]interface{}
+	if json.Unmarshal(b, &m) != nil {
+		return nil
+	}
+	return m
 }
 
 // speechLanguageOption reports providerOptions.cartesia.language and whether
