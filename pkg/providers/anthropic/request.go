@@ -599,6 +599,25 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	if prepared.err != nil {
 		return nil, prepared.err
 	}
+
+	// Forced-choice and JSON-tool fallbacks restrict the declared tools; MCP
+	// connectors must not restore other tools before the provider executes
+	// the request (TS 5ab7ff14ad).
+	restrictedChoice := (opts.ToolChoice.Type == types.ToolChoiceTool && (prepared.toolChoice["type"] == "auto" || usesJSONResponseTool)) ||
+		(opts.ToolChoice.Type == types.ToolChoiceNone && usesJSONResponseTool)
+	if restrictedChoice {
+		if servers, ok := body["mcp_servers"].([]map[string]interface{}); ok {
+			for _, srv := range servers {
+				tc := map[string]interface{}{"enabled": false}
+				if prev, ok := srv["tool_configuration"].(map[string]interface{}); ok {
+					if allowed, ok := prev["allowed_tools"]; ok {
+						tc["allowed_tools"] = allowed
+					}
+				}
+				srv["tool_configuration"] = tc
+			}
+		}
+	}
 	if prepared.tools != nil {
 		body["tools"] = prepared.tools
 	}

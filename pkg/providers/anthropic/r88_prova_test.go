@@ -671,3 +671,139 @@ func TestR88provaServiceTierPerProvider(t *testing.T) {
 		}
 	}
 }
+
+const r88provaTextResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+
+var r88provaTextEvents = []string{
+	`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1}}}`,
+	`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+	`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+	`{"type":"content_block_stop","index":0}`,
+	`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+	`{"type":"message_stop"}`,
+}
+
+// r88provaRequestBody runs a generate or stream call against a text
+// response and returns the request body (and the call error).
+func r88provaRequestBody(t *testing.T, modelID, method string, opts *provider.GenerateOptions) (map[string]interface{}, error) {
+	t.Helper()
+	s := r88provaNewServer(t, r88provaTextResponse, r88provaTextEvents)
+	m := r88provaModel(t, s, modelID)
+	var err error
+	if method == "generate" {
+		_, err = m.DoGenerate(context.Background(), opts)
+	} else {
+		var stream provider.TextStream
+		stream, err = m.DoStream(context.Background(), opts)
+		if err == nil {
+			_, err = r88provaDrain(stream)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.bodies) == 0 {
+		return nil, err
+	}
+	return s.bodies[0], err
+}
+
+func r88provaToolNames(body map[string]interface{}) []string {
+	var out []string
+	for _, t := range body["tools"].([]interface{}) {
+		out = append(out, t.(map[string]interface{})["name"].(string))
+	}
+	return out
+}
+
+// TS 5ab7ff14ad: MCP connectors are disabled when a named tool choice falls
+// back to auto or the JSON response tool replaces a named / none choice.
+func TestR88provaMCPRestrictedToolChoice(t *testing.T) {
+	mcpServers := []interface{}{
+		map[string]interface{}{"type": "url", "name": "default", "url": "https://default.invalid/mcp"},
+		map[string]interface{}{"type": "url", "name": "enabled", "url": "https://enabled.invalid/mcp", "toolConfiguration": map[string]interface{}{"enabled": true, "allowedTools": []interface{}{"selected"}}},
+		map[string]interface{}{"type": "url", "name": "disabled", "url": "https://disabled.invalid/mcp", "toolConfiguration": map[string]interface{}{"enabled": false, "allowedTools": []interface{}{"other"}}},
+		map[string]interface{}{"type": "url", "name": "allowlist", "url": "https://allowlist.invalid/mcp", "toolConfiguration": map[string]interface{}{"allowedTools": []interface{}{"selected"}}},
+	}
+	obj := map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+	tools := []types.Tool{{Name: "selected", Parameters: obj}, {Name: "other", Parameters: obj}}
+	disabled := `[{"name":"default","tool_configuration":{"enabled":false},"type":"url","url":"https://default.invalid/mcp"},{"name":"enabled","tool_configuration":{"allowed_tools":["selected"],"enabled":false},"type":"url","url":"https://enabled.invalid/mcp"},{"name":"disabled","tool_configuration":{"allowed_tools":["other"],"enabled":false},"type":"url","url":"https://disabled.invalid/mcp"},{"name":"allowlist","tool_configuration":{"allowed_tools":["selected"],"enabled":false},"type":"url","url":"https://allowlist.invalid/mcp"}]`
+	preserved := `[{"name":"default","type":"url","url":"https://default.invalid/mcp"},{"name":"enabled","tool_configuration":{"allowed_tools":["selected"],"enabled":true},"type":"url","url":"https://enabled.invalid/mcp"},{"name":"disabled","tool_configuration":{"allowed_tools":["other"],"enabled":false},"type":"url","url":"https://disabled.invalid/mcp"},{"name":"allowlist","tool_configuration":{"allowed_tools":["selected"]},"type":"url","url":"https://allowlist.invalid/mcp"}]`
+	jsonFormat := &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object", "additionalProperties": true}}
+	for _, method := range []string{"generate", "stream"} {
+		for _, mode := range []string{"auto", "jsonTool"} {
+			for _, choice := range []types.ToolChoice{{Type: types.ToolChoiceNone}, {Type: types.ToolChoiceTool, ToolName: "selected"}} {
+				body, err := r88provaRequestBody(t, "claude-sonnet-4-5", method, &provider.GenerateOptions{
+					Prompt: types.Prompt{Text: "hi"}, Tools: tools, ToolChoice: choice, ResponseFormat: jsonFormat,
+					ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"mcpServers": mcpServers, "structuredOutputMode": mode}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := r88provaJSON(body["mcp_servers"]); got != disabled {
+					t.Fatalf("%s %s %s: mcp_servers = %s", method, mode, choice.Type, got)
+				}
+				want := "selected,json"
+				if choice.Type == types.ToolChoiceNone {
+					want = "json"
+				}
+				if got := strings.Join(r88provaToolNames(body), ","); got != want {
+					t.Fatalf("tools = %s", got)
+				}
+			}
+		}
+		for _, choice := range []types.ToolChoice{{}, {Type: types.ToolChoiceAuto}, {Type: types.ToolChoiceRequired}} {
+			body, err := r88provaRequestBody(t, "claude-sonnet-4-5", method, &provider.GenerateOptions{
+				Prompt: types.Prompt{Text: "hi"}, Tools: tools, ToolChoice: choice, ResponseFormat: jsonFormat,
+				ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"mcpServers": mcpServers}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r88provaJSON(body["mcp_servers"]); got != preserved {
+				t.Fatalf("%s %q: mcp_servers = %s", method, choice.Type, got)
+			}
+		}
+		// named tool choice falling back to auto
+		for _, tc := range []struct {
+			model    string
+			thinking interface{}
+		}{{"claude-opus-5-5", nil}, {"claude-sonnet-4-5", map[string]interface{}{"type": "enabled", "budgetTokens": 1024}}} {
+			po := map[string]interface{}{"mcpServers": []interface{}{map[string]interface{}{"type": "url", "name": "echo", "url": "https://echo.invalid/mcp"}}}
+			if tc.thinking != nil {
+				po["thinking"] = tc.thinking
+			}
+			body, err := r88provaRequestBody(t, tc.model, method, &provider.GenerateOptions{
+				Prompt: types.Prompt{Text: "hi"}, Tools: []types.Tool{{Name: "selected", Parameters: map[string]interface{}{"type": "object"}}, {Name: "other", Parameters: map[string]interface{}{"type": "object"}}},
+				ToolChoice: types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "selected"}, ProviderOptions: map[string]interface{}{"anthropic": po},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r88provaJSON(body["tool_choice"]) != `{"type":"auto"}` || strings.Join(r88provaToolNames(body), ",") != "selected" {
+				t.Fatalf("%s: tool_choice %v tools %v", tc.model, body["tool_choice"], body["tools"])
+			}
+			if got := r88provaJSON(body["mcp_servers"]); got != `[{"name":"echo","tool_configuration":{"enabled":false},"type":"url","url":"https://echo.invalid/mcp"}]` {
+				t.Fatalf("%s: mcp_servers = %s", tc.model, got)
+			}
+		}
+		// provider-enforced choices keep the configuration
+		for _, structured := range []bool{false, true} {
+			for _, choice := range []types.ToolChoice{{Type: types.ToolChoiceNone}, {Type: types.ToolChoiceTool, ToolName: "selected"}} {
+				opts := &provider.GenerateOptions{
+					Prompt: types.Prompt{Text: "hi"}, Tools: []types.Tool{{Name: "selected", Parameters: map[string]interface{}{"type": "object"}}}, ToolChoice: choice,
+					ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"mcpServers": []interface{}{map[string]interface{}{"type": "url", "name": "echo", "url": "https://echo.invalid/mcp", "toolConfiguration": map[string]interface{}{"enabled": true, "allowedTools": []interface{}{"selected"}}}}}},
+				}
+				if structured {
+					opts.ResponseFormat = &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}}
+				}
+				body, err := r88provaRequestBody(t, "claude-sonnet-4-5", method, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := r88provaJSON(body["mcp_servers"]); got != `[{"name":"echo","tool_configuration":{"allowed_tools":["selected"],"enabled":true},"type":"url","url":"https://echo.invalid/mcp"}]` {
+					t.Fatalf("enforced %v %s: mcp_servers = %s", structured, choice.Type, got)
+				}
+			}
+		}
+	}
+}
