@@ -67,14 +67,22 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		q := opts.Questions[id]
 		switch q.Type {
 		case "choice":
+			// TS c70adf670b: 1 to 255 options.
 			criteria, _ := q.Criteria.(map[string]interface{})
-			if len(criteria) > 255 {
-				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "TypeSafe Choice questions support at most 255 options.", nil)
+			if len(criteria) == 0 || len(criteria) > 255 {
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "TypeSafe Choice questions require 1 to 255 options.", nil)
 			}
 		case "score":
+			// TS c70adf670b: 1 to 10 levels, none of them null.
 			criteria, _ := q.Criteria.([]interface{})
-			if len(criteria) > 10 {
-				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "TypeSafe Score questions support at most 10 levels.", nil)
+			hasNil := false
+			for _, level := range criteria {
+				if level == nil {
+					hasNil = true
+				}
+			}
+			if len(criteria) == 0 || len(criteria) > 10 || hasNil {
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "TypeSafe Score questions require 1 to 10 non-null levels.", nil)
 			}
 		}
 	}
@@ -205,7 +213,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		return nil, m.handleError(err)
 	}
 
-	answers, confidence, err := convertTypesafeAnswers(response.Answers)
+	answers, confidence, legend, err := convertTypesafeAnswers(response.Answers)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +248,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		},
 		Usage:            usage,
 		Warnings:         warnings,
-		ProviderMetadata: map[string]interface{}{"typesafe": map[string]interface{}{"confidence": confidence}},
+		ProviderMetadata: map[string]interface{}{"typesafe": map[string]interface{}{"confidence": confidence, "legend": legend}},
 		Response: &provider.DecisionResponseInfo{
 			ModelID: modelID,
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),
@@ -251,10 +259,12 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 
 // convertTypesafeAnswers maps the wire answer shapes ("choice"/"score"/"noul")
 // to provider.DecisionAnswer ("choice"/"score"/"boolean"), and collects the
-// per-question confidence values reported for choice/score answers.
-func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider.DecisionAnswer, map[string]float64, error) {
+// per-question confidence values reported for choice/score answers and the
+// score answers' legend records (TS c70adf670b providerMetadata.typesafe.legend).
+func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider.DecisionAnswer, map[string]float64, map[string]interface{}, error) {
 	answers := make(map[string]provider.DecisionAnswer, len(raw))
 	confidence := make(map[string]float64, len(raw))
+	legend := map[string]interface{}{}
 
 	ids := make([]string, 0, len(raw))
 	for id := range raw {
@@ -265,7 +275,7 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 	for _, id := range ids {
 		var fields map[string]interface{}
 		if err := json.Unmarshal(raw[id], &fields); err != nil {
-			return nil, nil, providererrors.NewInvalidResponseDataError(string(raw[id]), "TypeSafe AI returned a malformed decision answer.")
+			return nil, nil, nil, providererrors.NewInvalidResponseDataError(string(raw[id]), "TypeSafe AI returned a malformed decision answer.")
 		}
 		answerType, _ := fields["type"].(string)
 		switch answerType {
@@ -273,7 +283,7 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 			choice, ok := fields["choice"].(string)
 			probs, probsOK := toFloatMap(fields["probabilities"])
 			if !ok || !probsOK {
-				return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed choice answer for %q.", id))
+				return nil, nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed choice answer for %q.", id))
 			}
 			answers[id] = provider.DecisionAnswer{Type: "choice", Choice: choice, Probabilities: probs}
 			if c, ok := fields["confidence"].(float64); ok {
@@ -283,7 +293,15 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 			score, ok := fields["score"].(float64)
 			probs, probsOK := toFloatMap(fields["probabilities"])
 			if !ok || !probsOK {
-				return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed score answer for %q.", id))
+				return nil, nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed score answer for %q.", id))
+			}
+			// legend is z.record(z.string(), z.json()).nullish().
+			if l, present := fields["legend"]; present && l != nil {
+				record, ok := l.(map[string]interface{})
+				if !ok {
+					return nil, nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed score answer for %q.", id))
+				}
+				legend[id] = record
 			}
 			answers[id] = provider.DecisionAnswer{Type: "score", Score: &score, Probabilities: probs}
 			if c, ok := fields["confidence"].(float64); ok {
@@ -292,7 +310,7 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 		case "box":
 			box, ok := toBox(fields["box"])
 			if !ok {
-				return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed box answer for %q.", id))
+				return nil, nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed box answer for %q.", id))
 			}
 			answers[id] = provider.DecisionAnswer{Type: "box", Box: box}
 			if c, ok := fields["confidence"].(float64); ok {
@@ -301,15 +319,15 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 		case "noul":
 			noul, ok := fields["noul"].(float64)
 			if !ok {
-				return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed boolean answer for %q.", id))
+				return nil, nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed boolean answer for %q.", id))
 			}
 			answers[id] = provider.DecisionAnswer{Type: "boolean", Probability: &noul}
 		default:
-			return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned an unknown answer type for %q.", id))
+			return nil, nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned an unknown answer type for %q.", id))
 		}
 	}
 
-	return answers, confidence, nil
+	return answers, confidence, legend, nil
 }
 
 func toBox(v interface{}) (*provider.DecisionBox, bool) {
@@ -683,7 +701,10 @@ func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, prov
 		}
 	}
 
-	if len(stateParts) == 1 && stateParts[0].Type == "json" {
+	// TS c70adf670b: a single JSON state part goes as native JSON only when
+	// it is an object, an array or a string; any other value (a number, a
+	// boolean, null) is sent as its JSON.stringify text.
+	if len(stateParts) == 1 && stateParts[0].Type == "json" && typesafeNativeJSONState(stateParts[0].Value) {
 		return stateParts[0].Value, assets, images, nil
 	}
 	texts := make([]string, 0, len(stateParts))
@@ -750,4 +771,16 @@ func buildImageMultipart(body interface{}, images []typesafeImagePart) (*bytes.B
 		return nil, "", fmt.Errorf("failed to build multipart body: %w", err)
 	}
 	return &buf, w.FormDataContentType(), nil
+}
+
+// typesafeNativeJSONState is TS `jsonState != null && (typeof jsonState ===
+// 'object' || typeof jsonState === 'string')`, judged on the value's JSON
+// form.
+func typesafeNativeJSONState(value interface{}) bool {
+	encoded, err := jsonstr.Marshal(value)
+	if err != nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(encoded))
+	return trimmed != "" && (trimmed[0] == '{' || trimmed[0] == '[' || trimmed[0] == '"')
 }
