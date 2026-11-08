@@ -143,11 +143,20 @@ type VideoPromptImage struct {
 
 // GenerateVideoResult contains generated videos and metadata
 type GenerateVideoResult struct {
-	// Video is the primary generated video (first video in Videos array)
+	// Video is the first video available to the SDK (Videos[0]). It is nil
+	// when every video was delivered directly to caller-managed storage
+	// (UploadedVideos > 0, Videos empty); TS throws NoVideoGeneratedError
+	// from its getter instead.
 	Video *types.GeneratedFile `json:"video"`
 
-	// Videos contains all generated videos
+	// Videos contains all videos available to the SDK, excluding videos the
+	// provider uploaded to the caller's destination.
 	Videos []*types.GeneratedFile `json:"videos"`
+
+	// UploadedVideos is the number of videos the provider delivered directly
+	// to caller-managed storage (for example xAI output.uploadUrl). They are
+	// not downloaded and not included in Videos (TS uploadedVideos).
+	UploadedVideos int `json:"uploadedVideos"`
 
 	// Warnings from the generation process
 	Warnings []types.Warning `json:"warnings"`

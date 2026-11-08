@@ -177,7 +177,16 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, handleError("deepgram", err)
 	}
 
-	return m.convertResponse(response, httpResp), nil
+	result := m.convertResponse(response, httpResp)
+	// TS 5b89b2560c: batch transcription ignores the streaming options.
+	if streaming, present := rawTranscriptionOptions(opts.ProviderOptions)["streaming"]; present && streaming != nil {
+		result.Warnings = append(result.Warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "providerOptions.deepgram.streaming",
+			Details: "Deepgram batch transcription does not support streaming options.",
+		})
+	}
+	return result, nil
 }
 
 func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionResponse, httpResp *internalhttp.Response) *types.TranscriptionResult {

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -21,12 +23,29 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
-// pollTimeout and pollInterval mirror GladiaTranscriptionModel.doGenerate's
-// polling loop in the TypeScript SDK.
+// defaultPollTimeout and defaultPollInterval are TS DEFAULT_POLL_TIMEOUT_MS
+// (10 minutes: long audio and add-ons take several minutes) and
+// DEFAULT_POLL_INTERVAL_MS.
 const (
-	pollTimeout  = 60 * time.Second
-	pollInterval = 1 * time.Second
+	defaultPollTimeout  = 10 * time.Minute
+	defaultPollInterval = 1 * time.Second
 )
+
+// gladiaPollSetting resolves a polling value: the per-call option (a
+// validated positive integer of milliseconds), then the provider setting,
+// then the default.
+func gladiaPollSetting(g map[string]interface{}, key string, configured, fallback time.Duration) time.Duration {
+	if ms, ok := g[key].(float64); ok && ms > 0 {
+		if ms >= float64(math.MaxInt64/int64(time.Millisecond)) {
+			return time.Duration(math.MaxInt64)
+		}
+		return time.Duration(ms) * time.Millisecond
+	}
+	if configured > 0 {
+		return configured
+	}
+	return fallback
+}
 
 // TranscriptionModel implements the provider.TranscriptionModel interface for
 // Gladia's async pre-recorded transcription flow: upload the audio, start a
@@ -53,176 +72,358 @@ func (m *TranscriptionModel) ModelID() string {
 	return m.modelID
 }
 
-// extractOptions reads Gladia-specific options from the provider options map.
-func extractOptions(providerOptions map[string]interface{}) *TranscriptionModelOptions {
-	if providerOptions == nil {
-		return nil
-	}
+// gladiaOptionsObject returns providerOptions["gladia"] as a JSON object
+// read through its JSON form (a map, or a TranscriptionModelOptions value or
+// pointer), so slices are []interface{} and numbers float64 as in the
+// parsed TS options. Absent or null gives (nil, false).
+func gladiaOptionsObject(providerOptions map[string]interface{}) (map[string]interface{}, bool) {
 	raw, ok := providerOptions["gladia"]
 	if !ok || raw == nil {
-		return nil
+		return nil, false
 	}
 	b, err := json.Marshal(raw)
 	if err != nil {
-		return nil
+		m, isMap := raw.(map[string]interface{})
+		return m, isMap
 	}
-	var opts TranscriptionModelOptions
-	if err := json.Unmarshal(b, &opts); err != nil {
-		return nil
+	var m map[string]interface{}
+	if json.Unmarshal(b, &m) != nil || m == nil {
+		return nil, false
 	}
-	return &opts
+	return m, true
 }
 
-// buildRequestBody builds the /v2/pre-recorded request body, mirroring
-// GladiaTranscriptionModel.getArgs.
-func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
+// normalizeGladiaOptions replaces a typed TranscriptionModelOptions value
+// with its JSON object so the option schema validates it like a map.
+func normalizeGladiaOptions(providerOptions map[string]interface{}) map[string]interface{} {
+	switch providerOptions["gladia"].(type) {
+	case TranscriptionModelOptions, *TranscriptionModelOptions:
+	default:
+		return providerOptions
+	}
+	m, ok := gladiaOptionsObject(providerOptions)
+	if !ok {
+		return providerOptions
+	}
+	out := make(map[string]interface{}, len(providerOptions))
+	for k, v := range providerOptions {
+		out[k] = v
+	}
+	out["gladia"] = m
+	return out
+}
+
+// gladiaPresent is TS `value != null` for an object member.
+func gladiaPresent(m map[string]interface{}, key string) (interface{}, bool) {
+	v, ok := m[key]
+	return v, ok && v != nil
+}
+
+// copyPresent sets body[to] = m[from] when it is not null or absent (TS
+// `x ?? undefined`).
+func copyPresent(body, m map[string]interface{}, to, from string) {
+	if v, ok := gladiaPresent(m, from); ok {
+		body[to] = v
+	}
+}
+
+// gladiaModelSent reports whether a model ID goes into the request body.
+// Coordinator ruling (round 88, S6): "" and "default" are omitted (the
+// Gladia default model), solaria-* IDs are sent as TS does, and any other ID
+// keeps the v0.5.2 behavior (not sent) with an unsupported warning, because
+// v0.5.2 documented that the model ID is not sent and its examples passed
+// IDs Gladia rejects.
+func gladiaModelSent(modelID string) bool {
+	return strings.HasPrefix(modelID, "solaria-")
+}
+
+// gladiaEffectiveModelID is the model ID TS uses: gladia.transcription()
+// with no ID is 'default'; Go's "" means the same.
+func gladiaEffectiveModelID(modelID string) string {
+	if modelID == "" {
+		return "default"
+	}
+	return modelID
+}
+
+// getArgs builds the /v2/pre-recorded body (without audio_url) and the call
+// warnings from the validated options object, mirroring TS
+// GladiaTranscriptionModel.getArgs (c8875b71a3).
+func (m *TranscriptionModel) getArgs(g map[string]interface{}) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{}
-	if gOpts == nil {
-		return body
+	warnings := []types.Warning{}
+	modelID := gladiaEffectiveModelID(m.modelID)
+
+	if modelID != "default" {
+		if gladiaModelSent(modelID) {
+			body["model"] = modelID
+		} else {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "modelId",
+				Details: fmt.Sprintf("The model ID %q is not sent to Gladia; only solaria-* model IDs are forwarded, so the Gladia default model is used.", modelID),
+			})
+		}
 	}
 
-	setOptionalString(body, "context_prompt", gOpts.ContextPrompt)
-	if gOpts.CustomVocabulary != nil {
-		body["custom_vocabulary"] = gOpts.CustomVocabulary
-	}
-	setOptional(body, "detect_language", gOpts.DetectLanguage)
-	setOptional(body, "enable_code_switching", gOpts.EnableCodeSwitching)
-	setOptionalString(body, "language", gOpts.Language)
-	setOptional(body, "callback", gOpts.Callback)
-	setOptional(body, "subtitles", gOpts.Subtitles)
-	setOptional(body, "diarization", gOpts.Diarization)
-	setOptional(body, "translation", gOpts.Translation)
-	setOptional(body, "summarization", gOpts.Summarization)
-	setOptional(body, "moderation", gOpts.Moderation)
-	setOptional(body, "named_entity_recognition", gOpts.NamedEntityRecognition)
-	setOptional(body, "chapterization", gOpts.Chapterization)
-	setOptional(body, "name_consistency", gOpts.NameConsistency)
-	setOptional(body, "custom_spelling", gOpts.CustomSpelling)
-	setOptional(body, "structured_data_extraction", gOpts.StructuredDataExtraction)
-	setOptional(body, "sentiment_analysis", gOpts.SentimentAnalysis)
-	setOptional(body, "audio_to_llm", gOpts.AudioToLlm)
-	if gOpts.CustomMetadata != nil {
-		body["custom_metadata"] = gOpts.CustomMetadata
-	}
-	setOptional(body, "sentences", gOpts.Sentences)
-	setOptional(body, "display_mode", gOpts.DisplayMode)
-	setOptional(body, "punctuation_enhanced", gOpts.PunctuationEnhanced)
-
-	if gOpts.CustomVocabularyConfig != nil {
-		// TS maps each entry: strings pass through; objects are rebuilt as
-		// {value, intensity, pronunciations, language} so unknown keys are
-		// dropped and null fields become undefined (omitted).
-		vocabulary := make([]interface{}, 0, len(gOpts.CustomVocabularyConfig.Vocabulary))
-		for _, item := range gOpts.CustomVocabularyConfig.Vocabulary {
-			obj, isObj := item.(map[string]interface{})
-			if !isObj {
-				vocabulary = append(vocabulary, item)
-				continue
+	if g != nil {
+		diarizationConfig, _ := g["diarizationConfig"].(map[string]interface{})
+		for _, u := range []struct {
+			feature string
+			value   interface{}
+		}{
+			{"contextPrompt", g["contextPrompt"]},
+			{"moderation", g["moderation"]},
+			{"chapterization", g["chapterization"]},
+			{"nameConsistency", g["nameConsistency"]},
+			{"structuredDataExtraction", g["structuredDataExtraction"]},
+			{"structuredDataExtractionConfig", g["structuredDataExtractionConfig"]},
+			{"displayMode", g["displayMode"]},
+			{"diarizationConfig.enhanced", diarizationConfig["enhanced"]},
+		} {
+			if u.value != nil {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: u.feature,
+					Details: "No longer supported by the Gladia v2 pre-recorded API; ignored.",
+				})
 			}
-			entry := map[string]interface{}{"value": obj["value"]}
-			for _, k := range []string{"intensity", "pronunciations", "language"} {
-				if v, ok := obj[k]; ok && v != nil {
-					entry[k] = v
+		}
+		_, hasLanguageConfig := gladiaPresent(g, "languageConfig")
+		for _, setting := range []string{"language", "detectLanguage", "enableCodeSwitching", "codeSwitchingConfig"} {
+			if _, ok := gladiaPresent(g, setting); ok {
+				message := "Use languageConfig instead."
+				if hasLanguageConfig {
+					message = "Ignored because languageConfig is provided; remove this deprecated option."
 				}
-			}
-			vocabulary = append(vocabulary, entry)
-		}
-		cfg := map[string]interface{}{"vocabulary": vocabulary}
-		setOptional(cfg, "default_intensity", gOpts.CustomVocabularyConfig.DefaultIntensity)
-		body["custom_vocabulary_config"] = cfg
-	}
-	if gOpts.CodeSwitchingConfig != nil {
-		cfg := map[string]interface{}{}
-		if gOpts.CodeSwitchingConfig.Languages != nil {
-			cfg["languages"] = gOpts.CodeSwitchingConfig.Languages
-		}
-		body["code_switching_config"] = cfg
-	}
-	if gOpts.CallbackConfig != nil {
-		cfg := map[string]interface{}{"url": gOpts.CallbackConfig.URL}
-		setOptionalString(cfg, "method", gOpts.CallbackConfig.Method)
-		body["callback_config"] = cfg
-	}
-	if gOpts.SubtitlesConfig != nil {
-		cfg := map[string]interface{}{}
-		if gOpts.SubtitlesConfig.Formats != nil {
-			cfg["formats"] = gOpts.SubtitlesConfig.Formats
-		}
-		setOptional(cfg, "minimum_duration", gOpts.SubtitlesConfig.MinimumDuration)
-		setOptional(cfg, "maximum_duration", gOpts.SubtitlesConfig.MaximumDuration)
-		setOptional(cfg, "maximum_characters_per_row", gOpts.SubtitlesConfig.MaximumCharactersPerRow)
-		setOptional(cfg, "maximum_rows_per_caption", gOpts.SubtitlesConfig.MaximumRowsPerCaption)
-		setOptionalString(cfg, "style", gOpts.SubtitlesConfig.Style)
-		body["subtitles_config"] = cfg
-	}
-	if gOpts.DiarizationConfig != nil {
-		cfg := map[string]interface{}{}
-		setOptional(cfg, "number_of_speakers", gOpts.DiarizationConfig.NumberOfSpeakers)
-		setOptional(cfg, "min_speakers", gOpts.DiarizationConfig.MinSpeakers)
-		setOptional(cfg, "max_speakers", gOpts.DiarizationConfig.MaxSpeakers)
-		setOptional(cfg, "enhanced", gOpts.DiarizationConfig.Enhanced)
-		body["diarization_config"] = cfg
-	}
-	if gOpts.TranslationConfig != nil {
-		cfg := map[string]interface{}{"target_languages": gOpts.TranslationConfig.TargetLanguages}
-		setOptionalString(cfg, "model", gOpts.TranslationConfig.Model)
-		setOptional(cfg, "match_original_utterances", gOpts.TranslationConfig.MatchOriginalUtterances)
-		body["translation_config"] = cfg
-	}
-	if gOpts.SummarizationConfig != nil {
-		cfg := map[string]interface{}{}
-		setOptionalString(cfg, "type", gOpts.SummarizationConfig.Type)
-		body["summarization_config"] = cfg
-	}
-	if gOpts.CustomSpellingConfig != nil {
-		body["custom_spelling_config"] = map[string]interface{}{
-			"spelling_dictionary": gOpts.CustomSpellingConfig.SpellingDictionary,
-		}
-	}
-	if gOpts.StructuredDataExtractionConfig != nil {
-		body["structured_data_extraction_config"] = map[string]interface{}{
-			"classes": gOpts.StructuredDataExtractionConfig.Classes,
-		}
-	}
-	if gOpts.AudioToLlmConfig != nil {
-		body["audio_to_llm_config"] = map[string]interface{}{
-			"prompts": gOpts.AudioToLlmConfig.Prompts,
-		}
-	}
-
-	return body
-}
-
-// keepEmptyStringOptions restores free-form string options set to "": TS
-// `x ?? undefined` only drops null/absent, so contextPrompt, language and
-// translationConfig.model are sent even when empty.
-func keepEmptyStringOptions(body map[string]interface{}, providerOptions map[string]interface{}) {
-	raw, _ := providerOptions["gladia"].(map[string]interface{})
-	if v, ok := raw["contextPrompt"].(string); ok {
-		body["context_prompt"] = v
-	}
-	if v, ok := raw["language"].(string); ok {
-		body["language"] = v
-	}
-	if cfg, ok := raw["translationConfig"].(map[string]interface{}); ok {
-		if v, ok := cfg["model"].(string); ok {
-			if out, ok := body["translation_config"].(map[string]interface{}); ok {
-				out["model"] = v
+				warnings = append(warnings, types.Warning{Type: "deprecated", Setting: setting, Message: message})
 			}
 		}
+
+		customVocabulary, vocabularyFromArray, haveArrayVocabulary := resolveGladiaCustomVocabulary(g, &warnings)
+		if customVocabulary != nil {
+			body["custom_vocabulary"] = *customVocabulary
+		}
+		copyPresent(body, g, "callback", "callback")
+		copyPresent(body, g, "subtitles", "subtitles")
+		copyPresent(body, g, "diarization", "diarization")
+		copyPresent(body, g, "translation", "translation")
+		copyPresent(body, g, "summarization", "summarization")
+		copyPresent(body, g, "named_entity_recognition", "namedEntityRecognition")
+		copyPresent(body, g, "custom_spelling", "customSpelling")
+		copyPresent(body, g, "sentiment_analysis", "sentimentAnalysis")
+		copyPresent(body, g, "audio_to_llm", "audioToLlm")
+		copyPresent(body, g, "pii_redaction", "piiRedaction")
+		copyPresent(body, g, "custom_metadata", "customMetadata")
+		copyPresent(body, g, "sentences", "sentences")
+		copyPresent(body, g, "punctuation_enhanced", "punctuationEnhanced")
+
+		customVocabularyConfig, _ := g["customVocabularyConfig"].(map[string]interface{})
+		vocabulary, haveVocabulary := gladiaPresent(customVocabularyConfig, "vocabulary")
+		if !haveVocabulary && haveArrayVocabulary {
+			vocabulary, haveVocabulary = vocabularyFromArray, true
+		}
+		if items, ok := vocabulary.([]interface{}); haveVocabulary && ok {
+			mapped := make([]interface{}, 0, len(items))
+			for _, item := range items {
+				obj, isObj := item.(map[string]interface{})
+				if !isObj {
+					mapped = append(mapped, item)
+					continue
+				}
+				entry := map[string]interface{}{"value": obj["value"]}
+				for _, k := range []string{"intensity", "pronunciations", "language"} {
+					copyPresent(entry, obj, k, k)
+				}
+				mapped = append(mapped, entry)
+			}
+			cfg := map[string]interface{}{"vocabulary": mapped}
+			copyPresent(cfg, customVocabularyConfig, "default_intensity", "defaultIntensity")
+			body["custom_vocabulary_config"] = cfg
+		}
+
+		if languages, codeSwitching, ok := resolveGladiaLanguageConfig(g); ok {
+			cfg := map[string]interface{}{}
+			if languages != nil {
+				cfg["languages"] = languages
+			}
+			if codeSwitching != nil {
+				cfg["code_switching"] = codeSwitching
+			}
+			body["language_config"] = cfg
+		}
+
+		if c, ok := g["callbackConfig"].(map[string]interface{}); ok {
+			cfg := map[string]interface{}{"url": c["url"]}
+			copyPresent(cfg, c, "method", "method")
+			body["callback_config"] = cfg
+		}
+		if c, ok := g["subtitlesConfig"].(map[string]interface{}); ok {
+			cfg := map[string]interface{}{}
+			copyPresent(cfg, c, "formats", "formats")
+			copyPresent(cfg, c, "minimum_duration", "minimumDuration")
+			copyPresent(cfg, c, "maximum_duration", "maximumDuration")
+			copyPresent(cfg, c, "maximum_characters_per_row", "maximumCharactersPerRow")
+			copyPresent(cfg, c, "maximum_rows_per_caption", "maximumRowsPerCaption")
+			copyPresent(cfg, c, "style", "style")
+			body["subtitles_config"] = cfg
+		}
+		if diarizationConfig != nil {
+			cfg := map[string]interface{}{}
+			copyPresent(cfg, diarizationConfig, "number_of_speakers", "numberOfSpeakers")
+			copyPresent(cfg, diarizationConfig, "min_speakers", "minSpeakers")
+			copyPresent(cfg, diarizationConfig, "max_speakers", "maxSpeakers")
+			body["diarization_config"] = cfg
+		}
+		if c, ok := g["translationConfig"].(map[string]interface{}); ok {
+			cfg := map[string]interface{}{"target_languages": c["targetLanguages"]}
+			copyPresent(cfg, c, "model", "model")
+			copyPresent(cfg, c, "match_original_utterances", "matchOriginalUtterances")
+			copyPresent(cfg, c, "lipsync", "lipsync")
+			copyPresent(cfg, c, "context_adaptation", "contextAdaptation")
+			copyPresent(cfg, c, "context", "context")
+			copyPresent(cfg, c, "informal", "informal")
+			body["translation_config"] = cfg
+		}
+		if c, ok := g["summarizationConfig"].(map[string]interface{}); ok {
+			cfg := map[string]interface{}{}
+			copyPresent(cfg, c, "type", "type")
+			body["summarization_config"] = cfg
+		}
+		if c, ok := g["customSpellingConfig"].(map[string]interface{}); ok {
+			body["custom_spelling_config"] = map[string]interface{}{"spelling_dictionary": c["spellingDictionary"]}
+		}
+		if c, ok := g["audioToLlmConfig"].(map[string]interface{}); ok {
+			cfg := map[string]interface{}{"prompts": c["prompts"]}
+			copyPresent(cfg, c, "model", "model")
+			body["audio_to_llm_config"] = cfg
+		}
+		if c, ok := g["piiRedactionConfig"].(map[string]interface{}); ok {
+			if enabled, _ := g["piiRedaction"].(bool); !enabled {
+				warnings = append(warnings, types.Warning{Type: "other", Message: "piiRedactionConfig has no effect unless piiRedaction is true."})
+			}
+			cfg := map[string]interface{}{}
+			copyPresent(cfg, c, "entity_types", "entityTypes")
+			copyPresent(cfg, c, "processed_text_type", "processedTextType")
+			body["pii_redaction_config"] = cfg
+		}
 	}
+
+	if modelID == "solaria-3" {
+		languageConfig, _ := body["language_config"].(map[string]interface{})
+		if languages, ok := languageConfig["languages"].([]interface{}); !ok || len(languages) != 1 {
+			warnings = append(warnings, types.Warning{Type: "other", Message: `The "solaria-3" model supports a single language only. Pass exactly one language in languageConfig.languages; Gladia may reject the request.`})
+		}
+		if codeSwitching, _ := languageConfig["code_switching"].(bool); codeSwitching {
+			warnings = append(warnings, types.Warning{Type: "other", Message: `The "solaria-3" model does not support code switching; Gladia may reject the request.`})
+		}
+	}
+
+	return body, warnings
 }
 
-func setOptional[T any](body map[string]interface{}, key string, value *T) {
-	if value != nil {
-		body[key] = *value
+// resolveGladiaLanguageConfig is TS resolveLanguageConfig
+// (gladia-transcription-options-resolution.ts): languageConfig wins as
+// given; otherwise the deprecated language options are translated. ok is
+// false when neither languages nor codeSwitching resolves.
+func resolveGladiaLanguageConfig(g map[string]interface{}) (languages []interface{}, codeSwitching interface{}, ok bool) {
+	if lc, present := gladiaPresent(g, "languageConfig"); present {
+		obj, _ := lc.(map[string]interface{})
+		if v, ok := gladiaPresent(obj, "languages"); ok {
+			languages, _ = v.([]interface{})
+		}
+		if v, ok := gladiaPresent(obj, "codeSwitching"); ok {
+			codeSwitching = v
+		}
+		return languages, codeSwitching, true
 	}
+	if v, ok := gladiaPresent(g, "enableCodeSwitching"); ok {
+		codeSwitching = v
+	}
+	codeSwitchingConfig, _ := g["codeSwitchingConfig"].(map[string]interface{})
+	switch {
+	case codeSwitching == true && codeSwitchingConfig["languages"] != nil:
+		languages, _ = codeSwitchingConfig["languages"].([]interface{})
+		if languages == nil {
+			languages = []interface{}{}
+		}
+	case g["language"] != nil:
+		languages = []interface{}{g["language"]}
+	case providerutils.JSTruthy(g["detectLanguage"]):
+		languages = []interface{}{}
+	}
+	if languages == nil && codeSwitching == nil {
+		return nil, nil, false
+	}
+	return languages, codeSwitching, true
 }
 
-func setOptionalString(body map[string]interface{}, key, value string) {
-	if value != "" {
-		body[key] = value
+// resolveGladiaCustomVocabulary is TS resolveCustomVocabulary: the
+// deprecated array form is translated to custom_vocabulary: true plus a
+// filtered vocabulary list, with its warnings; a boolean passes through.
+func resolveGladiaCustomVocabulary(g map[string]interface{}, warnings *[]types.Warning) (customVocabulary *bool, vocabulary []interface{}, haveVocabulary bool) {
+	t := true
+	switch v := g["customVocabulary"].(type) {
+	case bool:
+		return &v, nil, false
+	case []interface{}:
+		*warnings = append(*warnings, types.Warning{Type: "deprecated", Setting: "customVocabulary", Message: "Use customVocabulary: true with customVocabularyConfig instead of an array."})
+		if cfg, _ := g["customVocabularyConfig"].(map[string]interface{}); cfg["vocabulary"] != nil {
+			*warnings = append(*warnings, types.Warning{Type: "other", Message: "customVocabularyConfig.vocabulary overrides the deprecated customVocabulary array."})
+			return &t, nil, false
+		}
+		kept := make([]interface{}, 0, len(v))
+		for _, item := range v {
+			if gladiaVocabularyEntryValid(item) {
+				kept = append(kept, item)
+			}
+		}
+		if len(kept) != len(v) {
+			*warnings = append(*warnings, types.Warning{Type: "other", Message: "Invalid customVocabulary entries were ignored; use strings or objects with a string value and correctly typed optional fields."})
+		}
+		if len(kept) > 0 {
+			return &t, kept, true
+		}
+		return nil, nil, false
 	}
+	return nil, nil, false
+}
+
+// gladiaVocabularyEntryValid is the TS resolveCustomVocabulary entry filter.
+func gladiaVocabularyEntryValid(item interface{}) bool {
+	if _, ok := item.(string); ok {
+		return true
+	}
+	obj, ok := item.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	if _, ok := obj["value"].(string); !ok {
+		return false
+	}
+	if v := obj["intensity"]; v != nil {
+		f, ok := v.(float64)
+		if !ok || math.IsInf(f, 0) || math.IsNaN(f) {
+			return false
+		}
+	}
+	if v := obj["pronunciations"]; v != nil {
+		list, ok := v.([]interface{})
+		if !ok {
+			return false
+		}
+		for _, p := range list {
+			if _, ok := p.(string); !ok {
+				return false
+			}
+		}
+	}
+	if v := obj["language"]; v != nil {
+		if _, ok := v.(string); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // DoTranscribe performs the upload -> start job -> poll flow.
@@ -231,6 +432,21 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		opts = &provider.TranscriptionOptions{}
 	}
 	currentDate := time.Now()
+
+	// TS createGladia validates the polling settings; Go's New cannot fail,
+	// so they are checked here, before any request.
+	if err := validatePollingSettings(m.provider.config); err != nil {
+		return nil, err
+	}
+
+	// TS getArgs (option parsing, validation and the body) runs before the
+	// upload, so an invalid option sends no request.
+	providerOptions := normalizeGladiaOptions(opts.ProviderOptions)
+	if err := validateOptions(providerOptions); err != nil {
+		return nil, err
+	}
+	gladiaOptions, _ := gladiaOptionsObject(providerOptions)
+	body, warnings := m.getArgs(gladiaOptions)
 
 	// Step 1: upload the audio file.
 	uploadBody, contentType, err := buildUploadMultipart(opts)
@@ -252,11 +468,6 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	// Step 2: start a pre-recorded transcription job.
-	if err := validateOptions(opts.ProviderOptions); err != nil {
-		return nil, err
-	}
-	body := buildRequestBody(extractOptions(opts.ProviderOptions))
-	keepEmptyStringOptions(body, opts.ProviderOptions)
 	body["audio_url"] = uploadResult.AudioURL
 
 	var initResult struct {
@@ -276,7 +487,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// Step 3: poll the job's result_url until it completes. The URL comes
 	// from the provider response; validate it (and any redirect) as
 	// untrusted input, trusting only the provider's own configured origin.
-	raw, headers, err := m.pollResult(ctx, initResult.ResultURL, opts.Headers)
+	interval := gladiaPollSetting(gladiaOptions, "pollIntervalMs", m.provider.config.PollInterval, defaultPollInterval)
+	timeout := gladiaPollSetting(gladiaOptions, "pollTimeoutMs", m.provider.config.PollTimeout, defaultPollTimeout)
+	raw, headers, err := m.pollResult(ctx, initResult.ResultURL, opts.Headers, interval, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +501,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, empty
 	}
 
-	return convertPollResult(raw, headers, currentDate), nil
+	return convertPollResult(raw, headers, currentDate, gladiaEffectiveModelID(m.modelID), warnings), nil
 }
 
 func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, string, error) {
@@ -322,15 +535,17 @@ func gladiaAudioExtension(mimeType string) string {
 }
 
 // pollResult polls resultURL until the job reaches status "done" or "error",
-// or pollTimeout elapses. It returns the raw decoded JSON response along with
+// or pollTimeout elapses (checked before each poll, after the abort check,
+// as TS does). It returns the raw decoded JSON response along with
 // that response's HTTP headers (TS: response.responseHeaders, surfaced on the
 // final TranscriptionResult.Response.Headers).
-func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, map[string]string, error) {
+func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string, pollInterval, pollTimeout time.Duration) (map[string]interface{}, map[string]string, error) {
 	trustedOrigin := m.provider.config.BaseURL
 	pollOpts := fileutil.TrustedOriginDownloadOptions(trustedOrigin, m.provider.client.HTTPClient().Transport)
 	pollOpts.Headers = m.pollHeaders(resultURL, trustedOrigin, headers)
 
 	start := time.Now()
+	var last map[string]interface{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -338,8 +553,14 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		default:
 		}
 		if time.Since(start) > pollTimeout {
-			// TS AISDKError TranscriptionJobPollingTimedOut.
-			return nil, nil, providererrors.NewProviderError("gladia", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
+			// TS AISDKError TranscriptionJobPollingTimedOut (cause: the last
+			// poll result).
+			timedOut := providererrors.NewProviderError("gladia", 0, "TranscriptionJobPollingTimedOut",
+				"Transcription job polling timed out after "+strconv.FormatInt(pollTimeout.Milliseconds(), 10)+" ms", nil)
+			if last != nil {
+				timedOut.Data = last
+			}
+			return nil, nil, timedOut
 		}
 
 		result, err := fileutil.DownloadWithMetadata(ctx, resultURL, pollOpts)
@@ -354,14 +575,20 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		if err := json.Unmarshal(result.Data, &raw); err != nil {
 			return nil, nil, fmt.Errorf("gladia: failed to decode poll response: %w", err)
 		}
+		last = raw
 
 		status, _ := raw["status"].(string)
 		switch status {
 		case "done":
 			return raw, flattenHeaders(result.Headers), nil
 		case "error":
-			// TS AISDKError TranscriptionJobFailed (cause: the result).
-			failure := providererrors.NewProviderError("gladia", 0, "", "Transcription job failed", nil)
+			// TS AISDKError TranscriptionJobFailed (cause: the result); the
+			// message names a reported error_code (TS 9207c2b1e0).
+			message := "Transcription job failed"
+			if code, ok := raw["error_code"].(float64); ok {
+				message += " with error code " + providerutils.JSNumberString(code)
+			}
+			failure := providererrors.NewProviderError("gladia", 0, "", message, nil)
 			failure.Data = raw
 			return nil, nil, failure
 		}
@@ -381,7 +608,10 @@ func (m *TranscriptionModel) pollHeaders(resultURL, trustedOrigin string, header
 	if !fileutil.IsSameOrigin(resultURL, trustedOrigin) {
 		return version.WithUserAgentSuffix(nil, version.ProviderUserAgent("gladia"))
 	}
-	return version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"x-gladia-key": providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("gladia"))
+	return version.WithUserAgentSuffix(mergeHeadersFold(map[string]string{
+		"x-gladia-key":     providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY"),
+		"x-gladia-version": version.SDKUserAgent(),
+	}, m.provider.config.Headers, headers), version.ProviderUserAgent("gladia"))
 }
 
 // flattenHeaders joins multi-value HTTP headers into single strings (the last
@@ -401,7 +631,10 @@ func flattenHeaders(h map[string][]string) map[string]string {
 
 // convertPollResult maps a raw completed-job response into a
 // TranscriptionResult, mirroring GladiaTranscriptionModel.doGenerate's return.
-func convertPollResult(raw map[string]interface{}, headers map[string]string, currentDate time.Time) *types.TranscriptionResult {
+func convertPollResult(raw map[string]interface{}, headers map[string]string, currentDate time.Time, modelID string, warnings []types.Warning) *types.TranscriptionResult {
+	if warnings == nil {
+		warnings = []types.Warning{}
+	}
 	b, _ := json.Marshal(raw)
 	var typed struct {
 		Result *struct {
@@ -423,10 +656,10 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 
 	if typed.Result == nil {
 		return &types.TranscriptionResult{
-			Warnings: []types.Warning{},
+			Warnings: warnings,
 			Response: &types.ResponseMetadata{
 				Timestamp: currentDate,
-				ModelID:   "default",
+				ModelID:   modelID,
 				Headers:   headers,
 				Body:      raw,
 			},
@@ -456,7 +689,7 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 		Timestamps:        segments,
 		Language:          language,
 		DurationInSeconds: &duration,
-		Warnings:          []types.Warning{},
+		Warnings:          warnings,
 		Usage: types.TranscriptionUsage{
 			DurationSeconds: duration,
 		},
@@ -467,9 +700,9 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 		ProviderMetadata: map[string]interface{}{"gladia": gladiaSchemaResult(raw)},
 		Response: &types.ResponseMetadata{
 			Timestamp: currentDate,
-			// Gladia's model ID is not selectable in the pre-recorded API;
-			// the TS SDK always reports "default" here too.
-			ModelID: "default",
+			// TS response.modelId is the model's ID ('default' when none
+			// was given).
+			ModelID: modelID,
 			Headers: headers,
 			Body:    raw,
 		},
@@ -532,53 +765,17 @@ func parseGladiaErrorBody(statusCode int, body []byte) (message string, code str
 	return http.StatusText(statusCode), ""
 }
 
-// gladiaSchemaResult applies the TS result schema (zod strips unknown keys):
-// providerMetadata.gladia holds the parsed result, not the raw response.
+// gladiaSchemaResult applies the TS result schema (TS 9207c2b1e0): the top
+// level is a plain z.object that keeps only status, error_code (null kept)
+// and result, while result and its nested objects are loose, so every
+// add-on (translation, summarization, audio_to_llm, sentences, subtitles,
+// extra metadata, utterance keys) passes through as returned.
 func gladiaSchemaResult(raw map[string]interface{}) map[string]interface{} {
-	pick := func(m map[string]interface{}, keys ...string) map[string]interface{} {
-		out := map[string]interface{}{}
-		for _, k := range keys {
-			if v, ok := m[k]; ok {
-				out[k] = v
-			}
+	out := map[string]interface{}{}
+	for _, k := range []string{"status", "error_code", "result"} {
+		if v, ok := raw[k]; ok {
+			out[k] = v
 		}
-		return out
 	}
-	out := pick(raw, "status")
-	res, ok := raw["result"].(map[string]interface{})
-	if !ok {
-		if v, present := raw["result"]; present && v == nil {
-			out["result"] = nil
-		}
-		return out
-	}
-	r := map[string]interface{}{}
-	if md, ok := res["metadata"].(map[string]interface{}); ok {
-		r["metadata"] = pick(md, "audio_duration")
-	}
-	if tr, ok := res["transcription"].(map[string]interface{}); ok {
-		t := pick(tr, "full_transcript", "languages")
-		if us, ok := tr["utterances"].([]interface{}); ok {
-			utts := make([]interface{}, 0, len(us))
-			for _, u := range us {
-				um, _ := u.(map[string]interface{})
-				item := pick(um, "start", "end", "text", "speaker", "confidence", "language")
-				if ws, ok := um["words"].([]interface{}); ok {
-					words := make([]interface{}, 0, len(ws))
-					for _, w := range ws {
-						wm, _ := w.(map[string]interface{})
-						words = append(words, pick(wm, "word", "start", "end", "confidence"))
-					}
-					item["words"] = words
-				} else if v, present := um["words"]; present && v == nil {
-					item["words"] = nil
-				}
-				utts = append(utts, item)
-			}
-			t["utterances"] = utts
-		}
-		r["transcription"] = t
-	}
-	out["result"] = r
 	return out
 }

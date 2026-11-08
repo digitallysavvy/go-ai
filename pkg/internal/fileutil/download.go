@@ -282,11 +282,17 @@ func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
 	}
 	validator := opts.URLValidator
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) > maxDownloadRedirects {
-			return providererrors.NewDownloadError(rawURL, 0, "", fmt.Sprintf("Too many redirects (max %d)", maxDownloadRedirects), nil)
-		}
 		if next, ok := fetchRedirectURL(req, via); ok {
 			req.URL = next
+		}
+		// TS f608c056a2: a redirect from HTTPS to HTTP is rejected before the
+		// target is requested, even for a trusted-origin hop, and before the
+		// redirect-count bound (TS checks it on the redirect response itself).
+		if len(via) > 0 && strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && strings.EqualFold(req.URL.Scheme, "http") {
+			return providererrors.NewDownloadError(rawURL, 0, "", "Redirect from HTTPS to HTTP was blocked", nil)
+		}
+		if len(via) > maxDownloadRedirects {
+			return providererrors.NewDownloadError(rawURL, 0, "", fmt.Sprintf("Too many redirects (max %d)", maxDownloadRedirects), nil)
 		}
 		if validator != nil {
 			if err := validator(req.URL.String()); err != nil {

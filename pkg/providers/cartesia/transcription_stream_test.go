@@ -840,7 +840,7 @@ func computeWebSocketAccept(key string) string {
 // TS expects the query in insertion order and the path resolved against the
 // base URL's origin.
 func TestBuildCartesiaStreamingTranscriptionURL_TSOrder(t *testing.T) {
-	u, err := buildCartesiaStreamingTranscriptionURL("https://api.cartesia.ai", "2026-03-01", "ink-2", "pcm_s16le", 16000, nil, "test-access-token", true, true)
+	u, err := buildCartesiaStreamingTranscriptionURL("https://api.cartesia.ai", "2026-03-01", "ink-2", "pcm_s16le", 16000, nil, "test-access-token", true, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -849,7 +849,7 @@ func TestBuildCartesiaStreamingTranscriptionURL_TSOrder(t *testing.T) {
 		t.Fatalf("url = %s\nwant  %s", u, want)
 	}
 	lang := "en"
-	u, _ = buildCartesiaStreamingTranscriptionURL("http://proxy.local/prefix/", "v", "ink-2", "pcm_mulaw", 8000, &lang, "tok", false, false)
+	u, _ = buildCartesiaStreamingTranscriptionURL("http://proxy.local/prefix/", "v", "ink-2", "pcm_mulaw", 8000, &lang, "tok", false, false, nil)
 	if want := "ws://proxy.local/stt/websocket?model=ink-2&encoding=pcm_mulaw&sample_rate=8000&cartesia_version=v&language=en"; u.String() != want {
 		t.Fatalf("url = %s, want %s", u, want)
 	}

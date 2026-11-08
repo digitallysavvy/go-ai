@@ -17,6 +17,24 @@ var cartesiaSpeechOptionsSchema = providerutils.OptionSchema{
 	"bitRate":    opt(providerutils.OptNumberLiterals(32000, 64000, 96000, 128000, 192000)),
 	"speed":      opt(providerutils.OptRange(0.6, 1.5)),
 	"language":   nullStr,
+	// TS 392d2fa3a4 / f10414f247 / 47b666b6c7: .optional(), null rejected.
+	"volume":                    providerutils.OptRange(0.5, 2),
+	"emotion":                   providerutils.OptEnum(cartesiaSpeechEmotions...),
+	"locale":                    providerutils.OptString,
+	"normalization":             providerutils.OptString,
+	"pronunciationDictionaryId": providerutils.OptString,
+}
+
+// cartesiaSpeechEmotions is the TS cartesiaSpeechEmotions list.
+var cartesiaSpeechEmotions = []string{
+	"neutral", "happy", "excited", "enthusiastic", "elated", "euphoric", "triumphant", "amazed",
+	"surprised", "flirtatious", "curious", "content", "peaceful", "serene", "calm", "grateful",
+	"affectionate", "trust", "sympathetic", "anticipation", "mysterious", "angry", "mad", "outraged",
+	"frustrated", "agitated", "threatened", "disgusted", "contempt", "envious", "sarcastic", "ironic",
+	"sad", "dejected", "melancholic", "disappointed", "hurt", "guilty", "bored", "tired",
+	"rejected", "nostalgic", "wistful", "apologetic", "hesitant", "insecure", "confused", "resigned",
+	"anxious", "panicked", "alarmed", "scared", "proud", "confident", "distant", "skeptical",
+	"contemplative", "determined",
 }
 
 // cartesiaTranscriptionOptionsSchema is cartesiaTranscriptionModelOptionsSchema
@@ -27,6 +45,12 @@ var cartesiaTranscriptionOptionsSchema = providerutils.OptionSchema{
 	"streaming": providerutils.OptObject(providerutils.OptionSchema{
 		"encoding":      providerutils.OptEnum("pcm_alaw", "pcm_f16le", "pcm_f32le", "pcm_mulaw", "pcm_s16le", "pcm_s32le"),
 		"turnDetection": providerutils.OptBool,
+		// TS 467b299146.
+		"keyterms":              providerutils.OptArray(providerutils.OptString, 0, 100),
+		"turnStartThreshold":    providerutils.OptNumber,
+		"turnEagerEndThreshold": providerutils.OptNumber,
+		"turnEndThreshold":      providerutils.OptNumber,
+		"turnEndTimeoutMs":      providerutils.OptInt(nil, nil),
 	}),
 }
 

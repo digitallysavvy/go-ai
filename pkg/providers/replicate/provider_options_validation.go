@@ -62,8 +62,10 @@ var replicateStatus = zodlite.Enum("starting", "processing", "succeeded", "faile
 
 var replicateURLs = zodlite.Object(zodlite.F("get", zodlite.String))
 
-// replicateImagePredictionNode is replicateImageResponseSchema.
+// replicateImagePredictionNode is replicateImageResponseSchema (id required
+// since TS 0d47a6cf8e: the cancel request is built from it).
 var replicateImagePredictionNode = zodlite.Object(
+	zodlite.F("id", zodlite.String),
 	zodlite.F("status", replicateStatus),
 	zodlite.F("output", zodlite.Nullish(zodlite.Union(zodlite.Array(zodlite.String), zodlite.String))),
 	zodlite.F("error", zodlite.Nullish(zodlite.String)),

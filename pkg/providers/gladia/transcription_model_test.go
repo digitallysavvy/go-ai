@@ -116,9 +116,9 @@ func TestTranscriptionModel_DoTranscribe(t *testing.T) {
 	if !ok {
 		t.Fatalf("utterance not a map: %#v", utterances[0])
 	}
-	// TS parses the result with a zod schema that strips unknown keys, so
-	// "channel" is not part of providerMetadata.gladia.
-	if _, has := firstUtterance["channel"]; has || firstUtterance["speaker"] != float64(0) {
+	// TS 9207c2b1e0: utterances are loose objects, so every key (channel
+	// included) is part of providerMetadata.gladia.
+	if firstUtterance["channel"] != float64(0) || firstUtterance["speaker"] != float64(0) {
 		t.Fatalf("utterance speaker/channel = %#v", firstUtterance)
 	}
 	if firstUtterance["confidence"] != 0.98 || firstUtterance["language"] != "en" {

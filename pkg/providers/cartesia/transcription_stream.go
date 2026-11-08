@@ -54,7 +54,12 @@ func cartesiaEncodingFromInputAudioFormat(inputType string) (string, error) {
 // keeps TS's insertion order (model, encoding, sample_rate, cartesia_version,
 // access_token, language) because the request body echoes the URL.
 // withToken=false drops access_token (`searchParams.delete`).
-func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding string, sampleRate int, language *string, token string, useTurnDetection, withToken bool) (*url.URL, error) {
+//
+// TS 467b299146: then one keyterm per streaming.keyterms entry (both
+// endpoints), and, on the turn detection endpoint, turn_start_threshold,
+// turn_eager_end_threshold, turn_end_threshold and turn_end_timeout_ms
+// (String(value)) for each option set.
+func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding string, sampleRate int, language *string, token string, useTurnDetection, withToken bool, streaming *StreamingOptions) (*url.URL, error) {
 	path := "/stt/websocket"
 	if useTurnDetection {
 		path = "/stt/turns/websocket"
@@ -89,8 +94,41 @@ func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding 
 	for _, kv := range pairs {
 		q.Set(kv[0], kv[1])
 	}
+	if streaming != nil {
+		for _, keyterm := range streaming.Keyterms {
+			q.Append("keyterm", keyterm)
+		}
+		if useTurnDetection {
+			for _, t := range cartesiaTurnThresholds(streaming) {
+				if t.value != nil {
+					q.Set(t.param, providerutils.JSNumberString(*t.value))
+				}
+			}
+		}
+	}
 	u.RawQuery = q.Encode()
 	return u, nil
+}
+
+type cartesiaTurnThreshold struct {
+	option, param string
+	value         *float64
+}
+
+// cartesiaTurnThresholds is TS TURN_THRESHOLD_PARAMS with the values set on
+// streaming, in TS order.
+func cartesiaTurnThresholds(streaming *StreamingOptions) []cartesiaTurnThreshold {
+	var timeout *float64
+	if streaming.TurnEndTimeoutMs != nil {
+		v := float64(*streaming.TurnEndTimeoutMs)
+		timeout = &v
+	}
+	return []cartesiaTurnThreshold{
+		{"turnStartThreshold", "turn_start_threshold", streaming.TurnStartThreshold},
+		{"turnEagerEndThreshold", "turn_eager_end_threshold", streaming.TurnEagerEndThreshold},
+		{"turnEndThreshold", "turn_end_threshold", streaming.TurnEndThreshold},
+		{"turnEndTimeoutMs", "turn_end_timeout_ms", timeout},
+	}
 }
 
 // createStreamingAccessToken mirrors TS
@@ -147,16 +185,29 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		})
 	}
 
+	var streaming *StreamingOptions
+	if cartesiaOpts != nil {
+		streaming = cartesiaOpts.Streaming
+	}
+
+	// TS 467b299146: turn thresholds need the turn detection endpoint.
+	if streaming != nil && streaming.TurnDetection != nil && !*streaming.TurnDetection {
+		for _, t := range cartesiaTurnThresholds(streaming) {
+			if t.value != nil {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "providerOptions.cartesia.streaming." + t.option,
+					Details: "Turn thresholds require turnDetection to be enabled.",
+				})
+			}
+		}
+	}
+
 	// Always validate the declared media type — an explicit
 	// streaming.encoding override must not bypass the allowlist.
 	inferredEncoding, err := cartesiaEncodingFromInputAudioFormat(opts.InputAudioFormat.Type)
 	if err != nil {
 		return nil, err
-	}
-
-	var streaming *StreamingOptions
-	if cartesiaOpts != nil {
-		streaming = cartesiaOpts.Streaming
 	}
 
 	encoding := inferredEncoding
@@ -202,14 +253,14 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		urlLanguage = language
 	}
 
-	wsURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection, true)
+	wsURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection, true, streaming)
 	if err != nil {
 		return nil, err
 	}
 
 	// The request body echoes the connection URL with the access token
 	// stripped, matching TS's `requestUrl.searchParams.delete('access_token')`.
-	requestURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection, false)
+	requestURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection, false, streaming)
 	if err != nil {
 		return nil, err
 	}

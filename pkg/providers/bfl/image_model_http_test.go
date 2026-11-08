@@ -379,10 +379,17 @@ func TestBFLImageModel_DoGenerateErrorPaths(t *testing.T) {
 	})
 }
 
-func TestBFLImageModel_SubmitResponseRequiresPollingURL(t *testing.T) {
+// TS eded4b8ed0: an image submit without polling_url (the webhook-shaped
+// response) is accepted and polled at get_result; here the poll body has no
+// status, so the poll (not the submit) is the invalid JSON response.
+func TestBFLImageModel_SubmitResponseWithoutPollingURLPollsGetResult(t *testing.T) {
 	t.Parallel()
 
+	var pollPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			pollPath = r.URL.RequestURI()
+		}
 		_, _ = w.Write([]byte(`{"id":"req-missing"}`))
 	}))
 	defer server.Close()
@@ -390,8 +397,8 @@ func TestBFLImageModel_SubmitResponseRequiresPollingURL(t *testing.T) {
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
 	m := NewImageModel(p, "flux-pro")
 	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
-	if err == nil || !strings.Contains(err.Error(), "Invalid JSON response") || !strings.Contains(err.Error(), "polling_url") {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Missing status in Black Forest Labs poll response") || pollPath != "/get_result?id=req-missing" {
+		t.Fatalf("unexpected error: %v (poll %q)", err, pollPath)
 	}
 }
 

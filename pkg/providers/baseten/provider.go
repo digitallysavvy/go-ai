@@ -11,6 +11,7 @@ import (
 	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // DefaultBaseURL is Baseten's Model APIs base URL (TS defaultBaseURL).
@@ -74,9 +75,19 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 
+	// TS createChatModel uses modelURL only for a /sync/v1 deployment; any
+	// other URL (a /sync embeddings deployment) leaves chat on the Model APIs
+	// at baseURL (a /predict URL is rejected by LanguageModel).
 	chatBaseURL := baseURL
-	if cfg.ModelURL != "" {
+	customChat := strings.Contains(cfg.ModelURL, "/sync/v1")
+	if customChat {
 		chatBaseURL = cfg.ModelURL
+	}
+	// TS c4a8b80e02: transformBasetenRequestBody is wired only on the
+	// default Model APIs chat path, not on a /sync/v1 custom deployment.
+	var transform func(map[string]interface{}) (map[string]interface{}, []types.Warning)
+	if !customChat {
+		transform = transformBasetenRequestBody
 	}
 
 	structuredOutputs := true
@@ -96,6 +107,8 @@ func New(cfg Config) *Provider {
 		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
 		IncludeUsage:              true,
 		UserAgentName:             "baseten",
+
+		TransformRequestBodyWithWarnings: transform,
 	})
 
 	p := &Provider{
@@ -119,6 +132,57 @@ func New(cfg Config) *Provider {
 	}
 
 	return p
+}
+
+// basetenDeepSeekV4Pro0813 is the Model APIs model whose JSON mode with
+// reasoning returns the answer as reasoning and leaves content empty.
+const basetenDeepSeekV4Pro0813 = "deepseek-ai/DeepSeek-V4-Pro-0813"
+
+// transformBasetenRequestBody is TS transformBasetenRequestBody
+// (baseten-provider.ts, c4a8b80e02): for DeepSeek V4 Pro 0813 with
+// reasoning not "none" and a json_schema / json_object response_format, the
+// response_format is dropped and a new leading system message carries the
+// JSON instruction (injectJsonInstructionIntoMessages({messages: [],
+// schema})), with a compatibility warning. Every other body is unchanged.
+func transformBasetenRequestBody(body map[string]interface{}) (map[string]interface{}, []types.Warning) {
+	if model, _ := body["model"].(string); model != basetenDeepSeekV4Pro0813 {
+		return body, nil
+	}
+	if effort, ok := body["reasoning_effort"].(string); ok && effort == "none" {
+		return body, nil
+	}
+	responseFormat, _ := body["response_format"].(map[string]interface{})
+	formatType, _ := responseFormat["type"].(string)
+	if formatType != "json_schema" && formatType != "json_object" {
+		return body, nil
+	}
+	var schema interface{}
+	if js, ok := responseFormat["json_schema"].(map[string]interface{}); ok {
+		schema = js["schema"]
+	}
+	system := map[string]interface{}{
+		"role":    "system",
+		"content": providerutils.InjectJSONInstructionSchema("", schema, providerutils.InjectJSONInstructionOptions{}),
+	}
+	out := make(map[string]interface{}, len(body))
+	for k, v := range body {
+		if k != "response_format" {
+			out[k] = v
+		}
+	}
+	switch msgs := body["messages"].(type) {
+	case []map[string]interface{}:
+		out["messages"] = append([]map[string]interface{}{system}, msgs...)
+	case []interface{}:
+		out["messages"] = append([]interface{}{system}, msgs...)
+	default:
+		out["messages"] = []map[string]interface{}{system}
+	}
+	return out, []types.Warning{{
+		Type:    "compatibility",
+		Feature: "responseFormat",
+		Details: "JSON instructions are injected into the system message and response_format is omitted because Baseten DeepSeek V4 Pro 0813 returns JSON as reasoning when JSON mode and reasoning are combined. The response is not constrained by the server.",
+	}}
 }
 
 // basetenEmbeddingURL mirrors TS getCommonModelConfig's embedding URL

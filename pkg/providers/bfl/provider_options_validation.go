@@ -203,7 +203,7 @@ func bflURLNode(v interface{}, present bool, path []interface{}) *zodlite.Issue 
 	return nil
 }
 
-// bflSubmitNode is bflSubmitSchema / bflVideoSubmitSchema.
+// bflSubmitNode is bflVideoSubmitSchema (polling_url required).
 var bflSubmitNode = zodlite.Object(
 	zodlite.F("id", zodlite.String),
 	zodlite.F("polling_url", bflURLNode),
@@ -212,15 +212,36 @@ var bflSubmitNode = zodlite.Object(
 	zodlite.F("output_mp", zodlite.Nullish(zodlite.Number)),
 )
 
-// validateBFLSubmitBody checks a submit response like bflSubmitSchema: nil
-// when it matches, a *providerutils.ChunkSchemaError for a schema mismatch, or
-// the JSON syntax error.
+// bflImageSubmitNode is the image bflSubmitSchema: polling_url is
+// z.url().nullish() because a submit that registered a webhook answers with a
+// webhook-shaped AsyncWebhookResponse without it (TS eded4b8ed0).
+var bflImageSubmitNode = zodlite.Object(
+	zodlite.F("id", zodlite.String),
+	zodlite.F("polling_url", zodlite.Nullish(bflURLNode)),
+	zodlite.F("cost", zodlite.Nullish(zodlite.Number)),
+	zodlite.F("input_mp", zodlite.Nullish(zodlite.Number)),
+	zodlite.F("output_mp", zodlite.Nullish(zodlite.Number)),
+)
+
+// validateBFLSubmitBody checks a video submit response like
+// bflVideoSubmitSchema: nil when it matches, a *zodlite.Issue for a schema
+// mismatch, or the JSON syntax error.
 func validateBFLSubmitBody(body []byte) error {
+	return validateBFLSubmitBodyWith(bflSubmitNode, body)
+}
+
+// validateBFLImageSubmitBody checks an image submit response like the image
+// bflSubmitSchema.
+func validateBFLImageSubmitBody(body []byte) error {
+	return validateBFLSubmitBodyWith(bflImageSubmitNode, body)
+}
+
+func validateBFLSubmitBodyWith(node zodlite.Node, body []byte) error {
 	var value interface{}
 	if err := json.Unmarshal(body, &value); err != nil {
 		return err
 	}
-	if bad := bflSubmitNode(value, true, nil); bad != nil {
+	if bad := node(value, true, nil); bad != nil {
 		return bad
 	}
 	return nil
