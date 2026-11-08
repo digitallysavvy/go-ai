@@ -162,3 +162,59 @@ func TestR88toolsCanonicalResourceWithoutPRM(t *testing.T) {
 		}
 	})
 }
+
+// --- TS dc0f7f243d: an unbound refresh token never takes a new binding ---
+
+// oauth.test.ts "does not authenticate an unbound stored token using a new
+// registration".
+func TestR88toolsUnboundTokenClearedBeforeRegistration(t *testing.T) {
+	c := &r88toolsCaptured{}
+	p := newFakeOAuthProvider()
+	p.tokens = &OAuthTokens{AccessToken: "test-access", RefreshToken: "test-refresh", TokenType: "Bearer"}
+	res, err := Auth(context.Background(), p, AuthOptions{ServerURL: "https://api.example.com/mcp-server", HTTPClient: r88toolsNoPRMClient(t, c)})
+	if err != nil || res != AuthResultRedirect {
+		t.Fatalf("Auth = %v, %v", res, err)
+	}
+	if len(c.forms) != 0 {
+		t.Fatalf("the unbound token reached the token endpoint: %v", c.forms)
+	}
+	if len(p.invalidatedLog) != 1 || p.invalidatedLog[0] != OAuthInvalidateTokens {
+		t.Fatalf("invalidations = %v", p.invalidatedLog)
+	}
+	if len(p.savedClientInfo) != 1 || len(p.savedTokens) != 0 || len(p.redirectedTo) != 1 {
+		t.Fatalf("saved client %d, saved tokens %d, redirects %d", len(p.savedClientInfo), len(p.savedTokens), len(p.redirectedTo))
+	}
+}
+
+// A provider without any invalidation hook.
+type r88toolsNoInvalidator struct{ OAuthClientProvider }
+
+// A provider whose invalidation leaves the tokens in storage.
+type r88toolsIneffectiveInvalidator struct{ *fakeOAuthProvider }
+
+func (p *r88toolsIneffectiveInvalidator) InvalidateCredentials(context.Context, OAuthCredentialInvalidationScope) error {
+	return nil
+}
+
+// oauth.test.ts "does not save a new binding when token invalidation is
+// missing / ineffective".
+func TestR88toolsUnboundTokenThatCannotBeCleared(t *testing.T) {
+	for name, wrap := range map[string]func(*fakeOAuthProvider) OAuthClientProvider{
+		"missing":     func(f *fakeOAuthProvider) OAuthClientProvider { return r88toolsNoInvalidator{f} },
+		"ineffective": func(f *fakeOAuthProvider) OAuthClientProvider { return &r88toolsIneffectiveInvalidator{f} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &r88toolsCaptured{}
+			f := newFakeOAuthProvider()
+			f.tokens = &OAuthTokens{AccessToken: "test-access", RefreshToken: "test-refresh", TokenType: "Bearer"}
+			_, err := Auth(context.Background(), wrap(f), AuthOptions{ServerURL: "https://api.example.com/mcp-server", HTTPClient: r88toolsNoPRMClient(t, c)})
+			var oauthErr *MCPClientOAuthError
+			if !errors.As(err, &oauthErr) || oauthErr.Message != "Stored OAuth tokens without an authorization server binding must be cleared before starting authorization" {
+				t.Fatalf("err = %v", err)
+			}
+			if len(f.savedClientInfo) != 0 || f.asInfo != nil || len(f.redirectedTo) != 0 || c.posts != 0 {
+				t.Fatalf("saved client %d, AS info %v, redirects %d, POSTs %d", len(f.savedClientInfo), f.asInfo, len(f.redirectedTo), c.posts)
+			}
+		})
+	}
+}
