@@ -1613,3 +1613,13 @@ func TestR88provaBatchToolsetMemberIsPlainToolCall(t *testing.T) {
 		t.Fatalf("tool call = %+v", tc)
 	}
 }
+
+// TS createJsonErrorResponseHandler parses with safeParseJSON
+// (secureJsonParse): an error body with a __proto__ key gives the status
+// text and no data.
+func TestR88provaErrorBodySecureParse(t *testing.T) {
+	perr := anthropicHTTPError("anthropic", 400, nil, []byte(`{"type":"error","error":{"type":"x","message":"m","__proto__":{}}}`), nil)
+	if perr.Message != "Bad Request" || perr.Data != nil {
+		t.Fatalf("message %q data %v", perr.Message, perr.Data)
+	}
+}

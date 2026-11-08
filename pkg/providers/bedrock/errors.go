@@ -7,6 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // bedrockErrorBody mirrors the TS SDK's AmazonBedrockErrorSchema:
@@ -39,7 +40,7 @@ func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *pr
 	}
 	// TS: error.type == null ? error.message : `${error.type}: ${error.message}`;
 	// an empty string is a valid message or type.
-	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != nil {
+	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != nil && secureJSON(body) {
 		if parsed.Type != nil {
 			message = *parsed.Type + ": " + *parsed.Message
 		} else {
@@ -60,11 +61,18 @@ func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *pr
 func bedrockConverseGenerateAPIError(statusCode int, body []byte, headers map[string]string) *providererrors.ProviderError {
 	body = []byte(textdecode.UTF8(body))
 	var parsed bedrockErrorBody
-	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Message == nil {
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Message == nil || !secureJSON(body) {
 		return bedrockAPIError(statusCode, body, headers)
 	}
 	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", *parsed.Message, nil)
 	providerErr.ResponseHeaders = headers
 	providerErr.ResponseBody = string(body)
 	return providerErr
+}
+
+// secureJSON reports a body TS secureJsonParse accepts (no __proto__ /
+// constructor.prototype keys); TS safeParseJSON fails otherwise.
+func secureJSON(body []byte) bool {
+	_, ok := prompt.SecureJSONParse(string(body))
+	return ok
 }

@@ -3394,7 +3394,8 @@ func anthropicHTTPError(providerName string, status int, headers http.Header, bo
 			Details json.RawMessage `json:"details"`
 		} `json:"error"`
 	}
-	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && parsed.Type != nil && *parsed.Type == "error" &&
+	_, secure := prompt.SecureJSONParse(string(body)) // TS safeParseJSON uses secureJsonParse
+	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && secure && parsed.Type != nil && *parsed.Type == "error" &&
 		parsed.Error != nil && parsed.Error.Type != nil && parsed.Error.Message != nil {
 		perr = providererrors.NewProviderError(providerName, status, *parsed.Error.Type, *parsed.Error.Message, cause)
 		// TS APICallError.data is the parsed error object (zod strips

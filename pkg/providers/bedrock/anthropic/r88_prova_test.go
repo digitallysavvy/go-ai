@@ -49,3 +49,17 @@ func TestR88provaBedrockAnthropicRejectsThreads(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TS createAmazonBedrockAnthropicFetch parses the error body with
+// safeParseJSON (secureJsonParse): a body with a __proto__ key does not
+// parse, so the whole text is the message.
+func TestR88provaBedrockErrorBodySecureParse(t *testing.T) {
+	body := `{"__proto__":{"x":1},"message":"m"}`
+	want := `{"type":"error","error":{"type":"error","message":"{\"__proto__\":{\"x\":1},\"message\":\"m\"}"}}`
+	if got := string(transformErrorBody([]byte(body))); got != want {
+		t.Fatalf("got %s", got)
+	}
+	if got := string(transformErrorBody([]byte(`{"message":"m","x":1}`))); got != `{"type":"error","error":{"type":"error","message":"m"}}` {
+		t.Fatalf("got %s", got)
+	}
+}
