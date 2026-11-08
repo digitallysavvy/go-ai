@@ -307,6 +307,14 @@ type TranscriptionResult struct {
 	// Optional timestamps for words or segments
 	Timestamps []TranscriptionTimestamp `json:"timestamps,omitempty"`
 
+	// Words are word-level timings reported by the provider, whether
+	// requested or returned by default. Segments keep their existing
+	// behavior; some providers also put word timings there. nil when word
+	// timings are unavailable. Mirrors TS TranscriptionModelV4Result.words
+	// (packages/provider/src/transcription-model/v4/
+	// transcription-model-v4-result.ts).
+	Words []TranscriptionWord `json:"words,omitempty"`
+
 	// Usage information
 	Usage TranscriptionUsage `json:"usage"`
 
@@ -339,6 +347,20 @@ type TranscriptionTimestamp struct {
 
 	// End time in seconds
 	End float64 `json:"end"`
+}
+
+// TranscriptionWord is one word-level timing in TranscriptionResult.Words,
+// mirroring an element of TS TranscriptionModelV4Result.words
+// ({ text, startSecond, endSecond }).
+type TranscriptionWord struct {
+	// Text of this word.
+	Text string `json:"text"`
+
+	// StartSecond is the start time of this word in seconds.
+	StartSecond float64 `json:"startSecond"`
+
+	// EndSecond is the end time of this word in seconds.
+	EndSecond float64 `json:"endSecond"`
 }
 
 // VideoResult contains the result of a video generation operation
