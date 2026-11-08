@@ -231,6 +231,12 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 			return []provider.StreamChunk{chunk}
 		}
 
+		// A ping passes through without flushing a partial word (TS
+		// smooth-stream.ts 143-146).
+		if chunk.Type == provider.ChunkTypePing {
+			return append(out, chunk)
+		}
+
 		// Handle non-smoothable chunks: flush the buffer and pass through.
 		if chunk.Type != provider.ChunkTypeText && chunk.Type != provider.ChunkTypeReasoning {
 			for _, c := range flush() {

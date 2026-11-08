@@ -1779,6 +1779,9 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		copyIfPresent(part, chunk, "kind", "kind")
 		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
 		s.appendPart(part)
+	case "steering-message":
+		// TS process-ui-message-stream.ts 964-972.
+		s.appendPart(UIMessageChunk{"type": "steering-message", "id": chunk["id"], "parts": cloneUIValue(chunk["parts"])})
 	case "start-step":
 		s.appendPart(UIMessageChunk{"type": "step-start"})
 	case "finish-step":
@@ -2700,6 +2703,138 @@ var uiChunkTSKeyOrders = map[string][]string{
 	"finish":                 {"type", "finishReason", "messageMetadata"},
 	"abort":                  {"type", "reason"},
 	"message-metadata":       {"type", "messageMetadata"},
+	"steering-message":       {"type", "id", "parts"},
+}
+
+// uiSteeringPartTSKeyOrders is the key order of the parts of a
+// steering-message chunk (to-ui-message-chunk.ts convertUserMessageToUIParts:
+// the file part spreads its fields before the url).
+var uiSteeringPartTSKeyOrders = map[string][]string{
+	"text": {"type", "text", "providerMetadata"},
+	"file": {"type", "mediaType", "filename", "providerMetadata", "url", "providerReference"},
+}
+
+// steeringMessageUIParts converts a steering user message to UI text and file
+// parts (TS to-ui-message-chunk.ts convertUserMessageToUIParts).
+func steeringMessageUIParts(message *types.Message) []interface{} {
+	parts := make([]interface{}, 0)
+	if message == nil {
+		return parts
+	}
+	for _, content := range message.Content {
+		var providerOptions map[string]interface{}
+		var file types.FileContent
+		var declared string
+		isFile := false
+		// urlInput: the part's data is a URL (a data: URL's media type
+		// wins, TS convertUrlToFilePartData).
+		urlInput := false
+		switch c := content.(type) {
+		case types.TextContent:
+			parts = append(parts, steeringTextUIPart(c))
+			continue
+		case *types.TextContent:
+			if c != nil {
+				parts = append(parts, steeringTextUIPart(*c))
+			}
+			continue
+		case types.FileContent:
+			file, providerOptions, isFile = c, c.ProviderOptions, true
+			declared = firstNonEmptyString(c.MediaType, c.MimeType, c.FileData.MediaType)
+			urlInput = c.FileData.Type == types.FileDataTypeURL || (c.FileData.IsZero() && len(c.Data) == 0 && c.URL != "")
+		case *types.FileContent:
+			if c != nil {
+				file, providerOptions, isFile = *c, c.ProviderOptions, true
+				declared = firstNonEmptyString(c.MediaType, c.MimeType, c.FileData.MediaType)
+				urlInput = c.FileData.Type == types.FileDataTypeURL || (c.FileData.IsZero() && len(c.Data) == 0 && c.URL != "")
+			}
+		case types.ImageContent:
+			providerOptions, declared, urlInput = c.ProviderOptions, c.MimeType, c.URL != ""
+			converted, err := prompt.NormalizeImageContent(c)
+			if err == nil {
+				file, isFile = converted, true
+			}
+		case *types.ImageContent:
+			if c != nil {
+				providerOptions, declared, urlInput = c.ProviderOptions, c.MimeType, c.URL != ""
+				converted, err := prompt.NormalizeImageContent(*c)
+				if err == nil {
+					file, isFile = converted, true
+				}
+			}
+		}
+		if !isFile {
+			continue
+		}
+		normalized, err := prompt.NormalizeFileContent(file)
+		if err != nil {
+			// The model call already converted this message, so its file
+			// data is valid; skip a part that is not.
+			continue
+		}
+		data := normalized.FileData
+		// TS: mediaType = dataUrlMediaType ?? part.mediaType ?? 'image'.
+		mediaType := declared
+		if urlInput && data.Type == types.FileDataTypeData {
+			mediaType = data.MediaType
+		} else if mediaType == "" {
+			mediaType = "image"
+		}
+		part := map[string]interface{}{"type": "file", "mediaType": mediaType}
+		if file.Filename != "" {
+			part["filename"] = file.Filename
+		}
+		if providerOptions != nil {
+			part["providerMetadata"] = uiPlainJSON(providerOptions)
+		}
+		switch data.Type {
+		case types.FileDataTypeURL:
+			part["url"] = data.URL
+		case types.FileDataTypeData:
+			encoded := data.DataString
+			if encoded == "" {
+				encoded = base64.StdEncoding.EncodeToString(data.Data)
+			}
+			part["url"] = "data:" + mediaType + ";base64," + encoded
+		case types.FileDataTypeText:
+			part["url"] = "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString([]byte(data.Text))
+		case types.FileDataTypeReference:
+			// The provider reference takes precedence over the url in
+			// model messages.
+			reference := make(map[string]interface{}, len(data.Reference))
+			for k, v := range data.Reference {
+				reference[k] = v
+			}
+			part["url"] = ""
+			part["providerReference"] = reference
+		default:
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+func steeringTextUIPart(c types.TextContent) map[string]interface{} {
+	part := map[string]interface{}{"type": "text", "text": c.Text}
+	if c.ProviderOptions != nil {
+		part["providerMetadata"] = uiPlainJSON(c.ProviderOptions)
+	}
+	return part
+}
+
+// uiPlainJSON returns v as plain JSON values (maps, slices, strings, float64,
+// bools), as a UI chunk holds them after a JSON round trip.
+func uiPlainJSON(v interface{}) interface{} {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out interface{}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return v
+	}
+	return out
 }
 
 // uiDataChunkTSKeyOrder is the key order of a data-* chunk (the
@@ -2755,7 +2890,83 @@ func marshalUIChunkInTSOrder(chunk UIMessageChunk) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		v, err := jsonstr.Marshal(chunk[key])
+		var v []byte
+		if typ == "steering-message" && key == "parts" {
+			v, err = marshalSteeringPartsInTSOrder(chunk[key])
+		} else {
+			v, err = jsonstr.Marshal(chunk[key])
+		}
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, k...)
+		buf = append(buf, ':')
+		buf = append(buf, v...)
+	}
+	return append(buf, '}'), nil
+}
+
+// marshalSteeringPartsInTSOrder writes a steering-message chunk's parts with
+// each part's keys in TS order.
+func marshalSteeringPartsInTSOrder(value interface{}) ([]byte, error) {
+	parts, ok := value.([]interface{})
+	if !ok {
+		return jsonstr.Marshal(value)
+	}
+	out := make([]json.RawMessage, 0, len(parts))
+	for _, raw := range parts {
+		part, ok := asUIMap(raw)
+		if !ok {
+			b, err := jsonstr.Marshal(raw)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, b)
+			continue
+		}
+		typ, _ := part["type"].(string)
+		order := uiSteeringPartTSKeyOrders[typ]
+		if order == nil {
+			order = []string{"type"}
+		}
+		b, err := marshalUIChunkWithOrder(part, order)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return jsonstr.Marshal(out)
+}
+
+// marshalUIChunkWithOrder writes m with the keys of order first, then the
+// other keys sorted (JS enumeration order for array-index keys).
+func marshalUIChunkWithOrder(m map[string]interface{}, order []string) ([]byte, error) {
+	keys := make([]string, 0, len(m))
+	known := make(map[string]bool, len(order))
+	for _, key := range order {
+		known[key] = true
+		if _, present := m[key]; present {
+			keys = append(keys, key)
+		}
+	}
+	rest := make([]string, 0)
+	for key := range m {
+		if !known[key] {
+			rest = append(rest, key)
+		}
+	}
+	sort.Strings(rest)
+	keys = jsonorder.JSKeyOrder(append(keys, rest...))
+	buf := []byte{'{'}
+	for i, key := range keys {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		k, err := jsonstr.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		v, err := jsonstr.Marshal(m[key])
 		if err != nil {
 			return nil, err
 		}
@@ -3236,10 +3447,18 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	}
 
 	switch chunk.Type {
-	case provider.ChunkTypeRaw:
+	case provider.ChunkTypeRaw, provider.ChunkTypePing:
+		// TS toUIMessageChunk: raw and ping parts have no UI chunk.
 		break
 	case provider.ChunkTypeResponseMetadata, provider.ChunkTypeFirstChunk:
 		break
+	case provider.ChunkTypeSteeringMessage:
+		// TS to-ui-message-chunk.ts 363-369.
+		out = append(out, UIMessageChunk{
+			"type":  "steering-message",
+			"id":    chunk.ID,
+			"parts": steeringMessageUIParts(chunk.SteeringMessage),
+		})
 	case provider.ChunkTypeTextStart:
 		part := map[string]interface{}{"type": "text-start", "id": chunk.ID}
 		withMeta(part)
