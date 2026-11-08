@@ -45,6 +45,12 @@ var cartesiaTranscriptionOptionsSchema = providerutils.OptionSchema{
 	"streaming": providerutils.OptObject(providerutils.OptionSchema{
 		"encoding":      providerutils.OptEnum("pcm_alaw", "pcm_f16le", "pcm_f32le", "pcm_mulaw", "pcm_s16le", "pcm_s32le"),
 		"turnDetection": providerutils.OptBool,
+		// TS 467b299146.
+		"keyterms":              providerutils.OptArray(providerutils.OptString, 0, 100),
+		"turnStartThreshold":    providerutils.OptNumber,
+		"turnEagerEndThreshold": providerutils.OptNumber,
+		"turnEndThreshold":      providerutils.OptNumber,
+		"turnEndTimeoutMs":      providerutils.OptInt(nil, nil),
 	}),
 }
 

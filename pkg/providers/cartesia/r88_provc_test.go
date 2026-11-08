@@ -127,3 +127,100 @@ func TestR88provcCartesiaSpeechOptions(t *testing.T) {
 		t.Fatalf("typed: %v %s", err, capture.last())
 	}
 }
+
+// TS cartesia-transcription-model.test.ts (467b299146): Ink 2 keyterms and
+// turn thresholds.
+func TestR88provcCartesiaStreamingKeytermsAndTurnThresholds(t *testing.T) {
+	start := func(t *testing.T, streaming map[string]interface{}) (*provider.TranscriptionStreamResult, error) {
+		t.Helper()
+		server := newCartesiaRealtimeTestServer(t)
+		t.Cleanup(server.close)
+		model := newCartesiaRealtimeTestModel(server.ts.URL)
+		return model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            newChanAudioStream(),
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(24000)},
+			ProviderOptions:  map[string]interface{}{"cartesia": map[string]interface{}{"streaming": streaming}},
+		})
+	}
+	firstWarnings := func(t *testing.T, res *provider.TranscriptionStreamResult) []types.Warning {
+		t.Helper()
+		defer res.Stream.Close() //nolint:errcheck
+		first, err := res.Stream.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return first.Warnings
+	}
+
+	t.Run("invalid options fail before connecting", func(t *testing.T) {
+		terms := make([]interface{}, 101)
+		for i := range terms {
+			terms[i] = "term"
+		}
+		for _, streaming := range []map[string]interface{}{{"keyterms": terms}, {"turnEndTimeoutMs": 800.5}, {"turnStartThreshold": nil}} {
+			_, err := start(t, streaming)
+			var ia *providererrors.InvalidArgumentError
+			if !errors.As(err, &ia) {
+				t.Fatalf("%v: err = %v", streaming, err)
+			}
+		}
+	})
+
+	t.Run("keyterms are repeated query parameters on both endpoints", func(t *testing.T) {
+		res, err := start(t, map[string]interface{}{"keyterms": []interface{}{"Cartesia", "Sonic 3"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := res.RequestBody.(string)
+		if !strings.Contains(body, "/stt/turns/websocket?") || !strings.HasSuffix(body, "&keyterm=Cartesia&keyterm=Sonic+3") {
+			t.Fatalf("url = %s", body)
+		}
+		_ = res.Stream.Close()
+		res, err = start(t, map[string]interface{}{"turnDetection": false, "keyterms": []interface{}{"Cartesia"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ = res.RequestBody.(string)
+		if !strings.Contains(body, "/stt/websocket?") || !strings.HasSuffix(body, "&keyterm=Cartesia") {
+			t.Fatalf("url = %s", body)
+		}
+		_ = res.Stream.Close()
+	})
+
+	thresholds := map[string]interface{}{"turnStartThreshold": 0.5, "turnEagerEndThreshold": 0.4, "turnEndThreshold": 0.3, "turnEndTimeoutMs": 800}
+
+	t.Run("thresholds are sent with turn detection", func(t *testing.T) {
+		res, err := start(t, thresholds)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := res.RequestBody.(string)
+		if !strings.HasSuffix(body, "&turn_start_threshold=0.5&turn_eager_end_threshold=0.4&turn_end_threshold=0.3&turn_end_timeout_ms=800") {
+			t.Fatalf("url = %s", body)
+		}
+		if w := firstWarnings(t, res); len(w) != 0 {
+			t.Fatalf("warnings = %#v", w)
+		}
+	})
+
+	t.Run("thresholds are omitted and warned without turn detection", func(t *testing.T) {
+		opts := map[string]interface{}{"turnDetection": false}
+		for k, v := range thresholds {
+			opts[k] = v
+		}
+		res, err := start(t, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body, _ := res.RequestBody.(string); strings.Contains(body, "turn_") {
+			t.Fatalf("url = %s", body)
+		}
+		var want []types.Warning
+		for _, f := range []string{"turnStartThreshold", "turnEagerEndThreshold", "turnEndThreshold", "turnEndTimeoutMs"} {
+			want = append(want, types.Warning{Type: "unsupported", Feature: "providerOptions.cartesia.streaming." + f, Details: "Turn thresholds require turnDetection to be enabled."})
+		}
+		if w := firstWarnings(t, res); !reflect.DeepEqual(w, want) {
+			t.Fatalf("warnings = %#v", w)
+		}
+	})
+}

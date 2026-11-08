@@ -10,7 +10,7 @@ import "testing"
 // .set('access_token','t~1') -> ?model=m&access_token=t%7E1.
 func TestR86bintegCartesiaQueryEscaping(t *testing.T) {
 	lang := "a~b*c d"
-	u, err := buildCartesiaStreamingTranscriptionURL("https://api.cartesia.ai", "2025-04-16", "ink", "pcm_s16le", 24000, &lang, "t~1", false, true)
+	u, err := buildCartesiaStreamingTranscriptionURL("https://api.cartesia.ai", "2025-04-16", "ink", "pcm_s16le", 24000, &lang, "t~1", false, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
