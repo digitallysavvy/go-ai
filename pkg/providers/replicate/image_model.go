@@ -375,36 +375,17 @@ func (m *ImageModel) pollImagePrediction(ctx context.Context, prediction replica
 			return current, nil
 		}
 
-		pollURL := current.URLs.Get
-		if pollURL == "" {
-			if current.ID == "" {
-				return replicateImagePrediction{}, providererrors.NewInvalidResponseDataError(current, "Replicate prediction response is missing urls.get.")
-			}
-			pollURL = m.provider.baseURL() + "/predictions/" + current.ID
-		}
-		dl := fileutil.TrustedOriginDownloadOptions(m.provider.baseURL(), m.provider.client.HTTPClient().Transport)
-		dl.Headers = m.provider.credentialedHeaders(pollURL, callHeaders)
-		polled, err := fileutil.PollJSON(ctx, pollURL, dl, nil)
+		next, err := m.pollImagePredictionOnce(ctx, current, callHeaders, i < maxAttempts-1, pollInterval)
 		if err != nil {
-			return replicateImagePrediction{}, m.handlePollError(err)
-		}
-		// TS createJsonResponseHandler(replicateImageResponseSchema).
-		if err := validateImagePrediction(http.StatusOK, headersOf(polled.Headers), polled.Data); err != nil {
+			// TS 0d47a6cf8e: the caller aborted (during the poll or the
+			// delay): cancel the prediction so it does not keep running
+			// (and billing) on Replicate after we return.
+			if ctx.Err() != nil {
+				m.cancelPrediction(ctx, current.ID)
+			}
 			return replicateImagePrediction{}, err
 		}
-		var next replicateImagePrediction
-		if err := json.Unmarshal(polled.Data, &next); err != nil {
-			return replicateImagePrediction{}, fmt.Errorf("failed to decode status response: %w", err)
-		}
 		current = next
-
-		if i < maxAttempts-1 {
-			select {
-			case <-ctx.Done():
-				return replicateImagePrediction{}, ctx.Err()
-			case <-time.After(pollInterval):
-			}
-		}
 	}
 
 	if done, err := completedImagePrediction(current); err != nil {
@@ -412,7 +393,70 @@ func (m *ImageModel) pollImagePrediction(ctx context.Context, prediction replica
 	} else if done {
 		return current, nil
 	}
+	// Polling gave up: cancel the prediction instead of leaving it running.
+	m.cancelPrediction(ctx, current.ID)
 	return replicateImagePrediction{}, fmt.Errorf("Replicate image generation did not complete after %d polling attempts.", maxAttempts) //nolint:staticcheck // mirrors TS message (proper noun)
+}
+
+// pollImagePredictionOnce is one TS poll iteration: GET urls.get, then wait
+// the poll interval unless it is the last attempt.
+func (m *ImageModel) pollImagePredictionOnce(ctx context.Context, current replicateImagePrediction, callHeaders map[string]string, wait bool, pollInterval time.Duration) (replicateImagePrediction, error) {
+	pollURL := current.URLs.Get
+	if pollURL == "" {
+		// Unreachable after replicateImageResponseSchema (urls.get is
+		// required); kept as a config-derived URL with the ID encoded.
+		if current.ID == "" {
+			return replicateImagePrediction{}, providererrors.NewInvalidResponseDataError(current, "Replicate prediction response is missing urls.get.")
+		}
+		pollURL = m.provider.baseURL() + "/predictions/" + providerutils.EncodePathSegment(current.ID)
+	}
+	dl := fileutil.TrustedOriginDownloadOptions(m.provider.baseURL(), m.provider.client.HTTPClient().Transport)
+	dl.Headers = m.provider.credentialedHeaders(pollURL, callHeaders)
+	polled, err := fileutil.PollJSON(ctx, pollURL, dl, nil)
+	if err != nil {
+		return replicateImagePrediction{}, m.handlePollError(err)
+	}
+	// TS createJsonResponseHandler(replicateImageResponseSchema).
+	if err := validateImagePrediction(http.StatusOK, headersOf(polled.Headers), polled.Data); err != nil {
+		return replicateImagePrediction{}, err
+	}
+	var next replicateImagePrediction
+	if err := json.Unmarshal(polled.Data, &next); err != nil {
+		return replicateImagePrediction{}, fmt.Errorf("failed to decode status response: %w", err)
+	}
+	if wait {
+		select {
+		case <-ctx.Done():
+			return replicateImagePrediction{}, ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+	return next, nil
+}
+
+// replicateCancelTimeout bounds the best-effort cancel request. TS sends it
+// with no signal and no deadline; Go bounds it so the goroutine cannot leak
+// (coordinator ruling, round 88, S7).
+var replicateCancelTimeout = 30 * time.Second
+
+// cancelPrediction is TS cancelReplicatePrediction, fire-and-forget: POST
+// <baseURL>/predictions/<encoded id>/cancel with an empty body and the
+// provider headers only (never the call headers or the prediction's
+// urls.cancel). It never receives the caller's cancellation and every error
+// is ignored, so the abort or timeout error that triggered it wins.
+func (m *ImageModel) cancelPrediction(ctx context.Context, predictionID string) {
+	if predictionID == "" {
+		return
+	}
+	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), replicateCancelTimeout)
+	go func() {
+		defer cancel()
+		_, _ = m.provider.client.Do(cancelCtx, internalhttp.Request{
+			Method: http.MethodPost,
+			Path:   "/predictions/" + providerutils.EncodePathSegment(predictionID) + "/cancel",
+			Body:   []byte{},
+		})
+	}()
 }
 
 func (m *ImageModel) handlePollError(err error) error {
