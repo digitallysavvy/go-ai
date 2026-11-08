@@ -42,6 +42,8 @@ type preparedRequest struct {
 	nameTools []types.Tool
 	// includePings is TS `stream && includePings === true`.
 	includePings bool
+	// thread reports a message thread request (batches reject it).
+	thread bool
 	// providerOptionsName / usedCustomProviderKey mirror TS prepareRequest's
 	// return fields of the same name: providerOptionsName is the wrapper's
 	// own providerOptions key (e.g. "minimax", "bedrock"), and
@@ -134,6 +136,20 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 
 	if o.ContextManagement != nil && o.Compaction != nil {
 		return nil, providererrors.NewArgumentError("providerOptions", "Anthropic provider options `compaction` and `contextManagement` cannot be used together.", nil)
+	}
+
+	// TS 6b101ac076: message threads need platform support and allow no
+	// compaction or context editing except keeping all thinking blocks.
+	thread := o.Thread
+	if thread != nil && !m.configBool(m.provider.config.SupportsMessageThreads) {
+		return nil, &providererrors.UnsupportedFunctionalityError{
+			Functionality: "Anthropic message threads",
+			Message:       fmt.Sprintf("%s does not support Anthropic message threads.", m.tsProviderString()),
+		}
+	}
+	if thread != nil && (o.Compaction != nil || threadIncompatibleContextManagement(o.ContextManagement)) {
+		return nil, providererrors.NewArgumentError("providerOptions.anthropic.thread",
+			`Anthropic message threads do not support compaction or context editing, except clear_thinking_20251015 with keep: "all".`, nil)
 	}
 
 	if opts.FrequencyPenalty != nil {
@@ -244,7 +260,12 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	}
 
 	// Shared cache control validator across the prompt and tool definitions.
-	validator := prompt.NewAnthropicCacheControlValidatorFor(m.provider.config.CacheControlProviderOptionsName)
+	// A thread with top-level cacheControl uses one of the four breakpoints.
+	initialBreakpoints := 0
+	if thread != nil && o.CacheControl != nil {
+		initialBreakpoints = 1
+	}
+	validator := prompt.NewAnthropicCacheControlValidatorWithBreakpoints(m.provider.config.CacheControlProviderOptionsName, initialBreakpoints)
 	defaultEager := stream && (o.ToolStreaming == nil || *o.ToolStreaming)
 
 	// Tools that tool changes add by value are only known from the prompt
@@ -295,7 +316,41 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		return nil, err
 	}
 	warnings = append(warnings, promptInfo.Warnings...)
+	if thread != nil {
+		pinned := map[string]bool{}
+		for _, b := range userBetas {
+			pinned[b] = true
+		}
+		for _, b := range o.AnthropicBeta {
+			pinned[b] = true
+		}
+		var unpinned []string
+		for _, b := range promptInfo.Betas {
+			if !pinned[b] {
+				unpinned = append(unpinned, b)
+			}
+		}
+		if len(unpinned) > 0 {
+			warnings = append(warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "providerOptions.anthropic.thread",
+				Details: fmt.Sprintf("Message content enabled beta headers: %s. ", strings.Join(unpinned, ", ")) +
+					"Thread requests require the same beta set on every turn. Pin these values with anthropicBeta on every request, or start a new thread when the set changes.",
+			})
+		}
+		if thread.Type == "continue" && (promptInfo.System != nil || len(opts.Tools) > 0) {
+			warnings = append(warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "providerOptions.anthropic.thread",
+				Details: "Continuation uses the system prompt and tool definitions stored by the create request; supplied definitions are omitted from the wire request. " +
+					"Supply identical tools for local tool handling and fixed request settings. To change system instructions or tools, start a new thread.",
+			})
+		}
+	}
 	var betas betaSet
+	if thread != nil {
+		betas.add(BetaHeaderMessageThreads)
+	}
 	betas.add(promptInfo.Betas...)
 
 	// Resolve thinking / effort.
@@ -473,8 +528,15 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	}
 
 	body["messages"] = promptInfo.Messages
-	if promptInfo.System != nil {
+	if promptInfo.System != nil && (thread == nil || thread.Type != "continue") {
 		body["system"] = promptInfo.System
+	}
+	if thread != nil {
+		if thread.Type == "create" {
+			body["thread"] = map[string]interface{}{"type": "create"}
+		} else {
+			body["thread"] = map[string]interface{}{"type": "continue", "previous_message_id": thread.PreviousMessageID}
+		}
 	}
 
 	if len(o.Safeguards) > 0 {
@@ -659,7 +721,8 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 			return nil, err
 		}
 	}
-	if prepared.tools != nil {
+	// A continuation uses the stored tool definitions (tool_choice stays).
+	if prepared.tools != nil && (thread == nil || thread.Type != "continue") {
 		body["tools"] = prepared.tools
 	}
 	if prepared.toolChoice != nil {
@@ -684,6 +747,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		toolsetNames:             toolsetNames,
 		preparedTools:            prepared.tools,
 		nameTools:                nameTools,
+		thread:                   thread != nil,
 		includePings:             stream && o.IncludePings != nil && *o.IncludePings,
 		providerOptionsName:      m.providerOptionsName(),
 		usedCustomProviderKey:    usedCustomProviderKey,
@@ -886,4 +950,37 @@ func checkInlineToolChoice(opts *provider.GenerateOptions, usesJSONResponseTool 
 			toolName, desc), nil)
 	}
 	return nil
+}
+
+// BetaHeaderMessageThreads is the beta of Anthropic message threads.
+const BetaHeaderMessageThreads = "message-threads-2026-08-12"
+
+// threadIncompatibleContextManagement reports a context edit other than
+// clear_thinking_20251015 with keep "all" (TS 6b101ac076).
+func threadIncompatibleContextManagement(cm *ContextManagement) bool {
+	if cm == nil {
+		return false
+	}
+	for _, edit := range cm.Edits {
+		e, ok := edit.(*ClearThinkingEdit)
+		if !ok || e == nil {
+			return true
+		}
+		if _, keepAll := e.Keep.(*KeepAllThinking); !keepAll {
+			return true
+		}
+	}
+	return false
+}
+
+// tsProviderString is the TS config.provider of this provider, used in
+// error text: Go names the direct and MiniMax providers without the
+// ".messages" suffix TS uses.
+func (m *LanguageModel) tsProviderString() string {
+	switch name := m.provider.Name(); name {
+	case "anthropic", "minimax":
+		return name + ".messages"
+	default:
+		return name
+	}
 }

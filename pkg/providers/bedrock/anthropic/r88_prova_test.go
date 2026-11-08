@@ -39,3 +39,13 @@ func TestR88provaBedrockAnthropicCredentialsSameOriginOnly(t *testing.T) {
 		}
 	}
 }
+
+// TS 6b101ac076: Bedrock Anthropic rejects message threads before a request.
+func TestR88provaBedrockAnthropicRejectsThreads(t *testing.T) {
+	m, _ := New(Config{BaseURL: "http://127.0.0.1:1", Region: "us-east-1", BearerToken: "tok"}).LanguageModel("anthropic.claude-sonnet-4-5-20250929-v1:0")
+	_, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "create"}}}})
+	if err == nil || err.Error() != "bedrock.anthropic.messages does not support Anthropic message threads." {
+		t.Fatalf("err = %v", err)
+	}
+}

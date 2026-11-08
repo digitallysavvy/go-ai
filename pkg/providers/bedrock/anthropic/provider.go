@@ -151,6 +151,7 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 	nativeStructuredOutput := supportsNativeStructuredOutput(modelID)
 	strictTools := supportsStrictTools(modelID)
 	supportsImageInput := true
+	noMessageThreads := false
 
 	inner := anthropicprovider.New(anthropicprovider.Config{
 		Name:                           providerName,
@@ -160,7 +161,9 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 		OmitAPIVersionHeader:           true, // anthropic_version goes in the body, not a header.
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsStrictTools:            &strictTools,
-		SupportsImageInput:             &supportsImageInput,
+		// Not a platform with Anthropic message threads (TS 6b101ac076).
+		SupportsMessageThreads: &noMessageThreads,
+		SupportsImageInput:     &supportsImageInput,
 		// TS amazon-bedrock-anthropic-provider.ts tags requests
 		// "ai-sdk-amazon-bedrock/VERSION" (its own package's tag, shared with
 		// the Converse-API amazon-bedrock provider), not "ai-sdk-anthropic".

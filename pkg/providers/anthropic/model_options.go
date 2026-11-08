@@ -374,6 +374,15 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{SendReasoning: &disabled}
 	SendReasoning *bool `json:"sendReasoning,omitempty"`
 
+	// Thread creates or continues a short-lived server-side message thread
+	// (TS thread; beta message-threads-2026-08-12). On continuation the
+	// prompt must contain only the new messages; the system prompt and tool
+	// definitions stored by the create request are used (the supplied ones
+	// are not sent). Keep the full conversation locally so it can be
+	// replayed when the thread expires (ProviderError.Data carries the
+	// error details, e.g. error_code "thread_not_found").
+	Thread *ThreadOption `json:"thread,omitempty"`
+
 	// IncludePings emits the API's streaming heartbeats as
 	// provider.ChunkTypePing parts (TS includePings). Disabled by default;
 	// it has no effect on non-streaming calls.
@@ -450,4 +459,11 @@ type ContainerConfig struct {
 	ID string `json:"id,omitempty"`
 	// Skills are the capability bundles to load into the container
 	Skills []ContainerSkill `json:"skills,omitempty"`
+}
+
+// ThreadOption is the message thread option: Type "create", or "continue"
+// with the PreviousMessageID of the message to continue from.
+type ThreadOption struct {
+	Type              string `json:"type"`
+	PreviousMessageID string `json:"previousMessageId,omitempty"`
 }

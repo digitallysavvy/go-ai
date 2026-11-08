@@ -3384,13 +3384,22 @@ func anthropicHTTPError(providerName string, status int, headers http.Header, bo
 	var parsed struct {
 		Type  *string `json:"type"`
 		Error *struct {
-			Type    *string `json:"type"`
-			Message *string `json:"message"`
+			Type    *string         `json:"type"`
+			Message *string         `json:"message"`
+			Details json.RawMessage `json:"details"`
 		} `json:"error"`
 	}
 	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && parsed.Type != nil && *parsed.Type == "error" &&
 		parsed.Error != nil && parsed.Error.Type != nil && parsed.Error.Message != nil {
 		perr = providererrors.NewProviderError(providerName, status, *parsed.Error.Type, *parsed.Error.Message, cause)
+		// TS APICallError.data is the parsed error object (zod strips
+		// unknown keys); details keeps error_code / unsupported only when
+		// well typed (.catch(undefined)), the recovery hook for threads.
+		errObj := map[string]interface{}{"type": *parsed.Error.Type, "message": *parsed.Error.Message}
+		if details, ok := anthropicErrorDetails(parsed.Error.Details); ok {
+			errObj["details"] = details
+		}
+		perr.Data = map[string]interface{}{"type": "error", "error": errObj}
 	} else {
 		// TS createJsonErrorResponseHandler: an empty or unparseable body gives
 		// the response status text (the body stays on ResponseBody).
@@ -3451,4 +3460,43 @@ func firstServiceTier(usage map[string]interface{}, fallback *string) *string {
 		return &v
 	}
 	return fallback
+}
+
+// anthropicErrorDetails ports the anthropicErrorDataSchema details field:
+// `{error_code?: string | null, unsupported?: string[] | null}`, nullish,
+// each part `.catch(undefined)`. ok is false when details is absent or
+// malformed (dropped).
+func anthropicErrorDetails(raw json.RawMessage) (interface{}, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	if string(raw) == "null" {
+		return nil, true
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return nil, false
+	}
+	out := map[string]interface{}{}
+	if v, ok := obj["error_code"]; ok {
+		var code *string
+		if json.Unmarshal(v, &code) == nil {
+			if code == nil {
+				out["error_code"] = nil
+			} else {
+				out["error_code"] = *code
+			}
+		}
+	}
+	if v, ok := obj["unsupported"]; ok {
+		var list *[]string
+		if json.Unmarshal(v, &list) == nil {
+			if list == nil {
+				out["unsupported"] = nil
+			} else {
+				out["unsupported"] = *list
+			}
+		}
+	}
+	return out, true
 }

@@ -106,6 +106,12 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		if err != nil {
 			return nil, err
 		}
+		if prepared.thread {
+			return nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: "message threads in batches",
+				Message:       fmt.Sprintf("Anthropic Message Batches do not support message threads (request \"%s\").", textReq.ID),
+			}
+		}
 		if prepared.usesJSONResponseTool {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: "batch responseFormat JSON-tool fallback",

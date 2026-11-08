@@ -123,6 +123,14 @@ func NewAnthropicCacheControlValidatorFor(providerOptionsName string) *Anthropic
 	return &AnthropicCacheControlValidator{providerOptionsName: providerOptionsName}
 }
 
+// NewAnthropicCacheControlValidatorWithBreakpoints is
+// NewAnthropicCacheControlValidatorFor with initialBreakpointCount
+// breakpoints already used (TS CacheControlValidator initialBreakpointCount;
+// a message thread with top-level cacheControl uses one).
+func NewAnthropicCacheControlValidatorWithBreakpoints(providerOptionsName string, initialBreakpointCount int) *AnthropicCacheControlValidator {
+	return &AnthropicCacheControlValidator{providerOptionsName: providerOptionsName, breakpointCount: initialBreakpointCount}
+}
+
 // GetCacheControl returns the cache_control value from the anthropic provider
 // options (accepting both cacheControl and cache_control), or nil.
 func (v *AnthropicCacheControlValidator) GetCacheControl(providerOptions map[string]interface{}, contextType string, canCache bool) interface{} {

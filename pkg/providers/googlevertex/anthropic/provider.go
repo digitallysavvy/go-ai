@@ -80,6 +80,7 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 
 	nativeStructuredOutput := false
 	supportsImageInput := true
+	noMessageThreads := false
 	supportsStrictTools := false
 	anthropicProvider := anthropicprovider.New(anthropicprovider.Config{
 		Name:                           DefaultProviderName,
@@ -89,6 +90,8 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsImageInput:             &supportsImageInput,
 		SupportsStrictTools:            &supportsStrictTools,
+		// Not a platform with Anthropic message threads (TS 6b101ac076).
+		SupportsMessageThreads: &noMessageThreads,
 		// TS google-vertex-anthropic-provider.ts builds AnthropicLanguageModel
 		// directly rather than through createAnthropic, so it never gets
 		// @ai-sdk/anthropic's own "ai-sdk-anthropic/VERSION" tag. Only the

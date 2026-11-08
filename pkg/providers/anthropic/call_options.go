@@ -250,6 +250,19 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 	if o.ServiceTier != "" && o.ServiceTier != "auto" && o.ServiceTier != "standard_only" && o.ServiceTier != "standard" && o.ServiceTier != "priority" {
 		return fmt.Errorf("serviceTier: invalid value %q", o.ServiceTier)
 	}
+	if th := o.Thread; th != nil {
+		switch th.Type {
+		case "create":
+			// zod strips previousMessageId from the create shape.
+			th.PreviousMessageID = ""
+		case "continue":
+			if th.PreviousMessageID == "" {
+				return fmt.Errorf("thread.previousMessageId: too small: expected string to have >=1 characters")
+			}
+		default:
+			return fmt.Errorf("thread.type: invalid value %q, expected \"create\" or \"continue\"", th.Type)
+		}
+	}
 	if o.InferenceGeo != "" && o.InferenceGeo != "us" && o.InferenceGeo != "global" {
 		return fmt.Errorf("inferenceGeo: invalid value %q", o.InferenceGeo)
 	}
@@ -394,6 +407,9 @@ func applyModelOptionsOverlay(dst *ModelOptions, overlay *ModelOptions) {
 	}
 	if overlay.SendReasoning != nil {
 		dst.SendReasoning = overlay.SendReasoning
+	}
+	if overlay.Thread != nil {
+		dst.Thread = overlay.Thread
 	}
 	if overlay.IncludePings != nil {
 		dst.IncludePings = overlay.IncludePings

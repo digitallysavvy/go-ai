@@ -61,3 +61,14 @@ func (r *r88provaRecordingRT) RoundTrip(req *http.Request) (*http.Response, erro
 	r.header = req.Header.Clone()
 	return &http.Response{StatusCode: 200, Body: http.NoBody, Request: req}, nil
 }
+
+// TS 6b101ac076: Vertex Anthropic rejects message threads before a request.
+func TestR88provaVertexAnthropicRejectsThreads(t *testing.T) {
+	p := New(Options{BaseURL: "http://127.0.0.1:1", AuthToken: func(context.Context) (string, error) { return "tok", nil }})
+	m, _ := p.LanguageModel("claude-sonnet-4-6")
+	_, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "create"}}}})
+	if err == nil || err.Error() != "googleVertex.anthropic.messages does not support Anthropic message threads." {
+		t.Fatalf("err = %v", err)
+	}
+}

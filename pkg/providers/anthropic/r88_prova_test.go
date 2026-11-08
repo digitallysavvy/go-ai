@@ -1114,3 +1114,314 @@ func TestR88provaInlineToolsByValue(t *testing.T) {
 		t.Fatalf("no converter: %v", err)
 	}
 }
+
+// r88provaThreadCall runs a call against a text response and returns the
+// request body, the anthropic-beta header, the warnings and the error.
+func r88provaThreadCall(t *testing.T, method string, m provider.LanguageModel, s *r88provaServer, opts *provider.GenerateOptions) (map[string]interface{}, string, []types.Warning, error) {
+	t.Helper()
+	var warnings []types.Warning
+	var err error
+	if method == "generate" {
+		var res *types.GenerateResult
+		res, err = m.DoGenerate(context.Background(), opts)
+		if res != nil {
+			warnings = res.Warnings
+		}
+	} else {
+		var stream provider.TextStream
+		stream, err = m.DoStream(context.Background(), opts)
+		if err == nil {
+			var parts []*provider.StreamChunk
+			parts, err = r88provaDrain(stream)
+			for _, p := range parts {
+				if p.Type == provider.ChunkTypeStreamStart {
+					warnings = p.Warnings
+				}
+			}
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.bodies) == 0 {
+		return nil, "", warnings, err
+	}
+	n := len(s.bodies) - 1
+	return s.bodies[n], s.headers[n].Get("anthropic-beta"), warnings, err
+}
+
+func r88provaThreadOptions(po map[string]interface{}) *provider.GenerateOptions {
+	return &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "Be concise."}}},
+			r88provaUserHello(),
+		}},
+		Tools:           []types.Tool{{Name: "weather", Parameters: map[string]interface{}{"type": "object"}}},
+		ProviderOptions: map[string]interface{}{"anthropic": po},
+	}
+}
+
+func r88provaHasWarning(ws []types.Warning, substr string) bool {
+	for _, w := range ws {
+		if strings.Contains(w.Details, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// TS 6b101ac076 anthropic-message-threads.test.ts.
+func TestR88provaMessageThreads(t *testing.T) {
+	for _, method := range []string{"generate", "stream"} {
+		s := r88provaNewServer(t, r88provaTextResponse, r88provaTextEvents)
+		m := r88provaModel(t, s, "claude-sonnet-4-6")
+		call := func(opts *provider.GenerateOptions) (map[string]interface{}, string, []types.Warning, error) {
+			return r88provaThreadCall(t, method, m, s, opts)
+		}
+		// creates a thread with system and tools and merges beta headers
+		opts := r88provaThreadOptions(map[string]interface{}{"thread": map[string]interface{}{"type": "create"}})
+		opts.Headers = map[string]string{"anthropic-beta": "custom-beta"}
+		body, beta, _, err := call(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r88provaJSON(body["thread"]) != `{"type":"create"}` || r88provaJSON(body["system"]) != `[{"text":"Be concise.","type":"text"}]` || r88provaToolNames(body)[0] != "weather" {
+			t.Fatalf("create body = %v", body)
+		}
+		if !strings.HasPrefix(beta, "message-threads-2026-08-12,") || !strings.Contains(beta, "custom-beta") {
+			t.Fatalf("create beta = %s", beta)
+		}
+
+		// continues with only supplied messages, omitting system and tools
+		opts = r88provaThreadOptions(map[string]interface{}{"thread": map[string]interface{}{"type": "continue", "previousMessageId": "msg_previous"}, "cacheControl": map[string]interface{}{"type": "ephemeral"}})
+		opts.ToolChoice = types.ToolChoice{Type: types.ToolChoiceAuto}
+		body, _, warnings, err := call(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, hasSystem := body["system"]
+		_, hasTools := body["tools"]
+		if r88provaJSON(body["thread"]) != `{"previous_message_id":"msg_previous","type":"continue"}` || hasSystem || hasTools ||
+			r88provaJSON(body["messages"]) != `[{"content":[{"text":"Hello","type":"text"}],"role":"user"}]` ||
+			r88provaJSON(body["tool_choice"]) != `{"type":"auto"}` || r88provaJSON(body["cache_control"]) != `{"type":"ephemeral"}` {
+			t.Fatalf("continue body = %v", body)
+		}
+		// warns rather than silently dropping new leading system instructions
+		if !r88provaHasWarning(warnings, "To change system instructions or tools, start a new thread") {
+			t.Fatalf("continue warnings = %v", warnings)
+		}
+
+		// keeps pinned PDF beta headers across a text-only continuation
+		pdf := &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{Data: []byte{1}, MediaType: "application/pdf"},
+		}}}}, ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "create"}, "anthropicBeta": []interface{}{"pdfs-2024-09-25"}}}}
+		_, beta1, warnings, err := call(pdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("pinned warnings = %v", warnings)
+		}
+		_, beta2, _, err := call(&provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{r88provaUserHello()}},
+			ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "continue", "previousMessageId": "msg_pdf"}, "anthropicBeta": []interface{}{"pdfs-2024-09-25"}}}})
+		if err != nil || beta1 != beta2 {
+			t.Fatalf("pinned betas %q vs %q (%v)", beta1, beta2, err)
+		}
+		// warns when message content enables an unpinned beta
+		delete(pdf.ProviderOptions["anthropic"].(map[string]interface{}), "anthropicBeta")
+		_, _, warnings, err = call(pdf)
+		if err != nil || !r88provaHasWarning(warnings, "Message content enabled beta headers: pdfs-2024-09-25. Thread requests require the same beta set on every turn.") {
+			t.Fatalf("unpinned warnings = %v (%v)", warnings, err)
+		}
+
+		// retains JSON-tool choice while omitting its synthetic definition
+		body, _, _, err = call(&provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{r88provaUserHello()}},
+			ResponseFormat:  &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}},
+			ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"structuredOutputMode": "jsonTool", "thread": map[string]interface{}{"type": "continue", "previousMessageId": "msg_json"}}}})
+		if _, ok := body["tools"]; err != nil || ok || body["tool_choice"].(map[string]interface{})["type"] != "any" {
+			t.Fatalf("json tool body = %v (%v)", body, err)
+		}
+
+		// counts top-level cache control toward the four-breakpoint limit
+		var parts []types.ContentPart
+		for i := 0; i < 4; i++ {
+			parts = append(parts, types.TextContent{Text: "Block", ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}}})
+		}
+		body, _, warnings, err = call(&provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: parts}}},
+			ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "create"}, "cacheControl": map[string]interface{}{"type": "ephemeral"}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cached := 0
+		for _, p := range body["messages"].([]interface{})[0].(map[string]interface{})["content"].([]interface{}) {
+			if p.(map[string]interface{})["cache_control"] != nil {
+				cached++
+			}
+		}
+		limit := false
+		for _, w := range warnings {
+			limit = limit || w.Feature == "cacheControl breakpoint limit"
+		}
+		if cached != 3 || !limit {
+			t.Fatalf("cached = %d, warnings = %v", cached, warnings)
+		}
+
+		// allows empty continuation messages for pause_turn
+		body, _, _, err = call(&provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{}},
+			ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "continue", "previousMessageId": "msg_paused"}}}})
+		if err != nil || r88provaJSON(body["messages"]) != "[]" {
+			t.Fatalf("empty continuation: %v (%v)", body["messages"], err)
+		}
+
+		// leaves requests unchanged when threads are not enabled
+		body, beta, _, err = call(r88provaThreadOptions(nil))
+		if _, ok := body["thread"]; err != nil || ok || strings.Contains(beta, "message-threads") {
+			t.Fatalf("no thread: %v %s", body["thread"], beta)
+		}
+
+		// allows keeping all thinking blocks
+		body, _, _, err = call(r88provaThreadOptions(map[string]interface{}{"thread": map[string]interface{}{"type": "create"},
+			"contextManagement": map[string]interface{}{"edits": []interface{}{map[string]interface{}{"type": "clear_thinking_20251015", "keep": "all"}}}}))
+		if err != nil || r88provaJSON(body["context_management"]) != `{"edits":[{"keep":"all","type":"clear_thinking_20251015"}]}` {
+			t.Fatalf("keep all: %v (%v)", body["context_management"], err)
+		}
+	}
+
+	for _, method := range []string{"generate", "stream"} {
+		// rejects unsupported context management
+		for _, incompatible := range []map[string]interface{}{
+			{"compaction": map[string]interface{}{"type": "summarize"}},
+			{"contextManagement": map[string]interface{}{"edits": []interface{}{map[string]interface{}{"type": "clear_tool_uses_20250919"}}}},
+			{"contextManagement": map[string]interface{}{"edits": []interface{}{map[string]interface{}{"type": "clear_thinking_20251015"}}}},
+			{"contextManagement": map[string]interface{}{"edits": []interface{}{map[string]interface{}{"type": "compact_20260112"}}}},
+		} {
+			s := r88provaNewServer(t, r88provaTextResponse, r88provaTextEvents)
+			po := map[string]interface{}{"thread": map[string]interface{}{"type": "create"}}
+			for k, v := range incompatible {
+				po[k] = v
+			}
+			body, _, _, err := r88provaThreadCall(t, method, r88provaModel(t, s, "claude-sonnet-4-6"), s, r88provaThreadOptions(po))
+			if err == nil || !strings.Contains(err.Error(), "message threads do not support") || body != nil {
+				t.Fatalf("%v: %v", incompatible, err)
+			}
+		}
+		// rejects invalid thread options
+		for _, thread := range []map[string]interface{}{{"type": "continue"}, {"type": "continue", "previousMessageId": ""}, {"type": "invalid"}} {
+			s := r88provaNewServer(t, r88provaTextResponse, r88provaTextEvents)
+			body, _, _, err := r88provaThreadCall(t, method, r88provaModel(t, s, "claude-sonnet-4-6"), s, r88provaThreadOptions(map[string]interface{}{"thread": thread}))
+			if err == nil || body != nil {
+				t.Fatalf("%v accepted", thread)
+			}
+		}
+		// supports a custom provider-options namespace
+		s := r88provaNewServer(t, r88provaTextResponse, r88provaTextEvents)
+		m, _ := New(Config{APIKey: "k", BaseURL: s.srv.URL, Name: "custom.messages"}).LanguageModel("claude-sonnet-4-6")
+		body, _, _, err := r88provaThreadCall(t, method, m, s, &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{r88provaUserHello()}},
+			ProviderOptions: map[string]interface{}{"custom": map[string]interface{}{"thread": map[string]interface{}{"type": "continue", "previousMessageId": "msg_custom"}}}})
+		if err != nil || r88provaJSON(body["thread"]) != `{"previous_message_id":"msg_custom","type":"continue"}` {
+			t.Fatalf("custom namespace: %v (%v)", body["thread"], err)
+		}
+		// unsupported thread platforms
+		for _, name := range []string{"bedrock.anthropic.messages", "googleVertex.anthropic.messages", "minimax"} {
+			no := false
+			s := r88provaNewServer(t, r88provaTextResponse, r88provaTextEvents)
+			m, _ := New(Config{APIKey: "k", BaseURL: s.srv.URL, Name: name, SupportsMessageThreads: &no}).LanguageModel("claude-sonnet-4-6")
+			body, _, _, err := r88provaThreadCall(t, method, m, s, r88provaThreadOptions(map[string]interface{}{"thread": map[string]interface{}{"type": "create"}}))
+			var uf *providererrors.UnsupportedFunctionalityError
+			want := name + " does not support Anthropic message threads."
+			if name == "minimax" {
+				want = "minimax.messages does not support Anthropic message threads."
+			}
+			if !errors.As(err, &uf) || uf.Error() != want || body != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+	}
+}
+
+// TS 6b101ac076 'thread errors': the parsed error object (with details)
+// is the ProviderError data; anthropic-error.test.ts details shapes.
+func TestR88provaThreadErrorData(t *testing.T) {
+	for _, tc := range []struct{ details, want string }{
+		{`{"error_code":"thread_not_found"}`, `{"error":{"details":{"error_code":"thread_not_found"},"message":"Thread not found","type":"not_found_error"},"type":"error"}`},
+		{`{"error_code":"thread_not_found","unsupported":[{"future":true}]}`, `{"error":{"details":{"error_code":"thread_not_found"},"message":"Thread not found","type":"not_found_error"},"type":"error"}`},
+		{`{"error_code":"thread_not_found","unknown_field":"future"}`, `{"error":{"details":{"error_code":"thread_not_found"},"message":"Thread not found","type":"not_found_error"},"type":"error"}`},
+		{`"future details shape"`, `{"error":{"message":"Thread not found","type":"not_found_error"},"type":"error"}`},
+		{`null`, `{"error":{"details":null,"message":"Thread not found","type":"not_found_error"},"type":"error"}`},
+		{`{"unsupported":["a"],"error_code":null}`, `{"error":{"details":{"error_code":null,"unsupported":["a"]},"message":"Thread not found","type":"not_found_error"},"type":"error"}`},
+	} {
+		for _, method := range []string{"generate", "stream"} {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(404)
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"not_found_error","message":"Thread not found","details":`+tc.details+`},"extra":1}`)
+			}))
+			m, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("claude-sonnet-4-6")
+			opts := r88provaThreadOptions(map[string]interface{}{"thread": map[string]interface{}{"type": "continue", "previousMessageId": "msg_expired"}})
+			var err error
+			if method == "generate" {
+				_, err = m.DoGenerate(context.Background(), opts)
+			} else {
+				_, err = m.DoStream(context.Background(), opts)
+			}
+			srv.Close()
+			var pe *providererrors.ProviderError
+			if !errors.As(err, &pe) || pe.StatusCode != 404 || pe.Message != "Thread not found" {
+				t.Fatalf("%s: err = %v", method, err)
+			}
+			if got := r88provaJSON(pe.Data); got != tc.want {
+				t.Fatalf("%s %s: data = %s", method, tc.details, got)
+			}
+		}
+	}
+}
+
+// TS 6b101ac076 anthropic-batch.test.ts: batches reject message threads
+// before any request.
+func TestR88provaBatchRejectsThreads(t *testing.T) {
+	s := r88provaNewServer(t, "{}", nil)
+	req := textBatchRequest("thread-request", ClaudeSonnet4_5, "Hello")
+	req.Text.Options.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "create"}}}
+	_, err := New(Config{APIKey: "k", BaseURL: s.srv.URL}).ExperimentalBatch().DoStartBatch(t.Context(), provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{req}})
+	var uf *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &uf) || uf.Error() != `Anthropic Message Batches do not support message threads (request "thread-request").` || len(s.bodies) != 0 {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS 6b101ac076 / a161c0a665: on a continuation the prepared tools still
+// drive implicit code execution, custom tool names and toolset checks,
+// although tools is not sent.
+func TestR88provaThreadContinuationKeepsPreparedTools(t *testing.T) {
+	cont := map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "continue", "previousMessageId": "msg_previous"}}}
+	m, _ := New(Config{APIKey: "k"}).LanguageModel("claude-sonnet-4-6")
+	req, err := m.(*LanguageModel).prepareRequest(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Messages: []types.Message{r88provaUserHello()}},
+		Tools:           []types.Tool{{Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.web_search_20260209", Name: "research", ProviderArgs: map[string]interface{}{}}},
+		ProviderOptions: cont,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := req.body["tools"]; ok || !req.markCodeExecutionDynamic || len(req.preparedTools) != 1 {
+		t.Fatalf("tools sent %v, dynamic %v, prepared %v", req.body["tools"], req.markCodeExecutionDynamic, req.preparedTools)
+	}
+	for _, streaming := range []bool{false, true} {
+		desktop := r88provaToolset(nil)
+		desktop.Name = "desktop"
+		s := r88provaMemberResponse(t, "screenshot", "computer", nil, nil)
+		calls, _, err := r88provaCall(t, s, streaming, &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Tools: []types.Tool{desktop}, ProviderOptions: cont})
+		if err != nil || len(calls) != 1 || calls[0].ToolName != "desktop" || calls[0].RawArguments != `{"action":"screenshot"}` {
+			t.Fatalf("streaming %v: %v %v", streaming, calls, err)
+		}
+		if _, ok := s.body(0)["tools"]; ok {
+			t.Fatal("tools sent on continuation")
+		}
+		s = r88provaMemberResponse(t, "screenshot", "computer", nil, nil)
+		_, _, err = r88provaCall(t, s, streaming, &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ProviderOptions: cont,
+			Tools: []types.Tool{r88provaToolset(map[tools.ComputerToolset20260801Member]tools.ComputerToolset20260801MemberConfig{tools.ComputerToolsetScreenshot: {Enabled: r88provaBool(false)}})}})
+		var ire *providererrors.InvalidResponseDataError
+		if !errors.As(err, &ire) {
+			t.Fatalf("disabled member on continuation: %v", err)
+		}
+	}
+}
