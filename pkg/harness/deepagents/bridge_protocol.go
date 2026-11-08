@@ -59,10 +59,15 @@ type StartMessage struct {
 	Effort       string          `json:"effort,omitempty"`
 	// SkillsPaths are the in-backend skills source dirs ($HOME and
 	// <workDir>), passed to createDeepAgent({ skills }).
-	SkillsPaths    []string          `json:"skillsPaths,omitempty"`
-	SkillsChanged  bool              `json:"skillsChanged,omitempty"`
-	RecursionLimit *int              `json:"recursionLimit,omitempty"`
-	Headers        map[string]string `json:"headers,omitempty"`
+	SkillsPaths   []string `json:"skillsPaths,omitempty"`
+	SkillsChanged bool     `json:"skillsChanged,omitempty"`
+	// ReadableSkillRoots are the active skills' directories
+	// ($HOME/.agents/skills/<name>), which the bridge trusts for reads under
+	// allow-reads / allow-edits. Sent only when the turn has skills (TS
+	// bb8aa09ec8).
+	ReadableSkillRoots []string          `json:"readableSkillRoots,omitempty"`
+	RecursionLimit     *int              `json:"recursionLimit,omitempty"`
+	Headers            map[string]string `json:"headers,omitempty"`
 
 	// PromptContent carries text plus inline images. When nil the prompt is
 	// the plain string StartBase.Prompt. Mirrors TS `harnessPromptContentSchema`.

@@ -65,3 +65,41 @@ func TestR88toolsDeepAgentsDeleteBuiltin(t *testing.T) {
 		t.Fatalf("schema = %#v", schema)
 	}
 }
+
+// TS bb8aa09ec8 "forwards individual active skill directories as readable
+// roots"; without skills the key is absent.
+func TestR88toolsDeepAgentsReadableSkillRoots(t *testing.T) {
+	for _, skills := range [][]harness.Skill{
+		{{Name: "demo", Description: "Demo skill.", Content: "Read reference.md."}},
+		nil,
+	} {
+		const token = "r88-skill-token"
+		starts := make(chan map[string]any, 1)
+		srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {
+			starts <- start
+			turn.Emit(map[string]any{"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+				"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}}})
+		})
+		sess, err := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }}).DoStart(context.Background(), harness.StartOptions{
+			SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/deepagents-test-session", SandboxSession: newFakeSandbox(srv),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+			TurnSettings: harness.TurnSettings{Skills: skills}, Prompt: harness.TextPrompt("Use demo."), Emit: func(harness.StreamPart) {},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		start := <-starts
+		roots, present := start["readableSkillRoots"]
+		if skills == nil {
+			if present {
+				t.Fatalf("readableSkillRoots sent without skills: %v", roots)
+			}
+		} else if list, _ := roots.([]any); len(list) != 1 || list[0] != "/home/vercel-sandbox/.agents/skills/demo" {
+			t.Fatalf("readableSkillRoots = %#v", roots)
+		}
+		_ = sess.DoDestroy(context.Background())
+	}
+}

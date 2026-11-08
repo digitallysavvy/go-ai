@@ -226,6 +226,10 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		SkillsPaths: s.p.skillsPaths, SkillsChanged: skillResult.Changed,
 		RecursionLimit: s.p.recursionLimit, MCPServers: s.p.mcpServers, Headers: s.p.headers,
 	}
+	// TS builds each root without path cleaning.
+	for _, skill := range opts.Skills {
+		msg.ReadableSkillRoots = append(msg.ReadableSkillRoots, s.p.homeDir+"/.agents/skills/"+skill.Name)
+	}
 	if !content.IsText() {
 		msg.PromptContent = &content
 	}
