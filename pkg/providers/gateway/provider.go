@@ -188,6 +188,14 @@ type Config struct {
 
 	// APIKey is the AI Gateway API key
 	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
+	//
+	// If neither APIKey nor AI_GATEWAY_API_KEY is a non-empty value, the
+	// provider authenticates with the Vercel OIDC token instead, resolved for
+	// each request (OIDCTokenFunc, else VERCEL_OIDC_TOKEN). On Vercel
+	// deployments this needs no configuration; locally, run `vercel env pull`
+	// or `vercel dev`. A non-empty configured key is always used instead of
+	// OIDC, even if it is invalid. With no OIDC token either, requests fail
+	// with a GatewayAuthenticationError ("No authentication provided").
 	APIKey string
 
 	// APIKeyFunc resolves the API key or Vercel access token before each
