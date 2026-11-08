@@ -21,7 +21,7 @@ func TestOAuthPRMDiscoveryRejectsRedirectToPrivateAddress(t *testing.T) {
 	var calls int
 	client := oauthTestClient(func(req *http.Request) (*http.Response, error) {
 		calls++
-		return redirectResponse("http://169.254.169.254/latest/meta-data"), nil
+		return redirectResponse("https://169.254.169.254/latest/meta-data"), nil
 	})
 	_, err := DiscoverOAuthProtectedResourceMetadata(context.Background(), "https://resource.example.com/mcp", OAuthDiscoveryOptions{HTTPClient: client})
 	if err == nil || !strings.Contains(err.Error(), "169.254.169.254") {
@@ -94,7 +94,7 @@ func TestOAuthASDiscoveryRejectsRedirectToPrivateAddress(t *testing.T) {
 	var calls int
 	client := oauthTestClient(func(req *http.Request) (*http.Response, error) {
 		calls++
-		return redirectResponse("http://127.0.0.1:4000/.well-known/openid-configuration"), nil
+		return redirectResponse("https://127.0.0.1:4000/.well-known/openid-configuration"), nil
 	})
 	_, err := DiscoverAuthorizationServerMetadata(context.Background(), "https://auth.example.com", OAuthDiscoveryOptions{HTTPClient: client})
 	if err == nil || !strings.Contains(err.Error(), "127.0.0.1") {

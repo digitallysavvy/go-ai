@@ -1,6 +1,6 @@
 // Package grokbuild is the Go port of the TypeScript
 // `@ai-sdk/harness-grok-build` package (pinned to
-// ai@7.0.162, TS 3fab50aa9b).
+// ai@7.0.165, TS 0f3a85f92d).
 //
 // Like pkg/harness/cursor, Grok Build is an "ACP-derived" adapter: TS
 // `createGrokBuild()` is a thin configuration layer over `createACP()`
@@ -29,7 +29,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-grok-build"
-	ClientAppVersion = "1.0.112" // TS VERSION: the bridge manifest's source version
+	ClientAppVersion = "1.0.115" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "grok-build"
 )
 
@@ -58,9 +58,13 @@ type Settings struct {
 	Port                 *int
 	PortEndpoint         *harness.PortEndpoint
 	StartupTimeoutMS     *int
-	Reconnect            *bridge.ReconnectOptions
-	MCPServers           map[string]any
-	MintBridgeToken      harness.MintBridgeTokenCallback
+	// HostDisconnectTimeoutMS aborts a running turn when its host
+	// disconnects and does not reconnect within this many milliseconds; a
+	// suspended turn is exempt (TS a54f0fd8c6).
+	HostDisconnectTimeoutMS *int
+	Reconnect               *bridge.ReconnectOptions
+	MCPServers              map[string]any
+	MintBridgeToken         harness.MintBridgeTokenCallback
 }
 
 // CreateGrokBuild returns the Grok Build harness-v1 adapter, wiring
@@ -109,11 +113,20 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
+		// Repository-owned Claude / Cursor hooks and MCP servers in the work
+		// dir are not loaded (TS e4a6112776).
+		Env: map[string]string{
+			"GROK_CLAUDE_HOOKS_ENABLED": "false",
+			"GROK_CURSOR_HOOKS_ENABLED": "false",
+			"GROK_CLAUDE_MCPS_ENABLED":  "false",
+			"GROK_CURSOR_MCPS_ENABLED":  "false",
+		},
 		ForwardEnv:             []string{"GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL", "GROK_CLI_CHAT_PROXY_BASE_URL"},
 		CredentialEnv:          []string{"XAI_API_KEY"},
 		CredentialBrokering:    CredentialBrokering,
 		CredentialBrokeringErr: CredentialBrokeringErr,
 		CredentialForwarding:   settings.CredentialForwarding,
+		PrepareSandbox:         PrepareSandbox,
 		ProviderAuthentication: &acp.ProviderAuthentication{
 			GatewayEnv: map[string]any{
 				"GROK_CLIENT_NAME":      map[string]any{"$source": "client-app-name"},
@@ -149,6 +162,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 	}
 	if settings.StartupTimeoutMS != nil {
 		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.HostDisconnectTimeoutMS != nil {
+		cfg.HostDisconnectTimeout = time.Duration(*settings.HostDisconnectTimeoutMS) * time.Millisecond
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect

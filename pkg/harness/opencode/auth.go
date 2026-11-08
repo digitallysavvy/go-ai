@@ -52,7 +52,10 @@ const (
 )
 
 // AuthenticationMode is the adapter `auth` setting. Mirrors TS
-// `OpenCodeAuthenticationMode` = `HarnessV1Authentication<'anthropic'|'openai'>`.
+// `OpenCodeAuthenticationMode` = `HarnessV1Authentication<'direct'|'anthropic'|'openai'>`.
+// "direct" uses the selected provider's own credentials (environment
+// variables, then a native OpenCode subscription) and ignores AI Gateway
+// credentials such as VERCEL_OIDC_TOKEN.
 type AuthenticationMode = harness.Authentication
 
 func isDirectProvider(v string) bool {
@@ -103,7 +106,8 @@ func resolveEnv(auth AuthenticationMode, model, provider string, processEnv map[
 		authEnv = auth.Environment
 	}
 	selected := resolveAuthenticationProvider(auth, model, provider, authEnv)
-	if (selected == AuthOpenAI && auth.Mode == "openai") || (selected == AuthAnthropic && auth.Mode == "anthropic") {
+	if (!auth.IsEnvironment() && auth.Mode == harness.AuthModeDirect) ||
+		(selected == AuthOpenAI && auth.Mode == "openai") || (selected == AuthAnthropic && auth.Mode == "anthropic") {
 		return pickDirectProvider(selected, authEnv)
 	}
 	gateway := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
@@ -122,6 +126,12 @@ func resolveAuthenticationMode(auth AuthenticationMode, model, provider string, 
 		return resolveAuthenticationProvider(auth, model, provider, auth.Environment)
 	}
 	selected := resolveAuthenticationProvider(auth, model, provider, processEnv)
+	// TS a97f49029f: direct uses the selected provider's own credentials
+	// (environment, then a native subscription) and ignores AI Gateway
+	// credentials such as VERCEL_OIDC_TOKEN.
+	if auth.Mode == harness.AuthModeDirect {
+		return selected
+	}
 	if selected == AuthOpenAI && auth.Mode == "openai" {
 		return AuthOpenAI
 	}

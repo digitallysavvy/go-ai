@@ -1,6 +1,6 @@
 // Package githubcopilot is the Go port of the TypeScript
 // `@ai-sdk/harness-github-copilot` package (pinned to
-// ai@7.0.162, TS 3fab50aa9b).
+// ai@7.0.165, TS 0f3a85f92d).
 //
 // Like pkg/harness/cursor, GitHub Copilot is an "ACP-derived" adapter: TS
 // `createGitHubCopilot()` is a thin configuration layer over `createACP()`
@@ -31,7 +31,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-github-copilot"
-	ClientAppVersion = "1.0.70" // TS VERSION: the bridge manifest's source version
+	ClientAppVersion = "1.0.73" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "github-copilot"
 
 	githubOAuthTokenBodyLength         = 36
@@ -72,8 +72,12 @@ type Settings struct {
 	Port                 *int
 	PortEndpoint         *harness.PortEndpoint
 	StartupTimeoutMS     *int
-	Reconnect            *bridge.ReconnectOptions
-	MintBridgeToken      harness.MintBridgeTokenCallback
+	// HostDisconnectTimeoutMS aborts a running turn when its host
+	// disconnects and does not reconnect within this many milliseconds; a
+	// suspended turn is exempt (TS a54f0fd8c6).
+	HostDisconnectTimeoutMS *int
+	Reconnect               *bridge.ReconnectOptions
+	MintBridgeToken         harness.MintBridgeTokenCallback
 }
 
 // GatewayModel is the AI Gateway model the Copilot CLI runs with in BYOK mode
@@ -111,6 +115,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		mcpToolTitlePrefixes = append(mcpToolTitlePrefixes, name+"-")
 	}
 
+	// GitHub Copilot CLI does not expose an option to disable project-level
+	// configuration. This ACP integration cannot isolate repository-owned
+	// configuration, so working directory contents must be trusted.
 	args := []string{"--acp", "--stdio", "--no-auto-update"}
 	if settings.ReasoningEffort != "" {
 		args = append(args, "--reasoning-effort="+string(settings.ReasoningEffort))
@@ -179,6 +186,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 	}
 	if settings.StartupTimeoutMS != nil {
 		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.HostDisconnectTimeoutMS != nil {
+		cfg.HostDisconnectTimeout = time.Duration(*settings.HostDisconnectTimeoutMS) * time.Millisecond
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect

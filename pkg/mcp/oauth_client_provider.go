@@ -208,7 +208,8 @@ type OAuthStateProvider interface {
 
 // OAuthResourceURLValidator lets an application override RFC 8707 resource
 // parameter selection (TS OAuthClientProvider.validateResourceURL). Returning
-// ("", nil) omits the resource parameter.
+// ("", nil) selects the default resource (the canonical server URL with the
+// fragment removed); the resource parameter is always sent.
 type OAuthResourceURLValidator interface {
 	ValidateResourceURL(ctx context.Context, defaultResource string, resourceMetadataResource string) (string, error)
 }

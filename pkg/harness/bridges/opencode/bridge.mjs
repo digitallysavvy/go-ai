@@ -1,4 +1,4 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import { existsSync, globSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
@@ -137,6 +137,12 @@ const WS_OPEN = 1;
 async function runBridge(options) {
 	const { bridgeType, bridgeStateDir, onStart, onStop, onDestroy } = options;
 	const teardownGraceMs = options.turnTeardownGraceMs ?? 1e4;
+	const hostDisconnectTimeoutMs = options.hostDisconnectTimeoutMs != null && Number.isFinite(options.hostDisconnectTimeoutMs) && options.hostDisconnectTimeoutMs > 0 ? Math.min(options.hostDisconnectTimeoutMs, 2147483647) : void 0;
+	let hostDisconnectTimer;
+	const clearHostDisconnectTimer = () => {
+		clearTimeout(hostDisconnectTimer);
+		hostDisconnectTimer = void 0;
+	};
 	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
@@ -324,6 +330,7 @@ async function runBridge(options) {
 				const thisTurn = new Promise((resolve) => turnFinished = resolve);
 				activeTurn = thisTurn;
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				const firstTurn = isFirstTurn;
 				isFirstTurn = false;
 				eventLog = [];
@@ -390,6 +397,7 @@ async function runBridge(options) {
 						activeTurn = void 0;
 						currentTurnState = "waiting";
 						writeBridgeMeta("waiting");
+						clearHostDisconnectTimer();
 					}
 					turnFinished();
 				}
@@ -456,6 +464,7 @@ async function runBridge(options) {
 				return;
 			case "resume":
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				replay(ws, msg.lastSeenEventId);
 				return;
 			case "destroy":
@@ -543,8 +552,18 @@ async function runBridge(options) {
 			}
 			handleInbound(parsed, ws);
 		});
-		ws.on("close", () => {
-			if (activeSocket === ws) activeSocket = void 0;
+		ws.on("close", (_code, reason) => {
+			if (activeSocket === ws) {
+				activeSocket = void 0;
+				if (hostDisconnectTimeoutMs != null && activeTurn != null && reason.toString() !== "suspended") {
+					clearHostDisconnectTimer();
+					hostDisconnectTimer = setTimeout(() => {
+						hostDisconnectTimer = void 0;
+						if (activeSocket == null) turnAbort?.abort();
+					}, hostDisconnectTimeoutMs);
+					hostDisconnectTimer.unref?.();
+				}
+			}
 		});
 		ws.on("error", () => {});
 	});
@@ -1833,6 +1852,94 @@ function toOpenCodePromptParts(prompt) {
 	});
 }
 //#endregion
+//#region src/bridge/permission-paths.ts
+async function areOpenCodePermissionPathsTrusted(options) {
+	const args = options.toolCall?.input;
+	const nativeName = options.toolCall?.nativeName;
+	const access = ["edit", "write"].includes(options.action) || [
+		"write",
+		"edit",
+		"apply_patch"
+	].includes(nativeName ?? "") ? "write" : "read";
+	let targets;
+	if (Array.isArray(options.metadata?.files)) {
+		if (options.metadata.files.length === 0) return false;
+		targets = options.metadata.files.flatMap((value) => {
+			if (value == null || typeof value !== "object") return [void 0];
+			const file = value;
+			return file.type === "move" || file.movePath != null ? [file.filePath, file.movePath] : [file.filePath];
+		});
+	} else if (args && [
+		"read",
+		"view",
+		"write",
+		"edit"
+	].includes(nativeName ?? "")) targets = [args.filePath];
+	else if (args && [
+		"glob",
+		"grep",
+		"list",
+		"ls"
+	].includes(nativeName ?? "")) targets = [args.path ?? options.workDir];
+	else if (typeof options.metadata?.filepath === "string" && options.action !== "edit") targets = [options.metadata.filepath];
+	else if (options.action === "edit" && typeof options.metadata?.filepath === "string" && path.posix.isAbsolute(options.metadata.filepath)) targets = [options.metadata.filepath];
+	else if (options.action === "read" && options.resources.length > 0 && options.resources.every((value) => path.posix.isAbsolute(value))) targets = options.resources;
+	else return false;
+	if (!targets.every((value) => typeof value === "string")) return false;
+	return areFileToolPathsTrusted({
+		workDir: options.workDir,
+		cwd: options.workDir,
+		paths: targets,
+		access,
+		readableSkillRoots: options.readableSkillRoots
+	});
+}
+async function areFileToolPathsTrusted(options) {
+	if (options.paths.length === 0) return false;
+	try {
+		const roots = [await realpath(options.workDir)];
+		if (options.access === "read") for (const root of options.readableSkillRoots) try {
+			roots.push(await realpath(root));
+		} catch {
+			continue;
+		}
+		for (const filePath of options.paths) {
+			if (typeof filePath !== "string" || filePath.trim().length === 0) return false;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(options.cwd)) return false;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${options.cwd}/${filePath}`;
+			for (const candidatePath of [absolutePath, path.posix.normalize(absolutePath)]) {
+				const candidate = await resolvePermissionPath({ filePath: candidatePath });
+				if (!roots.some((root) => {
+					const relative = path.posix.relative(root, candidate);
+					return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+				})) return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function resolvePermissionPath(options) {
+	let existingPath = options.filePath;
+	const missing = [];
+	for (;;) {
+		let exists = true;
+		try {
+			await lstat(existingPath);
+		} catch (error) {
+			if (error == null || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+			exists = false;
+		}
+		if (exists) return path.posix.join(await realpath(existingPath), ...missing);
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === "." || segment === "..") throw new Error("Unable to resolve permission path.");
+		missing.unshift(segment);
+		existingPath = parent;
+	}
+}
+//#endregion
 //#region src/bridge/index.ts
 const NATIVE_TO_COMMON = {
 	view: "read",
@@ -1901,6 +2008,7 @@ env.OPENCODE_DISABLE_PROJECT_CONFIG = "1";
 await runBridge({
 	bridgeType: "opencode",
 	bridgeStateDir,
+	...args.hostDisconnectTimeoutMs !== void 0 ? { hostDisconnectTimeoutMs: args.hostDisconnectTimeoutMs } : {},
 	onStart: runTurn,
 	onStop: () => runtime.sessionId ? { openCodeSessionId: runtime.sessionId } : {}
 });
@@ -2019,10 +2127,10 @@ function buildOpenCodeConfig({ start, relayPort, toolSchemasPath }) {
 		share: "disabled",
 		autoupdate: false,
 		permission: {
-			read: "allow",
-			glob: "allow",
-			grep: "allow",
-			list: "allow",
+			read: start.permissionMode && start.permissionMode !== "allow-all" ? "ask" : "allow",
+			glob: start.permissionMode && start.permissionMode !== "allow-all" ? "ask" : "allow",
+			grep: start.permissionMode && start.permissionMode !== "allow-all" ? "ask" : "allow",
+			list: start.permissionMode && start.permissionMode !== "allow-all" ? "ask" : "allow",
 			edit: "ask",
 			bash: "ask",
 			external_directory: "ask",
@@ -2087,6 +2195,7 @@ function buildProviderConfig(start) {
 	const providerID = model.providerID ?? start.provider ?? env.OPENAI_NAME ?? "anthropic";
 	const modelID = model.modelID;
 	if (env.AI_GATEWAY_API_KEY && env.AI_GATEWAY_BASE_URL) return { [providerID]: {
+		...providerID === "google" || providerID === "mistral" ? { npm: "@ai-sdk/openai-compatible" } : {},
 		options: {
 			apiKey: env.AI_GATEWAY_API_KEY,
 			baseURL: toOpenCodeGatewayBaseUrl(env.AI_GATEWAY_BASE_URL),
@@ -2278,6 +2387,7 @@ async function runPrompt({ client, sessionId, start, turn, emit }) {
 	const eventLoop = consumeEvents({
 		client,
 		sessionId,
+		readableSkillRoots: start.readableSkillRoots,
 		permissionMode: start.permissionMode,
 		inactiveBuiltinToolNames: start.inactiveBuiltinToolNames,
 		turn,
@@ -2462,6 +2572,7 @@ async function runCompaction({ client, sessionId, start, turn, emit }) {
 	const eventLoop = consumeEvents({
 		client,
 		sessionId,
+		readableSkillRoots: start.readableSkillRoots,
 		permissionMode: start.permissionMode,
 		inactiveBuiltinToolNames: start.inactiveBuiltinToolNames,
 		turn,
@@ -2512,7 +2623,7 @@ async function runCompaction({ client, sessionId, start, turn, emit }) {
 		harnessMetadata: { opencode: { missingSummary: true } }
 	});
 }
-async function consumeEvents({ client, sessionId, permissionMode, inactiveBuiltinToolNames, turn, state, hostInputTracker, emit, signal, onSubscribed, onEvent }) {
+async function consumeEvents({ client, sessionId, permissionMode, readableSkillRoots = [], inactiveBuiltinToolNames, turn, state, hostInputTracker, emit, signal, onSubscribed, onEvent }) {
 	const stream = await subscribeLegacyEvents({
 		client,
 		signal
@@ -2520,6 +2631,55 @@ async function consumeEvents({ client, sessionId, permissionMode, inactiveBuilti
 	onSubscribed?.();
 	if (!stream) return;
 	const taskSessionIds = /* @__PURE__ */ new Set([sessionId]);
+	const observedCalls = /* @__PURE__ */ new Map();
+	const permissionContext = {
+		readableSkillRoots,
+		decisions: /* @__PURE__ */ new Map(),
+		getToolCall: async ({ event, sessionId: sourceSessionId }) => {
+			const props = event.properties ?? {};
+			const source = asOpenCodeObject(props.tool) ?? asOpenCodeObject(props.source);
+			const callID = stringValue(source?.callID);
+			if (!callID) return void 0;
+			const key = JSON.stringify([sourceSessionId, callID]);
+			const observed = observedCalls.get(key);
+			if (observed) return observed;
+			const messageID = stringValue(source?.messageID);
+			if (messageID && typeof client.session.message === "function") try {
+				const parts = asOpenCodeObject((await client.session.message({
+					sessionID: sourceSessionId,
+					messageID,
+					directory: workdir
+				})).data)?.parts;
+				if (Array.isArray(parts)) {
+					const snapshot = permissionToolCallFromPart(parts.map(asOpenCodeObject).find((value) => value?.callID === callID));
+					if (snapshot) {
+						observedCalls.set(key, snapshot);
+						return snapshot;
+					}
+				}
+			} catch {
+				return observedCalls.get(key);
+			}
+			return observedCalls.get(key);
+		},
+		emitToolCall: ({ toolCallId, toolCall }) => {
+			if (!toolCall || sentToolCallIds.has(toolCallId)) return;
+			const nativeName = toolCall.nativeName;
+			const toolName = toWireToolName(nativeName);
+			state.toolCallsEmitted.add(toolCallId);
+			emitToHost({
+				type: "tool-call",
+				toolCallId,
+				toolName,
+				input: JSON.stringify(toolCall.input),
+				providerExecuted: true,
+				...nativeNameField({
+					nativeName,
+					toolName
+				})
+			});
+		}
+	};
 	const registerSubagentSession = (sourceSessionId) => function register({ parentSessionId, sessionId: subagentSessionId }) {
 		if (parentSessionId === sourceSessionId && taskSessionIds.has(sourceSessionId)) taskSessionIds.add(subagentSessionId);
 	};
@@ -2672,6 +2832,19 @@ async function consumeEvents({ client, sessionId, permissionMode, inactiveBuilti
 		const scopedSessionId = !eventSessionId || eventSessionId === sessionId ? sessionId : taskSessionIds.has(eventSessionId) ? eventSessionId : void 0;
 		if (!scopedSessionId) return false;
 		const isDescendant = scopedSessionId !== sessionId;
+		const part = asOpenCodeObject(event.properties?.part);
+		const snapshot = permissionToolCallFromPart(part);
+		if (snapshot && typeof part?.callID === "string") observedCalls.set(JSON.stringify([scopedSessionId, part.callID]), snapshot);
+		if (event.type === "session.next.tool.started") {
+			const props = event.properties ?? {};
+			const input = asOpenCodeObject(props.input);
+			const nativeName = stringValue(props.toolName ?? props.tool);
+			const callID = stringValue(props.callID);
+			if (input && nativeName && callID) observedCalls.set(JSON.stringify([scopedSessionId, callID]), {
+				nativeName,
+				input
+			});
+		}
 		const waitFor = ({ toolCallId, settlesToolCall }) => hostInputWait({
 			toolCallId: isDescendant ? `${scopedSessionId}:${toolCallId}` : toolCallId,
 			isDescendant,
@@ -2687,6 +2860,7 @@ async function consumeEvents({ client, sessionId, permissionMode, inactiveBuilti
 		else if (event.type === "permission.v2.asked") runHandler(handlePermissionV2({
 			client,
 			sessionId: scopedSessionId,
+			context: permissionContext,
 			permissionMode,
 			inactiveBuiltinToolNames,
 			turn,
@@ -2697,6 +2871,7 @@ async function consumeEvents({ client, sessionId, permissionMode, inactiveBuilti
 		else if (event.type === "permission.asked") runHandler(handlePermission({
 			client,
 			sessionId: scopedSessionId,
+			context: permissionContext,
 			permissionMode,
 			inactiveBuiltinToolNames,
 			turn,
@@ -2761,11 +2936,18 @@ async function handleQuestion({ client, turn, emit, event, waitFor }) {
 function sanitizeMcpToolName(value) {
 	return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
-async function handlePermissionV2({ client, sessionId, permissionMode, inactiveBuiltinToolNames, turn, emit, event, waitFor }) {
+async function handlePermissionV2({ client, sessionId, context, permissionMode, inactiveBuiltinToolNames, turn, emit, event, waitFor }) {
 	const props = event.properties ?? {};
 	const requestID = String(props.id ?? "");
 	if (!requestID) return;
 	const reply = await selectPermissionReply({
+		context,
+		sessionId,
+		toolCall: await context.getToolCall({
+			event,
+			sessionId
+		}),
+		metadata: asOpenCodeObject(props.metadata),
 		action: String(props.action ?? ""),
 		resources: Array.isArray(props.resources) ? props.resources.map(String) : [],
 		requestID,
@@ -2783,12 +2965,19 @@ async function handlePermissionV2({ client, sessionId, permissionMode, inactiveB
 		...reply.message ? { message: reply.message } : {}
 	});
 }
-async function handlePermission({ client, sessionId, permissionMode, inactiveBuiltinToolNames, turn, emit, event, waitFor }) {
+async function handlePermission({ client, sessionId, context, permissionMode, inactiveBuiltinToolNames, turn, emit, event, waitFor }) {
 	const props = event.properties ?? {};
 	const requestID = String(props.id ?? "");
 	if (!requestID) return;
 	const tool = asOpenCodeObject(props.tool);
 	const reply = await selectPermissionReply({
+		context,
+		sessionId,
+		toolCall: await context.getToolCall({
+			event,
+			sessionId
+		}),
+		metadata: asOpenCodeObject(props.metadata),
 		action: String(props.permission ?? ""),
 		resources: Array.isArray(props.patterns) ? props.patterns.map(String) : [],
 		requestID,
@@ -2806,25 +2995,40 @@ async function handlePermission({ client, sessionId, permissionMode, inactiveBui
 		...reply.message ? { message: reply.message } : {}
 	});
 }
-async function selectPermissionReply({ action, resources, requestID, toolCallId, permissionMode, inactiveBuiltinToolNames, turn, emit, waitFor }) {
-	const requestApproval = async () => {
-		const wait = waitFor?.({
+async function selectPermissionReply({ context, sessionId, toolCall, metadata, action, resources, requestID, toolCallId, permissionMode, inactiveBuiltinToolNames, turn, emit, waitFor }) {
+	const requestApproval = () => {
+		const key = toolCall ? JSON.stringify([
+			sessionId,
 			toolCallId,
-			settlesToolCall: false
-		});
-		wait?.markWaiting();
-		return turn.requestToolApproval(requestID).finally(() => wait?.clearWaiting());
+			toolCall
+		]) : void 0;
+		const existing = key ? context.decisions.get(key) : void 0;
+		if (existing) return existing;
+		const decision = (async () => {
+			context.emitToolCall({
+				toolCallId,
+				toolCall
+			});
+			await emit({
+				type: "tool-approval-request",
+				approvalId: requestID,
+				toolCallId
+			});
+			const wait = waitFor?.({
+				toolCallId,
+				settlesToolCall: false
+			});
+			wait?.markWaiting();
+			return turn.requestToolApproval(requestID).finally(() => wait?.clearWaiting());
+		})();
+		if (key) context.decisions.set(key, decision);
+		return decision;
 	};
 	const toolName = toPermissionToolName(action);
 	if (isBuiltinToolInactive({
 		toolName,
 		inactiveBuiltinToolNames
 	})) {
-		await emit({
-			type: "tool-approval-request",
-			approvalId: requestID,
-			toolCallId
-		});
 		const decision = await requestApproval();
 		return decision.approved ? { reply: "once" } : {
 			reply: "reject",
@@ -2832,17 +3036,24 @@ async function selectPermissionReply({ action, resources, requestID, toolCallId,
 		};
 	}
 	if (!permissionMode || permissionMode === "allow-all") return { reply: "always" };
-	if (resources.some((resource) => isExternalPath(resource))) return {
-		reply: "reject",
-		message: "External directory access rejected."
-	};
-	const kind = TOOL_KIND[toolName] ?? "bash";
-	if (permissionMode === "allow-edits" ? kind === "readonly" || kind === "edit" : kind === "readonly") return { reply: "always" };
-	await emit({
-		type: "tool-approval-request",
-		approvalId: requestID,
-		toolCallId
-	});
+	const nativeName = toolCall?.nativeName;
+	const filePermission = action === "external_directory" || [
+		"read",
+		"write",
+		"edit",
+		"glob",
+		"grep",
+		"ls"
+	].includes(toolName);
+	const kind = action === "external_directory" && nativeName ? nativeName === "apply_patch" ? "edit" : TOOL_KIND[toWireToolName(nativeName)] ?? "bash" : TOOL_KIND[toolName] ?? "bash";
+	if ((permissionMode === "allow-edits" ? kind === "readonly" || kind === "edit" : kind === "readonly") && (!filePermission || await areOpenCodePermissionPathsTrusted({
+		action,
+		resources,
+		metadata,
+		toolCall,
+		workDir: workdir,
+		readableSkillRoots: context.readableSkillRoots
+	}))) return { reply: "once" };
 	const decision = await requestApproval();
 	return decision.approved ? { reply: "once" } : {
 		reply: "reject",
@@ -2865,10 +3076,6 @@ function toPermissionToolName(action) {
 function isBuiltinToolInactive(input) {
 	return input.inactiveBuiltinToolNames?.some((toolName) => toolName === input.toolName) ?? false;
 }
-function isExternalPath(resource) {
-	if (!path.isAbsolute(resource)) return false;
-	return !isPathInsideOrEqual(resource, workdir) && (!skillsDir || !isPathInsideOrEqual(resource, skillsDir));
-}
 function isPathInsideOrEqual(file, root) {
 	const relative = path.relative(canonicalizeForContainment(root), canonicalizeForContainment(file));
 	return relative === "" || relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
@@ -2881,6 +3088,20 @@ function canonicalizeForContainment(inputPath) {
 		const parent = path.dirname(normalized);
 		return parent === normalized ? normalized : path.join(canonicalizeForContainment(parent), path.basename(normalized));
 	}
+}
+function permissionToolCallFromPart(value) {
+	const part = asOpenCodeObject(value);
+	const state = asOpenCodeObject(part?.state);
+	const input = asOpenCodeObject(state?.input);
+	if (part?.type !== "tool" || typeof part.tool !== "string" || !input || ![
+		"running",
+		"completed",
+		"error"
+	].includes(String(state?.status))) return void 0;
+	return {
+		nativeName: part.tool,
+		input
+	};
 }
 function toWireToolName(nativeName) {
 	return NATIVE_TO_COMMON[nativeName] ?? OPENCODE_TO_WIRE[nativeName] ?? nativeName;
@@ -3117,6 +3338,7 @@ function parseArgs(args) {
 	const out = {};
 	for (let i = 0; i < args.length; i++) if (args[i] === "--workdir" && i + 1 < args.length) out.workdir = args[++i];
 	else if (args[i] === "--bridge-state-dir" && i + 1 < args.length) out.bridgeStateDir = args[++i];
+	else if (args[i] === "--host-disconnect-timeout-ms" && i + 1 < args.length) out.hostDisconnectTimeoutMs = Number(args[++i]);
 	else if (args[i] === "--bootstrap-dir" && i + 1 < args.length) out.bootstrapDir = args[++i];
 	else if (args[i] === "--skills-dir" && i + 1 < args.length) out.skillsDir = args[++i];
 	return out;

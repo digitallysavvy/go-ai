@@ -17,13 +17,13 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.HarnessID != "cursor" {
 		t.Errorf("HarnessID = %q, want cursor", cfg.HarnessID)
 	}
-	if cfg.ClientApp.Name != "ai-sdk-harness-cursor" || cfg.ClientApp.Version != "1.0.88" {
+	if cfg.ClientApp.Name != "ai-sdk-harness-cursor" || cfg.ClientApp.Version != "1.0.91" {
 		t.Errorf("ClientApp = %+v", cfg.ClientApp)
 	}
 	if cfg.Executable != "agent" {
 		t.Errorf("Executable = %q, want agent", cfg.Executable)
 	}
-	if !reflect.DeepEqual(cfg.Args, []string{"--disable-auto-update", "acp"}) {
+	if !reflect.DeepEqual(cfg.Args, []string{"--disable-auto-update", "--disable-project-configs", "acp"}) {
 		t.Errorf("Args = %v", cfg.Args)
 	}
 	if cfg.Source.Type != acp.SourceInstallCommand || cfg.Source.Command != "curl https://cursor.com/install -fsS | bash" {

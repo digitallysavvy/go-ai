@@ -145,6 +145,11 @@ func oauthMetadataGETOnce(ctx context.Context, client *http.Client, endpoint, pr
 			return nil, err
 		}
 		nextURL := next.String()
+		// TS f608c056a2 (fetch-with-validated-redirects.ts 199-207): never
+		// follow a downgrade, not even to a trusted origin.
+		if base.Scheme == "https" && next.Scheme == "http" {
+			return nil, providererrors.NewDownloadError(endpoint, 0, "", "Redirect from HTTPS to HTTP was blocked", nil)
+		}
 		if !fileutil.IsSameOrigin(nextURL, current) {
 			headers = nil
 		}

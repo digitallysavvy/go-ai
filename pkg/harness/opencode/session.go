@@ -464,6 +464,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	msg.ResponseFormat = opts.ResponseFormat
 	msg.Instructions = opts.Instructions
 	msg.SkillsChanged = skillResult.Changed
+	msg.ReadableSkillRoots = s.readableSkillRoots(opts.Skills)
 	if err := s.p.channel.Send(msg); err != nil {
 		control.settleError(err)
 		return nil, err
@@ -508,6 +509,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		msg.ResponseFormat = opts.ResponseFormat
 		msg.Instructions = opts.Instructions
 		msg.SkillsChanged = skillResult.Changed
+		msg.ReadableSkillRoots = s.readableSkillRoots(opts.Skills)
 		if err := s.p.channel.Send(msg); err != nil {
 			control.settleError(err)
 			return nil, err
@@ -517,6 +519,16 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		s.mu.Unlock()
 	}
 	return control, nil
+}
+
+// readableSkillRoots builds the start frame's readableSkillRoots like TS:
+// always a list (maybe empty), each root without path cleaning.
+func (s *session) readableSkillRoots(skills []harness.Skill) *[]string {
+	roots := make([]string, 0, len(skills))
+	for _, skill := range skills {
+		roots = append(roots, s.p.sandboxHomeDir+"/.agents/skills/"+skill.Name)
+	}
+	return &roots
 }
 
 func (s *session) DoCompact(ctx context.Context, customInstructions string) error {

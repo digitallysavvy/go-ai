@@ -201,6 +201,12 @@ const WS_OPEN = 1;
 async function runBridge(options) {
 	const { bridgeType, bridgeStateDir, onStart, onStop, onDestroy } = options;
 	const teardownGraceMs = options.turnTeardownGraceMs ?? 1e4;
+	const hostDisconnectTimeoutMs = options.hostDisconnectTimeoutMs != null && Number.isFinite(options.hostDisconnectTimeoutMs) && options.hostDisconnectTimeoutMs > 0 ? Math.min(options.hostDisconnectTimeoutMs, 2147483647) : void 0;
+	let hostDisconnectTimer;
+	const clearHostDisconnectTimer = () => {
+		clearTimeout(hostDisconnectTimer);
+		hostDisconnectTimer = void 0;
+	};
 	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
@@ -388,6 +394,7 @@ async function runBridge(options) {
 				const thisTurn = new Promise((resolve) => turnFinished = resolve);
 				activeTurn = thisTurn;
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				const firstTurn = isFirstTurn;
 				isFirstTurn = false;
 				eventLog = [];
@@ -454,6 +461,7 @@ async function runBridge(options) {
 						activeTurn = void 0;
 						currentTurnState = "waiting";
 						writeBridgeMeta("waiting");
+						clearHostDisconnectTimer();
 					}
 					turnFinished();
 				}
@@ -520,6 +528,7 @@ async function runBridge(options) {
 				return;
 			case "resume":
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				replay(ws, msg.lastSeenEventId);
 				return;
 			case "destroy":
@@ -607,8 +616,18 @@ async function runBridge(options) {
 			}
 			handleInbound(parsed, ws);
 		});
-		ws.on("close", () => {
-			if (activeSocket === ws) activeSocket = void 0;
+		ws.on("close", (_code, reason) => {
+			if (activeSocket === ws) {
+				activeSocket = void 0;
+				if (hostDisconnectTimeoutMs != null && activeTurn != null && reason.toString() !== "suspended") {
+					clearHostDisconnectTimer();
+					hostDisconnectTimer = setTimeout(() => {
+						hostDisconnectTimer = void 0;
+						if (activeSocket == null) turnAbort?.abort();
+					}, hostDisconnectTimeoutMs);
+					hostDisconnectTimer.unref?.();
+				}
+			}
 		});
 		ws.on("error", () => {});
 	});
@@ -1330,7 +1349,8 @@ async function areFileToolPathsTrusted(options) {
 	if (options.paths.length === 0) return false;
 	try {
 		const roots = [await realpath(options.workDir)];
-		if (options.access === "read") for (const root of options.readableSkillRoots) try {
+		const trustedRoots = [...(options.additionalDirectories ?? []).filter((root) => path.posix.isAbsolute(root)), ...options.access === "read" ? options.readableSkillRoots : []];
+		for (const root of trustedRoots) try {
 			roots.push(await realpath(root));
 		} catch {
 			continue;
@@ -1538,7 +1558,40 @@ let lastClaudeSessionId;
 await runBridge({
 	bridgeType: "claude-code",
 	bridgeStateDir,
-	onStart: runTurn,
+	...args.hostDisconnectTimeoutMs !== void 0 ? { hostDisconnectTimeoutMs: args.hostDisconnectTimeoutMs } : {},
+	onStart: async (start, turn) => {
+		const emit = (event) => {
+			if (turn.abortSignal.aborted) return;
+			turn.emit({
+				...event,
+				...start.startId == null ? {} : { startId: start.startId }
+			});
+		};
+		const emitError = ({ error, message }) => {
+			if (turn.abortSignal.aborted) return;
+			console.error(`[harness:claude-code:error] ${message ?? "bridge error"}:`, error);
+			emit({
+				type: "error",
+				error: error instanceof Error ? {
+					name: error.name,
+					message: error.message,
+					stack: error.stack
+				} : error
+			});
+		};
+		try {
+			await runTurn(start, {
+				...turn,
+				emit,
+				emitError
+			});
+		} catch (error) {
+			emitError({
+				error,
+				message: "claude-code turn failed"
+			});
+		}
+	},
 	onStop: () => lastClaudeSessionId == null ? {} : { claudeSessionId: lastClaudeSessionId }
 });
 function createPermissionOptions(input) {
@@ -1567,6 +1620,7 @@ function createPermissionOptions(input) {
 				inactiveNativeTools,
 				cwd: input.toolCwds.get(options.toolUseID) ?? "",
 				readableSkillRoots: input.start.readableSkillRoots ?? [],
+				additionalDirectories: input.start.additionalDirectories ?? [],
 				blockedPath: options.blockedPath
 			})) return {
 				behavior: "allow",
@@ -1678,14 +1732,16 @@ function toGatewayModelOverride(model) {
 }
 /**
 * The `ANTHROPIC_DEFAULT_*_MODEL` variables point Claude Code's model aliases
-* at other ids, which it misreads the same way. `model` comes last so that its
-* entry wins a key it shares with an alias.
+* at other ids and `CLAUDE_CODE_SUBAGENT_MODEL` sets the model of subagents,
+* which it misreads the same way. `model` comes last so that its entry wins a
+* key it shares with one of them.
 */
 function createGatewayModelOverrides(model, env) {
 	const overrides = {
 		...toGatewayModelOverride(env.ANTHROPIC_DEFAULT_OPUS_MODEL),
 		...toGatewayModelOverride(env.ANTHROPIC_DEFAULT_SONNET_MODEL),
 		...toGatewayModelOverride(env.ANTHROPIC_DEFAULT_HAIKU_MODEL),
+		...toGatewayModelOverride(env.CLAUDE_CODE_SUBAGENT_MODEL),
 		...toGatewayModelOverride(model)
 	};
 	return Object.keys(overrides).length > 0 ? overrides : void 0;
@@ -1731,7 +1787,8 @@ async function needsHostApproval(input) {
 		cwd: input.cwd,
 		paths,
 		access,
-		readableSkillRoots: input.readableSkillRoots
+		readableSkillRoots: input.readableSkillRoots,
+		additionalDirectories: input.additionalDirectories
 	});
 }
 function createApprovalPreToolUseHook(input) {
@@ -1757,6 +1814,7 @@ function createApprovalPreToolUseHook(input) {
 			toolInput: hookInput.tool_input,
 			cwd: hookInput.cwd,
 			readableSkillRoots: input.readableSkillRoots,
+			additionalDirectories: input.additionalDirectories,
 			permissionMode: input.permissionMode,
 			inactiveNativeTools: input.inactiveNativeTools
 		})) return {};
@@ -1776,7 +1834,9 @@ function nativeToolRequiresApproval(input) {
 	return kind === "edit" || kind === "bash";
 }
 async function runTurn(start, turn) {
-	const emit = (msg) => turn.emit(msg);
+	const emit = (msg) => {
+		if (!turn.abortSignal.aborted) turn.emit(msg);
+	};
 	const abortCtl = new AbortController();
 	let gracefulAbort;
 	let hardAbortTimer;
@@ -1917,6 +1977,7 @@ async function runTurn(start, turn) {
 	const approvalPreToolUseHook = createApprovalPreToolUseHook({
 		toolCwds,
 		readableSkillRoots: start.readableSkillRoots ?? [],
+		additionalDirectories: start.additionalDirectories ?? [],
 		permissionMode,
 		inactiveNativeTools: new Set(inactiveNativeTools),
 		decisions: approvalDecisions,
@@ -1948,6 +2009,7 @@ async function runTurn(start, turn) {
 			...start.model ? { model: start.model } : {},
 			...start.maxTurns !== void 0 ? { maxTurns: start.maxTurns } : {},
 			...start.maxBudgetUsd !== void 0 ? { maxBudgetUsd: start.maxBudgetUsd } : {},
+			...start.additionalDirectories !== void 0 ? { additionalDirectories: start.additionalDirectories } : {},
 			...start.strictMcpConfig !== void 0 ? { strictMcpConfig: start.strictMcpConfig } : {},
 			...start.agentProgressSummaries !== void 0 ? { agentProgressSummaries: start.agentProgressSummaries } : {},
 			...start.forwardSubagentText !== void 0 ? { forwardSubagentText: start.forwardSubagentText } : {},
@@ -1978,6 +2040,7 @@ async function runTurn(start, turn) {
 			...permissionOptions,
 			...Object.keys(settings).length > 0 ? { settings } : {},
 			mcpServers,
+			settingSources: ["user"],
 			cwd: workdir,
 			abortSignal: abortCtl.signal
 		}
@@ -2347,6 +2410,7 @@ function parseArgs(args) {
 	const out = {};
 	for (let i = 0; i < args.length; i++) if (args[i] === "--workdir" && i + 1 < args.length) out.workdir = args[++i];
 	else if (args[i] === "--bridge-state-dir" && i + 1 < args.length) out.bridgeStateDir = args[++i];
+	else if (args[i] === "--host-disconnect-timeout-ms" && i + 1 < args.length) out.hostDisconnectTimeoutMs = Number(args[++i]);
 	return out;
 }
 function emitFatal(message) {

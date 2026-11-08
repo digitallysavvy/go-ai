@@ -20,7 +20,7 @@ const HarnessID = "codex"
 
 // version is used in the client-app attribution string, mirroring TS
 // `VERSION` pinned to the embedded bridge's source package version (VERSIONS.json).
-const version = "1.0.175"
+const version = "1.0.178"
 
 var _ harness.Harness = (*Harness)(nil)
 var _ harness.BootstrapProvider = (*Harness)(nil)
@@ -255,7 +255,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "codex bridge", Source: HarnessID, Sandbox: restricted,
 		Command: fmt.Sprintf("node %s --workdir %s --bridge-state-dir %s",
-			harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
+			harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)) +
+			harnessutil.HostDisconnectTimeoutFlag(settings.HostDisconnectTimeout),
 		Env: env, Port: port, Token: token, ReplayFromDisk: respawnStrategy == "replay",
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {

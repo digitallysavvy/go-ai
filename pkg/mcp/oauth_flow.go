@@ -308,6 +308,36 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 		}
 	}
 
+	// Resolve the existing token's binding before registration can create a
+	// new one (TS dc0f7f243d): an unbound refresh token must never inherit
+	// the binding of a client registered below.
+	var refreshASInfo *OAuthAuthorizationServerInformation
+	if tokens != nil && tokens.RefreshToken != "" {
+		refreshASInfo, err = getStoredOAuthAuthorizationServerInformation(ctx, provider, clientInformation, tokens)
+		if err != nil {
+			return "", err
+		}
+		if refreshASInfo != nil {
+			if err := AssertOAuthAuthorizationServerInformationMatches(*refreshASInfo, currentASInfo); err != nil {
+				return "", err
+			}
+		} else {
+			tokensCopy := *tokens
+			if err := invalidateOAuthTokens(ctx, provider, &tokensCopy); err != nil {
+				return "", err
+			}
+			// Do not persist a new binding alongside an unbound token, even
+			// if the provider cannot invalidate or leaves tokens in storage.
+			remaining, err := provider.Tokens(ctx)
+			if err != nil {
+				return "", err
+			}
+			if remaining != nil && remaining.RefreshToken != "" {
+				return "", &MCPClientOAuthError{Message: "Stored OAuth tokens without an authorization server binding must be cleared before starting authorization"}
+			}
+		}
+	}
+
 	if clientInformation == nil {
 		if options.HasAuthorizationCode {
 			return "", fmt.Errorf("Existing OAuth client information is required when exchanging an authorization code") //nolint:staticcheck // matches TS SDK error text
@@ -394,53 +424,35 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 	}
 
 	// Refresh only when stored credentials match the current AS pin.
-	if tokens != nil && tokens.RefreshToken != "" {
-		storedASInfo, err := getStoredOAuthAuthorizationServerInformation(ctx, provider, clientInformation, tokens)
-		if err != nil {
-			return "", err
-		}
-
-		if storedASInfo != nil {
-			if err := AssertOAuthAuthorizationServerInformationMatches(*storedASInfo, currentASInfo); err != nil {
-				return "", err
-			}
-		} else {
+	if tokens != nil && tokens.RefreshToken != "" && refreshASInfo != nil {
+		if refreshAttempt != nil {
 			tokensCopy := *tokens
-			if err := invalidateOAuthTokens(ctx, provider, &tokensCopy); err != nil {
-				return "", err
+			refreshAttempt.tokens = &tokensCopy
+		}
+		newTokens, refreshErr := RefreshOAuthAuthorization(ctx, authorizationServerURL, RefreshOAuthAuthorizationParams{
+			Metadata:                metadata,
+			ClientInformation:       *clientInformation,
+			RefreshToken:            tokens.RefreshToken,
+			Resource:                resource,
+			AddClientAuthentication: oauthAuthenticatorFunc(provider),
+			HTTPClient:              options.HTTPClient,
+		})
+		if refreshErr == nil {
+			// TS saves the refreshed tokens inside the same try block, so a
+			// failing saveTokens is handled like a failed refresh.
+			if saveErr := provider.SaveTokens(ctx, addOAuthASInfoToTokens(*newTokens, currentASInfo)); saveErr != nil {
+				refreshErr = saveErr
+			} else {
+				return AuthResultAuthorized, nil
 			}
 		}
 
-		if storedASInfo != nil {
-			if refreshAttempt != nil {
-				tokensCopy := *tokens
-				refreshAttempt.tokens = &tokensCopy
-			}
-			newTokens, refreshErr := RefreshOAuthAuthorization(ctx, authorizationServerURL, RefreshOAuthAuthorizationParams{
-				Metadata:                metadata,
-				ClientInformation:       *clientInformation,
-				RefreshToken:            tokens.RefreshToken,
-				Resource:                resource,
-				AddClientAuthentication: oauthAuthenticatorFunc(provider),
-				HTTPClient:              options.HTTPClient,
-			})
-			if refreshErr == nil {
-				// TS saves the refreshed tokens inside the same try block, so a
-				// failing saveTokens is handled like a failed refresh.
-				if saveErr := provider.SaveTokens(ctx, addOAuthASInfoToTokens(*newTokens, currentASInfo)); saveErr != nil {
-					refreshErr = saveErr
-				} else {
-					return AuthResultAuthorized, nil
-				}
-			}
-
-			// If this is a ServerError, or an unknown error type, swallow it
-			// and continue to a fresh authorization flow below. Otherwise
-			// (invalid_client/invalid_grant/unauthorized_client) escalate so
-			// Auth's retry-once logic can react.
-			if oauthRefreshErrorEscalates(refreshErr) {
-				return "", refreshErr
-			}
+		// If this is a ServerError, or an unknown error type, swallow it
+		// and continue to a fresh authorization flow below. Otherwise
+		// (invalid_client/invalid_grant/unauthorized_client) escalate so
+		// Auth's retry-once logic can react.
+		if oauthRefreshErrorEscalates(refreshErr) {
+			return "", refreshErr
 		}
 	}
 
@@ -495,8 +507,10 @@ func oauthAuthenticatorFunc(provider OAuthClientProvider) func(context.Context, 
 }
 
 // SelectOAuthResourceURL validates and selects the RFC 8707 resource value
-// sent to the authorization server, matching TS selectResourceURL (oauth.ts).
-// A nil result (with a nil error) means no resource parameter should be sent.
+// sent to the authorization server, matching TS selectResourceURL (oauth.ts,
+// 0f3a85f92d). The resource is always sent: without protected-resource
+// metadata, or when a validator returns "", it is the canonical server URL
+// (fragment removed), so tokens stay bound to this MCP server (TS ae13fcea03).
 func SelectOAuthResourceURL(ctx context.Context, serverURL string, provider OAuthClientProvider, resourceMetadata *OAuthProtectedResourceMetadata) (*url.URL, error) {
 	defaultResource, err := resourceURLFromServerURL(serverURL)
 	if err != nil {
@@ -513,13 +527,13 @@ func SelectOAuthResourceURL(ctx context.Context, serverURL string, provider OAut
 			return nil, err
 		}
 		if selected == "" {
-			return nil, nil
+			return defaultResource, nil
 		}
 		return url.Parse(selected)
 	}
 
 	if resourceMetadata == nil {
-		return nil, nil
+		return defaultResource, nil
 	}
 
 	allowed, err := checkOAuthResourceAllowed(defaultResource.String(), resourceMetadata.Resource)

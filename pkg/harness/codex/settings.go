@@ -1,6 +1,6 @@
 // Package codex is the Go host-side port of TS `@ai-sdk/harness-codex`
 // (`createCodex`), pinned to
-// ai@7.0.162, TS 3fab50aa9b.
+// ai@7.0.165, TS 0f3a85f92d.
 //
 // It implements harness.Harness/Session/PromptControl by launching the
 // embedded TS bridge (pkg/harness/bridges, WG6) as `node bridge.mjs` inside
@@ -81,7 +81,8 @@ type Settings struct {
 	CredentialForwarding harness.CredentialForwarding
 	// CodexConfig is additional configuration passed through to Codex
 	// as-is (snake_case config.toml keys). Values managed by this adapter
-	// take precedence over conflicting entries.
+	// take precedence over conflicting entries, except for the
+	// model_reasoning_summary default, which callers can override.
 	CodexConfig map[string]any
 	// MCPServers are additional MCP server definitions, keyed by name, in
 	// Codex's native configuration format.
@@ -99,6 +100,11 @@ type Settings struct {
 	// StartupTimeout bounds how long to wait for the bridge to announce its
 	// port. Defaults to 120s.
 	StartupTimeout time.Duration
+	// HostDisconnectTimeout aborts a running turn when its host disconnects
+	// and does not reconnect within this time, so the turn stops spending.
+	// A suspended turn is exempt. Zero keeps the turn running until it
+	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
+	HostDisconnectTimeout time.Duration
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions

@@ -207,6 +207,12 @@ const WS_OPEN = 1;
 async function runBridge(options) {
 	const { bridgeType, bridgeStateDir, onStart, onStop, onDestroy } = options;
 	const teardownGraceMs = options.turnTeardownGraceMs ?? 1e4;
+	const hostDisconnectTimeoutMs = options.hostDisconnectTimeoutMs != null && Number.isFinite(options.hostDisconnectTimeoutMs) && options.hostDisconnectTimeoutMs > 0 ? Math.min(options.hostDisconnectTimeoutMs, 2147483647) : void 0;
+	let hostDisconnectTimer;
+	const clearHostDisconnectTimer = () => {
+		clearTimeout(hostDisconnectTimer);
+		hostDisconnectTimer = void 0;
+	};
 	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
@@ -394,6 +400,7 @@ async function runBridge(options) {
 				const thisTurn = new Promise((resolve) => turnFinished = resolve);
 				activeTurn = thisTurn;
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				const firstTurn = isFirstTurn;
 				isFirstTurn = false;
 				eventLog = [];
@@ -460,6 +467,7 @@ async function runBridge(options) {
 						activeTurn = void 0;
 						currentTurnState = "waiting";
 						writeBridgeMeta("waiting");
+						clearHostDisconnectTimer();
 					}
 					turnFinished();
 				}
@@ -526,6 +534,7 @@ async function runBridge(options) {
 				return;
 			case "resume":
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				replay(ws, msg.lastSeenEventId);
 				return;
 			case "destroy":
@@ -613,8 +622,18 @@ async function runBridge(options) {
 			}
 			handleInbound(parsed, ws);
 		});
-		ws.on("close", () => {
-			if (activeSocket === ws) activeSocket = void 0;
+		ws.on("close", (_code, reason) => {
+			if (activeSocket === ws) {
+				activeSocket = void 0;
+				if (hostDisconnectTimeoutMs != null && activeTurn != null && reason.toString() !== "suspended") {
+					clearHostDisconnectTimer();
+					hostDisconnectTimer = setTimeout(() => {
+						hostDisconnectTimer = void 0;
+						if (activeSocket == null) turnAbort?.abort();
+					}, hostDisconnectTimeoutMs);
+					hostDisconnectTimer.unref?.();
+				}
+			}
 		});
 		ws.on("error", () => {});
 	});
@@ -2254,7 +2273,7 @@ function isRecord$3(value) {
 }
 //#endregion
 //#region src/v1/bridge/host-tool-mcp-server.ts
-const VERSION = "1.0.113";
+const VERSION = "1.0.116";
 function createHostToolMCPServer({ tools, revision = 1, invoke, onListTools }) {
 	let catalog = createCatalog({
 		revision,
@@ -3458,6 +3477,7 @@ let activeQuestionRequest;
 await runBridge({
 	bridgeType,
 	bridgeStateDir,
+	...args.hostDisconnectTimeoutMs !== void 0 ? { hostDisconnectTimeoutMs: args.hostDisconnectTimeoutMs } : {},
 	onStart: runTurn,
 	onStop: () => session == null ? {} : { sessionId: session.sessionId },
 	onExit: () => {
@@ -4108,6 +4128,7 @@ function parseArgs({ args }) {
 		if (args[index] === "--workdir") result.workDir = value;
 		else if (args[index] === "--bridge-state-dir") result.bridgeStateDir = value;
 		else if (args[index] === "--bridge-type") result.bridgeType = value;
+		else if (args[index] === "--host-disconnect-timeout-ms") result.hostDisconnectTimeoutMs = Number(value);
 	}
 	return result;
 }

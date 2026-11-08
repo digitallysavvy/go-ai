@@ -37,8 +37,13 @@ type Settings struct {
 	Port             int
 	PortEndpoint     *harness.PortEndpoint
 	StartupTimeout   time.Duration
-	Reconnect        bridge.ReconnectOptions
-	MintBridgeToken  harness.MintBridgeTokenCallback
+	// HostDisconnectTimeout aborts a running turn when its host disconnects
+	// and does not reconnect within this time, so the turn stops spending.
+	// A suspended turn is exempt. Zero keeps the turn running until it
+	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
+	HostDisconnectTimeout time.Duration
+	Reconnect             bridge.ReconnectOptions
+	MintBridgeToken       harness.MintBridgeTokenCallback
 }
 
 type openCodeHarness struct {
@@ -328,7 +333,8 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		" --workdir " + harnessutil.ShellQuote(workDir) +
 		" --bridge-state-dir " + harnessutil.ShellQuote(bridgeStateDir) +
 		" --bootstrap-dir " + harnessutil.ShellQuote(bootstrapDir) +
-		" --skills-dir " + harnessutil.ShellQuote(skillsDir)
+		" --skills-dir " + harnessutil.ShellQuote(skillsDir) +
+		harnessutil.HostDisconnectTimeoutFlag(settings.HostDisconnectTimeout)
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "OpenCode bridge", Source: HarnessID, Sandbox: toolSafeSandboxSession,

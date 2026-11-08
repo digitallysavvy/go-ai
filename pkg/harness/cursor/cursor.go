@@ -1,5 +1,5 @@
 // Package cursor is the Go port of the TypeScript `@ai-sdk/harness-cursor`
-// package (pinned to ai@7.0.162, TS 3fab50aa9b).
+// package (pinned to ai@7.0.165, TS 0f3a85f92d).
 //
 // Cursor is one of the "ACP-derived" harness adapters (see
 // state/parity/sep_23_2026/harness.md §2): TS `createCursor()` is a thin
@@ -28,10 +28,10 @@ import (
 // ClientAppName / ClientAppVersion are the ai-sdk client-app identity Cursor
 // requests are made with. ClientAppVersion is TS VERSION, the
 // @ai-sdk/harness-cursor package version at the TS release this SDK tracks
-// (3fab50aa9b); bump it with the harness bridges.
+// (0f3a85f92d); bump it with the harness bridges.
 const (
 	ClientAppName    = "ai-sdk-harness-cursor"
-	ClientAppVersion = "1.0.88"
+	ClientAppVersion = "1.0.91"
 	HarnessID        = "cursor"
 )
 
@@ -60,6 +60,11 @@ type Settings struct {
 	// StartupTimeoutMS is the maximum time to wait for the ACP bridge to
 	// start.
 	StartupTimeoutMS *int
+	// HostDisconnectTimeoutMS aborts a running turn when its host
+	// disconnects and does not reconnect within this many milliseconds. A
+	// suspended turn is exempt. Unset (or a value that is not positive)
+	// keeps the turn running until it finishes (TS a54f0fd8c6).
+	HostDisconnectTimeoutMS *int
 	// Reconnect configures reconnection attempts after an established bridge
 	// connection drops.
 	Reconnect *bridge.ReconnectOptions
@@ -108,7 +113,7 @@ func BuildConfig(settings Settings) acp.Settings {
 			Command: "curl https://cursor.com/install -fsS | bash",
 		},
 		Executable: "agent",
-		Args:       []string{"--disable-auto-update", "acp"},
+		Args:       []string{"--disable-auto-update", "--disable-project-configs", "acp"},
 		ModelMapping: acp.ModelMapping{
 			Type: acp.ModelMappingSessionConfigOption,
 			Path: "model",
@@ -126,6 +131,9 @@ func BuildConfig(settings Settings) acp.Settings {
 	}
 	if settings.StartupTimeoutMS != nil {
 		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.HostDisconnectTimeoutMS != nil {
+		cfg.HostDisconnectTimeout = time.Duration(*settings.HostDisconnectTimeoutMS) * time.Millisecond
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect

@@ -35,6 +35,11 @@ type StartMessage struct {
 	// A nil pointer means no filtering; a pointer to an empty slice means
 	// filtering is active but nothing is disabled (sent as `[]`, like TS).
 	InactiveBuiltinToolNames *[]string `json:"inactiveBuiltinToolNames,omitempty"`
+	// ReadableSkillRoots are the active skills' directories
+	// ($HOME/.agents/skills/<name>), which the bridge trusts for reads. TS
+	// sends it on every prompt and rerun continue, `[]` without skills, and
+	// never on compact (TS 3af9d06557), hence the pointer.
+	ReadableSkillRoots *[]string `json:"readableSkillRoots,omitempty"`
 
 	// PromptContent carries text plus inline images. When nil the prompt is
 	// the plain string StartBase.Prompt. Mirrors TS `harnessPromptContentSchema`.

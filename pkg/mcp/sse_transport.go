@@ -127,6 +127,8 @@ func NewSSETransport(config SSETransportConfig) *SSETransport {
 		httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return fmt.Errorf("mcp: server returned redirect to %s; set Redirect: MCPRedirectFollow to allow redirects", req.URL)
 		}
+	} else if httpClient.CheckRedirect == nil {
+		httpClient.CheckRedirect = mcpFetchRedirectPolicy
 	}
 
 	baseURL, _ := url.Parse(config.URL)

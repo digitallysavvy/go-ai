@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 import path, { dirname } from "node:path";
 import { argv, env, pid, stdout } from "node:process";
 import { rgPath } from "@vscode/ripgrep";
-import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { WebSocketServer } from "ws";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { tool } from "@langchain/core/tools";
 import { Command, MemorySaver, Overwrite } from "@langchain/langgraph";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
-import { LocalShellBackend, createDeepAgent } from "deepagents";
+import { CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend, createDeepAgent, createMemoryMiddleware, createSkillsMiddleware } from "deepagents";
 import { createMiddleware, toolStrategy } from "langchain";
 import { z } from "zod/v4";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
@@ -206,6 +206,12 @@ const WS_OPEN = 1;
 async function runBridge(options) {
 	const { bridgeType, bridgeStateDir, onStart, onStop, onDestroy } = options;
 	const teardownGraceMs = options.turnTeardownGraceMs ?? 1e4;
+	const hostDisconnectTimeoutMs = options.hostDisconnectTimeoutMs != null && Number.isFinite(options.hostDisconnectTimeoutMs) && options.hostDisconnectTimeoutMs > 0 ? Math.min(options.hostDisconnectTimeoutMs, 2147483647) : void 0;
+	let hostDisconnectTimer;
+	const clearHostDisconnectTimer = () => {
+		clearTimeout(hostDisconnectTimer);
+		hostDisconnectTimer = void 0;
+	};
 	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
@@ -393,6 +399,7 @@ async function runBridge(options) {
 				const thisTurn = new Promise((resolve) => turnFinished = resolve);
 				activeTurn = thisTurn;
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				const firstTurn = isFirstTurn;
 				isFirstTurn = false;
 				eventLog = [];
@@ -459,6 +466,7 @@ async function runBridge(options) {
 						activeTurn = void 0;
 						currentTurnState = "waiting";
 						writeBridgeMeta("waiting");
+						clearHostDisconnectTimer();
 					}
 					turnFinished();
 				}
@@ -525,6 +533,7 @@ async function runBridge(options) {
 				return;
 			case "resume":
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				replay(ws, msg.lastSeenEventId);
 				return;
 			case "destroy":
@@ -612,8 +621,18 @@ async function runBridge(options) {
 			}
 			handleInbound(parsed, ws);
 		});
-		ws.on("close", () => {
-			if (activeSocket === ws) activeSocket = void 0;
+		ws.on("close", (_code, reason) => {
+			if (activeSocket === ws) {
+				activeSocket = void 0;
+				if (hostDisconnectTimeoutMs != null && activeTurn != null && reason.toString() !== "suspended") {
+					clearHostDisconnectTimer();
+					hostDisconnectTimer = setTimeout(() => {
+						hostDisconnectTimer = void 0;
+						if (activeSocket == null) turnAbort?.abort();
+					}, hostDisconnectTimeoutMs);
+					hostDisconnectTimer.unref?.();
+				}
+			}
 		});
 		ws.on("error", () => {});
 	});
@@ -658,11 +677,59 @@ function serialiseError(err) {
 	return err;
 }
 //#endregion
+//#region src/bridge/permission-paths.ts
+async function areFileToolPathsTrusted(options) {
+	if (options.paths.length === 0) return false;
+	try {
+		const roots = [await realpath(options.workDir)];
+		if (options.access === "read") for (const root of options.readableSkillRoots) try {
+			roots.push(await realpath(root));
+		} catch {
+			continue;
+		}
+		for (const filePath of options.paths) {
+			if (typeof filePath !== "string" || filePath.trim().length === 0) return false;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(options.cwd)) return false;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${options.cwd}/${filePath}`;
+			for (const candidatePath of [absolutePath, path.posix.normalize(absolutePath)]) {
+				const candidate = await resolvePermissionPath({ filePath: candidatePath });
+				if (!roots.some((root) => {
+					const relative = path.posix.relative(root, candidate);
+					return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+				})) return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function resolvePermissionPath(options) {
+	let existingPath = options.filePath;
+	const missing = [];
+	for (;;) {
+		let exists = true;
+		try {
+			await lstat(existingPath);
+		} catch (error) {
+			if (error == null || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+			exists = false;
+		}
+		if (exists) return path.posix.join(await realpath(existingPath), ...missing);
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === "." || segment === "..") throw new Error("Unable to resolve permission path.");
+		missing.unshift(segment);
+		existingPath = parent;
+	}
+}
+//#endregion
 //#region src/bridge/approvals.ts
 const NATIVE_TOOL_KIND = {
 	read_file: "readonly",
 	write_file: "edit",
 	edit_file: "edit",
+	delete: "edit",
 	execute: "bash",
 	grep: "readonly",
 	glob: "readonly",
@@ -689,12 +756,51 @@ function builtinToolRequiresApproval(kind, permissionMode) {
 	if (permissionMode === "allow-edits") return kind === "bash";
 	return kind === "edit" || kind === "bash";
 }
-function buildInterruptOn(permissionMode, builtinToolFiltering) {
+function buildInterruptOn(options) {
+	if (options.permissionMode == null || options.permissionMode === "allow-all") return void 0;
 	const config = {};
-	for (const [nativeName, kind] of Object.entries(NATIVE_TOOL_KIND)) if (permissionMode != null && isBuiltinToolIncluded({
-		nativeName,
-		toolFiltering: builtinToolFiltering
-	}) && builtinToolRequiresApproval(kind, permissionMode)) config[nativeName] = { allowedDecisions: ["approve", "reject"] };
+	for (const [nativeName, kind] of Object.entries(NATIVE_TOOL_KIND)) {
+		if (!isBuiltinToolIncluded({
+			nativeName,
+			toolFiltering: options.builtinToolFiltering
+		})) continue;
+		if (builtinToolRequiresApproval(kind, options.permissionMode)) config[nativeName] = { allowedDecisions: ["approve", "reject"] };
+		else if ([
+			"read_file",
+			"write_file",
+			"edit_file",
+			"delete",
+			"ls",
+			"grep",
+			"glob"
+		].includes(nativeName)) config[nativeName] = {
+			allowedDecisions: ["approve", "reject"],
+			when: async ({ toolCall }) => {
+				const args = toolCall.args;
+				let target;
+				let globPrefix;
+				const access = kind === "edit" ? "write" : "read";
+				if (nativeName === "glob") {
+					if (typeof args.pattern !== "string" || /\.\.|[{}()[\]]/.test(args.pattern) || args.pattern.includes("\\") || args.pattern.startsWith("/")) return true;
+					target = args.path == null || args.path === "/" ? options.workDir : args.path;
+					const segments = args.pattern.split("/");
+					const wildcardIndex = segments.findIndex((segment) => /[*?]/.test(segment));
+					globPrefix = (wildcardIndex === -1 ? segments : segments.slice(0, wildcardIndex)).join("/");
+				} else if (nativeName === "ls" || nativeName === "grep") target = args.path ?? "/";
+				else target = "file_path" in args ? args.file_path : args.path;
+				if (typeof target !== "string") return true;
+				const paths = [target];
+				if (globPrefix) paths.push(`${path.posix.resolve(options.workDir, target)}/${globPrefix}`);
+				return !await areFileToolPathsTrusted({
+					workDir: options.workDir,
+					cwd: options.workDir,
+					paths,
+					access,
+					readableSkillRoots: options.readableSkillRoots
+				});
+			}
+		};
+	}
 	return Object.keys(config).length > 0 ? config : void 0;
 }
 function collectActionRequests(interrupts) {
@@ -1356,6 +1462,30 @@ function createBuiltinToolFilteringMiddleware(input) {
 	};
 }
 //#endregion
+//#region src/bridge/repository-resources.ts
+function createDeepAgentsRepositoryResourceMiddlewares({ workDir, homeDir, skillsPaths }) {
+	const backend = new CompositeBackend(new StateBackend(), {
+		[`${path.resolve(workDir)}/`]: new FilesystemBackend({
+			rootDir: workDir,
+			virtualMode: true
+		}),
+		[`${path.resolve(homeDir)}/`]: new FilesystemBackend({
+			rootDir: homeDir,
+			virtualMode: true
+		})
+	});
+	return {
+		memory: createMemoryMiddleware({
+			backend,
+			sources: [path.join(workDir, "AGENTS.md")]
+		}),
+		...skillsPaths?.length ? { skills: createSkillsMiddleware({
+			backend,
+			sources: [...skillsPaths]
+		}) } : {}
+	};
+}
+//#endregion
 //#region src/bridge/index.ts
 const HARNESS_CLIENT_APP = env.AI_SDK_HARNESS_CLIENT_APP;
 env.PATH = [env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", path.dirname(rgPath)].join(path.delimiter);
@@ -1427,9 +1557,10 @@ function createModelMiddleware() {
 }
 const args = parseArgs(argv.slice(2));
 const workdir = args.workdir;
+const homeDir = args.homeDir;
 const bridgeStateDir = args.bridgeStateDir;
-if (!workdir || !bridgeStateDir) {
-	console.error("deepagents bridge: missing --workdir / --bridge-state-dir");
+if (!workdir || !homeDir || !bridgeStateDir) {
+	console.error("deepagents bridge: missing --workdir / --home-dir / --bridge-state-dir");
 	process.exit(1);
 }
 const conversationCheckpointPath = `${bridgeStateDir}/conversation.checkpoint`;
@@ -1516,7 +1647,12 @@ async function runTurn(start, turn) {
 	activeHeaders = start.headers;
 	currentResponseFormat = start.responseFormat?.type === "json" && start.responseFormat.schema != null ? toolStrategy(start.responseFormat.schema) : void 0;
 	const emit = (event) => turn.emit(event);
-	const interruptOn = buildInterruptOn(start.permissionMode, start.builtinToolFiltering);
+	const interruptOn = buildInterruptOn({
+		permissionMode: start.permissionMode,
+		builtinToolFiltering: start.builtinToolFiltering,
+		workDir: workdir,
+		readableSkillRoots: start.readableSkillRoots ?? []
+	});
 	const config = {
 		version: "v2",
 		configurable: { thread_id: "bridge-session" },
@@ -1526,7 +1662,10 @@ async function runTurn(start, turn) {
 	const nextAgentConfigurationSignature = JSON.stringify({
 		instructions: start.instructions,
 		tools: start.tools,
-		skillsPaths: start.skillsPaths
+		skillsPaths: start.skillsPaths,
+		permissionMode: start.permissionMode,
+		builtinToolFiltering: start.builtinToolFiltering,
+		readableSkillRoots: start.readableSkillRoots
 	});
 	if (agent == null || agentConfigurationSignature !== nextAgentConfigurationSignature || start.skillsChanged === true) {
 		if (agent != null && start.skillsChanged === true) await agent.updateState(config, { skillsMetadata: new Overwrite([]) });
@@ -1540,6 +1679,11 @@ async function runTurn(start, turn) {
 			}
 		});
 		const middleware = [
+			...Object.values(createDeepAgentsRepositoryResourceMiddlewares({
+				workDir: workdir,
+				homeDir,
+				skillsPaths: start.skillsPaths
+			})),
 			createMcpToolErrorMiddleware({
 				mcpToolNames: () => mcpToolNames,
 				abortSignal: () => currentTurn?.abortSignal
@@ -1556,7 +1700,6 @@ async function runTurn(start, turn) {
 			tools: [...mcpTools, ...hostTools],
 			backend: createLocalShellBackend({ rootDir: workdir }),
 			systemPrompt: start.instructions ? { suffix: start.instructions } : void 0,
-			...start.skillsPaths?.length ? { skills: start.skillsPaths } : {},
 			...middleware.length > 0 ? { middleware } : {},
 			...interruptOn ? { interruptOn } : {},
 			checkpointer
@@ -1709,6 +1852,7 @@ async function runTurn(start, turn) {
 await runBridge({
 	bridgeType: "deepagents",
 	bridgeStateDir,
+	...args.hostDisconnectTimeoutMs !== void 0 ? { hostDisconnectTimeoutMs: Number(args.hostDisconnectTimeoutMs) } : {},
 	onStart: async (start, turn) => {
 		try {
 			await runTurn(start, turn);

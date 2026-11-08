@@ -24,6 +24,10 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 func (m *LanguageModel) SupportsImageInput() bool { return m.base.SupportsImageInput() }
 
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts, err := applyQueueThresholdHeader(opts)
+	if err != nil {
+		return nil, err
+	}
 	// The option warnings (the deprecated openai-compatible key) are the
 	// base model's own; TS reports them once.
 	ctx, _ = m.withCerebrasOptions(ctx, opts)
@@ -45,6 +49,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 }
 
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	opts, err := applyQueueThresholdHeader(opts)
+	if err != nil {
+		return nil, err
+	}
 	ctx, _ = m.withCerebrasOptions(ctx, opts)
 	stream, err := m.base.DoStream(ctx, opts)
 	if err != nil {
