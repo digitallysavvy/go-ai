@@ -250,3 +250,81 @@ func TestR88provbBatchRefusal(t *testing.T) {
 		t.Fatalf("finish = %s / %q", res.FinishReason, res.RawFinishReason)
 	}
 }
+
+// r88provbChatMessages builds the OpenAI chat request messages and warnings
+// for msgs (TS convertToOpenAIChatMessages through getArgs).
+func r88provbChatMessages(t *testing.T, msgs []types.Message, providerOptions map[string]interface{}) (string, []types.Warning, error) {
+	t.Helper()
+	m, err := New(Config{APIKey: "k"}).ChatModel("gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, warnings, err := m.(*LanguageModel).buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: types.Prompt{Messages: msgs}, ProviderOptions: providerOptions}, false)
+	if err != nil {
+		return "", warnings, err
+	}
+	raw, _ := json.Marshal(body["messages"])
+	return string(raw), warnings, nil
+}
+
+// TS 243bf221a8 (convert-to-openai-chat-messages.test.ts "message names"):
+// the it.each cases the extractor cannot expand.
+func TestR88provbChatMessageNames(t *testing.T) {
+	bp := map[string]interface{}{"mode": "explicit"}
+	for _, mode := range []string{"system", "developer"} {
+		msgs := []types.Message{
+			{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "Be helpful"}},
+				ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"name": "instructions", "promptCacheBreakpoint": bp}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "Hi", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"promptCacheBreakpoint": bp}}}},
+				ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"name": "bot"}}},
+		}
+		got, _, err := r88provbChatMessages(t, msgs, map[string]interface{}{"openai": map[string]interface{}{"systemMessageMode": mode}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `[{"content":[{"prompt_cache_breakpoint":{"mode":"explicit"},"text":"Be helpful","type":"text"}],"name":"instructions","role":"` + mode + `"},{"content":[{"prompt_cache_breakpoint":{"mode":"explicit"},"text":"Hi","type":"text"}],"name":"bot","role":"assistant"}]`
+		if got != want {
+			t.Errorf("%s mode:\n got %s\nwant %s", mode, got, want)
+		}
+	}
+
+	for _, name := range []interface{}{nil, 42, true, map[string]interface{}{}, []interface{}{}} {
+		msgs := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}},
+			ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"name": name}}}}
+		_, _, err := r88provbChatMessages(t, msgs, nil)
+		if err == nil || !strings.Contains(err.Error(), "invalid openai provider options") {
+			t.Errorf("name %#v: err = %v, want invalid openai provider options", name, err)
+		}
+	}
+
+	// The Go-only Message.Name keeps working; the TS option wins.
+	got, _, err := r88provbChatMessages(t, []types.Message{
+		{Role: types.RoleUser, Name: "legacy", Content: []types.ContentPart{types.TextContent{Text: "a"}}},
+		{Role: types.RoleUser, Name: "legacy", Content: []types.ContentPart{types.TextContent{Text: "b"}},
+			ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"name": "alice"}}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `[{"content":"a","name":"legacy","role":"user"},{"content":"b","name":"alice","role":"user"}]`; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+
+	// The OpenAI-compatible converter does not read the option.
+	srvBody := map[string]interface{}{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &srvBody)
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+	cm, _ := New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: true, Name: "test-provider"}).ChatModel("m")
+	if _, err := cm.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "a"}}, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"name": 42}}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := json.Marshal(srvBody["messages"]); string(raw) != `[{"content":"a","role":"user"}]` {
+		t.Errorf("compat messages = %s", raw)
+	}
+}

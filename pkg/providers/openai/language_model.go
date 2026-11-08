@@ -459,12 +459,17 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		toOpenAIMessagesOpts.ReasoningKey = "reasoning_content"
 		toOpenAIMessagesOpts.SpreadCompatMetadata = true
 		toOpenAIMessagesOpts.FileParts = prompt.FilePartsOpenAICompatible
+	} else {
+		// TS 243bf221a8: providerOptions.openai.name per message (OpenAI and
+		// Azure chat; the openai-compatible converter does not read it).
+		toOpenAIMessagesOpts.MessageNameKey = "openai"
 	}
 	if opts.Prompt.IsMessages() {
-		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
+		converted, messageWarnings, convErr := prompt.ToOpenAIMessagesWithWarnings(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
 		if convErr != nil {
 			return nil, nil, convErr
 		}
+		warnings = append(warnings, messageWarnings...)
 		body["messages"] = converted
 	} else if opts.Prompt.IsSimple() {
 		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
