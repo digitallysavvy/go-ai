@@ -337,7 +337,7 @@ func TestCompatChatProviderNamesKeyOptionsAndMetadata(t *testing.T) {
 			return must(deepinfra.New(deepinfra.Config{APIKey: "k", BaseURL: b}).LanguageModel("m"))
 		},
 		"baseten": func(b string) provider.LanguageModel {
-			return must(baseten.New(baseten.Config{APIKey: "k", ModelURL: b}).LanguageModel("m"))
+			return must(baseten.New(baseten.Config{APIKey: "k", BaseURL: b}).LanguageModel("m"))
 		},
 	}
 	for name, f := range cases {

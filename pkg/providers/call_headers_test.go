@@ -142,7 +142,7 @@ func TestGenerateResponseMetadataAndHeaders(t *testing.T) {
 		}, "resp_1", true},
 		"cohere": {func() (provider.LanguageModel, error) {
 			return cohere.New(cohere.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
-		}, "gen_1", false},
+		}, "resp_1", false}, // TS 73400b299d: id ?? generation_id
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

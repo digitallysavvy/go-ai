@@ -106,7 +106,7 @@ func TestHintedToolParametersKeepKeyOrderAcrossProviders(t *testing.T) {
 			return deepinfra.New(deepinfra.Config{APIKey: "k", BaseURL: u}).LanguageModel("m")
 		}),
 		"baseten": mk(func(u string) (provider.LanguageModel, error) {
-			return baseten.New(baseten.Config{APIKey: "k", ModelURL: u}).LanguageModel("m")
+			return baseten.New(baseten.Config{APIKey: "k", BaseURL: u}).LanguageModel("m")
 		}),
 		"gateway": mk(func(u string) (provider.LanguageModel, error) {
 			p, err := gateway.New(gateway.Config{APIKey: "k", BaseURL: u})
