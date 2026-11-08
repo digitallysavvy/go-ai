@@ -310,7 +310,12 @@ type Settings struct {
 	Port           int
 	PortEndpoint   *harness.PortEndpoint
 	StartupTimeout time.Duration
-	Reconnect      bridge.ReconnectOptions
+	// HostDisconnectTimeout aborts a running turn when its host disconnects
+	// and does not reconnect within this time, so the turn stops spending.
+	// A suspended turn is exempt. Zero keeps the turn running until it
+	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
+	HostDisconnectTimeout time.Duration
+	Reconnect             bridge.ReconnectOptions
 
 	// ClientApp overrides the default "ai-sdk-harness-acp"/Version identity
 	// sent to the ACP implementation and used in the implementation identity

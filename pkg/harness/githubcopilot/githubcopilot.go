@@ -72,8 +72,12 @@ type Settings struct {
 	Port                 *int
 	PortEndpoint         *harness.PortEndpoint
 	StartupTimeoutMS     *int
-	Reconnect            *bridge.ReconnectOptions
-	MintBridgeToken      harness.MintBridgeTokenCallback
+	// HostDisconnectTimeoutMS aborts a running turn when its host
+	// disconnects and does not reconnect within this many milliseconds; a
+	// suspended turn is exempt (TS a54f0fd8c6).
+	HostDisconnectTimeoutMS *int
+	Reconnect               *bridge.ReconnectOptions
+	MintBridgeToken         harness.MintBridgeTokenCallback
 }
 
 // GatewayModel is the AI Gateway model the Copilot CLI runs with in BYOK mode
@@ -182,6 +186,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 	}
 	if settings.StartupTimeoutMS != nil {
 		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.HostDisconnectTimeoutMS != nil {
+		cfg.HostDisconnectTimeout = time.Duration(*settings.HostDisconnectTimeoutMS) * time.Millisecond
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect

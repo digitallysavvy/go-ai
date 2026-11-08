@@ -60,6 +60,11 @@ type Settings struct {
 	// StartupTimeoutMS is the maximum time to wait for the ACP bridge to
 	// start.
 	StartupTimeoutMS *int
+	// HostDisconnectTimeoutMS aborts a running turn when its host
+	// disconnects and does not reconnect within this many milliseconds. A
+	// suspended turn is exempt. Unset (or a value that is not positive)
+	// keeps the turn running until it finishes (TS a54f0fd8c6).
+	HostDisconnectTimeoutMS *int
 	// Reconnect configures reconnection attempts after an established bridge
 	// connection drops.
 	Reconnect *bridge.ReconnectOptions
@@ -126,6 +131,9 @@ func BuildConfig(settings Settings) acp.Settings {
 	}
 	if settings.StartupTimeoutMS != nil {
 		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.HostDisconnectTimeoutMS != nil {
+		cfg.HostDisconnectTimeout = time.Duration(*settings.HostDisconnectTimeoutMS) * time.Millisecond
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect

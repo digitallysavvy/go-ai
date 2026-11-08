@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -130,6 +131,18 @@ func CurrentOS() string { return runtime.GOOS }
 // `shellQuote`.
 func ShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// HostDisconnectTimeoutFlag returns the bridge CLI flag
+// ` --host-disconnect-timeout-ms '<ms>'` for a positive timeout and "" for
+// zero or a negative value (TS a54f0fd8c6 appends it whenever the setting is
+// defined; the bridge ignores a value that is not a positive finite number,
+// so only the command line differs).
+func HostDisconnectTimeoutFlag(timeout time.Duration) string {
+	if timeout <= 0 {
+		return ""
+	}
+	return " --host-disconnect-timeout-ms " + ShellQuote(providerutils.JSNumberString(float64(timeout)/float64(time.Millisecond)))
 }
 
 // ResolveSandboxHomeDir re-exports harness.ResolveSandboxHomeDir (TS utils

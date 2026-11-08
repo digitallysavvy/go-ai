@@ -708,7 +708,8 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	command := "node " + harnessutil.ShellQuote(resolvedBridgeDir+"/bridge.mjs") +
 		" --workdir " + harnessutil.ShellQuote(workDir) +
 		" --bridge-state-dir " + harnessutil.ShellQuote(bridgeStateDir) +
-		" --bridge-type " + harnessutil.ShellQuote(settings.HarnessID)
+		" --bridge-type " + harnessutil.ShellQuote(settings.HarnessID) +
+		harnessutil.HostDisconnectTimeoutFlag(settings.HostDisconnectTimeout)
 
 	timeout := settings.StartupTimeout
 	if timeout <= 0 {

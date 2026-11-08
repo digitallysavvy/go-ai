@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -351,5 +352,18 @@ func TestR88toolsGrokBuildDisablesRepositoryHooksAndMCPs(t *testing.T) {
 	}
 	if _, err := CreateGrokBuild(); err != nil {
 		t.Fatalf("CreateGrokBuild: %v", err)
+	}
+}
+
+// TS a54f0fd8c6 grok-build-harness.test.ts: hostDisconnectTimeoutMs is
+// forwarded to createACP.
+func TestR88toolsGrokBuildHostDisconnectTimeout(t *testing.T) {
+	ms := 60000
+	cfg, err := BuildConfig(Settings{HostDisconnectTimeoutMS: &ms})
+	if err != nil || cfg.HostDisconnectTimeout != 60*time.Second {
+		t.Fatalf("HostDisconnectTimeout = %v, %v", cfg.HostDisconnectTimeout, err)
+	}
+	if cfg, _ := BuildConfig(Settings{}); cfg.HostDisconnectTimeout != 0 {
+		t.Fatalf("unset HostDisconnectTimeout = %v", cfg.HostDisconnectTimeout)
 	}
 }

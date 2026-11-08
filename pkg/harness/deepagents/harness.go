@@ -45,6 +45,11 @@ type Settings struct {
 	// StartupTimeout is the maximum time to wait for the bridge to advertise
 	// its port. Zero defaults to bridge.DefaultStartupTimeout.
 	StartupTimeout time.Duration
+	// HostDisconnectTimeout aborts a running turn when its host disconnects
+	// and does not reconnect within this time, so the turn stops spending.
+	// A suspended turn is exempt. Zero keeps the turn running until it
+	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
+	HostDisconnectTimeout time.Duration
 	// Reconnect configures reconnection after an established bridge
 	// connection drops.
 	Reconnect bridge.ReconnectOptions
@@ -262,6 +267,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	if isResume {
 		command += " --resume true"
 	}
+	command += harnessutil.HostDisconnectTimeoutFlag(settings.HostDisconnectTimeout)
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "deepagents bridge", Source: HarnessID, Sandbox: toolSafeSandboxSession,

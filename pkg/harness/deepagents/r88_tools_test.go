@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
@@ -101,5 +102,16 @@ func TestR88toolsDeepAgentsReadableSkillRoots(t *testing.T) {
 			t.Fatalf("readableSkillRoots = %#v", roots)
 		}
 		_ = sess.DoDestroy(context.Background())
+	}
+}
+
+// TS a54f0fd8c6 "passes hostDisconnectTimeoutMs %s to the bridge": the flag
+// follows --resume true / --bootstrap-dir.
+func TestR88toolsDeepAgentsHostDisconnectTimeout(t *testing.T) {
+	if cmd := r88toolsSpawn(t, Settings{HostDisconnectTimeout: 60 * time.Second}); !strings.HasSuffix(cmd, "/deepagents' --host-disconnect-timeout-ms '60000'") {
+		t.Fatalf("spawn command = %q", cmd)
+	}
+	if cmd := r88toolsSpawn(t, Settings{}); strings.Contains(cmd, "host-disconnect") {
+		t.Fatalf("spawn command = %q", cmd)
 	}
 }

@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,5 +65,38 @@ func TestR88toolsOpenCodeReadableSkillRoots(t *testing.T) {
 	}
 	if got, ok := (<-starts)["readableSkillRoots"]; ok {
 		t.Fatalf("compact start carries readableSkillRoots %#v", got)
+	}
+}
+
+// TS a54f0fd8c6 opencode-harness.test.ts: the flag follows --skills-dir.
+func TestR88toolsOpenCodeHostDisconnectTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		timeout time.Duration
+		want    string
+	}{{60 * time.Second, " --host-disconnect-timeout-ms '60000'"}, {0, ""}} {
+		srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+		t.Cleanup(srv.Close)
+		sandbox := newFakeSandbox(srv)
+		h, err := CreateOpenCode(Settings{HostDisconnectTimeout: tc.timeout})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s", SessionWorkDir: "/vercel/sandbox/s", SandboxSession: sandbox})
+		if err == nil {
+			_ = sess.DoDestroy(context.Background())
+		}
+		sandbox.mu.Lock()
+		if len(sandbox.spawnCommands) == 0 {
+			sandbox.mu.Unlock()
+			t.Fatalf("no spawn (DoStart: %v)", err)
+		}
+		cmd := sandbox.spawnCommands[0]
+		sandbox.mu.Unlock()
+		if tc.want != "" && !strings.HasSuffix(cmd, "/.agents/skills'"+tc.want) {
+			t.Fatalf("command = %q", cmd)
+		}
+		if tc.want == "" && strings.Contains(cmd, "host-disconnect") {
+			t.Fatalf("command = %q", cmd)
+		}
 	}
 }
