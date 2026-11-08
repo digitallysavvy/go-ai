@@ -21,9 +21,8 @@ type DecisionQuestion struct {
 	Type string
 
 	// Instructions is a JSON-compatible string, map[string]interface{}, or
-	// []interface{}. It may be nil for choice, score and boolean questions
-	// when the criteria define the judgment (a boolean question then needs a
-	// non-nil criterion); a box question always needs it.
+	// []interface{}. It may be nil for every question type when the provider
+	// supports it (a boolean question then needs a non-nil criterion).
 	Instructions interface{}
 
 	// Criteria is interpreted according to Type:
@@ -33,7 +32,8 @@ type DecisionQuestion struct {
 	//     allowed); providers may require more.
 	//   - "boolean": optional; when non-nil, a map[string]interface{} with
 	//     only "true"/"false" keys.
-	//   - "box": unused (a box question has instructions only).
+	//   - "box": unused (a box question has no criteria; instructions may be
+	//     nil).
 	//
 	// ExperimentalDecide also accepts typed Go containers in Instructions and
 	// Criteria (any slice or array, any map with string keys, for example

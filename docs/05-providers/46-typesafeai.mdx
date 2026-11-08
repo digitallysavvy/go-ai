@@ -83,7 +83,7 @@ TypeSafe AI as the judge model.
 
 ### Box questions
 
-A `box` question (`Type: "box"`, `Instructions` only) asks where something is in an image. The answer's `Box` holds normalized `Top`, `Bottom`, `Left` and `Right` edges in `[0, 1]`. The model sends `TypeSafe-Danger-Zone-Images: true` for requests with a box question, and the per-question confidence is reported in `ProviderMetadata["typesafe"]["confidence"]`.
+A `box` question (`Type: "box"`, no `Criteria`; `Instructions` optional) asks where something is in an image. The answer's `Box` holds normalized `Top`, `Bottom`, `Left` and `Right` edges in `[0, 1]`. The model sends `TypeSafe-Danger-Zone-Images: true` for requests with a box question, and the per-question confidence is reported in `ProviderMetadata["typesafe"]["confidence"]`.
 
 ### Model IDs
 
