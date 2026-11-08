@@ -328,3 +328,112 @@ func TestR88provbChatMessageNames(t *testing.T) {
 		t.Errorf("compat messages = %s", raw)
 	}
 }
+
+// r88provbImageServer records the image requests: the JSON body, or the
+// multipart field order, values and part content types.
+type r88provbImageRequest struct {
+	json   map[string]interface{}
+	fields []string
+	values map[string]string
+	types  map[string]string
+}
+
+func r88provbImageServer(t *testing.T) (*httptest.Server, *[]r88provbImageRequest) {
+	t.Helper()
+	var reqs []r88provbImageRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := r88provbImageRequest{values: map[string]string{}, types: map[string]string{}}
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+			mr, err := r.MultipartReader()
+			if err == nil {
+				for {
+					part, err := mr.NextPart()
+					if err != nil {
+						break
+					}
+					v, _ := io.ReadAll(part)
+					rec.fields = append(rec.fields, part.FormName())
+					rec.values[part.FormName()] = string(v)
+					rec.types[part.FormName()] = part.Header.Get("Content-Type")
+				}
+			}
+		} else {
+			_ = json.NewDecoder(r.Body).Decode(&rec.json)
+		}
+		reqs = append(reqs, rec)
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aGk="}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &reqs
+}
+
+// TS 6549344e0a / 5f9bb8eea4 (openai-image-model.test.ts "GPT Image 2.6
+// options" and the edit moderation case).
+func TestR88provbImageGPTImage26Options(t *testing.T) {
+	srv, reqs := r88provbImageServer(t)
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), ModelGPTImage26Flare)
+	n := 1
+	png := provider.ImageFile{Type: "file", MediaType: "image/png", Data: []byte{137, 80, 78, 71}}
+	ctx := context.Background()
+
+	if _, err := m.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "p", N: &n, Size: "1024x1024", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{
+		"complexity": "low", "outputFormat": "gif", "frameCount": 12, "frameDurationMs": 100, "safetyIdentifier": "hashed-user",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal((*reqs)[0].json)
+	if want := `{"complexity":"low","frame_count":12,"frame_duration_ms":100,"model":"gpt-image-2.6-flare","n":1,"output_format":"gif","prompt":"p","safety_identifier":"hashed-user","size":"1024x1024"}`; string(got) != want {
+		t.Errorf("generation body = %s, want %s", got, want)
+	}
+
+	// gif is generation only.
+	if _, err := m.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "p", Files: []provider.ImageFile{png}, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"outputFormat": "gif"}}}); err == nil {
+		t.Error("gif edit: want an error")
+	}
+	// safetyIdentifier has at most 128 characters.
+	if _, err := m.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "p", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"safetyIdentifier": strings.Repeat("a", 129)}}}); err == nil {
+		t.Error("safetyIdentifier 129: want an error")
+	}
+
+	*reqs = nil
+	if _, err := m.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "p", N: &n, Size: "1024x1024", Files: []provider.ImageFile{png}, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{
+		"complexity": "medium", "safetyIdentifier": "hashed-user", "moderation": "low", "quality": "high", "inputFidelity": "high",
+		"markup": "data:image/png;base64,iVBORw==",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	r := (*reqs)[0]
+	if got, want := strings.Join(r.fields, ","), "model,prompt,image,markup,n,size,quality,complexity,input_fidelity,moderation,safety_identifier"; got != want {
+		t.Errorf("edit field order = %s, want %s", got, want)
+	}
+	if r.types["markup"] != "image/png" || r.values["markup"] != string([]byte{137, 80, 78, 71}) {
+		t.Errorf("markup part = %q (%s)", r.values["markup"], r.types["markup"])
+	}
+	if r.values["moderation"] != "low" || r.values["complexity"] != "medium" || r.values["safety_identifier"] != "hashed-user" {
+		t.Errorf("edit values = %v", r.values)
+	}
+
+	*reqs = nil
+	for markup, want := range map[string]string{
+		"data:image/png;base64,iVBORw0KGgo=": "`markup` cannot be combined with `mask`.",
+	} {
+		_, err := m.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "p", Files: []provider.ImageFile{png}, Mask: &png, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"markup": markup}}})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("markup + mask: err = %v, want %q", err, want)
+		}
+	}
+	_, err := m.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "p", Files: []provider.ImageFile{png}, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"markup": "data:image/png,abc"}}})
+	if err == nil || !strings.Contains(err.Error(), "`markup` data URLs must be base64 encoded.") {
+		t.Errorf("plain data URL: err = %v", err)
+	}
+	if len(*reqs) != 0 {
+		t.Errorf("%d requests sent, want none", len(*reqs))
+	}
+
+	if f := m.SupportsFileInputs(); f == nil || !*f {
+		t.Error("SupportsFileInputs: want true for gpt-image-2.6-flare")
+	}
+	if ImageMaxImagesPerCall(ModelGPTImage26Sunburst) != 10 {
+		t.Error("max images: want 10")
+	}
+}

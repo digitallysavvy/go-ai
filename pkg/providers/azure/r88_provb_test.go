@@ -203,3 +203,48 @@ func TestR88provbAzureImageOpenAIOptions(t *testing.T) {
 		t.Errorf("body = %v", b)
 	}
 }
+
+// TS 6400cf8b88 (azure-mai-image-model.test.ts "accepts OpenAI image edit
+// options under the azure key %s").
+func TestR88provbAzureImageEditOpenAIOptions(t *testing.T) {
+	for name, openaiOpts := range map[string]map[string]interface{}{
+		"alone":                     nil,
+		"overriding openai options": {"inputFidelity": "low", "markup": "data:image/png;base64,AQID", "background": "opaque"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, reqs := r88provbServer(t, "application/json", `{"data":[{"b64_json":"aGk="}]}`)
+			p, err := New(Config{APIKey: "k", ResourceName: "test-resource", BaseURL: srv.URL + "/openai"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, _ := p.ImageModel("gpt-image-2.6-flare")
+			po := map[string]interface{}{"azure": map[string]interface{}{"inputFidelity": "high", "markup": "data:image/png;base64,iVBORw=="}}
+			if openaiOpts != nil {
+				po["openai"] = openaiOpts
+			}
+			res, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p",
+				Files:           []provider.ImageFile{{Type: "file", MediaType: "image/png", Data: []byte{137, 80, 78, 71}}},
+				ProviderOptions: po})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := (*reqs)[0].forms
+			if !strings.HasSuffix((*reqs)[0].path, "/images/edits") {
+				t.Errorf("path = %s", (*reqs)[0].path)
+			}
+			if f["input_fidelity"] != "high" || f["markup"] != string([]byte{137, 80, 78, 71}) {
+				t.Errorf("form = %v", f)
+			}
+			wantBackground := ""
+			if openaiOpts != nil {
+				wantBackground = "opaque"
+			}
+			if f["background"] != wantBackground {
+				t.Errorf("background = %q, want %q", f["background"], wantBackground)
+			}
+			if len(res.Warnings) != 0 {
+				t.Errorf("warnings = %v", res.Warnings)
+			}
+		})
+	}
+}
