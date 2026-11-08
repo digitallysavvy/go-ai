@@ -174,7 +174,7 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 	}
 	id := cfg.id
 	if id == "" {
-		id = "steer-" + GenerateID()
+		id = generateSteeringID()
 	}
 
 	s.mu.Lock()
@@ -199,6 +199,11 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 	}
 	return h, nil
 }
+
+// generateSteeringID makes the default id of a steering message: "steer-"
+// and 24 random characters (TS createIdGenerator({ prefix: 'steer', size:
+// 24 }), steering.ts 8).
+var generateSteeringID, _ = CreateIDGenerator(CreateIDGeneratorOptions{Prefix: "steer", Size: 24})
 
 // steeringRun is the run side of a Steering.
 type steeringRun struct{ s *Steering }

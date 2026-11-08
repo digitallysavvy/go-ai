@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"reflect"
+	"regexp"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -111,5 +112,22 @@ func TestR88genDecideForwardsNullBooleanCriteria(t *testing.T) {
 	}
 	if got := res.Answers["refund"]; !reflect.DeepEqual(got, answer) {
 		t.Fatalf("answer = %#v", got)
+	}
+}
+
+// TS steering.ts 8: default steering ids are createIdGenerator({ prefix:
+// 'steer', size: 24 }), which the steering-message stream part and UI part
+// now expose (1a1da8d68c).
+func TestR88genSteeringDefaultIDShape(t *testing.T) {
+	re := regexp.MustCompile(`^steer-[0-9A-Za-z]{24}$`)
+	s := NewSteering()
+	for _, h := range []*SteerHandle{s.Steer("a"), s.Queue("b")} {
+		run, _ := startSteeringRun(s)
+		if run != nil {
+			run.end(SteeringFinished)
+		}
+		if id := h.Outcome().ID; !re.MatchString(id) {
+			t.Fatalf("id = %q", id)
+		}
 	}
 }
