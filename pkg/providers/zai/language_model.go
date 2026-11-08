@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
 	stdhttp "net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -326,7 +325,7 @@ func (m *LanguageModel) handleError(err error) error {
 		// TS createJsonErrorResponseHandler: an empty body, or one that does
 		// not parse (secureJsonParse) or match the error schema, gives the
 		// response status text.
-		if text := http.StatusText(statusCode); text != "" {
+		if text := stdhttp.StatusText(statusCode); text != "" {
 			message = text
 		}
 	}
