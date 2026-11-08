@@ -2441,7 +2441,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					replayQueue, heldChunks = append(heldChunks, chunk), nil
 					continue
 				}
+				// A ping is never held behind buffered tool parts (TS
+				// stream-text.ts 2885-2890): it is forwarded right away.
 				if chunk.Type != provider.ChunkTypeError && chunk.Type != provider.ChunkTypeFinish &&
+					chunk.Type != provider.ChunkTypePing &&
 					(isStreamRetryToolPart(chunk.Type) || len(heldChunks) > 0) {
 					heldChunks = append(heldChunks, chunk)
 					continue

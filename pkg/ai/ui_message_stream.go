@@ -3236,7 +3236,8 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	}
 
 	switch chunk.Type {
-	case provider.ChunkTypeRaw:
+	case provider.ChunkTypeRaw, provider.ChunkTypePing:
+		// TS toUIMessageChunk: raw and ping parts have no UI chunk.
 		break
 	case provider.ChunkTypeResponseMetadata, provider.ChunkTypeFirstChunk:
 		break
