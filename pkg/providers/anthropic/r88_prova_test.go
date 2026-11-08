@@ -1585,3 +1585,16 @@ var (
 	_ provider.FileDownloader     = (*FilesAPI)(nil)
 	_ provider.FileDeleter        = (*FilesAPI)(nil)
 )
+
+// TS 4b8f00efff anthropic-prepare-tools.test.ts: no strict-tool beta for
+// providers that only support native final output.
+func TestR88provaPrepareToolsNativeOutputOnly(t *testing.T) {
+	strict := true
+	p := prepareTools(prepareToolsOptions{
+		tools:                    []types.Tool{{Name: "report", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}, Strict: &strict}},
+		supportsStructuredOutput: true,
+	})
+	if len(p.betas) != 0 || len(p.warnings) != 1 || p.warnings[0].Feature != "strict" || p.tools[0]["strict"] != nil {
+		t.Fatalf("betas %v warnings %v tool %v", p.betas, p.warnings, p.tools[0])
+	}
+}

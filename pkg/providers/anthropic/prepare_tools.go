@@ -249,7 +249,9 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			m["input_examples"] = examples
 		}
 		wire = append(wire, m)
-		if o.supportsStructuredOutput {
+		// Native final output does not require this beta; only providers
+		// that also support strict tools send it (TS 4b8f00efff).
+		if o.supportsStructuredOutput && o.supportsStrictTools {
 			addBeta(BetaHeaderStructuredOutputs)
 		}
 		if t.InputExamples != nil || allowedCallers != nil {

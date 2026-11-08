@@ -227,17 +227,25 @@ func TestR85provaForcedToolStructuredOutput(t *testing.T) {
 				t.Errorf("stream=%v %s open schema: body = %v", stream, id, body)
 			}
 		}
-		// preserves the beta header for tools with explicit outputFormat
-		opts := r85provaJSONCall(openSchema)
-		opts.Tools = []types.Tool{{Type: types.ToolTypeFunction, Name: "lookup", Parameters: r85provaSchema}}
-		opts.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"structuredOutputMode": "outputFormat"}}
-		m := r85provaForcedModel("claude-sonnet-4-5", true)
-		body, _ := r85provaBody(t, m, opts, stream)
-		if oc, _ := body["output_config"].(map[string]interface{}); oc["format"] == nil {
-			t.Errorf("stream=%v outputFormat: body = %v", stream, body)
-		}
-		if betas := m.combineBetaHeaders(opts, stream); !strings.Contains(betas, "structured-outputs-2025-11-13") {
-			t.Errorf("stream=%v outputFormat: anthropic-beta = %q", stream, betas)
+		// only sends the strict-tool beta with explicit outputFormat when
+		// supported (TS 4b8f00efff)
+		for _, strict := range []bool{false, true} {
+			opts := r85provaJSONCall(openSchema)
+			opts.Tools = []types.Tool{{Type: types.ToolTypeFunction, Name: "lookup", Parameters: r85provaSchema}}
+			opts.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"structuredOutputMode": "outputFormat"}}
+			native := true
+			m := NewLanguageModel(New(Config{APIKey: "test-api-key", SupportsNativeStructuredOutput: &native, SupportsStrictTools: &strict}), "claude-sonnet-4-5", nil)
+			body, _ := r85provaBody(t, m, opts, stream)
+			if oc, _ := body["output_config"].(map[string]interface{}); oc["format"] == nil {
+				t.Errorf("stream=%v outputFormat: body = %v", stream, body)
+			}
+			want := ""
+			if strict {
+				want = "structured-outputs-2025-11-13"
+			}
+			if betas := m.combineBetaHeaders(opts, stream); betas != want {
+				t.Errorf("stream=%v strict=%v outputFormat: anthropic-beta = %q", stream, strict, betas)
+			}
 		}
 	}
 }

@@ -2,7 +2,10 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
@@ -70,5 +73,52 @@ func TestR88provaVertexAnthropicRejectsThreads(t *testing.T) {
 		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thread": map[string]interface{}{"type": "create"}}}})
 	if err == nil || err.Error() != "googleVertex.anthropic.messages does not support Anthropic message threads." {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS 4b8f00efff: the native-output opt-in is gated by Vertex model support.
+func TestR88provaVertexNativeOutputModels(t *testing.T) {
+	for id, want := range map[string]bool{
+		"claude-opus-4-5@20251101": true, "claude-sonnet-4-5@20250929": true, "claude-haiku-4-5@20251001": true,
+		"claude-sonnet-4-6": true, "claude-opus-4-8": true, "claude-opus-5": true, "claude-opus-5-5": true,
+		"claude-fable-5-1": true, "claude-sonnet-6": true, "claude-sonnet-5": true, "claude-sonnet-5-5": true,
+		"claude-haiku-5-5": true, "claude-fable-5": true,
+		"claude-sonnet-4-5-20250929": false, "claude-3-5-sonnet-v2@20241022": false, "claude-opus-4-1@20250805": false,
+		"claude-opus-4@20250514": false, "claude-sonnet-4@20250514": false, "claude-3-7-sonnet@20250219": false,
+		"custom-deployment": false, "claude-opus-4-4": false, "claude-opus-3-9": false,
+	} {
+		if got := vertexAnthropicSupportsNativeStructuredOutput(id); got != want {
+			t.Errorf("%s: %v", id, got)
+		}
+	}
+}
+
+// TS 4b8f00efff google-vertex-anthropic-structured-output.test.ts: with the
+// opt-in, auto mode sends output_config.format without the strict-tool beta;
+// without it the JSON tool is used.
+func TestR88provaVertexNativeOutputOptIn(t *testing.T) {
+	for _, optIn := range []bool{false, true} {
+		var body map[string]interface{}
+		var beta string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &body)
+			beta = r.Header.Get("anthropic-beta")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"{}"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		}))
+		p := New(Options{BaseURL: srv.URL, AuthToken: func(context.Context) (string, error) { return "tok", nil }, SupportsNativeStructuredOutput: optIn})
+		m, _ := p.LanguageModel("claude-sonnet-4-6")
+		_, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+			Tools:          []types.Tool{{Name: "lookup", Parameters: map[string]interface{}{"type": "object"}}},
+			ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}}})
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, native := body["output_config"]
+		if native != optIn || beta != "" {
+			t.Fatalf("optIn=%v: output_config %v beta %q tools %v", optIn, body["output_config"], beta, body["tools"])
+		}
 	}
 }
