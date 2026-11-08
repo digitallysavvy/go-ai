@@ -363,6 +363,17 @@ func TestR88provcGenerateVideoUploadedOutcome(t *testing.T) {
 		}
 	})
 
+	t.Run("upload-only results across parallel calls", func(t *testing.T) {
+		one := 1
+		model := &mockVideoModel{maxPerCall: &one, generateFn: func(context.Context, *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+			return &provider.VideoModelV3Response{Videos: []provider.VideoModelV3VideoData{{Type: provider.VideoDataTypeUploaded}}, Response: provider.VideoModelV3ResponseInfo{ModelID: "mock-video"}}, nil
+		}}
+		res, err := GenerateVideo(context.Background(), GenerateVideoOptions{Model: model, Prompt: VideoPrompt{Text: "a cat"}, N: 2})
+		if err != nil || res.UploadedVideos != 2 || res.Video != nil || len(res.Videos) != 0 {
+			t.Fatalf("result = %+v, err = %v", res, err)
+		}
+	})
+
 	t.Run("uploaded outcomes through the start/status flow", func(t *testing.T) {
 		zero := 0
 		model := &mockAsyncVideoModel{
