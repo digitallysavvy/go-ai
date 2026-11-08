@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	vertexinternal "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/internal"
 )
 
@@ -50,6 +52,87 @@ func r88provgRedirectPair(t *testing.T) (api, foreign *r88provgHeaderRecorder, a
 	apiSrv := httptest.NewServer(api.handler(http.StatusTemporaryRedirect, foreignSrv.URL+"/landing"))
 	t.Cleanup(apiSrv.Close)
 	return api, foreign, apiSrv.URL
+}
+
+// TestR88provgMaaSNoCredentialsToOtherOrigins ports TS 977231e913
+// google-vertex-maas-provider-node.test.ts "should not send credentials or
+// custom headers to other origins": a foreign URL gets neither Authorization
+// nor the custom header, and the token func is never called.
+func TestR88provgMaaSNoCredentialsToOtherOrigins(t *testing.T) {
+	foreign := &r88provgHeaderRecorder{}
+	srv := httptest.NewServer(foreign.handler(0, ""))
+	defer srv.Close()
+
+	tokenCalls := 0
+	tr := &maasAuthTransport{
+		base: http.DefaultTransport,
+		headersFunc: func(context.Context) (map[string]string, error) {
+			return map[string]string{"X-Custom-Header": "custom-value"}, nil
+		},
+		authToken: func(context.Context) (string, error) {
+			tokenCalls++
+			return "mock-auth-token", nil
+		},
+		baseURL: "https://aiplatform.googleapis.com/v1/projects/test-project/locations/global/endpoints/openapi",
+	}
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/image.png", nil)
+	req.Header.Set("Accept", "image/*")
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	got := foreign.headers()
+	if len(got) != 1 {
+		t.Fatalf("requests = %d, want 1", len(got))
+	}
+	if v := got[0].Get("Authorization"); v != "" {
+		t.Fatalf("Authorization = %q, want none", v)
+	}
+	if v := got[0].Get("X-Custom-Header"); v != "" {
+		t.Fatalf("X-Custom-Header = %q, want none", v)
+	}
+	if got[0].Get("Accept") != "image/*" {
+		t.Fatalf("Accept = %q, want the caller's header unchanged", got[0].Get("Accept"))
+	}
+	if tokenCalls != 0 {
+		t.Fatalf("token func called %d times, want 0", tokenCalls)
+	}
+}
+
+// TestR88provgMaaSRedirectHopGetsNoCredentials is the Go-only case of
+// 977231e913: net/http runs the transport once per redirect hop, so a
+// same-origin POST that is redirected to another origin must not carry the
+// token or the custom headers on the second hop.
+func TestR88provgMaaSRedirectHopGetsNoCredentials(t *testing.T) {
+	api, foreign, apiURL := r88provgRedirectPair(t)
+	p := NewMaaS(MaaSConfig{
+		Project: "test-project",
+		BaseURL: apiURL,
+		Headers: StaticHeaders(map[string]string{"X-Custom": "header"}),
+		AuthToken: func(context.Context) (string, error) {
+			return "secret-token", nil
+		},
+	})
+	model, err := p.LanguageModel("test-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The foreign server answers {}, which is not a chat completion; only
+	// the headers each hop carried matter here.
+	_, _ = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+
+	if h := api.headers(); len(h) != 1 || h[0].Get("Authorization") != "Bearer secret-token" || h[0].Get("X-Custom") != "header" {
+		t.Fatalf("API hop headers = %v, want the token and custom header", h)
+	}
+	h := foreign.headers()
+	if len(h) != 1 {
+		t.Fatalf("foreign requests = %d, want 1", len(h))
+	}
+	if h[0].Get("Authorization") != "" || h[0].Get("X-Custom") != "" {
+		t.Fatalf("foreign hop leaked credentials: Authorization=%q X-Custom=%q", h[0].Get("Authorization"), h[0].Get("X-Custom"))
+	}
 }
 
 // TestR88provgAuthTransportRedirectHopGetsNoToken covers the credential

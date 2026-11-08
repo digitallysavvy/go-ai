@@ -39,6 +39,6 @@ func TestR86provaVertexTransportsCloseBodyOnError(t *testing.T) {
 	failing := func(context.Context) (string, error) { return "", keyErr }
 	r86provaAssertClosesBody(t, "express", &vertexExpressTransport{base: http.DefaultTransport, apiKeyFunc: failing}, keyErr)
 	r86provaAssertClosesBody(t, "oauth", &internal.AuthTransport{Base: http.DefaultTransport, TokenFunc: failing}, keyErr)
-	r86provaAssertClosesBody(t, "maas", &maasAuthTransport{base: http.DefaultTransport, authToken: failing}, keyErr)
+	r86provaAssertClosesBody(t, "maas", &maasAuthTransport{base: http.DefaultTransport, authToken: failing, baseURL: "http://127.0.0.1:1"}, keyErr)
 	r86provaAssertClosesBody(t, "failing", failingRoundTripper{keyErr}, keyErr)
 }
