@@ -123,12 +123,13 @@ var wireSuites = map[string]tsfixture.WireSuite{
 			// adds nothing to a response without test_field.
 			MetadataExtractor: wireTestMetadataExtractor{}}), nil
 	}},
-	"cohere": {RootBase: true, SkipResults: map[string]string{
+	"cohere": {RootBase: true, LanguageResults: true, SkipResults: map[string]string{
 		"doStream > tool call > rejects prototype keys in streamed tool call arguments": "known difference \"JSON payloads with __proto__\": Go JSON has no prototype keys to reject",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return cohere.New(cohere.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"mistral": {
+		LanguageResults: true,
 		Skip: map[string]string{
 			"doGenerate > should inject JSON schema when structured outputs are disabled": "the injected schema text keeps TS object key order, which a Go map cannot",
 			"~should use a custom base URL":                                               "Go mistral.Config.BaseURL is the host root and the provider adds /v1 (kept from v0.5.2); TS baseURL carries the version, so a TS /v2 base has no Go equivalent",
@@ -147,7 +148,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"voyage": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return voyage.New(voyage.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"perplexity": {Skip: map[string]string{
+	"perplexity": {LanguageResults: true, Skip: map[string]string{
 		"warns about unsupported options without adding fields to the request": "the warnings follow TS Object.keys(providerOptions.perplexity) insertion order; a Go map has none",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return perplexity.New(perplexity.Config{APIKey: k, BaseURL: b, Headers: h})
@@ -175,7 +176,11 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"prodia": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return prodia.New(prodia.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"replicate": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"replicate": {Skip: map[string]string{
+		"doGenerate > should cancel the prediction and rethrow the abort error when the caller aborts while polling":            "the cancel request is fire-and-forget on a goroutine and arrives after the replayed call returns; covered by TestR88provcReplicateCancelPrediction",
+		"doGenerate > should cancel the prediction and rethrow the timeout error when the maximum polling attempts are reached": "the cancel request is fire-and-forget on a goroutine and arrives after the replayed call returns; covered by TestR88provcReplicateCancelPrediction",
+		"doGenerate > should stop when the maximum polling attempts are reached":                                                "the cancel request is fire-and-forget on a goroutine and arrives after the replayed call returns; covered by TestR88provcReplicateCancelPrediction",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return replicate.New(replicate.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"topaz": {Skip: map[string]string{
@@ -217,10 +222,13 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"assemblyai": {GoPrefix: func(string) string { return "/v2" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return assemblyai.New(assemblyai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"gladia": {GoPrefix: func(string) string { return "/v2" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"gladia": {GoPrefix: func(string) string { return "/v2" }, Skip: map[string]string{
+		"forwards transcriptionModel alias ID future-gladia-model":                 "known difference (round 88 ruling, S6): a model ID other than default / solaria-* is not sent and warns",
+		"polling > stops before the first poll when the signal is already aborted": "the TS test's fetch ignores the aborted signal so the upload succeeds; a Go call with a cancelled context fails at the upload",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return gladia.New(gladia.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"groq": {GoPrefix: func(string) string { return "/openai" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"groq": {LanguageResults: true, GoPrefix: func(string) string { return "/openai" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return groq.New(groq.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"revai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {

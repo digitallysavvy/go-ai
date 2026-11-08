@@ -61,13 +61,14 @@ func init() {
 		LanguageResults: true,
 		Skip: map[string]string{
 			"~starts a batch with inline requests when the creation body is under 20 MB": "the TS test mocks generateId (display name) and sets provider-level headers the recording does not carry",
-			"~async headers handling":                                                 "the TS test configures headers as (async) functions, which the recording does not carry",
-			"~GoogleBatch > starts an inline image generation batch":                  "the TS test mocks generateId (batch display name)",
-			"~GoogleBatch > omits webhook configuration for inline input":             "the TS test mocks generateId (batch display name)",
-			"~GoogleBatch > omits webhook configuration for file input":               "the batch display name comes from a random TS generateId",
-			"~uses a resumable file upload when the creation body reaches 20 MB":      "the TS test mocks generateId (batch display name) and sets provider-level headers the recording does not carry",
-			"~GoogleBatch > surfaces Google HTTP errors from starting a batch":        "the TS test mocks generateId (batch display name)",
-			"~tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
+			"~async headers handling":                                                                                                  "the TS test configures headers as (async) functions, which the recording does not carry",
+			"~GoogleBatch > starts an inline image generation batch":                                                                   "the TS test mocks generateId (batch display name)",
+			"~GoogleBatch > omits webhook configuration for inline input":                                                              "the TS test mocks generateId (batch display name)",
+			"~GoogleBatch > omits webhook configuration for file input":                                                                "the batch display name comes from a random TS generateId",
+			"~uses a resumable file upload when the creation body reaches 20 MB":                                                       "the TS test mocks generateId (batch display name) and sets provider-level headers the recording does not carry",
+			"~GoogleBatch > surfaces Google HTTP errors from starting a batch":                                                         "the TS test mocks generateId (batch display name)",
+			"~tool-call + tool-result message pair through the request body (step 2)":                                                  "tool result JSON arrives as a Go map, which has no key order",
+			"~completed function call and text stream order > google.generative-ai > preserves a completed call without a provider ID": "the TS test injects generateId () => 'generated-call-id' into the model config, which the recording does not carry (the stream order cases are replayed with that id normalized by TestR87provaStreamOrderMatchesTS in pkg/providers/google)",
 		},
 		Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 			return google.New(google.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)}), nil
@@ -150,6 +151,9 @@ func init() {
 					AuthToken: func(context.Context) (string, error) { return "test-token", nil }, Headers: wireHeaders(m)}), nil
 			}
 			token := "test-oauth-token"
+			if strings.Contains(m.Cls, "Interactions") { // the Vertex Interactions tests' fetch token
+				token = "test-token"
+			}
 			hdrs := wireHeaders(m)
 			if auth, ok := hdrs["Authorization"]; ok { // the TS test sets the token as a provider header
 				token = strings.TrimPrefix(auth, "Bearer ")
@@ -157,6 +161,17 @@ func init() {
 			}
 			return googlevertex.New(googlevertex.Config{Project: "test-project", Location: "us-central1", AccessToken: token,
 				BaseURL: b, CloudTTSBaseURL: u.Scheme + "://" + u.Host + "/v1/text:synthesize", HTTPClient: client, Headers: hdrs})
+		},
+		// The shared GoogleInteractionsLanguageModel with Vertex settings
+		// (TS a210a29f9b labels tests) is Vertex Interactions in Go.
+		Language: func(p provider.Provider, cls, id string) (provider.LanguageModel, error) {
+			if vp, ok := p.(*googlevertex.Provider); ok && strings.Contains(cls, "Interactions") {
+				if strings.HasPrefix(id, "deep-research") {
+					return vp.InteractionsAgent(id)
+				}
+				return vp.Interactions(id)
+			}
+			return p.LanguageModel(id)
 		},
 	}
 }
@@ -170,17 +185,14 @@ func (h hostRewriter) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r2)
 }
 
-// anthropicWireTool maps a TS Anthropic provider tool and aliases its name.
+// anthropicWireTool maps a TS Anthropic provider tool and keeps its SDK
+// name (the TS tool's `name`, which tool choice and the tool name mapping
+// use; round 88: the inline-tool fallback tests name a provider tool after
+// the selected tool).
 func anthropicWireTool(id, name string, args map[string]interface{}) (types.Tool, bool) {
 	t, ok := anthropictools.ProviderTool(id, args)
-	if ok {
-		if tsfixture.ToolNameAlias == nil {
-			tsfixture.ToolNameAlias = map[string]string{}
-		}
-		if tsfixture.PromptToolNameAlias == nil {
-			tsfixture.PromptToolNameAlias = map[string]string{}
-		}
-		tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
+	if ok && name != "" {
+		t.Name = name
 	}
 	return t, ok
 }
