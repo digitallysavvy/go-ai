@@ -1551,6 +1551,10 @@ func responsesStructuredOutputText(output []json.RawMessage) *string {
 		}
 		var text strings.Builder
 		for _, part := range item.Content {
+			if part.Type == "refusal" {
+				text.WriteString(part.Refusal) // TS 6b97088662
+				continue
+			}
 			text.WriteString(part.Text)
 		}
 		joined := text.String()
@@ -1578,6 +1582,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	// hasFunctionCall tracks client-side tool calls for the finish reason
 	// (TS hasFunctionCall); provider-executed tools don't count.
 	hasFunctionCall := false
+	// hasRefusal: a refusal content part (TS 6b97088662); with no
+	// incomplete reason and no client tool call the finish is content-filter.
+	hasRefusal := false
 	hasWebSearchActionSources, hasFileSearchResults := openAIResponseRetrievalFlags(resp.Output)
 	retrievedFileIDs := map[string]bool{}
 	// pushCall records a client tool call and puts its tool-call part in the
@@ -1608,6 +1615,20 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			for _, part := range item.Content {
+				if part.Type == "refusal" {
+					// TS 6b97088662: the refusal is a text part with
+					// {itemId, phase} metadata only (no annotations, no
+					// logprobs).
+					hasRefusal = true
+					result.Text += part.Refusal
+					text := types.TextContent{Text: part.Refusal}
+					if meta := openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, nil); meta != nil {
+						text.ProviderOptions = meta
+						text.ProviderMetadata, _ = json.Marshal(meta)
+					}
+					result.Content = append(result.Content, text)
+					continue
+				}
 				result.Text += part.Text
 				msgMeta := openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, part.Annotations)
 				text := types.TextContent{
@@ -2196,7 +2217,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	if len(toolCalls) > 0 {
 		result.ToolCalls = toolCalls
 	}
-	result.FinishReason = mapResponsesFinishReason(resp.IncompleteDetails, hasFunctionCall)
+	result.FinishReason = mapResponsesFinishReason(resp.IncompleteDetails, hasFunctionCall, hasRefusal)
 	if resp.IncompleteDetails != nil {
 		result.RawFinishReason = resp.IncompleteDetails.Reason
 	}
@@ -2262,6 +2283,9 @@ func responsesOutputLogprobs(output []json.RawMessage) []json.RawMessage {
 			continue
 		}
 		for _, part := range item.Content {
+			if part.Type == "refusal" {
+				continue // TS: refusal parts carry no logprobs
+			}
 			if len(part.Logprobs) > 0 && string(part.Logprobs) != "null" {
 				out = append(out, normalizeResponsesLogprobs(part.Logprobs))
 			}
@@ -2745,8 +2769,10 @@ func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming
 // mapResponsesFinishReason maps Responses API incomplete_details to a
 // FinishReason. Mirrors TS mapOpenAIResponseFinishReason: a length or
 // content-filter stop wins over tool calls, and an unknown reason is
-// "tool-calls" when the model called a client-side tool, else "other".
-func mapResponsesFinishReason(details *responses.IncompleteDetails, hasFunctionCall bool) types.FinishReason {
+// "tool-calls" when the model called a client-side tool, else "other". With
+// no reason, a client tool call wins over a refusal (TS 6b97088662), and a
+// refusal is content-filter.
+func mapResponsesFinishReason(details *responses.IncompleteDetails, hasFunctionCall bool, hasRefusal ...bool) types.FinishReason {
 	reason := ""
 	if details != nil {
 		reason = details.Reason
@@ -2755,6 +2781,9 @@ func mapResponsesFinishReason(details *responses.IncompleteDetails, hasFunctionC
 	case "":
 		if hasFunctionCall {
 			return types.FinishReasonToolCalls
+		}
+		if len(hasRefusal) > 0 && hasRefusal[0] {
+			return types.FinishReasonContentFilter
 		}
 		return types.FinishReasonStop
 	case "max_output_tokens":
@@ -2885,6 +2914,9 @@ type responsesStream struct {
 	// hasFunctionCall is set once a client-side tool call item finishes; it
 	// makes the finish reason "tool-calls" (TS hasFunctionCall).
 	hasFunctionCall bool
+	// hasRefusal is set by response.refusal.delta / .done (TS hasRefusal,
+	// 6b97088662).
+	hasRefusal bool
 
 	// Accumulated tool calls keyed by output_index.
 	toolAccum map[int]*responsesToolAccum
@@ -3715,6 +3747,38 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			continue
 
+		case "response.refusal.delta":
+			// TS 6b97088662: a refusal delta is a text delta of the output
+			// item's text block.
+			var e struct {
+				ItemID      string `json:"item_id"`
+				OutputIndex int    `json:"output_index"`
+				Delta       string `json:"delta"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.hasRefusal = true
+			s.markOutputStarted()
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeText,
+				ID:   s.resolveEventItemID(e.OutputIndex, e.ItemID),
+				Text: e.Delta,
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+
+		case "response.refusal.done":
+			s.hasRefusal = true
+			s.markOutputStarted()
+			continue
+
 		case "response.function_call_arguments.delta":
 			var e responses.FunctionCallArgumentsDeltaEvent
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
@@ -4072,7 +4136,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// earlier parse failure or error event keeps the error finish
 			// reason (encounteredStreamError); the usage is still updated.
 			if !s.hadDecodeError {
-				s.finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall)
+				s.finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall, s.hasRefusal)
 				s.rawFinishReason = ""
 				if e.Response.IncompleteDetails != nil {
 					s.rawFinishReason = e.Response.IncompleteDetails.Reason
@@ -4112,7 +4176,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			s.finishReason = types.FinishReasonError
 			s.rawFinishReason = "error"
 			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
-				s.finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall)
+				s.finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall, s.hasRefusal)
 				s.rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
 			s.finishUsage = e.Response.Usage
