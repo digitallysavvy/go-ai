@@ -82,13 +82,16 @@ func CreateBedrockMantle(settings ProviderSettings) *BedrockMantleProvider {
 	headers := copyHeaders(settings.Headers)
 	httpClient := withAuthTransport(settings.HTTPClient, settings, region)
 
-	return &BedrockMantleProvider{
+	p := &BedrockMantleProvider{
 		settings:   settings,
 		region:     region,
 		apiKey:     apiKey,
 		httpClient: httpClient,
 		headers:    headers,
 	}
+	// Both Mantle routes (/v1 and /openai/v1) share one origin.
+	httpClient.Transport.(*sigV4Transport).baseURL = func() (string, error) { return p.baseURLForModel("") }
+	return p
 }
 
 // New creates a Bedrock Mantle provider.

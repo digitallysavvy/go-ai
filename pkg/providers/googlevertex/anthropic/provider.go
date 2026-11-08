@@ -76,7 +76,7 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 	if err != nil {
 		return nil, err
 	}
-	httpClient := p.httpClient()
+	httpClient := p.httpClient(baseURL)
 
 	nativeStructuredOutput := false
 	supportsImageInput := true
@@ -210,7 +210,7 @@ func vertexAnthropicHost(location string) string {
 	}
 }
 
-func (p *GoogleVertexAnthropicProvider) httpClient() *http.Client {
+func (p *GoogleVertexAnthropicProvider) httpClient(baseURL string) *http.Client {
 	baseClient := http.DefaultClient
 	if p.options.HTTPClient != nil {
 		baseClient = p.options.HTTPClient
@@ -231,6 +231,7 @@ func (p *GoogleVertexAnthropicProvider) httpClient() *http.Client {
 
 	clone.Transport = &authTransport{
 		base:        baseTransport,
+		baseURL:     baseURL,
 		tokenFunc:   tokenFunc,
 		headers:     p.options.Headers,
 		headersFunc: p.options.HeadersResolver,

@@ -8,12 +8,17 @@ import (
 	"os"
 	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
 type authTransport struct {
-	base        http.RoundTripper
+	base http.RoundTripper
+	// baseURL is the Vertex Anthropic endpoint: credentials and the custom
+	// headers go only to requests of its origin (a redirect hop to another
+	// origin gets neither).
+	baseURL     string
 	tokenFunc   func(ctx context.Context) (string, error)
 	headers     map[string]string
 	headersFunc HeadersResolver
@@ -30,6 +35,9 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
+	if !providerutils.IsSameOrigin(req.URL.String(), t.baseURL) {
+		return t.base.RoundTrip(req)
+	}
 	clone := req.Clone(req.Context())
 	token, err := t.tokenFunc(req.Context())
 	if err != nil {
