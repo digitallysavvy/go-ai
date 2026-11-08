@@ -446,7 +446,13 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				stream = CanonStream(raw)
 				resultMap["stream"] = raw
 				if rb, ok := s.(provider.StreamRequestBody); ok {
-					resultMap["request"] = map[string]interface{}{"body": rb.RequestBody()}
+					req := map[string]interface{}{"body": rb.RequestBody()}
+					// TS doStream request.url (934100cad4), when the stream
+					// reports it (provider.StreamRequestURL).
+					if ru, ok := s.(provider.StreamRequestURL); ok && ru.RequestURL() != "" {
+						req["url"] = ru.RequestURL()
+					}
+					resultMap["request"] = req
 				}
 				// TS doStream response.headers: the stream reports them
 				// beside its parts (provider.StreamResponseHeaders), or a v0.5
@@ -477,7 +483,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				// details) for old callers
 				resultMap["warnings"] = WarningsToTS(res.Warnings)
 				resultMap["providerMetadata"] = res.ProviderMetadata
-				resultMap["request"] = map[string]interface{}{"body": res.RawRequest}
+				resultMap["request"] = generateRequestToTS(res)
 				resp := map[string]interface{}{"headers": lowerHeaders(res.ResponseHeaders, keepContentLength)}
 				if m := res.ResponseMetadata; m != nil {
 					if m.ID != "" {
@@ -528,7 +534,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				case e.Expr == "await server.calls[0].requestBodyJson":
 					got = reqBody
 				case e.Expr == "request" && res != nil:
-					got = map[string]interface{}{"body": res.RawRequest}
+					got = generateRequestToTS(res)
 				case (e.Expr == "result.usage" || e.Expr == "usage") && res != nil:
 					got = UsageToTS(res.Usage)
 				case (e.Expr == "result.finishReason" || e.Expr == "response.finishReason") && res != nil:
@@ -552,6 +558,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				// through; Go decodes what it can (as the wire replay).
 				got = jsonValue(got)
 				wireAlignInvalidBase64(snap, got)
+				got = alignRequestURL(snap, got, srv.URL)
 				if m, ok := snap.(map[string]interface{}); ok && m["__err"] != nil {
 					t.Logf("%s: TS snapshot not extractable (%v)", e.Expr, m["__err"])
 					continue
@@ -1656,4 +1663,37 @@ func fileDataFromTS(v interface{}) (types.FileData, bool) {
 		return types.FileData{Type: types.FileDataTypeText, Text: str}, true
 	}
 	return types.FileData{}, false
+}
+
+// generateRequestToTS is TS doGenerate `request`: {body} plus `url` when the
+// provider reports it (GenerateResult.RequestURL, TS 934100cad4).
+func generateRequestToTS(res *types.GenerateResult) map[string]interface{} {
+	req := map[string]interface{}{"body": res.RawRequest}
+	if res.RequestURL != "" {
+		req["url"] = res.RequestURL
+	}
+	return req
+}
+
+// alignRequestURL maps a request URL Go reports against the test server
+// (base) to the TS one: TS tests call the provider's real base URL, so
+// `request.url` matches when the TS URL ends with the path Go requested.
+func alignRequestURL(want, got interface{}, base string) interface{} {
+	match := func(w, g interface{}) interface{} {
+		ws, ok1 := w.(string)
+		gs, ok2 := g.(string)
+		if ok1 && ok2 && base != "" && strings.HasPrefix(gs, base) && strings.HasSuffix(ws, strings.TrimPrefix(gs, base)) {
+			return ws
+		}
+		return g
+	}
+	if wm, ok := want.(map[string]interface{}); ok {
+		if gm, ok := got.(map[string]interface{}); ok {
+			if _, has := gm["url"]; has {
+				gm["url"] = match(wm["url"], gm["url"])
+			}
+		}
+		return got
+	}
+	return match(want, got)
 }
