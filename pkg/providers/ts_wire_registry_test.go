@@ -159,7 +159,9 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"togetherai": {LanguageResults: true, GoAdds: "/v1", RootBase: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return together.New(together.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"deepinfra": {GoAdds: "/inference", GoPrefix: func(p string) string {
+	"deepinfra": {Skip: map[string]string{
+		"~DeepInfraChatLanguageModel > usage calculation >": "the TS test builds the model with a custom url() returning the full endpoint and a mock fetch, which the provider-level replay cannot reproduce; the usage correction is covered by pkg/providers/deepinfra language_model_test.go",
+	}, GoAdds: "/inference", GoPrefix: func(p string) string {
 		if root, ok := strings.CutSuffix(p, "/inference"); ok {
 			return root + "/openai"
 		}
