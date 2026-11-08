@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // r88carryRecorder records what integrations are handed.
@@ -476,5 +477,133 @@ func TestR88carryFilterEventGenericShapes(t *testing.T) {
 	out = FilterEvent(in, &Options{RecordOutputs: Bool(false)})
 	if len(out.Ranking) != 0 || len(out.Values) != 1 {
 		t.Errorf("outputs: %+v", out)
+	}
+}
+
+// TS redact-tool-definition.test.ts (7bb309d132).
+func TestR88carryRedactProviderToolArgs(t *testing.T) {
+	keep := []map[string]interface{}{
+		{},
+		{"container": "cntr_existing"},
+		{"container": map[string]interface{}{}},
+		{"container": map[string]interface{}{"networkPolicy": map[string]interface{}{"type": "disabled"}}},
+		{"container": map[string]interface{}{"networkPolicy": map[string]interface{}{"type": "allowlist", "domainSecrets": []interface{}{}}}},
+	}
+	for _, args := range keep {
+		got := redactProviderToolArgs("openai.code_interpreter", args)
+		if r88carryJSON(t, got) != r88carryJSON(t, args) {
+			t.Errorf("changed %v -> %v", args, got)
+		}
+	}
+
+	shell := map[string]interface{}{"environment": map[string]interface{}{
+		"type": "containerAuto", "memoryLimit": "4g",
+		"networkPolicy": map[string]interface{}{"type": "allowlist", "allowedDomains": []interface{}{"example.com"},
+			"domainSecrets": []interface{}{map[string]interface{}{"domain": "example.com", "name": "KEY", "value": "shell-private-key"}}},
+	}}
+	before := r88carryJSON(t, shell)
+	got := r88carryJSON(t, redactProviderToolArgs("openai.shell", shell))
+	want := `{"environment":{"memoryLimit":"4g","networkPolicy":{"allowedDomains":["example.com"],"domainSecrets":[{"domain":"example.com","name":"KEY","value":"[redacted]"}],"type":"allowlist"},"type":"containerAuto"}}`
+	if got != want {
+		t.Errorf("shell = %s", got)
+	}
+	if r88carryJSON(t, shell) != before {
+		t.Errorf("shell args mutated")
+	}
+
+	mcp := map[string]interface{}{"serverLabel": "example", "serverUrl": "https://example.com/mcp", "allowedTools": []interface{}{"search"},
+		"requireApproval": "always", "authorization": "mcp-private-token",
+		"headers": map[string]interface{}{"Authorization": "Bearer mcp-private-token", "X-Custom-Key": "mcp-private-key"}}
+	before = r88carryJSON(t, mcp)
+	got = r88carryJSON(t, redactProviderToolArgs("openai.mcp", mcp))
+	want = `{"allowedTools":["search"],"authorization":"[redacted]","headers":{"Authorization":"[redacted]","X-Custom-Key":"[redacted]"},"requireApproval":"always","serverLabel":"example","serverUrl":"https://example.com/mcp"}`
+	if got != want {
+		t.Errorf("mcp = %s", got)
+	}
+	if r88carryJSON(t, mcp) != before {
+		t.Errorf("mcp args mutated")
+	}
+	// Typed Go shapes (map[string]string headers) are redacted too.
+	typed := map[string]interface{}{"headers": map[string]string{"X": "secret"}}
+	if got := r88carryJSON(t, redactProviderToolArgs("openai.mcp", typed)); got != `{"headers":{"X":"[redacted]"}}` {
+		t.Errorf("typed headers = %s", got)
+	}
+
+	plain := map[string]interface{}{"serverLabel": "example", "serverUrl": "https://example.com/mcp"}
+	if r88carryJSON(t, redactProviderToolArgs("openai.mcp", plain)) != r88carryJSON(t, plain) {
+		t.Errorf("plain mcp changed")
+	}
+	unrelated := map[string]interface{}{"container": map[string]interface{}{"networkPolicy": map[string]interface{}{"domainSecrets": []interface{}{map[string]interface{}{"value": "ordinary-input"}}}}}
+	if r88carryJSON(t, redactProviderToolArgs("other.tool", unrelated)) != r88carryJSON(t, unrelated) {
+		t.Errorf("unrelated tool changed")
+	}
+	if strings.Contains(r88carryJSON(t, languageModelToolDefinition(types.Tool{Type: "function", Name: "code_interpreter"})), "redacted") {
+		t.Errorf("function tool redacted")
+	}
+
+	multi := map[string]interface{}{"container": map[string]interface{}{"fileIds": []interface{}{"file-123"}, "memoryLimit": "4g",
+		"networkPolicy": map[string]interface{}{"type": "allowlist", "allowedDomains": []interface{}{"example.com"},
+			"domainSecrets": []interface{}{
+				map[string]interface{}{"domain": "example.com", "name": "API_KEY", "value": "private-key"},
+				map[string]interface{}{"domain": "example.com", "name": "TOKEN", "value": "private-token"},
+				"not-an-object",
+			}}}}
+	got = r88carryJSON(t, redactProviderToolArgs("openai.code_interpreter", multi))
+	if strings.Contains(got, "private") || strings.Count(got, "[redacted]") != 2 || !strings.Contains(got, `"not-an-object"`) {
+		t.Errorf("multi = %s", got)
+	}
+}
+
+func r88carryJSON(t *testing.T, v interface{}) string {
+	t.Helper()
+	b, err := jsonstr.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TS legacy-open-telemetry.test.ts / open-telemetry.test.ts (7bb309d132):
+// ai.prompt.tools and gen_ai.tool.definitions show [redacted], while the
+// tool's own ProviderArgs (the provider request) keep the real values.
+func TestR88carryToolDefinitionSpansRedacted(t *testing.T) {
+	tool := types.Tool{Type: types.ToolTypeProviderDefined, Name: "remote", ProviderID: "openai.mcp",
+		ProviderArgs: map[string]interface{}{"serverLabel": "x", "authorization": "mcp-private-token", "headers": map[string]interface{}{"X-Key": "mcp-private-key"}}}
+	for _, legacy := range []bool{true, false} {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		var integ TelemetryIntegration
+		if legacy {
+			integ = NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+		} else {
+			integ = NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
+		}
+		set := &Settings{Integrations: []TelemetryIntegration{integ}}
+		id := t.Name()
+		ctx := FireOnStart(context.Background(), TelemetryStartEvent{Settings: set, CallID: id, OperationType: "ai.generateText", ModelID: "m", ModelProvider: "openai.responses"})
+		ctx = FireOnStepStart(ctx, TelemetryStepStartEvent{Settings: set, CallID: id, OperationType: "ai.generateText", StepTools: []types.Tool{tool}})
+		ctx = FireOnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: set, CallID: id, ModelID: "m", ModelProvider: "openai.responses", Tools: []types.Tool{tool}})
+		FireOnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{Settings: set, CallID: id, ModelID: "m", ModelProvider: "openai.responses", FinishReason: "stop"})
+		FireOnStepEnd(ctx, TelemetryStepEndEvent{Settings: set, CallID: id, OperationType: "ai.generateText"})
+		FireOnEnd(ctx, TelemetryFinishEvent{Settings: set, CallID: id, OperationType: "ai.generateText"})
+		_ = tp.Shutdown(context.Background())
+		var found bool
+		for _, s := range rec.Ended() {
+			for _, kv := range s.Attributes() {
+				v := kv.Value.Emit()
+				if strings.Contains(v, "mcp-private") {
+					t.Errorf("legacy=%v %s %s leaks a credential: %s", legacy, s.Name(), kv.Key, v)
+				}
+				if (kv.Key == "ai.prompt.tools" || kv.Key == "gen_ai.tool.definitions") && strings.Contains(v, "[redacted]") {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("legacy=%v: no redacted tool definition attribute", legacy)
+		}
+	}
+	if tool.ProviderArgs["authorization"] != "mcp-private-token" || tool.ProviderArgs["headers"].(map[string]interface{})["X-Key"] != "mcp-private-key" {
+		t.Errorf("provider args mutated: %v", tool.ProviderArgs)
 	}
 }
