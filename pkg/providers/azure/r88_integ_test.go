@@ -2,10 +2,14 @@ package azure
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // r88 credential transport class (S2): the Entra token transport adds the
@@ -55,5 +59,20 @@ func TestR88integAzureTokenTransportSkipsCrossOriginHops(t *testing.T) {
 	}
 	if len(sameAuth) != 1 || sameAuth[0] != "Bearer entra-token" {
 		t.Fatalf("same-origin hop Authorization = %q", sameAuth)
+	}
+}
+
+// TS parseProviderOptions({provider: 'azure'}): an invalid azure option
+// fails with InvalidArgumentError(providerOptions, "invalid azure provider
+// options"); the cause names the field (provb r88 known-difference item,
+// fixed instead).
+func TestR88integAzureOptionErrorText(t *testing.T) {
+	_, err := parseAzureTranscriptionProviderOptions(map[string]interface{}{"azure": map[string]interface{}{"timestamps": "bad"}})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Field != "providerOptions" || err.Error() != "invalid azure provider options" {
+		t.Fatalf("err = %v (%#v)", err, ia)
+	}
+	if cause := errors.Unwrap(err); cause == nil || !strings.Contains(cause.Error(), "providerOptions.azure.timestamps") {
+		t.Fatalf("cause = %v", cause)
 	}
 }

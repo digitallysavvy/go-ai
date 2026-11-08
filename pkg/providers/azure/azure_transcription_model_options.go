@@ -2,6 +2,7 @@ package azure
 
 import (
 	"errors"
+	"fmt"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -222,8 +223,11 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 	return result, nil
 }
 
+// invalidAzureOption is the TS parseProviderOptions failure for the azure
+// option schemas: InvalidArgumentError(providerOptions, "invalid azure
+// provider options") whose cause names the field and the problem.
 func invalidAzureOption(field, message string) error {
-	return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	return providererrors.NewArgumentError("providerOptions", "invalid azure provider options", fmt.Errorf("%s: %s", field, message))
 }
 
 // azureOpenAIOptionCause is the validation message of an OpenAI option
