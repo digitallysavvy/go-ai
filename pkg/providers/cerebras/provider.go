@@ -82,6 +82,9 @@ func New(cfg Config) *Provider {
 		// cerebrasTransformTransport, which still receives the per-call
 		// extras via context (see cerebrasOptionsContextKey).
 		TransformRequestBody: transformCerebrasRequestBody,
+		// TS cerebrasMetadataExtractor (4a4e854fa6): the applied service
+		// tier as providerMetadata.cerebras.serviceTier.
+		MetadataExtractor: cerebrasMetadataExtractor{},
 	})
 
 	return &Provider{
@@ -182,7 +185,9 @@ func transformCerebrasRequestBody(body map[string]interface{}) map[string]interf
 	// verbatim (TS passthrough); TS's transform destructures these camelCase
 	// keys out again and re-adds them as snake_case, which
 	// cerebrasTransformTransport does per call.
-	for _, k := range []string{"parallelToolCalls", "topLogprobs", "logitBias", "serviceTier", "reasoningFormat", "promptCacheKey"} {
+	// queueThreshold goes out as the queue_threshold header instead
+	// (TS 4a4e854fa6).
+	for _, k := range []string{"parallelToolCalls", "topLogprobs", "logitBias", "serviceTier", "queueThreshold", "reasoningFormat", "promptCacheKey"} {
 		delete(body, k)
 	}
 	return body
