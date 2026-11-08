@@ -46,6 +46,12 @@ func defaultToolSchema(parameters interface{}) interface{} {
 // prepareTools ports TS prepareTools (google-prepare-tools.ts).
 func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID string, isVertex bool) preparedTools {
 	var out preparedTools
+	// TS 32dc1d2d17: NONE only disables function calling in the Google API,
+	// so provider tools (which run server side) are omitted; function
+	// declarations stay for conversation history with function calls.
+	if toolChoice.Type == types.ToolChoiceNone {
+		tools = functionToolsOnly(tools)
+	}
 	if len(tools) == 0 {
 		return out
 	}
@@ -165,6 +171,18 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 		// TS exhaustive check: UnsupportedFunctionalityError
 		// "tool choice type: <type>".
 		out.err = prompt.ValidateToolChoiceType(tools, toolChoice)
+	}
+	return out
+}
+
+// functionToolsOnly returns the non-provider tools of tools (a new slice;
+// the caller's slice is never modified).
+func functionToolsOnly(tools []types.Tool) []types.Tool {
+	var out []types.Tool
+	for _, t := range tools {
+		if t.Type != "provider" {
+			out = append(out, t)
+		}
 	}
 	return out
 }
