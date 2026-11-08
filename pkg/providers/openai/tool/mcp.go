@@ -28,6 +28,9 @@ type MCPConfig struct {
 	RequireApproval   interface{}       `json:"requireApproval,omitempty"`
 	ServerDescription string            `json:"serverDescription,omitempty"`
 	ServerURL         string            `json:"serverUrl,omitempty"`
+	// TunnelID is an OpenAI Secure MCP tunnel; it cannot be combined with
+	// ServerURL or ConnectorID (TS 7a905226b6). One of the three is required.
+	TunnelID string `json:"tunnelId,omitempty"`
 
 	// Name optionally overrides the tool's SDK name (default: "openai.mcp").
 	// TS callers pick this name freely as the tools-object key (e.g.

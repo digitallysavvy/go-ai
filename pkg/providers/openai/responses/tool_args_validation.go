@@ -154,7 +154,18 @@ var openAIToolArgsNodes = func() map[string]zodlite.Node {
 			f("userLocation", opt(userLocation)),
 		),
 		"openai.code_interpreter": obj(
-			f("container", opt(zodlite.Union(str, obj(f("fileIds", opt(strArray)))))),
+			f("container", opt(zodlite.Union(str, obj(
+				f("fileIds", opt(strArray)),
+				// TS 7bb309d132
+				f("memoryLimit", opt(enum("1g", "4g", "16g", "64g"))),
+				f("networkPolicy", opt(zodlite.DiscriminatedUnion([]string{"disabled", "allowlist"}, map[string]zodlite.Node{
+					"disabled": zodlite.Typed("disabled"),
+					"allowlist": zodlite.Typed("allowlist",
+						f("allowedDomains", strArray),
+						f("domainSecrets", opt(arr(obj(f("domain", str), f("name", str), f("value", str))))),
+					),
+				}))),
+			)))),
 		),
 		"openai.file_search": obj(
 			f("vectorStoreIds", strArray),
@@ -194,6 +205,7 @@ var openAIToolArgsNodes = func() map[string]zodlite.Node {
 			))),
 			f("serverDescription", opt(str)),
 			f("serverUrl", opt(str)),
+			f("tunnelId", opt(str)),
 		),
 		"openai.custom": obj(
 			f("description", opt(str)),
