@@ -1093,8 +1093,10 @@ func concatChatLogprobs(content, refusal json.RawMessage) ([]json.RawMessage, bo
 		if isNull(raw) {
 			continue
 		}
+		// TS schema output: {token, logprob, top_logprobs: [{token, logprob}]}
+		// (other wire keys such as bytes are dropped).
 		var items []json.RawMessage
-		if json.Unmarshal(raw, &items) == nil {
+		if json.Unmarshal(normalizeResponsesLogprobs(raw), &items) == nil {
 			out = append(out, items...)
 		}
 	}
