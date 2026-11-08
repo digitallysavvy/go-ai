@@ -69,7 +69,7 @@ func validateProviderOptionKeys(providerOptions map[string]interface{}, schema p
 // (keys openai-compatible, openaiCompatible, <name>, camelCase(<name>)).
 func (m *LanguageModel) validateChatProviderOptions(providerOptions map[string]interface{}) error {
 	if !m.provider.config.OpenAICompatible {
-		return validateProviderOptionKeys(providerOptions, openAIChatOptionsSchema, "openai")
+		return validateProviderOptionKeys(providerOptions, openAIChatOptionsSchema, m.chatProviderOptionKeys()...)
 	}
 	name := m.fileReferenceProvider()
 	return providerutils.ValidateOpenAICompatibleChatOptions(providerOptions, name)

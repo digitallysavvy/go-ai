@@ -52,10 +52,18 @@ func (m *azureSpeechDispatchModel) DoGenerate(ctx context.Context, opts *provide
 	}
 
 	if api == AzureTranscriptionAPISpeech {
-		return m.speech.DoGenerate(ctx, opts, resolved.AzureSpeechModelSpeechOptions)
+		result, err := m.speech.DoGenerate(ctx, opts, resolved.AzureSpeechModelSpeechOptions)
+		if err != nil {
+			return nil, err
+		}
+		// TS 6400cf8b88: OpenAI speech options warn on the Speech route.
+		result.Warnings = append(result.Warnings, azureUnsupportedOptionWarnings(resolved.openaiOptions, "This option requires the OpenAI speech API.")...)
+		return result, nil
 	}
 
-	result, err := m.openai.DoGenerate(ctx, opts)
+	openaiOpts := *opts
+	openaiOpts.ProviderOptions = withAzureOptionsForOpenAI(opts.ProviderOptions, resolved.openaiOptions)
+	result, err := m.openai.DoGenerate(ctx, &openaiOpts)
 	if err != nil {
 		return nil, err
 	}

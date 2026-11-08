@@ -306,6 +306,20 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.ProviderOptions != nil {
 		openaiOpts, _ = opts.ProviderOptions["openai"].(map[string]interface{})
 	}
+	// TS 6400cf8b88: on an Azure chat model `openai` and `azure` are merged
+	// key by key, `azure` winning.
+	optionKeys := m.chatProviderOptionKeys()
+	if len(optionKeys) > 1 {
+		merged := map[string]interface{}{}
+		for _, key := range optionKeys {
+			if o, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
+				for k, v := range o {
+					merged[k] = v
+				}
+			}
+		}
+		openaiOpts = merged
+	}
 
 	// OpenAI-compatible wrappers (baseten, deepinfra, vertex MaaS, ...) read
 	// options from openaiCompatible / <providerName> / <camelCaseName> like
@@ -418,7 +432,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// no field for it, so it would otherwise be silently dropped. Warn
 	// instead (TS commit 5b8e63bad8, #21178). The message is provider-neutral
 	// because azure.chat() shares this code path.
-	if v, ok := openaiOpts["reasoningSummary"]; ok && v != nil {
+	if chatRawOptionSet(opts.ProviderOptions, optionKeys, "reasoningSummary") {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "reasoningSummary",
@@ -1014,6 +1028,28 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 	}
 
 	return result
+}
+
+// chatProviderOptionKeys are the providerOptions namespaces the native chat
+// model reads: "openai", plus "azure" (winning) when the provider string
+// includes "azure" (TS 6400cf8b88 resolveProviderOptions merge). The
+// openai-compatible mode resolves its own keys.
+func (m *LanguageModel) chatProviderOptionKeys() []string {
+	if !m.provider.config.OpenAICompatible && strings.Contains(m.Provider(), "azure") {
+		return []string{"openai", "azure"}
+	}
+	return []string{"openai"}
+}
+
+// chatRawOptionSet reports whether any of keys holds a non-null option
+// (TS providerOptionsNames.some(name => providerOptions?.[name]?.[option] != null)).
+func chatRawOptionSet(providerOptions map[string]interface{}, keys []string, option string) bool {
+	for _, key := range keys {
+		if o, ok := providerOptions[key].(map[string]interface{}); ok && o[option] != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // applyChatLogprobs adds choices[0].logprobs to the provider metadata (TS

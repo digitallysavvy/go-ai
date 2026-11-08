@@ -122,5 +122,14 @@ func (m *ImageModel) openaiDelegate() *openai.ImageModel {
 }
 
 func (m *ImageModel) doGenerateOpenAI(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
-	return m.openaiDelegate().DoGenerate(ctx, opts)
+	// TS 6400cf8b88: OpenAI image options under azure (the edit shape when
+	// files are given, else the generation shape) reach the OpenAI model,
+	// azure winning.
+	shape := azureOpenAIImageGenerationKeys
+	if opts.Files != nil {
+		shape = azureOpenAIImageEditKeys
+	}
+	openaiOpts := *opts
+	openaiOpts.ProviderOptions = withAzureOptionsForOpenAI(opts.ProviderOptions, pickAzureOptions(opts.ProviderOptions, shape))
+	return m.openaiDelegate().DoGenerate(ctx, &openaiOpts)
 }

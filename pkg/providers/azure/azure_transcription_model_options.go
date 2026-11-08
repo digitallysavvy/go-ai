@@ -1,8 +1,11 @@
 package azure
 
 import (
+	"errors"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -47,8 +50,14 @@ type AzureSpeechTranscriptionOptions struct {
 type AzureTranscriptionModelOptions struct {
 	API AzureTranscriptionAPI
 	AzureSpeechTranscriptionOptions
-	// Language is a MAI-streaming-only language hint.
+	// Language is a MAI-streaming-only language hint (on the OpenAI route it
+	// is the OpenAI `language` option, TS 6400cf8b88).
 	Language string
+
+	// openaiOptions are the OpenAI transcription options passed under
+	// providerOptions.azure (TS pickAzureOptions with
+	// openAITranscriptionModelOptionsShape).
+	openaiOptions azurePickedOptions
 }
 
 // azureTranscribeModelsByLowercaseID maps a lowercase model ID to its Azure
@@ -113,9 +122,20 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 		"api": true, "timestamps": true, "transcribeStyle": true,
 		"locales": true, "diarization": true, "phraseList": true, "language": true,
 	}
+	// TS 6400cf8b88: the strict schema also accepts the OpenAI transcription
+	// options (validated like providerOptions.openai).
+	for _, key := range azureOpenAITranscriptionOptionKeys {
+		allowed[key] = true
+	}
 	for key := range m {
 		if !allowed[key] {
 			return result, invalidAzureOption("providerOptions.azure."+key, "unrecognized key")
+		}
+	}
+	result.openaiOptions = pickAzureOptions(providerOptions, azureOpenAITranscriptionOptionKeys)
+	if openaiOnly := result.openaiOptions.without("language"); len(openaiOnly.keys) > 0 {
+		if err := openai.ValidateTranscriptionProviderOptions(map[string]interface{}{"openai": openaiOnly.values}); err != nil {
+			return result, invalidAzureOption("providerOptions.azure", azureOpenAIOptionCause(err))
 		}
 	}
 
@@ -204,6 +224,22 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 
 func invalidAzureOption(field, message string) error {
 	return &providererrors.InvalidArgumentError{Field: field, Message: message}
+}
+
+// azureOpenAIOptionCause is the validation message of an OpenAI option
+// error (its cause when it has one).
+func azureOpenAIOptionCause(err error) string {
+	if u := errors.Unwrap(err); u != nil {
+		return u.Error()
+	}
+	return err.Error()
+}
+
+// azureOpenAITranscriptionOnlyWarnings is TS openaiTranscriptionOnlyWarnings:
+// the OpenAI transcription options other than the shared `language` (which
+// maiOnlyWarnings reports) warn on the Azure Speech and MAI routes.
+func azureOpenAITranscriptionOnlyWarnings(picked azurePickedOptions) []types.Warning {
+	return azureUnsupportedOptionWarnings(picked.without("language"), "This option requires the OpenAI transcription API.")
 }
 
 // azureTranscriptionSpeechOnlyWarnings returns an "unsupported" warning for

@@ -77,15 +77,19 @@ func (m *azureTranscriptionDispatchModel) DoTranscribe(ctx context.Context, opts
 			return nil, err
 		}
 		result.Warnings = append(result.Warnings, azureTranscriptionMaiOnlyWarnings(resolved.Language)...)
+		result.Warnings = append(result.Warnings, azureOpenAITranscriptionOnlyWarnings(resolved.openaiOptions)...)
 		return result, nil
 
 	default:
-		result, err := m.openai.DoTranscribe(ctx, opts)
+		// TS 6400cf8b88: OpenAI options under azure (language included)
+		// reach the OpenAI model, azure winning; no MAI language warning.
+		openaiOpts := *opts
+		openaiOpts.ProviderOptions = withAzureOptionsForOpenAI(opts.ProviderOptions, resolved.openaiOptions)
+		result, err := m.openai.DoTranscribe(ctx, &openaiOpts)
 		if err != nil {
 			return nil, err
 		}
 		result.Warnings = append(result.Warnings, azureTranscriptionSpeechOnlyWarnings(resolved.AzureSpeechTranscriptionOptions)...)
-		result.Warnings = append(result.Warnings, azureTranscriptionMaiOnlyWarnings(resolved.Language)...)
 		return result, nil
 	}
 }
@@ -109,7 +113,9 @@ func (m *azureTranscriptionDispatchModel) DoStream(ctx context.Context, opts *pr
 		}
 
 	case AzureTranscriptionAPIMai:
-		return m.mai.DoStream(ctx, opts, resolved, azureTranscriptionSpeechOnlyWarnings(resolved.AzureSpeechTranscriptionOptions))
+		warnings := azureTranscriptionSpeechOnlyWarnings(resolved.AzureSpeechTranscriptionOptions)
+		warnings = append(warnings, azureOpenAITranscriptionOnlyWarnings(resolved.openaiOptions)...)
+		return m.mai.DoStream(ctx, opts, resolved, warnings)
 
 	default:
 		streamer, ok := m.openai.(provider.TranscriptionStreamer)
@@ -118,7 +124,9 @@ func (m *azureTranscriptionDispatchModel) DoStream(ctx context.Context, opts *pr
 				Functionality: "streaming transcription with " + m.modelID,
 			}
 		}
-		return streamer.DoStream(ctx, opts)
+		openaiOpts := *opts
+		openaiOpts.ProviderOptions = withAzureOptionsForOpenAI(opts.ProviderOptions, resolved.openaiOptions)
+		return streamer.DoStream(ctx, &openaiOpts)
 	}
 }
 
