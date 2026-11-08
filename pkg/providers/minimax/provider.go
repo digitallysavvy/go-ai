@@ -96,6 +96,7 @@ func New(cfg Config) *Provider {
 
 	// MINIMAX_API_KEY is read per request (TS loadApiKey) by the Anthropic
 	// sub-provider through APIKeyEnvVar and by resolveVideoHeaders.
+	noMessageThreads := false
 	anthropicConfig := anthropic.Config{
 		APIKey:            cfg.APIKey,
 		APIKeyFunc:        cfg.APIKeyFunc,
@@ -111,6 +112,8 @@ func New(cfg Config) *Provider {
 			return map[string][]string{}
 		},
 		UserAgentName: "minimax",
+		// TS createMiniMax does not opt in to message threads (6b101ac076).
+		SupportsMessageThreads: &noMessageThreads,
 	}
 	anthropicProvider := anthropic.New(anthropicConfig)
 
