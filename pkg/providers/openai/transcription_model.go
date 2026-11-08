@@ -66,6 +66,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if err != nil {
 		return nil, err
 	}
+	_, granularityWarnings := m.timestampGranularities(opts)
 
 	// Use internal http client's Do method with custom headers
 	req := internalhttp.Request{
@@ -116,6 +117,16 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 	result.Language = openaiTranscriptionLanguage(response.Language, response.Languages)
 	result.DurationInSeconds = duration
+	result.Warnings = append(result.Warnings, granularityWarnings...)
+
+	// TS 41465fd1b6: word timings are reported separately when the response
+	// has any.
+	if len(response.Words) > 0 {
+		result.Words = make([]types.TranscriptionWord, len(response.Words))
+		for i, w := range response.Words {
+			result.Words[i] = types.TranscriptionWord{Text: w.Word, StartSecond: w.Start, EndSecond: w.End}
+		}
+	}
 
 	// Timestamped segments/words (abb9ebf: diarized segments carry an extra
 	// "speaker" field, surfaced separately via ProviderMetadata below).
@@ -176,6 +187,68 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	return result, nil
 }
 
+// timestampGranularities resolves the timestamp_granularities to send and
+// the warnings (TS 41465fd1b6): providerOptions.openai.timestampGranularities,
+// else the shared TimestampGranularities when non-nil (an empty slice
+// suppresses the default), else the Go-only Timestamps flag (word, when no
+// providerOptions.openai are given; v0.5 behavior), else segment for
+// verbose_json. Only verbose_json accepts the field, so it is sent for that
+// format alone; any other format warns for each granularity it cannot
+// return (diarized_json always returns segments).
+func (m *TranscriptionModel) timestampGranularities(opts *provider.TranscriptionOptions) ([]string, []types.Warning) {
+	openaiOpts := transcriptionOpenAIOptions(opts.ProviderOptions)
+	responseFormat := openaiOpts.ResponseFormat
+	if responseFormat == "" {
+		responseFormat = getOpenAITranscriptionModelEntry(m.modelID).responseFormat
+	}
+	var warnings []types.Warning
+	granularities := openaiOpts.TimestampGranularities
+	switch {
+	case openaiOpts.HasTimestampGranularities:
+	case opts.TimestampGranularities != nil:
+		granularities = opts.TimestampGranularities
+	case !openaiOpts.Present && opts.Timestamps:
+		granularities = []string{"word"}
+	case responseFormat == "verbose_json":
+		granularities = []string{"segment"}
+	}
+	if openaiOpts.HasTimestampGranularities {
+		for _, g := range opts.TimestampGranularities {
+			if !stringListContains(openaiOpts.TimestampGranularities, g) {
+				warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "timestampGranularities",
+					Details: fmt.Sprintf("The %q timestamp granularity is excluded by providerOptions.openai.timestampGranularities.", g)})
+			}
+		}
+	}
+	feature := "timestampGranularities"
+	if openaiOpts.HasTimestampGranularities {
+		feature = "providerOptions.openai.timestampGranularities"
+	}
+	format := responseFormat
+	if format == "" {
+		format = "default JSON"
+	}
+	for _, g := range granularities {
+		if responseFormat != "verbose_json" && !(responseFormat == "diarized_json" && g == "segment") {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: feature,
+				Details: fmt.Sprintf("OpenAI transcription with the %s response format does not support %s timestamps.", format, g)})
+		}
+	}
+	if responseFormat != "verbose_json" {
+		granularities = nil
+	}
+	return granularities, warnings
+}
+
+func stringListContains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOptions) (io.Reader, string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -216,16 +289,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if responseFormat == "" {
 		responseFormat = entry.responseFormat
 	}
-	granularities := openaiOpts.TimestampGranularities
-	switch {
-	case openaiOpts.HasTimestampGranularities:
-	case !openaiOpts.Present && opts.Timestamps:
-		// Go extension: top-level Timestamps requests word granularity when
-		// no providerOptions.openai are given (v0.5 behavior).
-		granularities = []string{"word"}
-	case responseFormat == "verbose_json":
-		granularities = []string{"segment"}
-	}
+	granularities, _ := m.timestampGranularities(opts)
 	// TS sends every option that is `!= null`, so a present "" language or
 	// prompt is sent as an empty form field.
 	language, hasLanguage := openaiOpts.Language, openaiOpts.hasLanguage

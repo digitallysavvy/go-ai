@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	stdhttp "net/http"
 	"strconv"
@@ -119,7 +120,31 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	if isMAI {
 		modelName = maiModel.Name
 	}
+	// TS 41465fd1b6: the shared timestamp granularities map to timestamps
+	// when providerOptions.azure.timestamps is unset.
+	warnings := []types.Warning{}
 	timestamps := azureOpts.Timestamps
+	if opts.TimestampGranularities != nil {
+		wantsWord, wantsSegment := false, false
+		for _, g := range opts.TimestampGranularities {
+			wantsWord = wantsWord || g == provider.TranscriptionTimestampGranularityWord
+			wantsSegment = wantsSegment || g == provider.TranscriptionTimestampGranularitySegment
+		}
+		switch {
+		case isMAI && !maiModel.SupportsTimestamps && (wantsWord || wantsSegment):
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "timestampGranularities",
+				Details: maiModel.Name + " cannot return word or segment timings."})
+		case timestamps == "":
+			if wantsWord {
+				timestamps = "word"
+			} else if wantsSegment {
+				timestamps = "segment"
+			}
+		case (wantsWord && timestamps != "word") || (wantsSegment && timestamps == "none"):
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "timestampGranularities",
+				Details: fmt.Sprintf("providerOptions.azure.timestamps is %q and overrides the requested timestamp granularities.", timestamps)})
+		}
+	}
 	if timestamps == "" && (!isMAI || maiModel.SupportsTimestamps) {
 		timestamps = "segment"
 	}
@@ -218,6 +243,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	}
 
 	var segments []types.TranscriptionTimestamp
+	var resultWords []types.TranscriptionWord
 	languages := map[string]bool{}
 	phrases := make([]AzureSpeechPhrase, 0, len(parsed.Phrases))
 	for _, phrase := range parsed.Phrases {
@@ -240,6 +266,11 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		words := make([]AzureSpeechWord, 0, len(phrase.Words))
 		for _, w := range phrase.Words {
 			words = append(words, AzureSpeechWord(w))
+			// TS 41465fd1b6: word timings with an offset and a duration.
+			if w.OffsetMilliseconds != nil && w.DurationMilliseconds != nil {
+				resultWords = append(resultWords, types.TranscriptionWord{Text: w.Text,
+					StartSecond: *w.OffsetMilliseconds / 1000, EndSecond: (*w.OffsetMilliseconds + *w.DurationMilliseconds) / 1000})
+			}
 		}
 		phrases = append(phrases, AzureSpeechPhrase{
 			Text:                 phrase.Text,
@@ -279,9 +310,10 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	return &types.TranscriptionResult{
 		Text:              strings.Join(textParts, " "),
 		Segments:          segments,
+		Words:             resultWords,
 		Language:          reportedLanguage,
 		DurationInSeconds: durationInSeconds,
-		Warnings:          []types.Warning{},
+		Warnings:          warnings,
 		ProviderMetadata: map[string]interface{}{
 			"azure": map[string]interface{}{"phrases": phrases},
 		},

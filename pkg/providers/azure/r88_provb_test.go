@@ -327,3 +327,63 @@ func r88provbQuote(s string) string {
 }
 
 func r88provbStr(s string) *string { return &s }
+
+// TS 41465fd1b6 (azure-transcription-model.test.ts): shared timestamp
+// granularities map onto Azure Speech timestamps, with the override and
+// unsupported-model warnings (it.each cases the recorder cannot replay).
+func TestR88provbAzureSpeechTimestampGranularities(t *testing.T) {
+	srv, reqs := r88provbServer(t, "application/json", `{"durationMilliseconds":1000,"combinedPhrases":[{"text":"Hello"}],"phrases":[{"text":"Hello","offsetMilliseconds":40,"durationMilliseconds":400,"locale":"en-US","words":[{"text":"Hello","offsetMilliseconds":40,"durationMilliseconds":400}]}]}`)
+	p, err := New(Config{APIKey: "k", ResourceName: "r", SpeechBaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(model string, granularities []string, timestamps string) (*types.TranscriptionResult, interface{}) {
+		t.Helper()
+		*reqs = nil
+		m, _ := p.TranscriptionModel(model)
+		opts := &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav", TimestampGranularities: granularities}
+		if timestamps != "" {
+			opts.ProviderOptions = map[string]interface{}{"azure": map[string]interface{}{"timestamps": timestamps}}
+		}
+		res, err := m.DoTranscribe(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var def struct {
+			EnhancedMode struct {
+				ModelOptions map[string]interface{} `json:"modelOptions"`
+			} `json:"enhancedMode"`
+		}
+		_ = json.Unmarshal([]byte((*reqs)[0].forms["definition"]), &def)
+		return res, def.EnhancedMode.ModelOptions["timestamps"]
+	}
+
+	res, ts := run("mai-transcribe-2", []string{"word", "segment"}, "")
+	if ts != "word" || len(res.Warnings) != 0 {
+		t.Errorf("word+segment: timestamps %v, warnings %v", ts, res.Warnings)
+	}
+	if want := []types.TranscriptionWord{{Text: "Hello", StartSecond: 0.04, EndSecond: 0.44}}; !reflect.DeepEqual(res.Words, want) {
+		t.Errorf("words = %+v, want %+v", res.Words, want)
+	}
+	if res, ts = run("mai-transcribe-2", []string{"segment"}, ""); ts != "segment" || len(res.Warnings) != 0 {
+		t.Errorf("segment: timestamps %v, warnings %v", ts, res.Warnings)
+	}
+	for _, tc := range [][2]string{{"word", "none"}, {"word", "segment"}, {"segment", "none"}} {
+		res, ts := run("mai-transcribe-2", []string{tc[0]}, tc[1])
+		want := []types.Warning{{Type: "unsupported", Feature: "timestampGranularities", Details: `providerOptions.azure.timestamps is "` + tc[1] + `" and overrides the requested timestamp granularities.`}}
+		if ts != tc[1] || !reflect.DeepEqual(res.Warnings, want) {
+			t.Errorf("%v: timestamps %v, warnings %+v", tc, ts, res.Warnings)
+		}
+	}
+	for _, timestamps := range []string{"", "word", "segment", "none"} {
+		res, ts := run("mai-transcribe-1.5", []string{"word", "segment"}, timestamps)
+		want := []types.Warning{{Type: "unsupported", Feature: "timestampGranularities", Details: "MAI-Transcribe-1.5 cannot return word or segment timings."}}
+		var wantTS interface{}
+		if timestamps != "" {
+			wantTS = timestamps
+		}
+		if ts != wantTS || !reflect.DeepEqual(res.Warnings, want) {
+			t.Errorf("1.5 %q: timestamps %v, warnings %+v", timestamps, ts, res.Warnings)
+		}
+	}
+}
