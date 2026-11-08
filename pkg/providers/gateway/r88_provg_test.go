@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TestR88provgAuthTransportRedirectHopGetsNoCredentials covers the
@@ -134,6 +135,60 @@ func TestR88provgGenerationInfoCostBreakdown(t *testing.T) {
 		}
 		if b, _ := json.Marshal(info); strings.Contains(string(b), "marketCost") {
 			t.Fatalf("json = %s", b)
+		}
+	}
+}
+
+// Ports the gateway-transcription-model.test.ts word timing and shared
+// timestampGranularities cases (TS 41465fd1b6): words are passed through
+// (nullish), and a non-empty granularity request warns without changing the
+// request body.
+func TestR88provgTranscriptionWordsAndGranularityWarning(t *testing.T) {
+	run := func(respWords string, granularities []string) (*types.TranscriptionResult, map[string]interface{}) {
+		t.Helper()
+		var mu sync.Mutex
+		var sent map[string]interface{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			_ = json.Unmarshal(b, &sent)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"text":"Hello world","segments":[]`+respWords+`}`)
+		}))
+		defer srv.Close()
+		p, err := New(Config{APIKey: "k", BaseURL: srv.URL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := p.TranscriptionModel("openai/whisper-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1, 2}, MimeType: "audio/wav", TimestampGranularities: granularities})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return res, sent
+	}
+	res, body := run(`,"words":[{"text":"Hello","startSecond":0,"endSecond":0.5},{"text":"world","startSecond":0.5,"endSecond":1}]`, []string{"word"})
+	if len(res.Words) != 2 || res.Words[1] != (types.TranscriptionWord{Text: "world", StartSecond: 0.5, EndSecond: 1}) {
+		t.Fatalf("words = %+v", res.Words)
+	}
+	if len(res.Warnings) != 1 || res.Warnings[0].Feature != "timestampGranularities" || res.Warnings[0].Details != "The AI Gateway adapter does not forward the shared timestampGranularities option." {
+		t.Fatalf("warnings = %+v", res.Warnings)
+	}
+	if _, ok := body["timestampGranularities"]; ok {
+		t.Fatalf("request body = %v", body)
+	}
+	for _, words := range []string{``, `,"words":null`} {
+		for _, g := range [][]string{nil, {}} {
+			res, _ = run(words, g)
+			if res.Words != nil || len(res.Warnings) != 0 {
+				t.Fatalf("%q %v: words %+v warnings %+v", words, g, res.Words, res.Warnings)
+			}
 		}
 	}
 }
