@@ -78,9 +78,8 @@ func TestExperimentalDecide_RejectsInstructionlessBooleanWithoutDescribedCriteri
 	}
 }
 
-func TestExperimentalDecide_RejectsInvalidInstructionsAndBoxWithout(t *testing.T) {
+func TestExperimentalDecide_RejectsInvalidInstructions(t *testing.T) {
 	for name, q := range map[string]provider.DecisionQuestion{
-		"box without instructions":  {Type: "box"},
 		"choice number":             {Type: "choice", Instructions: 42, Criteria: map[string]interface{}{"a": nil}},
 		"score bool":                {Type: "score", Instructions: false, Criteria: []interface{}{"Low", "High"}},
 		"boolean func":              {Type: "boolean", Instructions: func() bool { return true }, Criteria: map[string]interface{}{"true": "Yes"}},

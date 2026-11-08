@@ -174,7 +174,7 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 	}
 	id := cfg.id
 	if id == "" {
-		id = "steer-" + GenerateID()
+		id = generateSteeringID()
 	}
 
 	s.mu.Lock()
@@ -199,6 +199,11 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 	}
 	return h, nil
 }
+
+// generateSteeringID makes the default id of a steering message: "steer-"
+// and 24 random characters (TS createIdGenerator({ prefix: 'steer', size:
+// 24 }), steering.ts 8).
+var generateSteeringID, _ = CreateIDGenerator(CreateIDGeneratorOptions{Prefix: "steer", Size: 24})
 
 // steeringRun is the run side of a Steering.
 type steeringRun struct{ s *Steering }
@@ -268,9 +273,19 @@ func (r *steeringRun) takeMessages() []types.Message {
 	return out
 }
 
+// steeringDelivered is a delivered steering message with its id (TS
+// resolveTakenMessages result element { id, message }, steering.ts 127-131).
+type steeringDelivered struct {
+	ID      string
+	Message types.Message
+}
+
 // resolveTakenMessages resolves the taken messages as delivered when they are
-// part of sentMessages, and returns the delivered messages.
-func (r *steeringRun) resolveTakenMessages(stepNumber int, sentMessages []types.Message) []types.Message {
+// part of sentMessages, and returns the delivered messages with their ids
+// (TS SteeringRun.resolveTakenMessages, steering.ts 121-131 and 229-252;
+// #24405 added the ids so streamText can stream a steering-message part per
+// delivered message).
+func (r *steeringRun) resolveTakenMessages(stepNumber int, sentMessages []types.Message) []steeringDelivered {
 	if r == nil {
 		return nil
 	}
@@ -279,16 +294,31 @@ func (r *steeringRun) resolveTakenMessages(stepNumber int, sentMessages []types.
 	r.s.taken = nil
 	r.s.mu.Unlock()
 
-	var delivered []types.Message
+	var delivered []steeringDelivered
 	for _, p := range taken {
 		if steerIsSent(p.message, sentMessages) {
-			delivered = append(delivered, p.message)
+			delivered = append(delivered, steeringDelivered{ID: p.id, Message: p.message})
 			p.handle.resolve(SteeringOutcome{Delivered: true, ID: p.id, Message: p.message, StepNumber: stepNumber})
 		} else {
 			p.handle.resolve(SteeringOutcome{ID: p.id, Message: p.message, Reason: SteeringRemovedByPrepareStep})
 		}
 	}
 	return delivered
+}
+
+// steeringDeliveredMessages returns the messages of delivered (TS
+// `.map(({ message }) => message)`, generate-text.ts 1123-1128 and
+// stream-text.ts 2650-2652). It returns nil for an empty input, so
+// ExperimentalSteeringMessages stays nil when nothing was delivered.
+func steeringDeliveredMessages(delivered []steeringDelivered) []types.Message {
+	if len(delivered) == 0 {
+		return nil
+	}
+	out := make([]types.Message, 0, len(delivered))
+	for _, d := range delivered {
+		out = append(out, d.Message)
+	}
+	return out
 }
 
 // end resolves every waiting message as not delivered and ends the run.
