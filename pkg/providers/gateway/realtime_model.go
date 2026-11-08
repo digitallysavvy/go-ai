@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"reflect"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
