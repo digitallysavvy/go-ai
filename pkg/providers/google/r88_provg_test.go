@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // r88provgSpeechBody returns the raw generateContent body a Gemini TTS call
@@ -71,5 +72,50 @@ func TestR88provgGeminiTTSLanguageCode(t *testing.T) {
 				t.Fatalf("language %q: body %s warnings %d", lang, body, warnings)
 			}
 		}
+	}
+}
+
+// Ports the Interactions labels tests (TS a210a29f9b,
+// google-interactions-language-model.test.ts and the Vertex Interactions
+// labels block): labels are sent top-level after input (generate and stream
+// share buildArgs), an empty object is still sent, null or absent sends
+// none, and a non-string label fails.
+func TestR88provgInteractionsLabels(t *testing.T) {
+	m, err := New(Config{APIKey: "k"}).Interactions("gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	im := m.(*InteractionsLanguageModel)
+	body := func(google interface{}) (string, error) {
+		req, _, _, err := im.buildArgs(&provider.GenerateOptions{
+			Prompt:          types.Prompt{Text: "hi"},
+			ProviderOptions: map[string]interface{}{"google": google},
+		}, false)
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.Marshal(req)
+		return string(b), nil
+	}
+	got, err := body(map[string]interface{}{"labels": map[string]interface{}{"application": "example", "safety_identifier": "opaque_user_123"}, "store": false})
+	if err != nil || !strings.Contains(got, `"type":"user_input"}],"labels":{"application":"example","safety_identifier":"opaque_user_123"},`) {
+		t.Fatalf("provided: %s %v", got, err)
+	}
+	got, _ = body(map[string]interface{}{"labels": map[string]interface{}{}})
+	if !strings.Contains(got, `"labels":{}`) {
+		t.Fatalf("empty: %s", got)
+	}
+	for _, opts := range []interface{}{map[string]interface{}{"labels": nil}, map[string]interface{}{}, GoogleInteractionsProviderOptions{}} {
+		got, _ = body(opts)
+		if strings.Contains(got, "labels") {
+			t.Fatalf("absent: %s", got)
+		}
+	}
+	got, _ = body(GoogleInteractionsProviderOptions{Labels: map[string]string{"a": "b"}})
+	if !strings.Contains(got, `"labels":{"a":"b"}`) {
+		t.Fatalf("struct: %s", got)
+	}
+	if _, err := body(map[string]interface{}{"labels": map[string]interface{}{"a": 1}}); err == nil {
+		t.Fatal("non-string label: want error")
 	}
 }

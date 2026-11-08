@@ -416,6 +416,12 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		AgentConfig:           interactionsAgentConfig(isAgent, interactionsOpts.AgentConfig),
 		Background:            interactionsOpts.Background,
 	}
+	// TS a210a29f9b: labels go top-level, after input; an empty object is
+	// still sent.
+	if interactionsOpts.Labels != nil {
+		labels := interactionsOpts.Labels
+		body.Labels = &labels
+	}
 	// TS sends `background` only when providerOptions.google.background is
 	// set: some agents require it, others reject it.
 	if interactionsOpts.Environment != nil {
@@ -652,6 +658,15 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 		if n, ok := numberToInt(v["pollingTimeoutMs"]); ok {
 			out.PollingTimeoutMs = n
 		}
+		switch labels := v["labels"].(type) {
+		case map[string]string:
+			out.Labels = labels
+		case map[string]interface{}:
+			out.Labels = make(map[string]string, len(labels))
+			for k, x := range labels {
+				out.Labels[k], _ = x.(string) // checked above
+			}
+		}
 	default:
 		return out, fmt.Errorf("google interactions provider options must be GoogleInteractionsProviderOptions or map[string]interface{}, got %T", raw)
 	}
@@ -699,6 +714,20 @@ func checkInteractionsOptionTypes(v map[string]interface{}) error {
 		case []string, []interface{}:
 		default:
 			return fmt.Errorf("google.interactions: responseModalities: expected array, received %T", x)
+		}
+	}
+	// labels: z.record(z.string(), z.string()).nullish() (TS a210a29f9b).
+	if x, ok := v["labels"]; ok && x != nil {
+		switch m := x.(type) {
+		case map[string]string:
+		case map[string]interface{}:
+			for _, item := range m {
+				if _, isStr := item.(string); !isStr {
+					return fmt.Errorf("google.interactions: labels: expected record of strings")
+				}
+			}
+		default:
+			return fmt.Errorf("google.interactions: labels: expected record of strings")
 		}
 	}
 	if x, ok := v["imageConfig"]; ok && x != nil {
