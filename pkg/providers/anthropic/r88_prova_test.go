@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -1443,3 +1444,144 @@ func TestR88provaNullEnumOptionsRejected(t *testing.T) {
 		}
 	}
 }
+
+// r88provaFilesServer answers the files API: the handler gets the method
+// and path.
+func r88provaFilesServer(t *testing.T, h func(w http.ResponseWriter, r *http.Request)) (*FilesAPI, *[]*http.Request) {
+	t.Helper()
+	var mu sync.Mutex
+	var reqs []*http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reqs = append(reqs, r.Clone(context.Background()))
+		mu.Unlock()
+		h(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return New(Config{APIKey: "test-api-key", BaseURL: srv.URL}).Files().(*FilesAPI), &reqs
+}
+
+// TS 8b11ff6eb6 files/anthropic-files.test.ts.
+func TestR88provaFilesV4(t *testing.T) {
+	full := `{"id":"file-abc123","type":"file","filename":"test.pdf","mime_type":"application/pdf","size_bytes":12345,"created_at":"2025-04-14T12:00:00Z","downloadable":true}`
+	jsonBody := func(body string) func(http.ResponseWriter, *http.Request) {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, body)
+		}
+	}
+	ref := types.ProviderReference{"anthropic": "file-abc123"}
+	ctx := context.Background()
+
+	// upload: metadata only for present fields, result fields filled
+	files, _ := r88provaFilesServer(t, jsonBody(`{"id":"file-abc123","type":"file","filename":"test.pdf","mime_type":"application/pdf","size_bytes":12345,"created_at":"2025-04-14T12:00:00Z","downloadable":null,"expires_at":"2025-04-15T12:00:00Z"}`))
+	up, err := files.UploadFile(ctx, types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}}, MediaType: "application/octet-stream"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r88provaJSON(up.ProviderMetadata) != `{"anthropic":{"createdAt":"2025-04-14T12:00:00Z","expiresAt":"2025-04-15T12:00:00Z","filename":"test.pdf","mimeType":"application/pdf","sizeBytes":12345}}` ||
+		up.ByteSize == nil || *up.ByteSize != 12345 || up.CreatedAt == nil || up.ExpiresAt == nil || !up.ExpiresAt.Equal(up.CreatedAt.Add(24*time.Hour)) {
+		t.Fatalf("upload = %+v", up)
+	}
+	// upload with only an id: fallback media type, no metadata keys
+	files, _ = r88provaFilesServer(t, jsonBody(`{"id":"file-abc123"}`))
+	up, err = files.UploadFile(ctx, types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "text/plain", Filename: "a.txt"})
+	if err != nil || up.MediaType != "text/plain" || up.Filename != "a.txt" || r88provaJSON(up.ProviderMetadata) != `{"anthropic":{}}` || up.ByteSize != nil {
+		t.Fatalf("id-only upload = %+v (%v)", up, err)
+	}
+
+	// getFileMetadata
+	files, reqs := r88provaFilesServer(t, jsonBody(full))
+	md, err := files.GetFileMetadata(ctx, provider.FileMetadataOptions{File: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (*reqs)[0].Method != "GET" || (*reqs)[0].URL.Path != "/files/file-abc123" || (*reqs)[0].Header.Get("anthropic-beta") != "files-api-2025-04-14" {
+		t.Fatalf("request = %s %s %v", (*reqs)[0].Method, (*reqs)[0].URL.Path, (*reqs)[0].Header)
+	}
+	if md.Filename != "test.pdf" || md.MediaType != "application/pdf" || *md.ByteSize != 12345 || !md.CreatedAt.Equal(time.Date(2025, 4, 14, 12, 0, 0, 0, time.UTC)) ||
+		r88provaJSON(md.ProviderMetadata) != `{"anthropic":{"createdAt":"2025-04-14T12:00:00Z","downloadable":true,"filename":"test.pdf","mimeType":"application/pdf","sizeBytes":12345}}` {
+		t.Fatalf("metadata = %+v", md)
+	}
+	for _, body := range []string{`{"id":"file-abc123"}`, `{"id":"file-abc123","type":null,"filename":null,"mime_type":null,"size_bytes":null,"created_at":null,"downloadable":null}`} {
+		files, _ = r88provaFilesServer(t, jsonBody(body))
+		md, err = files.GetFileMetadata(ctx, provider.FileMetadataOptions{File: ref})
+		if err != nil || md.Filename != "" || md.ByteSize != nil || md.CreatedAt != nil || md.ProviderReference["anthropic"] != "file-abc123" {
+			t.Fatalf("%s: %+v (%v)", body, md, err)
+		}
+	}
+
+	// deleteFile
+	for _, body := range []string{`{"id":"file-abc123","type":"file_deleted"}`, `{"id":"file-abc123"}`, `{"id":"file-abc123","type":null}`} {
+		files, reqs = r88provaFilesServer(t, jsonBody(body))
+		del, err := files.DeleteFile(ctx, provider.DeleteFileOptions{File: ref})
+		if err != nil || !del.Deleted || del.ProviderReference["anthropic"] != "file-abc123" || (*reqs)[0].Method != "DELETE" {
+			t.Fatalf("%s: %+v (%v)", body, del, err)
+		}
+	}
+
+	// downloadFile: streamed content, media type without parameters
+	for _, tc := range []struct{ ct, want string }{{"application/pdf; charset=utf-8", "application/pdf"}, {"", ""}, {"; charset=utf-8", ""}} {
+		files, reqs = r88provaFilesServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header()["Content-Type"] = []string{tc.ct}
+			_, _ = io.WriteString(w, "file content")
+		})
+		dl, err := files.DownloadFile(ctx, provider.DownloadFileOptions{File: ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, _ := io.ReadAll(dl.Content)
+		_ = dl.Content.Close()
+		if string(content) != "file content" || dl.MediaType != tc.want || (*reqs)[0].URL.Path != "/files/file-abc123/content" {
+			t.Fatalf("download %q: %q %q", tc.ct, content, dl.MediaType)
+		}
+	}
+
+	// errors and call headers for every operation
+	for _, op := range []string{"getFileMetadata", "downloadFile", "deleteFile"} {
+		files, reqs = r88provaFilesServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(404)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"not_found_error","message":"File not found"}}`)
+		})
+		h := map[string]string{"x-request-id": "request-1"}
+		var err error
+		switch op {
+		case "getFileMetadata":
+			_, err = files.GetFileMetadata(ctx, provider.FileMetadataOptions{File: ref, Headers: h})
+		case "downloadFile":
+			_, err = files.DownloadFile(ctx, provider.DownloadFileOptions{File: ref, Headers: h})
+		default:
+			_, err = files.DeleteFile(ctx, provider.DeleteFileOptions{File: ref, Headers: h})
+		}
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.StatusCode != 404 || pe.Message != "File not found" {
+			t.Fatalf("%s: %v", op, err)
+		}
+		if got := (*reqs)[0].Header; got.Get("x-request-id") != "request-1" || got.Get("anthropic-beta") != "files-api-2025-04-14" || got.Get("x-api-key") != "test-api-key" {
+			t.Fatalf("%s headers = %v", op, got)
+		}
+		// blank, whitespace-only and missing ids
+		for _, bad := range []types.ProviderReference{{"anthropic": ""}, {"anthropic": " \t"}, {"openai": "x"}} {
+			var err error
+			switch op {
+			case "getFileMetadata":
+				_, err = files.GetFileMetadata(ctx, provider.FileMetadataOptions{File: bad})
+			case "downloadFile":
+				_, err = files.DownloadFile(ctx, provider.DownloadFileOptions{File: bad})
+			default:
+				_, err = files.DeleteFile(ctx, provider.DeleteFileOptions{File: bad})
+			}
+			var ae *providererrors.InvalidArgumentError
+			if !errors.As(err, &ae) || !strings.Contains(err.Error(), "file reference is missing an 'anthropic' file id.") {
+				t.Fatalf("%s %v: %v", op, bad, err)
+			}
+		}
+	}
+}
+
+var (
+	_ provider.FileMetadataGetter = (*FilesAPI)(nil)
+	_ provider.FileDownloader     = (*FilesAPI)(nil)
+	_ provider.FileDeleter        = (*FilesAPI)(nil)
+)

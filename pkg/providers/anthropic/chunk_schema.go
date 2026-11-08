@@ -404,7 +404,9 @@ var (
 		f("data", zArray(zBatchResponse)), f("has_more", zBoolean), f("last_id", zNullish(zString)),
 	)
 	zFileUpload = zObject(
-		f("id", zString), f("type", zLiteral("file")), f("filename", zString), f("mime_type", zString),
-		f("size_bytes", zNumber), f("created_at", zString), f("downloadable", zNullish(zBoolean)),
+		f("id", zString), f("type", zNullish(zLiteral("file"))), f("filename", zNullish(zString)), f("mime_type", zNullish(zString)),
+		f("size_bytes", zNullish(zNumber)), f("created_at", zNullish(zString)), f("downloadable", zNullish(zBoolean)),
+		f("expires_at", zNullish(zString)),
 	)
+	zFileDelete = zObject(f("type", zNullish(zLiteral("file_deleted"))), f("id", zString))
 )
