@@ -367,22 +367,16 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if len(opts.Tools) > 0 {
 		tools, _ := tool.DropProviderDefinedTools(opts.Tools, nil)
 		if opts.ToolChoice.Type != "" {
-			// TS mistral prepareTools: required and tool both force 'any'; a
-			// specific tool is selected by filtering the tool list.
+			// TS mistral prepareTools (a7f8478781): required forces 'any';
+			// a specific tool is the native {type:'function', function:{name}}
+			// choice and every tool is still sent.
 			switch opts.ToolChoice.Type {
 			case types.ToolChoiceAuto, types.ToolChoiceNone:
 				body["tool_choice"] = string(opts.ToolChoice.Type)
 			case types.ToolChoiceRequired:
 				body["tool_choice"] = "any"
 			case types.ToolChoiceTool:
-				body["tool_choice"] = "any"
-				var filtered []types.Tool
-				for _, t := range tools {
-					if t.Name == opts.ToolChoice.ToolName {
-						filtered = append(filtered, t)
-					}
-				}
-				tools = filtered
+				body["tool_choice"] = mistralFunctionToolChoice{Type: "function", Function: mistralFunctionName{Name: opts.ToolChoice.ToolName}}
 			}
 		}
 		body["tools"] = tool.ToOpenAIFormat(tools)
@@ -1047,4 +1041,15 @@ func mistralCreatedTimestamp(created *float64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(int64(*created * 1000))
+}
+
+// mistralFunctionToolChoice is the native specific tool choice, in TS key
+// order: { type: 'function', function: { name } }.
+type mistralFunctionToolChoice struct {
+	Type     string              `json:"type"`
+	Function mistralFunctionName `json:"function"`
+}
+
+type mistralFunctionName struct {
+	Name string `json:"name"`
 }
