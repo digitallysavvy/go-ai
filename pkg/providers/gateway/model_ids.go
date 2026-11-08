@@ -119,23 +119,21 @@ const (
 	GatewayLanguageModelGoogleGemini3FlashBatch          GatewayLanguageModelID = "google/gemini-3-flash-batch"
 	GatewayLanguageModelGoogleGemini3ProImage            GatewayLanguageModelID = "google/gemini-3-pro-image"
 	GatewayLanguageModelGoogleGemini31FlashImage         GatewayLanguageModelID = "google/gemini-3.1-flash-image"
-	GatewayLanguageModelGoogleGemini31FlashImagePreview  GatewayLanguageModelID = "google/gemini-3.1-flash-image-preview"
 	GatewayLanguageModelGoogleGemini31FlashLite          GatewayLanguageModelID = "google/gemini-3.1-flash-lite"
 	GatewayLanguageModelGoogleGemini31FlashLiteBatch     GatewayLanguageModelID = "google/gemini-3.1-flash-lite-batch"
 	GatewayLanguageModelGoogleGemini31FlashLiteImage     GatewayLanguageModelID = "google/gemini-3.1-flash-lite-image"
 	GatewayLanguageModelGoogleGemini31ProPreview         GatewayLanguageModelID = "google/gemini-3.1-pro-preview"
 	GatewayLanguageModelGoogleGemini31ProPreviewBatch    GatewayLanguageModelID = "google/gemini-3.1-pro-preview-batch"
 	GatewayLanguageModelGoogleGemini35Flash              GatewayLanguageModelID = "google/gemini-3.5-flash"
-	GatewayLanguageModelGoogleGemini35FlashBatch         GatewayLanguageModelID = "google/gemini-3.5-flash-batch"
 	GatewayLanguageModelGoogleGemini35FlashLite          GatewayLanguageModelID = "google/gemini-3.5-flash-lite"
 	GatewayLanguageModelGoogleGemini35FlashLiteBatch     GatewayLanguageModelID = "google/gemini-3.5-flash-lite-batch"
 	GatewayLanguageModelGoogleGemini36Flash              GatewayLanguageModelID = "google/gemini-3.6-flash"
 	GatewayLanguageModelGoogleGemini36FlashBatch         GatewayLanguageModelID = "google/gemini-3.6-flash-batch"
 	GatewayLanguageModelGoogleGemini37Flash              GatewayLanguageModelID = "google/gemini-3.7-flash"
-	GatewayLanguageModelGoogleGemini37FlashBatch         GatewayLanguageModelID = "google/gemini-3.7-flash-batch"
 	GatewayLanguageModelGoogleGemini38Flash              GatewayLanguageModelID = "google/gemini-3.8-flash"
 	GatewayLanguageModelGoogleGemini4Argon               GatewayLanguageModelID = "google/gemini-4-argon"
 	GatewayLanguageModelGoogleGeminiNanoBanana21         GatewayLanguageModelID = "google/gemini-nano-banana-2.1"
+	GatewayLanguageModelGoogleGeminiOmni12Flash          GatewayLanguageModelID = "google/gemini-omni-1.2-flash"
 	GatewayLanguageModelGoogleGeminiOmniFlashPreview     GatewayLanguageModelID = "google/gemini-omni-flash-preview"
 	GatewayLanguageModelGoogleGemma426bA4bIt             GatewayLanguageModelID = "google/gemma-4-26b-a4b-it"
 	GatewayLanguageModelGoogleGemma431bIt                GatewayLanguageModelID = "google/gemma-4-31b-it"
@@ -323,6 +321,7 @@ const (
 	GatewayLanguageModelTencentHyMt2Plus                 GatewayLanguageModelID = "tencent/hy-mt2-plus"
 	GatewayLanguageModelTencentHyMt2Pro                  GatewayLanguageModelID = "tencent/hy-mt2-pro"
 	GatewayLanguageModelTencentHy3                       GatewayLanguageModelID = "tencent/hy3"
+	GatewayLanguageModelTencentHy4                       GatewayLanguageModelID = "tencent/hy4"
 	GatewayLanguageModelTencentHy4Preview                GatewayLanguageModelID = "tencent/hy4-preview"
 	GatewayLanguageModelThinkingmachinesInkling          GatewayLanguageModelID = "thinkingmachines/inkling"
 	GatewayLanguageModelThinkingmachinesInklingSmall     GatewayLanguageModelID = "thinkingmachines/inkling-small"
@@ -407,6 +406,8 @@ const (
 	GatewayImageModelOpenaiGptImage2             GatewayImageModelID = "openai/gpt-image-2"
 	GatewayImageModelOpenaiGptImage25Flare       GatewayImageModelID = "openai/gpt-image-2.5-flare"
 	GatewayImageModelOpenaiGptImage25Sunburst    GatewayImageModelID = "openai/gpt-image-2.5-sunburst"
+	GatewayImageModelOpenaiGptImage26Flare       GatewayImageModelID = "openai/gpt-image-2.6-flare"
+	GatewayImageModelOpenaiGptImage26Sunburst    GatewayImageModelID = "openai/gpt-image-2.6-sunburst"
 	GatewayImageModelProdiaFluxFastSchnell       GatewayImageModelID = "prodia/flux-fast-schnell"
 	GatewayImageModelRecraftRecraftV2            GatewayImageModelID = "recraft/recraft-v2"
 	GatewayImageModelRecraftRecraftV3            GatewayImageModelID = "recraft/recraft-v3"
@@ -442,8 +443,6 @@ const (
 	GatewayVideoModelBytedanceSeedanceV10Pro        GatewayVideoModelID = "bytedance/seedance-v1.0-pro"
 	GatewayVideoModelBytedanceSeedanceV10ProFast    GatewayVideoModelID = "bytedance/seedance-v1.0-pro-fast"
 	GatewayVideoModelBytedanceSeedanceV15Pro        GatewayVideoModelID = "bytedance/seedance-v1.5-pro"
-	GatewayVideoModelGoogleVeo30FastGenerate001     GatewayVideoModelID = "google/veo-3.0-fast-generate-001"
-	GatewayVideoModelGoogleVeo30Generate001         GatewayVideoModelID = "google/veo-3.0-generate-001"
 	GatewayVideoModelGoogleVeo31FastGenerate001     GatewayVideoModelID = "google/veo-3.1-fast-generate-001"
 	GatewayVideoModelGoogleVeo31Generate001         GatewayVideoModelID = "google/veo-3.1-generate-001"
 	GatewayVideoModelGoogleVeo31LiteGenerate001     GatewayVideoModelID = "google/veo-3.1-lite-generate-001"
@@ -538,7 +537,6 @@ const (
 	GatewayRealtimeModelOpenaiGptRealtime21                GatewayRealtimeModelID = "openai/gpt-realtime-2.1"
 	GatewayRealtimeModelOpenaiGptRealtimeMini              GatewayRealtimeModelID = "openai/gpt-realtime-mini"
 	GatewayRealtimeModelSpacexaiGrokVoice30                GatewayRealtimeModelID = "spacexai/grok-voice-3.0"
-	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20       GatewayRealtimeModelID = "spacexai/grok-voice-think-fast-2.0"
 )
 
 // GatewayDecisionModelID constants mirror gateway-decision-model-settings.ts.
@@ -652,23 +650,21 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelGoogleGemini3FlashBatch,
 	GatewayLanguageModelGoogleGemini3ProImage,
 	GatewayLanguageModelGoogleGemini31FlashImage,
-	GatewayLanguageModelGoogleGemini31FlashImagePreview,
 	GatewayLanguageModelGoogleGemini31FlashLite,
 	GatewayLanguageModelGoogleGemini31FlashLiteBatch,
 	GatewayLanguageModelGoogleGemini31FlashLiteImage,
 	GatewayLanguageModelGoogleGemini31ProPreview,
 	GatewayLanguageModelGoogleGemini31ProPreviewBatch,
 	GatewayLanguageModelGoogleGemini35Flash,
-	GatewayLanguageModelGoogleGemini35FlashBatch,
 	GatewayLanguageModelGoogleGemini35FlashLite,
 	GatewayLanguageModelGoogleGemini35FlashLiteBatch,
 	GatewayLanguageModelGoogleGemini36Flash,
 	GatewayLanguageModelGoogleGemini36FlashBatch,
 	GatewayLanguageModelGoogleGemini37Flash,
-	GatewayLanguageModelGoogleGemini37FlashBatch,
 	GatewayLanguageModelGoogleGemini38Flash,
 	GatewayLanguageModelGoogleGemini4Argon,
 	GatewayLanguageModelGoogleGeminiNanoBanana21,
+	GatewayLanguageModelGoogleGeminiOmni12Flash,
 	GatewayLanguageModelGoogleGeminiOmniFlashPreview,
 	GatewayLanguageModelGoogleGemma426bA4bIt,
 	GatewayLanguageModelGoogleGemma431bIt,
@@ -856,6 +852,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelTencentHyMt2Plus,
 	GatewayLanguageModelTencentHyMt2Pro,
 	GatewayLanguageModelTencentHy3,
+	GatewayLanguageModelTencentHy4,
 	GatewayLanguageModelTencentHy4Preview,
 	GatewayLanguageModelThinkingmachinesInkling,
 	GatewayLanguageModelThinkingmachinesInklingSmall,
@@ -940,6 +937,8 @@ var GatewayImageModelIDs = []GatewayImageModelID{
 	GatewayImageModelOpenaiGptImage2,
 	GatewayImageModelOpenaiGptImage25Flare,
 	GatewayImageModelOpenaiGptImage25Sunburst,
+	GatewayImageModelOpenaiGptImage26Flare,
+	GatewayImageModelOpenaiGptImage26Sunburst,
 	GatewayImageModelProdiaFluxFastSchnell,
 	GatewayImageModelRecraftRecraftV2,
 	GatewayImageModelRecraftRecraftV3,
@@ -975,8 +974,6 @@ var GatewayVideoModelIDs = []GatewayVideoModelID{
 	GatewayVideoModelBytedanceSeedanceV10Pro,
 	GatewayVideoModelBytedanceSeedanceV10ProFast,
 	GatewayVideoModelBytedanceSeedanceV15Pro,
-	GatewayVideoModelGoogleVeo30FastGenerate001,
-	GatewayVideoModelGoogleVeo30Generate001,
 	GatewayVideoModelGoogleVeo31FastGenerate001,
 	GatewayVideoModelGoogleVeo31Generate001,
 	GatewayVideoModelGoogleVeo31LiteGenerate001,
@@ -1071,7 +1068,6 @@ var GatewayRealtimeModelIDs = []GatewayRealtimeModelID{
 	GatewayRealtimeModelOpenaiGptRealtime21,
 	GatewayRealtimeModelOpenaiGptRealtimeMini,
 	GatewayRealtimeModelSpacexaiGrokVoice30,
-	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20,
 }
 
 // GatewayDecisionModelIDs lists the suggested gateway decision model IDs from gateway-decision-model-settings.ts.

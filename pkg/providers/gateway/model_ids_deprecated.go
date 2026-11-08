@@ -163,4 +163,34 @@ const (
 	//
 	// Deprecated: removed from the suggested Gateway model IDs.
 	GatewayLanguageModelXiaomiMimoV25Pro GatewayLanguageModelID = "xiaomi/mimo-v2.5-pro"
+
+	// GatewayLanguageModelGoogleGemini31FlashImagePreview is no longer in the TS Gateway model ID union (TS bb4e2d0a3b).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelGoogleGemini31FlashImagePreview GatewayLanguageModelID = "google/gemini-3.1-flash-image-preview"
+
+	// GatewayLanguageModelGoogleGemini35FlashBatch is no longer in the TS Gateway model ID union (TS bb4e2d0a3b).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelGoogleGemini35FlashBatch GatewayLanguageModelID = "google/gemini-3.5-flash-batch"
+
+	// GatewayLanguageModelGoogleGemini37FlashBatch is no longer in the TS Gateway model ID union (TS bb4e2d0a3b).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelGoogleGemini37FlashBatch GatewayLanguageModelID = "google/gemini-3.7-flash-batch"
+
+	// GatewayVideoModelGoogleVeo30FastGenerate001 is no longer in the TS Gateway model ID union (TS bb4e2d0a3b).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayVideoModelGoogleVeo30FastGenerate001 GatewayVideoModelID = "google/veo-3.0-fast-generate-001"
+
+	// GatewayVideoModelGoogleVeo30Generate001 is no longer in the TS Gateway model ID union (TS bb4e2d0a3b).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayVideoModelGoogleVeo30Generate001 GatewayVideoModelID = "google/veo-3.0-generate-001"
+
+	// GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20 is no longer in the TS Gateway model ID union (TS bace5536e6).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20 GatewayRealtimeModelID = "spacexai/grok-voice-think-fast-2.0"
 )
