@@ -3,7 +3,10 @@ package cohere
 import (
 	"encoding/json"
 	"errors"
-	"fmt")
+	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // validateCohereChunk mirrors the TS cohereChatChunkSchema discriminated
 // union: an unknown or missing `type`, or a member with a missing/ill-typed
@@ -38,8 +41,29 @@ func validateCohereChunk(data []byte) error {
 	}
 
 	switch typ {
-	case "citation-start", "citation-end", "tool-call-end":
+	case "citation-end", "tool-call-end":
 		return nil
+	case "citation-start":
+		// TS 033a980fee: index nullish number; delta / message nullish
+		// objects; citations nullish, one citation or an array of them.
+		if v, ok := top["index"]; ok && v != nil && !num(v) {
+			return fail("index", "number")
+		}
+		if v, ok := top["delta"]; ok && v != nil {
+			delta := obj(v)
+			if delta == nil {
+				return fail("delta", "object")
+			}
+			if mv, ok := delta["message"]; ok && mv != nil {
+				message := obj(mv)
+				if message == nil {
+					return fail("delta.message", "object")
+				}
+				if err := providerutils.ValidateCohereCitations(message["citations"]); err != nil {
+					return err
+				}
+			}
+		}
 	case "content-start":
 		if !num(top["index"]) {
 			return fail("index", "number")

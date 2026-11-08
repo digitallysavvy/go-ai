@@ -295,6 +295,27 @@ func ValidateChatResponse(body []byte, kind ChatResponseKind) error {
 	return nil
 }
 
+// ValidateCohereCitations checks the citations of a Cohere `citation-start`
+// stream event (TS cohereChatChunkSchema, 033a980fee): nil (absent or null),
+// one citation, or an array of citations, each against cohereCitationSchema.
+// A nil result means the TS parse succeeds; the error is a *ChunkSchemaError.
+func ValidateCohereCitations(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+	path := []interface{}{"delta", "message", "citations"}
+	if arr, ok := value.([]interface{}); ok {
+		if bad := zArr(zCohereCitation)(arr, true, path); bad != nil {
+			return bad
+		}
+		return nil
+	}
+	if bad := zCohereCitation(value, true, path); bad != nil {
+		return bad
+	}
+	return nil
+}
+
 // ChatResponseValidator returns the response check of an http.Request
 // (ValidateResponse): TS createJsonResponseHandler(schema) turns a body that
 // fails the schema into an APICallError "Invalid JSON response" with the

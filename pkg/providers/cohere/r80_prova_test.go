@@ -43,12 +43,13 @@ func TestR80provaCohereTopLevelImageMediaType(t *testing.T) {
 	}
 }
 
-// TS cohereChatChunkSchema declares index only on the content members; on
+// TS cohereChatChunkSchema declares index only on the content members (and,
+// since 033a980fee, as a nullish number on citation-start); on
 // any other member an index that is not a number is stripped, so the chunk
 // parses (no error part, and the finish reason is not "error").
 func TestR80provaCohereStreamForeignIndexIgnored(t *testing.T) {
 	body := "data: {\"type\":\"message-start\",\"id\":\"g1\",\"index\":\"x\"}\n\n" +
-		"data: {\"type\":\"citation-start\",\"index\":{}}\n\n" +
+		"data: {\"type\":\"citation-end\",\"index\":{}}\n\n" +
 		"data: {\"type\":\"content-start\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"type\":\"text\",\"text\":\"\"}}}}\n\n" +
 		"data: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"text\":\"hi\"}}}}\n\n" +
 		"data: {\"type\":\"content-end\",\"index\":0}\n\n" +

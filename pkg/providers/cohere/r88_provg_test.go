@@ -140,3 +140,42 @@ func TestR88provgCohereStreamUsageWithoutTokens(t *testing.T) {
 		t.Fatalf("finish = %+v", finish)
 	}
 }
+
+// TS 033a980fee: citation-start events become source parts (one citation
+// or an array; tool-only citations skipped; null citations tolerated); a
+// malformed citation fails the chunk.
+func TestR88provgCohereStreamCitationSources(t *testing.T) {
+	sse := "data: {\"type\":\"citation-start\",\"index\":0,\"delta\":{\"message\":{\"citations\":{\"start\":49,\"end\":60,\"text\":\"Marrowdale.\",\"sources\":[{\"type\":\"document\",\"id\":\"doc:0\",\"document\":{\"id\":\"doc:0\",\"text\":\"Zephyria\",\"title\":\"zephyria.txt\"}}],\"type\":\"TEXT_CONTENT\"}}}}\n\n" +
+		"data: {\"type\":\"citation-end\",\"index\":0}\n\n" +
+		"data: {\"type\":\"citation-start\",\"index\":1,\"delta\":{\"message\":{\"citations\":[{\"sources\":[{\"type\":\"document\",\"document\":{\"text\":\"a\"}}]},{\"sources\":[{\"type\":\"tool\",\"tool_output\":{}}]},{\"sources\":[{\"document\":{\"title\":\"b\"}}]}]}}}\n\n" +
+		"data: {\"type\":\"citation-start\",\"index\":2}\n\n" +
+		"data: {\"type\":\"citation-start\",\"index\":3,\"delta\":{\"message\":{\"citations\":null}}}\n\n" +
+		"data: {\"type\":\"citation-start\",\"delta\":{\"message\":{\"citations\":{\"start\":\"x\"}}}}\n\n" +
+		"data: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"COMPLETE\",\"usage\":{\"tokens\":{\"input_tokens\":1,\"output_tokens\":2}}}}\n\n"
+	s := newCohereV2Stream(io.NopCloser(strings.NewReader(sse)))
+	var titles []string
+	ids := map[string]bool{}
+	errors := 0
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		switch c.Type {
+		case provider.ChunkTypeSource:
+			titles = append(titles, c.SourceContent.Title)
+			ids[c.SourceContent.ID] = true
+		case provider.ChunkTypeError:
+			errors++
+		}
+	}
+	if strings.Join(titles, ",") != "zephyria.txt,Document,b" {
+		t.Fatalf("source titles = %v", titles)
+	}
+	if len(ids) != 3 {
+		t.Fatalf("source ids = %v, want 3 distinct", ids)
+	}
+	if errors != 1 {
+		t.Fatalf("error parts = %d, want 1 (malformed citation)", errors)
+	}
+}

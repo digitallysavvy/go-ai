@@ -948,8 +948,38 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			}
 			continue
 
+		case "citation-start":
+			// TS 033a980fee: delta.message.citations is one citation or an
+			// array (validated above); each citation with a document becomes
+			// a source part, tool-only citations are skipped.
+			var delta struct {
+				Message *struct {
+					Citations json.RawMessage `json:"citations"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(ev.Delta, &delta) != nil || delta.Message == nil {
+				continue
+			}
+			raw := delta.Message.Citations
+			if len(raw) == 0 || string(raw) == "null" {
+				continue
+			}
+			var list []json.RawMessage
+			if json.Unmarshal(raw, &list) != nil {
+				list = []json.RawMessage{raw}
+			}
+			for _, c := range list {
+				if source := mapCohereCitationToSource(c); source != nil {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type:          provider.ChunkTypeSource,
+						SourceContent: source,
+					})
+				}
+			}
+			continue
+
 		default:
-			// citation-start, citation-end, tool-plan-delta, etc. — ignore
+			// citation-end, tool-plan-delta, etc. — ignore
 			continue
 		}
 
