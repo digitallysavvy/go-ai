@@ -36,8 +36,12 @@ func TestR88toolsBridgesAt0f3a85f92d(t *testing.T) {
 	}
 	checks := map[Adapter][]string{
 		DeepAgents: {`missing --workdir / --home-dir / --bridge-state-dir`, `readableSkillRoots: start.readableSkillRoots ?? []`},
-		OpenCode:   {`readableSkillRoots: start.readableSkillRoots,`},
-		ClaudeCode: {`settingSources: ["user"],`},
+		// f779a62cc9: Google / Mistral through AI Gateway use openai-compatible.
+		OpenCode: {`readableSkillRoots: start.readableSkillRoots,`, `providerID === "mistral" ? { npm: "@ai-sdk/openai-compatible" }`},
+		// c7ebb5653a: dotted CLAUDE_CODE_SUBAGENT_MODEL ids are mapped.
+		ClaudeCode: {`settingSources: ["user"],`, `...toGatewayModelOverride(env.CLAUDE_CODE_SUBAGENT_MODEL),`},
+		// 95c1307de5: the caller's model_reasoning_summary wins.
+		Codex: {"model_reasoning_summary: \"detailed\",\n\t\t...start.codexConfig,"},
 	}
 	for adapter, needles := range checks {
 		data, _, _ := BridgeEntry(adapter)
