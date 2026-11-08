@@ -4,8 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -421,4 +427,91 @@ func TestR88carryAdditionalDirectoriesOnStart(t *testing.T) {
 			}
 		}
 	}
+}
+
+// r88carryHelperHome writes ~/.claude/settings.json with an apiKeyHelper and
+// leaves no `sh` on PATH (TS claude-code-auth.test.ts setup).
+func r88carryHelperHome(t *testing.T, command string) {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(map[string]string{"apiKeyHelper": command})
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("PATH", t.TempDir())
+}
+
+// r88carryRecordHelperRuns records each helper command run.
+func r88carryRecordHelperRuns(t *testing.T, fake func(*exec.Cmd) ([]byte, error)) *[]string {
+	t.Helper()
+	var runs []string
+	orig := apiKeyHelperOutput
+	apiKeyHelperOutput = func(cmd *exec.Cmd) ([]byte, error) {
+		runs = append(runs, strings.Join(cmd.Args, " "))
+		if fake != nil {
+			return fake(cmd)
+		}
+		return orig(cmd)
+	}
+	t.Cleanup(func() { apiKeyHelperOutput = orig })
+	return &runs
+}
+
+// Ports TS 7a5a9c6c50 claude-code-auth.test.ts "default apiKeyHelper
+// reader".
+func TestR88carryAPIKeyHelperPlatformShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix shell paths")
+	}
+	t.Run("falls back to the system shell when sh is not on PATH", func(t *testing.T) {
+		r88carryHelperHome(t, "echo sk-from-helper")
+		runs := r88carryRecordHelperRuns(t, nil)
+		if got := readAPIKeyHelper(); got != "sk-from-helper" {
+			t.Fatalf("key = %q (runs %q)", got, *runs)
+		}
+		if len(*runs) != 2 || (*runs)[1] != "/bin/sh -c echo sk-from-helper" {
+			t.Fatalf("runs = %q", *runs)
+		}
+	})
+	t.Run("ignores an apiKeyHelper command that fails", func(t *testing.T) {
+		r88carryHelperHome(t, "exit 1")
+		if got := readAPIKeyHelper(); got != "" {
+			t.Fatalf("key = %q", got)
+		}
+	})
+	t.Run("preserves sh-based helpers when sh is available", func(t *testing.T) {
+		r88carryHelperHome(t, `printf "%s" "${HELPER_KEY:-sk-from-sh}"`)
+		runs := r88carryRecordHelperRuns(t, func(*exec.Cmd) ([]byte, error) { return []byte("sk-from-sh\n"), nil })
+		if got := readAPIKeyHelper(); got != "sk-from-sh" {
+			t.Fatalf("key = %q", got)
+		}
+		if len(*runs) != 1 || (*runs)[0] != `sh -c printf "%s" "${HELPER_KEY:-sk-from-sh}"` {
+			t.Fatalf("runs = %q", *runs)
+		}
+	})
+	for _, status := range []int{1, 127} {
+		t.Run("does not retry a helper that exits with a status", func(t *testing.T) {
+			r88carryHelperHome(t, "exit "+strconv.Itoa(status))
+			runs := r88carryRecordHelperRuns(t, func(*exec.Cmd) ([]byte, error) {
+				return nil, &exec.ExitError{}
+			})
+			if got := readAPIKeyHelper(); got != "" || len(*runs) != 1 {
+				t.Fatalf("key = %q, runs = %q", got, *runs)
+			}
+		})
+	}
+	t.Run("does not fall back when sh cannot be launched due to permissions", func(t *testing.T) {
+		r88carryHelperHome(t, "echo sk-from-helper")
+		runs := r88carryRecordHelperRuns(t, func(*exec.Cmd) ([]byte, error) {
+			return nil, &os.PathError{Op: "fork/exec", Path: "sh", Err: syscall.EACCES}
+		})
+		if got := readAPIKeyHelper(); got != "" || len(*runs) != 1 {
+			t.Fatalf("key = %q, runs = %q", got, *runs)
+		}
+	})
 }
