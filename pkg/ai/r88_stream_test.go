@@ -82,6 +82,7 @@ var r88streamFinishStop = provider.StreamChunk{Type: provider.ChunkTypeFinish, F
 
 // stream-text.test.ts 'ping forwarding' > should forward ping chunks without
 // enabling raw chunks.
+// Appendix A: stream-text.test.ts 24638 (TS 0f3a85f92d).
 func TestR88streamPingForwardedWithoutRawChunks(t *testing.T) {
 	r := r88streamStart(t, StreamTextOptions{
 		Model:  r88streamModel([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}, {Type: provider.ChunkTypePing}, r88streamFinishStop}),
@@ -118,6 +119,7 @@ func (s *r88streamBlockingStream) Close() error { return nil }
 
 // stream-text.test.ts 'ping forwarding' > does not hold heartbeats behind
 // buffered tool input during retries (TS stream-text.ts 2885-2890).
+// Appendix A: stream-text.test.ts 24668 (TS 0f3a85f92d).
 func TestR88streamPingNotHeldBehindBufferedToolInput(t *testing.T) {
 	stream := &r88streamBlockingStream{ch: make(chan provider.StreamChunk, 8)}
 	stream.ch <- provider.StreamChunk{Type: provider.ChunkTypeStreamStart}
@@ -155,6 +157,7 @@ func TestR88streamPingNotHeldBehindBufferedToolInput(t *testing.T) {
 
 // stream-text.test.ts 'ping forwarding' > delivers a heartbeat once while
 // discarding failed-attempt tool input and content.
+// Appendix A: stream-text.test.ts 24707 (TS 0f3a85f92d).
 func TestR88streamPingDeliveredOnceAcrossStreamRetry(t *testing.T) {
 	retries := 0
 	streamRetries := 1
@@ -208,6 +211,7 @@ func TestR88streamPingDeliveredOnceAcrossStreamRetry(t *testing.T) {
 
 // stream-text.test.ts 'ping forwarding' > does not treat a ping-only
 // incomplete stream as generated output.
+// Appendix A: stream-text.test.ts 24757 (TS 0f3a85f92d).
 func TestR88streamPingOnlyStreamIsNoOutput(t *testing.T) {
 	r := r88streamStart(t, StreamTextOptions{
 		Model:   r88streamModel([]provider.StreamChunk{{Type: provider.ChunkTypePing}}),
@@ -330,6 +334,7 @@ func r88streamTypes(parts []provider.StreamChunk) []string {
 
 // stream-text-steering.test.ts 'steering message stream part' > should
 // stream a delivered message before the output of its step.
+// Appendix A: stream-text-steering.test.ts 700 (TS 0f3a85f92d).
 func TestR88streamSteeringPartBeforeItsStep(t *testing.T) {
 	steering := NewSteering()
 	r := r88streamStart(t, StreamTextOptions{
@@ -359,6 +364,7 @@ func TestR88streamSteeringPartBeforeItsStep(t *testing.T) {
 
 // ... should stream a message sent before the stream starts before the first
 // step.
+// Appendix A: stream-text-steering.test.ts 756 (TS 0f3a85f92d).
 func TestR88streamSteeringPartBeforeFirstStep(t *testing.T) {
 	steering := NewSteering()
 	steering.Steer("Use Celsius.", WithSteerID("steer-1"))
@@ -426,6 +432,7 @@ func r88streamReadUIMessage(t *testing.T, r *StreamTextResult) UIMessage {
 
 // ... should keep provider options of delivered messages in converted model
 // messages.
+// Appendix A: stream-text-steering.test.ts 867 (TS 0f3a85f92d).
 func TestR88streamSteeringProviderOptionsRoundTrip(t *testing.T) {
 	steering := NewSteering()
 	if _, err := steering.SteerMessage(types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{
@@ -453,6 +460,7 @@ func TestR88streamSteeringProviderOptionsRoundTrip(t *testing.T) {
 
 // ... should add delivered messages to the ui message and keep them in
 // converted model messages.
+// Appendix A: stream-text-steering.test.ts 913 (TS 0f3a85f92d).
 func TestR88streamSteeringUIMessageAndModelMessages(t *testing.T) {
 	steering := NewSteering()
 	var mu sync.Mutex
@@ -686,6 +694,7 @@ func TestR88streamSteeringChunkOverSSE(t *testing.T) {
 // process-ui-message-stream.test.ts 'steering-message' > adds steering
 // messages before the step that received them and keeps them when the step
 // is reset.
+// Appendix A: process-ui-message-stream.test.ts 282 (TS 0f3a85f92d).
 func TestR88streamProcessSteeringChunkSurvivesReset(t *testing.T) {
 	ch := make(chan UIMessageChunk, 32)
 	for _, c := range []UIMessageChunk{
