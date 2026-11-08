@@ -85,7 +85,7 @@ func filterAny(v reflect.Value, hideInputs, hideOutputs bool) (reflect.Value, bo
 		cp.Set(v)
 		filterStruct(cp, hideInputs, hideOutputs)
 		return cp, true
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if v.IsNil() || v.Elem().Kind() != reflect.Struct {
 			return v, false
 		}
@@ -233,7 +233,7 @@ func filterStruct(s reflect.Value, hideInputs, hideOutputs bool) {
 			"ExperimentalSteeringMessages", "Values", "Documents",
 			"ProviderOptions", "Value", "Query")
 		if f, ok := settableField(s, "Output"); ok && f.Kind() != reflect.String {
-			if !(f.Kind() == reflect.Interface && !f.IsNil() && f.Elem().Kind() == reflect.String) {
+			if f.Kind() != reflect.Interface || f.IsNil() || f.Elem().Kind() != reflect.String {
 				f.Set(reflect.Zero(f.Type()))
 			}
 		}
@@ -358,7 +358,7 @@ func filterMetadata(f reflect.Value, isRequest, hideMessages bool) reflect.Value
 		cp.Set(f)
 		filterMetadataStruct(cp, hideMessages)
 		return cp
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if f.IsNil() || f.Elem().Kind() != reflect.Struct {
 			return f
 		}

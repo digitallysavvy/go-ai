@@ -403,7 +403,7 @@ func TestR88carrySpansUseFilteredErrors(t *testing.T) {
 		for _, s := range rec.Ended() {
 			for _, ev := range s.Events() {
 				for _, kv := range ev.Attributes {
-					if strings.Contains(kv.Value.Emit(), "secret") {
+					if strings.Contains(kv.Value.String(), "secret") {
 						t.Errorf("legacy=%v span %s event leaks %v", legacy, s.Name(), kv)
 					}
 				}
@@ -590,7 +590,7 @@ func TestR88carryToolDefinitionSpansRedacted(t *testing.T) {
 		var found bool
 		for _, s := range rec.Ended() {
 			for _, kv := range s.Attributes() {
-				v := kv.Value.Emit()
+				v := kv.Value.String()
 				if strings.Contains(v, "mcp-private") {
 					t.Errorf("legacy=%v %s %s leaks a credential: %s", legacy, s.Name(), kv.Key, v)
 				}
