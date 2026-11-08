@@ -1365,7 +1365,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Steering messages are delivered when they are part of the messages
 		// sent to the model after PrepareStep.
-		deliveredSteeringMessages := steeringRun.resolveTakenMessages(stepIndex, stepMessages)
+		deliveredSteeringMessages := steeringDeliveredMessages(steeringRun.resolveTakenMessages(stepIndex, stepMessages))
 
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		stepTools = orderStepTools(stepTools, stepToolOrder)
