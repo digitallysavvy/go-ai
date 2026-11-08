@@ -992,8 +992,8 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
-// cohereToolInputText is TS JSON.stringify(parseJSON(arguments?.trim() ||
-// '{}')): the arguments text compacted with its wire key order; args (sorted)
+// cohereToolInputText is TS JSON.stringify((await parseJSON(arguments?.trim()
+// || '{}')) ?? {}): the arguments text compacted with its wire key order; args (sorted)
 // stands in when the text is not valid JSON.
 func cohereToolInputText(raw string, args map[string]interface{}) string {
 	text := providerutils.JSTrim(raw)
@@ -1001,7 +1001,12 @@ func cohereToolInputText(raw string, args map[string]interface{}) string {
 		text = "{}"
 	}
 	if json.Valid([]byte(text)) {
-		return providerutils.CompactJSON(json.RawMessage(text))
+		// TS 27c44878c2: JSON.stringify(parsed ?? {}): a `null` argument
+		// text becomes "{}" (other values keep their text).
+		if compact := providerutils.CompactJSON(json.RawMessage(text)); compact != "null" {
+			return compact
+		}
+		return "{}"
 	}
 	b, _ := jsonstr.Marshal(args)
 	return string(b)

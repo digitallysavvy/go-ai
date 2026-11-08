@@ -203,3 +203,31 @@ func TestR88provgCohereResponseID(t *testing.T) {
 		t.Fatal("want Invalid JSON response for a numeric id")
 	}
 }
+
+// TS 27c44878c2: a streamed `null` tool argument text becomes "{}".
+func TestR88provgCohereStreamNullToolArguments(t *testing.T) {
+	for _, tc := range []struct{ args, want string }{
+		{`null`, `{}`},
+		{` null `, `{}`},
+		{`[]`, `[]`},
+		{`{"a": 1}`, `{"a":1}`},
+	} {
+		argsJSON, _ := json.Marshal(tc.args)
+		sse := "data: {\"type\":\"tool-call-start\",\"delta\":{\"message\":{\"tool_calls\":{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":" + string(argsJSON) + "}}}}}\n\n" +
+			"data: {\"type\":\"tool-call-end\"}\n\n"
+		s := newCohereV2Stream(io.NopCloser(strings.NewReader(sse)))
+		var call *types.ToolCall
+		for {
+			c, err := s.Next()
+			if err != nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeToolCall {
+				call = c.ToolCall
+			}
+		}
+		if call == nil || call.RawArguments != tc.want {
+			t.Fatalf("%q: tool call = %+v, want input %s", tc.args, call, tc.want)
+		}
+	}
+}
