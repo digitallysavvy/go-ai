@@ -47,7 +47,7 @@ func TestR74prova_TSCasesLanguageWithTSToolNames(t *testing.T) {
 			t.Fatal(err)
 		}
 		return m
-	}, map[string]string{
+	}, r88provaWithPending(map[string]string{
 		"should send the model id and settings":                                                      "TS passes topK 0.1; Go TopK is an int",
 		"should not strip temperature / topP / topK when thinking is disabled":                       "TS passes topK 0.1; Go TopK is an int",
 		"should pass headers":                                                                        "the TS test sets provider-level headers on createAnthropic; replayed by TestR79prova_TSCasesProviderHeaders",
@@ -57,7 +57,7 @@ func TestR74prova_TSCasesLanguageWithTSToolNames(t *testing.T) {
 		"should stream code execution tool results without beta header":                              longSnapshot,
 		"should include file id list in code execution tool call result.":                            longSnapshot,
 		"should throw an api error when the first stream chunk is an overloaded error":               "the TS test expects DoStream to fail; covered by TestStreamOverloadedFirstEvent",
-	})
+	}))
 }
 
 // anthropic-batch.test.ts "rejects aliased provider tool names that cannot

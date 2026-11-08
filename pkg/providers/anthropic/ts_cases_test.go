@@ -127,7 +127,7 @@ func TestTSCasesLanguage(t *testing.T) {
 			t.Fatal(err)
 		}
 		return m
-	}, map[string]string{
+	}, r88provaWithPending(map[string]string{
 		"should send the model id and settings":                                                      "TS passes topK 0.1; Go TopK is an int",
 		"should not strip temperature / topP / topK when thinking is disabled":                       "TS passes topK 0.1; Go TopK is an int",
 		"should pass headers":                                                                        "the TS test sets provider-level headers on createAnthropic; replayed by TestR79prova_TSCasesProviderHeaders",
@@ -139,7 +139,7 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should throw an api error when the first stream chunk is an overloaded error":               "the TS test expects DoStream to fail; covered by TestStreamOverloadedFirstEvent",
 		"should parse advisor calls and results as provider-executed tool parts":                     "the Go tool hook builds no advisor tool with args; replayed with TS tool names by TestR74prova_TSCasesLanguageWithTSToolNames",
 		"should emit the advisor server_tool_use as a provider-executed tool call":                   "the Go tool hook builds no advisor tool with args (the tool is named by its id), so the advisor tool call is not mapped; replayed with TS tool names by TestR74prova_TSCasesLanguageWithTSToolNames",
-	})
+	}))
 }
 
 const longSnapshot = "the .snap file stores very long strings with elisions the extractor cannot parse back; the shorter fixtures of the same tools are replayed"

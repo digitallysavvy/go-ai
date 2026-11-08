@@ -150,6 +150,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
+	if err := validateToolsetMemberCalls(response.Content, req.usesJSONResponseTool, req.preparedTools); err != nil {
+		return nil, err
+	}
 
 	result := m.convertResponseWithOptions(response, convertOptions{
 		usesJSONResponseTool:     req.usesJSONResponseTool,
@@ -197,6 +200,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, opts.Tools, req.warnings)
 	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
+	stream.preparedTools = req.preparedTools
 	stream.providerOptionsName = req.providerOptionsName
 	stream.usedCustomProviderKey = req.usedCustomProviderKey
 	// TS doStream reports `request: {body}` with the args before
@@ -225,6 +229,11 @@ func (m *LanguageModel) failOnFirstStreamError(stream *anthropicStream, headers 
 	for len(peeked) < 3 {
 		chunk, err := stream.Next()
 		if err != nil {
+			// A response-data error the stream raised rejects the first-chunk
+			// read, so doStream throws it (TS).
+			if stream.failed != nil {
+				return stream.failed
+			}
 			// EOF or a read failure: nothing to convert; the consumer sees the
 			// same condition from its own Next call.
 			break
@@ -657,11 +666,14 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				if caller := anthropicCallerInfo(content.Caller); caller != nil {
 					meta["caller"] = caller
 				}
+				// validateToolsetMemberCalls checked the member and its input
+				// before conversion (DoGenerate).
+				args, _ := toToolsetMemberInput(content.Name, content.rawInputValue())
 				addToolCall(blockIdx, types.ToolCall{
 					ID:               content.ID,
 					ToolName:         mapAnthropicToolName(content.ToolsetName, toolNameMap),
-					Arguments:        toToolsetMemberInput(content.Name, content.Input),
-					RawArguments:     jsonorder.Input(content.RawInput, content.Input).WithLead("action", content.Name).String(),
+					Arguments:        args,
+					RawArguments:     toolsetMemberInputText(content.RawInput, content.Input, content.Name),
 					ProviderMetadata: map[string]interface{}{"anthropic": meta},
 				})
 			} else {
@@ -1647,6 +1659,12 @@ type anthropicStream struct {
 	// markCodeExecutionDynamic marks code_execution calls dynamic (see
 	// HasDynamicFilteringWebToolWithoutCodeExecution).
 	markCodeExecutionDynamic bool
+	// preparedTools are the request's prepared tool definitions; toolset
+	// member calls are validated against them (TS preparedTools).
+	preparedTools []map[string]interface{}
+	// failed is a response-data error the stream raised (TS throws inside
+	// the transform): every later Next returns it.
+	failed error
 	// providerOptionsName / usedCustomProviderKey mirror preparedRequest's
 	// fields of the same name; finalizeFinish uses them to duplicate the
 	// finish chunk's providerMetadata under providerOptionsName (TS
@@ -1821,6 +1839,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 
 func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 	for {
+		if s.failed != nil {
+			return nil, s.failed
+		}
 		if s.err != nil {
 			return nil, s.err
 		}
@@ -1988,6 +2009,10 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					caller:       anthropicCallerInfo(start.ContentBlock.Caller),
 				}
 				if start.ContentBlock.ToolsetName != "" {
+					if err := validateToolsetMember(start.ContentBlock.ToolsetName, start.ContentBlock.Name, s.preparedTools); err != nil {
+						s.failed = err
+						return nil, err
+					}
 					block.toolName = mapAnthropicToolName(start.ContentBlock.ToolsetName, s.toolNameMap)
 					block.toolsetName = start.ContentBlock.ToolsetName
 					block.memberName = start.ContentBlock.Name
@@ -2699,10 +2724,26 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				}
 				var toolsetDelta *provider.StreamChunk
 				if block.toolsetName != "" {
-					args = toToolsetMemberInput(block.memberName, args)
-					if invalidInput == "" {
-						finalInput = jsonorder.Input(json.RawMessage(finalInput), nil).WithLead("action", block.memberName).String()
+					// TS: the member input must parse (secureJsonParse; ''
+					// is {}) and be an object, or the stream errors before
+					// the member's tool call.
+					var memberInput interface{} = map[string]interface{}{}
+					if inputStr != "" {
+						parsed, ok := prompt.SecureJSONParse(inputStr)
+						if !ok {
+							s.failed = providererrors.NewInvalidResponseDataError(inputStr, "Invalid toolset member input JSON.")
+							return nil, s.failed
+						}
+						memberInput = parsed
 					}
+					memberArgs, err := toToolsetMemberInput(block.memberName, memberInput)
+					if err != nil {
+						s.failed = err
+						return nil, err
+					}
+					args = memberArgs
+					invalidInput = ""
+					finalInput = toolsetMemberInputText(json.RawMessage(finalInput), nil, block.memberName)
 					toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: finalInput}
 				}
 				if block.providerToolName == "code_execution" {

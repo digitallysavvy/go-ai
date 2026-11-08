@@ -32,6 +32,10 @@ type preparedRequest struct {
 	// marked dynamic (see HasDynamicFilteringWebToolWithoutCodeExecution).
 	markCodeExecutionDynamic bool
 	toolsetNames             map[string]string
+	// preparedTools are the prepared tool definitions (TS preparedTools:
+	// anthropicTools), kept for the toolset member checks even when the wire
+	// request omits them.
+	preparedTools []map[string]interface{}
 	// providerOptionsName / usedCustomProviderKey mirror TS prepareRequest's
 	// return fields of the same name: providerOptionsName is the wrapper's
 	// own providerOptions key (e.g. "minimax", "bedrock"), and
@@ -599,6 +603,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		usesJSONResponseTool:     usesJSONResponseTool,
 		markCodeExecutionDynamic: HasDynamicFilteringWebToolWithoutCodeExecution(prepared.tools),
 		toolsetNames:             toolsetNames,
+		preparedTools:            prepared.tools,
 		providerOptionsName:      m.providerOptionsName(),
 		usedCustomProviderKey:    usedCustomProviderKey,
 	}, nil
