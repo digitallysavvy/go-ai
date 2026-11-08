@@ -13,6 +13,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -134,6 +135,22 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[string]string, []types.Warning, error) {
 	warnings := []types.Warning{}
 	dgOpts := extractSpeechModelOptions(opts.ProviderOptions)
+
+	// TS 5cc6dcaa65: with a callback URL Deepgram answers with a JSON
+	// acknowledgement instead of audio, so the call fails before any
+	// request; callbackMethod alone is ignored with a warning. (An empty
+	// string never gets here: the option schema rejects it.)
+	if dgOpts != nil && dgOpts.Callback != "" {
+		return nil, nil, providererrors.NewArgumentError("providerOptions.deepgram.callback",
+			"Deepgram processes speech requests with a `callback` URL asynchronously: it returns a JSON acknowledgement instead of audio and delivers the audio to the callback URL. `generateSpeech` requires the audio response, so `providerOptions.deepgram.callback` is not supported. Remove the option to receive the audio, or call the Deepgram REST API directly when you need asynchronous callback delivery.", nil)
+	}
+	if dgOpts != nil && dgOpts.CallbackMethod != "" {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "providerOptions.deepgram.callbackMethod",
+			Details: "providerOptions.deepgram.callbackMethod is only used together with `callback`, which is not supported by the AI SDK. Callback method was ignored.",
+		})
+	}
 
 	// Compose the upstream model ID from voice/language when a bare voice
 	// family ID is used; full voice IDs pass through.
@@ -469,12 +486,6 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 		}
 	}
 
-	if opts.Callback != "" {
-		query["callback"] = opts.Callback
-	}
-	if opts.CallbackMethod != "" {
-		query["callback_method"] = opts.CallbackMethod
-	}
 	if opts.MipOptOut != nil {
 		query["mip_opt_out"] = strconv.FormatBool(*opts.MipOptOut)
 	}
