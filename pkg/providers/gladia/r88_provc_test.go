@@ -3,6 +3,7 @@ package gladia
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -452,4 +455,150 @@ func TestR88provcGladiaResolveLanguageConfig(t *testing.T) {
 	if cv == nil || !*cv || have || vocab != nil || len(warnings) != 0 {
 		t.Fatalf("bool: %v %v %v %v", cv, vocab, have, warnings)
 	}
+}
+
+// TS gladia-transcription-model.test.ts (3ab5e75d79): configurable polling.
+func TestR88provcGladiaPolling(t *testing.T) {
+	processing := func(sleep time.Duration) func(int) (int, string) {
+		return func(int) (int, string) {
+			time.Sleep(sleep)
+			return 200, `{"status":"processing"}`
+		}
+	}
+	transcribe := func(cfg Config, opts map[string]interface{}) (*types.TranscriptionResult, error) {
+		m, _ := New(cfg).TranscriptionModel("")
+		var po map[string]interface{}
+		if opts != nil {
+			po = map[string]interface{}{"gladia": opts}
+		}
+		return m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg", ProviderOptions: po})
+	}
+	wantTimeout := func(t *testing.T, err error, ms string) {
+		t.Helper()
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.ErrorCode != "TranscriptionJobPollingTimedOut" || pe.Message != "Transcription job polling timed out after "+ms+" ms" {
+			t.Fatalf("err = %#v", err)
+		}
+		if m, _ := pe.Data.(map[string]interface{}); m["status"] != "processing" {
+			t.Fatalf("cause = %#v", pe.Data)
+		}
+	}
+
+	t.Run("polls queued and processing jobs until done", func(t *testing.T) {
+		g, srv := r88provcNewGladia(t, func(n int) (int, string) {
+			switch n {
+			case 1:
+				return 200, `{"status":"queued"}`
+			case 2:
+				return 200, `{"status":"processing"}`
+			}
+			return 200, r88provcDoneBody
+		})
+		res, err := transcribe(Config{APIKey: "k", BaseURL: srv.URL + "/v2", PollInterval: 10 * time.Millisecond}, nil)
+		if err != nil || res.Text != "x" || g.polls != 3 {
+			t.Fatalf("err = %v, polls = %d", err, g.polls)
+		}
+	})
+
+	t.Run("polling settings are not sent", func(t *testing.T) {
+		g, srv := r88provcNewGladia(t, nil)
+		if _, err := transcribe(Config{APIKey: "k", BaseURL: srv.URL + "/v2"}, map[string]interface{}{"pollIntervalMs": 1, "pollTimeoutMs": 1000}); err != nil {
+			t.Fatal(err)
+		}
+		body := r88provcInitBody(t, g)
+		if _, ok := body["pollIntervalMs"]; ok {
+			t.Fatal("pollIntervalMs sent")
+		}
+		if _, ok := body["pollTimeoutMs"]; ok {
+			t.Fatal("pollTimeoutMs sent")
+		}
+	})
+
+	t.Run("times out after the configured PollTimeout", func(t *testing.T) {
+		g, srv := r88provcNewGladia(t, processing(60*time.Millisecond))
+		_, err := transcribe(Config{APIKey: "k", BaseURL: srv.URL + "/v2", PollTimeout: 100 * time.Millisecond, PollInterval: time.Millisecond}, nil)
+		wantTimeout(t, err, "100")
+		if g.polls != 2 {
+			t.Fatalf("polls = %d", g.polls)
+		}
+	})
+
+	t.Run("per-call settings win over provider settings", func(t *testing.T) {
+		g, srv := r88provcNewGladia(t, processing(60*time.Millisecond))
+		_, err := transcribe(Config{APIKey: "k", BaseURL: srv.URL + "/v2", PollInterval: 10 * time.Minute, PollTimeout: 10 * time.Minute},
+			map[string]interface{}{"pollIntervalMs": 1, "pollTimeoutMs": 100})
+		wantTimeout(t, err, "100")
+		if g.polls != 2 {
+			t.Fatalf("polls = %d", g.polls)
+		}
+	})
+
+	t.Run("invalid per-call settings fail before the upload", func(t *testing.T) {
+		for _, v := range []interface{}{0, -1, 1.5, "10"} {
+			g, srv := r88provcNewGladia(t, nil)
+			_, err := transcribe(Config{APIKey: "k", BaseURL: srv.URL + "/v2"}, map[string]interface{}{"pollTimeoutMs": v})
+			var ia *providererrors.InvalidArgumentError
+			if !errors.As(err, &ia) || len(g.snapshot()) != 0 {
+				t.Fatalf("%v: err = %v, calls = %d", v, err, len(g.snapshot()))
+			}
+		}
+	})
+
+	t.Run("invalid provider settings fail before any request", func(t *testing.T) {
+		for _, cfg := range []Config{{PollInterval: -time.Millisecond}, {PollInterval: 1500 * time.Microsecond}, {PollTimeout: -1}, {PollTimeout: time.Nanosecond}} {
+			g, srv := r88provcNewGladia(t, nil)
+			cfg.APIKey, cfg.BaseURL = "k", srv.URL+"/v2"
+			_, err := transcribe(cfg, nil)
+			var ia *providererrors.InvalidArgumentError
+			if !errors.As(err, &ia) || len(g.snapshot()) != 0 {
+				t.Fatalf("%+v: err = %v", cfg, err)
+			}
+			want := "pollIntervalMs"
+			if cfg.PollTimeout != 0 {
+				want = "pollTimeoutMs"
+			}
+			if ia.Field != want || ia.Error() != want+" must be a positive integer number of milliseconds" {
+				t.Fatalf("%+v: %q %q", cfg, ia.Field, ia.Error())
+			}
+		}
+	})
+
+	t.Run("defaults are 10 minutes and 1 second", func(t *testing.T) {
+		if got := gladiaPollSetting(nil, "pollTimeoutMs", 0, defaultPollTimeout); got != 10*time.Minute {
+			t.Fatal(got)
+		}
+		if got := gladiaPollSetting(nil, "pollIntervalMs", 0, defaultPollInterval); got != time.Second {
+			t.Fatal(got)
+		}
+		if got := gladiaPollSetting(map[string]interface{}{"pollTimeoutMs": 1e18}, "pollTimeoutMs", 0, defaultPollTimeout); got <= 0 {
+			t.Fatalf("huge per-call timeout overflowed: %v", got)
+		}
+	})
+
+	t.Run("cancels the wait between polls", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		g, srv := r88provcNewGladia(t, func(int) (int, string) {
+			cancel()
+			return 200, `{"status":"processing"}`
+		})
+		m, _ := New(Config{APIKey: "k", BaseURL: srv.URL + "/v2"}).TranscriptionModel("")
+		_, err := m.DoTranscribe(ctx, &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg",
+			ProviderOptions: map[string]interface{}{"gladia": map[string]interface{}{"pollIntervalMs": 600000}}})
+		if !errors.Is(err, context.Canceled) || g.polls != 1 {
+			t.Fatalf("err = %v, polls = %d", err, g.polls)
+		}
+	})
+
+	t.Run("polling settings survive workflow serialization", func(t *testing.T) {
+		t.Setenv("GLADIA_API_KEY", "k")
+		g, srv := r88provcNewGladia(t, processing(15*time.Millisecond))
+		m, _ := New(Config{APIKey: "k", BaseURL: srv.URL + "/v2", PollInterval: time.Millisecond, PollTimeout: 20 * time.Millisecond}).TranscriptionModel("")
+		restored, err := provider.DeserializeTranscriptionModel(m.(*TranscriptionModel).Serialize())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = restored.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"})
+		wantTimeout(t, err, "20")
+		_ = g
+	})
 }

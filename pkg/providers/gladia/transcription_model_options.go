@@ -62,6 +62,13 @@ type TranscriptionModelOptions struct {
 	// Deprecated: no longer supported by the Gladia v2 pre-recorded API.
 	DisplayMode         *bool `json:"displayMode,omitempty"`
 	PunctuationEnhanced *bool `json:"punctuationEnhanced,omitempty"`
+
+	// PollIntervalMs overrides Config.PollInterval for this call (a positive
+	// integer number of milliseconds; not sent to Gladia).
+	PollIntervalMs *int64 `json:"pollIntervalMs,omitempty"`
+	// PollTimeoutMs overrides Config.PollTimeout for this call (a positive
+	// integer number of milliseconds; not sent to Gladia).
+	PollTimeoutMs *int64 `json:"pollTimeoutMs,omitempty"`
 }
 
 // LanguageConfig is the Gladia v2 language configuration. An empty

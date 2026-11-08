@@ -23,12 +23,29 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
-// pollTimeout and pollInterval mirror GladiaTranscriptionModel.doGenerate's
-// polling loop in the TypeScript SDK.
+// defaultPollTimeout and defaultPollInterval are TS DEFAULT_POLL_TIMEOUT_MS
+// (10 minutes: long audio and add-ons take several minutes) and
+// DEFAULT_POLL_INTERVAL_MS.
 const (
-	pollTimeout  = 60 * time.Second
-	pollInterval = 1 * time.Second
+	defaultPollTimeout  = 10 * time.Minute
+	defaultPollInterval = 1 * time.Second
 )
+
+// gladiaPollSetting resolves a polling value: the per-call option (a
+// validated positive integer of milliseconds), then the provider setting,
+// then the default.
+func gladiaPollSetting(g map[string]interface{}, key string, configured, fallback time.Duration) time.Duration {
+	if ms, ok := g[key].(float64); ok && ms > 0 {
+		if ms >= float64(math.MaxInt64/int64(time.Millisecond)) {
+			return time.Duration(math.MaxInt64)
+		}
+		return time.Duration(ms) * time.Millisecond
+	}
+	if configured > 0 {
+		return configured
+	}
+	return fallback
+}
 
 // TranscriptionModel implements the provider.TranscriptionModel interface for
 // Gladia's async pre-recorded transcription flow: upload the audio, start a
@@ -416,6 +433,12 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 	currentDate := time.Now()
 
+	// TS createGladia validates the polling settings; Go's New cannot fail,
+	// so they are checked here, before any request.
+	if err := validatePollingSettings(m.provider.config); err != nil {
+		return nil, err
+	}
+
 	// TS getArgs (option parsing, validation and the body) runs before the
 	// upload, so an invalid option sends no request.
 	providerOptions := normalizeGladiaOptions(opts.ProviderOptions)
@@ -464,7 +487,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// Step 3: poll the job's result_url until it completes. The URL comes
 	// from the provider response; validate it (and any redirect) as
 	// untrusted input, trusting only the provider's own configured origin.
-	raw, headers, err := m.pollResult(ctx, initResult.ResultURL, opts.Headers)
+	interval := gladiaPollSetting(gladiaOptions, "pollIntervalMs", m.provider.config.PollInterval, defaultPollInterval)
+	timeout := gladiaPollSetting(gladiaOptions, "pollTimeoutMs", m.provider.config.PollTimeout, defaultPollTimeout)
+	raw, headers, err := m.pollResult(ctx, initResult.ResultURL, opts.Headers, interval, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -510,15 +535,17 @@ func gladiaAudioExtension(mimeType string) string {
 }
 
 // pollResult polls resultURL until the job reaches status "done" or "error",
-// or pollTimeout elapses. It returns the raw decoded JSON response along with
+// or pollTimeout elapses (checked before each poll, after the abort check,
+// as TS does). It returns the raw decoded JSON response along with
 // that response's HTTP headers (TS: response.responseHeaders, surfaced on the
 // final TranscriptionResult.Response.Headers).
-func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, map[string]string, error) {
+func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string, pollInterval, pollTimeout time.Duration) (map[string]interface{}, map[string]string, error) {
 	trustedOrigin := m.provider.config.BaseURL
 	pollOpts := fileutil.TrustedOriginDownloadOptions(trustedOrigin, m.provider.client.HTTPClient().Transport)
 	pollOpts.Headers = m.pollHeaders(resultURL, trustedOrigin, headers)
 
 	start := time.Now()
+	var last map[string]interface{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -526,8 +553,14 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		default:
 		}
 		if time.Since(start) > pollTimeout {
-			// TS AISDKError TranscriptionJobPollingTimedOut.
-			return nil, nil, providererrors.NewProviderError("gladia", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
+			// TS AISDKError TranscriptionJobPollingTimedOut (cause: the last
+			// poll result).
+			timedOut := providererrors.NewProviderError("gladia", 0, "TranscriptionJobPollingTimedOut",
+				"Transcription job polling timed out after "+strconv.FormatInt(pollTimeout.Milliseconds(), 10)+" ms", nil)
+			if last != nil {
+				timedOut.Data = last
+			}
+			return nil, nil, timedOut
 		}
 
 		result, err := fileutil.DownloadWithMetadata(ctx, resultURL, pollOpts)
@@ -542,6 +575,7 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		if err := json.Unmarshal(result.Data, &raw); err != nil {
 			return nil, nil, fmt.Errorf("gladia: failed to decode poll response: %w", err)
 		}
+		last = raw
 
 		status, _ := raw["status"].(string)
 		switch status {

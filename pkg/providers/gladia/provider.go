@@ -4,6 +4,7 @@ package gladia
 
 import (
 	"strings"
+	"time"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
@@ -24,6 +25,38 @@ type Config struct {
 	// Headers are custom HTTP headers sent with every request (TS provider
 	// settings `headers`).
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// PollInterval is the wait between transcription job status checks (TS
+	// provider setting pollIntervalMs). Zero means the default, 1 second.
+	// It must be a whole number of milliseconds; a negative or fractional
+	// value fails the call before the upload with an InvalidArgumentError
+	// (TS throws it from createGladia).
+	PollInterval time.Duration `json:"pollInterval,omitempty"`
+
+	// PollTimeout is the longest wait for an asynchronous transcription job
+	// to finish before a TranscriptionJobPollingTimedOut error (TS provider
+	// setting pollTimeoutMs). Zero means the default, 10 minutes. Raise it
+	// for long audio or audio intelligence add-ons. Same validation as
+	// PollInterval. The per-call provider options pollIntervalMs /
+	// pollTimeoutMs override both.
+	PollTimeout time.Duration `json:"pollTimeout,omitempty"`
+}
+
+// validatePollingSettings is TS validatePollingSettings: each set polling
+// setting must be a positive whole number of milliseconds.
+func validatePollingSettings(config Config) error {
+	for _, setting := range []struct {
+		argument string
+		value    time.Duration
+	}{{"pollIntervalMs", config.PollInterval}, {"pollTimeoutMs", config.PollTimeout}} {
+		if setting.value == 0 {
+			continue
+		}
+		if setting.value < 0 || setting.value%time.Millisecond != 0 {
+			return providererrors.NewArgumentError(setting.argument, setting.argument+" must be a positive integer number of milliseconds", nil)
+		}
+	}
+	return nil
 }
 
 // Provider represents the Gladia AI provider

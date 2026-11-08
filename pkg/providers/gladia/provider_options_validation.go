@@ -116,6 +116,10 @@ var gladiaOptionsSchema = providerutils.OptionSchema{
 	"sentences":           nullBool,
 	"displayMode":         nullBool,
 	"punctuationEnhanced": nullBool,
+	// gladiaPollingOptionsShape: z.number().int().positive().nullish(); read
+	// by the SDK, never sent (TS 3ab5e75d79).
+	"pollIntervalMs": opt(providerutils.OptPositive(true)),
+	"pollTimeoutMs":  opt(providerutils.OptPositive(true)),
 }
 
 // validateOptions is parseProviderOptions with

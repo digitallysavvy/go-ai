@@ -46,7 +46,7 @@ func TestR33_PollCredentialsOnlyToConfiguredOrigin(t *testing.T) {
 	}))
 	defer srv.Close()
 	m := &TranscriptionModel{provider: New(Config{APIKey: "secret", BaseURL: srv.URL}), modelID: "default"}
-	if _, _, err := m.pollResult(context.Background(), srv.URL+"/result", map[string]string{"X-Caller": "c"}); err != nil {
+	if _, _, err := m.pollResult(context.Background(), srv.URL+"/result", map[string]string{"X-Caller": "c"}, defaultPollInterval, defaultPollTimeout); err != nil {
 		t.Fatal(err)
 	}
 	if gotKey != "secret" || gotCaller != "c" {
@@ -59,7 +59,7 @@ func TestR33_PollCredentialsOnlyToConfiguredOrigin(t *testing.T) {
 	}))
 	defer other.Close()
 	gotKey = ""
-	_, _, _ = m.pollResult(context.Background(), other.URL+"/result", nil)
+	_, _, _ = m.pollResult(context.Background(), other.URL+"/result", nil, defaultPollInterval, defaultPollTimeout)
 	if gotKey != "" {
 		t.Fatalf("foreign origin received the API key")
 	}
