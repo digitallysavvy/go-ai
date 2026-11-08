@@ -81,7 +81,7 @@ func r88toolsOpts(cerebras map[string]any) *provider.GenerateOptions {
 
 func r88toolsFinishMetadata(t *testing.T, stream provider.TextStream) map[string]any {
 	t.Helper()
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var meta map[string]any
 	for {
 		chunk, err := stream.Next()
