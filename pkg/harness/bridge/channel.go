@@ -600,7 +600,14 @@ func (c *Channel) Suspend() <-chan float64 {
 		conn := c.ws
 		c.mu.Unlock()
 		if conn != nil {
-			_ = conn.Close()
+			// The bridge reads the reason to tell a suspend from a drop, so a
+			// --host-disconnect-timeout-ms bridge does not abort the
+			// suspended turn (TS `ws.close(1000, 'suspended')`, a54f0fd8c6).
+			if rc, ok := conn.(reasonCloser); ok {
+				_ = rc.CloseWithReason(1000, CloseReasonSuspended)
+			} else {
+				_ = conn.Close()
+			}
 		}
 		c.finalizeClose(1000, CloseReasonSuspended)
 	})

@@ -272,7 +272,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "claude-code bridge", Source: HarnessID, Sandbox: restricted,
-		Command:        fmt.Sprintf("node %s --workdir %s --bridge-state-dir %s", harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
+		Command:        fmt.Sprintf("node %s --workdir %s --bridge-state-dir %s", harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)) + hostDisconnectTimeoutFlag(settings.HostDisconnectTimeout),
 		Port:           port,
 		Token:          token,
 		ReplayFromDisk: respawnStrategy == "replay",
@@ -493,4 +493,15 @@ func replayStartID(replaying bool, coords *bridgeCoords) string {
 		return ""
 	}
 	return coords.StartID
+}
+
+// hostDisconnectTimeoutFlag is the bridge's --host-disconnect-timeout-ms
+// argument for a positive timeout (TS appends it whenever
+// hostDisconnectTimeoutMs is defined; the bridge ignores a value that is
+// not positive, so a zero / negative Go duration sends nothing).
+func hostDisconnectTimeoutFlag(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return " --host-disconnect-timeout-ms " + harnessutil.ShellQuote(providerutils.JSNumberString(float64(d)/float64(time.Millisecond)))
 }

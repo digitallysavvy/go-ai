@@ -129,6 +129,13 @@ type Settings struct {
 	// included, fails the turn on the first timer tick after the start was
 	// sent; there is no value that disables the deadline.
 	TurnStartTimeout time.Duration
+	// HostDisconnectTimeout makes the bridge abort a running turn when its
+	// host disconnects and does not reconnect within this duration, so the
+	// turn stops spending. A suspended turn is exempt. Zero (or negative)
+	// keeps the turn running until it finishes. Mirrors TS
+	// `hostDisconnectTimeoutMs` (a54f0fd8c6), passed as
+	// --host-disconnect-timeout-ms.
+	HostDisconnectTimeout time.Duration
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions

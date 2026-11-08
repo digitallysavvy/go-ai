@@ -368,3 +368,21 @@ func TestR88carryIdempotentBridgeAlwaysGetsPendingStart(t *testing.T) {
 }
 
 func r88carryFloat(v float64) *float64 { return &v }
+
+// TS a54f0fd8c6 claude-code-harness.test.ts "passes the host disconnect
+// timeout to the bridge": the flag only for a set (positive) timeout.
+func TestR88carryHostDisconnectTimeoutFlag(t *testing.T) {
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{60 * time.Second, " --host-disconnect-timeout-ms '60000'"},
+		{1500 * time.Microsecond, " --host-disconnect-timeout-ms '1.5'"},
+		{0, ""},
+		{-time.Second, ""},
+	} {
+		if got := hostDisconnectTimeoutFlag(tc.d); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
