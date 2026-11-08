@@ -156,7 +156,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	result := m.convertResponseWithOptions(response, convertOptions{
 		usesJSONResponseTool:     req.usesJSONResponseTool,
-		tools:                    opts.Tools,
+		tools:                    req.nameTools,
 		markCodeExecutionDynamic: req.markCodeExecutionDynamic,
 		providerOptionsName:      req.providerOptionsName,
 		usedCustomProviderKey:    req.usedCustomProviderKey,
@@ -198,7 +198,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if m.provider.config.TransformStreamBody != nil {
 		respBody = m.provider.config.TransformStreamBody(respBody, httpResp.Header)
 	}
-	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, opts.Tools, req.warnings)
+	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, req.nameTools, req.warnings)
 	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
 	stream.preparedTools = req.preparedTools
 	stream.includePings = req.includePings

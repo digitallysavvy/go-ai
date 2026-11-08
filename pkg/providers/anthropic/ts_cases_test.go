@@ -165,6 +165,11 @@ func TestTSCasesConvertPrompt(t *testing.T) {
 		if v, ok := in["sendReasoning"].(bool); ok {
 			opts.SendReasoning = &v
 		}
+		// the test's convertInlineTool returns the definition prepareTools
+		// gives the tool ({name, description, input_schema}).
+		if _, ok := in["convertInlineTool"]; ok {
+			opts.ConvertInlineTool = r88provaConvertInlineTool
+		}
 		// toolNameMapping: tool name -> provider tool name via the tool's id
 		if tm, ok := in["toolNameMapping"].(map[string]interface{}); ok {
 			if m, ok := tm["__toolNameMapping"].(map[string]interface{}); ok {

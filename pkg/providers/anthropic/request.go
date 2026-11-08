@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -36,6 +37,9 @@ type preparedRequest struct {
 	// anthropicTools), kept for the toolset member checks even when the wire
 	// request omits them.
 	preparedTools []map[string]interface{}
+	// nameTools are the inline tools followed by the declared tools, for
+	// the response tool name mapping (TS toolNameMapping).
+	nameTools []types.Tool
 	// includePings is TS `stream && includePings === true`.
 	includePings bool
 	// providerOptionsName / usedCustomProviderKey mirror TS prepareRequest's
@@ -241,8 +245,20 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 
 	// Shared cache control validator across the prompt and tool definitions.
 	validator := prompt.NewAnthropicCacheControlValidatorFor(m.provider.config.CacheControlProviderOptionsName)
-	toolNames := newAnthropicToolNames(opts.Tools)
-	toolsetNames := toolNames.toolsets
+	defaultEager := stream && (o.ToolStreaming == nil || *o.ToolStreaming)
+
+	// Tools that tool changes add by value are only known from the prompt
+	// (TS getInlineToolsFromPrompt). They take part in tool name mapping;
+	// the declared tools go last, so an inline tool cannot take over their
+	// mapping.
+	inlineTools, err := prompt.AnthropicInlineTools(opts.Prompt.Messages)
+	if err != nil {
+		return nil, err
+	}
+	nameTools := append(append([]types.Tool{}, inlineTools...), opts.Tools...)
+	toolNames := newAnthropicToolNames(nameTools)
+	toolsetNames := newAnthropicToolNames(opts.Tools).toolsets
+	var inlineDefinitions []anthropicInlineDefinition
 	sendReasoning := o.SendReasoning
 	if sendReasoning == nil {
 		sendReasoning = opts.SendReasoning
@@ -253,6 +269,27 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		ToProviderToolName:    toolNames.providerName,
 		CacheControlValidator: validator,
 		ConvertMediaPart:      m.provider.config.ConvertMediaPart,
+		// TS convertInlineTool: prepareTools on the one tool with the shared
+		// cache control validator and no stream-dependent defaults, so the
+		// replayed definition stays identical between streaming and
+		// non-streaming calls.
+		ConvertInlineTool: func(tool types.Tool) (map[string]interface{}, []types.Warning, []string, error) {
+			p := prepareTools(prepareToolsOptions{
+				tools:                    []types.Tool{tool},
+				validator:                validator,
+				supportsStructuredOutput: supportsStructuredOutput,
+				supportsStrictTools:      supportsStrictTools,
+			})
+			if p.err != nil {
+				return nil, nil, nil, p.err
+			}
+			var definition map[string]interface{}
+			if len(p.tools) > 0 {
+				definition = p.tools[0]
+				inlineDefinitions = append(inlineDefinitions, anthropicInlineDefinition{sdkName: tool.Name, definition: definition})
+			}
+			return definition, p.warnings, p.betas, nil
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -554,8 +591,6 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		betas.add(BetaHeaderServerSideFallback)
 	}
 
-	defaultEager := stream && (o.ToolStreaming == nil || *o.ToolStreaming)
-
 	var prepared preparedTools
 	if usesJSONResponseTool {
 		// TS 2cd0a97424: toolChoice none drops the user tools and a named
@@ -588,6 +623,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		prepared = prepareTools(prepareToolsOptions{
 			tools:                      opts.Tools,
 			toolChoice:                 &tc,
+			hasInlineTools:             len(inlineTools) > 0,
 			disableParallelToolUse:     o.DisableParallelToolUse,
 			validator:                  validator,
 			supportsStructuredOutput:   supportsStructuredOutput,
@@ -617,6 +653,11 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 				srv["tool_configuration"] = tc
 			}
 		}
+		// Inline definitions, including those replayed from history, must
+		// not restore other tools either (TS ba302a14fc, b3088a77b0).
+		if err := checkInlineToolChoice(opts, usesJSONResponseTool, toolNames, promptInfo.Messages, inlineDefinitions); err != nil {
+			return nil, err
+		}
 	}
 	if prepared.tools != nil {
 		body["tools"] = prepared.tools
@@ -642,6 +683,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		markCodeExecutionDynamic: HasDynamicFilteringWebToolWithoutCodeExecution(prepared.tools),
 		toolsetNames:             toolsetNames,
 		preparedTools:            prepared.tools,
+		nameTools:                nameTools,
 		includePings:             stream && o.IncludePings != nil && *o.IncludePings,
 		providerOptionsName:      m.providerOptionsName(),
 		usedCustomProviderKey:    usedCustomProviderKey,
@@ -771,4 +813,77 @@ func containerWire(o *ModelOptions) (interface{}, error) {
 		return o.Container.ID, nil
 	}
 	return nil, nil
+}
+
+// anthropicInlineDefinition is a tool definition a tool change added by value.
+type anthropicInlineDefinition struct {
+	sdkName    string
+	definition map[string]interface{}
+}
+
+// checkInlineToolChoice ports the TS inline tool choice restriction
+// (anthropic-language-model.ts, ba302a14fc narrowed by b3088a77b0): under a
+// forced-choice fallback or the JSON response tool, an inline definition
+// emitted in the outgoing messages (ignored initial-system additions are
+// not checked) conflicts with the tool choice unless it is the selected
+// tool. Definitions are compared by identity, as TS Set.has does.
+func checkInlineToolChoice(opts *provider.GenerateOptions, usesJSONResponseTool bool, names anthropicToolNames, messages []map[string]interface{}, defs []anthropicInlineDefinition) error {
+	emitted := map[uintptr]bool{}
+	for _, msg := range messages {
+		if msg["role"] != "system" {
+			continue
+		}
+		content, _ := msg["content"].([]map[string]interface{})
+		for _, part := range content {
+			tool, _ := part["tool"].(map[string]interface{})
+			if part["type"] != "tool_addition" || tool["type"] != "tool_definition" {
+				continue
+			}
+			if def, ok := tool["definition"].(map[string]interface{}); ok {
+				emitted[reflect.ValueOf(def).Pointer()] = true
+			}
+		}
+	}
+	choice := opts.ToolChoice
+	selectedSDKName := ""
+	if choice.Type == types.ToolChoiceTool {
+		selectedSDKName = choice.ToolName
+	}
+	selectedProviderName := selectedSDKName
+	if usesJSONResponseTool && choice.Type == types.ToolChoiceTool {
+		isFunction := false
+		for _, t := range opts.Tools {
+			if t.Name == selectedSDKName {
+				isFunction = t.Type == "" || t.Type == types.ToolTypeFunction
+				break
+			}
+		}
+		if !isFunction {
+			selectedProviderName = names.providerName(selectedSDKName)
+		}
+	}
+	for _, d := range defs {
+		if !emitted[reflect.ValueOf(d.definition).Pointer()] {
+			continue
+		}
+		name, hasName := d.definition["name"]
+		if choice.Type != types.ToolChoiceNone &&
+			!(usesJSONResponseTool && d.sdkName != selectedSDKName) &&
+			hasName && name == selectedProviderName {
+			continue
+		}
+		toolName := d.definition["type"]
+		if hasName {
+			toolName = name
+		}
+		desc := "tool choice 'none'"
+		if choice.Type == types.ToolChoiceTool {
+			desc = fmt.Sprintf("named tool choice '%s'", choice.ToolName)
+		}
+		return providererrors.NewArgumentError("toolChoice", fmt.Sprintf(
+			"Inline tool '%v' conflicts with %s. "+
+				"Inline definitions must respect the tool choice when forced tool use falls back or the JSON response tool is used.",
+			toolName, desc), nil)
+	}
+	return nil
 }

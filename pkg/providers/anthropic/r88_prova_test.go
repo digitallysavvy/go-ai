@@ -12,10 +12,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // r88provaServer serves one canned response (JSON for generate, SSE events
@@ -327,21 +329,14 @@ func TestR88provaToolsetSchemaEnum(t *testing.T) {
 
 // r88provaPending lists the language.json.gz cases (re-extracted at TS
 // 0f3a85f92d) whose TS change a later round 88 commit ports.
-var r88provaPending = map[string]string{
-	"should pass sanitized zod output schema as output_config.format":                                                   "r88 pending",
-	"should send tools added by value as tool definitions with the inline tools beta":                                   "r88 pending: 457dc40d06",
-	"should send the same definition for streaming and non-streaming requests":                                          "r88 pending: 457dc40d06",
-	"should warn and ignore computer tools added by value":                                                              "r88 pending: 457dc40d06",
-	"should keep the response name of a declared computer toolset when an inline computer tool is ignored":              "r88 pending: 457dc40d06",
-	"should keep the response name of a declared provider tool when an inline provider tool has the same provider name": "r88 pending: 457dc40d06",
-	"should send the tool choice and disabled parallel tool use when all tools are added by value":                      "r88 pending: 457dc40d06",
-}
+var r88provaPending = map[string]string{}
 
 // r88provaReplayed lists language.json.gz cases a hand port replays
 // because the extractor cannot see the provider the TS test builds.
 var r88provaReplayed = map[string]string{
-	`reads the legacy "vertex" key when "googleVertex" is absent`:    "createGoogleVertexNamedModel() builds createAnthropic({name: 'googleVertex'}) in a helper; replayed by TestR88provaLegacyVertexKey",
-	`ignores the legacy "vertex" key when "googleVertex" is present`: "createGoogleVertexNamedModel() builds createAnthropic({name: 'googleVertex'}) in a helper; replayed by TestR88provaLegacyVertexKey",
+	"should pass sanitized zod output schema as output_config.format": "capture.mjs fills the call from the TS options, where the zod schema of responseFormat does not serialize (the call has no schema); the sanitizer is replayed by sanitize_schema.json.gz",
+	`reads the legacy "vertex" key when "googleVertex" is absent`:     "createGoogleVertexNamedModel() builds createAnthropic({name: 'googleVertex'}) in a helper; replayed by TestR88provaLegacyVertexKey",
+	`ignores the legacy "vertex" key when "googleVertex" is present`:  "createGoogleVertexNamedModel() builds createAnthropic({name: 'googleVertex'}) in a helper; replayed by TestR88provaLegacyVertexKey",
 }
 
 // r88provaWithPending adds r88provaReplayed and r88provaPending to a
@@ -805,5 +800,317 @@ func TestR88provaMCPRestrictedToolChoice(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// r88provaConvertInlineTool is the tsfixture adapter's convertInlineTool:
+// prepareTools on the one tool.
+func r88provaConvertInlineTool(tool types.Tool) (map[string]interface{}, []types.Warning, []string, error) {
+	p := prepareTools(prepareToolsOptions{tools: []types.Tool{tool}})
+	if p.err != nil || len(p.tools) == 0 {
+		return nil, p.warnings, p.betas, p.err
+	}
+	return p.tools[0], p.warnings, p.betas, nil
+}
+
+func r88provaInlineChange(tool map[string]interface{}) types.Message {
+	return types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: ""}},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"toolChanges": []interface{}{
+			map[string]interface{}{"type": "tool_addition", "tool": tool},
+		}}}}
+}
+
+func r88provaUserHello() types.Message {
+	return types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}}
+}
+
+func r88provaCopyMap(m map[string]interface{}, over map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for k, v := range m {
+		out[k] = v
+	}
+	for k, v := range over {
+		out[k] = v
+	}
+	return out
+}
+
+// TS ba302a14fc / b3088a77b0 'named tool choice with inline tools'.
+func TestR88provaInlineToolChoiceRestrictions(t *testing.T) {
+	selectedMap := map[string]interface{}{"type": "function", "name": "selected", "inputSchema": map[string]interface{}{"type": "object"}}
+	selectedTool := types.Tool{Name: "selected", Parameters: map[string]interface{}{"type": "object"}}
+	thinking := map[string]interface{}{"type": "enabled", "budgetTokens": 1024}
+	var argErr *providererrors.InvalidArgumentError
+	for _, method := range []string{"generate", "stream"} {
+		// should keep ignoring initial system tool additions
+		for _, useJSON := range []bool{false, true} {
+			sys := r88provaInlineChange(r88provaCopyMap(selectedMap, map[string]interface{}{"name": "other"}))
+			sys.Content = []types.ContentPart{types.TextContent{Text: "Initial instructions"}}
+			opts := &provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{sys, r88provaUserHello()}}, Tools: []types.Tool{selectedTool},
+				ToolChoice:      types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "selected"},
+				ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thinking": thinking, "structuredOutputMode": "jsonTool"}},
+			}
+			if useJSON {
+				opts.ResponseFormat = &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}
+			}
+			body, err := r88provaRequestBody(t, "claude-haiku-4-5", method, opts)
+			if err != nil {
+				t.Fatalf("initial system json=%v: %v", useJSON, err)
+			}
+			if r88provaJSON(body["system"]) != `[{"text":"Initial instructions","type":"text"}]` || len(body["messages"].([]interface{})) != 1 {
+				t.Fatalf("initial system body = %v", body)
+			}
+		}
+		// conflicting additions are rejected before the request
+		inlineTools := []map[string]interface{}{
+			r88provaCopyMap(selectedMap, map[string]interface{}{"name": "other"}),
+			{"type": "provider", "id": "anthropic.web_search_20250305", "name": "web_search", "args": map[string]interface{}{}},
+			{"type": "provider", "id": "anthropic.web_fetch_20250910", "name": "web_fetch", "args": map[string]interface{}{}},
+			{"type": "provider", "id": "anthropic.web_search_20250305", "name": "selected", "args": map[string]interface{}{}},
+		}
+		for _, inline := range inlineTools {
+			for _, tc := range []struct{ model, source string }{
+				{"claude-haiku-4-5", "providerOptions"}, {"claude-haiku-4-5", "reasoning"}, {"claude-opus-5-5", "model"}, {"claude-haiku-4-5", "inlineOnly"},
+			} {
+				msgs := []types.Message{r88provaUserHello(), r88provaInlineChange(inline)}
+				if tc.source != "providerOptions" {
+					msgs = append(msgs, types.Message{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "OK."}}}, r88provaUserHello())
+				}
+				opts := &provider.GenerateOptions{Prompt: types.Prompt{Messages: msgs}, ToolChoice: types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "selected"}}
+				if tc.source != "inlineOnly" {
+					opts.Tools = []types.Tool{selectedTool}
+				}
+				switch tc.source {
+				case "reasoning":
+					low := types.ReasoningLow
+					opts.Reasoning = &low
+				case "model":
+				default:
+					opts.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"thinking": thinking}}
+				}
+				body, err := r88provaRequestBody(t, tc.model, method, opts)
+				if !errors.As(err, &argErr) || body != nil {
+					t.Fatalf("%s %v via %s: err = %v, sent = %v", method, inline["name"], tc.source, err, body != nil)
+				}
+				if !strings.Contains(err.Error(), "' conflicts with named tool choice 'selected'. Inline definitions must respect the tool choice when forced tool use falls back or the JSON response tool is used.") {
+					t.Fatalf("message = %v", err)
+				}
+			}
+		}
+		// allowed inline tools are kept
+		for _, tc := range []struct {
+			model    string
+			thinking map[string]interface{}
+			toolName string
+			choice   string
+			want     string
+		}{
+			{"claude-haiku-4-5", thinking, "selected", "tool", `{"type":"auto"}`},
+			{"claude-haiku-4-5", thinking, "other", "auto", `{"type":"auto"}`},
+			{"claude-haiku-4-5", thinking, "other", "required", `{"type":"auto"}`},
+			{"claude-sonnet-4-6", map[string]interface{}{"type": "adaptive"}, "other", "tool", `{"name":"selected","type":"tool"}`},
+			{"claude-haiku-5-5", thinking, "other", "tool", `{"name":"selected","type":"tool"}`},
+		} {
+			choice := types.ToolChoice{Type: types.ToolChoiceType(tc.choice)}
+			if tc.choice == "tool" {
+				choice.ToolName = "selected"
+			}
+			body, err := r88provaRequestBody(t, tc.model, method, &provider.GenerateOptions{
+				Prompt:     types.Prompt{Messages: []types.Message{r88provaUserHello(), r88provaInlineChange(r88provaCopyMap(selectedMap, map[string]interface{}{"name": tc.toolName}))}},
+				ToolChoice: choice, ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thinking": tc.thinking}},
+			})
+			if err != nil {
+				t.Fatalf("%s %s %s: %v", tc.model, tc.toolName, tc.choice, err)
+			}
+			if _, ok := body["tools"]; ok {
+				t.Fatalf("tools sent: %v", body["tools"])
+			}
+			part := body["messages"].([]interface{})[1].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})
+			if part["type"] != "tool_addition" || part["tool"].(map[string]interface{})["definition"].(map[string]interface{})["name"] != tc.toolName {
+				t.Fatalf("addition = %v", part)
+			}
+			if got := r88provaJSON(body["tool_choice"]); got != tc.want {
+				t.Fatalf("%s %s %s: tool_choice = %s", tc.model, tc.toolName, tc.choice, got)
+			}
+		}
+		// JSON response tool
+		for _, useThinking := range []bool{false, true} {
+			jsonFormat := &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}
+			po := map[string]interface{}{"structuredOutputMode": "jsonTool"}
+			if useThinking {
+				po["thinking"] = thinking
+			}
+			providerTool := map[string]interface{}{"type": "provider", "id": "anthropic.web_fetch_20250910", "name": "selected", "args": map[string]interface{}{}}
+			for _, tc := range []struct {
+				choice                   string
+				providerAlias, reuseName bool
+			}{{"tool", false, false}, {"none", false, false}, {"tool", true, false}, {"tool", false, true}, {"tool", true, true}} {
+				inline := r88provaCopyMap(providerTool, nil)
+				switch {
+				case tc.reuseName:
+					inline["id"], inline["name"] = "anthropic.web_search_20250305", "selected"
+				case tc.providerAlias:
+					inline["name"] = "other"
+				default:
+					inline["name"] = "web_fetch"
+				}
+				declared := selectedTool
+				if tc.providerAlias {
+					declared = types.Tool{Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.web_fetch_20250910", Name: "selected", ProviderArgs: map[string]interface{}{}}
+				}
+				choice := types.ToolChoice{Type: types.ToolChoiceType(tc.choice)}
+				if tc.choice == "tool" {
+					choice.ToolName = "selected"
+				}
+				body, err := r88provaRequestBody(t, "claude-opus-4-8", method, &provider.GenerateOptions{
+					Prompt: types.Prompt{Messages: []types.Message{r88provaUserHello(), r88provaInlineChange(inline)}},
+					Tools:  []types.Tool{declared}, ToolChoice: choice, ResponseFormat: jsonFormat,
+					ProviderOptions: map[string]interface{}{"anthropic": po},
+				})
+				if !errors.As(err, &argErr) || body != nil {
+					t.Fatalf("json reject %+v thinking=%v: err = %v", tc, useThinking, err)
+				}
+			}
+			for _, tc := range []struct {
+				choice                    string
+				providerAlias, inlineOnly bool
+			}{{"tool", false, false}, {"auto", false, false}, {"required", false, false}, {"tool", true, false}, {"tool", false, true}, {"tool", true, true}} {
+				var inline map[string]interface{}
+				var declared types.Tool
+				if tc.providerAlias {
+					inline = map[string]interface{}{"type": "provider", "id": "anthropic.web_search_20250305", "name": "selected", "args": map[string]interface{}{}}
+					declared = types.Tool{Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.web_search_20250305", Name: "selected", ProviderArgs: map[string]interface{}{}}
+				} else {
+					name := "other"
+					if tc.choice == "tool" {
+						name = "selected"
+					}
+					inline = r88provaCopyMap(selectedMap, map[string]interface{}{"name": name})
+					declared = selectedTool
+				}
+				var ts []types.Tool
+				if !tc.inlineOnly {
+					ts = []types.Tool{declared}
+				}
+				choice := types.ToolChoice{Type: types.ToolChoiceType(tc.choice)}
+				if tc.choice == "tool" {
+					choice.ToolName = "selected"
+				}
+				body, err := r88provaRequestBody(t, "claude-opus-4-8", method, &provider.GenerateOptions{
+					Prompt: types.Prompt{Messages: []types.Message{r88provaUserHello(), r88provaInlineChange(inline)}},
+					Tools:  ts, ToolChoice: choice, ResponseFormat: jsonFormat,
+					ProviderOptions: map[string]interface{}{"anthropic": po},
+				})
+				if err != nil {
+					t.Fatalf("json allow %+v thinking=%v: %v", tc, useThinking, err)
+				}
+				wantChoice := `{"disable_parallel_tool_use":true,"type":"any"}`
+				if useThinking {
+					wantChoice = `{"disable_parallel_tool_use":true,"type":"auto"}`
+				}
+				if got := r88provaJSON(body["tool_choice"]); got != wantChoice {
+					t.Fatalf("json allow %+v: tool_choice %s", tc, got)
+				}
+				wantTools := "json"
+				if !tc.inlineOnly {
+					wantTools = "selected,json"
+					if tc.providerAlias {
+						wantTools = "web_search,json"
+					}
+				}
+				if got := strings.Join(r88provaToolNames(body), ","); got != wantTools {
+					t.Fatalf("json allow %+v: tools %s", tc, got)
+				}
+				def := body["messages"].([]interface{})[1].(map[string]interface{})["content"].([]interface{})[0].(map[string]interface{})["tool"].(map[string]interface{})["definition"].(map[string]interface{})
+				wantName := inline["name"]
+				if tc.providerAlias {
+					wantName = "web_search"
+				}
+				if def["name"] != wantName {
+					t.Fatalf("json allow %+v: definition %v", tc, def)
+				}
+			}
+		}
+	}
+}
+
+// r88provaPorted marks the TS 457dc40d06 assertions the evaluator cannot
+// read (two calls compared, a Set) as hand-ported.
+var r88provaPorted = map[string]string{
+	tsfixture.PortedKey("should send the same definition for streaming and non-streaming requests", "JSON.stringify(streamBody.messages)", "toContain"):                    "TestR88provaInlineToolsByValue",
+	tsfixture.PortedKey("should send the tool choice and disabled parallel tool use when all tools are added by value", "bodies.map(body => body.tools)", "toEqual"):       "TestR88provaInlineToolsByValue",
+	tsfixture.PortedKey("should send the tool choice and disabled parallel tool use when all tools are added by value", "bodies.map(body => body.tool_choice)", "toEqual"): "TestR88provaInlineToolsByValue",
+	tsfixture.PortedKey("should emit tool definitions for tools added by value and prefer the inline tools beta", "result.betas.has('inline-tools-2026-09-15')", "toBe"):   "TestR88provaInlineToolsByValue",
+}
+
+func init() { tsfixture.RegisterPorted(r88provaPorted) }
+
+// TS 457dc40d06: tools added by value.
+func TestR88provaInlineToolsByValue(t *testing.T) {
+	forecast := map[string]interface{}{"type": "function", "name": "get_forecast", "inputSchema": map[string]interface{}{"type": "object"}}
+	sayOK := types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Say OK."}}}
+	msgs := []types.Message{sayOK, r88provaInlineChange(forecast)}
+
+	// the same definition for streaming and non-streaming requests
+	gen, err := r88provaRequestBody(t, "claude-opus-4-8", "generate", &provider.GenerateOptions{Prompt: types.Prompt{Messages: msgs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	str, err := r88provaRequestBody(t, "claude-opus-4-8", "stream", &provider.GenerateOptions{Prompt: types.Prompt{Messages: msgs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r88provaJSON(gen["messages"]) != r88provaJSON(str["messages"]) || strings.Contains(r88provaJSON(str["messages"]), "eager_input_streaming") {
+		t.Fatalf("generate %s\nstream %s", r88provaJSON(gen["messages"]), r88provaJSON(str["messages"]))
+	}
+
+	// tool choice and parallel tool use with only inline tools
+	for _, tc := range []struct {
+		opts *provider.GenerateOptions
+		want string
+	}{
+		{&provider.GenerateOptions{ToolChoice: types.ToolChoice{Type: types.ToolChoiceNone}}, `{"type":"none"}`},
+		{&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"disableParallelToolUse": true}}}, `{"disable_parallel_tool_use":true,"type":"auto"}`},
+		{&provider.GenerateOptions{ToolChoice: types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "get_forecast"}}, `{"name":"get_forecast","type":"tool"}`},
+	} {
+		tc.opts.Prompt = types.Prompt{Messages: msgs}
+		body, err := r88provaRequestBody(t, "claude-opus-4-8", "generate", tc.opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := body["tools"]; ok || r88provaJSON(body["tool_choice"]) != tc.want {
+			t.Fatalf("tools %v tool_choice %s, want %s", body["tools"], r88provaJSON(body["tool_choice"]), tc.want)
+		}
+	}
+	// no tools at all: no tool choice
+	body, err := r88provaRequestBody(t, "claude-opus-4-8", "generate", &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{sayOK}}, ToolChoice: types.ToolChoice{Type: types.ToolChoiceNone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["tool_choice"]; ok {
+		t.Fatalf("tool_choice = %v", body["tool_choice"])
+	}
+
+	// convertToAnthropicPrompt: the inline tools beta replaces the tool
+	// changes beta; without a converter a by-value addition is unsupported.
+	sys := r88provaInlineChange(map[string]interface{}{"type": "function", "name": "get_forecast", "description": "Get forecast", "inputSchema": map[string]interface{}{"type": "object"}})
+	sys.ProviderOptions["anthropic"].(map[string]interface{})["toolChanges"] = append(sys.ProviderOptions["anthropic"].(map[string]interface{})["toolChanges"].([]interface{}),
+		map[string]interface{}{"type": "tool_removal", "toolName": "get_weather"})
+	convMsgs := []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "initial"}}}, {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}, {Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "hello"}}}, sys}
+	res, err := prompt.ConvertToAnthropicPrompt(convMsgs, prompt.AnthropicPromptOptions{ConvertInlineTool: r88provaConvertInlineTool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	betas := strings.Join(res.Betas, ",")
+	if !strings.Contains(betas, "inline-tools-2026-09-15") || strings.Contains(betas, "mid-conversation-tool-changes-2026-07-01") {
+		t.Fatalf("betas = %s", betas)
+	}
+	if got := r88provaJSON(res.Messages[len(res.Messages)-1]["content"]); got != `[{"tool":{"definition":{"description":"Get forecast","input_schema":{"type":"object"},"name":"get_forecast"},"type":"tool_definition"},"type":"tool_addition"},{"tool":{"name":"get_weather","type":"tool_reference"},"type":"tool_removal"}]` {
+		t.Fatalf("content = %s", got)
+	}
+	var uf *providererrors.UnsupportedFunctionalityError
+	if _, err := prompt.ConvertToAnthropicPrompt(convMsgs, prompt.AnthropicPromptOptions{}); !errors.As(err, &uf) || uf.Functionality != "tool additions by value in mid-conversation tool changes" {
+		t.Fatalf("no converter: %v", err)
 	}
 }
