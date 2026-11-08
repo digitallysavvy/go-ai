@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -129,7 +130,7 @@ func openAIRealtimeIntent(intent provider.RealtimeSessionIntent) (provider.Realt
 	case provider.RealtimeSessionIntentConversation, provider.RealtimeSessionIntentTranscription:
 		return intent, nil
 	}
-	return "", fmt.Errorf("OpenAI realtime session intent '%s' is not supported.", intent)
+	return "", errors.New("OpenAI realtime session intent '" + string(intent) + "' is not supported.")
 }
 
 // GetServerConnection returns the upstream WebSocket for a trusted server
@@ -214,7 +215,7 @@ func buildOpenAIRealtimeSession(config provider.RealtimeSessionConfig, modelID s
 			{"tools", config.Tools != nil},
 		} {
 			if c.set {
-				return nil, fmt.Errorf("OpenAI realtime transcription sessions do not support '%s'.", c.key)
+				return nil, errors.New("OpenAI realtime transcription sessions do not support '" + c.key + "'.")
 			}
 		}
 		session := map[string]interface{}{"type": "transcription"}

@@ -39,7 +39,7 @@ func r88provbChatStream(t *testing.T, frames []string, compat bool) []*provider.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	var out []*provider.StreamChunk
 	for {
 		c, err := st.Next()
@@ -208,7 +208,7 @@ func TestR88provbResponsesStreamRefusalFlag(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer st.Close()
+			defer func() { _ = st.Close() }()
 			var finish *provider.StreamChunk
 			var text string
 			for {

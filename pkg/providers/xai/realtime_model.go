@@ -3,6 +3,7 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -68,7 +69,7 @@ var (
 // assertConversationIntent, 892af4dab7).
 func xaiConversationIntent(intent provider.RealtimeSessionIntent) error {
 	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
-		return fmt.Errorf("xAI realtime does not support the '%s' session intent.", intent)
+		return errors.New("xAI realtime does not support the '" + string(intent) + "' session intent.")
 	}
 	return nil
 }

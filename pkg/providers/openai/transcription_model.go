@@ -229,7 +229,7 @@ func (m *TranscriptionModel) timestampGranularities(opts *provider.Transcription
 		format = "default JSON"
 	}
 	for _, g := range granularities {
-		if responseFormat != "verbose_json" && !(responseFormat == "diarized_json" && g == "segment") {
+		if responseFormat != "verbose_json" && (responseFormat != "diarized_json" || g != "segment") {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: feature,
 				Details: fmt.Sprintf("OpenAI transcription with the %s response format does not support %s timestamps.", format, g)})
 		}

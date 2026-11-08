@@ -3,7 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/url"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -53,7 +53,7 @@ var (
 // assertConversationIntent, 892af4dab7).
 func liveConversationIntent(intent provider.RealtimeSessionIntent) error {
 	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
-		return fmt.Errorf("OpenAI Live session intent '%s' is not supported.", intent)
+		return errors.New("OpenAI Live session intent '" + string(intent) + "' is not supported.")
 	}
 	return nil
 }
