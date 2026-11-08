@@ -100,3 +100,66 @@ func TestR88toolsOpenCodeHostDisconnectTimeout(t *testing.T) {
 		}
 	}
 }
+
+// TS a97f49029f opencode-auth.test.ts: auth "direct".
+func TestR88toolsOpenCodeDirectAuth(t *testing.T) {
+	direct := AuthenticationMode{Mode: harness.AuthModeDirect}
+	env := map[string]string{"AI_GATEWAY_API_KEY": "gateway-key", "VERCEL_OIDC_TOKEN": "oidc-token", "GITHUB_TOKEN": "github-token", "OPENAI_API_KEY": "openai-key"}
+	if got := resolveEnv(direct, "", "github-copilot", env); !reflect.DeepEqual(got, map[string]string{"GITHUB_TOKEN": "github-token"}) {
+		t.Fatalf("env = %v", got)
+	}
+	if got := resolveAuthenticationMode(direct, "", "github-copilot", env); got != AuthGitHubCopilot {
+		t.Fatalf("mode = %q", got)
+	}
+	env = map[string]string{"VERCEL_OIDC_TOKEN": "oidc-token", "ANTHROPIC_API_KEY": "anthropic-key"}
+	if got := resolveEnv(direct, "", "", env); !reflect.DeepEqual(got, map[string]string{"ANTHROPIC_API_KEY": "anthropic-key"}) {
+		t.Fatalf("default env = %v", got)
+	}
+	if got := resolveAuthenticationMode(direct, "", "", env); got != AuthAnthropic {
+		t.Fatalf("default mode = %q", got)
+	}
+	for _, p := range []string{"xai", "github-copilot", "poe", "opencode-go", "gitlab"} {
+		if got := resolveAuthenticationMode(direct, "", p, map[string]string{"AI_GATEWAY_API_KEY": "gateway-key", "VERCEL_OIDC_TOKEN": "oidc-token"}); string(got) != p {
+			t.Fatalf("%s: mode = %q", p, got)
+		}
+	}
+}
+
+// TS a97f49029f resolveOpenCodeAuthentication cases.
+func TestR88toolsOpenCodeDirectAuthSubscription(t *testing.T) {
+	direct := AuthenticationMode{Mode: harness.AuthModeDirect}
+	for _, p := range []string{"openai", "xai", "github-copilot", "poe", "opencode-go", "gitlab"} {
+		env := map[string]string{"AI_GATEWAY_API_KEY": "gateway-key", "VERCEL_OIDC_TOKEN": "oidc-token"}
+		var calls []string
+		got, err := resolveOpenCodeAuthentication(context.Background(), direct, "", p, env, func(_ context.Context, id string, e map[string]string) (*Subscription, error) {
+			calls = append(calls, id)
+			if !reflect.DeepEqual(e, env) {
+				t.Fatalf("subscription env = %v", e)
+			}
+			return &Subscription{ProviderID: SubscriptionProvider(id), AccessToken: "subscription-token"}, nil
+		})
+		if err != nil || string(got.AuthenticationMode) != p || got.Subscription == nil ||
+			!reflect.DeepEqual(got.Environment, map[string]string{SubscriptionAccessTokenEnvironmentVariable: "subscription-token"}) {
+			t.Fatalf("%s: %+v, %v", p, got, err)
+		}
+		if !reflect.DeepEqual(calls, []string{p}) {
+			t.Fatalf("%s: reads = %v", p, calls)
+		}
+	}
+
+	read := func(context.Context, string, map[string]string) (*Subscription, error) {
+		t.Fatal("subscription read")
+		return nil, nil
+	}
+	got, err := resolveOpenCodeAuthentication(context.Background(), direct, "", "xai", map[string]string{"VERCEL_OIDC_TOKEN": "oidc-token", "XAI_API_KEY": "environment-key"}, read)
+	if err != nil || got.AuthenticationMode != AuthXAI || !reflect.DeepEqual(got.Environment, map[string]string{"XAI_API_KEY": "environment-key"}) {
+		t.Fatalf("api key: %+v, %v", got, err)
+	}
+	for _, auth := range []AuthenticationMode{{}, {Mode: "auto"}} {
+		got, err := resolveOpenCodeAuthentication(context.Background(), auth, "", "github-copilot", map[string]string{"VERCEL_OIDC_TOKEN": "oidc-token"}, read)
+		want := map[string]string{"AI_GATEWAY_API_KEY": "oidc-token", "AI_GATEWAY_BASE_URL": "https://ai-gateway.vercel.sh/v1"}
+		if err != nil || got.AuthenticationMode != AuthAIGateway || !reflect.DeepEqual(got.Environment, want) {
+			t.Fatalf("%q: %+v, %v", auth.Mode, got, err)
+		}
+	}
+}
