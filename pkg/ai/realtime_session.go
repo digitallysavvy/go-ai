@@ -40,7 +40,28 @@ type RealtimeSessionOptions struct {
 	ClientSecret  *provider.ClientSecretResult
 	SessionConfig *provider.RealtimeSessionConfig
 	Dialer        RealtimeDialer
+
+	// Intent, when set, connects server-side to the endpoint variant for
+	// that intent through the model's provider.RealtimeServerConnectionProvider
+	// (the long-lived provider credential, never a client secret; meant for
+	// trusted servers) and serializes client events with its
+	// provider.RealtimeIntentCodec when it has one. ClientSecret is then
+	// ignored. Empty (the default) keeps the existing connection flow, so
+	// existing callers never switch to the long-lived key. Mirrors the TS
+	// getServerWebSocketConfig({ intent }) / serializeClientEvent(event,
+	// { intent }) server flow (892af4dab7).
+	Intent RealtimeSessionIntent
 }
+
+// RealtimeSessionIntent selects the realtime endpoint variant (TS
+// Experimental_RealtimeSessionIntent).
+type RealtimeSessionIntent = provider.RealtimeSessionIntent
+
+// Realtime session intents (TS 'conversation' | 'transcription').
+const (
+	RealtimeSessionIntentConversation  = provider.RealtimeSessionIntentConversation
+	RealtimeSessionIntentTranscription = provider.RealtimeSessionIntentTranscription
+)
 
 type RealtimeSession struct {
 	model     provider.Experimental_RealtimeModelV4
@@ -50,6 +71,7 @@ type RealtimeSession struct {
 	closeOnce sync.Once
 	parser    func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error)
 	lifecycle provider.RealtimeLifecycle
+	intent    RealtimeSessionIntent
 }
 
 func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeModelV4, opts RealtimeSessionOptions) (*RealtimeSession, error) {
@@ -66,7 +88,17 @@ func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeMo
 	// token minted via DoCreateClientSecret, matching TS
 	// getServerWebSocketConfig().
 	var cfg provider.WebSocketConfig
-	if serverModel, ok := model.(provider.RealtimeServerWebSocketConfigProvider); ok {
+	if opts.Intent != "" {
+		connector, ok := model.(provider.RealtimeServerConnectionProvider)
+		if !ok {
+			return nil, fmt.Errorf("realtime model does not support server connections for the '%s' session intent (RealtimeServerConnectionProvider)", opts.Intent)
+		}
+		built, err := connector.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{Intent: opts.Intent})
+		if err != nil {
+			return nil, err
+		}
+		cfg = built
+	} else if serverModel, ok := model.(provider.RealtimeServerWebSocketConfigProvider); ok {
 		built, err := serverModel.GetServerWebSocketConfig()
 		if err != nil {
 			return nil, err
@@ -97,7 +129,7 @@ func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeMo
 		return nil, err
 	}
 
-	s := &RealtimeSession{model: model, conn: conn, done: make(chan struct{})}
+	s := &RealtimeSession{model: model, conn: conn, done: make(chan struct{}), intent: opts.Intent}
 	if factory, ok := model.(provider.RealtimeServerEventParserFactory); ok {
 		s.parser = factory.NewServerEventParser()
 	}
@@ -166,7 +198,13 @@ func (s *RealtimeSession) Send(ctx context.Context, event provider.RealtimeClien
 			return s.conn.Send(ctx, data)
 		}
 	}
-	raw, err := s.model.SerializeClientEvent(event)
+	var raw json.RawMessage
+	var err error
+	if codec, ok := s.model.(provider.RealtimeIntentCodec); ok && s.intent != "" {
+		raw, err = codec.SerializeClientEventForIntent(event, s.intent)
+	} else {
+		raw, err = s.model.SerializeClientEvent(event)
+	}
 	if err != nil {
 		return err
 	}

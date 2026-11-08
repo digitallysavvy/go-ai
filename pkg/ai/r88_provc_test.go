@@ -407,3 +407,81 @@ func TestR88provcGenerateVideoUploadedOutcome(t *testing.T) {
 		}
 	})
 }
+
+// r88provcIntentModel is a realtime model with the server connection and
+// intent codec capabilities (ruling 1, TS 892af4dab7).
+type r88provcIntentModel struct {
+	mockRealtimeModel
+	gotIntent RealtimeSessionIntent
+}
+
+func (m *r88provcIntentModel) GetServerConnection(_ context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	m.gotIntent = opts.Intent
+	if opts.Intent == RealtimeSessionIntentTranscription {
+		return provider.WebSocketConfig{URL: "wss://server.test/realtime?intent=transcription", Headers: map[string]string{"Authorization": "Bearer long-lived"}}, nil
+	}
+	return provider.WebSocketConfig{URL: "wss://server.test/realtime?model=m"}, nil
+}
+
+func (m *r88provcIntentModel) BuildSessionConfigForIntent(cfg provider.RealtimeSessionConfig, intent RealtimeSessionIntent) (any, error) {
+	return map[string]any{"intent": string(intent)}, nil
+}
+
+func (m *r88provcIntentModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent RealtimeSessionIntent) (json.RawMessage, error) {
+	return json.Marshal(map[string]interface{}{"type": event.Type, "intent": string(intent)})
+}
+
+func TestR88provcConnectRealtimeIntent(t *testing.T) {
+	if RealtimeSessionIntentConversation != "conversation" || RealtimeSessionIntentTranscription != "transcription" {
+		t.Fatal("intent values")
+	}
+	instructions := "hi"
+	conn := &mockRealtimeConn{}
+	dialer := &mockRealtimeDialer{conn: conn}
+	model := &r88provcIntentModel{}
+	session, err := ConnectRealtime(context.Background(), model, RealtimeSessionOptions{
+		Dialer: dialer, Intent: RealtimeSessionIntentTranscription,
+		ClientSecret:  &provider.ClientSecretResult{Token: "ignored", URL: "ws://ignored"},
+		SessionConfig: &provider.RealtimeSessionConfig{Instructions: &instructions},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close() //nolint:errcheck
+	if model.gotIntent != RealtimeSessionIntentTranscription || dialer.config.URL != "wss://server.test/realtime?intent=transcription" || dialer.config.Headers["Authorization"] != "Bearer long-lived" {
+		t.Fatalf("dial config = %+v", dialer.config)
+	}
+	if err := session.Send(context.Background(), provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	conn.mu.Lock()
+	sent := append([][]byte(nil), conn.sent...)
+	conn.mu.Unlock()
+	if len(sent) != 2 || string(sent[0]) != `{"intent":"transcription","type":"session-update"}` || string(sent[1]) != `{"intent":"transcription","type":"input-audio-append"}` {
+		t.Fatalf("sent = %q", sent)
+	}
+
+	// Without an intent the existing client-secret flow is unchanged.
+	conn2 := &mockRealtimeConn{}
+	dialer2 := &mockRealtimeDialer{conn: conn2}
+	session2, err := ConnectRealtime(context.Background(), &r88provcIntentModel{}, RealtimeSessionOptions{Dialer: dialer2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session2.Close() //nolint:errcheck
+	if dialer2.config.URL != "ws://example.test" {
+		t.Fatalf("dial config = %+v", dialer2.config)
+	}
+	if err := session2.Send(context.Background(), provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(conn2.sent[0]); got != `{"audio":"abc","type":"input-audio-append"}` {
+		t.Fatalf("sent = %s", got)
+	}
+
+	// A model without the capability cannot take an intent.
+	_, err = ConnectRealtime(context.Background(), mockRealtimeModel{}, RealtimeSessionOptions{Dialer: &mockRealtimeDialer{conn: &mockRealtimeConn{}}, Intent: RealtimeSessionIntentConversation})
+	if err == nil || !strings.Contains(err.Error(), "RealtimeServerConnectionProvider") {
+		t.Fatalf("err = %v", err)
+	}
+}
