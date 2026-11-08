@@ -474,8 +474,26 @@ func durationValue(duration *float64) float64 {
 	return *duration
 }
 
+// assemblyAIErrorMessage is TS assemblyaiFailedResponseHandler (c87b19ee75):
+// the documented flat `{"error": "<message>"}` shape gives that message; the
+// older nested `{"error": {"message", "code"}}` shape is still accepted;
+// anything else gives the HTTP status text.
+func assemblyAIErrorMessage(statusCode int, body []byte) (message, code string) {
+	var flat struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(body, &flat) == nil && len(flat.Error) > 0 && flat.Error[0] == '"' {
+		var text string
+		if json.Unmarshal(flat.Error, &text) == nil {
+			return text, ""
+		}
+	}
+	return providerutils.NestedErrorMessage(statusCode, body)
+}
+
 // handleError converts an HTTP error into a ProviderError, parsing
-// AssemblyAI's `{"error":{"message","code"}}` error shape when present.
+// AssemblyAI's `{"error": "..."}` / `{"error":{"message","code"}}` error
+// shapes when present.
 func (m *TranscriptionModel) handleError(err error) error {
 	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
@@ -485,7 +503,7 @@ func (m *TranscriptionModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := providerutils.NestedErrorMessage(statusErr.StatusCode, statusErr.Body)
+		message, code := assemblyAIErrorMessage(statusErr.StatusCode, statusErr.Body)
 		return providererrors.NewProviderErrorFromResponse("assemblyai", 0, code, message, err)
 	}
 	var validationErr *providererrors.ValidationError
