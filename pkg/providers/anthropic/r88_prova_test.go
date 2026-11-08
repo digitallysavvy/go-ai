@@ -1425,3 +1425,21 @@ func TestR88provaThreadContinuationKeepsPreparedTools(t *testing.T) {
 		}
 	}
 }
+
+// cr-r88-tools-to-prova 1 (TS 8291ccf237, z.enum().optional()): a null
+// serviceTier (and the other enum options) fails before the request under
+// the anthropic and the minimax keys.
+func TestR88provaNullEnumOptionsRejected(t *testing.T) {
+	for _, name := range []string{"anthropic", "minimax"} {
+		for _, key := range []string{"serviceTier", "effort", "speed", "inferenceGeo", "structuredOutputMode"} {
+			s := r88provaNewServer(t, r88provaTextResponse, nil)
+			m, _ := New(Config{APIKey: "k", BaseURL: s.srv.URL, Name: name}).LanguageModel("claude-haiku-4-5")
+			_, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+				ProviderOptions: map[string]interface{}{name: map[string]interface{}{key: nil}}})
+			var ae *providererrors.InvalidArgumentError
+			if !errors.As(err, &ae) || len(s.bodies) != 0 {
+				t.Fatalf("%s %s: err = %v, requests = %d", name, key, err, len(s.bodies))
+			}
+		}
+	}
+}

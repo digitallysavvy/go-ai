@@ -143,6 +143,14 @@ func decodeAnthropicCallOptions(raw map[string]interface{}) (*ModelOptions, erro
 		return nil, nil
 	}
 
+	// TS z.enum(...).optional() rejects null (only absent is unset); the
+	// enum options cannot be null (cr-r88-tools-to-prova 1, TS 8291ccf237).
+	for _, key := range []string{"structuredOutputMode", "effort", "speed", "serviceTier", "inferenceGeo"} {
+		if v, ok := raw[key]; ok && v == nil {
+			return nil, fmt.Errorf("%s: invalid input, expected a string, received null", key)
+		}
+	}
+
 	// "fallbacks" is a TS union (the literal "default" or an array of
 	// FallbackConfig); pull it out before the generic unmarshal, which
 	// cannot decode a union into a single Go field.
