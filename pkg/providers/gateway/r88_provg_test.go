@@ -192,3 +192,50 @@ func TestR88provgTranscriptionWordsAndGranularityWarning(t *testing.T) {
 		}
 	}
 }
+
+// Ports the gateway-realtime-model.test.ts server connection tests (TS
+// 892af4dab7): the realtime-model route with the HTTP auth headers (OIDC
+// included), team and custom headers, conversation intent only.
+func TestR88provgRealtimeServerConnection(t *testing.T) {
+	p, err := New(Config{
+		OIDCTokenFunc: func(context.Context) (string, error) { return "oidc-test-token", nil },
+		TeamIDOrSlug:  "team-example",
+		Headers:       map[string]string{"x-custom": "example"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AI_GATEWAY_API_KEY", "")
+	m := p.ExperimentalRealtime("openai/gpt-realtime")
+	cfg, err := m.GetServerConnection(context.Background(), provider.RealtimeServerConnectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.URL != "wss://ai-gateway.vercel.sh/v4/ai/realtime-model?ai-model-id=openai%2Fgpt-realtime" {
+		t.Fatalf("url = %s", cfg.URL)
+	}
+	for k, want := range map[string]string{
+		"authorization":               "Bearer oidc-test-token",
+		"ai-gateway-auth-method":      "oidc",
+		"ai-gateway-protocol-version": AIGatewayProtocolVersion,
+		"x-vercel-ai-gateway-team":    "team-example",
+		"x-custom":                    "example",
+	} {
+		if cfg.Headers[k] != want {
+			t.Fatalf("header %s = %q, want %q (all %v)", k, cfg.Headers[k], want, cfg.Headers)
+		}
+	}
+	if !strings.Contains(cfg.Headers["user-agent"], "ai-sdk-gateway/") {
+		t.Fatalf("user-agent = %q", cfg.Headers["user-agent"])
+	}
+	const want = "AI Gateway realtime does not support the 'transcription' session intent on the normalized realtime route."
+	if _, err := m.GetServerConnection(context.Background(), provider.RealtimeServerConnectionOptions{Intent: provider.RealtimeSessionIntentTranscription}); err == nil || err.Error() != want {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := m.SerializeClientEventForIntent(provider.RealtimeClientEvent{Type: "response-create"}, provider.RealtimeSessionIntentTranscription); err == nil || err.Error() != want {
+		t.Fatalf("serialize err = %v", err)
+	}
+	if _, err := m.BuildSessionConfigForIntent(provider.RealtimeSessionConfig{}, provider.RealtimeSessionIntentTranscription); err == nil || err.Error() != want {
+		t.Fatalf("build err = %v", err)
+	}
+}
