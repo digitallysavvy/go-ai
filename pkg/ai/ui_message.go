@@ -37,7 +37,7 @@ type UIMessage struct {
 // UIMessagePart is one part of a UI message. Implemented by TextUIPart,
 // CustomContentUIPart, ReasoningUIPart, ToolUIPart (static and dynamic tools),
 // SourceURLUIPart, SourceDocumentUIPart, FileUIPart, ReasoningFileUIPart,
-// DataUIPart and StepStartUIPart (value or pointer).
+// DataUIPart, SteeringMessageUIPart and StepStartUIPart (value or pointer).
 type UIMessagePart interface {
 	// UIPartType returns the part's `type` discriminator.
 	UIPartType() string
@@ -126,6 +126,18 @@ type ReasoningFileUIPart struct {
 
 // StepStartUIPart marks a step boundary in an assistant message.
 type StepStartUIPart struct{}
+
+// SteeringMessageUIPart is a user message that was added to the run with
+// steering while the assistant message was generated. It is placed before the
+// output of the step that received it. Experimental. Mirrors TS
+// Experimental_SteeringMessageUIPart.
+type SteeringMessageUIPart struct {
+	// ID is the id of the steering message.
+	ID string
+	// Parts is the content of the user message: TextUIPart and FileUIPart
+	// parts (pointers when decoded from JSON).
+	Parts []UIMessagePart
+}
 
 // DataUIPart is a custom data part. Type is the full discriminator
 // (`data-<name>`).
@@ -252,16 +264,17 @@ type DynamicToolUIPart = ToolUIPart
 // the output-error state. Use IsToolOutputErrorUIPart to identify it.
 type ToolOutputErrorUIPart = ToolUIPart
 
-func (TextUIPart) UIPartType() string           { return "text" }
-func (CustomContentUIPart) UIPartType() string  { return "custom" }
-func (ReasoningUIPart) UIPartType() string      { return "reasoning" }
-func (SourceURLUIPart) UIPartType() string      { return "source-url" }
-func (SourceDocumentUIPart) UIPartType() string { return "source-document" }
-func (FileUIPart) UIPartType() string           { return "file" }
-func (ReasoningFileUIPart) UIPartType() string  { return "reasoning-file" }
-func (StepStartUIPart) UIPartType() string      { return "step-start" }
-func (p DataUIPart) UIPartType() string         { return p.Type }
-func (p ToolUIPart) UIPartType() string         { return p.Type }
+func (TextUIPart) UIPartType() string            { return "text" }
+func (CustomContentUIPart) UIPartType() string   { return "custom" }
+func (ReasoningUIPart) UIPartType() string       { return "reasoning" }
+func (SourceURLUIPart) UIPartType() string       { return "source-url" }
+func (SourceDocumentUIPart) UIPartType() string  { return "source-document" }
+func (FileUIPart) UIPartType() string            { return "file" }
+func (ReasoningFileUIPart) UIPartType() string   { return "reasoning-file" }
+func (StepStartUIPart) UIPartType() string       { return "step-start" }
+func (SteeringMessageUIPart) UIPartType() string { return "steering-message" }
+func (p DataUIPart) UIPartType() string          { return p.Type }
+func (p ToolUIPart) UIPartType() string          { return p.Type }
 
 // ---------------------------------------------------------------------------
 // Type guards (TS isTextUIPart, isToolUIPart, ...)
@@ -495,6 +508,8 @@ func UnmarshalUIMessagePart(data []byte) (UIMessagePart, error) {
 		part = &ReasoningFileUIPart{}
 	case head.Type == "step-start":
 		return &StepStartUIPart{}, nil
+	case head.Type == "steering-message":
+		part = &SteeringMessageUIPart{}
 	case strings.HasPrefix(head.Type, "data-"):
 		part = &DataUIPart{}
 	case head.Type == "dynamic-tool" || strings.HasPrefix(head.Type, "tool-"):
@@ -708,6 +723,52 @@ func (p *ReasoningFileUIPart) UnmarshalJSON(data []byte) error {
 
 func (StepStartUIPart) MarshalJSON() ([]byte, error) {
 	return []byte(`{"type":"step-start"}`), nil
+}
+
+func (p SteeringMessageUIPart) MarshalJSON() ([]byte, error) {
+	var o orderedJSON
+	o.field("type", "steering-message")
+	o.field("id", p.ID)
+	parts := p.Parts
+	if parts == nil {
+		parts = []UIMessagePart{}
+	}
+	o.field("parts", parts)
+	return o.bytes()
+}
+
+func (p *SteeringMessageUIPart) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID    string            `json:"id"`
+		Parts []json.RawMessage `json:"parts"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	parts := make([]UIMessagePart, 0, len(raw.Parts))
+	for i, rawPart := range raw.Parts {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(rawPart, &head); err != nil {
+			return err
+		}
+		var part UIMessagePart
+		switch head.Type {
+		case "text":
+			part = &TextUIPart{}
+		case "file":
+			part = &FileUIPart{}
+		default:
+			return fmt.Errorf("parts[%d]: unsupported steering message part type %q", i, head.Type)
+		}
+		if err := json.Unmarshal(rawPart, part); err != nil {
+			return fmt.Errorf("parts[%d]: %w", i, err)
+		}
+		parts = append(parts, part)
+	}
+	*p = SteeringMessageUIPart{ID: raw.ID, Parts: parts}
+	return nil
 }
 
 func (p DataUIPart) MarshalJSON() ([]byte, error) {

@@ -150,7 +150,7 @@ func uiChunkWritesMessage(chunk UIMessageChunk) bool {
 		"tool-input-start", "tool-input-delta", "tool-input-available", "tool-input-error",
 		"tool-approval-request", "tool-approval-response",
 		"tool-output-denied", "tool-output-available", "tool-output-error",
-		"reset-step":
+		"steering-message", "reset-step":
 		return true
 	}
 	// start-step, finish-step, error, abort and any type TS does not know

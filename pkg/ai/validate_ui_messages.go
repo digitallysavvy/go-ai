@@ -483,24 +483,12 @@ func uiPartIssue(raw interface{}) string {
 	case partType == "source-document":
 		return checks(str("sourceId"), str("mediaType"), str("title"), optStr("filename"), optPM("providerMetadata"))
 	case partType == "file":
-		return checks(str("mediaType"), optStr("filename"), str("url"), func() string {
-			v, exists := part["providerReference"]
-			if !exists {
-				return ""
-			}
-			m, ok := v.(map[string]interface{})
-			if !ok {
-				return "Invalid input: expected record for providerReference"
-			}
-			for key, value := range m {
-				if _, ok := value.(string); !ok {
-					return fmt.Sprintf("Invalid input: expected string for providerReference.%s", key)
-				}
-			}
-			return ""
-		}, optPM("providerMetadata"))
+		return checks(str("mediaType"), optStr("filename"), str("url"), func() string { return providerReferenceIssue(part) }, optPM("providerMetadata"))
 	case partType == "reasoning-file":
 		return checks(str("mediaType"), str("url"), optPM("providerMetadata"))
+	case partType == "steering-message":
+		// TS validate-ui-messages.ts 144-164: an id and text / file parts.
+		return checks(str("id"), func() string { return steeringPartsIssue(part) })
 	case partType == "step-start":
 		return ""
 	case strings.HasPrefix(partType, "data-"):
@@ -527,6 +515,55 @@ func uiPartIssue(raw interface{}) string {
 		return uiToolPartIssue(part)
 	}
 	return fmt.Sprintf("Invalid input: unsupported part type %q", partType)
+}
+
+// steeringPartsIssue checks a steering-message part's parts: each a text part
+// (text, optional provider metadata) or a file part (mediaType, optional
+// filename, url, optional provider reference and metadata).
+func steeringPartsIssue(part map[string]interface{}) string {
+	parts, ok := part["parts"].([]interface{})
+	if !ok {
+		return "Invalid input: expected array for parts"
+	}
+	for i, raw := range parts {
+		nested, ok := raw.(map[string]interface{})
+		if !ok {
+			return fmt.Sprintf("Invalid input: expected object for parts[%d]", i)
+		}
+		var issue string
+		switch nested["type"] {
+		case "text":
+			issue = firstIssue(requireString(nested, "text"), optionalProviderMetadata(nested, "providerMetadata"))
+		case "file":
+			issue = firstIssue(requireString(nested, "mediaType"), optionalString(nested, "filename"), requireString(nested, "url"),
+				providerReferenceIssue(nested), optionalProviderMetadata(nested, "providerMetadata"))
+		default:
+			issue = "Invalid input: expected a text or file part"
+		}
+		if issue != "" {
+			return fmt.Sprintf("parts[%d]: %s", i, issue)
+		}
+	}
+	return ""
+}
+
+// providerReferenceIssue checks an optional record<string, string>
+// providerReference.
+func providerReferenceIssue(part map[string]interface{}) string {
+	v, exists := part["providerReference"]
+	if !exists {
+		return ""
+	}
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return "Invalid input: expected record for providerReference"
+	}
+	for key, value := range m {
+		if _, ok := value.(string); !ok {
+			return fmt.Sprintf("Invalid input: expected string for providerReference.%s", key)
+		}
+	}
+	return ""
 }
 
 // citationsIssue checks a text part's optional citations against the TS

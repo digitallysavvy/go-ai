@@ -110,16 +110,12 @@ func ConvertToModelMessages(ctx context.Context, messages []UIMessage, opts ...C
 		case UIMessageRoleUser:
 			content := make([]types.ContentPart, 0, len(message.Parts))
 			for _, part := range message.Parts {
-				if textPart, ok := asTextUIPart(part); ok {
-					content = append(content, types.TextContent{Text: textPart.Text, ProviderOptions: textPart.ProviderMetadata})
-					continue
-				}
-				if filePart, ok := asFileUIPart(part); ok {
-					fileContent, err := fileUIPartToModel(filePart)
+				if IsTextUIPart(part) || IsFileUIPart(part) {
+					converted, err := convertUserContentUIPart(part)
 					if err != nil {
 						return nil, &MessageConversionError{OriginalMessage: message, Message: err.Error(), Cause: err}
 					}
-					content = append(content, fileContent)
+					content = append(content, converted)
 					continue
 				}
 				if dataPart, ok := asDataUIPart(part); ok {
@@ -167,6 +163,24 @@ func ConvertToModelMessages(ctx context.Context, messages []UIMessage, opts ...C
 					if err := processBlock(); err != nil {
 						return nil, err
 					}
+				case partType(part) == "steering-message":
+					// Steering messages were added to the run between two
+					// steps (TS convert-to-model-messages.ts 458-464).
+					if err := processBlock(); err != nil {
+						return nil, err
+					}
+					steering, _ := asSteeringMessageUIPart(part)
+					content := make([]types.ContentPart, 0)
+					if steering != nil {
+						for _, steeringPart := range steering.Parts {
+							converted, err := convertUserContentUIPart(steeringPart)
+							if err != nil {
+								return nil, &MessageConversionError{OriginalMessage: message, Message: err.Error(), Cause: err}
+							}
+							content = append(content, converted)
+						}
+					}
+					modelMessages = append(modelMessages, types.Message{Role: types.RoleUser, Content: content})
 				}
 			}
 			if err := processBlock(); err != nil {
@@ -553,6 +567,28 @@ func asReasoningUIPart(part UIMessagePart) (*ReasoningUIPart, bool) {
 		return &p, true
 	}
 	return nil, false
+}
+
+func asSteeringMessageUIPart(part UIMessagePart) (*SteeringMessageUIPart, bool) {
+	switch p := part.(type) {
+	case *SteeringMessageUIPart:
+		return p, p != nil
+	case SteeringMessageUIPart:
+		return &p, true
+	}
+	return nil, false
+}
+
+// convertUserContentUIPart converts a user text or file UI part to a model
+// message part (TS convert-to-model-messages.ts convertUserContentUIPart).
+func convertUserContentUIPart(part UIMessagePart) (types.ContentPart, error) {
+	if textPart, ok := asTextUIPart(part); ok {
+		return types.TextContent{Text: textPart.Text, ProviderOptions: textPart.ProviderMetadata}, nil
+	}
+	if filePart, ok := asFileUIPart(part); ok {
+		return fileUIPartToModel(filePart)
+	}
+	return nil, fmt.Errorf("unsupported user message part type %q", partType(part))
 }
 
 func asFileUIPart(part UIMessagePart) (*FileUIPart, bool) {

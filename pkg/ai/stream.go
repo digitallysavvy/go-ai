@@ -765,6 +765,11 @@ type StreamTextResult struct {
 	// stepSteering the steering messages delivered to the current step.
 	steering     *steeringRun
 	stepSteering []types.Message
+	// pendingSteering holds the steering-message parts of the step being
+	// prepared until they are streamed, before that step's output (TS
+	// stream-text.ts 2654-2671 adds them to the stitchable stream ahead of
+	// the step's own stream).
+	pendingSteering []provider.StreamChunk
 
 	// singleConsumer is set by StreamTextLowMemory: the chunk buffer drops
 	// consumed chunks and the first stream accessor claims the only cursor.
@@ -1315,7 +1320,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 
 	// Steering messages are delivered when they are part of the messages sent
 	// to the model after PrepareStep.
-	r.stepSteering = r.steering.resolveTakenMessages(0, stepMessages)
+	deliveredSteering := r.steering.resolveTakenMessages(0, stepMessages)
+	r.stepSteering = steeringDeliveredMessages(deliveredSteering)
+	r.pendingSteering = steeringMessageChunks(deliveredSteering, 0)
 
 	stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 	stepTools = orderStepTools(stepTools, stepToolOrder)
@@ -1552,7 +1559,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			// after `start` and reports it to onError (after onChunk) instead
 			// of throwing. The error part carries the model call's own error
 			// (TS `{ type: 'error', error }`); onError gets it wrapped.
-			r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
+			r.pushPreStreamParts(ctx, opts, r.preStreamStartParts(provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})...)
 			notifyFailedEnd(ctx, opts.Internal, onEndEvent, callID, runtimeContext, toolsContext, initialResponseMessages, nil, startErr)
 		}
 		if stepCancel != nil {
@@ -1728,9 +1735,36 @@ func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamText
 		// TS's pipeline catch enqueues the error itself; its event
 		// processor calls onChunk for the part, then onError with the error
 		// wrapped.
-		r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
+		r.pushPreStreamParts(ctx, opts, r.preStreamStartParts(provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})...)
 	}
 	r.fail(err)
+}
+
+// preStreamStartParts returns `start`, the first step's delivered steering
+// messages and then parts: TS adds the steering-message parts to the
+// stitchable stream before the failing first step's error part.
+func (r *StreamTextResult) preStreamStartParts(parts ...provider.StreamChunk) []provider.StreamChunk {
+	out := make([]provider.StreamChunk, 0, 1+len(r.pendingSteering)+len(parts))
+	out = append(out, provider.StreamChunk{Type: provider.ChunkTypeStart})
+	out = append(out, r.pendingSteering...)
+	r.pendingSteering = nil
+	return append(out, parts...)
+}
+
+// steeringMessageChunks returns one steering-message part per delivered
+// steering message of step stepNumber (TS `{ type: 'steering-message', id,
+// message, stepNumber }`).
+func steeringMessageChunks(delivered []steeringDelivered, stepNumber int) []provider.StreamChunk {
+	if len(delivered) == 0 {
+		return nil
+	}
+	out := make([]provider.StreamChunk, len(delivered))
+	for i, d := range delivered {
+		message := d.Message
+		step := stepNumber
+		out[i] = provider.StreamChunk{Type: provider.ChunkTypeSteeringMessage, ID: d.ID, SteeringMessage: &message, StepNumber: &step}
+	}
+	return out
 }
 
 // pushPreStreamParts adds the parts of a run that ended before its first
@@ -2135,14 +2169,28 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// PrepareStep instructions or settings, or its prompt conversion). TS
 	// streamText catches the failed streamStep and enqueues an `error` part,
 	// which reaches onError (called once, after the loop) and the full stream.
+	// flushSteering streams the delivered steering messages of the step
+	// being prepared, once.
+	flushSteering := func() {
+		if len(r.pendingSteering) == 0 {
+			return
+		}
+		parts := r.pendingSteering
+		r.pendingSteering = nil
+		forwardThroughTransformChain(0, parts)
+	}
+
 	failNextStep := func(err error) {
 		// onError (after the loop) gets r.err: TS's event processor passes
 		// wrapGatewayError(part.error), as for a later step that fails to open.
 		r.err = wrapGatewayError(err)
 		if !isAbortErr(ctx, err) {
 			continuationFailed = true
-			// TS's step catch enqueues the error itself.
+			// TS's step catch enqueues the error itself, into the previous
+			// step's stream, which the stitchable stream reads before the
+			// steering-message parts added for the failed step.
 			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: err, Text: err.Error()}})
+			flushSteering()
 		}
 	}
 
@@ -2525,6 +2573,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// next chunk).
 			if stepFirstForwardedChunk && chunk.Type != provider.ChunkTypeStreamStart {
 				stepFirstForwardedChunk = false
+				// Delivered steering messages come right before the step's
+				// start-step (TS stream-text.ts 2654-2671).
+				flushSteering()
 				startStepWarnings := append([]types.Warning(nil), r.warnings[stepWarningsStart:]...)
 				if startStepWarnings == nil {
 					startStepWarnings = []types.Warning{}
@@ -3710,6 +3761,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			cancelStep()
 			break
 		}
+		// A step stream without parts never opened its step: its steering
+		// messages still precede the step's finish.
+		flushSteering()
 		finishStepResponse := stepResult.Response
 		finishStepPerf := performance
 		finishStepUsage := stepUsage
@@ -4159,7 +4213,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		// Steering messages are delivered when they are part of the messages
 		// sent to the model after PrepareStep.
-		r.stepSteering = r.steering.resolveTakenMessages(stepNum, nextMessages)
+		deliveredSteering := r.steering.resolveTakenMessages(stepNum, nextMessages)
+		r.stepSteering = steeringDeliveredMessages(deliveredSteering)
+		r.pendingSteering = steeringMessageChunks(deliveredSteering, stepNum)
 
 		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
 		nextTools = orderStepTools(nextTools, nextToolOrder)
@@ -4349,6 +4405,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// The error part carries the model call's own error (TS step
 				// catch); onError gets it wrapped.
 				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: openErr, Text: openErr.Error()}})
+				flushSteering()
 				continuationFailed = true
 				stepErrorTelemetryCtx = nextModelCallCtx
 			}
