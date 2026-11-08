@@ -246,6 +246,8 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		fl("providerMetadata", zNullish(zRec(zRec(zAny)))),
 	}
 	gatewayVideoData := zodlite.Union(
+		// TS 2e44144812: an upload confirmation (cr-r88-provg-to-provc 1).
+		zodlite.Typed("uploaded", fl("mediaType", zStr)),
 		zodlite.Typed("url", fl("url", zStr), fl("mediaType", zStr)),
 		zodlite.Typed("base64", fl("data", zStr), fl("mediaType", zStr)))
 	// gatewayVideoMetaEntry is providerMetadataEntrySchema in
@@ -393,6 +395,8 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("usage", zOptional(zRec(zAny))), fl("providerMetadata", zOptional(zRec(zodlite.Record)))),
 		SchemaGatewayTranscription: zObj(fl("text", zStr),
 			fl("segments", zOptional(zArr(zObj(fl("text", zStr), fl("startSecond", zNum), fl("endSecond", zNum))))),
+			// TS 41465fd1b6 (cr-r88-provg-to-provc 2).
+			fl("words", zNullish(zArr(zObj(fl("text", zStr), fl("startSecond", zNum), fl("endSecond", zNum))))),
 			fl("language", nStr), fl("durationInSeconds", nNum), fl("warnings", zOptional(zArr(gatewayWarning))),
 			fl("usage", zOptional(zRec(zAny))), fl("providerMetadata", zOptional(zRec(zodlite.Record)))),
 		SchemaAssemblyAIUpload: zObj(fl("upload_url", zStr)),
@@ -519,7 +523,10 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("audio_timestamps", zNullish(zObj(fl("graph_chars", zArr(zStr)),
 				fl("graph_times", zArr(zTuple2Num)))))),
 		SchemaGatewayCredits: zObj(fl("balance", zStr), fl("total_used", zStr)),
-		SchemaGatewayGenerationInfo: zObj(fl("data", zObj(fl("id", zStr), fl("total_cost", zNum), fl("upstream_inference_cost", zNum),
+		// market_cost / surcharge_cost / gateway_cost: TS 32acf432db
+		// (cr-r88-provg-to-provc 3).
+		SchemaGatewayGenerationInfo: zObj(fl("data", zObj(fl("id", zStr), fl("total_cost", zNum),
+			fl("market_cost", nNum), fl("surcharge_cost", nNum), fl("gateway_cost", nNum), fl("upstream_inference_cost", zNum),
 			fl("usage", zNum), fl("created_at", zStr), fl("model", zStr), fl("is_byok", zodlite.Boolean), fl("provider_name", zStr),
 			fl("streamed", zodlite.Boolean), fl("finish_reason", zStr), fl("latency", zNum), fl("generation_time", zNum),
 			fl("native_tokens_prompt", zNum), fl("native_tokens_completion", zNum), fl("native_tokens_reasoning", zNum),
