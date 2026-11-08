@@ -309,7 +309,7 @@ func TestBedrockMantleMissingCredentialsIncludeOriginalError(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
-	tr := &sigV4Transport{region: "us-east-1", base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+	tr := &sigV4Transport{region: "us-east-1", baseURL: func() (string, error) { return "https://example.com", nil }, base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("unexpected send")
 	})}
 	req, _ := http.NewRequest("POST", "https://example.com", nil)

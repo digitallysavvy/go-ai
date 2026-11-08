@@ -24,6 +24,20 @@ type sigV4Transport struct {
 	sessionToken       string
 	credentialProvider bedrock.CredentialProvider
 	region             string
+	// baseURL resolves the Mantle endpoint at request time: credentials go
+	// only to requests of its origin (a redirect hop to another origin gets
+	// none; fails closed when the endpoint cannot be resolved).
+	baseURL func() (string, error)
+}
+
+// sameOrigin reports whether req goes to the Mantle endpoint's origin (false
+// when the endpoint is unknown).
+func (t *sigV4Transport) sameOrigin(req *http.Request) bool {
+	if t.baseURL == nil {
+		return false
+	}
+	baseURL, err := t.baseURL()
+	return err == nil && providerutils.IsSameOrigin(req.URL.String(), baseURL)
 }
 
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -37,6 +51,11 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
+	if !t.sameOrigin(req) {
+		req = req.Clone(req.Context())
+		req.Header.Del("Authorization")
+		return t.base.RoundTrip(req)
+	}
 	if t.apiKeyFunc != nil {
 		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
 			APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Amazon Bedrock", RequireNonEmpty: true,
@@ -80,6 +99,8 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 		sessionToken := firstNonEmpty(t.sessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 		signer = bedrock.NewAWSSignerForService(accessKeyID, secretAccessKey, sessionToken, region, mantleSigningService)
 	}
+	// Sign a clone: a RoundTripper must not modify the caller's request.
+	req = req.Clone(req.Context())
 	// The wrapped OpenAI client may have set a stale Authorization (e.g. from
 	// OPENAI_API_KEY); it must not be part of the signed headers.
 	req.Header.Del("Authorization")

@@ -34,6 +34,7 @@ func TestSigV4Transport_LastCredentialsRace(t *testing.T) {
 		region:          "us-west-2",
 		accessKeyID:     "akid",
 		secretAccessKey: "secret",
+		baseURL:         "https://example.com/v1",
 	}
 
 	const n = 20

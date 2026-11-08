@@ -130,6 +130,12 @@ type Config struct {
 	// value means true; the model capability must also allow it.
 	SupportsNativeStructuredOutput *bool
 
+	// SupportsMessageThreads reports whether the platform supports Anthropic
+	// message threads (ModelOptions.Thread). A nil value means true, like TS
+	// createAnthropic / createAnthropicAws; Vertex, Bedrock and MiniMax set
+	// it to false, and a thread then fails before the request.
+	SupportsMessageThreads *bool
+
 	// SupportsImageInput overrides model capability detection. A nil value
 	// preserves the default Anthropic model-based behavior.
 	SupportsImageInput *bool

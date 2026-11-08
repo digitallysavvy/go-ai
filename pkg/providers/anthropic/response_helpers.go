@@ -2,8 +2,10 @@ package anthropic
 
 import (
 	"encoding/json"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -42,19 +44,78 @@ func callerMetadataJSON(caller map[string]interface{}) json.RawMessage {
 	return b
 }
 
-// toToolsetMemberInput injects the toolset member name as the action
-// (TS toToolsetMemberInput).
-func toToolsetMemberInput(memberName string, input map[string]interface{}) map[string]interface{} {
-	out := map[string]interface{}{"action": memberName}
-	for k, v := range input {
+// computerToolset20260801Members lists the computer toolset's member tools
+// (TS computerToolset_20260801Members).
+var computerToolset20260801Members = []string{
+	"screenshot", "zoom", "left_click", "right_click", "middle_click", "double_click",
+	"triple_click", "left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up",
+	"cursor_position", "scroll", "type", "key", "hold_key", "wait",
+}
+
+// validateToolsetMember ports TS validateToolsetMember: a toolset member call
+// is accepted only for the computer toolset declared in the prepared tools,
+// for a known member whose config is not `enabled: false`.
+func validateToolsetMember(toolsetName, memberName string, preparedTools []map[string]interface{}) error {
+	var toolset map[string]interface{}
+	for _, t := range preparedTools {
+		if t["type"] == "computer_toolset_20260801" {
+			toolset = t
+			break
+		}
+	}
+	known := false
+	for _, m := range computerToolset20260801Members {
+		if m == memberName {
+			known = true
+			break
+		}
+	}
+	if toolsetName != "computer" || toolset == nil || !known || toolsetMemberDisabled(toolset, memberName) {
+		return providererrors.NewInvalidResponseDataError(
+			map[string]interface{}{"toolsetName": toolsetName, "memberName": memberName},
+			fmt.Sprintf("Received an unavailable toolset member: %s.%s.", toolsetName, memberName))
+	}
+	return nil
+}
+
+// toolsetMemberDisabled is TS `toolset.configs?.[memberName]?.enabled === false`.
+func toolsetMemberDisabled(toolset map[string]interface{}, memberName string) bool {
+	configs, ok := toolset["configs"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	cfg, ok := configs[memberName].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	enabled, ok := cfg["enabled"].(bool)
+	return ok && !enabled
+}
+
+// toToolsetMemberInput ports TS toToolsetMemberInput: the member input must
+// be a JSON object, and the member name the API selected is the action
+// (`{...input, action: memberName}`: it overrides an `action` key in the
+// input).
+func toToolsetMemberInput(memberName string, input interface{}) (map[string]interface{}, error) {
+	obj, ok := input.(map[string]interface{})
+	if !ok {
+		return nil, providererrors.NewInvalidResponseDataError(input, "Invalid toolset member input: expected an object.")
+	}
+	out := make(map[string]interface{}, len(obj)+1)
+	for k, v := range obj {
 		out[k] = v
 	}
-	// the member name wins, like TS { action, ...input } except input keys
-	// override; TS spreads input after action, so input keys win.
-	if a, ok := input["action"]; ok {
-		out["action"] = a
-	}
-	return out
+	out["action"] = memberName
+	return out, nil
+}
+
+// toolsetMemberInputText is JSON.stringify({...input, action: memberName})
+// in wire key order: `action` keeps the position of an input `action` key,
+// and otherwise comes last.
+func toolsetMemberInputText(raw json.RawMessage, input map[string]interface{}, memberName string) string {
+	o := jsonorder.Input(raw, input)
+	o.Set("action", memberName)
+	return o.String()
 }
 
 // serverToolUseCall converts a server_tool_use block into a provider-executed
@@ -252,4 +313,23 @@ func convertDeferredToolResult(blockType string, raw json.RawMessage, toolNameMa
 		return deferredToolResult{ToolName: mapAnthropicToolName("advisor", toolNameMap), Result: res, IsError: isErr, ErrorCode: code}, true
 	}
 	return deferredToolResult{}, false
+}
+
+// validateToolsetMemberCalls runs the TS doGenerate toolset member checks
+// (validateToolsetMember, then toToolsetMemberInput) over the response
+// content in order, against the prepared tools of the request.
+func validateToolsetMemberCalls(content []anthropicContent, usesJSONResponseTool bool, preparedTools []map[string]interface{}) error {
+	for i := range content {
+		part := &content[i]
+		if part.Type != "tool_use" || part.ToolsetName == "" || (usesJSONResponseTool && part.Name == "json") {
+			continue
+		}
+		if err := validateToolsetMember(part.ToolsetName, part.Name, preparedTools); err != nil {
+			return err
+		}
+		if _, err := toToolsetMemberInput(part.Name, part.rawInputValue()); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -20,7 +20,7 @@ func (r *r86provaCloseRecorder) Close() error { r.closed = true; return nil }
 // contract).
 func TestR86provaBedrockAnthropicTransportClosesBodyOnError(t *testing.T) {
 	keyErr := errors.New("no key")
-	p := &BedrockAnthropicProvider{config: Config{BearerTokenFunc: func(context.Context) (string, error) { return "", keyErr }}}
+	p := &BedrockAnthropicProvider{config: Config{BaseURL: "http://127.0.0.1:1", BearerTokenFunc: func(context.Context) (string, error) { return "", keyErr }}}
 	tr := &bedrockAnthropicTransport{base: http.DefaultTransport, provider: p}
 	body := &r86provaCloseRecorder{Reader: strings.NewReader("{}")}
 	req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:1/x", body)

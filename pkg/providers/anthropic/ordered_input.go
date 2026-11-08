@@ -9,27 +9,63 @@ import (
 // inputText is JSON.stringify(part.input) for a response block input, keeping
 // the wire key order.
 func inputText(raw json.RawMessage, fallback map[string]interface{}) string {
+	if len(raw) > 0 {
+		// TS JSON.stringify(part.input) of an input that is not an object
+		// (z.unknown()) gives that value's text.
+		if v, ok := jsonorder.Parse(raw); ok {
+			if _, isObject := v.(*jsonorder.Object); !isObject {
+				return jsonorder.Stringify(v)
+			}
+		}
+	}
 	return jsonorder.Text(raw, fallback)
 }
 
-// UnmarshalJSON decodes the block and keeps the wire form of its input.
+// UnmarshalJSON decodes the block and keeps the wire form of its input. An
+// input that is not a JSON object (TS tool_use `input: z.unknown()`) leaves
+// Input nil and is kept in RawInput, so the block still decodes.
 func (c *anthropicContent) UnmarshalJSON(b []byte) error {
 	type plain anthropicContent
-	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
-		return err
-	}
-	*c = anthropicContent(p)
-	var aux struct {
+	var p struct {
+		*plain
 		Input     json.RawMessage `json:"input"`
 		Signature json.RawMessage `json:"signature"`
 	}
-	if json.Unmarshal(b, &aux) == nil {
-		if len(aux.Input) > 0 && string(aux.Input) != "null" {
-			c.RawInput = aux.Input
+	p.plain = (*plain)(c)
+	*c = anthropicContent{}
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	c.Signature = ""
+	if len(p.Signature) > 0 && string(p.Signature) != "null" {
+		if err := json.Unmarshal(p.Signature, &c.Signature); err != nil {
+			return err
 		}
 		// TS `part.signature != null`: an empty string still counts.
-		c.HasSignature = len(aux.Signature) > 0 && string(aux.Signature) != "null"
+		c.HasSignature = true
+	}
+	if len(p.Input) > 0 && string(p.Input) != "null" {
+		c.RawInput = p.Input
+		var obj map[string]interface{}
+		if json.Unmarshal(p.Input, &obj) == nil {
+			c.Input = obj
+		}
 	}
 	return nil
+}
+
+// rawInputValue is the decoded block input (TS part.input): Input when the
+// wire input is an object, else the decoded RawInput (nil when absent).
+func (c *anthropicContent) rawInputValue() interface{} {
+	if c.Input != nil {
+		return c.Input
+	}
+	if len(c.RawInput) == 0 {
+		return nil
+	}
+	var v interface{}
+	if json.Unmarshal(c.RawInput, &v) != nil {
+		return nil
+	}
+	return v
 }

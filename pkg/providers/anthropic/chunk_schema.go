@@ -207,7 +207,9 @@ var (
 	zAnthropicChunk = zDisc(map[string]zodlite.Node{
 		"message_start": typed("message_start", f("message", zObject(
 			f("id", zNullish(zString)), f("model", zNullish(zString)), f("role", zNullish(zString)),
+			f("service_tier", zNullish(zString)),
 			f("usage", zObject(
+				f("service_tier", zNullish(zString)),
 				f("input_tokens", zNumber),
 				f("cache_creation_input_tokens", zNullish(zNumber)),
 				f("cache_read_input_tokens", zNullish(zNumber)))),
@@ -249,6 +251,7 @@ var (
 				))),
 			)),
 			f("usage", zObject(
+				f("service_tier", zNullish(zString)),
 				f("input_tokens", zNullish(zNumber)),
 				f("output_tokens", zNumber),
 				f("output_tokens_details", zNullish(zObject(f("thinking_tokens", zNullish(zNumber))))),
@@ -311,10 +314,12 @@ var zAnthropicResponse = zObject(
 	f("content", zArray(zResponseContent)),
 	f("stop_reason", zNullish(zString)),
 	f("stop_sequence", zNullish(zString)),
+	f("service_tier", zNullish(zString)),
 	f("stop_details", zNullish(zStopDetails)),
 	f("input_transformations", zNullish(zArray(zInputTransformation))),
 	f("safeguard_results", zNullish(zArray(zSafeguardResult))),
 	f("usage", zObject(
+		f("service_tier", zNullish(zString)),
 		f("input_tokens", zNumber),
 		f("output_tokens", zNumber),
 		f("output_tokens_details", zNullish(zObject(f("thinking_tokens", zNullish(zNumber))))),
@@ -399,7 +404,9 @@ var (
 		f("data", zArray(zBatchResponse)), f("has_more", zBoolean), f("last_id", zNullish(zString)),
 	)
 	zFileUpload = zObject(
-		f("id", zString), f("type", zLiteral("file")), f("filename", zString), f("mime_type", zString),
-		f("size_bytes", zNumber), f("created_at", zString), f("downloadable", zNullish(zBoolean)),
+		f("id", zString), f("type", zNullish(zLiteral("file"))), f("filename", zNullish(zString)), f("mime_type", zNullish(zString)),
+		f("size_bytes", zNullish(zNumber)), f("created_at", zNullish(zString)), f("downloadable", zNullish(zBoolean)),
+		f("expires_at", zNullish(zString)),
 	)
+	zFileDelete = zObject(f("type", zNullish(zLiteral("file_deleted"))), f("id", zString))
 )

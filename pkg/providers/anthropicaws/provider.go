@@ -101,6 +101,7 @@ func New(cfg Config) (*Provider, error) {
 		secretAccessKey:    cfg.SecretAccessKey,
 		sessionToken:       cfg.SessionToken,
 		credentialProvider: cfg.CredentialProvider,
+		baseURL:            baseURL,
 	}
 	httpClient.Transport = transport
 
@@ -176,6 +177,9 @@ type sigV4Transport struct {
 	secretAccessKey    string
 	sessionToken       string
 	credentialProvider CredentialProvider
+	// baseURL is the endpoint: the API key or SigV4 signature goes only to
+	// requests of its origin (a redirect hop to another origin gets none).
+	baseURL string
 
 	// lastCredentials and its mutex guard the diagnostic
 	// LastSigningCredentials() accessor against concurrent RoundTrip calls.
@@ -210,6 +214,9 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
+	if !providerutils.IsSameOrigin(req.URL.String(), t.baseURL) {
+		return t.base.RoundTrip(req)
+	}
 	if key := providerutils.APIKeyOrEnv(t.apiKey, "ANTHROPIC_AWS_API_KEY"); key != "" {
 		req = req.Clone(req.Context())
 		req.Header.Set("x-api-key", key)

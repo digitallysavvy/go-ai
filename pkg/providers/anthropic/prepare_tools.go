@@ -44,8 +44,13 @@ func ProviderToolBeta(toolName string) (string, bool) {
 const BetaHeaderStructuredOutputs = "structured-outputs-2025-11-13"
 
 type prepareToolsOptions struct {
-	tools                      []types.Tool
-	toolChoice                 *types.ToolChoice
+	tools      []types.Tool
+	toolChoice *types.ToolChoice
+	// hasInlineTools reports tools added by value in the prompt
+	// (mid-conversation tool changes): the model has tools even when tools
+	// is empty, so the tool choice and parallel tool use settings are still
+	// sent, and tools is omitted rather than sent empty (TS hasInlineTools).
+	hasInlineTools             bool
 	disableParallelToolUse     *bool
 	validator                  *prompt.AnthropicCacheControlValidator
 	supportsStructuredOutput   bool
@@ -121,7 +126,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.betas = append(out.betas, b)
 		}
 	}
-	if len(o.tools) == 0 {
+	if len(o.tools) == 0 && !o.hasInlineTools {
 		return out
 	}
 	validator := o.validator
@@ -244,14 +249,18 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			m["input_examples"] = examples
 		}
 		wire = append(wire, m)
-		if o.supportsStructuredOutput {
+		// Native final output does not require this beta; only providers
+		// that also support strict tools send it (TS 4b8f00efff).
+		if o.supportsStructuredOutput && o.supportsStrictTools {
 			addBeta(BetaHeaderStructuredOutputs)
 		}
 		if t.InputExamples != nil || allowedCallers != nil {
 			addBeta(BetaHeaderAdvancedToolUse)
 		}
 	}
-	out.tools = wire
+	if len(o.tools) > 0 {
+		out.tools = wire
+	}
 
 	disable := o.disableParallelToolUse
 	withDisable := func(m map[string]interface{}) map[string]interface{} {

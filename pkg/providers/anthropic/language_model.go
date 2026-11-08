@@ -150,10 +150,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
+	if err := validateToolsetMemberCalls(response.Content, req.usesJSONResponseTool, req.preparedTools); err != nil {
+		return nil, err
+	}
 
 	result := m.convertResponseWithOptions(response, convertOptions{
 		usesJSONResponseTool:     req.usesJSONResponseTool,
-		tools:                    opts.Tools,
+		tools:                    req.nameTools,
 		markCodeExecutionDynamic: req.markCodeExecutionDynamic,
 		providerOptionsName:      req.providerOptionsName,
 		usedCustomProviderKey:    req.usedCustomProviderKey,
@@ -195,8 +198,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if m.provider.config.TransformStreamBody != nil {
 		respBody = m.provider.config.TransformStreamBody(respBody, httpResp.Header)
 	}
-	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, opts.Tools, req.warnings)
+	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, req.nameTools, req.warnings)
 	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
+	stream.preparedTools = req.preparedTools
+	stream.includePings = req.includePings
 	stream.providerOptionsName = req.providerOptionsName
 	stream.usedCustomProviderKey = req.usedCustomProviderKey
 	// TS doStream reports `request: {body}` with the args before
@@ -217,20 +222,27 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
-// failOnFirstStreamError peeks the stream's first part (past the stream-start and one raw chunk)
+// failOnFirstStreamError peeks the stream's first part (past the stream-start, raw and ping parts)
 // and converts an error part into a *ProviderError, mirroring doStream's
 // "first chunk is an error" check. Peeked parts are replayed to the consumer.
 func (m *LanguageModel) failOnFirstStreamError(stream *anthropicStream, headers http.Header, body interface{}) error {
 	var peeked []*provider.StreamChunk
-	for len(peeked) < 3 {
+	for {
 		chunk, err := stream.Next()
 		if err != nil {
+			// A response-data error the stream raised rejects the first-chunk
+			// read, so doStream throws it (TS).
+			if stream.failed != nil {
+				return stream.failed
+			}
 			// EOF or a read failure: nothing to convert; the consumer sees the
 			// same condition from its own Next call.
 			break
 		}
 		peeked = append(peeked, chunk)
-		if chunk.Type == provider.ChunkTypeRaw || chunk.Type == provider.ChunkTypeStreamStart {
+		// TS skips the stream-start part, then the transport-only raw and
+		// ping parts, before checking the first provider event.
+		if chunk.Type == provider.ChunkTypeRaw || chunk.Type == provider.ChunkTypeStreamStart || chunk.Type == provider.ChunkTypePing {
 			continue
 		}
 		if chunk.Type == provider.ChunkTypeError {
@@ -391,6 +403,11 @@ type convertOptions struct {
 	// document ordering to normalize page_location/char_location citations
 	// against (citationDocuments is left empty in that case).
 	rawBatchCitations bool
+	// batchResult is true for batch result conversion: TS
+	// convertAnthropicBatchResponse emits toolset member calls as plain
+	// tool calls named by the member (there are no prepared tools to check
+	// the member against).
+	batchResult bool
 	// customToolNames, when set, is the wire name -> custom tool name map
 	// used instead of the one derived from tools (batch results, which have
 	// no tool list; see batchToolNameStore).
@@ -650,18 +667,21 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				byBlock[blockIdx] = append(byBlock[blockIdx], types.TextContent{Text: jsonText})
 				jsonToolBlocks[blockIdx] = true
 				isJsonResponseFromTool = true
-			} else if content.ToolsetName != "" {
+			} else if content.ToolsetName != "" && !co.batchResult {
 				// Toolset member calls (e.g. the computer toolset) map to the
 				// toolset tool with the member name as the action.
 				meta := map[string]interface{}{"toolsetName": content.ToolsetName}
 				if caller := anthropicCallerInfo(content.Caller); caller != nil {
 					meta["caller"] = caller
 				}
+				// validateToolsetMemberCalls checked the member and its input
+				// before conversion (DoGenerate).
+				args, _ := toToolsetMemberInput(content.Name, content.rawInputValue())
 				addToolCall(blockIdx, types.ToolCall{
 					ID:               content.ID,
 					ToolName:         mapAnthropicToolName(content.ToolsetName, toolNameMap),
-					Arguments:        toToolsetMemberInput(content.Name, content.Input),
-					RawArguments:     jsonorder.Input(content.RawInput, content.Input).WithLead("action", content.Name).String(),
+					Arguments:        args,
+					RawArguments:     toolsetMemberInputText(content.RawInput, content.Input, content.Name),
 					ProviderMetadata: map[string]interface{}{"anthropic": meta},
 				})
 			} else {
@@ -858,6 +878,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	result.ProviderMetadata = withCustomProviderKeyMetadata(anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
 		inputTransformations: rawJSONValue(response.InputTransformations),
 		safeguardResults:     rawJSONValue(response.SafeguardResults),
+		serviceTier:          firstServiceTier(response.Usage.Raw, response.ServiceTier),
 	}), co.providerOptionsName, co.usedCustomProviderKey)
 
 	return result
@@ -1007,6 +1028,9 @@ func anthropicCompactionMetadata(signature string, hasSignature bool) json.RawMe
 type metadataExtras struct {
 	inputTransformations interface{}
 	safeguardResults     interface{}
+	// serviceTier is the applied tier (TS `usage.service_tier ??
+	// service_tier`), reported only when set.
+	serviceTier *string
 }
 
 func anthropicProviderMetadata(usage anthropicUsage, stopSequence *string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, extrasOpt ...metadataExtras) map[string]interface{} {
@@ -1030,6 +1054,9 @@ func anthropicProviderMetadata(usage anthropicUsage, stopSequence *string, stopD
 		}
 		if extrasOpt[0].safeguardResults != nil {
 			anthropic["safeguardResults"] = extrasOpt[0].safeguardResults
+		}
+		if extrasOpt[0].serviceTier != nil {
+			anthropic["serviceTier"] = *extrasOpt[0].serviceTier
 		}
 	}
 	if container != nil {
@@ -1388,7 +1415,9 @@ type anthropicResponse struct {
 	StopReason   string                `json:"stop_reason"`
 	StopSequence *string               `json:"stop_sequence,omitempty"`
 	StopDetails  *anthropicStopDetails `json:"stop_details,omitempty"`
-	Usage        anthropicUsage        `json:"usage"`
+	// ServiceTier is the response's applied tier (the usage one wins).
+	ServiceTier *string        `json:"service_tier,omitempty"`
+	Usage       anthropicUsage `json:"usage"`
 	// Root-level context management (TS location; takes precedence).
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Container info returned when a container was used/created
@@ -1612,7 +1641,9 @@ type anthropicStream struct {
 	container *anthropicContainerResponse
 	// stop metadata parsed from message_delta for finish provider metadata.
 	stopSequence *string
-	stopDetails  *anthropicStopDetails
+	// serviceTier is the applied tier from message_start / message_delta.
+	serviceTier *string
+	stopDetails *anthropicStopDetails
 	// usesJsonResponseTool is true when the request was built with the synthetic
 	// 'json' tool (jsonTool structured output mode). Text delta events are
 	// suppressed and json tool input_json_delta events are emitted as text chunks.
@@ -1647,6 +1678,14 @@ type anthropicStream struct {
 	// markCodeExecutionDynamic marks code_execution calls dynamic (see
 	// HasDynamicFilteringWebToolWithoutCodeExecution).
 	markCodeExecutionDynamic bool
+	// preparedTools are the request's prepared tool definitions; toolset
+	// member calls are validated against them (TS preparedTools).
+	preparedTools []map[string]interface{}
+	// includePings emits ping events as ChunkTypePing parts.
+	includePings bool
+	// failed is a response-data error the stream raised (TS throws inside
+	// the transform): every later Next returns it.
+	failed error
 	// providerOptionsName / usedCustomProviderKey mirror preparedRequest's
 	// fields of the same name; finalizeFinish uses them to duplicate the
 	// finish chunk's providerMetadata under providerOptionsName (TS
@@ -1821,6 +1860,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 
 func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 	for {
+		if s.failed != nil {
+			return nil, s.failed
+		}
 		if s.err != nil {
 			return nil, s.err
 		}
@@ -1913,7 +1955,10 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 		// Anthropic uses different event types
 		switch event.Event {
 		case "ping":
-			// No-op: keep alive signal, get next chunk
+			// Keep-alive: a ping part only with includePings (TS).
+			if s.includePings {
+				return &provider.StreamChunk{Type: provider.ChunkTypePing}, nil
+			}
 			continue
 
 		case "content_block_start":
@@ -1988,6 +2033,10 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					caller:       anthropicCallerInfo(start.ContentBlock.Caller),
 				}
 				if start.ContentBlock.ToolsetName != "" {
+					if err := validateToolsetMember(start.ContentBlock.ToolsetName, start.ContentBlock.Name, s.preparedTools); err != nil {
+						s.failed = err
+						return nil, err
+					}
 					block.toolName = mapAnthropicToolName(start.ContentBlock.ToolsetName, s.toolNameMap)
 					block.toolsetName = start.ContentBlock.ToolsetName
 					block.memberName = start.ContentBlock.Name
@@ -2365,7 +2414,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Model                string          `json:"model"`
 					StopReason           string          `json:"stop_reason"`
 					InputTransformations json.RawMessage `json:"input_transformations"`
+					ServiceTier          *string         `json:"service_tier"`
 					Usage                struct {
+						ServiceTier              *string          `json:"service_tier"`
 						InputTokens              int              `json:"input_tokens"`
 						OutputTokens             int              `json:"output_tokens,omitempty"`
 						CacheReadInputTokens     int              `json:"cache_read_input_tokens"`
@@ -2403,6 +2454,11 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 						Text: text,
 						Err:  providererrors.NewInvalidResponseDataError(eventData, text),
 					}, nil
+				}
+				// TS: the applied tier resets on every message_start.
+				s.serviceTier = msg.Message.Usage.ServiceTier
+				if s.serviceTier == nil {
+					s.serviceTier = msg.Message.ServiceTier
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
@@ -2699,10 +2755,26 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				}
 				var toolsetDelta *provider.StreamChunk
 				if block.toolsetName != "" {
-					args = toToolsetMemberInput(block.memberName, args)
-					if invalidInput == "" {
-						finalInput = jsonorder.Input(json.RawMessage(finalInput), nil).WithLead("action", block.memberName).String()
+					// TS: the member input must parse (secureJsonParse; ''
+					// is {}) and be an object, or the stream errors before
+					// the member's tool call.
+					var memberInput interface{} = map[string]interface{}{}
+					if inputStr != "" {
+						parsed, ok := prompt.SecureJSONParse(inputStr)
+						if !ok {
+							s.failed = providererrors.NewInvalidResponseDataError(inputStr, "Invalid toolset member input JSON.")
+							return nil, s.failed
+						}
+						memberInput = parsed
 					}
+					memberArgs, err := toToolsetMemberInput(block.memberName, memberInput)
+					if err != nil {
+						s.failed = err
+						return nil, err
+					}
+					args = memberArgs
+					invalidInput = ""
+					finalInput = toolsetMemberInputText(json.RawMessage(finalInput), nil, block.memberName)
 					toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: finalInput}
 				}
 				if block.providerToolName == "code_execution" {
@@ -2800,10 +2872,11 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				} `json:"delta"`
 				InputTransformations json.RawMessage `json:"input_transformations,omitempty"`
 				Usage                struct {
-					InputTokens              *int `json:"input_tokens,omitempty"`
-					OutputTokens             *int `json:"output_tokens,omitempty"`
-					CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
-					CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+					ServiceTier              *string `json:"service_tier"`
+					InputTokens              *int    `json:"input_tokens,omitempty"`
+					OutputTokens             *int    `json:"output_tokens,omitempty"`
+					CacheReadInputTokens     *int    `json:"cache_read_input_tokens,omitempty"`
+					CacheCreationInputTokens *int    `json:"cache_creation_input_tokens,omitempty"`
 					// Legacy location for context management (Go-only fallback)
 					ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 					// Iterations breakdown for compaction
@@ -2832,6 +2905,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			}
 			s.stopSequence = delta.Delta.StopSequence
 			s.stopDetails = delta.Delta.StopDetails
+			if delta.Usage.ServiceTier != nil {
+				s.serviceTier = delta.Usage.ServiceTier
+			}
 			if v := rawJSONValue(delta.InputTransformations); v != nil {
 				s.inputTransformations = v
 			}
@@ -3067,6 +3143,7 @@ func (s *anthropicStream) finalizeFinish() *provider.StreamChunk {
 	chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, s.contextManagement, s.providerOptionsName, s.usedCustomProviderKey, metadataExtras{
 		inputTransformations: s.inputTransformations,
 		safeguardResults:     s.safeguardResults,
+		serviceTier:          s.serviceTier,
 	})
 	if s.usage.Raw == nil {
 		// No message_start or message_delta yet: TS has no rawUsage, so the
@@ -3312,13 +3389,23 @@ func anthropicHTTPError(providerName string, status int, headers http.Header, bo
 	var parsed struct {
 		Type  *string `json:"type"`
 		Error *struct {
-			Type    *string `json:"type"`
-			Message *string `json:"message"`
+			Type    *string         `json:"type"`
+			Message *string         `json:"message"`
+			Details json.RawMessage `json:"details"`
 		} `json:"error"`
 	}
-	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && parsed.Type != nil && *parsed.Type == "error" &&
+	_, secure := prompt.SecureJSONParse(string(body)) // TS safeParseJSON uses secureJsonParse
+	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && secure && parsed.Type != nil && *parsed.Type == "error" &&
 		parsed.Error != nil && parsed.Error.Type != nil && parsed.Error.Message != nil {
 		perr = providererrors.NewProviderError(providerName, status, *parsed.Error.Type, *parsed.Error.Message, cause)
+		// TS APICallError.data is the parsed error object (zod strips
+		// unknown keys); details keeps error_code / unsupported only when
+		// well typed (.catch(undefined)), the recovery hook for threads.
+		errObj := map[string]interface{}{"type": *parsed.Error.Type, "message": *parsed.Error.Message}
+		if details, ok := anthropicErrorDetails(parsed.Error.Details); ok {
+			errObj["details"] = details
+		}
+		perr.Data = map[string]interface{}{"type": "error", "error": errObj}
 	} else {
 		// TS createJsonErrorResponseHandler: an empty or unparseable body gives
 		// the response status text (the body stays on ResponseBody).
@@ -3371,3 +3458,51 @@ func mapStopReason(stopReason string, isJSONResponseFromTool bool) types.FinishR
 func isTrue(b *bool) bool { return b != nil && *b }
 
 func trueFlag() *bool { b := true; return &b }
+
+// firstServiceTier is TS `usage.service_tier ?? fallback`: the usage object's
+// string tier, else fallback (nil when neither is set).
+func firstServiceTier(usage map[string]interface{}, fallback *string) *string {
+	if v, ok := usage["service_tier"].(string); ok {
+		return &v
+	}
+	return fallback
+}
+
+// anthropicErrorDetails ports the anthropicErrorDataSchema details field:
+// `{error_code?: string | null, unsupported?: string[] | null}`, nullish,
+// each part `.catch(undefined)`. ok is false when details is absent or
+// malformed (dropped).
+func anthropicErrorDetails(raw json.RawMessage) (interface{}, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	if string(raw) == "null" {
+		return nil, true
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return nil, false
+	}
+	out := map[string]interface{}{}
+	if v, ok := obj["error_code"]; ok {
+		var code *string
+		if json.Unmarshal(v, &code) == nil {
+			if code == nil {
+				out["error_code"] = nil
+			} else {
+				out["error_code"] = *code
+			}
+		}
+	}
+	if v, ok := obj["unsupported"]; ok {
+		var list *[]string
+		if json.Unmarshal(v, &list) == nil {
+			if list == nil {
+				out["unsupported"] = nil
+			} else {
+				out["unsupported"] = *list
+			}
+		}
+	}
+	return out, true
+}

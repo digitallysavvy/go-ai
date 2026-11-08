@@ -127,22 +127,33 @@ func ComputerToolset20260801(config ComputerToolset20260801Config) types.Tool {
 		ProviderID:      "anthropic.computer_toolset_20260801",
 		ProviderArgs:    computerToolset20260801ProviderArgs(config),
 		Description:     "Computer use toolset (Anthropic, version 2026-08-01). Each member action is executed by the caller.",
-		Parameters:      buildComputerToolset20260801Schema(),
+		Parameters:      buildComputerToolset20260801Schema(config.Configs),
 		ProviderOptions: &computerToolset20260801Opts{Config: config},
 	}
 }
 
+// computerToolset20260801Members is the toolset's member order.
+var computerToolset20260801Members = []string{
+	"screenshot", "zoom", "left_click", "right_click", "middle_click", "double_click",
+	"triple_click", "left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up",
+	"cursor_position", "scroll", "type", "key", "hold_key", "wait",
+}
+
 // buildComputerToolset20260801Schema is TS's computerToolset_20260801 input
 // schema: the 20251124 properties plus repeat, with the toolset's member
-// order as the action enum.
-func buildComputerToolset20260801Schema() map[string]interface{} {
+// order as the action enum, keeping only the members whose config is not
+// `enabled: false` (TS computerToolset_20260801InputSchema(configs)).
+func buildComputerToolset20260801Schema(configs map[ComputerToolset20260801Member]ComputerToolset20260801MemberConfig) map[string]interface{} {
 	schema := buildComputer20251124Schema()
 	props := schema["properties"].(map[string]interface{})
-	props["action"].(map[string]interface{})["enum"] = []string{
-		"screenshot", "zoom", "left_click", "right_click", "middle_click", "double_click",
-		"triple_click", "left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up",
-		"cursor_position", "scroll", "type", "key", "hold_key", "wait",
+	enum := make([]string, 0, len(computerToolset20260801Members))
+	for _, m := range computerToolset20260801Members {
+		if cfg, ok := configs[ComputerToolset20260801Member(m)]; ok && cfg.Enabled != nil && !*cfg.Enabled {
+			continue
+		}
+		enum = append(enum, m)
 	}
+	props["action"].(map[string]interface{})["enum"] = enum
 	props["repeat"] = map[string]interface{}{
 		"type":        "integer",
 		"description": "Number of times to repeat the action.",

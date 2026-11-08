@@ -1,10 +1,9 @@
 package anthropic
 
 import (
-	"encoding/json"
-
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // transformErrorBody mirrors createAmazonBedrockAnthropicFetch's non-ok
@@ -16,12 +15,15 @@ import (
 // escaping). Registered as anthropic.Config.TransformErrorBody.
 func transformErrorBody(body []byte) []byte {
 	text := textdecode.UTF8(body)
-	var parsed struct {
-		Message string `json:"message"`
-	}
+	// TS safeParseJSON (secureJsonParse) against z.looseObject({message:
+	// z.string().optional()}): a truthy string message, else the text.
 	message := text
-	if err := json.Unmarshal([]byte(text), &parsed); err == nil && parsed.Message != "" {
-		message = parsed.Message
+	if v, ok := prompt.SecureJSONParse(text); ok {
+		if obj, ok := v.(map[string]interface{}); ok {
+			if m, ok := obj["message"].(string); ok && m != "" {
+				message = m
+			}
+		}
 	}
 	encoded, err := jsonstr.Marshal(message)
 	if err != nil {

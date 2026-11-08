@@ -151,6 +151,7 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 	nativeStructuredOutput := supportsNativeStructuredOutput(modelID)
 	strictTools := supportsStrictTools(modelID)
 	supportsImageInput := true
+	noMessageThreads := false
 
 	inner := anthropicprovider.New(anthropicprovider.Config{
 		Name:                           providerName,
@@ -160,7 +161,9 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 		OmitAPIVersionHeader:           true, // anthropic_version goes in the body, not a header.
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsStrictTools:            &strictTools,
-		SupportsImageInput:             &supportsImageInput,
+		// Not a platform with Anthropic message threads (TS 6b101ac076).
+		SupportsMessageThreads: &noMessageThreads,
+		SupportsImageInput:     &supportsImageInput,
 		// TS amazon-bedrock-anthropic-provider.ts tags requests
 		// "ai-sdk-amazon-bedrock/VERSION" (its own package's tag, shared with
 		// the Converse-API amazon-bedrock provider), not "ai-sdk-anthropic".
@@ -253,6 +256,14 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 }
 
 func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response, error) {
+	// Credentials go only to the Bedrock runtime origin: a redirect hop to
+	// another origin is sent unchanged, without a bearer token or a SigV4
+	// signature (fails closed when the endpoint cannot be resolved).
+	if baseURL, err := t.provider.runtimeBaseURL(); err != nil || !providerutils.IsSameOrigin(req.URL.String(), baseURL) {
+		return t.base.RoundTrip(req)
+	}
+	// A RoundTripper must not modify the caller's request.
+	req = req.Clone(req.Context())
 	if strings.Contains(req.URL.Path, "invoke-with-response-stream") {
 		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	}

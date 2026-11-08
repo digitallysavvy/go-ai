@@ -40,6 +40,14 @@ func (m *LanguageModel) providerOptionsName() string {
 	return name
 }
 
+// legacyProviderOptionsNames are legacy names of custom providerOptions keys,
+// read when the current key is absent (TS LEGACY_PROVIDER_OPTIONS_NAMES): the
+// Google Vertex Anthropic provider was renamed from `vertex` to
+// `googleVertex`.
+var legacyProviderOptionsNames = map[string][]string{
+	"googleVertex": {"vertex"},
+}
+
 // resolveCallOptions computes the effective ModelOptions for a single call:
 // construction-time m.options as defaults, overridden field-by-field by the
 // merged (canonical "anthropic" + custom providerOptionsName, custom wins)
@@ -85,11 +93,19 @@ func (m *LanguageModel) resolveCallOptions(opts *provider.GenerateOptions) (*Mod
 	var customOverlay *ModelOptions
 	usedCustomProviderKey := false
 	if providerOptionsName != "anthropic" {
-		customOverlay, err = decodeAnthropicCallOptionsAt(opts.ProviderOptions, providerOptionsName)
-		if err != nil {
-			return nil, false, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options: %s", providerOptionsName, err.Error()), nil)
+		// The custom key and its legacy aliases are alternatives: the first
+		// present one is used (TS resolveProviderOptions resolution
+		// 'first'); only the custom key itself counts as used.
+		for _, key := range append([]string{providerOptionsName}, legacyProviderOptionsNames[providerOptionsName]...) {
+			customOverlay, err = decodeAnthropicCallOptionsAt(opts.ProviderOptions, key)
+			if err != nil {
+				return nil, false, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options: %s", key, err.Error()), nil)
+			}
+			if customOverlay != nil {
+				usedCustomProviderKey = key == providerOptionsName
+				break
+			}
 		}
-		usedCustomProviderKey = customOverlay != nil
 	}
 
 	applyModelOptionsOverlay(&base, canonicalOverlay)
@@ -125,6 +141,14 @@ func decodeAnthropicCallOptionsAt(raw map[string]interface{}, key string) (*Mode
 func decodeAnthropicCallOptions(raw map[string]interface{}) (*ModelOptions, error) {
 	if raw == nil {
 		return nil, nil
+	}
+
+	// TS z.enum(...).optional() rejects null (only absent is unset); the
+	// enum options cannot be null (cr-r88-tools-to-prova 1, TS 8291ccf237).
+	for _, key := range []string{"structuredOutputMode", "effort", "speed", "serviceTier", "inferenceGeo"} {
+		if v, ok := raw[key]; ok && v == nil {
+			return nil, fmt.Errorf("%s: invalid input, expected a string, received null", key)
+		}
 	}
 
 	// "fallbacks" is a TS union (the literal "default" or an array of
@@ -231,8 +255,21 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 			return fmt.Errorf("speed: invalid value %q", o.Speed)
 		}
 	}
-	if o.ServiceTier != "" && o.ServiceTier != "auto" && o.ServiceTier != "standard_only" {
+	if o.ServiceTier != "" && o.ServiceTier != "auto" && o.ServiceTier != "standard_only" && o.ServiceTier != "standard" && o.ServiceTier != "priority" {
 		return fmt.Errorf("serviceTier: invalid value %q", o.ServiceTier)
+	}
+	if th := o.Thread; th != nil {
+		switch th.Type {
+		case "create":
+			// zod strips previousMessageId from the create shape.
+			th.PreviousMessageID = ""
+		case "continue":
+			if th.PreviousMessageID == "" {
+				return fmt.Errorf("thread.previousMessageId: too small: expected string to have >=1 characters")
+			}
+		default:
+			return fmt.Errorf("thread.type: invalid value %q, expected \"create\" or \"continue\"", th.Type)
+		}
 	}
 	if o.InferenceGeo != "" && o.InferenceGeo != "us" && o.InferenceGeo != "global" {
 		return fmt.Errorf("inferenceGeo: invalid value %q", o.InferenceGeo)
@@ -378,6 +415,12 @@ func applyModelOptionsOverlay(dst *ModelOptions, overlay *ModelOptions) {
 	}
 	if overlay.SendReasoning != nil {
 		dst.SendReasoning = overlay.SendReasoning
+	}
+	if overlay.Thread != nil {
+		dst.Thread = overlay.Thread
+	}
+	if overlay.IncludePings != nil {
+		dst.IncludePings = overlay.IncludePings
 	}
 	if overlay.Metadata != nil {
 		dst.Metadata = overlay.Metadata

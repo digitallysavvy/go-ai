@@ -27,6 +27,7 @@ const (
 	AnthropicBetaCompact                    = "compact-2026-09-04"
 	AnthropicBetaMidConversationSystem      = "mid-conversation-system-2026-04-07"
 	AnthropicBetaMidConversationToolChanges = "mid-conversation-tool-changes-2026-07-01"
+	AnthropicBetaInlineTools                = "inline-tools-2026-09-15"
 	AnthropicBetaMidConversationClearAt     = "mid-conversation-system-clear-at-2026-08-21"
 	AnthropicBetaMidConversationOutputCfg   = "mid-conversation-output-config-2026-07-01"
 	AnthropicBetaServerSideFallback         = "server-side-fallback-2026-06-01"
@@ -122,6 +123,14 @@ func NewAnthropicCacheControlValidatorFor(providerOptionsName string) *Anthropic
 	return &AnthropicCacheControlValidator{providerOptionsName: providerOptionsName}
 }
 
+// NewAnthropicCacheControlValidatorWithBreakpoints is
+// NewAnthropicCacheControlValidatorFor with initialBreakpointCount
+// breakpoints already used (TS CacheControlValidator initialBreakpointCount;
+// a message thread with top-level cacheControl uses one).
+func NewAnthropicCacheControlValidatorWithBreakpoints(providerOptionsName string, initialBreakpointCount int) *AnthropicCacheControlValidator {
+	return &AnthropicCacheControlValidator{providerOptionsName: providerOptionsName, breakpointCount: initialBreakpointCount}
+}
+
 // GetCacheControl returns the cache_control value from the anthropic provider
 // options (accepting both cacheControl and cache_control), or nil.
 func (v *AnthropicCacheControlValidator) GetCacheControl(providerOptions map[string]interface{}, contextType string, canCache bool) interface{} {
@@ -205,6 +214,14 @@ type AnthropicPromptOptions struct {
 	// CacheControlValidator may be shared with tool preparation so the
 	// breakpoint limit spans the whole request. nil creates a fresh one.
 	CacheControlValidator *AnthropicCacheControlValidator
+
+	// ConvertInlineTool converts a tool that a mid-conversation tool change
+	// adds by value (`toolChanges: [{type: "tool_addition", tool}]`) into its
+	// Anthropic tool definition, the same way the tools option is converted
+	// (TS AnthropicInlineToolConverter). A nil definition skips the change
+	// (its warnings and betas still apply). nil makes a by-value addition an
+	// UnsupportedFunctionalityError.
+	ConvertInlineTool func(tool types.Tool) (definition map[string]interface{}, warnings []types.Warning, betas []string, err error)
 }
 
 // AnthropicPrompt is the converted Anthropic Messages API prompt.
@@ -455,17 +472,101 @@ func ToAnthropicMessages(messages []types.Message) []map[string]interface{} {
 // ── system ───────────────────────────────────────────────────────────────────
 
 type anthropicSystemMessage struct {
-	content         []map[string]interface{}
-	clearAt         interface{}
-	effort          interface{}
-	toolChangeCount int
+	content                 []map[string]interface{}
+	clearAt                 interface{}
+	effort                  interface{}
+	toolChangeCount         int
+	hasInlineToolDefinition bool
+}
+
+// anthropicToolChange is one validated toolChanges entry: a change by
+// reference (toolName) or a tool addition by value (tool).
+type anthropicToolChange struct {
+	typ      string
+	toolName string
+	tool     *types.Tool
+}
+
+// anthropicInlineTool decodes the `tool` of a by-value tool addition: a
+// types.Tool, or the TS shape {type: "function", name, inputSchema, ...} /
+// {type: "provider", id, name, args, ...} (loose objects: description,
+// strict, inputExamples and providerOptions carry over). ok is false when
+// the value matches neither shape.
+func anthropicInlineTool(v interface{}) (types.Tool, bool) {
+	switch t := v.(type) {
+	case types.Tool:
+		return t, t.Name != ""
+	case *types.Tool:
+		if t == nil {
+			return types.Tool{}, false
+		}
+		return *t, t.Name != ""
+	}
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		if encoded, err := json.Marshal(v); err == nil {
+			_ = json.Unmarshal(encoded, &m)
+		}
+		if m == nil {
+			return types.Tool{}, false
+		}
+	}
+	name, nameOK := m["name"].(string)
+	if !nameOK {
+		return types.Tool{}, false
+	}
+	tool := types.Tool{Name: name}
+	tool.Description, _ = m["description"].(string)
+	if po, ok := m["providerOptions"].(map[string]interface{}); ok {
+		tool.ProviderOptions = po
+	}
+	switch m["type"] {
+	case "function":
+		schema, ok := m["inputSchema"].(map[string]interface{})
+		if !ok {
+			return types.Tool{}, false
+		}
+		tool.Type = types.ToolTypeFunction
+		tool.Parameters = schema
+		if strict, ok := m["strict"].(bool); ok {
+			tool.Strict = &strict
+		}
+		if examples, ok := m["inputExamples"].([]interface{}); ok {
+			for _, ev := range examples {
+				em, _ := ev.(map[string]interface{})
+				in, _ := em["input"].(map[string]interface{})
+				tool.InputExamples = append(tool.InputExamples, types.ToolInputExample{Input: in})
+			}
+		}
+	case "provider":
+		id, idOK := m["id"].(string)
+		args, argsOK := m["args"].(map[string]interface{})
+		if !idOK || !argsOK {
+			return types.Tool{}, false
+		}
+		tool.Type = types.ToolTypeProviderDefined
+		tool.ProviderID = id
+		tool.ProviderArgs = args
+	default:
+		return types.Tool{}, false
+	}
+	return tool, true
+}
+
+// isAnthropicComputerTool reports a computer use tool, which the API
+// rejects inside a message (TS isComputerTool): it must be declared in the
+// tools option and added by reference.
+func isAnthropicComputerTool(tool types.Tool) bool {
+	return tool.Type == types.ToolTypeProviderDefined && strings.HasPrefix(tool.ProviderID, "anthropic.computer_")
 }
 
 // validateAnthropicSystemMessageOptions mirrors TS parseProviderOptions with
 // anthropicSystemMessageProviderOptions: clearAt, effort and toolChanges are
-// schema-checked and a violation is an InvalidArgumentError. It returns the
-// toolChanges normalised to []interface{}.
-func validateAnthropicSystemMessageOptions(sysOpts map[string]interface{}) ([]interface{}, error) {
+// schema-checked and a violation is an InvalidArgumentError. A toolChanges
+// entry is a tool_addition or tool_removal by toolName, or a tool_addition
+// by value (tool); like the TS union, an entry with a string toolName is a
+// change by reference.
+func validateAnthropicSystemMessageOptions(sysOpts map[string]interface{}) ([]anthropicToolChange, error) {
 	invalid := func(format string, args ...interface{}) error {
 		return providererrors.NewArgumentError("providerOptions", "invalid anthropic provider options", fmt.Errorf(format, args...))
 	}
@@ -497,6 +598,7 @@ func validateAnthropicSystemMessageOptions(sysOpts map[string]interface{}) ([]in
 			return nil, invalid("toolChanges: invalid input, expected an array")
 		}
 	}
+	out := make([]anthropicToolChange, 0, len(toolChanges))
 	for i, change := range toolChanges {
 		m, isMap := change.(map[string]interface{})
 		if !isMap {
@@ -506,16 +608,49 @@ func validateAnthropicSystemMessageOptions(sysOpts map[string]interface{}) ([]in
 			if m == nil {
 				return nil, invalid("toolChanges[%d]: invalid input, expected an object", i)
 			}
-			toolChanges[i] = m
 		}
-		if t, _ := m["type"].(string); t != "tool_addition" && t != "tool_removal" {
+		t, _ := m["type"].(string)
+		if t != "tool_addition" && t != "tool_removal" {
 			return nil, invalid("toolChanges[%d].type: invalid option, expected tool_addition or tool_removal", i)
 		}
-		if _, isString := m["toolName"].(string); !isString {
-			return nil, invalid("toolChanges[%d].toolName: invalid input, expected string", i)
+		if toolName, isString := m["toolName"].(string); isString {
+			out = append(out, anthropicToolChange{typ: t, toolName: toolName})
+			continue
+		}
+		if tv, hasTool := m["tool"]; hasTool && t == "tool_addition" {
+			tool, ok := anthropicInlineTool(tv)
+			if !ok {
+				return nil, invalid("toolChanges[%d].tool: invalid input", i)
+			}
+			out = append(out, anthropicToolChange{typ: t, tool: &tool})
+			continue
+		}
+		return nil, invalid("toolChanges[%d].toolName: invalid input, expected string", i)
+	}
+	return out, nil
+}
+
+// AnthropicInlineTools collects the tools that mid-conversation tool changes
+// add by value, so they can take part in tool name mapping like the tools of
+// the tools option (TS getInlineToolsFromPrompt). Computer tools are left
+// out because they are ignored.
+func AnthropicInlineTools(messages []types.Message) ([]types.Tool, error) {
+	var out []types.Tool
+	for _, msg := range messages {
+		if msg.Role != types.RoleSystem || msg.ProviderOptions == nil {
+			continue
+		}
+		changes, err := validateAnthropicSystemMessageOptions(anthropicOptions(msg.ProviderOptions))
+		if err != nil {
+			return nil, err
+		}
+		for _, change := range changes {
+			if change.tool != nil && !isAnthropicComputerTool(*change.tool) {
+				out = append(out, *change.tool)
+			}
 		}
 	}
-	return toolChanges, nil
+	return out, nil
 }
 
 func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int, system *[]map[string]interface{}, out *[]map[string]interface{}) error {
@@ -536,25 +671,59 @@ func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int,
 			setIfNotNil(textBlock, "cache_control", c.validator.GetCacheControl(msg.ProviderOptions, "system message", true))
 			content = append(content, textBlock)
 		}
+		toolChangeCount := 0
+		hasInlineToolDefinition := false
 		for _, change := range toolChanges {
-			m, ok := change.(map[string]interface{})
-			if !ok {
+			if change.tool != nil {
+				if c.opts.ConvertInlineTool == nil {
+					return &providererrors.UnsupportedFunctionalityError{
+						Functionality: "tool additions by value in mid-conversation tool changes",
+					}
+				}
+				if isAnthropicComputerTool(*change.tool) {
+					c.warn(fmt.Sprintf("The tool '%s' cannot be added by value in a tool change. "+
+						"Declare it in the tools option and add it by reference with toolName. "+
+						"The tool change has been ignored.", change.tool.Name))
+					continue
+				}
+				definition, toolWarnings, toolBetas, err := c.opts.ConvertInlineTool(*change.tool)
+				if err != nil {
+					return err
+				}
+				c.warnings = append(c.warnings, toolWarnings...)
+				for _, beta := range toolBetas {
+					c.addBeta(beta)
+				}
+				if definition == nil {
+					continue
+				}
+				content = append(content, map[string]interface{}{
+					"type": "tool_addition",
+					"tool": map[string]interface{}{"type": "tool_definition", "definition": definition},
+				})
+				toolChangeCount++
+				hasInlineToolDefinition = true
 				continue
 			}
-			toolName, _ := m["toolName"].(string)
 			content = append(content, map[string]interface{}{
-				"type": m["type"],
+				"type": change.typ,
 				"tool": map[string]interface{}{
 					"type": "tool_reference",
-					"name": c.toProviderToolName(toolName),
+					"name": c.toProviderToolName(change.toolName),
 				},
 			})
+			toolChangeCount++
+		}
+		// Every change was ignored and nothing else is left to send.
+		if len(content) == 0 && clearAt == nil && effort == nil {
+			continue
 		}
 		converted = append(converted, anthropicSystemMessage{
-			content:         content,
-			clearAt:         clearAt,
-			effort:          effort,
-			toolChangeCount: len(toolChanges),
+			content:                 content,
+			clearAt:                 clearAt,
+			effort:                  effort,
+			toolChangeCount:         toolChangeCount,
+			hasInlineToolDefinition: hasInlineToolDefinition,
 		})
 	}
 
@@ -613,7 +782,10 @@ func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int,
 			msg["output_config"] = map[string]interface{}{"effort": m.effort}
 		}
 		*out = append(*out, msg)
-		if m.toolChangeCount > 0 {
+		// The inline tools beta also covers changes by reference.
+		if m.hasInlineToolDefinition {
+			c.addBeta(AnthropicBetaInlineTools)
+		} else if m.toolChangeCount > 0 {
 			c.addBeta(AnthropicBetaMidConversationToolChanges)
 		}
 		if m.clearAt != nil {

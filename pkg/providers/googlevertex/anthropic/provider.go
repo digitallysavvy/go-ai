@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -76,10 +78,12 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 	if err != nil {
 		return nil, err
 	}
-	httpClient := p.httpClient()
+	httpClient := p.httpClient(baseURL)
 
-	nativeStructuredOutput := false
+	// Native output is default-denied by GCP policy and requires Claude 4.5+.
+	nativeStructuredOutput := p.options.SupportsNativeStructuredOutput && vertexAnthropicSupportsNativeStructuredOutput(modelID)
 	supportsImageInput := true
+	noMessageThreads := false
 	supportsStrictTools := false
 	anthropicProvider := anthropicprovider.New(anthropicprovider.Config{
 		Name:                           DefaultProviderName,
@@ -89,6 +93,8 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsImageInput:             &supportsImageInput,
 		SupportsStrictTools:            &supportsStrictTools,
+		// Not a platform with Anthropic message threads (TS 6b101ac076).
+		SupportsMessageThreads: &noMessageThreads,
 		// TS google-vertex-anthropic-provider.ts builds AnthropicLanguageModel
 		// directly rather than through createAnthropic, so it never gets
 		// @ai-sdk/anthropic's own "ai-sdk-anthropic/VERSION" tag. Only the
@@ -210,7 +216,7 @@ func vertexAnthropicHost(location string) string {
 	}
 }
 
-func (p *GoogleVertexAnthropicProvider) httpClient() *http.Client {
+func (p *GoogleVertexAnthropicProvider) httpClient(baseURL string) *http.Client {
 	baseClient := http.DefaultClient
 	if p.options.HTTPClient != nil {
 		baseClient = p.options.HTTPClient
@@ -231,9 +237,35 @@ func (p *GoogleVertexAnthropicProvider) httpClient() *http.Client {
 
 	clone.Transport = &authTransport{
 		base:        baseTransport,
+		baseURL:     baseURL,
 		tokenFunc:   tokenFunc,
 		headers:     p.options.Headers,
 		headersFunc: p.options.HeadersResolver,
 	}
 	return &clone
+}
+
+// vertexAnthropicNativeOutputModel is TS
+// /^claude-[a-z]+-(\d+)(?:-(\d+))?(?:@|$)/.
+var vertexAnthropicNativeOutputModel = regexp.MustCompile(`^claude-[a-z]+-(\d+)(?:-(\d+))?(?:@|$)`)
+
+// vertexAnthropicSupportsNativeStructuredOutput reports Claude 4.5 or newer
+// (a missing minor version is NaN in TS: false for major 4).
+func vertexAnthropicSupportsNativeStructuredOutput(modelID string) bool {
+	m := vertexAnthropicNativeOutputModel.FindStringSubmatch(modelID)
+	if m == nil {
+		return false
+	}
+	major, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return false
+	}
+	if major > 4 {
+		return true
+	}
+	if major != 4 || m[2] == "" {
+		return false
+	}
+	minor, err := strconv.ParseFloat(m[2], 64)
+	return err == nil && minor >= 5
 }

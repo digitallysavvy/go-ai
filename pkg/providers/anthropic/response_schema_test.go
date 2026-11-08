@@ -59,7 +59,8 @@ func TestFilesAndBatchBodiesAreSchemaValidated(t *testing.T) {
 		body string
 		call func(p *Provider) error
 	}{
-		"file missing type": {`{"id":"f","filename":"a","mime_type":"t","size_bytes":1,"created_at":"c"}`, func(p *Provider) error {
+		// TS 8b11ff6eb6: every field but id is nullish; a wrong type literal still fails.
+		"file wrong type": {`{"id":"f","type":"other","filename":"a","mime_type":"t","size_bytes":1,"created_at":"c"}`, func(p *Provider) error {
 			_, err := p.Files().UploadFile(t.Context(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "text/plain"})
 			return err
 		}},
