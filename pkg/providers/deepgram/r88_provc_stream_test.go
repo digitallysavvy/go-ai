@@ -676,7 +676,7 @@ func TestR88provcDeepgramLiveTranscription(t *testing.T) {
 		}
 	})
 
-	failure := func(t *testing.T, script func(s *r88provcWS), audio *r88provcAudio) (error, *r88provcAudio) {
+	failure := func(t *testing.T, script func(s *r88provcWS), audio *r88provcAudio) (*r88provcAudio, error) {
 		t.Helper()
 		s := r88provcNewWS(t)
 		if audio == nil {
@@ -689,7 +689,7 @@ func TestR88provcDeepgramLiveTranscription(t *testing.T) {
 		s.wait(t)
 		script(s)
 		_, err = r88provcDrain(res.Stream)
-		return err, audio
+		return audio, err
 	}
 
 	t.Run("failures end the stream and cancel the audio", func(t *testing.T) {
@@ -709,7 +709,7 @@ func TestR88provcDeepgramLiveTranscription(t *testing.T) {
 			"abnormal close": {func(s *r88provcWS) { s.closeFrame(t, 1011, "") }, "Deepgram streaming connection closed unexpectedly (1011)."},
 			"close reason":   {func(s *r88provcWS) { s.closeFrame(t, 1008, "DATA-0000") }, "Deepgram streaming connection closed unexpectedly (1008): DATA-0000"},
 		} {
-			err, audio := failure(t, tc.script, nil)
+			audio, err := failure(t, tc.script, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || audio.cancels() != 1 {
 				t.Fatalf("%s: err = %v, cancels = %d", name, err, audio.cancels())
 			}
@@ -717,7 +717,7 @@ func TestR88provcDeepgramLiveTranscription(t *testing.T) {
 	})
 
 	t.Run("a close code other than 1000 after the input fails", func(t *testing.T) {
-		err, _ := failure(t, func(s *r88provcWS) {
+		_, err := failure(t, func(s *r88provcWS) {
 			s.waitFrames(t, r88provcSentCloseStream)
 			s.closeFrame(t, 1011, "")
 		}, r88provcDefaultAudio())
@@ -727,7 +727,7 @@ func TestR88provcDeepgramLiveTranscription(t *testing.T) {
 	})
 
 	t.Run("input producer errors propagate", func(t *testing.T) {
-		err, _ := failure(t, func(*r88provcWS) {}, &r88provcAudio{err: errors.New("microphone disconnected")})
+		_, err := failure(t, func(*r88provcWS) {}, &r88provcAudio{err: errors.New("microphone disconnected")})
 		if err == nil || err.Error() != "microphone disconnected" {
 			t.Fatalf("err = %v", err)
 		}
