@@ -203,6 +203,7 @@ func FireOnDecideStart(ctx context.Context, e DecideStartEvent) context.Context 
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnDecideStart, e)
 	result := ctx
 	for _, integration := range snapshotFor(e.Settings) {
@@ -221,6 +222,7 @@ func FireOnDecideEnd(ctx context.Context, e DecideEndEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnDecideEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(decideEndHandler); ok {
@@ -238,6 +240,7 @@ func FireOnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartE
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnDecisionModelCallStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(decisionModelCallStartHandler); ok {
@@ -255,6 +258,7 @@ func FireOnDecisionModelCallEnd(ctx context.Context, e DecisionModelCallEndEvent
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnDecisionModelCallEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(decisionModelCallEndHandler); ok {

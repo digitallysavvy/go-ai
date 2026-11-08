@@ -259,7 +259,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			FunctionID:      telFuncID,
 		}
 		if telemetry.Enabled(opts.ExperimentalTelemetry) {
-			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, emptyStartEvent)
+			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, telemetry.FilterEvent(emptyStartEvent, opts.ExperimentalTelemetry))
 		}
 		if opts.OnStart != nil {
 			safeInvoke(func() { opts.OnStart(emptyStartEvent) })
@@ -313,7 +313,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			FunctionID:     telFuncID,
 		}
 		if telemetry.Enabled(opts.ExperimentalTelemetry) {
-			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, emptyFinishEvent)
+			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, telemetry.FilterEvent(emptyFinishEvent, opts.ExperimentalTelemetry))
 		}
 		if opts.OnEnd != nil {
 			safeInvoke(func() { opts.OnEnd(emptyFinishEvent) })
@@ -361,7 +361,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		FunctionID:      telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, startEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, telemetry.FilterEvent(startEvent, opts.ExperimentalTelemetry))
 	}
 	if opts.OnStart != nil {
 		safeInvoke(func() { opts.OnStart(startEvent) })
@@ -533,7 +533,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		FunctionID:       telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, finishEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, telemetry.FilterEvent(finishEvent, opts.ExperimentalTelemetry))
 	}
 	if opts.OnEnd != nil {
 		safeInvoke(func() { opts.OnEnd(finishEvent) })

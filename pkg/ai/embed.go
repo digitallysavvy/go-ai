@@ -269,7 +269,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		FunctionID:       telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, telemetry.FilterEvent(startEvent, opts.ExperimentalTelemetry))
 	}
 	if opts.OnStart != nil {
 		safeInvoke(func() { opts.OnStart(startEvent) })
@@ -399,7 +399,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		FunctionID:       telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, telemetry.FilterEvent(finishEvent, opts.ExperimentalTelemetry))
 	}
 	if opts.OnEnd != nil {
 		safeInvoke(func() { opts.OnEnd(finishEvent) })
@@ -581,7 +581,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		FunctionID:       telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, telemetry.FilterEvent(startEvent, opts.ExperimentalTelemetry))
 	}
 	if opts.OnStart != nil {
 		safeInvoke(func() { opts.OnStart(startEvent) })
@@ -633,7 +633,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		FunctionID:       telFuncID,
 	}
 	if telemetry.Enabled(opts.ExperimentalTelemetry) {
-		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
+		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, telemetry.FilterEvent(finishEvent, opts.ExperimentalTelemetry))
 	}
 	if opts.OnEnd != nil {
 		safeInvoke(func() { opts.OnEnd(finishEvent) })

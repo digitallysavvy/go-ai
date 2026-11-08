@@ -62,6 +62,10 @@ func RecordErrorOnSpan(span trace.Span, err error) {
 	if err == nil {
 		return
 	}
+	if isHiddenToolError(err) {
+		span.SetStatus(codes.Error, "")
+		return
+	}
 
 	var providerErr *providererrors.ProviderError
 	if errors.As(err, &providerErr) && providerErr.StatusCode != 0 {
