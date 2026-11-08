@@ -209,3 +209,14 @@ func TestR88provcBasetenChatModelURLRouting(t *testing.T) {
 		}
 	}
 }
+
+// The model-ID constants match the TS catalog IDs exactly.
+func TestR88provcBasetenModelIDs(t *testing.T) {
+	want := []string{"deepseek-ai/DeepSeek-R1-0528", "deepseek-ai/DeepSeek-V3-0324", "deepseek-ai/DeepSeek-V3.1", "moonshotai/Kimi-K2-Instruct-0905", "moonshotai/Kimi-K2-Thinking", "Qwen/Qwen3-235B-A22B-Instruct-2507", "Qwen/Qwen3-Coder-480B-A35B-Instruct", "openai/gpt-oss-120b", "zai-org/GLM-4.6", "zai-org/GLM-4.7"}
+	got := []string{ModelDeepSeekR10528, ModelDeepSeekV30324, ModelDeepSeekV31, ModelKimiK2Instruct0905, ModelKimiK2Thinking, ModelQwen3235BA22BInstruct2507, ModelQwen3Coder480BA35BInstruct, ModelGPTOSS120B, ModelGLM46, ModelGLM47}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%d: %q != %q", i, got[i], want[i])
+		}
+	}
+}
