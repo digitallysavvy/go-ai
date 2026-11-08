@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
@@ -83,4 +84,26 @@ func (f StartFrame) MarshalJSON() ([]byte, error) {
 		plain
 		Prompt harnessutil.PromptContent `json:"prompt"`
 	}{plain(f), *f.PromptContent})
+}
+
+// decodeOutbound parses one claude-code bridge frame: the shared outbound
+// schema intersected with `{ startId: z.string().optional() }` (TS
+// claude-code-bridge-protocol.ts outboundMessageSchema). A frame whose
+// `startId` is present but not a string (null included) fails validation, so
+// the channel reports it as an error part instead of delivering the frame.
+func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
+	msg, seq, err := bridge.DecodeOutbound(data)
+	if err != nil {
+		return msg, seq, err
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) == nil {
+		if raw, ok := fields["startId"]; ok {
+			var startID string
+			if json.Unmarshal(raw, &startID) != nil || string(raw) == "null" {
+				return nil, seq, fmt.Errorf("harness bridge: invalid %s frame: startId must be a string", msg.FrameType())
+			}
+		}
+	}
+	return msg, seq, nil
 }

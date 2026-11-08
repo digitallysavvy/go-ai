@@ -431,22 +431,29 @@ func TestR87carryDoesNotDuplicateAcceptedTurn(t *testing.T) {
 		for _, notIdempotent := range []bool{false, true} {
 			turn := r87carryStartTurn(t, r87carryTurnOpts{drop: true, acceptBeforeDrop: true, finishBeforeReconnect: finished, notIdempotent: notIdempotent})
 			turn.mustFinish(t)
+			// TS 5a05735ed0 (claude-code-start.integration.test.ts "does not
+			// duplicate an accepted turn"): an idempotent bridge gets the
+			// pending start again on reconnect (it drops the repeated
+			// startId); an older one is not resent the accepted start. The
+			// reconnect handlers run on the channel queue before the bridge's
+			// resume-triggered finish is dispatched, so the resend always
+			// happens; the fake bridge records it on its own goroutine, so
+			// wait for the record before asserting the exact count.
+			want := 2
+			if notIdempotent {
+				want = 1
+			}
 			frames, accepted := turn.bridge.snapshot()
-			// TS 5a05735ed0: an idempotent bridge gets the pending start
-			// again (it drops the repeated startId); an older one is not
-			// resent the accepted start. Go reads the new socket while the
-			// reconnect handlers run, so the bridge's finish (sent on resume)
-			// can settle the turn first, and then nothing is resent.
+			for deadline := time.Now().Add(2 * time.Second); len(r87carryStarts(frames)) < want && time.Now().Before(deadline); {
+				time.Sleep(5 * time.Millisecond)
+				frames, accepted = turn.bridge.snapshot()
+			}
 			starts := r87carryStarts(frames)
 			ids := map[string]bool{}
 			for _, s := range starts {
 				ids[s.StartID] = true
 			}
-			okStarts := len(starts) == 2 || len(starts) == 1
-			if notIdempotent {
-				okStarts = len(starts) == 1
-			}
-			if !okStarts || len(ids) != 1 || accepted != 1 {
+			if len(starts) != want || len(ids) != 1 || accepted != 1 {
 				t.Fatalf("finished=%v notIdempotent=%v: starts = %+v, accepted = %d", finished, notIdempotent, starts, accepted)
 			}
 		}
