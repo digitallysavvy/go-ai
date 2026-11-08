@@ -1,10 +1,10 @@
 package cerebras
 
 import (
-	"encoding/json"
 	"errors"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -37,7 +37,7 @@ func parseCerebrasHTTPStatusError(candidate error, cause error) error {
 		return nil
 	}
 	var payload cerebrasErrorPayload
-	if err := json.Unmarshal(statusErr.Body, &payload); err != nil ||
+	if err := securejson.Unmarshal(statusErr.Body, &payload); err != nil ||
 		payload.Message == nil || payload.Type == nil || payload.Param == nil || payload.Code == nil {
 		return nil
 	}

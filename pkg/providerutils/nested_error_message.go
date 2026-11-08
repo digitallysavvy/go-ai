@@ -1,9 +1,10 @@
 package providerutils
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
 
 // NestedErrorMessage is the TS createJsonErrorResponseHandler outcome for the
@@ -19,7 +20,7 @@ func NestedErrorMessage(statusCode int, body []byte) (message, code string) {
 			Code    *float64 `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
 		payload.Error.Message != nil && payload.Error.Code != nil {
 		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
 	}

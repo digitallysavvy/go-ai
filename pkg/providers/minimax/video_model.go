@@ -14,6 +14,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -881,7 +882,7 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
 			Message *string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &errResp) == nil {
+	if securejson.Unmarshal(body, &errResp) == nil {
 		message = "MiniMax video generation error"
 		if errResp.Error != nil && errResp.Error.Message != nil {
 			message = *errResp.Error.Message

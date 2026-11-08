@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/pplxschema"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
 
 // This file mirrors the TS SDK's perplexity-agent-api.ts: the wire shapes for
@@ -177,7 +178,7 @@ type perplexityErrorEnvelope struct {
 // back to the response status text.
 func perplexityErrorBodyMatches(body []byte) bool {
 	var value interface{}
-	if err := json.Unmarshal(body, &value); err != nil {
+	if err := securejson.Unmarshal(body, &value); err != nil {
 		return false
 	}
 	return pplxschema.Error(value, true, nil) == nil

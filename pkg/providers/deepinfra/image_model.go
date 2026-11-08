@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -13,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -194,7 +196,7 @@ type deepInfraGenerateError struct {
 func (m *ImageModel) parseGenerateError(resp *internalhttp.Response) error {
 	var errResp deepInfraGenerateError
 	message := string(resp.Body)
-	if err := json.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail.Error != "" {
+	if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail.Error != "" {
 		message = errResp.Detail.Error
 	}
 	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
@@ -266,7 +268,7 @@ type deepInfraEditError struct {
 func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
 	var errResp deepInfraEditError
 	message := "Unknown error"
-	if err := json.Unmarshal(resp.Body, &errResp); err == nil && errResp.Error != nil && errResp.Error.Message != "" {
+	if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Error != nil && errResp.Error.Message != "" {
 		message = errResp.Error.Message
 	}
 	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)

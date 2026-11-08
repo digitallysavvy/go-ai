@@ -1,11 +1,11 @@
 package alibaba
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -23,7 +23,7 @@ func alibabaChatErrorMessage(statusCode int, body []byte) (message, code string)
 			Type    *string `json:"type"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil && payload.Error.Message != nil {
+	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil && payload.Error.Message != nil {
 		if payload.Error.Code != nil {
 			code = *payload.Error.Code
 		}
@@ -43,7 +43,7 @@ func alibabaNativeErrorMessage(statusCode int, body []byte) (message, code strin
 		Message   *string `json:"message"`
 		RequestID *string `json:"request_id"`
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Message != nil {
+	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Message != nil {
 		if payload.Code != nil {
 			code = *payload.Code
 		}

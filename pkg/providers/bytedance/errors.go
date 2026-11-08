@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
 
 // Error represents a ByteDance API error
@@ -40,7 +42,7 @@ func byteDanceErrorMessage(statusCode int, body []byte) string {
 		Message json.RawMessage `json:"message"`
 	}
 	statusText := http.StatusText(statusCode)
-	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &raw) != nil {
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &raw) != nil {
 		return statusText
 	}
 	var nested, top *string

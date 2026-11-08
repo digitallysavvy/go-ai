@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -241,7 +242,7 @@ func replicateErrorMessage(status int, body []byte) string {
 		}
 		return value, true, true
 	}
-	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil {
+	if len(body) > 0 && securejson.Unmarshal(body, &parsed) == nil {
 		detail, hasDetail, detailOK := optional(parsed.Detail)
 		errorField, hasError, errorOK := optional(parsed.Error)
 		if detailOK && errorOK {

@@ -3,6 +3,8 @@ package errors
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
 
 type GatewayAuthenticationError struct {
@@ -210,7 +212,7 @@ type forbiddenParam struct {
 
 func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, defaultMessage string, cause error, authMethod string) error {
 	var payload gatewayErrorPayload
-	if err := json.Unmarshal(responseBody, &payload); err != nil || payload.Error == nil || payload.Error.Message == nil {
+	if err := securejson.Unmarshal(responseBody, &payload); err != nil || payload.Error == nil || payload.Error.Message == nil {
 		return newInvalidGatewayErrorResponse(responseBody, statusCode, defaultMessage, err, cause)
 	}
 	if !isValidGatewayErrorCode(payload.Error.Code) {
@@ -263,7 +265,7 @@ func newInvalidGatewayErrorResponse(responseBody []byte, statusCode int, default
 	}
 	rawGenerationID := ""
 	var fallback interface{}
-	if json.Unmarshal(responseBody, &fallback) == nil {
+	if securejson.Unmarshal(responseBody, &fallback) == nil {
 		if object, ok := fallback.(map[string]interface{}); ok {
 			if value, ok := object["generationId"].(string); ok {
 				rawGenerationID = value

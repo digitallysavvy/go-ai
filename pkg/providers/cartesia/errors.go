@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -36,7 +37,7 @@ func handleError(err error) error {
 		// required strings; a body that does not match gives the HTTP status
 		// text.
 		message := http.StatusText(statusErr.StatusCode)
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil &&
+		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil &&
 			payload.Title != nil && payload.Message != nil && payload.RequestID != nil && docURLMatchesSchema(payload.DocURL) {
 			message = *payload.Title + ": " + *payload.Message
 		} else {

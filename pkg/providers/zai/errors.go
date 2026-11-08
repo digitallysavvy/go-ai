@@ -1,11 +1,11 @@
 package zai
 
 import (
-	"encoding/json"
 	"errors"
 	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -34,7 +34,7 @@ func parseZaiProviderError(err error) error {
 	}
 
 	var payload zaiErrorPayload
-	if unmarshalErr := json.Unmarshal(statusErr.Body, &payload); unmarshalErr != nil {
+	if unmarshalErr := securejson.Unmarshal(statusErr.Body, &payload); unmarshalErr != nil {
 		return nil
 	}
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -391,7 +392,7 @@ type azureSpeechErrorBody struct {
 func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte, speechSynthesis bool) error {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var parsed azureSpeechErrorBody
-	parseOK := json.Unmarshal(body, &parsed) == nil
+	parseOK := securejson.Unmarshal(body, &parsed) == nil
 	var message string
 	if speechSynthesis {
 		switch {

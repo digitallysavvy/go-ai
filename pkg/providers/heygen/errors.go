@@ -1,10 +1,10 @@
 package heygen
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -31,7 +31,7 @@ func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
 	var parsed heygenErrorBody
 	message := ""
 	code := ""
-	if json.Unmarshal(body, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != nil {
+	if securejson.Unmarshal(body, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != nil {
 		message = *parsed.Error.Message
 		if parsed.Error.Code != nil {
 			code = *parsed.Error.Code

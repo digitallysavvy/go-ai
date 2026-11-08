@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -304,7 +305,7 @@ func elevenlabsErrorMessage(statusCode int, body []byte) (message, code string) 
 	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
 	// invalid UTF-8 replaced).
 	body = []byte(textdecode.UTF8(body))
-	if json.Unmarshal(body, &data) != nil || elevenlabsErrorDataSchema(data, true, nil) != nil {
+	if securejson.Unmarshal(body, &data) != nil || elevenlabsErrorDataSchema(data, true, nil) != nil {
 		return http.StatusText(statusCode), ""
 	}
 	detail, hasDetail := data["detail"]

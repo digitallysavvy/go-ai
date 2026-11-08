@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -362,7 +363,7 @@ func parallelHTTPError(err error) error {
 			Message *string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(statusErr.Body, &envelope) == nil && envelope.Error != nil && envelope.Error.Message != nil {
+	if securejson.Unmarshal(statusErr.Body, &envelope) == nil && envelope.Error != nil && envelope.Error.Message != nil {
 		message = *envelope.Error.Message
 		// zod's parsed value keeps only the schema's keys.
 		data = map[string]interface{}{"error": map[string]interface{}{"message": message}}

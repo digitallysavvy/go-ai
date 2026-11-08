@@ -92,3 +92,17 @@ func TestR88integResponsesRefusalChunks(t *testing.T) {
 		}
 	}
 }
+
+// prova r88 open item, class sweep (TS safeParseJSON): the shared nested
+// error schema does not read a body with a __proto__ key.
+func TestR88integNestedErrorMessageSecureParse(t *testing.T) {
+	if msg, code := NestedErrorMessage(400, []byte(`{"error":{"message":"m","code":7}}`)); msg != "m" || code != "7" {
+		t.Fatalf("clean body: %q %q", msg, code)
+	}
+	if msg, code := NestedErrorMessage(400, []byte(`{"error":{"message":"m","code":7},"__proto__":{}}`)); msg != "Bad Request" || code != "" {
+		t.Fatalf("__proto__ body: %q %q", msg, code)
+	}
+	if msg, _ := NestedErrorMessage(400, []byte(`{"error":{"message":"m","code":7,"constructor":{"prototype":{}}}}`)); msg != "Bad Request" {
+		t.Fatalf("constructor.prototype body: %q", msg)
+	}
+}

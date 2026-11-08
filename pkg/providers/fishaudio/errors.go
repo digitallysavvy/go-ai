@@ -2,11 +2,11 @@ package fishaudio
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -40,7 +40,7 @@ func handleError(err error) error {
 		// object matches and the message is `message ?? 'Unknown Fish Audio
 		// error'`; a body that is not such an object gives the status text.
 		message := http.StatusText(statusErr.StatusCode)
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && isJSONObject(statusErr.Body) {
+		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil && isJSONObject(statusErr.Body) {
 			if payload.Message != nil {
 				message = *payload.Message
 			} else {

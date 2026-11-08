@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -303,7 +304,7 @@ func parseGoogleErrorData(body []byte, out *googleErrorData) bool {
 			Details json.RawMessage `json:"details"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &raw) != nil || raw.Error == nil || raw.Error.Message == nil || raw.Error.Status == nil || len(raw.Error.Code) == 0 {
+	if securejson.Unmarshal(body, &raw) != nil || raw.Error == nil || raw.Error.Message == nil || raw.Error.Status == nil || len(raw.Error.Code) == 0 {
 		return false
 	}
 	var code *float64

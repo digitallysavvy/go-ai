@@ -3,13 +3,13 @@ package stability
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -169,7 +169,7 @@ func handleError(err error) error {
 	var body struct {
 		Message *string `json:"message"`
 	}
-	if json.Unmarshal(statusErr.Body, &body) == nil && body.Message != nil {
+	if securejson.Unmarshal(statusErr.Body, &body) == nil && body.Message != nil {
 		message = *body.Message
 	}
 	return providererrors.NewProviderErrorFromResponse("stability", 0, "", message, err)

@@ -16,6 +16,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -398,7 +399,7 @@ func (m *DecisionModel) handleError(err error) error {
 func typesafeErrorMessage(statusCode int, body []byte) string {
 	statusText := http.StatusText(statusCode)
 	var fields map[string]json.RawMessage
-	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &fields) != nil {
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &fields) != nil {
 		return statusText
 	}
 	// A map keeps an explicit null distinguishable from an absent key, which

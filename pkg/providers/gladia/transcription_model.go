@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -758,7 +759,7 @@ func parseGladiaErrorBody(statusCode int, body []byte) (message string, code str
 			Code    *float64 `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
 		payload.Error.Message != nil && payload.Error.Code != nil {
 		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
 	}

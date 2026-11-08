@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -257,7 +258,7 @@ func falImageErrorMessage(status int, body []byte) string {
 	// Decode field by field: a mistyped `detail` (a string) must not hide a
 	// valid `message`, which the second union branch still accepts.
 	var top map[string]json.RawMessage
-	if json.Unmarshal([]byte(textdecode.UTF8(body)), &top) != nil || top == nil {
+	if securejson.Unmarshal([]byte(textdecode.UTF8(body)), &top) != nil || top == nil {
 		return http.StatusText(status)
 	}
 	var detail []json.RawMessage

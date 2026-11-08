@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -35,7 +36,7 @@ func parseFireworksProviderError(err error) error {
 		return nil
 	}
 	var payload fireworksErrorPayload
-	if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr != nil || len(payload.Error) == 0 {
+	if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr != nil || len(payload.Error) == 0 {
 		return nil
 	}
 

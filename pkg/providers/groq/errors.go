@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -34,7 +35,7 @@ func parseGroqProviderError(err error) error {
 	// invalid UTF-8 replaced).
 	// The TS schema requires both as strings; "" is a valid message
 	// (errorToMessage: data.error.message).
-	if jsonErr := json.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &payload); jsonErr != nil || payload.Error.Message == nil || payload.Error.Type == nil {
+	if jsonErr := securejson.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &payload); jsonErr != nil || payload.Error.Message == nil || payload.Error.Type == nil {
 		return nil
 	}
 	return providererrors.NewProviderError("groq", statusErr.StatusCode, *payload.Error.Type, *payload.Error.Message, err)

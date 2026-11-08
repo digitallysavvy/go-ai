@@ -1,12 +1,12 @@
 package hume
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -43,7 +43,7 @@ func handleError(err error) error {
 // wrongly typed field) gives the HTTP status text.
 func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
 	var payload humeErrorPayload
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
 		payload.Error.Message != nil && payload.Error.Code != nil {
 		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
 	}

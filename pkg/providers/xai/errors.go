@@ -1,10 +1,10 @@
 package xai
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -15,7 +15,7 @@ func newXAIProviderError(provider string, statusCode int, body []byte) *provider
 		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &responsesError); err == nil && responsesError.Code != "" && responsesError.Error != "" {
+	if err := securejson.Unmarshal(body, &responsesError); err == nil && responsesError.Code != "" && responsesError.Error != "" {
 		return providererrors.NewProviderError(provider, statusCode, responsesError.Code, responsesError.Code+": "+responsesError.Error, nil)
 	}
 
@@ -32,7 +32,7 @@ func newXAIProviderError(provider string, statusCode int, body []byte) *provider
 	// xaiFailedResponseHandler's errorToMessage for whichever matches.
 	message := parseXAIErrorMessage(body)
 	errorCode := ""
-	if err := json.Unmarshal(body, &parsed); err == nil {
+	if err := securejson.Unmarshal(body, &parsed); err == nil {
 		switch code := parsed.Error.Code.(type) {
 		case string:
 			errorCode = code
@@ -211,7 +211,7 @@ func parseXAIErrorMessage(body []byte) string {
 			Type    *string `json:"type"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error != nil && apiErr.Error.Message != nil {
+	if err := securejson.Unmarshal(body, &apiErr); err == nil && apiErr.Error != nil && apiErr.Error.Message != nil {
 		return *apiErr.Error.Message
 	}
 
@@ -220,7 +220,7 @@ func parseXAIErrorMessage(body []byte) string {
 		Code  *string `json:"code"`
 		Error *string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &responsesErr); err == nil &&
+	if err := securejson.Unmarshal(body, &responsesErr); err == nil &&
 		responsesErr.Code != nil && responsesErr.Error != nil {
 		return *responsesErr.Code + ": " + *responsesErr.Error
 	}
@@ -229,7 +229,7 @@ func parseXAIErrorMessage(body []byte) string {
 	var speechErr struct {
 		Error *string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &speechErr); err == nil && speechErr.Error != nil {
+	if err := securejson.Unmarshal(body, &speechErr); err == nil && speechErr.Error != nil {
 		return *speechErr.Error
 	}
 

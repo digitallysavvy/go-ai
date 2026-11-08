@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -33,7 +34,7 @@ type topazIssue struct {
 // createJsonErrorResponseHandler uses the HTTP status text as the message.
 func parseTopazErrorData(body []byte) (data topazErrorData, ok bool) {
 	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &data) != nil {
+	if len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &data) != nil {
 		return topazErrorData{}, false
 	}
 	// detail: string | array of loose objects with a nullish string msg.

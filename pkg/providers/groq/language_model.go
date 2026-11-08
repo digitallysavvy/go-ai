@@ -486,11 +486,18 @@ func (m *LanguageModel) handleError(err error) error {
 		return parsed
 	}
 	statusCode := 0
+	message := err.Error()
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		statusCode = statusErr.StatusCode
+		// TS createJsonErrorResponseHandler: an empty body, or one that does
+		// not parse (secureJsonParse) or match the error schema, gives the
+		// response status text.
+		if text := http.StatusText(statusCode); text != "" {
+			message = text
+		}
 	}
-	return providererrors.NewProviderError("groq", statusCode, "", err.Error(), err)
+	return providererrors.NewProviderError("groq", statusCode, "", message, err)
 }
 
 type groqResponse struct {

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -62,10 +63,10 @@ func parseMoonshotProviderError(err error) error {
 			Message *string `json:"message"`
 		} `json:"error"`
 	}
-	if unmarshalErr := json.Unmarshal(statusErr.Body, &envelope); unmarshalErr != nil || json.Unmarshal(statusErr.Body, &present) != nil || present.Error.Message == nil {
+	if unmarshalErr := securejson.Unmarshal(statusErr.Body, &envelope); unmarshalErr != nil || securejson.Unmarshal(statusErr.Body, &present) != nil || present.Error.Message == nil {
 		return err
 	}
-	_ = json.Unmarshal(statusErr.Body, &raw)
+	_ = securejson.Unmarshal(statusErr.Body, &raw)
 
 	code := envelope.Error.Code
 	if code == "" {

@@ -8,6 +8,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -31,7 +32,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 		State   *string         `json:"state"`
 	}
 	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &raw) != nil {
+	if len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &raw) != nil {
 		return providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(statusCode), cause)
 	}
 

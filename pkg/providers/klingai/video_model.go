@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -362,7 +363,7 @@ func parseKlingAIErrorBody(statusCode int, body []byte) error {
 		Code    *float64 `json:"code"`
 		Message *string  `json:"message"`
 	}
-	if jsonErr := json.Unmarshal([]byte(textdecode.UTF8(body)), &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil {
+	if jsonErr := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil {
 		e := NewError(int(*envelope.Code), *envelope.Message, "")
 		e.httpStatus, e.httpBody = statusCode, body
 		return e

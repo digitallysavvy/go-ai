@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -873,7 +874,7 @@ func gatewayErrorMessage(body []byte, statusCode int) string {
 		return gatewayStatusTextFallback(statusCode)
 	}
 	var value interface{}
-	if err := json.Unmarshal(body, &value); err != nil {
+	if err := securejson.Unmarshal(body, &value); err != nil {
 		return gatewayStatusTextFallback(statusCode)
 	}
 	if value == nil {
@@ -907,7 +908,7 @@ func gatewayErrorData(body []byte) interface{} {
 		return nil
 	}
 	var value interface{}
-	if err := json.Unmarshal(body, &value); err != nil {
+	if err := securejson.Unmarshal(body, &value); err != nil {
 		return nil
 	}
 	return value

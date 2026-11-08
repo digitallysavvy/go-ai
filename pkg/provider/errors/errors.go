@@ -1,13 +1,13 @@
 package errors
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -218,7 +218,9 @@ func newProviderError(provider string, statusCode int, errorCode, message string
 	e.ResponseBody = string(body)
 	if len(body) > 0 {
 		var data interface{}
-		if json.Unmarshal(body, &data) == nil {
+		// TS safeParseJSON: a body with a __proto__ / constructor.prototype
+		// key does not parse (no data, status text message).
+		if securejson.Unmarshal(body, &data) == nil {
 			e.Data = data
 		}
 	}
@@ -269,7 +271,7 @@ func canonicalResponseHeaders(cause error, headers map[string]string) map[string
 // openai-compatible `data.error.message`).
 func ExtractAPIErrorMessage(body []byte) string {
 	var v map[string]interface{}
-	if err := json.Unmarshal(body, &v); err != nil {
+	if err := securejson.Unmarshal(body, &v); err != nil {
 		return ""
 	}
 	str := func(x interface{}) string {

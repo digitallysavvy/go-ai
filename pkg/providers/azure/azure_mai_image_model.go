@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -506,7 +507,7 @@ func azureMaiImageAPIError(status int, headers map[string]string, body []byte) e
 			Message *string         `json:"message"`
 		} `json:"error"`
 	}
-	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != nil &&
+	if len(body) > 0 && securejson.Unmarshal(body, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != nil &&
 		azureMaiErrorCodeValid(parsed.Error.Code) {
 		message = *parsed.Error.Message
 	}

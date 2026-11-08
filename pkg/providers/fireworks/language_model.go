@@ -325,11 +325,18 @@ func (m *LanguageModel) handleError(err error) error {
 	// instead of hardcoding 0 (which several retry-classification paths treat
 	// as "unknown", i.e. retryable).
 	statusCode := 0
+	message := err.Error()
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		statusCode = statusErr.StatusCode
+		// TS createJsonErrorResponseHandler: an empty body, or one that does
+		// not parse (secureJsonParse) or match the error schema, gives the
+		// response status text.
+		if text := http.StatusText(statusCode); text != "" {
+			message = text
+		}
 	}
-	return providererrors.NewProviderError("fireworks", statusCode, "", err.Error(), err)
+	return providererrors.NewProviderError("fireworks", statusCode, "", message, err)
 }
 
 // convertFireworksUsage converts Fireworks usage to detailed Usage struct

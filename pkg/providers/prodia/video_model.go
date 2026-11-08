@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -218,7 +220,7 @@ func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *p
 func prodiaErrorMessage(statusCode int, body []byte) string {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var fields map[string]json.RawMessage
-	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &fields) != nil {
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &fields) != nil {
 		return http.StatusText(statusCode)
 	}
 	optionalString := func(key string) (string, bool, bool) {

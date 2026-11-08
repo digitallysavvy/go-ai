@@ -1,10 +1,10 @@
 package perplexity
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -33,17 +33,20 @@ func perplexityHTTPError(err error, providerName string) error {
 	var raw map[string]interface{}
 	if perplexityErrorBodyMatches(statusErr.Body) {
 		var envelope perplexityErrorEnvelope
-		if json.Unmarshal(statusErr.Body, &envelope) == nil {
+		if securejson.Unmarshal(statusErr.Body, &envelope) == nil {
 			message = perplexityErrorToMessage(envelope)
-			_ = json.Unmarshal(statusErr.Body, &raw)
+			_ = securejson.Unmarshal(statusErr.Body, &raw)
 		}
 	}
-	return &providererrors.ProviderError{
+	pe := &providererrors.ProviderError{
 		Provider:        providerName,
 		StatusCode:      statusErr.StatusCode,
 		Message:         message,
 		ResponseHeaders: lowerHeaders(providerutils.ExtractHeaders(statusErr.Headers)),
 		ResponseBody:    string(statusErr.Body),
-		Data:            raw,
 	}
+	if raw != nil { // TS data: only a body that matched the schema
+		pe.Data = raw
+	}
+	return pe
 }

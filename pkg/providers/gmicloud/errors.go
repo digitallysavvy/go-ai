@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -44,7 +45,7 @@ func parseGmicloudProviderError(err error) error {
 	message := http.StatusText(statusErr.StatusCode)
 	code := ""
 	var payload gmicloudErrorPayload
-	if unmarshalErr := json.Unmarshal(statusErr.Body, &payload); unmarshalErr == nil && payload.Error != nil &&
+	if unmarshalErr := securejson.Unmarshal(statusErr.Body, &payload); unmarshalErr == nil && payload.Error != nil &&
 		payload.Error.Message != nil && gmicloudCodeMatchesSchema(payload.Error.Code) {
 		message = *payload.Error.Message
 		if payload.Error.Details != nil {

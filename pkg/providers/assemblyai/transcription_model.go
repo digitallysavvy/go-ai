@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -482,7 +483,7 @@ func assemblyAIErrorMessage(statusCode int, body []byte) (message, code string) 
 	var flat struct {
 		Error json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal(body, &flat) == nil && len(flat.Error) > 0 && flat.Error[0] == '"' {
+	if securejson.Unmarshal(body, &flat) == nil && len(flat.Error) > 0 && flat.Error[0] == '"' {
 		var text string
 		if json.Unmarshal(flat.Error, &text) == nil {
 			return text, ""

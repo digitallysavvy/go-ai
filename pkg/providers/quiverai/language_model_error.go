@@ -1,11 +1,11 @@
 package quiverai
 
 import (
-	"encoding/json"
 	"math"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
 )
@@ -50,7 +50,7 @@ func parseQuiverAIErrorBody(body []byte) (quiverAPIError, bool) {
 		Message   *string  `json:"message"`
 		RequestID *string  `json:"request_id"`
 	}
-	if json.Unmarshal(body, &raw) != nil {
+	if securejson.Unmarshal(body, &raw) != nil {
 		return quiverAPIError{}, false
 	}
 	if raw.Status == nil || *raw.Status != math.Trunc(*raw.Status) ||

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -45,7 +46,7 @@ func parseHuggingFaceError(err error) error {
 	message := http.StatusText(statusErr.StatusCode)
 	code := ""
 	var payload hfErrorPayload
-	if unmarshalErr := json.Unmarshal(statusErr.Body, &payload); unmarshalErr == nil &&
+	if unmarshalErr := securejson.Unmarshal(statusErr.Body, &payload); unmarshalErr == nil &&
 		payload.Error != nil && payload.Error.Message != nil {
 		_, typeOK := optionalString(payload.Error.Type)
 		errorCode, codeOK := optionalString(payload.Error.Code)

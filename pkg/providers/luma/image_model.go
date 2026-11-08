@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	stdhttp "net/http"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -385,7 +387,7 @@ func (m *ImageModel) parseErrorResponseWithHeaders(body []byte, statusCode int, 
 	// schema (or is empty) gives the HTTP status text as the message.
 	msg := stdhttp.StatusText(statusCode)
 	var errResp lumaErrorResponse
-	if err := json.Unmarshal([]byte(textdecode.UTF8(body)), &errResp); err == nil && errResp.valid() {
+	if err := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &errResp); err == nil && errResp.valid() {
 		// detail[0].msg is a required string, so `?? 'Unknown error'` never
 		// applies; an empty detail array makes errorToMessage throw, which
 		// the handler also turns into the status text.

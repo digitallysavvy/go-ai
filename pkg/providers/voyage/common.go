@@ -1,11 +1,11 @@
 package voyage
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -36,7 +36,7 @@ func voyageErrorMessage(statusCode int, body []byte) string {
 	var payload struct {
 		Detail *string `json:"detail"`
 	}
-	if json.Unmarshal(body, &payload) == nil && payload.Detail != nil {
+	if securejson.Unmarshal(body, &payload) == nil && payload.Detail != nil {
 		return *payload.Detail
 	}
 	return http.StatusText(statusCode)
