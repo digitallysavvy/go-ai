@@ -127,8 +127,11 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	functionTools, toolWarnings := preparePerplexityTools(opts.Tools, opts.ToolChoice)
 	warnings = append(warnings, toolWarnings...)
 
+	// TS 7772d0ca0f: toolChoice none drops the native
+	// providerOptions.perplexity.tools as well as the function tools.
+	toolChoiceNone := opts.ToolChoice.Type == types.ToolChoiceNone
 	var agentTools []map[string]interface{}
-	if parsedOptions != nil {
+	if parsedOptions != nil && !toolChoiceNone {
 		agentTools = append(agentTools, parsedOptions.Tools...)
 	}
 	agentTools = append(agentTools, functionTools...)
@@ -162,6 +165,12 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	// undefined (JSON.stringify drops it).
 	for _, k := range []string{"max_output_tokens", "temperature", "top_p", "response_format"} {
 		delete(body, k)
+	}
+	// Presets can enable native tools even when no explicit tools are sent,
+	// so toolChoice none also sends max_tool_calls: 0 (TS 7772d0ca0f; it
+	// overrides a caller's maxToolCalls).
+	if toolChoiceNone {
+		body["max_tool_calls"] = 0
 	}
 	if model != "" {
 		body["model"] = model
