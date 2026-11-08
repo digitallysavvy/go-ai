@@ -2,6 +2,7 @@ package googlevertex
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -200,5 +201,80 @@ func TestR88provgExpressTransportRedirectHopGetsNoKey(t *testing.T) {
 	}
 	if h := foreign.headers(); len(h) != 1 || h[0].Get("x-goog-api-key") != "" {
 		t.Fatalf("foreign hop x-goog-api-key = %q, want none", h[0].Get("x-goog-api-key"))
+	}
+}
+
+// r88provgVertexTranscribe runs a Vertex Gemini transcription against a
+// server answering with parts and returns the result and the request's
+// generationConfig.
+func r88provgVertexTranscribe(t *testing.T, parts string, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, string) {
+	t.Helper()
+	var mu sync.Mutex
+	var genConfig string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			GenerationConfig json.RawMessage `json:"generationConfig"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		genConfig = string(body.GenerationConfig)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":`+parts+`}}]}`)
+	}))
+	defer srv.Close()
+	model := NewGeminiTranscriptionModel(newVertexTestProvider(t, srv.URL), ModelGemini35Transcribe)
+	opts.Audio, opts.MimeType = []byte{1, 2}, "audio/wav"
+	res, err := model.DoTranscribe(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return res, genConfig
+}
+
+// Ports google-vertex-gemini-transcription-model.test.ts (TS 41465fd1b6):
+// the word granularity sets wordTimestamp when unset, a disabling option
+// wins with a warning, segments are unavailable (warning), Words duplicates
+// the word segments, and a non-blank transcript without word timings warns.
+func TestR88provgVertexGeminiTranscriptionWords(t *testing.T) {
+	const withWords = `[{"audioTranscription":{"text":"Hello world","words":[{"word":"Hello","startOffset":"0s","endOffset":"0.5s"},{"word":"world","startOffset":"0.5s","endOffset":"1s"}]}}]`
+	const noWords = `[{"audioTranscription":{"text":"Hello world"}}]`
+	word := []string{provider.TranscriptionTimestampGranularityWord}
+
+	res, gc := r88provgVertexTranscribe(t, withWords, &provider.TranscriptionOptions{TimestampGranularities: []string{"word", "segment"}})
+	if gc != `{"audioTranscriptionConfig":{"wordTimestamp":true}}` {
+		t.Fatalf("generationConfig = %s", gc)
+	}
+	if len(res.Words) != 2 || res.Words[1] != (types.TranscriptionWord{Text: "world", StartSecond: 0.5, EndSecond: 1}) || len(res.Segments) != 2 {
+		t.Fatalf("words = %+v segments = %+v", res.Words, res.Segments)
+	}
+	if len(res.Warnings) != 1 || res.Warnings[0].Details != "Vertex Gemini transcription returns word timings and does not provide separate caption segments." {
+		t.Fatalf("warnings = %+v", res.Warnings)
+	}
+
+	for _, ns := range []string{"googleVertex", "vertex", "google"} {
+		res, gc = r88provgVertexTranscribe(t, noWords, &provider.TranscriptionOptions{TimestampGranularities: word,
+			ProviderOptions: map[string]interface{}{ns: map[string]interface{}{"wordTimestamp": false}}})
+		if gc != `{"audioTranscriptionConfig":{"wordTimestamp":false}}` || len(res.Warnings) != 1 ||
+			res.Warnings[0].Details != "The provider wordTimestamp option is false and overrides the requested word timings." {
+			t.Fatalf("%s: generationConfig %s warnings %+v", ns, gc, res.Warnings)
+		}
+	}
+
+	res, _ = r88provgVertexTranscribe(t, noWords, &provider.TranscriptionOptions{TimestampGranularities: word})
+	if res.Words != nil || len(res.Warnings) != 1 || res.Warnings[0].Type != "other" ||
+		res.Warnings[0].Message != "The Vertex Gemini transcription response omitted the requested word timings." {
+		t.Fatalf("omitted words: %+v / %+v", res.Words, res.Warnings)
+	}
+	res, _ = r88provgVertexTranscribe(t, `[{"audioTranscription":{"text":"  "}}]`, &provider.TranscriptionOptions{TimestampGranularities: word})
+	if len(res.Warnings) != 0 {
+		t.Fatalf("blank transcript warnings = %+v", res.Warnings)
+	}
+	// No granularity: request and result unchanged.
+	res, gc = r88provgVertexTranscribe(t, noWords, &provider.TranscriptionOptions{})
+	if gc != "" || len(res.Warnings) != 0 {
+		t.Fatalf("no granularity: %s %+v", gc, res.Warnings)
 	}
 }
