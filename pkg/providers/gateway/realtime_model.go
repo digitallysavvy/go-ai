@@ -3,7 +3,9 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -209,6 +211,68 @@ func gatewayRealtimeConversationItem(item provider.RealtimeConversationItem) map
 // maps it to the upstream provider's session payload server-side.
 func (m *RealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	return config
+}
+
+var (
+	_ provider.RealtimeServerConnectionProvider = (*RealtimeModel)(nil)
+	_ provider.RealtimeIntentCodec              = (*RealtimeModel)(nil)
+)
+
+// gatewayRealtimeAssertConversationIntent mirrors TS assertConversationIntent
+// (892af4dab7): the normalized realtime route is conversational only. The
+// empty intent is conversation.
+func gatewayRealtimeAssertConversationIntent(intent provider.RealtimeSessionIntent) error {
+	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
+		return fmt.Errorf("AI Gateway realtime does not support the '%s' session intent on the normalized realtime route.", intent) //nolint:staticcheck // matches the TS error text
+	}
+	return nil
+}
+
+// GetServerConnection returns the server-side WebSocket connection (TS
+// getServerWebSocketConfig, 892af4dab7): the realtime-model route with the
+// provider's resolved HTTP auth headers (Authorization, auth method,
+// protocol version, team and custom headers). Conversation intent only.
+// ConnectRealtime uses it only when RealtimeSessionOptions.Intent is set
+// (coordinator ruling 1).
+func (m *RealtimeModel) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	if err := gatewayRealtimeAssertConversationIntent(opts.Intent); err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	token, authMethod, err := m.provider.authResolver(ctx)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	headers := mergeHeadersFold(
+		map[string]string{"Authorization": "Bearer " + token, "ai-gateway-auth-method": authMethod},
+		m.provider.headers,
+	)
+	// TS getHeaders goes through withUserAgentSuffix, which lower-cases the
+	// header names; removeUndefinedEntries drops unset values.
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if v != "" {
+			out[strings.ToLower(k)] = v
+		}
+	}
+	return provider.WebSocketConfig{URL: ToGatewayRealtimeURL(m.provider.baseURL, m.modelID), Headers: out}, nil
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent
+// (conversation only).
+func (m *RealtimeModel) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	if err := gatewayRealtimeAssertConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.BuildSessionConfig(config), nil
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent
+// (conversation only).
+func (m *RealtimeModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	if err := gatewayRealtimeAssertConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.SerializeClientEvent(event)
 }
 
 var _ provider.Experimental_RealtimeModelV4 = (*RealtimeModel)(nil)

@@ -765,6 +765,11 @@ func (t *vertexExpressTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Respo
 }
 
 func (t *vertexExpressTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	// A redirect hop to another origin gets no API key (credential
+	// transport class sweep, S2).
+	if vertexinternal.IsCrossOriginRedirectHop(req) {
+		return t.base.RoundTrip(req.Clone(req.Context()))
+	}
 	key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
 		APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Google Vertex", RequireNonEmpty: true,
 	})

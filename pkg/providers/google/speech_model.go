@@ -226,7 +226,14 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		return nil, "", false, nil, providererrors.NewArgumentError("voice", "Custom voices are not supported. Use a prebuilt voice instead.", nil)
 	}
 
+	// TS 3c6fb4322c: the speech language is forwarded as
+	// speechConfig.languageCode ("auto" leaves it unset), after the voice
+	// configuration.
 	var speechConfig map[string]interface{}
+	languageCode := opts.Language
+	if languageCode == "auto" {
+		languageCode = ""
+	}
 	if googleOpts.MultiSpeakerVoiceConfig != nil {
 		speechConfig = map[string]interface{}{"multiSpeakerVoiceConfig": googleOpts.MultiSpeakerVoiceConfig}
 	} else {
@@ -235,6 +242,9 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 				"prebuiltVoiceConfig": map[string]interface{}{"voiceName": voice},
 			},
 		}
+	}
+	if languageCode != "" {
+		speechConfig["languageCode"] = languageCode
 	}
 
 	promptText := opts.Text
@@ -317,13 +327,6 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 			Details: "Google Gemini TTS models do not support the `speed` option. It was ignored.",
 		})
 	}
-	if opts.Language != "" {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "language",
-			Details: "Google Gemini TTS models do not support the `language` option. Language is detected automatically from the input text.",
-		})
-	}
 
 	formats := map[string]string{"wav": "AUDIO_WAV", "pcm": "AUDIO_L16"}
 	if usesStructured {
@@ -365,8 +368,9 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 
 // googleSpeechOrderedBody gives request.body the key order of the TS
 // requestBody literal ({contents: [{role, parts: [{text, speechMetadata:
-// {style, speaker}}]}], generationConfig: {responseModalities, speechConfig,
-// responseFormat}}), which JSON.stringify keeps and a Go map sorts.
+// {style, speaker}}]}], generationConfig: {responseModalities, speechConfig:
+// {multiSpeakerVoiceConfig | voiceConfig, languageCode}, responseFormat}}),
+// which JSON.stringify keeps and a Go map sorts.
 func googleSpeechOrderedBody(body map[string]interface{}) interface{} {
 	ordered := func(m map[string]interface{}, keys ...string) interface{} {
 		if m == nil {
@@ -391,6 +395,14 @@ func googleSpeechOrderedBody(body map[string]interface{}) interface{} {
 		orderedContents[i] = ordered(map[string]interface{}{"role": content["role"], "parts": orderedParts}, "role", "parts")
 	}
 	generationConfig, _ := body["generationConfig"].(map[string]interface{})
+	if sc, ok := generationConfig["speechConfig"].(map[string]interface{}); ok {
+		gc := make(map[string]interface{}, len(generationConfig))
+		for k, v := range generationConfig {
+			gc[k] = v
+		}
+		gc["speechConfig"] = ordered(sc, "multiSpeakerVoiceConfig", "voiceConfig", "languageCode")
+		generationConfig = gc
+	}
 	return ordered(map[string]interface{}{
 		"contents":         orderedContents,
 		"generationConfig": ordered(generationConfig, "responseModalities", "speechConfig", "responseFormat"),

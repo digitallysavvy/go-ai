@@ -703,6 +703,11 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			Err:         streamErr,
 		}, nil, true
 
+	case "ping":
+		// TS 9754014925: the Gateway passes every server part through, so a
+		// forwarded keep-alive is a { type: 'ping' } part (cr-r88-stream-to-provg 1).
+		return &provider.StreamChunk{Type: provider.ChunkTypePing}, nil, true
+
 	default:
 		// Skip unknown chunk types and get next chunk
 		return nil, nil, false

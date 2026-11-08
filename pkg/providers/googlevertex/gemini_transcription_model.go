@@ -221,7 +221,40 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	if err != nil {
 		return nil, err
 	}
-	audioConfig := buildVertexAudioTranscriptionConfig(transcriptionOpts)
+	// TS 41465fd1b6: the shared word granularity turns on wordTimestamp when
+	// the provider option leaves it unset; a disabling option wins with a
+	// warning, and caption segments are not available.
+	warnings := []types.Warning{}
+	wantsWord, wantsSegment := false, false
+	for _, g := range opts.TimestampGranularities {
+		switch g {
+		case provider.TranscriptionTimestampGranularityWord:
+			wantsWord = true
+		case provider.TranscriptionTimestampGranularitySegment:
+			wantsSegment = true
+		}
+	}
+	wordTimestampDisabled := transcriptionOpts.WordTimestamp != nil && !*transcriptionOpts.WordTimestamp
+	if wantsWord && wordTimestampDisabled {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "timestampGranularities",
+			Details: "The provider wordTimestamp option is false and overrides the requested word timings.",
+		})
+	}
+	if wantsSegment {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "timestampGranularities",
+			Details: "Vertex Gemini transcription returns word timings and does not provide separate caption segments.",
+		})
+	}
+	resolvedOpts := transcriptionOpts
+	if transcriptionOpts.WordTimestamp == nil && wantsWord {
+		enabled := true
+		resolvedOpts.WordTimestamp = &enabled
+	}
+	audioConfig := buildVertexAudioTranscriptionConfig(resolvedOpts)
 
 	reqBody := map[string]interface{}{
 		"contents": []map[string]interface{}{
@@ -261,6 +294,7 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 
 	var plainText, transcriptionText strings.Builder
 	var segments []types.TranscriptionTimestamp
+	var words []types.TranscriptionWord
 	var language string
 	languageSet := false
 	if len(response.Candidates) > 0 {
@@ -281,6 +315,7 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 					if word.Word == nil || !ok1 || !ok2 {
 						continue
 					}
+					words = append(words, types.TranscriptionWord{Text: *word.Word, StartSecond: startSecond, EndSecond: endSecond})
 					segments = append(segments, types.TranscriptionTimestamp{
 						Text:  *word.Word,
 						Start: startSecond,
@@ -299,6 +334,11 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		text = transcriptionText.String()
 	}
 
+	if wantsWord && !wordTimestampDisabled && len(words) == 0 && providerutils.JSTrim(text) != "" {
+		const msg = "The Vertex Gemini transcription response omitted the requested word timings."
+		warnings = append(warnings, types.Warning{Type: "other", Message: msg})
+	}
+
 	var providerMetadata map[string]interface{}
 	if response.UsageMetadata != nil {
 		providerMetadata = map[string]interface{}{
@@ -314,9 +354,10 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	return &types.TranscriptionResult{
 		Text:             text,
 		Segments:         segments,
+		Words:            words,
 		Timestamps:       segments,
 		Language:         language,
-		Warnings:         []types.Warning{},
+		Warnings:         warnings,
 		ProviderMetadata: providerMetadata,
 		ProviderUsage:    providerUsage,
 		Response: &types.ResponseMetadata{

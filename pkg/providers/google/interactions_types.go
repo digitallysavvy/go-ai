@@ -38,12 +38,17 @@ type GoogleInteractionsProviderOptions struct {
 	Environment      interface{}
 	PollingTimeoutMs int
 	Background       *bool
+	// Labels are user-defined metadata sent as the top-level request
+	// `labels` (TS providerOptions.google.labels, a210a29f9b). A non-nil
+	// empty map is sent as {}; nil sends none.
+	Labels map[string]string
 }
 
 type interactionsRequest struct {
 	Model             string                   `json:"model,omitempty"`
 	Agent             string                   `json:"agent,omitempty"`
 	Input             interface{}              `json:"input"`
+	Labels            *map[string]string       `json:"labels,omitempty"`
 	SystemInstruction string                   `json:"system_instruction,omitempty"`
 	Tools             []map[string]interface{} `json:"tools,omitempty"`
 	// ResponseFormat is a polymorphic array of entries (TS

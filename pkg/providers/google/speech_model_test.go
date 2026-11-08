@@ -79,7 +79,12 @@ func TestGoogleSpeechModelRequestAndWAVResponse(t *testing.T) {
 	if len(result.Audio) != 44+len(pcm) || string(result.Audio[:4]) != "RIFF" {
 		t.Fatalf("audio result len=%d", len(result.Audio))
 	}
-	if len(result.Warnings) != 2 {
+	// TS 3c6fb4322c: language is forwarded as speechConfig.languageCode
+	// (no language warning); only speed warns.
+	if lc := gen["speechConfig"].(map[string]interface{})["languageCode"]; lc != "en" {
+		t.Fatalf("languageCode = %#v", lc)
+	}
+	if len(result.Warnings) != 1 {
 		t.Fatalf("warnings = %#v", result.Warnings)
 	}
 	meta := result.ProviderMetadata["google"].(map[string]interface{})

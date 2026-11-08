@@ -10,12 +10,6 @@ import (
 	"unicode/utf16"
 )
 
-// maxAccumulatorArrayIndex bounds the array index a streamed path may address.
-// TS builds sparse JS arrays in O(1); Go materializes the skipped slots, so an
-// index such as `$.l[999999999]` in a hostile or corrupt frame would allocate
-// gigabytes. No real function call has arrays this large.
-const maxAccumulatorArrayIndex = 1 << 16
-
 // PartialArg mirrors TS `PartialArg` (google-json-accumulator.ts): one
 // streamed leaf value contributing to a function call's arguments, addressed
 // by a `$.`-prefixed JSON path.
@@ -144,6 +138,12 @@ func (g *GoogleJSONAccumulator) processPartialArgs(partialArgs []PartialArg) (ac
 		if err != nil {
 			failure = err
 			break
+		}
+		// TS 26fc2a998f: an array index that leaves a gap is skipped (no
+		// state change, no text), which also bounds allocation by the
+		// input size.
+		if !hasContiguousIndexes(g.accumulatedArgs, segments) {
+			continue
 		}
 
 		existingValue, existingOK := getNestedValue(g.accumulatedArgs, segments)
@@ -439,10 +439,9 @@ func parseJSONPath(rawPath string) ([]interface{}, error) {
 		for _, m := range bracketIndexRe.FindAllStringSubmatch(part[bracketIdx:], -1) {
 			n, err := strconv.Atoi(m[1])
 			if err != nil {
+				// Too large for an int: never contiguous, so the argument
+				// is skipped by hasContiguousIndexes.
 				n = math.MaxInt
-			}
-			if n > maxAccumulatorArrayIndex {
-				return nil, fmt.Errorf("google json accumulator: array index %s in path %q exceeds the supported maximum of %d", m[1], rawPath, maxAccumulatorArrayIndex)
 			}
 			segments = append(segments, n)
 		}
@@ -482,6 +481,50 @@ func getNestedValue(root *orderedMap, segments []interface{}) (interface{}, bool
 		}
 	}
 	return current, true
+}
+
+// hasContiguousIndexes ports TS hasContiguousIndexes
+// (google-json-accumulator.ts, 26fc2a998f): every array index on the path is
+// an existing element or the next one. A missing or null parent counts as
+// length 0 (it is replaced with a new array); an object parent is not
+// checked.
+//
+// Input: ({items:["a"]}, ["items",1]) or ({items:["a"]}, ["items",5])
+// Output: true or false
+func hasContiguousIndexes(root *orderedMap, segments []interface{}) bool {
+	var current interface{} = root
+	for _, seg := range segments {
+		if idx, isIndex := seg.(int); isIndex {
+			switch c := current.(type) {
+			case []interface{}:
+				if idx > len(c) {
+					return false
+				}
+			case nil:
+				if idx > 0 {
+					return false
+				}
+			}
+		}
+		// current = own property of current, else undefined.
+		var next interface{}
+		switch c := current.(type) {
+		case *orderedMap:
+			key, isKey := seg.(string)
+			if !isKey {
+				key = strconv.Itoa(seg.(int))
+			}
+			next, _ = c.get(key)
+		case []interface{}:
+			if idx, isIndex := seg.(int); isIndex && idx >= 0 && idx < len(c) {
+				if _, isHole := c[idx].(arrayHole); !isHole {
+					next = c[idx]
+				}
+			}
+		}
+		current = next
+	}
+	return true
 }
 
 // arrayHole marks an array slot that no path has written. A JS sparse array

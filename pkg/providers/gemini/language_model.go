@@ -233,17 +233,25 @@ var jsonResponseToolModelPattern = regexp.MustCompile(`(?i)(^|/)gemini-`)
 // only with automatic tool choice, so a forced tool choice (required / a
 // specific tool) also needs the response tool (TS #21989).
 func (m *LanguageModel) withJSONResponseTool(opts *provider.GenerateOptions) (*provider.GenerateOptions, string) {
-	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, opts.Tools) || !jsonResponseToolModelPattern.MatchString(m.modelID) {
+	// TS 32dc1d2d17: enforce the caller's tool choice before the JSON
+	// response fallback can replace it with a forced call to the synthetic
+	// response tool: with none, only function tools take part (as in TS,
+	// the options pass through unchanged when no rewrite happens).
+	tools := opts.Tools
+	if opts.ToolChoice.Type == types.ToolChoiceNone {
+		tools = functionToolsOnly(tools)
+	}
+	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, tools) || !jsonResponseToolModelPattern.MatchString(m.modelID) {
 		return opts, ""
 	}
 	forced := opts.ToolChoice.Type == types.ToolChoiceRequired || opts.ToolChoice.Type == types.ToolChoiceTool
 	if GetModelCapabilities(m.modelID).UsesGemini3Features && !forced {
 		return opts, ""
 	}
-	responseTool := providerutils.NewJSONResponseTool(opts.ResponseFormat, opts.Tools)
+	responseTool := providerutils.NewJSONResponseTool(opts.ResponseFormat, tools)
 	rewritten := *opts
 	rewritten.ResponseFormat = nil
-	rewritten.Tools = append(append([]types.Tool(nil), opts.Tools...), responseTool)
+	rewritten.Tools = append(append([]types.Tool(nil), tools...), responseTool)
 	rewritten.ToolChoice = providerutils.JSONResponseToolChoice(opts.ToolChoice, responseTool.Name)
 	return &rewritten, responseTool.Name
 }

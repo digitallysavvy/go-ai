@@ -146,8 +146,6 @@ func TestGoogleJSONAccumulator_ConflictingPathsFailWithoutPanic(t *testing.T) {
 		{"key on an array", []PartialArg{str("$.a[0]", "x"), str("$.a.b", "y")}},
 		{"root index", []PartialArg{str("$.[0]", "x")}},
 		{"string onto number", []PartialArg{num("$.a", 1), str("$.a", "x")}},
-		{"index beyond the supported maximum", []PartialArg{str("$.a[999999999]", "x")}},
-		{"index beyond int", []PartialArg{str("$.a[99999999999999999999999]", "x")}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -160,22 +158,23 @@ func TestGoogleJSONAccumulator_ConflictingPathsFailWithoutPanic(t *testing.T) {
 	}
 }
 
-// Skipped array slots are holes: a string for one starts a value (no
-// continuation), and they print as null. The stream text and the final JSON
-// still agree because the closing delta is counted in UTF-16 code units.
+// TS 26fc2a998f: an array index that leaves a gap is skipped (no state, no
+// text), so a huge index no longer fails the stream or allocates; the stream
+// text and the final JSON still agree because the closing delta is counted
+// in UTF-16 code units.
 func TestGoogleJSONAccumulator_SparseArrayAndUTF16Closing(t *testing.T) {
 	s := func(path, v string) PartialArg { return PartialArg{JSONPath: path, StringValue: &v} }
 	acc := NewGoogleJSONAccumulator()
-	r1 := acc.ProcessPartialArgs([]PartialArg{s("$.l[2]", "c"), s("$.l[0]", "😀")})
-	if got, want := r1.TextDelta, `{"l":["c","😀"`; got != want {
+	r1 := acc.ProcessPartialArgs([]PartialArg{s("$.l[2]", "c"), s("$.l[0]", "😀"), s("$.l[5]", "x"), s("$.m[999999999]", "y"), s("$.n[99999999999999999999999]", "z")})
+	if got, want := r1.TextDelta, `{"l":["😀"`; got != want {
 		t.Fatalf("textDelta = %q, want %q", got, want)
 	}
 	final, closing := acc.Finalize()
-	if want := `{"l":["😀",null,"c"]}`; final != want {
+	if want := `{"l":["😀"]}`; final != want {
 		t.Fatalf("final = %q, want %q", final, want)
 	}
 	// TS slices the final JSON by the UTF-16 length of the streamed text.
-	if closing == "" || strings.Contains(closing, "�") {
+	if closing != "]}" {
 		t.Fatalf("closing delta = %q", closing)
 	}
 }

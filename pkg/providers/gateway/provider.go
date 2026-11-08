@@ -92,6 +92,17 @@ func (t *gatewayAuthTransport) RoundTrip(req *http.Request) (*http.Response, err
 }
 
 func (t *gatewayAuthTransport) roundTrip(req *http.Request) (*http.Response, error) {
+	// A redirect hop to another origin gets no credentials: the transport
+	// runs once per hop, while TS adds the headers once per call and fetch
+	// drops Authorization on a cross-origin redirect (credential transport
+	// class sweep, S2).
+	if gatewayCrossOriginRedirectHop(req) {
+		resp, err := t.base.RoundTrip(req.Clone(req.Context()))
+		if err != nil && t.custom {
+			return nil, customFetchError(err)
+		}
+		return resp, err
+	}
 	token, authMethod, err := t.resolver(req.Context())
 	if err != nil {
 		return nil, err
@@ -111,6 +122,23 @@ func (t *gatewayAuthTransport) roundTrip(req *http.Request) (*http.Response, err
 		return nil, customFetchError(err)
 	}
 	return resp, err
+}
+
+// gatewayCrossOriginRedirectHop reports whether req is a net/http redirect
+// hop whose origin differs from the first request of the chain (fails
+// closed on an unparsable URL).
+func gatewayCrossOriginRedirectHop(req *http.Request) bool {
+	if req == nil || req.Response == nil {
+		return false
+	}
+	first := req
+	for first.Response != nil && first.Response.Request != nil {
+		first = first.Response.Request
+	}
+	if first == req || first.URL == nil || req.URL == nil {
+		return true
+	}
+	return !providerutils.IsSameOrigin(req.URL.String(), first.URL.String())
 }
 
 func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver) *http.Client {
@@ -160,6 +188,14 @@ type Config struct {
 
 	// APIKey is the AI Gateway API key
 	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
+	//
+	// If neither APIKey nor AI_GATEWAY_API_KEY is a non-empty value, the
+	// provider authenticates with the Vercel OIDC token instead, resolved for
+	// each request (OIDCTokenFunc, else VERCEL_OIDC_TOKEN). On Vercel
+	// deployments this needs no configuration; locally, run `vercel env pull`
+	// or `vercel dev`. A non-empty configured key is always used instead of
+	// OIDC, even if it is invalid. With no OIDC token either, requests fail
+	// with a GatewayAuthenticationError ("No authentication provided").
 	APIKey string
 
 	// APIKeyFunc resolves the API key or Vercel access token before each

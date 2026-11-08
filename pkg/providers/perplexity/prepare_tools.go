@@ -16,6 +16,11 @@ func preparePerplexityTools(tools []types.Tool, toolChoice types.ToolChoice) ([]
 	var prepared []map[string]interface{}
 	var warnings []types.Warning
 
+	// TS 7772d0ca0f: toolChoice none sends no tools and warns about nothing.
+	if toolChoice.Type == types.ToolChoiceNone {
+		return nil, nil
+	}
+
 	for _, tool := range tools {
 		if tool.Type == types.ToolTypeProviderDefined {
 			warnings = append(warnings, types.Warning{

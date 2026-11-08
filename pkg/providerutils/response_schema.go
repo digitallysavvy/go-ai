@@ -195,9 +195,24 @@ var (
 		)),
 	)
 
-	zCohereTokens = zObj(fl("input_tokens", zNum), fl("output_tokens", zNum))
+	// cohereUsageSchema (TS 3aad18a417): every field is nullish, and
+	// billed_units / tokens are nullish loose objects with nullish numbers.
+	zCohereTokens = zObj(fl("input_tokens", nNum), fl("output_tokens", nNum))
+
+	// cohereCitationSchema (TS cohere-citations.ts): every citation field is
+	// nullish; a source references a document (loose object) or tool output.
+	zCohereCitation = zObj(
+		fl("start", nNum), fl("end", nNum), fl("text", nStr),
+		fl("sources", zNullish(zArr(zObj(
+			fl("type", nStr), fl("id", nStr),
+			fl("document", zNullish(zObj(fl("id", nStr), fl("text", nStr), fl("title", nStr)))),
+			fl("tool_output", zNullish(zObj())),
+		)))),
+		fl("type", nStr),
+	)
 
 	zCohereResponse = zObj(
+		fl("id", nStr),
 		fl("generation_id", nStr),
 		fl("message", zObj(
 			fl("role", zStr),
@@ -210,21 +225,14 @@ var (
 				fl("id", zStr), fl("type", zLit("function")),
 				fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
 			)))),
-			fl("citations", zNullish(zArr(zObj(
-				fl("start", zNum), fl("end", zNum), fl("text", zStr),
-				fl("sources", zArr(zObj(
-					fl("type", zOptional(zStr)), fl("id", zOptional(zStr)),
-					fl("document", zObj(fl("id", zOptional(zStr)), fl("text", zStr), fl("title", zStr))),
-				))),
-				fl("type", zOptional(zStr)),
-			)))),
+			fl("citations", zNullish(zArr(zCohereCitation))),
 		)),
 		fl("finish_reason", zStr),
-		fl("usage", zObj(
+		fl("usage", zNullish(zObj(
 			fl("billed_units", zNullish(zCohereTokens)),
-			fl("tokens", zCohereTokens),
+			fl("tokens", zNullish(zCohereTokens)),
 			fl("cached_tokens", nNum),
-		)),
+		))),
 	)
 
 	zAlibabaResponse = zObj(
@@ -283,6 +291,27 @@ func ValidateChatResponse(body []byte, kind ChatResponseKind) error {
 		return err
 	}
 	if bad := kind.node()(value, true, nil); bad != nil {
+		return bad
+	}
+	return nil
+}
+
+// ValidateCohereCitations checks the citations of a Cohere `citation-start`
+// stream event (TS cohereChatChunkSchema, 033a980fee): nil (absent or null),
+// one citation, or an array of citations, each against cohereCitationSchema.
+// A nil result means the TS parse succeeds; the error is a *ChunkSchemaError.
+func ValidateCohereCitations(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+	path := []interface{}{"delta", "message", "citations"}
+	if arr, ok := value.([]interface{}); ok {
+		if bad := zArr(zCohereCitation)(arr, true, path); bad != nil {
+			return bad
+		}
+		return nil
+	}
+	if bad := zCohereCitation(value, true, path); bad != nil {
 		return bad
 	}
 	return nil

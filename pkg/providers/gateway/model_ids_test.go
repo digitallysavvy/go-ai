@@ -81,20 +81,20 @@ func catalogs() map[string][]string {
 
 func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 	want := map[string]int{
-		"language":      319,
+		"language":      318,
 		"embedding":     28,
-		"image":         37,
-		"video":         39,
+		"image":         39,
+		"video":         37,
 		"reranking":     9,
 		"speech":        24,
 		"transcription": 16,
-		"realtime":      11,
+		"realtime":      10,
 		"decision":      14,
 	}
 	got := catalogs()
 	for kind, n := range want {
 		if len(got[kind]) != n {
-			t.Errorf("%s catalog length = %d, want %d (TS 3fab50aa9b)", kind, len(got[kind]), n)
+			t.Errorf("%s catalog length = %d, want %d (TS 0f3a85f92d)", kind, len(got[kind]), n)
 		}
 	}
 }

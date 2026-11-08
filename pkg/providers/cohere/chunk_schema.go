@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // validateCohereChunk mirrors the TS cohereChatChunkSchema discriminated
@@ -39,8 +41,29 @@ func validateCohereChunk(data []byte) error {
 	}
 
 	switch typ {
-	case "citation-start", "citation-end", "tool-call-end":
+	case "citation-end", "tool-call-end":
 		return nil
+	case "citation-start":
+		// TS 033a980fee: index nullish number; delta / message nullish
+		// objects; citations nullish, one citation or an array of them.
+		if v, ok := top["index"]; ok && v != nil && !num(v) {
+			return fail("index", "number")
+		}
+		if v, ok := top["delta"]; ok && v != nil {
+			delta := obj(v)
+			if delta == nil {
+				return fail("delta", "object")
+			}
+			if mv, ok := delta["message"]; ok && mv != nil {
+				message := obj(mv)
+				if message == nil {
+					return fail("delta.message", "object")
+				}
+				if err := providerutils.ValidateCohereCitations(message["citations"]); err != nil {
+					return err
+				}
+			}
+		}
 	case "content-start":
 		if !num(top["index"]) {
 			return fail("index", "number")
@@ -78,14 +101,21 @@ func validateCohereChunk(data []byte) error {
 		if usage == nil {
 			return fail("delta.usage", "object")
 		}
-		tokens := obj(usage["tokens"])
-		if tokens == nil || !num(tokens["input_tokens"]) || !num(tokens["output_tokens"]) {
-			return fail("delta.usage.tokens", "input_tokens/output_tokens numbers")
-		}
-		if billed, ok := usage["billed_units"]; ok && billed != nil {
-			b := obj(billed)
-			if b == nil || !num(b["input_tokens"]) || !num(b["output_tokens"]) {
-				return fail("delta.usage.billed_units", "input_tokens/output_tokens numbers")
+		// cohereUsageSchema (TS 3aad18a417): tokens and billed_units are
+		// nullish objects whose counts are nullish numbers.
+		for _, key := range []string{"tokens", "billed_units"} {
+			v, ok := usage[key]
+			if !ok || v == nil {
+				continue
+			}
+			b := obj(v)
+			if b == nil {
+				return fail("delta.usage."+key, "object")
+			}
+			for _, f := range []string{"input_tokens", "output_tokens"} {
+				if c, ok := b[f]; ok && c != nil && !num(c) {
+					return fail("delta.usage."+key+"."+f, "number")
+				}
 			}
 		}
 		if c, ok := usage["cached_tokens"]; ok && c != nil && !num(c) {

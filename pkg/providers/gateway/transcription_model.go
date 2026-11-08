@@ -132,6 +132,15 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if warnings == nil {
 		warnings = []types.Warning{}
 	}
+	// TS 41465fd1b6: the adapter does not forward the shared
+	// timestampGranularities option and says so when one was requested.
+	if len(opts.TimestampGranularities) > 0 {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "timestampGranularities",
+			Details: "The AI Gateway adapter does not forward the shared timestampGranularities option.",
+		})
+	}
 	rawBody := parseGatewayTranscriptionRawBody(httpResp.Body)
 	if isXaiTranscriptionModel(m.modelID) && requestsXaiDiarization(opts.ProviderOptions) && !containsSpeaker(rawBody) {
 		warnings = append(warnings, types.Warning{
@@ -140,9 +149,18 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Details: "AI Gateway does not currently expose xAI speaker diarization metadata.",
 		})
 	}
+	// TS: words are passed through when the response has them (nullish).
+	var words []types.TranscriptionWord
+	if response.Words != nil {
+		words = make([]types.TranscriptionWord, 0, len(*response.Words))
+		for _, w := range *response.Words {
+			words = append(words, types.TranscriptionWord{Text: w.Text, StartSecond: w.StartSecond, EndSecond: w.EndSecond})
+		}
+	}
 	return &types.TranscriptionResult{
 		Text:              response.Text,
 		Segments:          segments,
+		Words:             words,
 		Language:          response.Language,
 		DurationInSeconds: response.DurationInSeconds,
 		Timestamps:        segments,
@@ -171,6 +189,7 @@ func (m *TranscriptionModel) getModelConfigHeaders() map[string]string {
 type gatewayTranscriptionResponse struct {
 	Text              string                 `json:"text"`
 	Segments          []gatewaySegment       `json:"segments,omitempty"`
+	Words             *[]gatewaySegment      `json:"words"`
 	Language          string                 `json:"language,omitempty"`
 	DurationInSeconds *float64               `json:"durationInSeconds,omitempty"`
 	Warnings          []types.Warning        `json:"warnings,omitempty"`

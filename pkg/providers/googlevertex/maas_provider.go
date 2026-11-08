@@ -107,6 +107,11 @@ type maasAuthTransport struct {
 	base        stdhttp.RoundTripper
 	headersFunc func(ctx context.Context) (map[string]string, error)
 	authToken   func(ctx context.Context) (string, error)
+	// baseURL is the MaaS API base URL. Credentials and custom headers go
+	// only to requests with the same origin (TS 977231e913
+	// google-vertex-maas-provider-node.ts isSameOrigin check), so a
+	// cross-origin redirect hop or a foreign URL never receives them.
+	baseURL string
 }
 
 func (t *maasAuthTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
@@ -130,6 +135,12 @@ func (t *maasAuthTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, 
 		bodyBytes = applyMaasMaxTokensDefault(bodyBytes)
 		clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		clone.ContentLength = int64(len(bodyBytes))
+	}
+	// Credentials only go to the MaaS API. Other URLs (e.g. image URLs from
+	// a response, or the hops of a redirect to another origin) are fetched
+	// without them. IsSameOrigin fails closed on a parse error, as TS does.
+	if !providerutils.IsSameOrigin(clone.URL.String(), t.baseURL) {
+		return t.base.RoundTrip(clone)
 	}
 	if t.headersFunc != nil {
 		headers, err := t.headersFunc(req.Context())
@@ -240,6 +251,7 @@ func (p *MaaSProvider) init() error {
 		base:        baseTransport,
 		headersFunc: headersFunc,
 		authToken:   authToken,
+		baseURL:     baseURL,
 	}
 
 	p.provider = openai.New(openai.Config{
