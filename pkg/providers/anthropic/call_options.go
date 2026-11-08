@@ -247,7 +247,7 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 			return fmt.Errorf("speed: invalid value %q", o.Speed)
 		}
 	}
-	if o.ServiceTier != "" && o.ServiceTier != "auto" && o.ServiceTier != "standard_only" {
+	if o.ServiceTier != "" && o.ServiceTier != "auto" && o.ServiceTier != "standard_only" && o.ServiceTier != "standard" && o.ServiceTier != "priority" {
 		return fmt.Errorf("serviceTier: invalid value %q", o.ServiceTier)
 	}
 	if o.InferenceGeo != "" && o.InferenceGeo != "us" && o.InferenceGeo != "global" {

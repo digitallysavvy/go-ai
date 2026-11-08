@@ -329,13 +329,6 @@ func TestR88provaToolsetSchemaEnum(t *testing.T) {
 // 0f3a85f92d) whose TS change a later round 88 commit ports.
 var r88provaPending = map[string]string{
 	"should pass sanitized zod output schema as output_config.format":                                                   "r88 pending",
-	"should expose container information as provider metadata":                                                          "r88 pending: 8291ccf237 service tier",
-	"should stream the tool call":                                                                                       "r88 pending: 8291ccf237 / 9754014925",
-	"should support tools with empty parameters in streaming":                                                           "r88 pending: 8291ccf237 / 9754014925",
-	"should stream programmatic tool calling with multiple message_start/stop sequences":                                "r88 pending: 8291ccf237 / 9754014925",
-	"should stream web search tool results":                                                                             "r88 pending: 8291ccf237 / 9754014925",
-	"should stream tool search bm25 results":                                                                            "r88 pending: 8291ccf237 / 9754014925",
-	`reads the legacy "vertex" key when "googleVertex" is absent`:                                                       "r88 pending: 6400cf8b88",
 	"should send tools added by value as tool definitions with the inline tools beta":                                   "r88 pending: 457dc40d06",
 	"should send the same definition for streaming and non-streaming requests":                                          "r88 pending: 457dc40d06",
 	"should warn and ignore computer tools added by value":                                                              "r88 pending: 457dc40d06",
@@ -501,5 +494,180 @@ func TestR88provaLegacyVertexKey(t *testing.T) {
 	b, _ = run(map[string]interface{}{"vertex": map[string]interface{}{"labels": map[string]interface{}{"team": "ai"}}}, nil)
 	if _, ok := b["labels"]; ok {
 		t.Fatal("labels sent")
+	}
+}
+
+// r88provaTierEvents is TS anthropic-service-tier.test.ts events(value).
+func r88provaTierEvents(message map[string]interface{}) []string {
+	return []string{
+		r88provaJSON(map[string]interface{}{"type": "message_start", "message": message}),
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+		`{"type":"message_stop"}`,
+	}
+}
+
+func r88provaTierMessage(extra map[string]interface{}, usageExtra map[string]interface{}) map[string]interface{} {
+	usage := map[string]interface{}{"input_tokens": 1, "output_tokens": 1}
+	for k, v := range usageExtra {
+		usage[k] = v
+	}
+	m := map[string]interface{}{"id": "msg_tier", "type": "message", "role": "assistant", "model": "claude-haiku-4-5", "content": []interface{}{}, "stop_reason": "end_turn", "usage": usage}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return m
+}
+
+// r88provaTierFinishes runs the call and returns providerMetadata.anthropic
+// .serviceTier of the result (generate) or of every finish part (stream).
+func r88provaTierFinishes(t *testing.T, s *r88provaServer, mode string, po map[string]interface{}) ([]interface{}, []types.Warning) {
+	t.Helper()
+	m := r88provaModel(t, s, "claude-haiku-4-5")
+	max := 16
+	opts := &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}}}}, MaxTokens: &max, ProviderOptions: po}
+	tier := func(meta map[string]interface{}) interface{} {
+		a, _ := meta["anthropic"].(map[string]interface{})
+		return a["serviceTier"]
+	}
+	if mode == "generate" {
+		res, err := m.DoGenerate(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []interface{}{tier(res.ProviderMetadata)}, res.Warnings
+	}
+	stream, err := m.DoStream(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := r88provaDrain(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []interface{}
+	var warnings []types.Warning
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeStreamStart {
+			warnings = p.Warnings
+		}
+		if p.Type == provider.ChunkTypeFinish {
+			var meta map[string]interface{}
+			_ = json.Unmarshal(p.ProviderMetadata, &meta)
+			out = append(out, tier(meta))
+		}
+	}
+	return out, warnings
+}
+
+// TS 8291ccf237 anthropic-service-tier.test.ts.
+func TestR88provaServiceTier(t *testing.T) {
+	for _, mode := range []string{"generate", "stream"} {
+		msg := r88provaTierMessage(nil, nil)
+		s := r88provaNewServer(t, r88provaJSON(msg), r88provaTierEvents(msg))
+		r88provaTierFinishes(t, s, mode, map[string]interface{}{"anthropic": map[string]interface{}{"serviceTier": "standard_only"}})
+		if s.body(0)["service_tier"] != "standard_only" {
+			t.Fatalf("%s: service_tier = %v", mode, s.body(0)["service_tier"])
+		}
+
+		// reads the applied tier from usage
+		msg = r88provaTierMessage(map[string]interface{}{"service_tier": "top-level"}, map[string]interface{}{"service_tier": "priority"})
+		s = r88provaNewServer(t, r88provaJSON(msg), r88provaTierEvents(msg))
+		if got, _ := r88provaTierFinishes(t, s, mode, nil); len(got) != 1 || got[0] != "priority" {
+			t.Fatalf("%s: usage tier = %v", mode, got)
+		}
+		// retains top-level compatible-provider metadata
+		msg = r88provaTierMessage(map[string]interface{}{"service_tier": "standard"}, nil)
+		s = r88provaNewServer(t, r88provaJSON(msg), r88provaTierEvents(msg))
+		if got, _ := r88provaTierFinishes(t, s, mode, nil); len(got) != 1 || got[0] != "standard" {
+			t.Fatalf("%s: top-level tier = %v", mode, got)
+		}
+		// absent: no serviceTier key
+		msg = r88provaTierMessage(nil, nil)
+		s = r88provaNewServer(t, r88provaJSON(msg), r88provaTierEvents(msg))
+		if got, _ := r88provaTierFinishes(t, s, mode, nil); len(got) != 1 || got[0] != nil {
+			t.Fatalf("%s: absent tier = %v", mode, got)
+		}
+	}
+
+	// warns and omits a MiniMax-only tier
+	msg := r88provaTierMessage(nil, nil)
+	s := r88provaNewServer(t, r88provaJSON(msg), nil)
+	_, warnings := r88provaTierFinishes(t, s, "generate", map[string]interface{}{"anthropic": map[string]interface{}{"serviceTier": "priority"}})
+	if _, ok := s.body(0)["service_tier"]; ok {
+		t.Fatal("service_tier sent")
+	}
+	found := false
+	for _, w := range warnings {
+		if w.Type == "unsupported" && w.Feature == "serviceTier" && w.Details == `serviceTier "priority" is not supported by anthropic. Use "auto" or "standard_only".` {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %v", warnings)
+	}
+
+	// does not retain a previous message tier when the next message omits it
+	first := r88provaTierMessage(nil, map[string]interface{}{"service_tier": "standard"})
+	second := r88provaTierMessage(map[string]interface{}{"id": "msg_second"}, nil)
+	s = r88provaNewServer(t, "", append(r88provaTierEvents(first), r88provaTierEvents(second)...))
+	if got, _ := r88provaTierFinishes(t, s, "stream", nil); len(got) != 2 || got[0] != "standard" || got[1] != nil {
+		t.Fatalf("two messages: %v", got)
+	}
+
+	// uses a final usage update when the service tier arrives in a delta
+	s = r88provaNewServer(t, "", []string{
+		r88provaJSON(map[string]interface{}{"type": "message_start", "message": r88provaTierMessage(nil, nil)}),
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1,"service_tier":"priority"}}`,
+		`{"type":"message_stop"}`,
+	})
+	if got, _ := r88provaTierFinishes(t, s, "stream", nil); len(got) != 1 || got[0] != "priority" {
+		t.Fatalf("delta tier = %v", got)
+	}
+
+	// a non-string tier fails the response schema (TS z.string().nullish())
+	s = r88provaNewServer(t, r88provaJSON(r88provaTierMessage(map[string]interface{}{"service_tier": 1}, nil)), nil)
+	if _, err := r88provaModel(t, s, "claude-haiku-4-5").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err == nil || !strings.Contains(err.Error(), "Invalid JSON response") || !strings.Contains(err.Error(), "service_tier") {
+		t.Fatalf("non-string service_tier: %v", err)
+	}
+}
+
+// TS 8291ccf237: a minimax-named provider accepts standard / priority and
+// warns for the Anthropic-only tiers; another custom name forwards all.
+func TestR88provaServiceTierPerProvider(t *testing.T) {
+	msg := r88provaTierMessage(nil, nil)
+	for _, tc := range []struct {
+		name, tier string
+		sent       bool
+		warning    string
+	}{
+		{"minimax", "priority", true, ""},
+		{"minimax", "standard", true, ""},
+		{"minimax", "auto", false, `serviceTier "auto" is not supported by minimax. Use "standard" or "priority".`},
+		{"other.messages", "priority", true, ""},
+		{"other.messages", "auto", true, ""},
+	} {
+		s := r88provaNewServer(t, r88provaJSON(msg), nil)
+		m, err := New(Config{APIKey: "k", BaseURL: s.srv.URL, Name: tc.name}).LanguageModel("claude-haiku-4-5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := strings.SplitN(tc.name, ".", 2)[0]
+		res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ProviderOptions: map[string]interface{}{key: map[string]interface{}{"serviceTier": tc.tier}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, sent := s.body(0)["service_tier"]
+		if sent != tc.sent {
+			t.Fatalf("%s %s: sent = %v", tc.name, tc.tier, sent)
+		}
+		got := ""
+		for _, w := range res.Warnings {
+			if w.Feature == "serviceTier" {
+				got = w.Details
+			}
+		}
+		if got != tc.warning {
+			t.Fatalf("%s %s: warning %q", tc.name, tc.tier, got)
+		}
 	}
 }

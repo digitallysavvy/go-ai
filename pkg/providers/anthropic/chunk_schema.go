@@ -207,7 +207,9 @@ var (
 	zAnthropicChunk = zDisc(map[string]zodlite.Node{
 		"message_start": typed("message_start", f("message", zObject(
 			f("id", zNullish(zString)), f("model", zNullish(zString)), f("role", zNullish(zString)),
+			f("service_tier", zNullish(zString)),
 			f("usage", zObject(
+				f("service_tier", zNullish(zString)),
 				f("input_tokens", zNumber),
 				f("cache_creation_input_tokens", zNullish(zNumber)),
 				f("cache_read_input_tokens", zNullish(zNumber)))),
@@ -249,6 +251,7 @@ var (
 				))),
 			)),
 			f("usage", zObject(
+				f("service_tier", zNullish(zString)),
 				f("input_tokens", zNullish(zNumber)),
 				f("output_tokens", zNumber),
 				f("output_tokens_details", zNullish(zObject(f("thinking_tokens", zNullish(zNumber))))),
@@ -311,10 +314,12 @@ var zAnthropicResponse = zObject(
 	f("content", zArray(zResponseContent)),
 	f("stop_reason", zNullish(zString)),
 	f("stop_sequence", zNullish(zString)),
+	f("service_tier", zNullish(zString)),
 	f("stop_details", zNullish(zStopDetails)),
 	f("input_transformations", zNullish(zArray(zInputTransformation))),
 	f("safeguard_results", zNullish(zArray(zSafeguardResult))),
 	f("usage", zObject(
+		f("service_tier", zNullish(zString)),
 		f("input_tokens", zNumber),
 		f("output_tokens", zNumber),
 		f("output_tokens_details", zNullish(zObject(f("thinking_tokens", zNullish(zNumber))))),

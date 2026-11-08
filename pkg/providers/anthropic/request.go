@@ -167,6 +167,23 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	}
 	jsonSchemaFormat := jsonFormat && opts.ResponseFormat.Schema != nil
 
+	// TS 8291ccf237: Anthropic accepts auto / standard_only, MiniMax
+	// standard / priority; another known provider's tier is omitted with a
+	// warning, and other providers forward every value.
+	if o.ServiceTier != "" {
+		var supported []string
+		switch name := m.providerOptionsName(); name {
+		case "anthropic":
+			supported = []string{"auto", "standard_only"}
+		case "minimax":
+			supported = []string{"standard", "priority"}
+		}
+		if supported != nil && o.ServiceTier != supported[0] && o.ServiceTier != supported[1] {
+			warnUnsupported(&warnings, "serviceTier", fmt.Sprintf("serviceTier %q is not supported by %s. Use %q or %q.", o.ServiceTier, m.providerOptionsName(), supported[0], supported[1]))
+			o.ServiceTier = ""
+		}
+	}
+
 	caps := GetModelCapabilities(m.modelID)
 
 	if !caps.IsKnownModel && opts.MaxTokens == nil {

@@ -873,6 +873,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	result.ProviderMetadata = withCustomProviderKeyMetadata(anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
 		inputTransformations: rawJSONValue(response.InputTransformations),
 		safeguardResults:     rawJSONValue(response.SafeguardResults),
+		serviceTier:          firstServiceTier(response.Usage.Raw, response.ServiceTier),
 	}), co.providerOptionsName, co.usedCustomProviderKey)
 
 	return result
@@ -1022,6 +1023,9 @@ func anthropicCompactionMetadata(signature string, hasSignature bool) json.RawMe
 type metadataExtras struct {
 	inputTransformations interface{}
 	safeguardResults     interface{}
+	// serviceTier is the applied tier (TS `usage.service_tier ??
+	// service_tier`), reported only when set.
+	serviceTier *string
 }
 
 func anthropicProviderMetadata(usage anthropicUsage, stopSequence *string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, extrasOpt ...metadataExtras) map[string]interface{} {
@@ -1045,6 +1049,9 @@ func anthropicProviderMetadata(usage anthropicUsage, stopSequence *string, stopD
 		}
 		if extrasOpt[0].safeguardResults != nil {
 			anthropic["safeguardResults"] = extrasOpt[0].safeguardResults
+		}
+		if extrasOpt[0].serviceTier != nil {
+			anthropic["serviceTier"] = *extrasOpt[0].serviceTier
 		}
 	}
 	if container != nil {
@@ -1403,7 +1410,9 @@ type anthropicResponse struct {
 	StopReason   string                `json:"stop_reason"`
 	StopSequence *string               `json:"stop_sequence,omitempty"`
 	StopDetails  *anthropicStopDetails `json:"stop_details,omitempty"`
-	Usage        anthropicUsage        `json:"usage"`
+	// ServiceTier is the response's applied tier (the usage one wins).
+	ServiceTier *string        `json:"service_tier,omitempty"`
+	Usage       anthropicUsage `json:"usage"`
 	// Root-level context management (TS location; takes precedence).
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Container info returned when a container was used/created
@@ -1627,7 +1636,9 @@ type anthropicStream struct {
 	container *anthropicContainerResponse
 	// stop metadata parsed from message_delta for finish provider metadata.
 	stopSequence *string
-	stopDetails  *anthropicStopDetails
+	// serviceTier is the applied tier from message_start / message_delta.
+	serviceTier *string
+	stopDetails *anthropicStopDetails
 	// usesJsonResponseTool is true when the request was built with the synthetic
 	// 'json' tool (jsonTool structured output mode). Text delta events are
 	// suppressed and json tool input_json_delta events are emitted as text chunks.
@@ -2398,7 +2409,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Model                string          `json:"model"`
 					StopReason           string          `json:"stop_reason"`
 					InputTransformations json.RawMessage `json:"input_transformations"`
+					ServiceTier          *string         `json:"service_tier"`
 					Usage                struct {
+						ServiceTier              *string          `json:"service_tier"`
 						InputTokens              int              `json:"input_tokens"`
 						OutputTokens             int              `json:"output_tokens,omitempty"`
 						CacheReadInputTokens     int              `json:"cache_read_input_tokens"`
@@ -2436,6 +2449,11 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 						Text: text,
 						Err:  providererrors.NewInvalidResponseDataError(eventData, text),
 					}, nil
+				}
+				// TS: the applied tier resets on every message_start.
+				s.serviceTier = msg.Message.Usage.ServiceTier
+				if s.serviceTier == nil {
+					s.serviceTier = msg.Message.ServiceTier
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
@@ -2849,10 +2867,11 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				} `json:"delta"`
 				InputTransformations json.RawMessage `json:"input_transformations,omitempty"`
 				Usage                struct {
-					InputTokens              *int `json:"input_tokens,omitempty"`
-					OutputTokens             *int `json:"output_tokens,omitempty"`
-					CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
-					CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+					ServiceTier              *string `json:"service_tier"`
+					InputTokens              *int    `json:"input_tokens,omitempty"`
+					OutputTokens             *int    `json:"output_tokens,omitempty"`
+					CacheReadInputTokens     *int    `json:"cache_read_input_tokens,omitempty"`
+					CacheCreationInputTokens *int    `json:"cache_creation_input_tokens,omitempty"`
 					// Legacy location for context management (Go-only fallback)
 					ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 					// Iterations breakdown for compaction
@@ -2881,6 +2900,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			}
 			s.stopSequence = delta.Delta.StopSequence
 			s.stopDetails = delta.Delta.StopDetails
+			if delta.Usage.ServiceTier != nil {
+				s.serviceTier = delta.Usage.ServiceTier
+			}
 			if v := rawJSONValue(delta.InputTransformations); v != nil {
 				s.inputTransformations = v
 			}
@@ -3116,6 +3138,7 @@ func (s *anthropicStream) finalizeFinish() *provider.StreamChunk {
 	chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, s.contextManagement, s.providerOptionsName, s.usedCustomProviderKey, metadataExtras{
 		inputTransformations: s.inputTransformations,
 		safeguardResults:     s.safeguardResults,
+		serviceTier:          s.serviceTier,
 	})
 	if s.usage.Raw == nil {
 		// No message_start or message_delta yet: TS has no rawUsage, so the
@@ -3420,3 +3443,12 @@ func mapStopReason(stopReason string, isJSONResponseFromTool bool) types.FinishR
 func isTrue(b *bool) bool { return b != nil && *b }
 
 func trueFlag() *bool { b := true; return &b }
+
+// firstServiceTier is TS `usage.service_tier ?? fallback`: the usage object's
+// string tier, else fallback (nil when neither is set).
+func firstServiceTier(usage map[string]interface{}, fallback *string) *string {
+	if v, ok := usage["service_tier"].(string); ok {
+		return &v
+	}
+	return fallback
+}

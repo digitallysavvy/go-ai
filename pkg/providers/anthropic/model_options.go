@@ -273,8 +273,10 @@ type ModelOptions struct {
 	// takes precedence over Fallbacks.
 	FallbacksDefault bool `json:"fallbacksDefault,omitempty"`
 
-	// ServiceTier selects the Anthropic service tier: "auto" or
-	// "standard_only". Serialized as service_tier.
+	// ServiceTier selects the request admission tier, serialized as
+	// service_tier. Anthropic accepts "auto" and "standard_only"; MiniMax
+	// accepts "standard" and "priority". A value for the other one is
+	// omitted with an unsupported warning (TS 8291ccf237).
 	ServiceTier string `json:"serviceTier,omitempty"`
 
 	// AnthropicBeta lists additional anthropic-beta flags to send.
