@@ -74,9 +74,9 @@ func (m *GoogleRealtimeModel) ModelID() string              { return m.modelID }
 // DoCreateClientSecret directly on the concrete type, so losing either
 // method would otherwise only surface as a runtime failure elsewhere.
 var (
-	_ provider.Experimental_RealtimeModelV4    = (*GoogleRealtimeModel)(nil)
-	_ provider.RealtimeClientSecretCreator     = (*GoogleRealtimeModel)(nil)
-	_ provider.RealtimeWebSocketConfigProvider = (*GoogleRealtimeModel)(nil)
+	_ provider.Experimental_RealtimeModelV4     = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator      = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider  = (*GoogleRealtimeModel)(nil)
 	_ provider.RealtimeServerEventParserFactory = (*GoogleRealtimeModel)(nil)
 	_ provider.RealtimeServerConnectionProvider = (*GoogleRealtimeModel)(nil)
 	_ provider.RealtimeIntentCodec              = (*GoogleRealtimeModel)(nil)
