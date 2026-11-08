@@ -602,3 +602,39 @@ func TestR88provcGladiaPolling(t *testing.T) {
 		_ = g
 	})
 }
+
+// TS gladia-transcription-model.test.ts (9207c2b1e0): provider metadata
+// keeps every add-on, and the job-failed message names the error code.
+func TestR88provcGladiaProviderMetadataAddOns(t *testing.T) {
+	result := `{"status":"done","error_code":null,"unknown_top":1,"result":{"metadata":{"audio_duration":36.74,"billing_time":36.74},` +
+		`"transcription":{"full_transcript":"x","languages":["en"],"utterances":[{"start":0.14,"end":5.3,"text":"x","channel":0,"words":[]}],` +
+		`"subtitles":[{"format":"srt","subtitles":"1"}],"sentences":[{"sentence":"s"}]},` +
+		`"translation":{"success":true,"results":[{"languages":["fr"]}]},"summarization":{"results":"A summary."},` +
+		`"named_entity_recognition":{"error":{"status_code":500,"message":"Upstream failure"},"results":[{"entity_type":"ORIGIN"}]},` +
+		`"sentences":{"results":["a","b"]},` +
+		`"audio_to_llm":{"results":[{"prompt":"p","response":null,"success":false,"is_empty":true,"exec_time":0.2,"error":{"status_code":400}}]}}}`
+	_, srv := r88provcNewGladia(t, func(int) (int, string) { return 200, result })
+	res, err := r88provcTranscribe(t, srv, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]interface{}
+	_ = json.Unmarshal([]byte(result), &want)
+	delete(want, "unknown_top")
+	if !reflect.DeepEqual(res.ProviderMetadata["gladia"], want) {
+		t.Fatalf("metadata = %s", r88provcJSON(res.ProviderMetadata["gladia"]))
+	}
+
+	for body, msg := range map[string]string{
+		`{"status":"error","error_code":400,"result":null}`: "Transcription job failed with error code 400",
+		`{"status":"error","error_code":null}`:              "Transcription job failed",
+		`{"status":"error"}`:                                "Transcription job failed",
+	} {
+		_, srv := r88provcNewGladia(t, func(int) (int, string) { return 200, body })
+		_, err := r88provcTranscribe(t, srv, "", nil)
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.Message != msg {
+			t.Fatalf("%s: err = %v", body, err)
+		}
+	}
+}

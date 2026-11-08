@@ -408,13 +408,14 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("auto_highlights_result", zNullish(zRec(zAny))), fl("audio_duration", nNum), fl("error", nStr)),
 		SchemaGladiaUpload: zObj(fl("audio_url", zStr)),
 		SchemaGladiaInit:   zObj(fl("result_url", zStr)),
+		// TS 9207c2b1e0: error_code is z.number().nullish(); the loose result
+		// objects validate only the fields doGenerate reads.
 		SchemaGladiaResult: zObj(fl("status", zodlite.Enum("queued", "processing", "done", "error")),
+			fl("error_code", nNum),
 			fl("result", zNullish(zObj(
 				fl("metadata", zObj(fl("audio_duration", zNum))),
 				fl("transcription", zObj(fl("full_transcript", zStr), fl("languages", zArr(zStr)),
-					fl("utterances", zArr(zObj(fl("start", zNum), fl("end", zNum), fl("text", zStr),
-						fl("speaker", zNullish(zUnionOf(zStr, zNum))), fl("confidence", nNum), fl("language", nStr),
-						fl("words", zNullish(zArr(zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum), fl("confidence", nNum)))))))))))))),
+					fl("utterances", zArr(zObj(fl("start", zNum), fl("end", zNum), fl("text", zStr)))))))))),
 		SchemaCartesiaTranscription: zObj(fl("text", zStr), fl("language", nStr), fl("duration", nNum),
 			fl("words", zNullish(zArr(zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum)))))),
 		SchemaCartesiaAccessToken: zObj(fl("token", zNonEmptyStr)),

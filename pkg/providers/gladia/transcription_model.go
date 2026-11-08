@@ -582,8 +582,13 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		case "done":
 			return raw, flattenHeaders(result.Headers), nil
 		case "error":
-			// TS AISDKError TranscriptionJobFailed (cause: the result).
-			failure := providererrors.NewProviderError("gladia", 0, "", "Transcription job failed", nil)
+			// TS AISDKError TranscriptionJobFailed (cause: the result); the
+			// message names a reported error_code (TS 9207c2b1e0).
+			message := "Transcription job failed"
+			if code, ok := raw["error_code"].(float64); ok {
+				message += " with error code " + providerutils.JSNumberString(code)
+			}
+			failure := providererrors.NewProviderError("gladia", 0, "", message, nil)
 			failure.Data = raw
 			return nil, nil, failure
 		}
@@ -760,53 +765,17 @@ func parseGladiaErrorBody(statusCode int, body []byte) (message string, code str
 	return http.StatusText(statusCode), ""
 }
 
-// gladiaSchemaResult applies the TS result schema (zod strips unknown keys):
-// providerMetadata.gladia holds the parsed result, not the raw response.
+// gladiaSchemaResult applies the TS result schema (TS 9207c2b1e0): the top
+// level is a plain z.object that keeps only status, error_code (null kept)
+// and result, while result and its nested objects are loose, so every
+// add-on (translation, summarization, audio_to_llm, sentences, subtitles,
+// extra metadata, utterance keys) passes through as returned.
 func gladiaSchemaResult(raw map[string]interface{}) map[string]interface{} {
-	pick := func(m map[string]interface{}, keys ...string) map[string]interface{} {
-		out := map[string]interface{}{}
-		for _, k := range keys {
-			if v, ok := m[k]; ok {
-				out[k] = v
-			}
+	out := map[string]interface{}{}
+	for _, k := range []string{"status", "error_code", "result"} {
+		if v, ok := raw[k]; ok {
+			out[k] = v
 		}
-		return out
 	}
-	out := pick(raw, "status")
-	res, ok := raw["result"].(map[string]interface{})
-	if !ok {
-		if v, present := raw["result"]; present && v == nil {
-			out["result"] = nil
-		}
-		return out
-	}
-	r := map[string]interface{}{}
-	if md, ok := res["metadata"].(map[string]interface{}); ok {
-		r["metadata"] = pick(md, "audio_duration")
-	}
-	if tr, ok := res["transcription"].(map[string]interface{}); ok {
-		t := pick(tr, "full_transcript", "languages")
-		if us, ok := tr["utterances"].([]interface{}); ok {
-			utts := make([]interface{}, 0, len(us))
-			for _, u := range us {
-				um, _ := u.(map[string]interface{})
-				item := pick(um, "start", "end", "text", "speaker", "confidence", "language")
-				if ws, ok := um["words"].([]interface{}); ok {
-					words := make([]interface{}, 0, len(ws))
-					for _, w := range ws {
-						wm, _ := w.(map[string]interface{})
-						words = append(words, pick(wm, "word", "start", "end", "confidence"))
-					}
-					item["words"] = words
-				} else if v, present := um["words"]; present && v == nil {
-					item["words"] = nil
-				}
-				utts = append(utts, item)
-			}
-			t["utterances"] = utts
-		}
-		r["transcription"] = t
-	}
-	out["result"] = r
 	return out
 }
