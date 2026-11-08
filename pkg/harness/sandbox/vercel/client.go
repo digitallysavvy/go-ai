@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -107,11 +108,32 @@ func newAPIClient(baseURL string, credentials Credentials, refresh *OIDCRefresh)
 	return &APIClient{
 		http: httpinternal.NewClient(httpinternal.Config{
 			BaseURL:    baseURL,
-			HTTPClient: &http.Client{Transport: transport},
+			HTTPClient: &http.Client{Transport: transport, CheckRedirect: dropCredentialsOnCrossOriginRedirect},
 		}),
 		credentials: credentials,
 		team:        team,
 	}
+}
+
+// dropCredentialsOnCrossOriginRedirect is net/http's default redirect
+// policy (at most 10 hops) plus fetch's rule that a redirect to another
+// origin drops the Authorization header for the rest of the chain.
+// net/http alone forwards it to the same host on another port and to
+// subdomains, and copies it again from the first request on every hop.
+func dropCredentialsOnCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	prev := via[0].URL.String()
+	for _, hop := range append(via[1:len(via):len(via)], req) {
+		next := hop.URL.String()
+		if !fileutil.IsSameOrigin(next, prev) {
+			req.Header.Del("Authorization")
+			return nil
+		}
+		prev = next
+	}
+	return nil
 }
 
 // APIError preserves the Vercel Sandbox API's structured error response.

@@ -259,3 +259,44 @@ func TestR88toolsDiscoveryRejectsDowngradeRedirects(t *testing.T) {
 		})
 	}
 }
+
+// Credential class sweep (r88 Go-only item): with MCPRedirectFollow and no
+// caller redirect policy, a redirect to another origin drops Authorization
+// for the rest of the chain, like fetch.
+func TestR88toolsFollowRedirectDropsAuthorizationAcrossOrigins(t *testing.T) {
+	mk := func(urls ...string) (*http.Request, []*http.Request) {
+		var via []*http.Request
+		for _, u := range urls[:len(urls)-1] {
+			r, _ := http.NewRequest(http.MethodGet, u, nil)
+			via = append(via, r)
+		}
+		req, _ := http.NewRequest(http.MethodGet, urls[len(urls)-1], nil)
+		req.Header.Set("Authorization", "Bearer t")
+		return req, via
+	}
+	for _, tc := range []struct {
+		urls []string
+		keep bool
+	}{
+		{[]string{"https://mcp.example.com/a", "https://mcp.example.com/b"}, true},
+		{[]string{"https://mcp.example.com/a", "https://mcp.example.com:8443/b"}, false},
+		{[]string{"https://mcp.example.com/a", "https://sub.mcp.example.com/b"}, false},
+		{[]string{"https://mcp.example.com/a", "https://other.example/b", "https://mcp.example.com/c"}, false},
+	} {
+		req, via := mk(tc.urls...)
+		if err := mcpFetchRedirectPolicy(req, via); err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Header.Get("Authorization") != ""; got != tc.keep {
+			t.Fatalf("%v: kept Authorization = %v", tc.urls, got)
+		}
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://mcp.example.com/", nil)
+	if err := mcpFetchRedirectPolicy(req, make([]*http.Request, 10)); err == nil {
+		t.Fatal("followed an 11th redirect")
+	}
+	ht := NewHTTPTransport(HTTPTransportConfig{URL: "https://mcp.example.com/mcp", Config: TransportConfig{Redirect: MCPRedirectFollow}})
+	if ht.client.CheckRedirect == nil {
+		t.Fatal("follow mode has no redirect policy")
+	}
+}

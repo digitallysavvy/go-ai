@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -319,6 +320,27 @@ type OAuthConfig struct {
 	RefreshTokenFunc func(ctx context.Context, cfg *OAuthConfig) (accessToken string, expiresIn time.Duration, err error) `json:"-"`
 }
 
+// mcpFetchRedirectPolicy is net/http's default redirect policy (at most 10
+// hops) plus fetch's rule that a redirect to another origin drops the
+// Authorization header for the rest of the chain. net/http alone forwards
+// it to the same host on another port and to subdomains. Used for
+// MCPRedirectFollow when the caller's client has no redirect policy.
+func mcpFetchRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	prev := via[0].URL.String()
+	for _, hop := range append(via[1:len(via):len(via)], req) {
+		next := hop.URL.String()
+		if !fileutil.IsSameOrigin(next, prev) {
+			req.Header.Del("Authorization")
+			return nil
+		}
+		prev = next
+	}
+	return nil
+}
+
 // NewHTTPTransport creates a new HTTP transport
 func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
@@ -344,6 +366,8 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return fmt.Errorf("mcp: server returned redirect to %s; set Redirect: MCPRedirectFollow to allow redirects", req.URL)
 		}
+	} else if httpClient.CheckRedirect == nil {
+		httpClient.CheckRedirect = mcpFetchRedirectPolicy
 	}
 
 	terminateSessionOnClose := true

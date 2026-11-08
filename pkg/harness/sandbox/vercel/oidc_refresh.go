@@ -251,10 +251,20 @@ func (t *oidcTokenTransport) RoundTrip(req *http.Request) (*http.Response, error
 		}
 		return nil, team.err
 	}
+	// A redirect hop follows its Location as given and keeps the token only
+	// while dropCredentialsOnCrossOriginRedirect left the header in place
+	// (no cross-origin hop so far); only the API request itself gets the
+	// team query.
+	if req.Response != nil && req.Header.Get("Authorization") == "" {
+		return t.base.RoundTrip(req)
+	}
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+token)
-	// TS sends `teamId: this.teamId` first on every request (APIClient.path
-	// put the client's team there); the refreshed team takes its place.
-	clone.URL.RawQuery = team.withTeam(clone.URL.RawQuery)
+	if req.Response == nil {
+		// TS sends `teamId: this.teamId` first on every request
+		// (APIClient.path put the client's team there); the refreshed team
+		// takes its place.
+		clone.URL.RawQuery = team.withTeam(clone.URL.RawQuery)
+	}
 	return t.base.RoundTrip(clone)
 }
