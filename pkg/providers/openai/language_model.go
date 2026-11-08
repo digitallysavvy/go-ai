@@ -943,6 +943,19 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 			}
 		}
 
+		// TS f6dbf04b5d / 646a7e3c2e: a refusal is returned as text. When the
+		// model refuses after answering, the content text and the refusal are
+		// two text parts (content first); Text joins them.
+		refusal := chatRefusalText(choice.Message.Refusal)
+		hasRefusal := refusal != ""
+		if hasRefusal {
+			if result.Text != "" {
+				result.Content = append(result.Content, types.TextContent{Text: result.Text})
+			}
+			result.Content = append(result.Content, types.TextContent{Text: refusal})
+			result.Text += refusal
+		}
+
 		// Extract tool calls
 		if len(choice.Message.ToolCalls) > 0 {
 			result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -987,7 +1000,7 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 		}
 
 		// Extract finish reason
-		result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
+		result.FinishReason = mapOpenAIChatFinishReason(choice.FinishReason, hasRefusal)
 		result.RawFinishReason = choice.FinishReason
 
 		result.ProviderMetadata = m.chatProviderMetadata(response.Usage.CompletionTokensDetails, nil)
@@ -998,8 +1011,10 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 	return result
 }
 
-// applyChatLogprobs adds choices[0].logprobs.content to the provider metadata
-// (TS providerMetadata.openai.logprobs; native OpenAI chat only).
+// applyChatLogprobs adds choices[0].logprobs to the provider metadata (TS
+// providerMetadata.openai.logprobs; native OpenAI chat only): the content
+// logprobs followed by the refusal logprobs when either is non-null
+// (646a7e3c2e). An explicitly empty list is reported as [].
 func (m *LanguageModel) applyChatLogprobs(result *types.GenerateResult, body []byte) {
 	if m.provider.config.OpenAICompatible {
 		return
@@ -1008,19 +1023,41 @@ func (m *LanguageModel) applyChatLogprobs(result *types.GenerateResult, body []b
 		Choices []struct {
 			Logprobs *struct {
 				Content json.RawMessage `json:"content"`
+				Refusal json.RawMessage `json:"refusal"`
 			} `json:"logprobs"`
 		} `json:"choices"`
 	}
 	if json.Unmarshal(body, &wire) != nil || len(wire.Choices) == 0 || wire.Choices[0].Logprobs == nil {
 		return
 	}
-	content := wire.Choices[0].Logprobs.Content
-	if len(content) == 0 || string(content) == "null" {
+	lp := wire.Choices[0].Logprobs
+	combined, ok := concatChatLogprobs(lp.Content, lp.Refusal)
+	if !ok {
 		return
 	}
 	if meta, ok := result.ProviderMetadata["openai"].(map[string]interface{}); ok {
-		meta["logprobs"] = content
+		meta["logprobs"] = combined
 	}
+}
+
+// concatChatLogprobs returns [...content ?? [], ...refusal ?? []] and true
+// when either list is non-null.
+func concatChatLogprobs(content, refusal json.RawMessage) ([]json.RawMessage, bool) {
+	isNull := func(raw json.RawMessage) bool { return len(raw) == 0 || string(raw) == "null" }
+	if isNull(content) && isNull(refusal) {
+		return nil, false
+	}
+	out := []json.RawMessage{}
+	for _, raw := range []json.RawMessage{content, refusal} {
+		if isNull(raw) {
+			continue
+		}
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) == nil {
+			out = append(out, items...)
+		}
+	}
+	return out, true
 }
 
 // chatProviderMetadata builds the provider metadata TS OpenAIChatLanguageModel
@@ -1291,6 +1328,31 @@ type openAIMessage struct {
 	Reasoning        *string `json:"reasoning,omitempty"`
 	// Annotations carries url_citation entries (OpenAI web search).
 	Annotations []openAIAnnotation `json:"annotations,omitempty"`
+	// Refusal is set instead of content when the model refuses to answer
+	// (TS openaiChatResponseSchema message.refusal, f6dbf04b5d; the
+	// openai-compatible schema ignores non-string values, 646a7e3c2e).
+	Refusal json.RawMessage `json:"refusal,omitempty"`
+}
+
+// chatRefusalText returns a JSON string value, or "" for null, absent or a
+// non-string value (TS openai-compatible refusal transform).
+func chatRefusalText(raw json.RawMessage) string {
+	var s string
+	if len(raw) == 0 || json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// mapOpenAIChatFinishReason is TS mapOpenAIFinishReason({finishReason,
+// hasRefusal}) and mapOpenAICompatibleFinishReason(raw, {hasRefusal})
+// (f6dbf04b5d, 646a7e3c2e): OpenAI reports a completed response for a
+// refusal, so `stop` with a refusal is content-filter.
+func mapOpenAIChatFinishReason(raw string, hasRefusal bool) types.FinishReason {
+	if raw == "stop" && hasRefusal {
+		return types.FinishReasonContentFilter
+	}
+	return providerutils.MapOpenAIFinishReason(raw)
 }
 
 // openAIAnnotation is a chat completion message/delta annotation.
@@ -1403,7 +1465,14 @@ type openAIStream struct {
 	// "txt-0" for the OpenAI-compatible model).
 	isActiveText bool
 	usage        *openAIUsage
-	logprobs     json.RawMessage
+	// logprobs collects the logprobs of every chunk, content then refusal
+	// per chunk (TS streamedLogprobs, 646a7e3c2e); hasLogprobs is set once
+	// any chunk carried a non-null list.
+	logprobs    []json.RawMessage
+	hasLogprobs bool
+	// hasRefusal: a non-empty refusal delta was streamed (TS hasRefusal);
+	// a `stop` finish then maps to content-filter.
+	hasRefusal bool
 }
 
 // newOpenAIStream creates a new OpenAI stream
@@ -1541,10 +1610,14 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 						} `json:"extra_content,omitempty"`
 					} `json:"tool_calls,omitempty"`
 					Annotations []openAIAnnotation `json:"annotations,omitempty"`
+					// Refusal is streamed instead of content when the model
+					// refuses (TS delta.refusal; compat ignores non-strings).
+					Refusal json.RawMessage `json:"refusal,omitempty"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 				Logprobs     *struct {
 					Content json.RawMessage `json:"content"`
+					Refusal json.RawMessage `json:"refusal"`
 				} `json:"logprobs,omitempty"`
 			} `json:"choices"`
 			Usage *openAIUsage    `json:"usage,omitempty"`
@@ -1642,7 +1715,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		for _, c := range chunkData.Choices {
 			var text string
 			_ = json.Unmarshal(c.Delta.Content, &text) //nolint:errcheck // null / non-string content is not output
-			if text != "" || len(c.Delta.ToolCalls) > 0 || len(c.Delta.Annotations) > 0 {
+			if text != "" || chatRefusalText(c.Delta.Refusal) != "" || len(c.Delta.ToolCalls) > 0 || len(c.Delta.Annotations) > 0 {
 				s.outputStarted = true
 				break
 			}
@@ -1663,8 +1736,13 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		if len(chunkData.Choices) > 0 {
 			choice := chunkData.Choices[0]
 
-			if choice.Logprobs != nil && len(choice.Logprobs.Content) > 0 && string(choice.Logprobs.Content) != "null" {
-				s.logprobs = choice.Logprobs.Content
+			// TS 646a7e3c2e: collect the logprobs of all chunks (content
+			// then refusal) and report the complete list at the end.
+			if choice.Logprobs != nil {
+				if items, ok := concatChatLogprobs(choice.Logprobs.Content, choice.Logprobs.Refusal); ok {
+					s.hasLogprobs = true
+					s.logprobs = append(s.logprobs, items...)
+				}
 			}
 
 			// Reasoning text (OpenAI-compatible hosts): reasoning_content ?? reasoning.
@@ -1685,7 +1763,21 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 
 			// Text chunk: a string, or (compat) an array of text / thinking
 			// parts as TS convertOpenAICompatibleContent reads it.
-			for _, part := range s.contentParts(choice.Delta.Content) {
+			refusal := chatRefusalText(choice.Delta.Refusal)
+			parts := s.contentParts(choice.Delta.Content)
+			if refusal != "" {
+				s.hasRefusal = true
+				// TS f6dbf04b5d (native): an empty `content: ""` delta is
+				// emitted only when no other text delta is in the chunk.
+				if !s.compat && len(parts) == 1 && parts[0].Text == "" && !parts[0].Reasoning {
+					parts = nil
+				}
+				// The refusal is appended to the same text block, after the
+				// content (native) or after content and reasoning (compat
+				// enqueueTextDelta), and before tool calls.
+				parts = append(parts, streaming.CompatContentPart{Text: refusal})
+			}
+			for _, part := range parts {
 				if part.Reasoning {
 					// TS openai-compatible enqueueReasoningDelta ends the
 					// text block first.
@@ -1951,7 +2043,7 @@ func (s *openAIStream) endStream() {
 		}
 		finish := &provider.StreamChunk{
 			Type:            provider.ChunkTypeFinish,
-			FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
+			FinishReason:    mapOpenAIChatFinishReason(s.finishRaw, s.hasRefusal),
 			RawFinishReason: s.finishRaw,
 		}
 		if !s.compat && !s.finishSeen {
@@ -1989,7 +2081,10 @@ func (s *openAIStream) endStream() {
 				meta["rejectedPredictionTokens"] = *details.RejectedPredictionTokens
 			}
 		}
-		if len(s.logprobs) > 0 && !s.compat {
+		if s.hasLogprobs && !s.compat {
+			if s.logprobs == nil {
+				s.logprobs = []json.RawMessage{}
+			}
 			meta["logprobs"] = s.logprobs
 		}
 		all := map[string]interface{}{key: meta}
