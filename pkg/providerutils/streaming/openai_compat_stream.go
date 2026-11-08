@@ -82,6 +82,8 @@ type OpenAICompatStream struct {
 	// isActiveText tracks whether the "txt-0" text block is open (TS
 	// isActiveText).
 	isActiveText bool
+	// hasRefusal: a non-empty refusal delta was streamed (TS hasRefusal).
+	hasRefusal bool
 
 	// finishPending is set once a finish_reason has been observed. The actual
 	// ChunkTypeFinish chunk is not enqueued until the SSE stream truly ends
@@ -245,7 +247,9 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 					Content          json.RawMessage `json:"content"`
 					ReasoningContent *string         `json:"reasoning_content"`
 					Reasoning        *string         `json:"reasoning"`
-					ToolCalls        []struct {
+					// Refusal: TS chunk `refusal`, strings only (646a7e3c2e).
+					Refusal   json.RawMessage `json:"refusal"`
+					ToolCalls []struct {
 						Index    *int    `json:"index"`
 						ID       *string `json:"id"`
 						Type     *string `json:"type"` // nullable mid-stream
@@ -426,6 +430,22 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: part.Text, ID: "txt-0"})
 			}
 
+			// TS 646a7e3c2e: a refusal delta goes through enqueueTextDelta
+			// after the content and before the tool calls; a `stop` finish
+			// then maps to content-filter.
+			if refusal := compatRefusalText(choice.Delta.Refusal); refusal != "" {
+				s.hasRefusal = true
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				}
+				if !s.isActiveText {
+					s.isActiveText = true
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "txt-0"})
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: refusal, ID: "txt-0"})
+			}
+
 			// Tool call delta — accumulate arguments by index, never emit yet.
 			if len(choice.Delta.ToolCalls) > 0 {
 				// TS ends the active reasoning block before tool calls start.
@@ -590,6 +610,11 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 				RawFinishReason:  finishReason,
 				Usage:            s.convertUsage(usage),
 				ProviderMetadata: s.finishMetadata(usage),
+			}
+			if finishReason == "stop" && s.hasRefusal {
+				// TS mapOpenAICompatibleFinishReason(raw, {hasRefusal}); a
+				// provider remap of `stop` (Z.ai) keeps the base result.
+				finish.FinishReason = types.FinishReasonContentFilter
 			}
 			if s.finishErrored {
 				// A parse/error chunk after finish_reason: TS sets the

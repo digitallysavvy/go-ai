@@ -146,6 +146,16 @@ type ToOpenAIMessagesOptions struct {
 	// as *errors.UnsupportedFunctionalityError; ToOpenAIMessages cannot return
 	// the error and falls back to the legacy file part.
 	FileParts FilePartMode
+
+	// MessageNameKey, when set, reads each message's participant name from
+	// providerOptions[MessageNameKey].name (TS OpenAIChatMessageProviderOptions,
+	// 243bf221a8; OpenAI and Azure chat set "openai"). The name is sent on
+	// system, developer, user and assistant messages and wins over the Go-only
+	// types.Message.Name; a tool message with a name sends none and records
+	// the warning "message name on tool messages" (ToOpenAIMessagesWithWarnings).
+	// A non-string name is an InvalidArgumentError ("invalid <key> provider
+	// options") from ToOpenAIMessagesWithError.
+	MessageNameKey string
 }
 
 // FilePartMode selects which TS converter's user file-part rules
@@ -176,6 +186,9 @@ type providerRefResolver struct {
 	// the same rules and custom tool content blocks are rejected.
 	strict bool
 	err    error
+	// warnings are the conversion warnings (TS convertToOpenAIChatMessages
+	// `warnings`).
+	warnings []types.Warning
 }
 
 func (r *providerRefResolver) fail(err error) {
@@ -217,6 +230,14 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 // complete on error (the offending part is emitted in the legacy shape) so
 // callers that ignore the error behave as with ToOpenAIMessages.
 func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessagesOptions) ([]map[string]interface{}, error) {
+	result, _, err := ToOpenAIMessagesWithWarnings(messages, opts...)
+	return result, err
+}
+
+// ToOpenAIMessagesWithWarnings is ToOpenAIMessagesWithError that also returns
+// the conversion warnings (for example a message name on a tool message, see
+// ToOpenAIMessagesOptions.MessageNameKey).
+func ToOpenAIMessagesWithWarnings(messages []types.Message, opts ...ToOpenAIMessagesOptions) ([]map[string]interface{}, []types.Warning, error) {
 	var opt ToOpenAIMessagesOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -227,9 +248,25 @@ func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessage
 	refs := &providerRefResolver{provider: opt.Provider, strict: opt.FileParts == FilePartsOpenAICompatible}
 	result := toOpenAIMessages(messages, opt, refs)
 	if refs.err != nil {
-		return result, refs.err
+		return result, refs.warnings, refs.err
 	}
-	return result, nil
+	return result, refs.warnings, nil
+}
+
+// openAIMessageName returns the participant name of msg: the
+// providerOptions[MessageNameKey].name option when set (fromOption), else
+// the Go-only msg.Name. A non-string option fails like TS
+// parseProviderOptions (recorded on refs).
+func openAIMessageName(msg types.Message, opt ToOpenAIMessagesOptions, refs *providerRefResolver) (name string, has, fromOption bool) {
+	if opt.MessageNameKey != "" {
+		obj, err := providerutils.ParseProviderOptions(opt.MessageNameKey, msg.ProviderOptions, providerutils.OptionSchema{"name": providerutils.OptString})
+		if err != nil {
+			refs.fail(err)
+		} else if v, ok := obj["name"].(string); ok {
+			return v, true, true
+		}
+	}
+	return msg.Name, msg.Name != "", false
 }
 
 // ValidateProviderFileReferences reports the
@@ -283,10 +320,16 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 	result := make([]map[string]interface{}, 0, len(messages))
 
 	for _, msg := range messages {
+		name, hasName, nameFromOption := openAIMessageName(msg, opt, refs)
+
 		// ── Tool role messages ────────────────────────────────────────────────
 		// OpenAI requires: {"role":"tool","tool_call_id":"...","content":"..."}
 		// tool_call_id and content are both top-level; there is no content array.
 		if msg.Role == types.RoleTool {
+			if nameFromOption {
+				// TS 243bf221a8: tool messages carry no name.
+				refs.warnings = append(refs.warnings, types.Warning{Type: "unsupported", Feature: "message name on tool messages"})
+			}
 			for _, part := range msg.Content {
 				if p, ok := part.(types.ToolResultContent); ok {
 					toolMsg := map[string]interface{}{
@@ -340,6 +383,9 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			} else {
 				systemMsg["content"] = text
 			}
+			if hasName {
+				systemMsg["name"] = name // TS 243bf221a8
+			}
 			result = append(result, systemMsg)
 			continue
 		}
@@ -392,8 +438,8 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			if opt.IncludePromptCacheBreakpoint {
 				if textParts, hasBreakpoint := assistantTextPartsWithBreakpoint(msg.Content); hasBreakpoint {
 					openAIMsg["content"] = textParts
-					if msg.Name != "" {
-						openAIMsg["name"] = msg.Name
+					if hasName {
+						openAIMsg["name"] = name
 					}
 					spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 					result = append(result, openAIMsg)
@@ -413,8 +459,8 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 					openAIMsg["content"] = text
 				}
 			}
-			if msg.Name != "" {
-				openAIMsg["name"] = msg.Name
+			if hasName {
+				openAIMsg["name"] = name
 			}
 			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 			result = append(result, openAIMsg)
@@ -438,8 +484,8 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			if reasoning := assistantReasoningContent(msg.Content); opt.ReasoningKey != "" && reasoning != "" {
 				openAIMsg[opt.ReasoningKey] = reasoning
 			}
-			if msg.Name != "" {
-				openAIMsg["name"] = msg.Name
+			if hasName {
+				openAIMsg["name"] = name
 			}
 			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 			result = append(result, openAIMsg)
@@ -558,8 +604,8 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			openAIMsg["content"] = ""
 		}
 
-		if msg.Name != "" {
-			openAIMsg["name"] = msg.Name
+		if hasName {
+			openAIMsg["name"] = name
 		}
 		if !singleTextMetadata {
 			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)

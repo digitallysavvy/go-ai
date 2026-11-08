@@ -133,12 +133,33 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		break
 	}
 
+	// TS 41465fd1b6: xAI returns word timings only; a segment request warns,
+	// a word request answered without words (for non-blank text) warns, and
+	// the words are reported separately when present.
+	warnings := []types.Warning{}
+	if containsGranularity(opts.TimestampGranularities, provider.TranscriptionTimestampGranularitySegment) {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "timestampGranularities",
+			Details: "xAI transcription returns word timings and does not provide separate caption segments."})
+	}
+	if containsGranularity(opts.TimestampGranularities, provider.TranscriptionTimestampGranularityWord) &&
+		len(parsed.Words) == 0 && providerutils.JSTrim(parsed.Text) != "" {
+		warnings = append(warnings, types.Warning{Type: "other", Message: "The xAI transcription response omitted the requested word timings."})
+	}
+	var words []types.TranscriptionWord
+	if len(parsed.Words) > 0 {
+		words = make([]types.TranscriptionWord, len(parsed.Words))
+		for i, w := range parsed.Words {
+			words[i] = types.TranscriptionWord{Text: w.Text, StartSecond: w.Start, EndSecond: w.End}
+		}
+	}
+
 	return &types.TranscriptionResult{
 		Text:              parsed.Text,
 		Segments:          segments,
+		Words:             words,
 		Language:          parsed.Language,
 		DurationInSeconds: parsed.Duration,
-		Warnings:          []types.Warning{},
+		Warnings:          warnings,
 		ProviderMetadata:  providerMetadata,
 		Response: &types.ResponseMetadata{
 			Timestamp: timestamp,
@@ -364,4 +385,13 @@ type xaiTranscriptionResponse struct {
 		End     float64  `json:"end"`
 		Speaker *float64 `json:"speaker"`
 	} `json:"words,omitempty"`
+}
+
+func containsGranularity(list []string, g string) bool {
+	for _, v := range list {
+		if v == g {
+			return true
+		}
+	}
+	return false
 }

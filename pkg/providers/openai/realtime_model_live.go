@@ -1,7 +1,9 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -43,7 +45,43 @@ var (
 	_ provider.Experimental_RealtimeModelV4          = (*OpenAIRealtimeModelLive)(nil)
 	_ provider.RealtimeServerWebSocketConfigProvider = (*OpenAIRealtimeModelLive)(nil)
 	_ provider.RealtimeLifecycleProvider             = (*OpenAIRealtimeModelLive)(nil)
+	_ provider.RealtimeServerConnectionProvider      = (*OpenAIRealtimeModelLive)(nil)
+	_ provider.RealtimeIntentCodec                   = (*OpenAIRealtimeModelLive)(nil)
 )
+
+// liveConversationIntent rejects every intent but conversation (TS
+// assertConversationIntent, 892af4dab7).
+func liveConversationIntent(intent provider.RealtimeSessionIntent) error {
+	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
+		return errors.New("OpenAI Live session intent '" + string(intent) + "' is not supported.")
+	}
+	return nil
+}
+
+// GetServerConnection is GetServerWebSocketConfig for an intent; Live has
+// the conversation endpoint only (TS getServerWebSocketConfig({intent})).
+func (m *OpenAIRealtimeModelLive) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	if err := liveConversationIntent(opts.Intent); err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return m.serverWebSocketConfig(func() (map[string]string, error) { return m.provider.client.RequestHeadersCtx(ctx) })
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent.
+func (m *OpenAIRealtimeModelLive) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	if err := liveConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.BuildSessionConfig(config), nil
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent.
+func (m *OpenAIRealtimeModelLive) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	if err := liveConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.SerializeClientEvent(event)
+}
 
 // DoCreateClientSecret and GetWebSocketConfig are intentionally NOT
 // implemented: short-lived browser credentials are not supported over the
@@ -64,6 +102,10 @@ var (
 // per-connection token/subprotocol. Mirrors TS
 // OpenAIRealtimeModelLive.getServerWebSocketConfig().
 func (m *OpenAIRealtimeModelLive) GetServerWebSocketConfig() (provider.WebSocketConfig, error) {
+	return m.serverWebSocketConfig(m.provider.client.RequestHeaders)
+}
+
+func (m *OpenAIRealtimeModelLive) serverWebSocketConfig(requestHeaders func() (map[string]string, error)) (provider.WebSocketConfig, error) {
 	base := m.provider.config.BaseURL
 	if base == "" {
 		base = DefaultBaseURL
@@ -82,7 +124,7 @@ func (m *OpenAIRealtimeModelLive) GetServerWebSocketConfig() (provider.WebSocket
 
 	// TS getServerWebSocketConfig reads config.headers(): a missing API key
 	// is a LoadAPIKeyError, not a handshake without credentials.
-	headers, err := m.provider.client.RequestHeaders()
+	headers, err := requestHeaders()
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}

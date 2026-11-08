@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -36,6 +37,23 @@ type OpenAIImageModelOptions struct {
 	OutputCompression *int   `json:"outputCompression,omitempty"`
 	InputFidelity     string `json:"inputFidelity,omitempty"`
 	User              string `json:"user,omitempty"`
+
+	// Complexity is how much detail the model puts into the image: "low",
+	// "medium" or "high" (GPT Image 2.6; TS 6549344e0a).
+	Complexity string `json:"complexity,omitempty"`
+	// SafetyIdentifier is a stable end-user identifier (at most 128
+	// characters) for abuse detection.
+	SafetyIdentifier string `json:"safetyIdentifier,omitempty"`
+	// FrameCount is the number of frames (2-64) of an animated GIF
+	// (OutputFormat "gif", generation only).
+	FrameCount *int `json:"frameCount,omitempty"`
+	// FrameDurationMs is the duration of each GIF frame in milliseconds
+	// (20-2000, generation only).
+	FrameDurationMs *int `json:"frameDurationMs,omitempty"`
+	// Markup is a transparent PNG overlaid on the first input image to mark
+	// the regions to change, as an HTTPS URL or a base64 data URL (edits
+	// only; cannot be combined with a mask).
+	Markup string `json:"markup,omitempty"`
 }
 
 // OpenAIImageProviderOptions is kept as an alias for backward compatibility.
@@ -77,6 +95,8 @@ var openaiFileInputSupportedModels = map[string]bool{
 	"gpt-image-2.5-flare-2026-09-08":    true,
 	"gpt-image-2.5-sunburst":            true,
 	"gpt-image-2.5-sunburst-2026-09-08": true,
+	"gpt-image-2.6-flare":               true,
+	"gpt-image-2.6-sunburst":            true,
 	"chatgpt-image-latest":              true,
 }
 
@@ -92,6 +112,8 @@ var openaiModelMaxImagesPerCall = map[string]int{
 	"gpt-image-2.5-flare-2026-09-08":    10,
 	"gpt-image-2.5-sunburst":            10,
 	"gpt-image-2.5-sunburst-2026-09-08": 10,
+	"gpt-image-2.6-flare":               10,
+	"gpt-image-2.6-sunburst":            10,
 	"chatgpt-image-latest":              10,
 }
 
@@ -156,7 +178,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		if err := validateOpenAIImageProviderOptions(opts.ProviderOptions, true); err != nil {
 			return nil, err
 		}
-		return m.doEdit(ctx, opts)
+		markup, err := openAIImageMarkup(opts)
+		if err != nil {
+			return nil, err
+		}
+		return m.doEdit(ctx, opts, markup)
 	}
 
 	if err := validateOpenAIImageProviderOptions(opts.ProviderOptions, false); err != nil {
@@ -243,14 +269,73 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	if openaiOpts.OutputCompression != nil {
 		body["output_compression"] = *openaiOpts.OutputCompression
 	}
+	// TS 6549344e0a: GPT Image 2.6 options.
+	if openaiOpts.Complexity != "" {
+		body["complexity"] = openaiOpts.Complexity
+	}
+	if openaiOpts.FrameCount != nil {
+		body["frame_count"] = *openaiOpts.FrameCount
+	}
+	if openaiOpts.FrameDurationMs != nil {
+		body["frame_duration_ms"] = *openaiOpts.FrameDurationMs
+	}
 	if openaiOpts.User != "" {
 		body["user"] = openaiOpts.User
+	}
+	if openaiOpts.SafetyIdentifier != "" {
+		body["safety_identifier"] = openaiOpts.SafetyIdentifier
 	}
 	return body
 }
 
-func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
-	body, contentType, err := m.buildEditMultipartBody(ctx, opts)
+// openAIImageMarkupInput is the edit markup image: inline bytes from a base64
+// data URL, or an URL to download (TS markupToBlob).
+type openAIImageMarkupInput struct {
+	set       bool
+	url       string
+	data      []byte
+	mediaType string
+}
+
+var openAIImageMarkupDataURL = regexp.MustCompile(`(?s)^data:([^;,]*)(;base64)?,(.*)$`)
+
+// openAIImageMarkup checks providerOptions.openai.markup before the request:
+// it cannot be combined with a mask, and a data URL must be base64 encoded
+// (TS 6549344e0a).
+func openAIImageMarkup(opts *provider.ImageGenerateOptions) (openAIImageMarkupInput, error) {
+	raw, _ := opts.ProviderOptions["openai"].(map[string]interface{})
+	markup, isString := raw["markup"].(string)
+	if !isString {
+		if typed := extractOpenAIImageProviderOptions(opts.ProviderOptions); typed.Markup != "" {
+			markup, isString = typed.Markup, true
+		}
+	}
+	if !isString {
+		return openAIImageMarkupInput{}, nil
+	}
+	if opts.Mask != nil {
+		return openAIImageMarkupInput{}, providererrors.NewArgumentError("providerOptions.openai.markup", "`markup` cannot be combined with `mask`.", nil)
+	}
+	m := openAIImageMarkupDataURL.FindStringSubmatch(markup)
+	if m == nil {
+		return openAIImageMarkupInput{set: true, url: markup}, nil
+	}
+	if m[2] == "" {
+		return openAIImageMarkupInput{}, providererrors.NewArgumentError("providerOptions.openai.markup", "`markup` data URLs must be base64 encoded.", nil)
+	}
+	data, err := fileutil.ConvertBase64ToBytes(m[3])
+	if err != nil {
+		return openAIImageMarkupInput{}, err
+	}
+	mediaType := m[1]
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return openAIImageMarkupInput{set: true, data: data, mediaType: mediaType}, nil
+}
+
+func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOptions, markup openAIImageMarkupInput) (*types.ImageResult, error) {
+	body, contentType, err := m.buildEditMultipartBody(ctx, opts, markup)
 	if err != nil {
 		return nil, err
 	}
@@ -279,50 +364,29 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	return result, nil
 }
 
-func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.ImageGenerateOptions) (io.Reader, string, error) {
+func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.ImageGenerateOptions, markup ...openAIImageMarkupInput) (io.Reader, string, error) {
 	openaiOpts := extractOpenAIImageProviderOptions(opts.ProviderOptions)
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 
 	go func() {
 		err := func() error {
+			field := func(key, value string) error {
+				if value == "" {
+					return nil
+				}
+				return writer.WriteField(key, value)
+			}
+			// TS 5f9bb8eea4 / 6549344e0a convertToFormData order: model,
+			// prompt, image, mask, markup, n, size, quality, background,
+			// output_format, output_compression, complexity, input_fidelity,
+			// moderation, user, safety_identifier.
 			if err := writer.WriteField("model", m.modelID); err != nil {
 				return err
 			}
-			if opts.Prompt != "" {
-				if err := writer.WriteField("prompt", opts.Prompt); err != nil {
-					return err
-				}
+			if err := field("prompt", opts.Prompt); err != nil {
+				return err
 			}
-			if opts.N != nil {
-				if err := writer.WriteField("n", fmt.Sprintf("%d", *opts.N)); err != nil {
-					return err
-				}
-			}
-			if size := firstNonEmpty(openaiOpts.Size, opts.Size); size != "" {
-				if err := writer.WriteField("size", size); err != nil {
-					return err
-				}
-			}
-			for key, value := range map[string]string{
-				"quality":        openaiOpts.Quality,
-				"background":     openaiOpts.Background,
-				"output_format":  openaiOpts.OutputFormat,
-				"input_fidelity": openaiOpts.InputFidelity,
-				"user":           openaiOpts.User,
-			} {
-				if value != "" {
-					if err := writer.WriteField(key, value); err != nil {
-						return err
-					}
-				}
-			}
-			if openaiOpts.OutputCompression != nil {
-				if err := writer.WriteField("output_compression", fmt.Sprintf("%d", *openaiOpts.OutputCompression)); err != nil {
-					return err
-				}
-			}
-
 			imageField := "image"
 			if len(opts.Files) > 1 {
 				imageField = "image[]"
@@ -337,6 +401,44 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 					return err
 				}
 			}
+			if len(markup) > 0 && markup[0].set {
+				if err := writeOpenAIImageMarkup(ctx, writer, markup[0]); err != nil {
+					return err
+				}
+			}
+			if opts.N != nil {
+				if err := writer.WriteField("n", fmt.Sprintf("%d", *opts.N)); err != nil {
+					return err
+				}
+			}
+			if err := field("size", firstNonEmpty(openaiOpts.Size, opts.Size)); err != nil {
+				return err
+			}
+			for _, kv := range [][2]string{
+				{"quality", openaiOpts.Quality},
+				{"background", openaiOpts.Background},
+				{"output_format", openaiOpts.OutputFormat},
+			} {
+				if err := field(kv[0], kv[1]); err != nil {
+					return err
+				}
+			}
+			if openaiOpts.OutputCompression != nil {
+				if err := writer.WriteField("output_compression", fmt.Sprintf("%d", *openaiOpts.OutputCompression)); err != nil {
+					return err
+				}
+			}
+			for _, kv := range [][2]string{
+				{"complexity", openaiOpts.Complexity},
+				{"input_fidelity", openaiOpts.InputFidelity},
+				{"moderation", openaiOpts.Moderation},
+				{"user", openaiOpts.User},
+				{"safety_identifier", openaiOpts.SafetyIdentifier},
+			} {
+				if err := field(kv[0], kv[1]); err != nil {
+					return err
+				}
+			}
 			return writer.Close()
 		}()
 		if err != nil {
@@ -347,6 +449,26 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 	}()
 
 	return pr, writer.FormDataContentType(), nil
+}
+
+// writeOpenAIImageMarkup appends the markup image as a typed Blob: a URL is
+// downloaded through the validated downloader and typed by its content type
+// (TS downloadBlob), a data URL carries its own type.
+func writeOpenAIImageMarkup(ctx context.Context, writer *multipart.Writer, markup openAIImageMarkupInput) error {
+	data, mediaType := markup.data, markup.mediaType
+	if markup.url != "" {
+		res, err := fileutil.DownloadWithMetadata(ctx, markup.url, fileutil.DefaultDownloadOptions())
+		if err != nil {
+			return err
+		}
+		data, mediaType = res.Data, res.ContentType
+	}
+	part, err := providerutils.CreateTypedFormFile(writer, "markup", "blob", mediaType)
+	if err != nil {
+		return err
+	}
+	_, err = part.Write(data)
+	return err
 }
 
 func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
@@ -431,14 +553,23 @@ func openAIImageOptionsSchema(edit bool) providerutils.OptionSchema {
 		"quality":           providerutils.OptEnum("standard", "hd", "low", "medium", "high", "xhigh", "max", "auto"),
 		"background":        providerutils.OptEnum("transparent", "opaque", "auto"),
 		"outputFormat":      providerutils.OptEnum("png", "jpeg", "webp"),
+		"complexity":        providerutils.OptEnum("low", "medium", "high"),
 		"outputCompression": providerutils.OptInt(&zero, &hundred),
 		"user":              providerutils.OptString,
+		"safetyIdentifier":  providerutils.OptStringMax(128),
 	}
+	// TS 5f9bb8eea4 / 6549344e0a: edits add markup and moderation;
+	// generation adds gif and the frame options.
+	schema["moderation"] = providerutils.OptEnum("auto", "low")
 	if edit {
 		schema["inputFidelity"] = providerutils.OptEnum("high", "low")
+		schema["markup"] = providerutils.OptString
 	} else {
+		two, sixtyFour, twenty, twoThousand := 2, 64, 20, 2000
 		schema["style"] = providerutils.OptEnum("vivid", "natural")
-		schema["moderation"] = providerutils.OptEnum("auto", "low")
+		schema["outputFormat"] = providerutils.OptEnum("png", "jpeg", "webp", "gif")
+		schema["frameCount"] = providerutils.OptInt(&two, &sixtyFour)
+		schema["frameDurationMs"] = providerutils.OptInt(&twenty, &twoThousand)
 	}
 	return schema
 }

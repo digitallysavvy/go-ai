@@ -137,6 +137,10 @@ const (
 	ModelGPTImage25Flare_2026_09_08    = "gpt-image-2.5-flare-2026-09-08"
 	ModelGPTImage25Sunburst            = "gpt-image-2.5-sunburst"
 	ModelGPTImage25Sunburst_2026_09_08 = "gpt-image-2.5-sunburst-2026-09-08"
+
+	// GPT Image 2.6 series (TS 6549344e0a)
+	ModelGPTImage26Flare    = "gpt-image-2.6-flare"
+	ModelGPTImage26Sunburst = "gpt-image-2.6-sunburst"
 )
 
 // Embedding model ID constants for OpenAI embedding models.

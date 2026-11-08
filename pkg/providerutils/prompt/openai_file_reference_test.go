@@ -125,7 +125,9 @@ func TestToOpenAIMessagesWithError_CompatFileValidation(t *testing.T) {
 		{"audio url", types.FileContent{MediaType: "audio/wav", URL: "https://x/a.wav"}, "audio file parts with URLs"},
 		{"pdf url", types.FileContent{MediaType: "application/pdf", URL: "https://x/a.pdf"}, "PDF file parts with URLs"},
 		{"application type", types.FileContent{MediaType: "application/zip", Data: []byte("x")}, "file part media type application/zip"},
-		{"text file part", types.FileContent{FileData: types.FileData{Type: types.FileDataTypeText, Text: "hi"}, MediaType: "text/plain"}, "text file parts"},
+		// TS 5f19ea5c61: text/* text data is a text part; other media types
+		// keep the error.
+		{"text file part", types.FileContent{FileData: types.FileData{Type: types.FileDataTypeText, Text: "hi"}, MediaType: "application/json"}, "text file parts"},
 		{"other top level", types.FileContent{MediaType: "model/gltf", Data: []byte("x")}, "file part media type model/gltf"},
 	}
 	for _, tc := range cases {

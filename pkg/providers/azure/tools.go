@@ -2,6 +2,7 @@ package azure
 
 import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
 
@@ -36,4 +37,23 @@ func WebSearchPreview(config openaitool.WebSearchPreviewConfig) types.Tool {
 // Mark function tools to defer with provider options {"azure": {"deferLoading": true}}.
 func ToolSearch(args openaitool.ToolSearchArgs) types.Tool {
 	return openaitool.ToolSearch(args)
+}
+
+// NewCustomTool creates the OpenAI Responses custom tool for Azure OpenAI
+// (TS azure.tools.customTool, 27528dbf24). Register it with
+// CustomTool.ToTool(name).
+func NewCustomTool(opts ...openaitool.CustomToolOption) openaitool.CustomTool {
+	return openaitool.NewCustomTool(opts...)
+}
+
+// ApplyPatch creates the OpenAI Responses apply_patch provider tool for
+// Azure OpenAI (TS azure.tools.applyPatch, bf10079bc2).
+func ApplyPatch() types.Tool {
+	return responses.NewApplyPatchTool()
+}
+
+// Shell creates the OpenAI Responses shell provider tool for Azure OpenAI
+// (TS azure.tools.shell, 5cc6d284e8).
+func Shell(opts ...responses.ShellToolOption) types.Tool {
+	return responses.NewShellTool(opts...)
 }

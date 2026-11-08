@@ -99,6 +99,17 @@ func compatContentParts(raw []byte) (string, []CompatContentPart, error) {
 	return text.String(), parts, nil
 }
 
+// compatRefusalText returns the refusal when it is a non-empty JSON string;
+// null, absent and non-string values are ignored (TS openai-compatible
+// `refusal: z.unknown().nullish().transform(...)`, 646a7e3c2e).
+func compatRefusalText(raw json.RawMessage) string {
+	var s string
+	if len(raw) == 0 || json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
 // ApplyOpenAICompatibleChatResponse fills the choice-derived fields of result
 // from the raw wire body the way TS OpenAICompatibleChatLanguageModel.doGenerate
 // does: content parts (text and thinking), reasoning_content ?? reasoning, tool
@@ -107,7 +118,9 @@ func compatContentParts(raw []byte) (string, []CompatContentPart, error) {
 // {metadataKey: {acceptedPredictionTokens, rejectedPredictionTokens}} and the
 // response id / model / timestamp. A body without choices is an
 // InvalidResponseDataError. Usage and the finish reason are left to the caller
-// (providers map their own finish reasons).
+// (providers map their own finish reasons), except that a non-empty refusal
+// turns a raw `stop` into content-filter (TS mapOpenAICompatibleFinishReason
+// hasRefusal); call it after setting FinishReason.
 func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte, headers map[string]string, metadataKey string) error {
 	var wire struct {
 		ID      string   `json:"id"`
@@ -119,7 +132,9 @@ func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte
 				Content          json.RawMessage `json:"content"`
 				ReasoningContent *string         `json:"reasoning_content"`
 				Reasoning        *string         `json:"reasoning"`
-				ToolCalls        []struct {
+				// Refusal: TS z.unknown() keeping only a string (646a7e3c2e).
+				Refusal   json.RawMessage `json:"refusal"`
+				ToolCalls []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string `json:"name"`
@@ -183,6 +198,18 @@ func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte
 			content = append(content, types.TextContent{Text: p.Text})
 		default:
 			text.WriteString(p.Text)
+		}
+	}
+	// TS 646a7e3c2e: a refusal is a text part after the content parts, and
+	// `stop` with a refusal is content-filter.
+	if refusal := compatRefusalText(choice.Message.Refusal); refusal != "" {
+		if !interleaved && text.Len() > 0 {
+			content = append(content, types.TextContent{Text: text.String()})
+		}
+		content = append(content, types.TextContent{Text: refusal})
+		text.WriteString(refusal)
+		if choice.FinishReason != nil && *choice.FinishReason == "stop" {
+			result.FinishReason = types.FinishReasonContentFilter
 		}
 	}
 	result.Text = text.String()

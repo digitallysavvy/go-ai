@@ -18,6 +18,9 @@ function resolveSrc(id) {
   return cands.find(c => fs.existsSync(c)) ?? null;
 }
 export default defineConfig({
+  // Keep Vite's cache in the scratch directory, never in a linked TS
+  // checkout node_modules (NO_INSTALL=1 leaves the checkout read-only).
+  cacheDir: path.join(W, 'rec/.vite'),
   plugins: [{
     name: 'rec', enforce: 'pre',
     resolveId(id) { return resolveSrc(id); },

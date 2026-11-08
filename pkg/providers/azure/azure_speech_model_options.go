@@ -2,6 +2,7 @@ package azure
 
 import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -20,6 +21,10 @@ type AzureSpeechModelSpeechOptions struct {
 type AzureSpeechModelOptions struct {
 	API AzureTranscriptionAPI // reuses "openai" | "speech"
 	AzureSpeechModelSpeechOptions
+
+	// openaiOptions are the OpenAI speech options passed under
+	// providerOptions.azure (TS 6400cf8b88).
+	openaiOptions azurePickedOptions
 }
 
 // azureVoiceModelsByLowercaseID maps a lowercase model ID to its Azure
@@ -56,9 +61,18 @@ func parseAzureSpeechProviderOptions(providerOptions map[string]interface{}) (Az
 	}
 
 	allowed := map[string]bool{"api": true, "style": true, "styleDegree": true}
+	for _, key := range azureOpenAISpeechOptionKeys {
+		allowed[key] = true // TS 6400cf8b88: OpenAI speech options
+	}
 	for key := range m {
 		if !allowed[key] {
 			return result, invalidAzureOption("providerOptions.azure."+key, "unrecognized key")
+		}
+	}
+	result.openaiOptions = pickAzureOptions(providerOptions, azureOpenAISpeechOptionKeys)
+	if len(result.openaiOptions.keys) > 0 {
+		if err := openai.ValidateSpeechProviderOptions(map[string]interface{}{"openai": result.openaiOptions.values}); err != nil {
+			return result, invalidAzureOption("providerOptions.azure", azureOpenAIOptionCause(err))
 		}
 	}
 

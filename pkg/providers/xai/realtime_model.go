@@ -3,10 +3,12 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -56,10 +58,61 @@ func (m *XAIRealtimeModel) ModelID() string              { return m.modelID }
 // DoCreateClientSecret directly on the concrete type, so losing either
 // method would otherwise only surface as a runtime failure elsewhere.
 var (
-	_ provider.Experimental_RealtimeModelV4    = (*XAIRealtimeModel)(nil)
-	_ provider.RealtimeClientSecretCreator     = (*XAIRealtimeModel)(nil)
-	_ provider.RealtimeWebSocketConfigProvider = (*XAIRealtimeModel)(nil)
+	_ provider.Experimental_RealtimeModelV4     = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator      = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider  = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeServerConnectionProvider = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeIntentCodec              = (*XAIRealtimeModel)(nil)
 )
+
+// xaiConversationIntent rejects every intent but conversation (TS
+// assertConversationIntent, 892af4dab7).
+func xaiConversationIntent(intent provider.RealtimeSessionIntent) error {
+	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
+		return errors.New("xAI realtime does not support the '" + string(intent) + "' session intent.")
+	}
+	return nil
+}
+
+// GetServerConnection returns the conversational upstream WebSocket for a
+// trusted server, <ws base>/realtime?model=<id> with the provider headers
+// (TS getServerWebSocketConfig({intent}), 892af4dab7). xAI has no
+// transcription endpoint.
+func (m *XAIRealtimeModel) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	if err := xaiConversationIntent(opts.Intent); err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	u, err := url.Parse(m.provider.realtimeBaseURL)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	scheme := "wss"
+	if u.Scheme == "http" {
+		scheme = "ws"
+	}
+	wsURL := scheme + "://" + u.Host + strings.TrimSuffix(u.EscapedPath(), "/") + "/realtime?model=" + providerutils.EncodeURIComponent(m.modelID)
+	headers, err := m.provider.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: headers}, nil
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent.
+func (m *XAIRealtimeModel) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	if err := xaiConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.BuildSessionConfig(config), nil
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent.
+func (m *XAIRealtimeModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	if err := xaiConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.SerializeClientEvent(event)
+}
 
 func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	body := map[string]interface{}{}
@@ -205,6 +258,7 @@ func xaiParseServerEvent(raw json.RawMessage) provider.RealtimeServerEvent {
 		e.Type = "input-transcription-completed"
 		e.ItemID = xaiStringField(event, "item_id")
 		e.Transcript = xaiStringField(event, "transcript")
+		e.Usage = xaiRealtimeTranscriptionUsage(event["usage"])
 	case "response.created":
 		e.Type = "response-created"
 		if responseID, ok := xaiNestedStringField(event, "response", "id"); ok {
@@ -224,6 +278,14 @@ func xaiParseServerEvent(raw json.RawMessage) provider.RealtimeServerEvent {
 		} else {
 			e.Status = "completed"
 		}
+		// TS 892af4dab7: event.usage ?? response.usage.
+		usage := event["usage"]
+		if usage == nil {
+			if response, ok := event["response"].(map[string]interface{}); ok {
+				usage = response["usage"]
+			}
+		}
+		e.Usage = xaiRealtimeResponseUsage(usage)
 	case "response.output_item.added":
 		e.Type = "output-item-added"
 		e.ResponseID = xaiStringField(event, "response_id")
@@ -448,4 +510,68 @@ func xaiNestedStringField(m map[string]interface{}, key, nested string) (string,
 		return "", false
 	}
 	return xaiStringFieldPresent(child, nested)
+}
+
+func xaiRealtimeUsageNumber(m map[string]interface{}, key string) *int {
+	if f, ok := m[key].(float64); ok {
+		n := int(f)
+		return &n
+	}
+	return nil
+}
+
+// xaiRealtimeResponseUsage is TS mapResponseUsage (892af4dab7; the OpenAI
+// realtime wire shape): nil when nothing is reported.
+func xaiRealtimeResponseUsage(raw interface{}) *provider.RealtimeUsage {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	input, _ := usage["input_token_details"].(map[string]interface{})
+	output, _ := usage["output_token_details"].(map[string]interface{})
+	cached, _ := input["cached_tokens_details"].(map[string]interface{})
+	u := provider.RealtimeUsage{
+		InputTokens:            xaiRealtimeUsageNumber(usage, "input_tokens"),
+		OutputTokens:           xaiRealtimeUsageNumber(usage, "output_tokens"),
+		CachedInputTokens:      xaiRealtimeUsageNumber(input, "cached_tokens"),
+		InputAudioTokens:       xaiRealtimeUsageNumber(input, "audio_tokens"),
+		InputTextTokens:        xaiRealtimeUsageNumber(input, "text_tokens"),
+		OutputAudioTokens:      xaiRealtimeUsageNumber(output, "audio_tokens"),
+		OutputTextTokens:       xaiRealtimeUsageNumber(output, "text_tokens"),
+		CachedInputAudioTokens: xaiRealtimeUsageNumber(cached, "audio_tokens"),
+		CachedInputTextTokens:  xaiRealtimeUsageNumber(cached, "text_tokens"),
+	}
+	if u.HasSeconds() {
+		return nil
+	}
+	return &u
+}
+
+// xaiRealtimeTranscriptionUsage is TS mapTranscriptionUsage.
+func xaiRealtimeTranscriptionUsage(raw interface{}) *provider.RealtimeUsage {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if usage["type"] == "duration" {
+		seconds, ok := usage["seconds"].(float64)
+		if !ok {
+			return nil
+		}
+		u := provider.RealtimeUsage{}
+		u.SetSeconds(seconds)
+		return &u
+	}
+	input, _ := usage["input_token_details"].(map[string]interface{})
+	u := provider.RealtimeUsage{
+		InputTokens:      xaiRealtimeUsageNumber(usage, "input_tokens"),
+		OutputTokens:     xaiRealtimeUsageNumber(usage, "output_tokens"),
+		InputAudioTokens: xaiRealtimeUsageNumber(input, "audio_tokens"),
+		InputTextTokens:  xaiRealtimeUsageNumber(input, "text_tokens"),
+		OutputTextTokens: xaiRealtimeUsageNumber(usage, "output_tokens"),
+	}
+	if u.HasSeconds() {
+		return nil
+	}
+	return &u
 }

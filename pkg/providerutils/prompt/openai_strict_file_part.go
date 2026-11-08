@@ -51,6 +51,16 @@ func openAIStrictFilePart(file types.FileContent, mode FilePartMode, refs *provi
 		return nil, nil
 	}
 	if file.FileData.Type == types.FileDataTypeText || file.Text != "" {
+		// TS 5f19ea5c61: openai-compatible sends inline text data of a text/*
+		// media type as a text part (the caller spreads the part metadata);
+		// OpenAI chat and Groq still reject text file parts.
+		if mode == FilePartsOpenAICompatible && topLevelMediaType(firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)) == "text" {
+			text := file.FileData.Text
+			if file.FileData.Type != types.FileDataTypeText {
+				text = file.Text
+			}
+			return map[string]interface{}{"type": "text", "text": text}, nil
+		}
 		return nil, unsupportedFilePart("text file parts")
 	}
 

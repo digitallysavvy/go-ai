@@ -1078,6 +1078,16 @@ func wireSpeech(ctx context.Context, m provider.SpeechModel, arg map[string]inte
 func wireTranscription(ctx context.Context, m provider.TranscriptionModel, arg map[string]interface{}) (map[string]interface{}, error) {
 	opts := &provider.TranscriptionOptions{ProviderOptions: objMap(arg["providerOptions"]), Headers: strMap(arg["headers"])}
 	opts.MimeType, _ = arg["mediaType"].(string)
+	// TS timestampGranularities (41465fd1b6): nil when absent, an empty
+	// non-nil slice when [].
+	if list, ok := arg["timestampGranularities"].([]interface{}); ok {
+		opts.TimestampGranularities = []string{}
+		for _, v := range list {
+			if g, ok := v.(string); ok {
+				opts.TimestampGranularities = append(opts.TimestampGranularities, g)
+			}
+		}
+	}
 	if s, ok := arg["audio"].(string); ok {
 		opts.AudioBase64 = s
 		if b, err := base64.StdEncoding.DecodeString(s); err == nil {
@@ -1104,6 +1114,13 @@ func wireTranscription(ctx context.Context, m provider.TranscriptionModel, arg m
 		segs = append(segs, map[string]interface{}{"text": s.Text, "startSecond": s.Start, "endSecond": s.End})
 	}
 	out["segments"] = segs
+	if res.Words != nil {
+		words := []interface{}{}
+		for _, w := range res.Words {
+			words = append(words, map[string]interface{}{"text": w.Text, "startSecond": w.StartSecond, "endSecond": w.EndSecond})
+		}
+		out["words"] = words
+	}
 	if len(res.ProviderUsage) > 0 {
 		out["usage"] = res.ProviderUsage
 	}

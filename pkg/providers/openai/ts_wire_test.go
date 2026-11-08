@@ -38,6 +38,11 @@ func TestTSWire(t *testing.T) {
 			"falls back to input_text beyond input_json limits: '32 container levels'":                                                                "the recorder truncates call arguments nested deeper than 14 levels, so the replayed value is not the TS one; covered by TestR85provbDecisionInputJSON",
 			"falls back to input_text beyond input_json limits: '33 container levels'":                                                                "the recorder truncates call arguments nested deeper than 14 levels, so the replayed value is not the TS one; covered by TestR85provbDecisionInputJSON",
 			"OpenAIResponsesLanguageModel > doGenerate > basic text response > should replay a regular function named tool_search as a function call": "the TS tool-call input is an object whose key order Go maps cannot carry; Go sends the Input string it is given as is",
+			// TS 6b97088662: remove with the provg response schema CR.
+			"OpenAIResponsesLanguageModel > doGenerate > should surface a refusal content part as text and map the finish reason to content-filter":     r88provbRefusalSchemaSkip,
+			"OpenAIResponsesLanguageModel > doGenerate > should surface output_text and refusal parts from the same message":                            r88provbRefusalSchemaSkip,
+			"OpenAIResponsesLanguageModel > doGenerate > should include a refusal in structuredOutputText for a final answer":                           r88provbRefusalSchemaSkip,
+			"OpenAIResponsesLanguageModel > doGenerate > should prefer tool-calls over content-filter when a refusal is accompanied by a function call": r88provbRefusalSchemaSkip,
 		},
 		Provider: func(base string, m tsfixture.WireModel) (provider.Provider, error) {
 			headers := map[string]string{}

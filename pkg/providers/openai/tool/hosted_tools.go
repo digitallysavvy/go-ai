@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -10,6 +11,47 @@ import (
 // CodeInterpreterContainer configures an auto-created code interpreter container.
 type CodeInterpreterContainer struct {
 	FileIDs []string `json:"fileIds,omitempty"`
+	// MemoryLimit is the container memory: "1g", "4g", "16g" or "64g"
+	// (TS 7bb309d132).
+	MemoryLimit string `json:"memoryLimit,omitempty"`
+	// NetworkPolicy controls outbound network access from the container.
+	NetworkPolicy *CodeInterpreterNetworkPolicy `json:"networkPolicy,omitempty"`
+}
+
+// CodeInterpreterNetworkPolicy is the container network policy: Type
+// "disabled" (no network), or "allowlist" with AllowedDomains and optional
+// DomainSecrets injected for those domains.
+type CodeInterpreterNetworkPolicy struct {
+	Type           string                        `json:"type"`
+	AllowedDomains []string                      `json:"allowedDomains"`
+	DomainSecrets  []CodeInterpreterDomainSecret `json:"domainSecrets,omitempty"`
+}
+
+// MarshalJSON writes {type: "disabled"} for a disabled policy and an
+// allowlist with its domains (an empty list when nil) otherwise.
+func (p CodeInterpreterNetworkPolicy) MarshalJSON() ([]byte, error) {
+	if p.Type != "allowlist" {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+		}{p.Type})
+	}
+	domains := p.AllowedDomains
+	if domains == nil {
+		domains = []string{}
+	}
+	return json.Marshal(struct {
+		Type           string                        `json:"type"`
+		AllowedDomains []string                      `json:"allowedDomains"`
+		DomainSecrets  []CodeInterpreterDomainSecret `json:"domainSecrets,omitempty"`
+	}{p.Type, domains, p.DomainSecrets})
+}
+
+// CodeInterpreterDomainSecret is a secret the container receives for
+// requests to Domain.
+type CodeInterpreterDomainSecret struct {
+	Domain string `json:"domain"`
+	Name   string `json:"name"`
+	Value  string `json:"value"`
 }
 
 // CodeInterpreterConfig configures the provider-executed code_interpreter tool.

@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"encoding/json"
 	"fmt"
 	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"strings"
@@ -101,11 +102,22 @@ func validateMCPToolArgs(t types.Tool) error {
 		return nil
 	}
 	var cfg openaitool.MCPConfig
-	if !toolConfig(t, &cfg) || cfg.ServerURL != "" || cfg.ConnectorID != "" {
+	if !toolConfig(t, &cfg) {
 		return nil
 	}
-	if a := tsShapedToolArgs(t, &openaitool.MCPConfig{}); a != nil && (a["serverUrl"] != nil || a["connectorId"] != nil) {
-		return nil // TS `v.serverUrl != null`: an empty string passes
+	// TS `v.serverUrl != null`: an empty string in TS-shaped args counts.
+	a := tsShapedToolArgs(t, &openaitool.MCPConfig{})
+	present := func(typed, key string) bool { return typed != "" || (a != nil && a[key] != nil) }
+	hasURL, hasConnector, hasTunnel := present(cfg.ServerURL, "serverUrl"), present(cfg.ConnectorID, "connectorId"), present(cfg.TunnelID, "tunnelId")
+	var message string
+	switch {
+	case !hasURL && !hasConnector && !hasTunnel:
+		message = "One of serverUrl, connectorId, or tunnelId must be provided."
+	case hasTunnel && (hasURL || hasConnector):
+		// TS 7a905226b6: the second refine.
+		message = "tunnelId cannot be combined with serverUrl or connectorId."
+	default:
+		return nil
 	}
 	var args interface{} = t.ProviderArgs
 	if t.ProviderArgs == nil {
@@ -113,7 +125,7 @@ func validateMCPToolArgs(t types.Tool) error {
 	}
 	// zod's custom issue for the mcpArgsSchema refine, as ZodError.message
 	// renders it (JSON.stringify(issues, null, 2)).
-	return openAIToolArgsError(args, "[\n  {\n    \"code\": \"custom\",\n    \"path\": [],\n    \"message\": \"One of serverUrl or connectorId must be provided.\"\n  }\n]", nil)
+	return openAIToolArgsError(args, "[\n  {\n    \"code\": \"custom\",\n    \"path\": [],\n    \"message\": \""+message+"\"\n  }\n]", nil)
 }
 
 // convertTool converts a single types.Tool to its Responses API representation.
@@ -204,29 +216,62 @@ func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
 	case string:
 		// TS forwards any string container id as is, including "".
 		def["container"] = container
-	case openaitool.CodeInterpreterContainer:
-		containerDef := map[string]interface{}{"type": "auto"}
-		if container.FileIDs != nil {
-			containerDef["file_ids"] = container.FileIDs
-		}
-		def["container"] = containerDef
-	case *openaitool.CodeInterpreterContainer:
-		containerDef := map[string]interface{}{"type": "auto"}
-		if container != nil && container.FileIDs != nil {
-			containerDef["file_ids"] = container.FileIDs
-		}
-		def["container"] = containerDef
+	case nil:
+		def["container"] = map[string]interface{}{"type": "auto"}
 	case map[string]interface{}:
-		// TS args form {fileIds?: string[]} (ProviderArgs).
-		containerDef := map[string]interface{}{"type": "auto"}
-		if fileIDs, ok := container["fileIds"]; ok && fileIDs != nil {
-			containerDef["file_ids"] = fileIDs
-		}
-		def["container"] = containerDef
+		def["container"] = codeInterpreterAutoContainer(container) // TS args form (ProviderArgs)
+	case openaitool.CodeInterpreterContainer:
+		def["container"] = codeInterpreterTypedContainer(&container)
+	case *openaitool.CodeInterpreterContainer:
+		def["container"] = codeInterpreterTypedContainer(container)
 	default:
 		def["container"] = map[string]interface{}{"type": "auto"}
 	}
 	return def
+}
+
+// codeInterpreterTypedContainer converts a typed container through its JSON
+// args form, keeping the typed file ID list.
+func codeInterpreterTypedContainer(c *openaitool.CodeInterpreterContainer) map[string]interface{} {
+	if c == nil {
+		return map[string]interface{}{"type": "auto"}
+	}
+	var args map[string]interface{}
+	if raw, err := json.Marshal(c); err == nil {
+		_ = json.Unmarshal(raw, &args)
+	}
+	out := codeInterpreterAutoContainer(args)
+	delete(out, "file_ids")
+	if c.FileIDs != nil {
+		out["file_ids"] = c.FileIDs
+	}
+	return out
+}
+
+// codeInterpreterAutoContainer is TS {type: 'auto', file_ids, memory_limit,
+// network_policy} for a container object (7bb309d132): a disabled policy
+// sends only its type; an allowlist sends allowed_domains and, when given,
+// domain_secrets.
+func codeInterpreterAutoContainer(args map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{"type": "auto"}
+	if fileIDs, ok := args["fileIds"]; ok && fileIDs != nil {
+		out["file_ids"] = fileIDs
+	}
+	if limit, ok := args["memoryLimit"]; ok && limit != nil {
+		out["memory_limit"] = limit
+	}
+	if policy, ok := args["networkPolicy"].(map[string]interface{}); ok {
+		if policy["type"] == "disabled" {
+			out["network_policy"] = map[string]interface{}{"type": "disabled"}
+		} else {
+			np := map[string]interface{}{"type": "allowlist", "allowed_domains": policy["allowedDomains"]}
+			if secrets, ok := policy["domainSecrets"]; ok && secrets != nil {
+				np["domain_secrets"] = secrets
+			}
+			out["network_policy"] = np
+		}
+	}
+	return out
 }
 
 func convertFileSearchTool(t types.Tool) map[string]interface{} {
@@ -370,9 +415,13 @@ func convertMCPTool(t types.Tool) map[string]interface{} {
 	if cfg.ServerURL != "" {
 		def["server_url"] = cfg.ServerURL
 	}
+	if cfg.TunnelID != "" {
+		def["tunnel_id"] = cfg.TunnelID // TS 7a905226b6
+	}
 	keepEmptyStrings(def, tsShapedToolArgs(t, &openaitool.MCPConfig{}),
 		[2]string{"authorization", "authorization"}, [2]string{"connectorId", "connector_id"},
-		[2]string{"serverDescription", "server_description"}, [2]string{"serverUrl", "server_url"})
+		[2]string{"serverDescription", "server_description"}, [2]string{"serverUrl", "server_url"},
+		[2]string{"tunnelId", "tunnel_id"})
 	return def
 }
 

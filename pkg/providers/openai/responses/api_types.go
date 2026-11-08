@@ -29,11 +29,14 @@ type AssistantMessageItem struct {
 
 // AssistantMessageContent is a single content part in an assistant message.
 type AssistantMessageContent struct {
-	// Type is "output_text".
+	// Type is "output_text" or "refusal".
 	Type string `json:"type"`
 
 	// Text is the text content.
 	Text string `json:"text"`
+
+	// Refusal is the refusal text of a "refusal" part (TS 6b97088662).
+	Refusal string `json:"refusal,omitempty"`
 
 	// Annotations holds citations attached to this text part (url_citation,
 	// file_citation, container_file_citation, file_path).

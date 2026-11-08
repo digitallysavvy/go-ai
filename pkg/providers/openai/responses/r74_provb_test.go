@@ -18,7 +18,7 @@ import (
 // "validation error on field 'tools': Type validation failed for <tool>: ...".
 func TestR74ProvbToolArgsTypeValidationText(t *testing.T) {
 	_, err := PrepareToolsWithError([]types.Tool{openaitool.MCP(openaitool.MCPConfig{ServerLabel: "x"})})
-	want := "Type validation failed: Value: {\"serverLabel\":\"x\"}.\nError message: [\n  {\n    \"code\": \"custom\",\n    \"path\": [],\n    \"message\": \"One of serverUrl or connectorId must be provided.\"\n  }\n]"
+	want := "Type validation failed: Value: {\"serverLabel\":\"x\"}.\nError message: [\n  {\n    \"code\": \"custom\",\n    \"path\": [],\n    \"message\": \"One of serverUrl, connectorId, or tunnelId must be provided.\"\n  }\n]"
 	var tv *providererrors.TypeValidationError
 	if !errors.As(err, &tv) || err.Error() != want {
 		t.Fatalf("mcp refine err =\n%v\nwant\n%s", err, want)

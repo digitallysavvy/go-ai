@@ -99,6 +99,13 @@ func (m *SpeechModel) buildRequestBodyChecked(opts *provider.SpeechGenerateOptio
 	return body, warnings, nil
 }
 
+// ValidateSpeechProviderOptions validates providerOptions.openai for speech
+// calls (TS openaiSpeechModelOptionsSchema; also used by the Azure speech
+// router for OpenAI options passed under providerOptions.azure).
+func ValidateSpeechProviderOptions(providerOptions map[string]interface{}) error {
+	return validateSpeechProviderOptions(providerOptions)
+}
+
 func validateSpeechProviderOptions(providerOptions map[string]interface{}) error {
 	raw, ok := providerOptions["openai"]
 	if !ok || raw == nil {
