@@ -80,7 +80,11 @@ type bridgeCoords struct {
 	Port            int     `json:"port"`
 	Token           string  `json:"token"`
 	LastSeenEventID float64 `json:"lastSeenEventId"`
-	SandboxID       string  `json:"sandboxId,omitempty"`
+	// StartID is the start of the turn the coordinates were saved in (TS
+	// `startId`, 5a05735ed0): a replay or attach keeps only that turn's
+	// events.
+	StartID   string `json:"startId,omitempty"`
+	SandboxID string `json:"sandboxId,omitempty"`
 }
 
 // ValidateLifecycleStateData accepts any JSON object or null (TS
@@ -324,6 +328,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		sessionID: opts.SessionID, channel: channel, proc: launched.Proc, finishListenerAttachment: finishAttachment, debug: debugConfig(opts.Observability),
 		maxTurns: settings.MaxTurns, startSettings: startSettingsFrom(settings), agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
 		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun", deferredToolUseID: deferredToolUseID,
+		startID:         replayStartID(replaying, coords),
 		resumeSessionID: resumeData.ClaudeSessionID,
 		bridgePort:      launched.Port, bridgeToken: token, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
@@ -402,6 +407,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		sessionID: opts.sessionID, channel: channel, proc: nil, finishListenerAttachment: finishAttachment, debug: opts.debug,
 		maxTurns: opts.maxTurns, startSettings: startSettingsFrom(opts.settings), agentProgressSummaries: opts.agentProgressSummaries, forwardSubagentText: opts.forwardSubagentText, env: opts.env, thinking: opts.thinking, effort: opts.effort,
 		isResume: true, continueOnFirstPrompt: false, rerunContinue: false,
+		startID:         opts.coords.StartID,
 		resumeSessionID: opts.resumeSessionID,
 		bridgePort:      opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.sandboxID,
 		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
@@ -479,3 +485,12 @@ func debugConfig(o *harness.Observability) *harness.DebugConfig {
 }
 
 func joinLines(lines []string) string { return strings.Join(lines, "\n") }
+
+// replayStartID is the persisted turn start a replaying respawn keeps (TS
+// `respawnStrategy === 'replay' ? coords?.startId : undefined`).
+func replayStartID(replaying bool, coords *bridgeCoords) string {
+	if !replaying || coords == nil {
+		return ""
+	}
+	return coords.StartID
+}

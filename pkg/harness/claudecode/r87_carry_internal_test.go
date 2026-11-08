@@ -23,7 +23,7 @@ func TestR87carryInitialStartSendErrorCleansUp(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	s := newSession(sessionOptions{sessionID: "s1", channel: ch, turnStartTimeout: 50 * time.Millisecond})
-	pc := s.wireTurn(context.Background(), func(harness.StreamPart) {})
+	pc := s.wireTurn(context.Background(), func(harness.StreamPart) {}, "")
 	err := pc.sendStart(&StartFrame{})
 	if err == nil || err.Error() != "SandboxChannel: cannot send start — channel is closed." {
 		t.Fatalf("err = %v", err)
@@ -110,14 +110,14 @@ func TestR87carrySettledDuringRegistrationRemovesListeners(t *testing.T) {
 		mu.Lock()
 		first = append(first, p.PartType())
 		mu.Unlock()
-	})
+	}, "")
 	select {
 	case <-pc.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("the buffered finish did not settle the turn")
 	}
 	second := make(chan string, 4)
-	s.wireTurn(context.Background(), func(p harness.StreamPart) { second <- p.PartType() })
+	s.wireTurn(context.Background(), func(p harness.StreamPart) { second <- p.PartType() }, "")
 	conn.in <- []byte(`{"type":"text-delta","seq":2,"id":"t","delta":"x"}`)
 	select {
 	case got := <-second:
