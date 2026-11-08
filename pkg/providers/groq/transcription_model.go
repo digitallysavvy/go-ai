@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"mime/multipart"
+	"regexp"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -91,18 +93,93 @@ func resolveGroqTranscriptionOptions(providerOptions map[string]interface{}) gro
 
 // DoTranscribe performs batch speech-to-text transcription.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+	return m.generate(ctx, groqTranscribeInput{
+		bytesOpts:       opts,
+		providerOptions: opts.ProviderOptions,
+		headers:         opts.Headers,
+	})
+}
+
+var _ provider.TranscriptionURLModel = (*TranscriptionModel)(nil)
+
+// groqRedirectDeclineRe matches the Groq error for a URL it would have to
+// follow a redirect for (TS doGenerateFromUrl).
+var groqRedirectDeclineRe = regexp.MustCompile(`^failed to retrieve media: received status code: (301|302|303|307|308)\b`)
+
+// DoTranscribeFromURL sends an HTTP(S) audio URL for Groq to fetch itself
+// (TS 36802d48af doGenerateFromUrl): the form field `url` replaces `file`.
+// Groq does not follow redirects for that URL, so a 400 "failed to retrieve
+// media: received status code: 3xx" declines (nil, nil) and the caller falls
+// back to the validated local download. A URL that is not http(s) or carries
+// userinfo is an InvalidArgumentError; the fragment is not sent.
+func (m *TranscriptionModel) DoTranscribeFromURL(ctx context.Context, opts *provider.TranscriptionURLOptions) (*types.TranscriptionResult, error) {
+	if opts == nil {
+		opts = &provider.TranscriptionURLOptions{}
+	}
+	res, err := m.generate(ctx, groqTranscribeInput{
+		audioURL:        opts.AudioURL,
+		isURL:           true,
+		providerOptions: opts.ProviderOptions,
+		headers:         opts.Headers,
+	})
+	if err != nil {
+		var perr *providererrors.ProviderError
+		if errors.As(err, &perr) && perr.StatusCode == 400 && groqRedirectDeclineRe.MatchString(perr.Message) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return res, nil
+}
+
+// groqTranscribeInput is the audio source and call settings of one request:
+// bytes (DoTranscribe) or a URL (DoTranscribeFromURL).
+type groqTranscribeInput struct {
+	bytesOpts       *provider.TranscriptionOptions
+	audioURL        string
+	isURL           bool
+	providerOptions map[string]interface{}
+	headers         map[string]string
+}
+
+// groqTranscriptionURL validates and serializes the URL Groq fetches (TS
+// getArgs URL branch): http(s) only, no userinfo, fragment cleared.
+func groqTranscriptionURL(raw string) (string, error) {
+	invalid := providererrors.NewArgumentError("audio", "Groq URL transcription requires an HTTP(S) URL without userinfo.", nil)
+	u, err := urlnorm.Parse(raw)
+	if err != nil {
+		return "", invalid
+	}
+	if (u.Scheme != "https" && u.Scheme != "http") || u.Username != "" || u.Password != "" {
+		return "", invalid
+	}
+	u.Fragment = nil
+	return u.String(), nil
+}
+
+func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInput) (*types.TranscriptionResult, error) {
 	// TS reads currentDate at the start of doGenerate, before the request.
 	timestamp := time.Now()
-	audio, err := groqAudioBytes(opts)
-	if err != nil {
+	var audio []byte
+	var audioURL, mimeType string
+	if in.isURL {
+		var err error
+		if audioURL, err = groqTranscriptionURL(in.audioURL); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		if audio, err = groqAudioBytes(in.bytesOpts); err != nil {
+			return nil, err
+		}
+		mimeType = in.bytesOpts.MimeType
+	}
+	if err := validateGroqTranscriptionOptions(in.providerOptions); err != nil {
 		return nil, err
 	}
-	if err := validateGroqTranscriptionOptions(opts.ProviderOptions); err != nil {
-		return nil, err
-	}
-	groqOpts := resolveGroqTranscriptionOptions(opts.ProviderOptions)
+	groqOpts := resolveGroqTranscriptionOptions(in.providerOptions)
 
-	body, contentType, err := m.buildMultipartBody(audio, opts.MimeType, groqOpts)
+	body, contentType, err := m.buildMultipartBody(audio, audioURL, in.isURL, mimeType, groqOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +188,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Method:  "POST",
 		Path:    "/v1/audio/transcriptions",
 		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		Headers: internalhttp.MergeHeaders(in.headers, map[string]string{"Content-Type": contentType}),
 	})
 	if err != nil {
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
@@ -210,7 +287,7 @@ func groqAudioBytes(opts *provider.TranscriptionOptions) ([]byte, error) {
 	return nil, fmt.Errorf("groq: no audio data provided")
 }
 
-func (m *TranscriptionModel) buildMultipartBody(audio []byte, mediaType string, opts groqTranscriptionOptions) (*bytes.Buffer, string, error) {
+func (m *TranscriptionModel) buildMultipartBody(audio []byte, audioURL string, isURL bool, mediaType string, opts groqTranscriptionOptions) (*bytes.Buffer, string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
@@ -218,12 +295,18 @@ func (m *TranscriptionModel) buildMultipartBody(audio []byte, mediaType string, 
 		return nil, "", err
 	}
 
-	part, err := providerutils.CreateTypedFormFile(writer, "file", "audio."+groqAudioExtension(mediaType), mediaType)
-	if err != nil {
-		return nil, "", err
-	}
-	if _, err := part.Write(audio); err != nil {
-		return nil, "", err
+	if isURL {
+		if err := writer.WriteField("url", audioURL); err != nil {
+			return nil, "", err
+		}
+	} else {
+		part, err := providerutils.CreateTypedFormFile(writer, "file", "audio."+groqAudioExtension(mediaType), mediaType)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := part.Write(audio); err != nil {
+			return nil, "", err
+		}
 	}
 
 	// TS appends every defined option, including an empty string.
