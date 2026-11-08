@@ -227,3 +227,24 @@ func CreateDataURL(mimeType string, data []byte) string {
 	encoded.WriteString(string(data)) // Assume data is already base64 encoded
 	return encoded.String()
 }
+
+// TopLevelMediaType is TS getTopLevelMediaType: the part of mediaType before
+// the first "/", or the whole string when it has none.
+func TopLevelMediaType(mediaType string) string {
+	if i := strings.IndexByte(mediaType, '/'); i >= 0 {
+		return mediaType[:i]
+	}
+	return mediaType
+}
+
+// IsFullMediaType is TS isFullMediaType: true only for `type/subtype` with a
+// non-empty subtype that is not "*" ("image/png" yes; "image/*", "image",
+// "image/", "" no).
+func IsFullMediaType(mediaType string) bool {
+	i := strings.IndexByte(mediaType, '/')
+	if i < 0 {
+		return false
+	}
+	subtype := mediaType[i+1:]
+	return subtype != "" && subtype != "*"
+}

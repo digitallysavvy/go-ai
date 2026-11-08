@@ -10,9 +10,11 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -29,8 +31,23 @@ type TranscribeOptions struct {
 
 	MimeType        string
 	ProviderOptions map[string]interface{}
-	Headers         map[string]string
-	Download        URLDownloadFunction
+
+	// TimestampGranularities is the shared word / segment timing request
+	// (provider.TranscriptionTimestampGranularityWord /
+	// TranscriptionTimestampGranularitySegment), forwarded only when non-nil.
+	// Supporting adapters map it onto the provider's native control when the
+	// matching provider option is omitted (an explicit provider option wins)
+	// and warn when they cannot return a requested granularity. An empty,
+	// non-nil slice requests no shared granularity; provider defaults may
+	// vary. Mirrors TS transcribe `timestampGranularities`.
+	TimestampGranularities []string
+
+	Headers map[string]string
+
+	// Download fetches AudioURL. Setting Download or DownloadWithMetadata
+	// forces a local download even when the model supports native URL
+	// transcription (provider.TranscriptionURLModel).
+	Download URLDownloadFunction
 	// DownloadWithMetadata downloads AudioURL and also returns the response
 	// media type, which then takes precedence over magic-byte detection (TS
 	// transcribe: downloadedMediaType ?? detectMediaType(...) ?? 'audio/wav').
@@ -51,14 +68,21 @@ type TranscribeOptions struct {
 
 // TranscribeResult contains speech transcription output.
 type TranscribeResult struct {
-	Text              string                               `json:"text"`
-	Segments          []TranscriptionSegment               `json:"segments"`
+	Text     string                 `json:"text"`
+	Segments []TranscriptionSegment `json:"segments"`
+	// Words are word-level timings the provider reported, requested or
+	// returned by default; nil when unavailable (TS TranscriptionResult.words).
+	Words             []TranscriptionWord                  `json:"words,omitempty"`
 	Language          string                               `json:"language,omitempty"`
 	DurationInSeconds *float64                             `json:"durationInSeconds,omitempty"`
 	Warnings          []types.Warning                      `json:"warnings"`
 	Responses         []TranscriptionModelResponseMetadata `json:"responses"`
 	ProviderMetadata  map[string]interface{}               `json:"providerMetadata"`
 }
+
+// TranscriptionWord is one word-level timing in TranscribeResult.Words
+// ({text, startSecond, endSecond}).
+type TranscriptionWord = types.TranscriptionWord
 
 type TranscriptionSegment struct {
 	Text        string  `json:"text"`
@@ -129,47 +153,46 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		audio = decoded
 	}
 	var downloadedMediaType string
-	if len(audio) == 0 && opts.AudioURL != "" {
-		if opts.Download != nil {
-			data, err := opts.Download(ctx, opts.AudioURL)
-			if err != nil {
-				return failPreparation(err)
-			}
-			audio = data
-		} else {
-			download := opts.DownloadWithMetadata
-			if download == nil {
-				download = CreateURLDownloadWithMetadata(nil)
-			}
-			result, err := download(ctx, opts.AudioURL)
-			if err != nil {
-				return failPreparation(err)
-			}
-			if result != nil {
-				audio = result.Data
-				downloadedMediaType = result.MediaType
-			}
+	// TS 36802d48af: an http(s) URL goes to a model with native URL
+	// transcription as is, unless the caller supplied a download function.
+	urlModel, nativeCapable := opts.Model.(provider.TranscriptionURLModel)
+	nativeURL := len(audio) == 0 && opts.AudioURL != "" && nativeCapable &&
+		opts.Download == nil && opts.DownloadWithMetadata == nil && isHTTPAudioURL(opts.AudioURL)
+	if len(audio) == 0 && opts.AudioURL != "" && !nativeURL {
+		data, mediaType, err := downloadTranscriptionAudio(ctx, opts)
+		if err != nil {
+			return failPreparation(err)
 		}
+		audio, downloadedMediaType = data, mediaType
 	}
 	// TS does not reject empty audio; only a missing source is an error.
 	if audio == nil && opts.Audio == nil && opts.AudioBase64 == "" && opts.AudioURL == "" {
 		return nil, fmt.Errorf("audio is required")
 	}
-	mediaType := opts.MimeType
-	if mediaType == "" {
-		mediaType = downloadedMediaType
+	resolveMediaType := func(data []byte, downloaded string) string {
+		if opts.MimeType != "" {
+			return opts.MimeType
+		}
+		if mediaType := getAudioMediaType(downloaded); mediaType != "" {
+			return mediaType
+		}
+		return detectTranscriptionMediaType(data)
 	}
-	if mediaType == "" {
-		mediaType = detectTranscriptionMediaType(audio)
+	// The native URL path has no audio size or media type (TS undefined).
+	var mediaType string
+	var audioByteLength *int64
+	if !nativeURL {
+		mediaType = resolveMediaType(audio, downloadedMediaType)
+		n := int64(len(audio))
+		audioByteLength = &n
 	}
-	audioByteLength := int64(len(audio))
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:          callID,
 		OperationType:   "ai.transcribe",
 		ModelProvider:   opts.Model.Provider(),
 		ModelID:         opts.Model.ModelID(),
 		Settings:        opts.ExperimentalTelemetry,
-		AudioByteLength: &audioByteLength,
+		AudioByteLength: audioByteLength,
 		AudioMediaType:  mediaType,
 		Headers:         opts.Headers,
 	})
@@ -177,17 +200,45 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	if providerOptions == nil {
 		providerOptions = map[string]interface{}{}
 	}
+	headers := transcribeHeadersWithUserAgent(opts.Headers)
 	callOptions := &provider.TranscriptionOptions{
-		Audio:           audio,
-		MimeType:        mediaType,
-		ProviderOptions: providerOptions,
-		Headers:         transcribeHeadersWithUserAgent(opts.Headers),
+		Audio:                  audio,
+		MimeType:               mediaType,
+		ProviderOptions:        providerOptions,
+		Headers:                headers,
+		TimestampGranularities: opts.TimestampGranularities,
+	}
+	transcribeOnce := func(callCtx context.Context) (*types.TranscriptionResult, error) {
+		if nativeURL {
+			result, err := urlModel.DoTranscribeFromURL(callCtx, &provider.TranscriptionURLOptions{
+				AudioURL:               opts.AudioURL,
+				ProviderOptions:        providerOptions,
+				Headers:                headers,
+				TimestampGranularities: opts.TimestampGranularities,
+			})
+			if err != nil || result != nil {
+				return result, err
+			}
+			// The model declined this URL (for example a redirect): keep
+			// the validated download and the file path, as TS does.
+			data, downloaded, err := downloadTranscriptionAudio(callCtx, TranscribeOptions{AudioURL: opts.AudioURL})
+			if err != nil {
+				return nil, err
+			}
+			nativeURL = false
+			audio = data
+			mediaType = resolveMediaType(audio, downloaded)
+			n := int64(len(audio))
+			audioByteLength = &n
+			callOptions.Audio, callOptions.MimeType = audio, mediaType
+		}
+		return opts.Model.DoTranscribe(callCtx, callOptions)
 	}
 	maxRetries := preparedMaxRetries(opts.MaxRetries)
 	var raw *types.TranscriptionResult
 	var err error
 	if maxRetries == 0 {
-		raw, err = opts.Model.DoTranscribe(ctx, callOptions)
+		raw, err = transcribeOnce(ctx)
 	} else {
 		err = retryutil.Do(ctx, retryutil.Config{
 			MaxRetries:   maxRetries,
@@ -197,7 +248,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 			ShouldRetry:  isGatewayCallRetryable,
 		}, func(retryCtx context.Context) error {
 			var transcribeErr error
-			raw, transcribeErr = opts.Model.DoTranscribe(retryCtx, callOptions)
+			raw, transcribeErr = transcribeOnce(retryCtx)
 			return transcribeErr
 		})
 	}
@@ -239,7 +290,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		ModelID:          opts.Model.ModelID(),
 		Settings:         opts.ExperimentalTelemetry,
 		Text:             raw.Text,
-		AudioByteLength:  &audioByteLength,
+		AudioByteLength:  audioByteLength,
 		AudioMediaType:   mediaType,
 		ProviderMetadata: providerMetadata,
 		ProviderUsage:    raw.ProviderUsage,
@@ -247,6 +298,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	return &TranscribeResult{
 		Text:              raw.Text,
 		Segments:          segments,
+		Words:             raw.Words,
 		Language:          raw.Language,
 		DurationInSeconds: raw.DurationInSeconds,
 		Warnings:          warnings,
@@ -295,6 +347,51 @@ func detectTranscriptionMediaType(data []byte) string {
 		return mediaType
 	}
 	return "audio/wav"
+}
+
+// downloadTranscriptionAudio fetches opts.AudioURL with opts.Download, else
+// opts.DownloadWithMetadata, else the validated default download (2 GiB),
+// returning the bytes and any response media type.
+func downloadTranscriptionAudio(ctx context.Context, opts TranscribeOptions) ([]byte, string, error) {
+	if opts.Download != nil {
+		data, err := opts.Download(ctx, opts.AudioURL)
+		return data, "", err
+	}
+	download := opts.DownloadWithMetadata
+	if download == nil {
+		download = CreateURLDownloadWithMetadata(nil)
+	}
+	result, err := download(ctx, opts.AudioURL)
+	if err != nil || result == nil {
+		return nil, "", err
+	}
+	return result.Data, result.MediaType, nil
+}
+
+// isHTTPAudioURL reports whether raw is an absolute http: or https: URL
+// (TS `audio.protocol === 'https:' || audio.protocol === 'http:'`).
+func isHTTPAudioURL(raw string) bool {
+	u, err := urlnorm.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
+}
+
+// getAudioMediaType is TS getAudioMediaType (5d18351e1e): a downloaded
+// Content-Type is used only when, lower-cased and without parameters, it is
+// a full audio/<subtype> media type; generic types such as
+// application/octet-stream return "" so the bytes are sniffed instead.
+func getAudioMediaType(contentType string) string {
+	if contentType == "" {
+		return ""
+	}
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	mediaType = strings.ToLower(providerutils.JSTrim(mediaType))
+	if fileutil.TopLevelMediaType(mediaType) == "audio" && fileutil.IsFullMediaType(mediaType) {
+		return mediaType
+	}
+	return ""
 }
 
 func transcribeHeadersWithUserAgent(headers map[string]string) map[string]string {

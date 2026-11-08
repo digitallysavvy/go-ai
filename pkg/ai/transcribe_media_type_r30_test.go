@@ -9,8 +9,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-// A downloaded media type wins over magic-byte detection and the audio/wav
-// fallback (TS: downloadedMediaType ?? detectMediaType(...) ?? 'audio/wav').
+// A downloaded audio media type wins over magic-byte detection and the
+// audio/wav fallback, lower-cased (TS 5d18351e1e getAudioMediaType).
 func TestTranscribeDownloadedMediaTypeWins(t *testing.T) {
 	var got string
 	model := &testutil.MockTranscriptionModel{
@@ -29,8 +29,8 @@ func TestTranscribeDownloadedMediaTypeWins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "audio/L16" {
-		t.Fatalf("media type = %q, want audio/L16", got)
+	if got != "audio/l16" {
+		t.Fatalf("media type = %q, want audio/l16", got)
 	}
 }
 
