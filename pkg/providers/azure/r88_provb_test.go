@@ -14,6 +14,8 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
+	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
 
 // r88provbRequest is one request a test server received.
@@ -248,3 +250,80 @@ func TestR88provbAzureImageEditOpenAIOptions(t *testing.T) {
 		})
 	}
 }
+
+// TS 27528dbf24 / bf10079bc2 / 5cc6d284e8 (azure-openai-provider.test.ts
+// "custom tool", "apply_patch" and "shell" blocks): the Azure tool
+// factories go through the shared Responses path with Azure item metadata.
+func TestR88provbAzureResponsesToolFactories(t *testing.T) {
+	sql := `SELECT "name" FROM users WHERE age > 25`
+	syntax, def := "regex", "SELECT .+"
+	custom := NewCustomTool(openaitool.WithDescription("Write a SQL query."), openaitool.WithFormat(openaitool.CustomToolFormat{Type: "grammar", Syntax: &syntax, Definition: &def})).ToTool("write_sql")
+	ref := "cntr_test"
+	for _, tc := range []struct {
+		name     string
+		tool     types.Tool
+		output   string
+		wantTool string
+		wantName string
+		wantArgs string
+		executed bool
+	}{
+		{"custom", custom,
+			`{"type":"custom_tool_call","id":"ct_sql","call_id":"call_sql","name":"write_sql","input":` + r88provbQuote(sql) + `,"status":"completed"}`,
+			`{"description":"Write a SQL query.","format":{"definition":"SELECT .+","syntax":"regex","type":"grammar"},"name":"write_sql","type":"custom"}`,
+			"write_sql", r88provbQuote(sql), false},
+		{"apply_patch", ApplyPatch(),
+			`{"type":"apply_patch_call","id":"apc_1","call_id":"call_patch","status":"completed","operation":{"type":"delete_file","path":"a.txt"}}`,
+			`{"type":"apply_patch"}`, "openai.apply_patch", `{"callId":"call_patch","operation":{"type":"delete_file","path":"a.txt"}}`, false},
+		{"shell local", Shell(responses.WithShellEnvironment(responses.ShellEnvironment{Type: "local", Skills: []responses.ShellSkill{{Name: r88provbStr("test"), Description: r88provbStr("Test"), Path: r88provbStr("/skills/test")}}})),
+			`{"type":"shell_call","id":"sh_1","call_id":"call_shell","status":"completed","action":{"commands":["ls"]}}`,
+			`{"environment":{"skills":[{"description":"Test","name":"test","path":"/skills/test"}],"type":"local"},"type":"shell"}`, "openai.shell", "", false},
+		{"shell container_auto", Shell(responses.WithShellEnvironment(responses.ShellEnvironment{Type: "container_auto"})),
+			`{"type":"shell_call","id":"sh_1","call_id":"call_shell","status":"completed","action":{"commands":["ls"]}}`,
+			`{"environment":{"type":"container_auto"},"type":"shell"}`, "openai.shell", "", true},
+		{"shell container_reference", Shell(responses.WithShellEnvironment(responses.ShellEnvironment{Type: "container_reference", ContainerID: &ref})),
+			`{"type":"shell_call","id":"sh_1","call_id":"call_shell","status":"completed","action":{"commands":["ls"]}}`,
+			`{"environment":{"container_id":"cntr_test","type":"container_reference"},"type":"shell"}`, "openai.shell", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, reqs := r88provbServer(t, "application/json", `{"id":"resp_1","created_at":1741257730,"model":"test-deployment","output":[`+tc.output+`],"usage":{"input_tokens":2,"output_tokens":4}}`)
+			p, err := New(Config{APIKey: "k", BaseURL: srv.URL + "/openai"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, _ := p.ResponsesModel("test-deployment")
+			res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}, Tools: []types.Tool{tc.tool}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tools, _ := json.Marshal((*reqs)[0].json["tools"])
+			if string(tools) != "["+tc.wantTool+"]" {
+				t.Errorf("tools = %s, want [%s]", tools, tc.wantTool)
+			}
+			if len(res.ToolCalls) != 1 {
+				t.Fatalf("tool calls = %+v", res.ToolCalls)
+			}
+			call := res.ToolCalls[0]
+			meta, _ := call.ProviderMetadata["azure"].(map[string]interface{})
+			if meta["itemId"] == nil {
+				t.Errorf("tool call metadata = %v, want azure.itemId", call.ProviderMetadata)
+			}
+			if tc.wantArgs != "" && call.RawArguments != tc.wantArgs {
+				t.Errorf("input = %s, want %s", call.RawArguments, tc.wantArgs)
+			}
+			if call.ProviderExecuted != tc.executed {
+				t.Errorf("providerExecuted = %v, want %v", call.ProviderExecuted, tc.executed)
+			}
+		})
+	}
+}
+
+func r88provbQuote(s string) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s)
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func r88provbStr(s string) *string { return &s }
