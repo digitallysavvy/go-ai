@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -89,5 +90,50 @@ func TestR88provgGatewayStreamForwardsPing(t *testing.T) {
 	}
 	if pings != 1 {
 		t.Fatalf("chunk types = %v, want one ping", types)
+	}
+}
+
+// Ports the gateway-generation-info.test.ts cost breakdown cases (TS
+// 32acf432db): marketCost / surchargeCost / gatewayCost are decoded from the
+// snake_case fields, zero is kept, and null or absent leaves them unset.
+func TestR88provgGenerationInfoCostBreakdown(t *testing.T) {
+	const base = `"id":"gen_1","total_cost":0.00123,"upstream_inference_cost":0.0011,"usage":0.00123,"created_at":"2024-01-01T00:00:00.000Z","model":"m","is_byok":false,"provider_name":"anthropic","streamed":false,"finish_reason":"stop","latency":1,"generation_time":1,"native_tokens_prompt":1,"native_tokens_completion":1,"native_tokens_reasoning":0,"native_tokens_cached":0,"native_tokens_cache_creation":0,"billable_web_search_calls":0`
+	get := func(extra string) *GenerationInfo {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":{`+base+extra+`}}`)
+		}))
+		defer srv.Close()
+		p, err := New(Config{APIKey: "k", BaseURL: srv.URL + "/v3/ai"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := p.GetGenerationInfo(context.Background(), GenerationInfoParams{ID: "gen_1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info
+	}
+	info := get(`,"market_cost":0.0011,"surcharge_cost":0.00013,"gateway_cost":0.00123`)
+	if info.MarketCost == nil || *info.MarketCost != 0.0011 || *info.SurchargeCost != 0.00013 || *info.GatewayCost != 0.00123 {
+		t.Fatalf("costs = %v %v %v", info.MarketCost, info.SurchargeCost, info.GatewayCost)
+	}
+	b, _ := json.Marshal(info)
+	if !strings.Contains(string(b), `"marketCost":0.0011,"surchargeCost":0.00013,"gatewayCost":0.00123`) {
+		t.Fatalf("json = %s", b)
+	}
+	info = get(`,"market_cost":0,"surcharge_cost":0,"gateway_cost":0`)
+	if info.MarketCost == nil || *info.MarketCost != 0 || info.SurchargeCost == nil || info.GatewayCost == nil {
+		t.Fatal("zero costs must be kept")
+	}
+	for _, extra := range []string{``, `,"market_cost":null,"surcharge_cost":null,"gateway_cost":null`} {
+		info = get(extra)
+		if info.MarketCost != nil || info.SurchargeCost != nil || info.GatewayCost != nil || info.TotalCost != 0.00123 {
+			t.Fatalf("%q: costs = %+v", extra, info)
+		}
+		if b, _ := json.Marshal(info); strings.Contains(string(b), "marketCost") {
+			t.Fatalf("json = %s", b)
+		}
 	}
 }
