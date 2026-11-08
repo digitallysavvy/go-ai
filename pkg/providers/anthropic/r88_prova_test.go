@@ -344,10 +344,21 @@ var r88provaPending = map[string]string{
 	"should send the tool choice and disabled parallel tool use when all tools are added by value":                      "r88 pending: 457dc40d06",
 }
 
-// r88provaWithPending adds r88provaPending to a suite's skip list.
+// r88provaReplayed lists language.json.gz cases a hand port replays
+// because the extractor cannot see the provider the TS test builds.
+var r88provaReplayed = map[string]string{
+	`reads the legacy "vertex" key when "googleVertex" is absent`:    "createGoogleVertexNamedModel() builds createAnthropic({name: 'googleVertex'}) in a helper; replayed by TestR88provaLegacyVertexKey",
+	`ignores the legacy "vertex" key when "googleVertex" is present`: "createGoogleVertexNamedModel() builds createAnthropic({name: 'googleVertex'}) in a helper; replayed by TestR88provaLegacyVertexKey",
+}
+
+// r88provaWithPending adds r88provaReplayed and r88provaPending to a
+// suite's skip list.
 func r88provaWithPending(skips map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range skips {
+		out[k] = v
+	}
+	for k, v := range r88provaReplayed {
 		out[k] = v
 	}
 	if os.Getenv("R88PROVA_NO_PENDING") != "" {
@@ -451,5 +462,44 @@ func TestR88provaPingsBeforeStartupError(t *testing.T) {
 		if !errors.As(err, &pe) || !pe.IsRetryable() || pe.Message != "Overloaded" {
 			t.Fatalf("raw=%v: err = %#v", raw, err)
 		}
+	}
+}
+
+// TS 6400cf8b88 'legacy custom provider options names': a provider named
+// googleVertex reads providerOptions.vertex when googleVertex is absent
+// (first present wins, metadata only under anthropic), ignores it when
+// googleVertex is present, and never sends Vertex-only keys such as labels.
+func TestR88provaLegacyVertexKey(t *testing.T) {
+	body := `{"id":"msg_legacy_test","type":"message","role":"assistant","content":[{"type":"text","text":"Hello, World!"}],"model":"claude-3-haiku-20240307","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":20}}`
+	tool := []types.Tool{{Name: "testTool", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}}
+	run := func(po map[string]interface{}, tools []types.Tool) (map[string]interface{}, *types.GenerateResult) {
+		s := r88provaNewServer(t, body, nil)
+		m, err := New(Config{APIKey: "test-api-key", BaseURL: s.srv.URL, Name: "googleVertex"}).LanguageModel("claude-3-haiku-20240307")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}, ProviderOptions: po, Tools: tools})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.body(0), res
+	}
+	b, res := run(map[string]interface{}{"vertex": map[string]interface{}{"disableParallelToolUse": true}}, tool)
+	if tc, _ := b["tool_choice"].(map[string]interface{}); tc["disable_parallel_tool_use"] != true || tc["type"] != "auto" {
+		t.Fatalf("tool_choice = %v", b["tool_choice"])
+	}
+	if len(res.ProviderMetadata) != 1 || res.ProviderMetadata["anthropic"] == nil {
+		t.Fatalf("metadata keys = %v", res.ProviderMetadata)
+	}
+	b, _ = run(map[string]interface{}{
+		"googleVertex": map[string]interface{}{"disableParallelToolUse": false},
+		"vertex":       map[string]interface{}{"disableParallelToolUse": true},
+	}, tool)
+	if tc, _ := b["tool_choice"].(map[string]interface{}); tc != nil && tc["disable_parallel_tool_use"] == true {
+		t.Fatalf("tool_choice = %v", b["tool_choice"])
+	}
+	b, _ = run(map[string]interface{}{"vertex": map[string]interface{}{"labels": map[string]interface{}{"team": "ai"}}}, nil)
+	if _, ok := b["labels"]; ok {
+		t.Fatal("labels sent")
 	}
 }

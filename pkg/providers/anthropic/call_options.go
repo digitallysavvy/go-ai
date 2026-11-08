@@ -40,6 +40,14 @@ func (m *LanguageModel) providerOptionsName() string {
 	return name
 }
 
+// legacyProviderOptionsNames are legacy names of custom providerOptions keys,
+// read when the current key is absent (TS LEGACY_PROVIDER_OPTIONS_NAMES): the
+// Google Vertex Anthropic provider was renamed from `vertex` to
+// `googleVertex`.
+var legacyProviderOptionsNames = map[string][]string{
+	"googleVertex": {"vertex"},
+}
+
 // resolveCallOptions computes the effective ModelOptions for a single call:
 // construction-time m.options as defaults, overridden field-by-field by the
 // merged (canonical "anthropic" + custom providerOptionsName, custom wins)
@@ -85,11 +93,19 @@ func (m *LanguageModel) resolveCallOptions(opts *provider.GenerateOptions) (*Mod
 	var customOverlay *ModelOptions
 	usedCustomProviderKey := false
 	if providerOptionsName != "anthropic" {
-		customOverlay, err = decodeAnthropicCallOptionsAt(opts.ProviderOptions, providerOptionsName)
-		if err != nil {
-			return nil, false, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options: %s", providerOptionsName, err.Error()), nil)
+		// The custom key and its legacy aliases are alternatives: the first
+		// present one is used (TS resolveProviderOptions resolution
+		// 'first'); only the custom key itself counts as used.
+		for _, key := range append([]string{providerOptionsName}, legacyProviderOptionsNames[providerOptionsName]...) {
+			customOverlay, err = decodeAnthropicCallOptionsAt(opts.ProviderOptions, key)
+			if err != nil {
+				return nil, false, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options: %s", key, err.Error()), nil)
+			}
+			if customOverlay != nil {
+				usedCustomProviderKey = key == providerOptionsName
+				break
+			}
 		}
-		usedCustomProviderKey = customOverlay != nil
 	}
 
 	applyModelOptionsOverlay(&base, canonicalOverlay)
