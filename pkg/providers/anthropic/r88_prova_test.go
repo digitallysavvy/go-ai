@@ -24,14 +24,13 @@ import (
 // r88provaServer serves one canned response (JSON for generate, SSE events
 // for stream) and records the request bodies.
 type r88provaServer struct {
-	mu       sync.Mutex
-	bodies   []map[string]interface{}
-	headers  []http.Header
-	json     string
-	events   []string
-	srv      *httptest.Server
-	paths    []string
-	statuses []int
+	mu      sync.Mutex
+	bodies  []map[string]interface{}
+	headers []http.Header
+	json    string
+	events  []string
+	srv     *httptest.Server
+	paths   []string
 }
 
 func r88provaNewServer(t *testing.T, jsonBody string, events []string) *r88provaServer {
@@ -64,12 +63,6 @@ func (s *r88provaServer) body(i int) map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bodies[i]
-}
-
-func (s *r88provaServer) header(i int) http.Header {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.headers[i]
 }
 
 func r88provaModel(t *testing.T, s *r88provaServer, modelID string) provider.LanguageModel {

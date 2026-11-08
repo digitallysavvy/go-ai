@@ -44,7 +44,3 @@ func r88provaRedirectServers(t *testing.T) (string, func() []http.Header, func()
 	}
 	return srv.URL, get(&foreign), get(&api)
 }
-
-// r88provaCredentialHeaders lists the credential and custom headers a
-// foreign origin must never receive.
-var r88provaCredentialHeaders = []string{"Authorization", "X-Api-Key", "X-Custom-Header", "X-Amz-Date", "X-Amz-Security-Token", "X-Amz-Content-Sha256"}

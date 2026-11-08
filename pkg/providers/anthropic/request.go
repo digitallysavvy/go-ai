@@ -932,7 +932,7 @@ func checkInlineToolChoice(opts *provider.GenerateOptions, usesJSONResponseTool 
 		}
 		name, hasName := d.definition["name"]
 		if choice.Type != types.ToolChoiceNone &&
-			!(usesJSONResponseTool && d.sdkName != selectedSDKName) &&
+			(!usesJSONResponseTool || d.sdkName == selectedSDKName) &&
 			hasName && name == selectedProviderName {
 			continue
 		}
