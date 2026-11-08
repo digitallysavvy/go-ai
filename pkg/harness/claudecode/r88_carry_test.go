@@ -2,6 +2,7 @@ package claudecode_test
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,5 +35,16 @@ func TestR88carryHostDisconnectTimeoutSpawn(t *testing.T) {
 		}
 		_ = sess.DoDestroy(context.Background())
 		srv.Close()
+	}
+}
+
+// TS ae4e2363a2 "sends additional directories ... to the bridge".
+func TestR88carryAdditionalDirectoriesSent(t *testing.T) {
+	srv, ch := newReplayServer()
+	t.Cleanup(srv.Close)
+	h := replayHarness(t, claudecode.Settings{AdditionalDirectories: []string{"/vercel/sandbox/shared"}})
+	_, start := replayPrompt(t, h, newRecSandbox(srv), harness.StartOptions{}, harness.PromptTurnOptions{}, ch)
+	if got := start["additionalDirectories"]; !reflect.DeepEqual(got, []any{"/vercel/sandbox/shared"}) {
+		t.Fatalf("additionalDirectories = %#v", got)
 	}
 }

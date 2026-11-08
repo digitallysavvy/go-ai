@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
 
 // r88carryConn is an in-memory bridge socket that records the frames the
@@ -383,6 +384,41 @@ func TestR88carryHostDisconnectTimeoutFlag(t *testing.T) {
 	} {
 		if got := hostDisconnectTimeoutFlag(tc.d); got != tc.want {
 			t.Errorf("%v: %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+// TS ae4e2363a2: additionalDirectories on the start frame when the setting
+// is defined (an empty list included), a copy of the caller's slice.
+func TestR88carryAdditionalDirectoriesOnStart(t *testing.T) {
+	for _, tc := range []struct {
+		dirs []string
+		want string
+	}{
+		{[]string{"/vercel/sandbox/shared"}, `"additionalDirectories":["/vercel/sandbox/shared"]`},
+		{[]string{}, `"additionalDirectories":[]`},
+		{nil, ""},
+	} {
+		s := newSession(sessionOptions{sessionID: "s", startSettings: startSettingsFrom(Settings{AdditionalDirectories: tc.dirs})})
+		frame := s.buildStartFrame(harnessutil.PromptContent{Text: "hi"}, harness.TurnSettings{}, nil)
+		b, err := json.Marshal(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.want == "" {
+			if strings.Contains(string(b), "additionalDirectories") {
+				t.Errorf("nil setting sent: %s", b)
+			}
+			continue
+		}
+		if !strings.Contains(string(b), tc.want) {
+			t.Errorf("frame = %s, want %s", b, tc.want)
+		}
+		if len(tc.dirs) > 0 {
+			tc.dirs[0] = "/mutated"
+			if (*frame.AdditionalDirectories)[0] != "/vercel/sandbox/shared" {
+				t.Errorf("frame shares the caller's slice")
+			}
 		}
 	}
 }

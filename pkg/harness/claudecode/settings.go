@@ -81,6 +81,13 @@ type Settings struct {
 	// query. When it is exceeded, the query stops and the turn ends with an
 	// error. Nil means no limit.
 	MaxBudgetUSD *float64
+	// AdditionalDirectories are absolute paths of directories Claude can
+	// access in addition to the session working directory; the bridge also
+	// trusts reads under them in approvals. Nil sends nothing; a non-nil
+	// empty slice is sent as []. Paths are forwarded as given (relative
+	// entries are not trusted by the bridge). Mirrors TS
+	// `additionalDirectories` (ae4e2363a2).
+	AdditionalDirectories []string
 	// StrictMCPConfig, when true, uses only the MCP servers configured with
 	// MCPServers and ignores any other MCP configuration such as a project
 	// `.mcp.json` or user settings. Nil leaves the Claude Code default.

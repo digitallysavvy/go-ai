@@ -94,6 +94,7 @@ type sessionOptions struct {
 type startSettings struct {
 	skillOverrides         map[string]SkillOverride
 	maxBudgetUSD           *float64
+	additionalDirectories  []string
 	strictMCPConfig        *bool
 	questionTimeoutMs      *int
 	excludeDynamicSections *bool
@@ -103,7 +104,8 @@ type startSettings struct {
 func startSettingsFrom(settings Settings) startSettings {
 	return startSettings{
 		skillOverrides: settings.SkillOverrides, maxBudgetUSD: settings.MaxBudgetUSD,
-		strictMCPConfig: settings.StrictMCPConfig, questionTimeoutMs: settings.QuestionTimeoutMs,
+		additionalDirectories: settings.AdditionalDirectories,
+		strictMCPConfig:       settings.StrictMCPConfig, questionTimeoutMs: settings.QuestionTimeoutMs,
 		excludeDynamicSections: settings.ExcludeDynamicSections, toolHints: settings.ToolHints,
 	}
 }
@@ -247,6 +249,10 @@ func (s *session) buildStartFrame(prompt harnessutil.PromptContent, ts harness.T
 	extra := s.opts.startSettings
 	frame.SkillOverrides = extra.skillOverrides
 	frame.MaxBudgetUSD = extra.maxBudgetUSD
+	if extra.additionalDirectories != nil {
+		dirs := append([]string{}, extra.additionalDirectories...)
+		frame.AdditionalDirectories = &dirs
+	}
 	frame.StrictMCPConfig = extra.strictMCPConfig
 	frame.QuestionTimeoutMs = extra.questionTimeoutMs
 	frame.ExcludeDynamicSections = extra.excludeDynamicSections
