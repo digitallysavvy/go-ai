@@ -275,6 +275,19 @@ The approval decision. The stream emits this chunk for automatic decisions. Clie
 | `reason` | `string` | Optional. Reason for the decision. |
 | `providerExecuted` | `bool` | Optional. |
 
+## Steering messages
+
+### `steering-message`
+
+Sent with `ExperimentalSteering` for each steering message delivered to a step, before that step's `start-step` (TS 1a1da8d68c). `ReadUIMessageStream` appends a `SteeringMessageUIPart`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | The steering message id. |
+| `parts` | `array` | The user message as UI parts: `text` parts and `file` parts (`mediaType`, `url`, optional `filename`). |
+
+A provider `ping` part (`provider.ChunkTypePing`) produces no UI chunk.
+
 ## Data chunks
 
 ### `data-<name>`

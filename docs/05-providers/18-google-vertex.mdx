@@ -565,3 +565,10 @@ model, err := maas.LanguageModel(string(googlevertex.MaaSModelGrok420Reasoning))
 ### Auth token overrides
 
 Vertex Anthropic auth token generation can be overridden through MaaS configuration when a custom token source is required.
+
+## November 8 2026 catch-up
+
+- **Credentials stay on their origin.** MaaS, OAuth and express-mode credentials are not sent to a redirect hop on another origin; neither are the Vertex Anthropic credentials.
+- **Claude native structured output.** `googlevertex/anthropic.Options.SupportsNativeStructuredOutput` opts Claude 4.5+ models into native structured output on Vertex.
+- **Gemini transcription words.** The shared `TimestampGranularities: []string{"word"}` turns on `wordTimestamp` (unless the provider option sets it) and fills `Words`.
+- **Interactions labels.** `providerOptions.google.labels` (or `vertex`) is sent as top-level `labels` on Vertex Interactions.

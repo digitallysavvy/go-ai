@@ -359,3 +359,8 @@ messages := []types.Message{{
     },
 }}
 ```
+
+## November 8 2026 catch-up
+
+- **Citations.** Untitled-document and tool-output citations are accepted; tool-only citations are not sources. Streams emit `ChunkTypeSource` parts for `citation-start` events.
+- **Usage and ids.** Token counts are nil when `usage.tokens` is missing, and `ResponseMetadata.ID` is the v2 `id` (falling back to `generation_id`).

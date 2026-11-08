@@ -521,6 +521,71 @@ already, you can skip them.
 | Vercel network policy updates; stubbed Vercel API | Lists sessions first | wire/protocol change | Serve the sessions listing | [Vercel network policy inspection lists sessions](#vercel-policy-inspection-list-sessions) |
 | Vercel `ListSnapshots` | Every page | silent behavior change | Bound with a context | [Vercel snapshot listing follows every page](#vercel-snapshot-pagination) |
 | Vercel JWT array `owner_id` | One `teamId` per element | wire/protocol change | None | [Vercel array owner_id sends one teamId per element](#vercel-owner-id-array) |
+| Custom `TelemetryIntegration`, `SubscribeDiagnostic` with `RecordInputs` / `RecordOutputs` false | Filtered events; errors read `AI SDK operation failed` | silent behavior change | Turn the flag on to keep the fields | [Recording flags filter what integrations and diagnostic subscribers see](#telemetry-recording-flags-filter) |
+| `ai.prompt.tools` / `gen_ai.tool.definitions` with `openai.mcp`, `openai.code_interpreter`, `openai.shell` | Credential values read `[redacted]` | silent behavior change | None | [Telemetry tool definitions redact provider credentials](#telemetry-tool-definition-redaction) |
+| `HarnessAgent` with `ToolApproval` `user-approval` host tools | Pauses at the step end without other echoes | silent behavior change | None | [A pending host tool approval pauses the turn without waiting for other host results](#harness-host-approval-pause) |
+| `claudecode` sessions reused after an abort; `ResumeSessionState` data | Events of another turn's `startId` dropped | silent behavior change | None | [claude-code turns keep only their own bridge events](#claude-code-turn-start-id) |
+| Custom bridges reading the host's close frame | Close 1000 with reason `suspended` | wire/protocol change | None | [Bridge suspend closes the WebSocket with the reason suspended](#bridge-suspend-close-reason) |
+| `apiKeyHelper` in claude-code settings on Windows | Platform shell fallback | silent behavior change | None | [claude-code apiKeyHelper runs without sh on PATH](#claude-code-apikeyhelper-shell) |
+| `deepagents`, `opencode`, `claudecode`, `codex`, `deepagents.BuiltinTools()` | Outside-workdir file access asks; project claude-code config ignored | silent behavior change | None unless you relied on it | [Harness bridges are resynced to ai@7.0.165](#harness-bridges-0f3a85f92d) |
+| `grokbuild.CreateGrokBuild` | `ask = ["Read"]` added to the sandbox config | silent behavior change | None | [Grok Build file reads need ACP approval](#grok-build-read-approval) |
+| `cursor.BuildConfig().Args`, `grokbuild.BuildConfig().Env` | Repository configs disabled | silent behavior change | None unless you relied on them | [Cursor and Grok Build ignore repository configs, hooks and MCP servers](#repo-config-isolation) |
+| OpenCode subscription auth on Windows | `%HOME%\.local\share\opencode\auth.json` first | silent behavior change | None | [OpenCode on Windows reads the XDG auth store first](#opencode-windows-auth-store) |
+| `vercel.NewAPIClient`, `mcp.NewHTTPTransport` / `NewSSETransport` with `MCPRedirectFollow` | `Authorization` dropped after an origin change | silent behavior change | None | [Vercel Sandbox and MCP transports drop credentials on cross-origin redirects](#redirect-credentials-cross-origin) |
+| `mcp.Auth`, `SelectOAuthResourceURL`, `OAuthResourceURLValidator` | `resource` is the canonical server URL when unset | wire/protocol change | Return the resource you want from `ValidateResourceURL` | [MCP OAuth always sends the resource parameter](#mcp-oauth-resource-always) |
+| `OAuthClientProvider.Tokens` without `Issuer` / `AuthorizationServer` / `TokenEndpoint` | Invalidated before registration; else `MCPClientOAuthError` | silent behavior change | Implement invalidation or store the binding | [MCP OAuth clears refresh tokens without an authorization server binding](#mcp-oauth-unbound-refresh-token) |
+| `DiscoverOAuthProtectedResourceMetadata`, `DiscoverAuthorizationServerMetadata`, `Auth` | `DownloadError` on an https to http hop | silent behavior change | Serve metadata over https | [MCP OAuth discovery rejects HTTPS to HTTP redirects](#mcp-oauth-https-downgrade) |
+| `providerOptions.cerebras.queueThreshold`, `ProviderMetadata["cerebras"]` | Sent as the `queue_threshold` header; metadata has `serviceTier` | wire/protocol change | None | [Cerebras queueThreshold is a validated header](#cerebras-queue-threshold) |
+| `tools.ComputerToolset20260801`, `toolset_name` | The member is the action; unknown or disabled members fail | silent behavior change | None | [Anthropic computer toolset member calls are checked](#anthropic-toolset-member-guard) |
+| A custom `BaseURL` that redirects to another origin | No credentials on cross-origin hops | silent behavior change | Point `BaseURL` at the final origin | [Vertex Anthropic, Bedrock Anthropic, Mantle and Anthropic AWS send credentials only to their endpoint](#anthropic-credential-redirects) |
+| `ProviderOptions["vertex"]` with Vertex Anthropic | Read when `googleVertex` is absent | silent behavior change | None | [Claude on Vertex reads the legacy vertex options key](#anthropic-vertex-legacy-key) |
+| `ModelOptions.ServiceTier`, `serviceTier`, `providerMetadata["anthropic"]["serviceTier"]` | Unsupported tier warns and is omitted; metadata reports the tier | silent behavior change | None | [Anthropic serviceTier follows the provider's allowed values](#anthropic-service-tier) |
+| `ModelOptions.MCPServers` with `ToolChoiceTool` / `ToolChoiceNone` | `tool_configuration {enabled: false}` | wire/protocol change | None | [Anthropic MCP connectors are disabled when a tool choice falls back](#anthropic-mcp-restricted-choice) |
+| `ProviderError.Data` from Anthropic | `{type, error: {type, message, details?}}` | silent behavior change | None | [Anthropic ProviderError.Data holds the parsed error object](#anthropic-error-data) |
+| `UploadFileResult.ProviderMetadata["anthropic"]` | Keys omitted when absent; ByteSize / CreatedAt / ExpiresAt set | silent behavior change | Read keys with a presence check | [Anthropic file upload metadata keys are present only when sent](#anthropic-files-v4) |
+| `Config.SupportsStrictTools: &false` with native output | No `structured-outputs-2025-11-13` for function tools | wire/protocol change | None | [Anthropic sends the structured-outputs beta for tools only with strict tool support](#anthropic-strict-tools-beta) |
+| Computer toolset in Message Batches | Tool calls named by the member | silent behavior change | Handle member names | [Anthropic batch results report toolset member calls as plain tool calls](#anthropic-batch-toolset-calls) |
+| `googlevertex.NewMaaS`, a custom `Fetch` / `HTTPClient` relying on redirected credentials | No credentials on cross-origin redirect hops | silent behavior change | None | [Vertex MaaS, OAuth, express and AI Gateway credentials stay on their origin](#vertex-maas-credentials-same-origin) |
+| `cohere` `SourceContent.ProviderMetadata`, `Usage.InputTokens` nil checks | No failure; tool-only citations are not sources | silent behavior change | Check usage for nil | [Cohere accepts untitled and tool citations; usage without tokens is unset](#cohere-partial-citations) |
+| Cohere `DoStream` / `StreamText` with documents | `ChunkTypeSource` parts; a malformed citation-start is an error part | silent behavior change | None | [Cohere streams emit source parts for citations](#cohere-stream-sources) |
+| `ResponseMetadata.ID` from Cohere | `id`, falling back to `generation_id` | silent behavior change | None | [Cohere response ID is the v2 id](#cohere-response-id) |
+| Cohere streamed tool calls | `RawArguments` `{}` for `null` | silent behavior change | None | [Cohere streamed null tool arguments become {}](#cohere-null-tool-args) |
+| Mistral `ToolChoiceTool` | All tools and `tool_choice: {type: function, function: {name}}` | wire/protocol change | None | [Mistral sends a named tool choice natively](#mistral-native-tool-choice) |
+| Perplexity `ToolChoiceNone` | No tools; `max_tool_calls: 0` | wire/protocol change | None | [Perplexity ToolChoiceNone sends no tools](#perplexity-tool-choice-none) |
+| Google / Vertex `ToolChoiceNone` with provider tools | Provider tools not sent; no warnings | wire/protocol change | None | [Google ToolChoiceNone drops provider-defined tools](#google-tool-choice-none-provider-tools) |
+| Google speech `Language` | `speechConfig.languageCode`; no warning | wire/protocol change | None | [Gemini TTS sends the speech language](#gemini-tts-language) |
+| `providerOptions.google.labels`, `GoogleInteractionsProviderOptions.Labels` | Sent as top-level `labels`; a non-string label fails | wire/protocol change | None | [Google Interactions sends labels](#google-interactions-labels) |
+| Gemini streamed `partialArgs` tool arguments | Gap indexes skipped; large indexes no longer fail | silent behavior change | None | [Gemini streamed partial arguments with array gaps are skipped](#gemini-stream-array-gaps) |
+| Vertex Gemini transcription with `TimestampGranularities` | `wordTimestamp` on; `Words`; new warnings | wire/protocol change | None | [Vertex Gemini transcription honors shared word timestamps](#vertex-gemini-transcription-words) |
+| `FinishReasonStop` checks; `result.Text` on refused chat requests | Refusal text part; `stop` + refusal is `content-filter` | silent behavior change | Treat refusals as content | [Chat Completions refusals are returned as text](#openai-chat-refusals) |
+| `providerMetadata["openai"]["logprobs"]` on streams | Every chunk; content then refusal; no `bytes` | silent behavior change | None | [Streamed chat logprobs hold every chunk](#openai-chat-logprobs-all-chunks) |
+| Responses `FinishReasonStop`, empty text on refusals | Refusal text and `content-filter` | silent behavior change | None | [Responses refusals are returned as text](#openai-responses-refusals) |
+| `FileContent` with `FileData{Type: text}` and a `text/*` media type | Sent as a text part | silent behavior change | None | [OpenAI-compatible inline text files are sent as text](#compat-inline-text-files) |
+| `Message.Name`, `ProviderOptions["openai"]["name"]` | Sent on system / developer / user / assistant | wire/protocol change | None | [OpenAI chat sends message names from provider options](#openai-chat-message-names) |
+| `ProviderOptions["azure"]` with OpenAI option keys | Applied on chat, transcription, speech and image | silent behavior change | None | [Azure merges azure and openai options](#azure-option-namespaces) |
+| OpenAI `/images/edits` with `moderation` | `moderation` sent; fixed multipart order | wire/protocol change | None | [OpenAI image edits send moderation in a fixed field order](#openai-image-edit-moderation) |
+| OpenAI MCP tool without `ServerURL` / `ConnectorID` | New refine text; tunnelId conflicts fail | error text only | None | [OpenAI MCP tool validation names tunnelId](#openai-mcp-tunnel-refine) |
+| `providerOptions.openai.timestampGranularities` with another `responseFormat`; `Timestamps: true` | Not sent outside verbose_json; warns; `Words` set | wire/protocol change | None | [OpenAI transcription sends timestamp granularities only for verbose_json](#openai-transcription-granularities) |
+| `providerOptions.xai.output` | https URL required; uploaded outcome; generic errors | silent behavior change | Use an https URL without userinfo or fragment | [xAI video output upload URLs are validated](#xai-video-upload-url) |
+| HTTPS URLs that redirect to `http://` (prompt files, media results, `PollJSON`) | `DownloadError` "Redirect from HTTPS to HTTP was blocked" | silent behavior change | Keep the chain on HTTPS | [Validated downloads reject HTTPS to HTTP redirects](#download-https-downgrade) |
+| `blackForestLabs.webhookUrl` | Succeeds by polling `get_result` | silent behavior change | None | [Black Forest Labs webhook image calls poll get_result](#bfl-webhook-get-result) |
+| `deepseek-ai/DeepSeek-V4-Pro-0813` with reasoning and JSON output | No `response_format`; system instruction; warning | wire/protocol change | None | [Baseten DeepSeek V4 Pro JSON output uses an instruction](#baseten-deepseek-json) |
+| `baseten.Config{ModelURL: ...}` without `/sync/v1` used for `LanguageModel` | Chat stays on `BaseURL` | silent behavior change | Set `BaseURL` for chat | [Baseten chat uses ModelURL only for /sync/v1](#baseten-chat-modelurl) |
+| Gladia transcription jobs longer than 60 s | Default 10 min / 1 s; new timeout text | silent behavior change | None | [Gladia polls for up to 10 minutes](#gladia-poll-timeout) |
+| `contextPrompt`, `moderation`, `chapterization`, `language`, `customVocabulary` and other v1 Gladia options | v1 fields warn or are translated; `x-gladia-version` | wire/protocol change | Move to the v2 option shapes | [Gladia uses the v2 options](#gladia-v2-options) |
+| `gladia` `TranscriptionModel("...")` | `solaria-*` sent as `model`; other IDs warn | silent behavior change | Use `""` or `gladia.ModelSolaria1` | [Gladia sends solaria model IDs](#gladia-model-id) |
+| `ProviderMetadata["gladia"]`; failed-job error text | `error_code` and the whole `result` | silent behavior change | None | [Gladia provider metadata carries the whole result](#gladia-provider-metadata-addons) |
+| `SpeechModelOptions.Callback` / `CallbackMethod` | `Callback` fails; `CallbackMethod` warns | silent behavior change | Remove `Callback` | [Deepgram speech rejects callback](#deepgram-speech-callback) |
+| `providerOptions.deepgram.streaming` with `DoTranscribe` | `unsupported` warning | silent behavior change | None | [Deepgram batch transcription warns about the streaming option](#deepgram-batch-streaming-warning) |
+| Cartesia speech provider options | New body keys when set; locale + language fails | wire/protocol change | None | [Cartesia speech sends locale, normalization and generation options](#cartesia-speech-options) |
+| Cartesia Ink 2 streaming options | `keyterm` / `turn_*` query parameters; warnings | wire/protocol change | None | [Cartesia streaming transcription sends keyterms and turn thresholds](#cartesia-ink2-keyterms) |
+| Replicate image calls that are cancelled or time out | `POST /predictions/<id>/cancel`; `id` required | silent behavior change | None | [Replicate cancels abandoned predictions](#replicate-cancel) |
+| `TranscribeOptions.AudioURL` with a generic `Content-Type` | Media type detected from the bytes | silent behavior change | None | [Transcribe ignores a generic downloaded content type](#transcribe-audio-media-type) |
+| `TranscribeOptions.AudioURL` with Groq (a `provider.TranscriptionURLModel`) | URL sent to the provider | silent behavior change | Set `Download` to force a local download | [Transcribe sends URLs to providers that take them](#transcribe-native-url) |
+| `GenerateVideoResult.Video` with providers that upload (xAI `output`) | `Video` nil for upload-only results; `UploadedVideos` | silent behavior change | Check `UploadedVideos` before `Video` | [Uploaded videos are counted, not converted](#video-uploaded-outcome) |
+| AssemblyAI error text | `{"error": "..."}` message used | error text only | None | [AssemblyAI flat error bodies give their message](#assemblyai-flat-error) |
+| Provider error text / `ProviderError.Data` for bodies with `__proto__` or `constructor.prototype` keys | Status text, no data | error text only | None | [Error bodies with `__proto__` keys give the status text](#error-body-secure-parse) |
+| `azure.Config.ADTokenProvider` behind a redirect to another origin | No token on cross-origin hops | silent behavior change | None | [Azure Entra tokens are not sent on cross-origin redirects](#azure-entra-token-redirects) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1638,6 +1703,27 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** Handle the failure in `OnError` or from the returned error.
 - **Kind:** silent behavior change
 
+### Transcribe ignores a generic downloaded content type {#transcribe-audio-media-type}
+
+- **What changed:** A downloaded audio `Content-Type` was used verbatim. v0.6 lower-cases it, drops parameters and keeps only a full `audio/<subtype>`; anything else (`application/octet-stream`, `audio/*`) is detected from the bytes (TS 5d18351e1e, review round 88).
+- **Am I affected?** `Transcribe` with `AudioURL`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Transcribe sends URLs to providers that take them {#transcribe-native-url}
+
+- **What changed:** With a model that implements `provider.TranscriptionURLModel` (Groq) and no `Download` / `DownloadWithMetadata`, an http(s) `AudioURL` is sent to the provider instead of downloaded; if the provider declines, the validated download runs. Telemetry has no audio size or media type then (TS 36802d48af, review round 88).
+- **Am I affected?** `Transcribe` with `AudioURL` and a Groq model.
+- **What to do:** Set `Download` to force the local download.
+- **Kind:** silent behavior change
+
+### Uploaded videos are counted, not converted {#video-uploaded-outcome}
+
+- **What changed:** An `uploaded` video data part failed as an unknown type. v0.6 counts it in `GenerateVideoResult.UploadedVideos`; an upload-only result succeeds with `Video` nil and `Videos` empty (TS 2e44144812; TS throws from a `video` getter, see the known difference; review round 88).
+- **Am I affected?** Code that dereferences `result.Video` after an upload delivery.
+- **What to do:** Check `UploadedVideos` before reading `Video`.
+- **Kind:** silent behavior change
+
 ## Prompts and validation {#prompts-and-validation}
 
 ### Prompt validation matches TS {#prompt-validation}
@@ -1928,6 +2014,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Am I affected?** Prompts with `TextContent{Text: ""}` parts.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
+
+### Validated downloads reject HTTPS to HTTP redirects {#download-https-downgrade}
+
+- **What changed:** Validated downloads (prompt files, image / video results, `PollJSON`) followed a redirect from https to http. v0.6 fails with `DownloadError` "Redirect from HTTPS to HTTP was blocked" before the http target is requested, trusted-origin hops included (TS f608c056a2, review round 88).
+- **Am I affected?** Download URLs whose redirect chain goes from https to http.
+- **What to do:** Keep the chain on HTTPS, or start on HTTP.
+- **Kind:** silent behavior change
 
 ## Tools {#tools}
 
@@ -4519,6 +4612,20 @@ compile-time changes.
 - **What to do:** No action unless you parse the call ID's format.
 - **Kind:** silent behavior change
 
+### Recording flags filter what integrations and diagnostic subscribers see {#telemetry-recording-flags-filter}
+
+- **What changed:** With `RecordInputs` or `RecordOutputs` false, v0.5 passed every event unfiltered to custom integrations and `SubscribeDiagnostic` handlers. v0.6 gives every integration (built-in and custom) and every diagnostic subscriber a filtered copy, as TS `filterTelemetryEvent` does in its dispatcher (TS 8da48db187, 883fcde5f9): input fields (prompt, system, messages, tools, schema and its name / description, embedding values, rerank query / documents, decide state / questions / provider options, tool args) or output fields (text, content, reasoning, tool calls and results, files, object, embeddings, ranking, answers) are emptied, provider metadata and request / response bodies are dropped, and every error becomes `AI SDK operation failed`. This covers the `ObjectOn*Event`s that `GenerateObject` / `StreamObject` publish on the channel. `ExecuteTool` integrations get nil args when inputs are hidden; the tool still gets its input. Built-in spans record the generic error text, no `ai.response.providerMetadata` and, with inputs hidden, no `ai.schema.name` / `ai.schema.description`; a failed tool with outputs hidden gets an error status without a message. Application callbacks and results are unchanged (review round 88).
+- **Am I affected?** Custom `telemetry.TelemetryIntegration`s, `SubscribeDiagnostic` / `SubscribeDiagnosticTyped` handlers or span assertions, combined with `RecordInputs: telemetry.Bool(false)` or `RecordOutputs: telemetry.Bool(false)`.
+- **What to do:** No action unless you read those fields with a flag off; turn the flag back on to keep them. `telemetry.FilterEvent` applies the same filter to your own events.
+- **Kind:** silent behavior change
+
+### Telemetry tool definitions redact provider credentials {#telemetry-tool-definition-redaction}
+
+- **What changed:** The telemetry tool definitions (`ai.prompt.tools`, `gen_ai.tool.definitions`) showed the `openai.mcp` `authorization` and header values and the `domainSecrets[].value` of the `openai.code_interpreter` container and `openai.shell` environment network policies. v0.6 writes `[redacted]` there on a telemetry-only copy, as TS otel `redactToolDefinition` (TS 7bb309d132). The provider request still sends the real values (review round 88).
+- **Am I affected?** Span assertions on those attributes for OpenAI MCP, code interpreter or shell tools.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -4701,6 +4808,13 @@ compile-time changes.
 - **What changed:** TS has two `AI_InvalidArgumentError` classes: the `ai` package's (`Invalid argument for parameter <x>: <message>`) and `@ai-sdk/provider`'s, whose message is the bare text. Go errors that port the provider class (provider packages, `parseProviderOptions`' `invalid <provider> provider options`, provider-utils such as `CreateIDGenerator`, `NewDecisionLanguageModel`, base URL validation) now have the bare message, built with `providererrors.NewArgumentError`. The type, its fields and `errors.As` matching are unchanged (review round 87e).
 - **Am I affected?** Code that matches `Invalid argument for parameter` in provider error text.
 - **What to do:** Match with `errors.As` on `*providererrors.InvalidArgumentError` and read `Field`.
+- **Kind:** error text only
+
+### Error bodies with `__proto__` keys give the status text {#error-body-secure-parse}
+
+- **What changed:** TS parses error bodies with secureJsonParse, so a body with a `__proto__` (or `constructor.prototype`) key does not parse: the message is the response status text and no error data is kept. v0.6 does the same in every provider's error handler (`providererrors`, the shared nested error schema and each provider's own parser). Groq, Z.ai and Fireworks also give the status text for a body that does not match their error schema (v0.5 said `HTTP <code>: <body>`), and Perplexity keeps no data for such a body (review round 88).
+- **Am I affected?** Code that matches provider error text or reads `ProviderError.Data` for unusual error bodies; Groq, Z.ai and Fireworks error text for non-JSON or non-schema bodies.
+- **What to do:** No action unless you match that text.
 - **Kind:** error text only
 
 ## Providers {#providers}
@@ -7077,6 +7191,328 @@ compile-time changes.
   ```
 - **Kind:** wire/protocol change
 
+### Cerebras queueThreshold is a validated header {#cerebras-queue-threshold}
+
+- **What changed:** `providerOptions.cerebras.queueThreshold` went into the request body as a raw key. v0.6 validates it (an integer from 50 to 20000, `InvalidArgumentError` otherwise) and sends it as the `queue_threshold` header; `providerMetadata.cerebras.serviceTier` reports the applied tier (TS 4a4e854fa6, review round 88).
+- **Am I affected?** Cerebras calls with `queueThreshold`; consumers of `ProviderMetadata["cerebras"]`.
+- **What to do:** No action unless you pass a value outside 50-20000.
+- **Kind:** wire/protocol change
+
+### Anthropic computer toolset member calls are checked {#anthropic-toolset-member-guard}
+
+- **What changed:** A computer toolset member call's input `action` overrode the member the API selected, and unknown, disabled or undeclared members became tool calls. v0.6 makes the member the action (`action` comes last in the raw input unless the input has one), and unknown, disabled or undeclared members and invalid member input fail with `InvalidResponseDataError` (`Invalid toolset member input JSON.` / `expected an object.`). The local schema enum lists only enabled members (TS a161c0a665, review round 88).
+- **Am I affected?** `tools.ComputerToolset20260801` users; code that matches `InvalidResponseDataError`.
+- **What to do:** No action unless you relied on the input's `action` or on calls to disabled members.
+- **Kind:** silent behavior change
+
+### Vertex Anthropic, Bedrock Anthropic, Mantle and Anthropic AWS send credentials only to their endpoint {#anthropic-credential-redirects}
+
+- **What changed:** The credential transports of Vertex Anthropic, Bedrock Anthropic, Bedrock Mantle and Anthropic on AWS ran on every redirect hop, so a cross-origin redirect received the token, API key, SigV4 signature and custom headers, and two of them modified the caller's request. v0.6 sends credentials and custom headers only to requests that are same-origin with the configured endpoint, and signs a clone (S2, review round 88).
+- **Am I affected?** A custom `BaseURL` for those providers that redirects to another origin.
+- **What to do:** Point `BaseURL` at the final origin.
+- **Kind:** silent behavior change
+
+### Claude on Vertex reads the legacy vertex options key {#anthropic-vertex-legacy-key}
+
+- **What changed:** Claude on Vertex read only `providerOptions.googleVertex` (and `anthropic`). v0.6 also reads `providerOptions.vertex` when `googleVertex` is absent; only `googleVertex` counts as the custom key for metadata (TS 6400cf8b88, review round 88).
+- **Am I affected?** Vertex Anthropic calls that put data under `ProviderOptions["vertex"]`.
+- **What to do:** No action unless you put unrelated data under `vertex`.
+- **Kind:** silent behavior change
+
+### Anthropic serviceTier follows the provider's allowed values {#anthropic-service-tier}
+
+- **What changed:** `serviceTier` accepts `standard` and `priority` (MiniMax). A tier the provider does not take is omitted with an `unsupported` warning instead of failing validation (Anthropic: `auto`, `standard_only`; MiniMax: `standard`, `priority`); `providerMetadata.anthropic.serviceTier` reports the applied tier (`usage.service_tier`, else `service_tier`); an explicit null enum option (such as `serviceTier: nil`) now fails like TS (TS 8291ccf237, review round 88).
+- **Am I affected?** Anthropic or MiniMax calls with `serviceTier`, or a nil enum option; readers of `providerMetadata.anthropic`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Anthropic MCP connectors are disabled when a tool choice falls back {#anthropic-mcp-restricted-choice}
+
+- **What changed:** MCP connectors stayed enabled when a named tool choice fell back to auto, or when the JSON response tool replaced a named or `none` choice. v0.6 sends `tool_configuration: {enabled: false}` for them in those cases (TS 5ab7ff14ad, review round 88).
+- **Am I affected?** Anthropic calls with `MCPServers` and a named or `none` tool choice.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Anthropic ProviderError.Data holds the parsed error object {#anthropic-error-data}
+
+- **What changed:** Anthropic `ProviderError.Data` holds the parsed error object `{type, error: {type, message, details?}}` (TS 6b101ac076). Error bodies with a `__proto__` key give the status text and no data (TS secureJsonParse; review round 88).
+- **Am I affected?** Code that reads `ProviderError.Data` from Anthropic errors.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Anthropic file upload metadata keys are present only when sent {#anthropic-files-v4}
+
+- **What changed:** The upload result fills `ByteSize`, `CreatedAt` and `ExpiresAt`; metadata keys are omitted when the API omits them (v0.5 gave `""` / `0`); a response without filename, mime_type, size_bytes or created_at no longer fails. `FilesAPI` gains `GetFileMetadata`, `DownloadFile` and `DeleteFile` (TS 8b11ff6eb6, review round 88).
+- **Am I affected?** Readers of `UploadFileResult.ProviderMetadata["anthropic"]`.
+- **What to do:** Read the keys with a presence check.
+- **Kind:** silent behavior change
+
+### Anthropic sends the structured-outputs beta for tools only with strict tool support {#anthropic-strict-tools-beta}
+
+- **What changed:** `structured-outputs-2025-11-13` was sent for function tools whenever native structured output was on. v0.6 sends it only when strict tools are supported too (TS 4b8f00efff, review round 88).
+- **Am I affected?** Anthropic-compatible platforms configured with `SupportsStrictTools: &false` and native output.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Anthropic batch results report toolset member calls as plain tool calls {#anthropic-batch-toolset-calls}
+
+- **What changed:** A batch result mapped a toolset member call to the computer tool with the member as the action, which skipped the member checks. v0.6 reports it as a plain tool call named by the member, as TS `convertAnthropicBatchResponse` (review round 88).
+- **Am I affected?** Anthropic Message Batches with the computer toolset.
+- **What to do:** Handle member names in batch results.
+- **Kind:** silent behavior change
+
+### Vertex MaaS, OAuth, express and AI Gateway credentials stay on their origin {#vertex-maas-credentials-same-origin}
+
+- **What changed:** The MaaS transport sent the Google token and custom headers to every URL, including cross-origin redirect hops (TS 977231e913); the Vertex OAuth, express `APIKeyFunc` and AI Gateway transports re-added credentials on such hops. v0.6 keeps them on the configured origin (S2, review round 88).
+- **Am I affected?** `googlevertex` MaaS, OAuth and express clients and `gateway` behind a redirect to another origin.
+- **What to do:** No action unless you route these calls through another origin.
+- **Kind:** silent behavior change
+
+### Cohere accepts untitled and tool citations; usage without tokens is unset {#cohere-partial-citations}
+
+- **What changed:** Untitled-document or tool-output citations, or usage without `tokens`, failed with `Invalid JSON response`. v0.6 accepts them: tool-only citations are not sources, usage counts are nil when `usage.tokens` is missing, and citation metadata keeps the parsed sources (extra document keys, `tool_output`) without null fields (TS 3aad18a417, review round 88).
+- **Am I affected?** Cohere chat with documents or tools; code that reads token counts or citation metadata.
+- **What to do:** Check `Usage.InputTokens` / `OutputTokens` for nil.
+- **Kind:** silent behavior change
+
+### Cohere streams emit source parts for citations {#cohere-stream-sources}
+
+- **What changed:** Cohere streams ignored `citation-start` events. v0.6 emits `ChunkTypeSource` parts for them, and a malformed citation-start is an error part (TS 033a980fee, review round 88).
+- **Am I affected?** Cohere streaming with documents; exhaustive switches over stream parts.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Cohere response ID is the v2 id {#cohere-response-id}
+
+- **What changed:** `ResponseMetadata.ID` came from `generation_id`. v0.6 reads the v2 `id` and falls back to `generation_id` (TS 73400b299d, review round 88).
+- **Am I affected?** Code that stores Cohere response ids.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Cohere streamed null tool arguments become {} {#cohere-null-tool-args}
+
+- **What changed:** Streamed `null` tool arguments kept the text `null`. v0.6 gives `{}` (TS 27c44878c2, review round 88).
+- **Am I affected?** Cohere streaming tool calls without arguments.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Mistral sends a named tool choice natively {#mistral-native-tool-choice}
+
+- **What changed:** Mistral `ToolChoiceTool` filtered the tools to the named one and sent `any`. v0.6 sends every tool and `tool_choice: {type: "function", function: {name}}` (TS a7f8478781, review round 88).
+- **Am I affected?** Mistral calls with a named tool choice.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Perplexity ToolChoiceNone sends no tools {#perplexity-tool-choice-none}
+
+- **What changed:** With `ToolChoiceNone`, Perplexity still sent function and native MCP / connector tools, warned, and sent no `max_tool_calls`. v0.6 sends no tools and `max_tool_calls: 0` (overriding a caller value), with no tool warnings (TS 7772d0ca0f, review round 88).
+- **Am I affected?** Perplexity calls with `ToolChoiceNone`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Google ToolChoiceNone drops provider-defined tools {#google-tool-choice-none-provider-tools}
+
+- **What changed:** With `ToolChoiceNone`, Google and Vertex still sent provider-defined tools (server-side execution), also in the JSON response tool fallback. v0.6 sends none and drops their `unsupported` warnings (TS 32dc1d2d17, review round 88).
+- **Am I affected?** Google / Vertex calls with `ToolChoiceNone` and provider tools such as Google Search.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Gemini TTS sends the speech language {#gemini-tts-language}
+
+- **What changed:** Gemini TTS dropped `Language` with an `unsupported` warning. v0.6 sends it as `speechConfig.languageCode` (except `auto`) (TS 3c6fb4322c, review round 88).
+- **Am I affected?** Google speech calls that set `Language`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Google Interactions sends labels {#google-interactions-labels}
+
+- **What changed:** `providerOptions.google.labels` was ignored by the Interactions models. v0.6 sends it as top-level `labels` (an empty map as `{}`), and a non-string label fails (TS a210a29f9b, review round 88).
+- **Am I affected?** Google / Vertex Interactions calls with labels.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Gemini streamed partial arguments with array gaps are skipped {#gemini-stream-array-gaps}
+
+- **What changed:** Streamed `partialArgs` with an array index gap filled the holes, and an index above 65536 failed the stream. v0.6 skips such an argument, as TS (TS 26fc2a998f, review round 88).
+- **Am I affected?** Gemini streaming tool calls with partial arguments.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Vertex Gemini transcription honors shared word timestamps {#vertex-gemini-transcription-words}
+
+- **What changed:** The shared `TimestampGranularities: []string{"word"}` turns on `wordTimestamp` unless the provider option sets it, `Words` is filled, and segment, disabled and omitted word timings warn (TS 41465fd1b6, review round 88).
+- **Am I affected?** Vertex Gemini transcription callers that set the new shared option.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Chat Completions refusals are returned as text {#openai-chat-refusals}
+
+- **What changed:** v0.5 dropped `message.refusal` / `delta.refusal` (empty text, `stop`). v0.6 returns the refusal as text (a second text part after the content), and `stop` with a refusal is `content-filter`. This covers OpenAI and Azure chat, OpenAI compatible mode, Together, Fireworks, GMI Cloud, Z.ai, Ollama and Vertex xAI. Native OpenAI responses with a non-string `refusal` or malformed refusal logprobs now fail like TS (TS f6dbf04b5d, 646a7e3c2e, review round 88).
+- **Am I affected?** `FinishReasonStop` checks and `result.Text` on refused chat requests.
+- **What to do:** No action unless you treat refusals as empty output.
+- **Kind:** silent behavior change
+
+### Streamed chat logprobs hold every chunk {#openai-chat-logprobs-all-chunks}
+
+- **What changed:** `providerMetadata.openai.logprobs` on a stream held the last chunk only. v0.6 holds every chunk, content then refusal logprobs, each `{token, logprob, top_logprobs}` (no `bytes`) (TS 646a7e3c2e, review round 88).
+- **Am I affected?** Streaming chat calls that read logprobs.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Responses refusals are returned as text {#openai-responses-refusals}
+
+- **What changed:** A Responses refusal part gave `""` text and `stop`, a non-streaming response with a refusal part failed with `Invalid JSON response`, and stream refusal events were dropped. v0.6 returns the refusal text with `content-filter` (unless a client tool call is present), includes it in `StructuredOutputText`, and validates the `response.refusal.*` events (TS 6b97088662, review round 88).
+- **Am I affected?** OpenAI / Azure Responses calls that the model refuses.
+- **What to do:** No action unless you treat refusals as empty output.
+- **Kind:** silent behavior change
+
+### OpenAI-compatible inline text files are sent as text {#compat-inline-text-files}
+
+- **What changed:** An OpenAI-compatible file part with inline text data and a `text/*` media type failed with a text-file-parts error. v0.6 sends it as a text part (TS 5f19ea5c61, review round 88).
+- **Am I affected?** OpenAI-compatible providers given inline text files.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### OpenAI chat sends message names from provider options {#openai-chat-message-names}
+
+- **What changed:** `providerOptions.openai.name` is sent as `name` on system, developer, user and assistant messages; tool messages warn, and a non-string fails. `Message.Name` is now also sent on native system messages (TS 243bf221a8, review round 88).
+- **Am I affected?** OpenAI chat calls that set `Message.Name` or `providerOptions.openai.name`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Azure merges azure and openai options {#azure-option-namespaces}
+
+- **What changed:** Azure chat merges `azure` over `openai`. OpenAI-route transcription, speech and image apply OpenAI options given under `azure` (they were dropped or rejected by the strict schemas). `azure.language` on GPT-4o Transcribe or Whisper no longer warns; the Speech and MAI routes warn about OpenAI-only keys. An invalid azure option fails with `invalid azure provider options` (the field is in the cause), the TS `parseProviderOptions` text; v0.5 said `Invalid argument for parameter providerOptions.azure.<key>: ...` (TS 6400cf8b88, review round 88).
+- **Am I affected?** Azure calls with options under `azure`; code that matches azure option error text.
+- **What to do:** No action unless you match the old error text.
+- **Kind:** silent behavior change
+
+### OpenAI image edits send moderation in a fixed field order {#openai-image-edit-moderation}
+
+- **What changed:** `/images/edits` did not send `moderation`, and the multipart fields followed Go map order. v0.6 sends it, in the TS field order (TS 5f9bb8eea4, 6549344e0a, review round 88).
+- **Am I affected?** OpenAI image edit calls.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### OpenAI MCP tool validation names tunnelId {#openai-mcp-tunnel-refine}
+
+- **What changed:** "One of serverUrl or connectorId must be provided." became "One of serverUrl, connectorId, or tunnelId must be provided.", and `TunnelID` together with `ServerURL` or `ConnectorID` fails (TS 7a905226b6, review round 88).
+- **Am I affected?** Code that matches the old MCP tool validation text.
+- **What to do:** No action unless you match that text.
+- **Kind:** error text only
+
+### OpenAI transcription sends timestamp granularities only for verbose_json {#openai-transcription-granularities}
+
+- **What changed:** `timestamp_granularities` is sent only for `verbose_json` (an explicit provider option with another format is not sent and warns). The shared `TranscriptionOptions.TimestampGranularities` is honored (provider option first, then the shared option, then `Timestamps`), and `Words` is set (TS 41465fd1b6, review round 88).
+- **Am I affected?** OpenAI and Azure transcription with `timestampGranularities`, `responseFormat` json / diarized_json, or `Timestamps: true` on non-whisper models.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### xAI video output upload URLs are validated {#xai-video-upload-url}
+
+- **What changed:** `providerOptions.xai.output` was passed through raw. v0.6 reads `output.uploadUrl` (or the raw `upload_url`; `uploadUrl` wins), which must be an https URL without userinfo or fragment, or the call fails before the request with "Invalid xAI video provider options for upload delivery."; the result is an uploaded video with no URL, and API errors of an upload call carry no body or upload URL (TS 2e44144812, review round 88).
+- **Am I affected?** xAI video calls with `output`.
+- **What to do:** Use an https upload URL without userinfo or fragment.
+- **Kind:** silent behavior change
+
+### Black Forest Labs webhook image calls poll get_result {#bfl-webhook-get-result}
+
+- **What changed:** Image calls with `webhookUrl` failed because the submit response has no `polling_url`. v0.6 polls `<baseURL>/get_result?id=`, treats a transient "Task not found" as pending (up to 20 times) and fails with "Black Forest Labs task <id> was not found via get_result before timing out" (TS eded4b8ed0, review round 88).
+- **Am I affected?** BFL image calls with `webhookUrl`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Baseten DeepSeek V4 Pro JSON output uses an instruction {#baseten-deepseek-json}
+
+- **What changed:** Structured output on `deepseek-ai/DeepSeek-V4-Pro-0813` with reasoning returned empty content. v0.6 sends no `response_format`, prepends a JSON instruction system message and warns `compatibility` / `responseFormat` (default Model APIs path only; TS c4a8b80e02, review round 88).
+- **Am I affected?** Baseten calls to that model with JSON output and reasoning.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Baseten chat uses ModelURL only for /sync/v1 {#baseten-chat-modelurl}
+
+- **What changed:** Baseten chat used any `Config.ModelURL`. v0.6 uses it only when it contains `/sync/v1`, as TS `createChatModel`; any other `ModelURL` (a `/sync` embeddings deployment) leaves chat on `BaseURL`. v0.5.2 documented only `/sync/v1` for chat (review round 88).
+- **Am I affected?** `baseten.Config{ModelURL: ...}` without `/sync/v1` used for chat models.
+- **What to do:** Set `BaseURL` to that URL for chat instead of `ModelURL`.
+- **Kind:** silent behavior change
+
+### Gladia polls for up to 10 minutes {#gladia-poll-timeout}
+
+- **What changed:** Polling stopped after a fixed 60 s. v0.6 polls every second for up to 10 minutes, configurable with `Config.PollTimeout` / `PollInterval` or the per-call `pollTimeoutMs` / `pollIntervalMs`; the timeout reads "Transcription job polling timed out after <ms> ms", and invalid settings fail before the upload (TS 3ab5e75d79, review round 88).
+- **Am I affected?** Gladia transcription callers; code that matches the old timeout text.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Gladia uses the v2 options {#gladia-v2-options}
+
+- **What changed:** The v1 fields `contextPrompt`, `moderation`, `chapterization`, `nameConsistency`, `structuredDataExtraction(Config)`, `displayMode` and `diarizationConfig.enhanced` are no longer sent and warn `unsupported`; `language`, `detectLanguage`, `enableCodeSwitching`, `codeSwitchingConfig` and a `customVocabulary` array are translated to `language_config` / `custom_vocabulary_config` with `deprecated` warnings; requests carry `x-gladia-version`, and options are validated before the upload (TS c8875b71a3, review round 88).
+- **Am I affected?** Gladia calls with v1 option keys.
+- **What to do:** Move to `languageConfig` and `customVocabularyConfig`.
+- **Kind:** wire/protocol change
+
+### Gladia sends solaria model IDs {#gladia-model-id}
+
+- **What changed:** Gladia never sent the model ID, and `Response.ModelID` was always `default`. v0.6 sends `solaria-*` IDs as `model`, omits `""` and `default`, warns `unsupported` / `modelId` for any other ID (which is still not sent), and reports the ID (TS c8875b71a3; see the known difference for other IDs; review round 88).
+- **Am I affected?** Gladia models created with an ID such as `whisper-v3`.
+- **What to do:** Use `""`, `gladia.ModelSolaria1` or `gladia.ModelSolaria3`.
+- **Kind:** silent behavior change
+
+### Gladia provider metadata carries the whole result {#gladia-provider-metadata-addons}
+
+- **What changed:** `ProviderMetadata["gladia"]` carries `status`, `error_code` and the whole `result` object (every add-on and utterance key), and a failed job's error names the code ("... with error code N") (TS 9207c2b1e0, review round 88).
+- **Am I affected?** Readers of Gladia provider metadata; code that matches failed-job text.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Deepgram speech rejects callback {#deepgram-speech-callback}
+
+- **What changed:** `callback` made the model return the JSON acknowledgement as audio. v0.6 fails with `InvalidArgumentError` before any request; `callbackMethod` is ignored with a warning (TS 5cc6dcaa65, review round 88).
+- **Am I affected?** Deepgram speech calls with `Callback`.
+- **What to do:** Remove `Callback`.
+- **Kind:** silent behavior change
+
+### Deepgram batch transcription warns about the streaming option {#deepgram-batch-streaming-warning}
+
+- **What changed:** `DoTranscribe` warns `unsupported` / `providerOptions.deepgram.streaming`; live transcription is `DoStream` (TS 5b89b2560c, review round 88).
+- **Am I affected?** Deepgram batch calls with streaming options.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Cartesia speech sends locale, normalization and generation options {#cartesia-speech-options}
+
+- **What changed:** Cartesia speech sends `locale`, `normalization`, `pronunciation_dict_id`, `generation_config.volume` and `generation_config.emotion` when set, in the TS key order; a locale together with a provider language is an error (TS 392d2fa3a4, f10414f247, 47b666b6c7, review round 88).
+- **Am I affected?** Cartesia speech calls with these options.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Cartesia streaming transcription sends keyterms and turn thresholds {#cartesia-ink2-keyterms}
+
+- **What changed:** Cartesia streaming transcription sends `keyterm` and `turn_*` query parameters when set; thresholds without turn detection warn (TS 467b299146, review round 88).
+- **Am I affected?** Cartesia streaming transcription with these options.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Replicate cancels abandoned predictions {#replicate-cancel}
+
+- **What changed:** An aborted call or exhausted polling left the prediction running. v0.6 sends `POST /predictions/<id>/cancel` in the background (provider headers only, encoded id, 30 s bound), and a prediction without `id` is `Invalid JSON response` (TS 0d47a6cf8e, review round 88).
+- **Am I affected?** Replicate image calls; stubbed Replicate servers.
+- **What to do:** No action unless your stub rejects the cancel request.
+- **Kind:** silent behavior change
+
+### AssemblyAI flat error bodies give their message {#assemblyai-flat-error}
+
+- **What changed:** AssemblyAI `{"error": "..."}` bodies gave the status text. v0.6 uses that message (TS c87b19ee75, review round 88).
+- **Am I affected?** Code that matches AssemblyAI error text.
+- **What to do:** No action unless you match that text.
+- **Kind:** error text only
+
+### Azure Entra tokens are not sent on cross-origin redirects {#azure-entra-token-redirects}
+
+- **What changed:** The Azure Entra token transport added the `ADTokenProvider` token whenever `Authorization` was empty, which is what net/http leaves on a redirect hop to another origin, so the token reached that origin. v0.6 skips such hops (S2, review round 88).
+- **Am I affected?** Azure endpoints that redirect to another origin and expect the Entra token there.
+- **What to do:** No action unless your endpoint redirects to another origin.
+- **Kind:** silent behavior change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -7169,6 +7605,27 @@ compile-time changes.
 - **Am I affected?** Code matching `*TransportError` / "broken pipe" after a server crash.
 - **What to do:** Match `*mcp.MCPClientError` (or check `!transport.IsConnected()`).
 - **Kind:** error text only
+
+### MCP OAuth always sends the resource parameter {#mcp-oauth-resource-always}
+
+- **What changed:** Without protected-resource metadata, or when `ValidateResourceURL` returned "", v0.5 sent no `resource`, so the authorization server could apply a default audience. v0.6 sends the canonical server URL (fragment removed) on authorize, code exchange and refresh, and `SelectOAuthResourceURL` never returns nil (TS ae13fcea03, review round 88).
+- **Am I affected?** `mcp.Auth` flows against authorization servers that reject `resource`; custom `ValidateResourceURL` implementations that return "" to omit it.
+- **What to do:** Return the resource you want from `ValidateResourceURL`; "" no longer omits it.
+- **Kind:** wire/protocol change
+
+### MCP OAuth clears refresh tokens without an authorization server binding {#mcp-oauth-unbound-refresh-token}
+
+- **What changed:** A stored refresh token with no authorization server binding could inherit the binding of a client registered in the same call. v0.6 resolves the binding before registration: an unbound token is invalidated, and if it is still stored `Auth` fails with `MCPClientOAuthError` "Stored OAuth tokens without an authorization server binding must be cleared before starting authorization" (TS dc0f7f243d, review round 88).
+- **Am I affected?** OAuth client providers whose `Tokens` carry a refresh token without `Issuer`, `AuthorizationServer` or `TokenEndpoint`, and that implement neither `OAuthCredentialInvalidator` nor `OAuthTokenInvalidator`.
+- **What to do:** Implement invalidation, or store tokens with their authorization server binding.
+- **Kind:** silent behavior change
+
+### MCP OAuth discovery rejects HTTPS to HTTP redirects {#mcp-oauth-https-downgrade}
+
+- **What changed:** OAuth metadata discovery followed a redirect from https to http. v0.6 fails with a `DownloadError` "Redirect from HTTPS to HTTP was blocked" before the http target is requested (TS f608c056a2, review round 88).
+- **Am I affected?** OAuth metadata URLs that redirect to `http://`.
+- **What to do:** No action unless your metadata redirects to http.
+- **Kind:** silent behavior change
 
 ## Code mode {#code-mode}
 
@@ -7664,6 +8121,69 @@ compile-time changes.
 - **What to do:** No action (Vercel issues string owners).
 - **Kind:** wire/protocol change
 
+### A pending host tool approval pauses the turn without waiting for other host results {#harness-host-approval-pause}
+
+- **What changed:** A turn with a pending custom host tool approval waited at the step end for the runtime to echo the other host tool results, which could deadlock, and the raw call of a settled host approval was not kept, so a later pause lost its completed result. v0.6 pauses as soon as any approval is pending and keeps the settled call (TS 8e8033a73d, review round 88).
+- **Am I affected?** `harness.HarnessAgent` runs with host tools whose `ToolApproval` is `user-approval`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### claude-code turns keep only their own bridge events {#claude-code-turn-start-id}
+
+- **What changed:** Late events of an aborted claude-code turn reached the next turn (a stream error, a turn finishing without its answer, a wrong conversation id). v0.6 tags each start with a `startId`: a turn keeps only the events of its own start, prompt and rerun turns send a fresh id, attached or replayed continuations keep the persisted one (saved as `bridge.startId` in the resume / continue state), and a bridge with `idempotentStart` gets a pending start resent on every reconnect. A bridge frame whose `startId` is present but not a string is an error part, as TS's frame schema rejects it (TS 5a05735ed0, review round 88).
+- **Am I affected?** `claudecode` sessions with several turns, especially after an abort; code that reads the claude-code resume state.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Bridge suspend closes the WebSocket with the reason suspended {#bridge-suspend-close-reason}
+
+- **What changed:** Detaching or suspending a session closed the bridge WebSocket without a reason, so a bridge started with `--host-disconnect-timeout-ms` aborted a suspended turn. v0.6 closes with status 1000 and reason `suspended` (TS a54f0fd8c6, review round 88).
+- **Am I affected?** Custom bridge implementations that read the close frame.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### claude-code apiKeyHelper runs without sh on PATH {#claude-code-apikeyhelper-shell}
+
+- **What changed:** The `apiKeyHelper` command ran through `sh -c` and failed when `sh` was not on PATH (Windows PowerShell or cmd). v0.6 falls back to the platform shell (`%ComSpec% /d /s /c`, or `/bin/sh -c`) only when `sh` is not found (TS 7a5a9c6c50, review round 88).
+- **Am I affected?** claude-code `apiKeyHelper` on hosts without `sh`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Harness bridges are resynced to ai@7.0.165 {#harness-bridges-0f3a85f92d}
+
+- **What changed:** The vendored bridges are the TS 0f3a85f92d builds: Deep Agents and OpenCode ask before file access outside the work directory (except active skill directories, sent as `readableSkillRoots`), claude-code no longer loads project `.claude/` settings, hooks, skills or `CLAUDE.md`, Codex honors `codexConfig.model_reasoning_summary`, OpenCode reaches Google and Mistral models through the AI Gateway with the openai-compatible driver, and claude-code maps a dotted `CLAUDE_CODE_SUBAGENT_MODEL`. Deep Agents gets `--home-dir` and a `delete` built-in tool (kind edit). Adapter version constants follow the TS packages (TS bb8aa09ec8, 3af9d06557, e4a6112776, f779a62cc9, c7ebb5653a, 95c1307de5; review round 88).
+- **Am I affected?** `deepagents.CreateDeepAgents`, `opencode.CreateOpenCode`, `claudecode`, `codex`, code that lists `deepagents.BuiltinTools()`.
+- **What to do:** No action unless you relied on unprompted outside-workdir access or project-level claude-code configuration.
+- **Kind:** silent behavior change
+
+### Grok Build file reads need ACP approval {#grok-build-read-approval}
+
+- **What changed:** Grok Build read files without asking. v0.6 adds `ask = ["Read"]` to `$GROK_HOME/config.toml` (else `~/.grok/config.toml`) in the sandbox before the bridge starts, so reads go through ACP approval (Grok 1.0.49 sends no `locations`, so reads inside the work directory ask too). An invalid TOML file, or a `permission` / `permission.ask` of the wrong type, fails the start (TS deeb2bfb62, review round 88).
+- **Am I affected?** `grokbuild.CreateGrokBuild` sessions.
+- **What to do:** No action unless your sandbox config has a non-table `permission`.
+- **Kind:** silent behavior change
+
+### Cursor and Grok Build ignore repository configs, hooks and MCP servers {#repo-config-isolation}
+
+- **What changed:** Cursor runs with `--disable-project-configs`, and Grok Build sets `GROK_CLAUDE_HOOKS_ENABLED`, `GROK_CLAUDE_MCPS_ENABLED`, `GROK_CURSOR_HOOKS_ENABLED` and `GROK_CURSOR_MCPS_ENABLED` to `false`, so a repository cannot inject hooks or MCP servers (TS e4a6112776, review round 88).
+- **Am I affected?** `cursor` and `grokbuild` sessions on repositories that ship their own hooks or MCP servers.
+- **What to do:** No action unless you relied on repository hooks or MCP servers.
+- **Kind:** silent behavior change
+
+### OpenCode on Windows reads the XDG auth store first {#opencode-windows-auth-store}
+
+- **What changed:** On Windows the OpenCode auth store is read from `%HOME%\.local\share\opencode\auth.json` first; `~/.opencode/auth.json` is only a fallback for providers missing there (TS 89e6bc94d7, review round 88).
+- **Am I affected?** `opencode` subscription credentials on Windows hosts.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Vercel Sandbox and MCP transports drop credentials on cross-origin redirects {#redirect-credentials-cross-origin}
+
+- **What changed:** The Vercel Sandbox API client and the MCP HTTP / SSE transports with `Redirect: MCPRedirectFollow` (and no caller `CheckRedirect`) drop `Authorization` once a redirect changes origin (port or subdomain included) and keep it dropped for the rest of the chain, as fetch does; the Vercel OIDC refresh transport no longer adds the token and team query to redirect hops (S2, review round 88).
+- **Am I affected?** Vercel Sandbox or MCP endpoints that redirect to another origin and expect the credential there.
+- **What to do:** No action unless your endpoint redirects to another origin; point the configuration at the final origin.
+- **Kind:** silent behavior change
+
 ## Policy {#policy}
 
 ### An OPA HTTP policy response without result is not-applicable {#opa-undefined-result}
@@ -7780,6 +8300,12 @@ after upgrading:
   2026-10-28), as in `GenerateText` and the agents. TS streams an error part
   and finishes. See
   [StreamText tool context failure ends the run](./known-differences.mdx).
+- **Gladia sends only `solaria-*` model IDs**; other IDs warn and are not
+  sent, as v0.5.2 documented. See
+  [Gladia model IDs](./known-differences.mdx).
+- **An upload-only video result has a nil `Video`** and `UploadedVideos`
+  set; TS throws from its `video` getter. See
+  [Upload-only video results](./known-differences.mdx).
 - **`codemode.SetMaxWorkers(0)` means unlimited**, kept from v0.5.2; TS
   rejects 0. See
   [Code-mode: never-settling promises and in-flight limits](./known-differences.mdx).

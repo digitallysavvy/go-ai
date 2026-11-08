@@ -274,3 +274,7 @@ for the mechanism.
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Groq Documentation](https://console.groq.com/docs)
+
+## November 8 2026 catch-up
+
+- **URL transcription.** The transcription model implements `provider.TranscriptionURLModel` (`DoTranscribeFromURL`). `ai.Transcribe` sends an http(s) `AudioURL` to Groq instead of downloading it, unless you set `Download` or `DownloadWithMetadata`; when Groq declines the URL, the validated download runs.

@@ -156,3 +156,9 @@ for the mechanism.
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Baseten Documentation](https://docs.baseten.co)
+
+## November 8 2026 catch-up
+
+- **Chat routing.** Chat uses `Config.ModelURL` only when it contains `/sync/v1`; set `BaseURL` for any other chat endpoint.
+- **DeepSeek V4 Pro JSON.** For `deepseek-ai/DeepSeek-V4-Pro-0813` with reasoning, JSON output sends no `response_format`, prepends a JSON instruction and warns.
+- **Model IDs.** Baseten model ID constants follow the TS catalog.

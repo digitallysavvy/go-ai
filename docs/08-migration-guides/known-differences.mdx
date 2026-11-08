@@ -364,6 +364,8 @@ insertion order, which a Go map does not keep (the wire replay of "warns
 about unsupported options without adding fields to the request" is skipped
 for it; review round 82).
 
+Azure reports its warnings for OpenAI options given under `providerOptions.azure` (Speech and MAI routes) in the TS option-shape order, not the caller's object key order (review round 88).
+
 Reason: S3: a Go map has no key order.
 
 ## Struct-tag schemas: Go-only choices
@@ -619,6 +621,33 @@ Open Responses function calls keep the v0.5 Go `namespace`: a returned item's `n
 ## Open Responses done item without arguments
 
 An Open Responses `output_item.done` function call without an `arguments` key (or a custom tool call without `input`) uses the arguments accumulated from the deltas, as in v0.5.2; TS uses `undefined` as the tool input, which then fails to parse (S6, review round 87e).
+
+## Upload-only video results
+When every video of a `GenerateVideo` call was delivered to an upload destination (xAI `output.uploadUrl`), Go returns `Video` nil, `Videos` empty and `UploadedVideos` set (JSON `"video": null`). TS throws `NoVideoGeneratedError` ("Videos were delivered to the upload destination. Use uploadedVideos instead of video.") from a non-enumerable `video` getter, which a Go struct field cannot do (S3: JS getter semantics; coordinator ruling round 88).
+
+## Gladia model IDs
+Gladia omits `""` and `default` and sends `solaria-*` model IDs as `model`, as TS does. Any other model ID is not sent, and the call warns `unsupported` / `modelId`; TS sends it. v0.5.2 documented that the model ID is never sent, so an ID such as `whisper-v3` keeps working (S6: v0.5.2 runtime contract; coordinator ruling round 88). The wire replay of "forwards transcriptionModel alias ID future-gladia-model" is skipped for it.
+
+## Gladia polling settings
+TS `createGladia` throws for an invalid `pollIntervalMs` / `pollTimeoutMs`. Go's `gladia.New` cannot return an error, so a negative or non-whole-millisecond `Config.PollInterval` / `PollTimeout` fails each call before the upload with the same `InvalidArgumentError`. Zero means the default (S1: changing the `New` signature would break v0.5.2 callers; coordinator ruling round 88).
+
+## Replicate prediction cancel deadline
+TS sends the cancel of an abandoned Replicate prediction with no abort signal and no deadline. Go sends it on a goroutine detached from the caller's context (`context.WithoutCancel`) with a 30 s bound, so a hanging cancel cannot leak (S7: TS leaves the request unbounded; coordinator ruling round 88).
+
+## Deepgram live transcription WebSocket setting
+TS Deepgram live transcription accepts a custom `webSocket` constructor. Go dials with its own WebSocket client, like the other streaming transcription models (S3: the TS setting is a JS constructor; coordinator ruling round 88).
+
+## Harness HostDisconnectTimeout zero or negative
+TS appends `--host-disconnect-timeout-ms` for any defined `hostDisconnectTimeoutMs`, 0 and negative values included, which the bridge ignores. Go passes the flag only for a positive `HostDisconnectTimeout` (claude-code, Codex, OpenCode, Deep Agents, ACP) or `HostDisconnectTimeoutMS` (Cursor, GitHub Copilot, Grok Build): a `time.Duration` cannot tell 0 from unset, and the wrappers' `*int` 0 maps to the same. Only the bridge command line differs (S1: a pointer field would break the v0.5.2 settings shape; harness ruling round 88).
+
+## Grok Build config formatting
+Grok Build's `PrepareSandbox` rewrites `config.toml` with go-toml, not `@iarna/toml`, so whitespace and table layout can differ from TS; comments are lost in both (S3: a different TOML library; review round 88).
+
+## TS test replays skipped in round 88
+
+Recorded at TS `0f3a85f92d` (ai@7.0.165) and skipped because the replay cannot carry the test's setup, with the behavior covered by Go tests: the three Replicate cancel tests (the cancel is fire-and-forget on a goroutine and lands after the replayed call returns; TS waits with `vi.waitFor`; `TestR88provcReplicateCancelPrediction`); Gladia "stops before the first poll when the signal is already aborted" (the TS fetch ignores the aborted signal, so the upload succeeds; a Go call with a cancelled context fails at the upload); the two DeepInfra usage-calculation tests (the model is built with a custom `url()` and mock `fetch`); the Google stream-order case with an injected `generateId` (replayed with the id normalized by `TestR87provaStreamOrderMatchesTS`); the two Anthropic legacy `vertex` key cases (helper-built provider; `TestR88provaLegacyVertexKey`) and "should pass sanitized zod output schema as output_config.format" (the capture has no zod schema; the sanitizer is replayed by `sanitize_schema.json.gz`). The Topaz, fal and Prodia suites keep their earlier recordings: their tests download from public hosts, which the recorder could not reach (review round 88).
+
+Reason: S3 (the recordings cannot carry the JS test setup).
 
 ## Features that are TypeScript-only (not ported)
 

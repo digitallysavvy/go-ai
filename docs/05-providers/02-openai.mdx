@@ -1007,3 +1007,12 @@ For JSON output, non-streaming calls parse the last `final_answer` message (`Gen
 ### Custom tool deltas
 
 Custom tool input deltas are raw text again, not JSON-encoded. `ToolCall.InputEncoding` is `"text"` on the `tool-input-start` chunk and is forwarded as `inputEncoding` on UI message chunks and parts.
+
+## November 8 2026 catch-up
+
+- **Refusals.** Chat Completions and Responses return a refusal as text (a second text part after any content) with finish reason `content-filter` (Responses: unless a client tool call is present). Streamed chat logprobs in `providerMetadata.openai.logprobs` hold every chunk, content then refusal entries.
+- **Message names.** `providerOptions.openai.name` on a system, developer, user or assistant message is sent as `name` (a tool message warns; a non-string fails). `prompt.ToOpenAIMessagesWithWarnings` returns those warnings.
+- **GPT Image 2.6.** `gpt-image-2.6-flare` and `gpt-image-2.6-sunburst` take up to 10 file and mask inputs. Image options add `Complexity`, `SafetyIdentifier`, `FrameCount` / `FrameDurationMs` (animated GIF) and edit `Markup` (a data URL or a validated download; not with a mask); edits send `Moderation`, and multipart fields follow the TS order.
+- **Code interpreter and MCP.** `openaitool.CodeInterpreterContainer` takes `MemoryLimit` (`1g`, `4g`, `16g`, `64g`) and `NetworkPolicy` (`CodeInterpreterNetworkPolicy` with allowed domains and `DomainSecrets`, redacted in telemetry). The MCP tool takes `TunnelID` (sent as `tunnel_id`; exclusive with `ServerURL` / `ConnectorID`).
+- **Transcription.** `timestamp_granularities` is sent only with `verbose_json`; the shared `TranscribeOptions.TimestampGranularities` is honored after the provider option and fills `Words`.
+- **Realtime.** The GA and Live realtime models report usage events and implement `provider.RealtimeServerConnectionProvider` / `RealtimeIntentCodec` for `RealtimeSessionOptions.Intent` (conversation and transcription).

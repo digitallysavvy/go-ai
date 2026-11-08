@@ -143,6 +143,14 @@ Also new:
 - **`elevenlabs.SpeechModelOptions.WithTimestamps`, `TranscriptionModelOptions.SourceURL`, `MusicWordTimestamp`, `SpeechAlignment`, `SpeechVoiceSegment`**; **`Config.APIKeyFunc`** for elevenlabs, heygen, topaz, voyage, prodia, quiverai and minimax; the new **`pkg/providers/parallel`** decision provider (TS `@ai-sdk/parallel`) (review round 85).
 - **`claudecode.Settings.{MaxBudgetUSD, StrictMCPConfig, QuestionTimeoutMs, ExcludeDynamicSections, ToolHints, SkillOverrides}`**, `claudecode.ToolHint`, `claudecode.SkillOverride` (+ constants), the new `claudecode.StartFrame` fields; **`harness.SandboxCreator`, `CreateSessionOptions.SandboxCreator`** (review round 85).
 - **`acp.Settings.ResolveHostToolCall`, `acp.ResolveHostToolCallFunc`, `ResolvedHostToolCall`, `ResolveHostToolCallOptions`, `LegacyResolveHostToolCall`, `HostToolCallResolutionRequestFrame`, `TypeHostToolCallResolutionRequest`**; `cursor.ResolveHostToolCall`, `githubcopilot.ResolveHostToolCall`, `grokbuild.ResolveHostToolCall`; **`vercel.PolicyRule.Response`, `vercel.PolicySessionInspector`, `(*vercel.Sandbox).CurrentSessionNetworkPolicyMetadata`, `(*vercel.Session).Stat` / `ListDirectory` / `DeleteFile`** (review round 85).
+- **Steering messages in streams** (TS 1a1da8d68c): `provider.ChunkTypeSteeringMessage` parts (`ID`, `SteeringMessage`, `StepNumber`) before the step that received them, the `steering-message` UI chunk and **`ai.SteeringMessageUIPart`**; default steering ids are `steer-` + 24 characters. **`provider.ChunkTypePing`** flows through StreamText and SmoothStream (Anthropic `IncludePings`, AI Gateway pings) and has no UI chunk (TS 9754014925) (review round 88).
+- **Transcription word timings** (TS 41465fd1b6): `TranscribeOptions.TimestampGranularities`, `TranscribeResult.Words` / `ai.TranscriptionWord`, filled by OpenAI, Azure, xAI, Gateway and Vertex Gemini; **`provider.TranscriptionURLModel`** used by `ai.Transcribe` (Groq `DoTranscribeFromURL`, TS 36802d48af); **Deepgram live transcription** (`DoStream`, `deepgram.StreamingOptions`, TS 5b89b2560c) (review round 88).
+- **Realtime server connections** (TS 892af4dab7): `RealtimeSessionOptions.Intent` (`ai.RealtimeSessionIntentConversation` / `Transcription`) with the optional `provider.RealtimeServerConnectionProvider` / `RealtimeIntentCodec` on OpenAI, OpenAI Live, xAI, Google and the AI Gateway, realtime usage events, and Google `NewServerEventParser` (review round 88).
+- **`GenerateVideoResult.UploadedVideos`** and xAI `XAIVideoProviderOptions.Output` (`XAIVideoOutput.UploadURL`) upload delivery (TS 2e44144812) (review round 88).
+- **`telemetry.FilterEvent`**, `bridge.StreamPartFrame.StartID`, `claudecode.Settings.HostDisconnectTimeout` / `AdditionalDirectories`, `HostDisconnectTimeout` (codex, opencode, deepagents, acp) and `HostDisconnectTimeoutMS` (cursor, githubcopilot, grokbuild), `harnessutil.HostDisconnectTimeoutFlag`, **`acp.Settings.PrepareSandbox`** / `acp.PrepareSandboxOptions`, `grokbuild.PrepareSandbox`, OpenCode `auth: "direct"` (review round 88).
+- **Anthropic** (review round 88): `ModelOptions.IncludePings`, message threads (`ModelOptions.Thread` / `anthropic.ThreadOption`, `Config.SupportsMessageThreads`, `BetaHeaderMessageThreads`; Vertex, Bedrock and MiniMax reject them), inline `toolChanges` tools by value (`prompt.AnthropicInlineTools`, `AnthropicPromptOptions.ConvertInlineTool`, `prompt.AnthropicBetaInlineTools`, `prompt.NewAnthropicCacheControlValidatorWithBreakpoints`), `FilesAPI.GetFileMetadata` / `DownloadFile` / `DeleteFile`, `serviceTier` `standard` / `priority`, and `googlevertex/anthropic.Options.SupportsNativeStructuredOutput`.
+- **OpenAI and Azure** (review round 88): GPT Image 2.6 IDs and options (`Complexity`, `SafetyIdentifier`, gif `FrameCount` / `FrameDurationMs`, edit `Markup`, edit `Moderation`), code interpreter `MemoryLimit` / `NetworkPolicy`, MCP `TunnelID`, `prompt.ToOpenAIMessagesWithWarnings` / `ToOpenAIMessagesOptions.MessageNameKey`, `openai.ValidateSpeechProviderOptions`, `azure.NewCustomTool` / `ApplyPatch` / `Shell`, and Together / Fireworks / Hugging Face model ID constants.
+- **Other providers** (review round 88): `gateway.GenerationInfo.MarketCost` / `SurchargeCost` / `GatewayCost` and regenerated Gateway model IDs (removed IDs kept as deprecated constants), Cerebras `queueThreshold` header and `serviceTier` metadata, Gladia `Config.PollTimeout` / `PollInterval`, v2 options (`LanguageConfig`, `PiiRedactionConfig`, ...) and `ModelSolaria1` / `ModelSolaria3`, Cartesia speech (`volume`, `emotion`, pronunciation dictionary, `locale`, `normalization`) and Ink 2 keyterms / turn thresholds, Baseten model ID constants, and `providerutils.IsCrossOriginRedirectHop`.
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -159,6 +167,12 @@ Also new:
 Most of these fixes were also released in v0.5.3. If you are on v0.5.2 or
 earlier, upgrade to either.
 
+- **Telemetry recording flags are honored by every integration and diagnostic subscriber** (TS 8da48db187, review round 88). With `RecordInputs` / `RecordOutputs` false, custom integrations, `SubscribeDiagnostic` handlers and the object callback events on the diagnostic channel still received prompts, outputs, tool arguments, raw errors, provider metadata and bodies. They now get a filtered copy, and OpenAI MCP / code interpreter / shell credentials are redacted from telemetry tool definitions (TS 7bb309d132).
+- **MCP OAuth binds tokens to the server and rejects downgrades** (TS ae13fcea03, dc0f7f243d, f608c056a2, review round 88): `resource` is always sent, an unbound refresh token is cleared before a new client registration can lend it a binding, and discovery rejects https to http redirects.
+- **Validated downloads reject HTTPS to HTTP redirects** (TS f608c056a2, review round 88), trusted-origin hops included.
+- **Credential transports stay on their origin** (review round 88): Vertex MaaS (TS 977231e913), Vertex OAuth and express, AI Gateway, Vertex Anthropic, Bedrock Anthropic, Bedrock Mantle, Anthropic on AWS, the Azure Entra token transport, the Vercel Sandbox API client and the MCP transports no longer send credentials to a cross-origin redirect hop.
+- **Harness bridges resynced to ai@7.0.165** (review round 88): Deep Agents and OpenCode ask before file access outside the work directory, claude-code ignores project `.claude/` settings and hooks, Cursor and Grok Build ignore repository configs, hooks and MCP servers, and Grok Build reads go through ACP approval.
+- **Anthropic computer toolset member calls are checked** (TS a161c0a665, review round 88): the API's member is the action, and unknown, disabled or undeclared members fail closed, also in batch results.
 - **OpenCode GitLab credential brokering is limited to the chat token exchange** (TS 138d66eb78, review round 87). The real `GITLAB_TOKEN` was injected into every sandbox request to the GitLab host that carried the placeholder bearer, so sandboxed code could call any GitLab API with the user's token. It is now injected only into `POST <instance>/api/v4/ai/third_party_agents/direct_access` with the exact placeholder header.
 - **Approval continuations rebuild the tool's metadata from the server tool** (TS 857ca45151, review round 85). `ToolMetadata`, `Dynamic` and `Title` of an approved call came from client-supplied history, so a forged history could change what a `ToolApproval` policy, input refiner or the tool saw (for example a read-only flag a policy auto-approves on). They now come from the current server tool before signature checks, refinement and the policy.
 - **Topaz input-video uploads reject redirects** (TS c66402d340, review round 85). net/http resent the whole video body to a 307/308 target.
@@ -300,6 +314,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **StreamTextResult.PipeTextStreamToResponse writes status 200 and the text/plain content type first** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-pipe-text-head)
 - **Reasoning-file parts marshal in the TS message shape (data string, no fileData)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-file-message-json)
 - **StreamObject stream failure calls only OnError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamobject-stream-failure-callbacks)
+- **Transcribe ignores a generic downloaded content type** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#transcribe-audio-media-type)
+- **Transcribe sends URLs to providers that take them** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#transcribe-native-url)
+- **Uploaded videos are counted, not converted** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#video-uploaded-outcome)
 
 #### Prompts and validation
 
@@ -319,6 +336,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **`GetTextFromDataURL` returns the TS atob string when no charset is declared and decodes a charset like TS `TextDecoder`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#data-url-text-ts)
 - **Empty text parts with provider metadata stay in response messages** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#empty-text-provider-metadata)
 - **Empty text parts are removed from prompts before the model call** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#prompt-empty-text-parts)
+- **Validated downloads reject HTTPS to HTTP redirects** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#download-https-downgrade)
 
 #### Tools
 
@@ -474,6 +492,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **An empty InputExamples list is kept as [] in tool telemetry and serialized workflow tools** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-definitions-empty-input-examples)
 - **User OnStart runs before the telemetry root start** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-start-after-onstart)
 - **WorkflowAgent root telemetry follows the TS durable report** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-root-telemetry-durable)
+- **Recording flags filter what integrations and diagnostic subscribers see** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-recording-flags-filter)
+- **Telemetry tool definitions redact provider credentials** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-tool-definition-redaction)
 
 #### Errors
 
@@ -487,6 +507,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **An empty provider error message is reported as is, not replaced by a fallback text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#empty-provider-error-message)
 - **Response header maps keep the last Set-Cookie line, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#set-cookie-last-line)
 - **Provider-package argument errors have no parameter prefix** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-argument-bare-message)
+- **Error bodies with `__proto__` keys give the status text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#error-body-secure-parse)
 
 #### Providers
 
@@ -669,6 +690,52 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Provider responses keep a present empty string** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-response-empty-strings)
 - **OpenAI-style chat streams send text-start and text-end parts** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#chat-stream-text-blocks)
 - **Provider streams report response headers beside the stream** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-response-headers-capability)
+- **Cerebras queueThreshold is a validated header** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cerebras-queue-threshold)
+- **Anthropic computer toolset member calls are checked** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-toolset-member-guard)
+- **Vertex Anthropic, Bedrock Anthropic, Mantle and Anthropic AWS send credentials only to their endpoint** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-credential-redirects)
+- **Claude on Vertex reads the legacy vertex options key** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-vertex-legacy-key)
+- **Anthropic serviceTier follows the provider's allowed values** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-service-tier)
+- **Anthropic MCP connectors are disabled when a tool choice falls back** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-mcp-restricted-choice)
+- **Anthropic ProviderError.Data holds the parsed error object** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-error-data)
+- **Anthropic file upload metadata keys are present only when sent** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-files-v4)
+- **Anthropic sends the structured-outputs beta for tools only with strict tool support** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-strict-tools-beta)
+- **Anthropic batch results report toolset member calls as plain tool calls** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-batch-toolset-calls)
+- **Vertex MaaS, OAuth, express and AI Gateway credentials stay on their origin** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vertex-maas-credentials-same-origin)
+- **Cohere accepts untitled and tool citations; usage without tokens is unset** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-partial-citations)
+- **Cohere streams emit source parts for citations** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-stream-sources)
+- **Cohere response ID is the v2 id** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-response-id)
+- **Cohere streamed null tool arguments become {}** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-null-tool-args)
+- **Mistral sends a named tool choice natively** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mistral-native-tool-choice)
+- **Perplexity ToolChoiceNone sends no tools** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-tool-choice-none)
+- **Google ToolChoiceNone drops provider-defined tools** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-tool-choice-none-provider-tools)
+- **Gemini TTS sends the speech language** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gemini-tts-language)
+- **Google Interactions sends labels** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-interactions-labels)
+- **Gemini streamed partial arguments with array gaps are skipped** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gemini-stream-array-gaps)
+- **Vertex Gemini transcription honors shared word timestamps** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vertex-gemini-transcription-words)
+- **Chat Completions refusals are returned as text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-chat-refusals)
+- **Streamed chat logprobs hold every chunk** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-chat-logprobs-all-chunks)
+- **Responses refusals are returned as text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-responses-refusals)
+- **OpenAI-compatible inline text files are sent as text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-inline-text-files)
+- **OpenAI chat sends message names from provider options** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-chat-message-names)
+- **Azure merges azure and openai options** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#azure-option-namespaces)
+- **OpenAI image edits send moderation in a fixed field order** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-image-edit-moderation)
+- **OpenAI MCP tool validation names tunnelId** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-mcp-tunnel-refine)
+- **OpenAI transcription sends timestamp granularities only for verbose_json** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-transcription-granularities)
+- **xAI video output upload URLs are validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-video-upload-url)
+- **Black Forest Labs webhook image calls poll get_result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bfl-webhook-get-result)
+- **Baseten DeepSeek V4 Pro JSON output uses an instruction** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#baseten-deepseek-json)
+- **Baseten chat uses ModelURL only for /sync/v1** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#baseten-chat-modelurl)
+- **Gladia polls for up to 10 minutes** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gladia-poll-timeout)
+- **Gladia uses the v2 options** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gladia-v2-options)
+- **Gladia sends solaria model IDs** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gladia-model-id)
+- **Gladia provider metadata carries the whole result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gladia-provider-metadata-addons)
+- **Deepgram speech rejects callback** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#deepgram-speech-callback)
+- **Deepgram batch transcription warns about the streaming option** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#deepgram-batch-streaming-warning)
+- **Cartesia speech sends locale, normalization and generation options** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cartesia-speech-options)
+- **Cartesia streaming transcription sends keyterms and turn thresholds** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cartesia-ink2-keyterms)
+- **Replicate cancels abandoned predictions** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#replicate-cancel)
+- **AssemblyAI flat error bodies give their message** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#assemblyai-flat-error)
+- **Azure Entra tokens are not sent on cross-origin redirects** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#azure-entra-token-redirects)
 
 #### MCP
 
@@ -681,6 +748,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **MCP HTTP transport starts once** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-http-connect-once)
 - **MCP SSE transport stays connected after a stream read error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-sse-read-error-connected)
 - **MCP stdio transport disconnects when the server exits** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-stdio-server-exit)
+- **MCP OAuth always sends the resource parameter** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-resource-always)
+- **MCP OAuth clears refresh tokens without an authorization server binding** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-unbound-refresh-token)
+- **MCP OAuth discovery rejects HTTPS to HTTP redirects** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-https-downgrade)
 
 #### Code mode
 
@@ -739,6 +809,15 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Vercel network policy inspection lists sessions** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-policy-inspection-list-sessions)
 - **Vercel snapshot listing follows every page** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-snapshot-pagination)
 - **Vercel array owner_id sends one teamId per element** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-owner-id-array)
+- **A pending host tool approval pauses the turn without waiting for other host results** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-host-approval-pause)
+- **claude-code turns keep only their own bridge events** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#claude-code-turn-start-id)
+- **Bridge suspend closes the WebSocket with the reason suspended** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bridge-suspend-close-reason)
+- **claude-code apiKeyHelper runs without sh on PATH** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#claude-code-apikeyhelper-shell)
+- **Harness bridges are resynced to ai@7.0.165** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-bridges-0f3a85f92d)
+- **Grok Build file reads need ACP approval** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#grok-build-read-approval)
+- **Cursor and Grok Build ignore repository configs, hooks and MCP servers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#repo-config-isolation)
+- **OpenCode on Windows reads the XDG auth store first** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#opencode-windows-auth-store)
+- **Vercel Sandbox and MCP transports drop credentials on cross-origin redirects** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#redirect-credentials-cross-origin)
 
 #### Policy
 
@@ -1730,6 +1809,14 @@ Notable ones:
 - **Provider option spellings kept from v0.5**: alibaba accepts the `openai-compatible` keys and raw snake_case option names documented in v0.5.2; zai forwards `user` and `verbosity`; TS drops them (round 82).
 - **Hugging Face byte image data**: sent as base64; TS interpolates the bytes as a comma-separated list (round 82).
 - **Provider option warning order**: Perplexity unsupported-option warnings follow sorted option names, not the TS object's insertion order (round 82).
+- **Upload-only video results**: `Video` is nil and `UploadedVideos` is set; TS throws from a `video` getter (round 88).
+- **Gladia model IDs**: IDs other than `""`, `default` and `solaria-*` are not sent and warn, as v0.5.2 documented; TS sends them (round 88).
+- **Gladia polling settings**: invalid `PollInterval` / `PollTimeout` fail each call before the upload; TS `createGladia` throws (round 88).
+- **Replicate prediction cancel deadline**: the background cancel has a 30 s bound; TS sends it without one (round 88).
+- **Deepgram live transcription WebSocket setting**: Go dials with its own client; TS accepts a WebSocket constructor (round 88).
+- **Harness HostDisconnectTimeout zero or negative**: the bridge flag is passed only for a positive value (round 88).
+- **Grok Build config formatting**: `config.toml` is rewritten by go-toml (round 88).
+- **TS test replays skipped in round 88**: Replicate cancel timing, a Gladia pre-aborted call, DeepInfra and Google tests with injected functions (round 88).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else

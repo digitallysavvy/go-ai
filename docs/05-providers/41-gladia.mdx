@@ -34,9 +34,16 @@ if err != nil {
 }
 ```
 
-Gladia has a single transcription model, not a selectable catalog — the
-model ID argument is kept for interface parity with other providers but is
-not sent in the request; pass an empty string.
+Pass an empty string (or `"default"`) to let Gladia pick its default model,
+or `gladia.ModelSolaria1` / `gladia.ModelSolaria3` (`solaria-*` IDs) to send
+that model as `model`. Any other model ID is not sent, and the call returns an
+`unsupported` warning for `modelId` (see
+[Known differences](../08-migration-guides/known-differences.mdx#gladia-model-ids)).
+
+Jobs are polled every second for up to 10 minutes. Set `Config.PollInterval` /
+`Config.PollTimeout`, or the per-call provider options `pollIntervalMs` /
+`pollTimeoutMs` (whole milliseconds), to change that. Invalid settings fail
+the call before the upload.
 
 ## Transcribe Audio
 
@@ -52,7 +59,7 @@ result, err := ai.Transcribe(context.Background(), ai.TranscribeOptions{
     MimeType: "audio/mpeg",
     ProviderOptions: map[string]interface{}{
         "gladia": map[string]interface{}{
-            "language": "en",
+            "languageConfig": map[string]interface{}{"languages": []string{"en"}},
         },
     },
 })
@@ -73,11 +80,6 @@ result, err := ai.Transcribe(context.Background(), ai.TranscribeOptions{
     Model:    model,
     Audio:    audioData,
     MimeType: "audio/mpeg",
-    ProviderOptions: map[string]interface{}{
-        "gladia": map[string]interface{}{
-            "detectLanguage": true,
-        },
-    },
 })
 if err != nil {
     log.Fatal(err)
@@ -87,6 +89,23 @@ for _, segment := range result.Segments {
     fmt.Printf("[%.2f-%.2f] %s\n", segment.StartSecond, segment.EndSecond, segment.Text)
 }
 ```
+
+## Options (Gladia v2 API)
+
+Options go under `ProviderOptions["gladia"]` (`gladia.TranscriptionModelOptions`
+keys). Language and vocabulary use the v2 shapes: `languageConfig`
+(`languages`, `codeSwitching`) and `customVocabularyConfig`. The v1 keys
+`language`, `detectLanguage`, `enableCodeSwitching`, `codeSwitchingConfig` and
+a `customVocabulary` array are still read and translated, with a `deprecated`
+warning. The v1 fields the v2 API dropped (`contextPrompt`, `moderation`,
+`chapterization`, `nameConsistency`, `structuredDataExtraction`,
+`structuredDataExtractionConfig`, `displayMode`, `diarizationConfig.enhanced`)
+are not sent and return an `unsupported` warning. Requests carry the
+`x-gladia-version` header (a caller header of that name wins).
+
+`result.ProviderMetadata["gladia"]` holds the job `status`, `error_code` and
+the whole Gladia `result` object (every add-on such as summarization,
+translation or sentiment analysis, and the utterances).
 
 ## Workflow Serialization
 

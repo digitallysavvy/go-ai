@@ -283,3 +283,9 @@ if err != nil {
 ```
 
 Per-call headers can also be supplied through generation options and override provider-level headers.
+
+## November 8 2026 catch-up
+
+- **Option namespaces.** Azure chat merges `providerOptions.azure` over `providerOptions.openai`. On the OpenAI routes, transcription, speech and image apply OpenAI options given under `azure`; the Speech and MAI routes warn about OpenAI-only keys. An invalid azure option fails with `invalid azure provider options` (the field is named in the error's cause).
+- **Responses tools.** `azure.NewCustomTool`, `azure.ApplyPatch` and `azure.Shell` mirror the OpenAI factories.
+- **Entra tokens.** The `ADTokenProvider` token is not sent to a redirect hop on another origin.

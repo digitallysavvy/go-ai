@@ -98,5 +98,6 @@ The tables on this page are generated from the Go source. For usage, see the [Go
 | `Environment` | `interface{}` |  |
 | `PollingTimeoutMs` | `int` |  |
 | `Background` | `*bool` |  |
+| `Labels` | `map[string]string` | Labels are user-defined metadata sent as the top-level request `labels` (TS providerOptions.google.labels, a210a29f9b). A non-nil empty map is sent as \{\}; nil sends none. |
 
 {/* /gen:fields */}

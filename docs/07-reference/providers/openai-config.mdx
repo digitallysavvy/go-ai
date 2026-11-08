@@ -87,6 +87,11 @@ Options for image generation.
 | `OutputCompression` | `*int` |  |
 | `InputFidelity` | `string` |  |
 | `User` | `string` |  |
+| `Complexity` | `string` | Complexity is how much detail the model puts into the image: "low", "medium" or "high" (GPT Image 2.6; TS 6549344e0a). |
+| `SafetyIdentifier` | `string` | SafetyIdentifier is a stable end-user identifier (at most 128 characters) for abuse detection. |
+| `FrameCount` | `*int` | FrameCount is the number of frames (2-64) of an animated GIF (OutputFormat "gif", generation only). |
+| `FrameDurationMs` | `*int` | FrameDurationMs is the duration of each GIF frame in milliseconds (20-2000, generation only). |
+| `Markup` | `string` | Markup is a transparent PNG overlaid on the first input image to mark the regions to change, as an HTTPS URL or a base64 data URL (edits only; cannot be combined with a mask). |
 
 {/* /gen:fields */}
 

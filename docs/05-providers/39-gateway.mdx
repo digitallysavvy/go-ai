@@ -634,3 +634,11 @@ opts := gateway.GatewayProviderOptions{
 ### Unknown model types
 
 Gateway metadata parsing is resilient to unknown model types and recognizes `reranking` as a valid model type.
+
+## November 8 2026 catch-up
+
+- **Cost breakdown.** `GenerationInfo.MarketCost`, `SurchargeCost` and `GatewayCost`.
+- **Transcription words.** `TranscriptionResult.Words` from the Gateway, and a warning for shared timestamp granularities.
+- **Pings and realtime.** Stream `ping` parts pass through as `provider.ChunkTypePing`; the realtime model implements the server connection and intent codec for `RealtimeSessionOptions.Intent`.
+- **Video.** `uploaded` video outcomes are accepted.
+- **Model IDs** follow TS 0f3a85f92d; removed IDs stay as deprecated constants.

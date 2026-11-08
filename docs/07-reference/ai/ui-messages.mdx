@@ -212,6 +212,19 @@ When `ValidateUIMessages` converts a static tool part into a `dynamic-tool` part
 
 An empty struct with type `step-start`. It marks the start of a model step.
 
+### SteeringMessageUIPart
+
+A part with type `steering-message` (experimental; TS `Experimental_SteeringMessageUIPart`). With `ExperimentalSteering`, the UI message stream sends a `steering-message` chunk for each steering message delivered to a step, and the reader appends this part before that step's `step-start`. `ConvertToModelMessages` turns it into a user message between the steps.
+
+{/* gen:fields ai.SteeringMessageUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` | ID is the id of the steering message. |
+| `Parts` | `[]UIMessagePart` | Parts is the content of the user message: TextUIPart and FileUIPart parts (pointers when decoded from JSON). |
+
+{/* /gen:fields */}
+
 ## Type guards and accessors
 
 | Function | Description |

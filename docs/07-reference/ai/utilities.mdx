@@ -264,6 +264,7 @@ A decision model must report specification version `v4`; another version fails w
 
 | Name | Description |
 | --- | --- |
+| `ai.RealtimeSessionIntent` | `RealtimeSessionOptions.Intent`: `ai.RealtimeSessionIntentConversation` or `ai.RealtimeSessionIntentTranscription` (alias of `provider.RealtimeSessionIntent`). When set, `ConnectRealtime` connects server-side through the model's `provider.RealtimeServerConnectionProvider` with the provider's long-lived credential (trusted servers only) and serializes client events with its `provider.RealtimeIntentCodec`; `ClientSecret` is ignored. Empty keeps the client-secret flow (OpenAI, Live, xAI, Google and Gateway implement it; TS `getServerWebSocketConfig({ intent })`). |
 | `ai.RealtimeDialer` | Opens a connection: `Dial(ctx, provider.WebSocketConfig) (RealtimeWebSocketConn, error)`. |
 | `ai.WebSocketRealtimeDialer` | The default dialer, built on `golang.org/x/net/websocket`. The `Origin` field is unused. |
 | `ai.RealtimeWebSocketConn` | A connection with `Send`, `Receive` and `Close`. |

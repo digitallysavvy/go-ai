@@ -333,3 +333,8 @@ Use `ai.UploadFile` with `xai.New(...)`. The returned `ProviderReference` is `ma
 ## Workflow serialization
 
 xAI's image, speech, and transcription models can cross a workflow boundary with `providerutils.SerializeModel` / `DeserializeModel` (language models could already be serialized). See [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization) for the mechanism; video models are not yet serializable.
+
+## November 8 2026 catch-up
+
+- **Video upload delivery.** `XAIVideoProviderOptions.Output` (`XAIVideoOutput{UploadURL}`) delivers the video to your upload URL (https, no userinfo or fragment). The result reports an uploaded video (`GenerateVideoResult.UploadedVideos`) with no URL, and errors of an upload call carry no body or upload URL. The raw `{"output": {"upload_url": ...}}` form is accepted and validated the same way.
+- **Transcription and realtime.** Transcription fills `Words` and warns for segment timings; the realtime model reports usage and implements the server connection for `RealtimeSessionOptions.Intent` (conversation).

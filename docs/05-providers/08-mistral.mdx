@@ -336,3 +336,7 @@ The transcription model implements `DoStream` for `voxtral-mini-transcribe-realt
 ### Voice agent sessions (server side)
 
 `(*mistral.Provider).ExperimentalRealtime()` returns the server half of the Mistral voice agent: `CreateSession` posts `/v1/audio/sessions` and returns the session id, participant token and server URL a browser client connects to; `CloseSession` deletes a session. `mistral.BuildRealtimeSessionConfig` builds the session body (or the live-update subset) from the TS `providerOptions.mistral` schema. The LiveKit browser transport of `mistral.experimental_realtime(modelId)` is TS-only (TS 0912e0b1b9).
+
+## November 8 2026 catch-up
+
+- **Named tool choice.** `ToolChoiceTool` sends every tool and `tool_choice: {type: "function", function: {name}}`.

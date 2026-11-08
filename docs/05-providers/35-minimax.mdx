@@ -131,3 +131,8 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Anthropic Provider](03-anthropic.mdx) - MiniMax chat shares this implementation
 - [MiniMax Documentation](https://www.minimax.io/platform_overview)
+
+## November 8 2026 catch-up
+
+- **Service tiers.** `providerOptions.minimax.serviceTier` takes `standard` or `priority` (it wins over the `anthropic` key); other tiers warn and are omitted.
+- **Message threads** are not supported: a `thread` option fails before the request with "minimax.messages does not support Anthropic message threads.".

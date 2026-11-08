@@ -1062,3 +1062,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     },
 })
 ```
+
+## November 8 2026 catch-up
+
+- **Tool choice none.** `ToolChoiceNone` sends no provider-defined tools (also with the JSON response tool).
+- **Speech language.** Gemini TTS sends `Language` as `speechConfig.languageCode`.
+- **Interactions labels.** `providerOptions.google.labels` is sent as top-level `labels`.
+- **Realtime.** Each Live session has its own event parser (`NewServerEventParser`), usage is reported, and the model implements the server connection for `RealtimeSessionOptions.Intent`.

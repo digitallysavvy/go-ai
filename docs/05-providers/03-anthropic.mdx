@@ -917,3 +917,12 @@ model, err := p.LanguageModelWithOptions(anthropic.ClaudeOpus4_7, &anthropic.Mod
 ### Schema and beta header behavior
 
 The provider sanitizes unsupported JSON Schema validation properties before sending tools or structured output requests to Anthropic. The obsolete fine-grained tool streaming beta header is no longer injected.
+
+## November 8 2026 catch-up
+
+- **Pings.** `ModelOptions.IncludePings` (`includePings`) streams the API's `ping` events as `provider.ChunkTypePing` parts; StreamText forwards them without affecting output.
+- **Message threads.** `ModelOptions.Thread` (`anthropic.ThreadOption`) creates or continues a server-side message thread (`message-threads-2026-08-12` beta). Platforms set `Config.SupportsMessageThreads` (nil means supported); Vertex, Bedrock and MiniMax reject threads before the request.
+- **Inline tools.** A `toolChanges` tool addition can carry the tool by value; it is sent as an inline `tool_definition` with the `inline-tools-2026-09-15` beta and joins the tool name mapping.
+- **Service tiers.** `serviceTier` accepts `auto` and `standard_only` (Anthropic) or `standard` and `priority` (MiniMax); another tier warns and is omitted. `providerMetadata.anthropic.serviceTier` reports the applied tier.
+- **Files API.** `FilesAPI.GetFileMetadata`, `DownloadFile` and `DeleteFile`; upload results fill `ByteSize`, `CreatedAt` and `ExpiresAt`.
+- **Computer toolset.** The member the API selects is the action; unknown, disabled or undeclared members fail with `InvalidResponseDataError`.
