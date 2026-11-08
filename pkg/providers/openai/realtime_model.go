@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -112,10 +113,118 @@ func (m *OpenAIRealtimeModel) ModelID() string              { return m.modelID }
 // UnsupportedFunctionalityError matching the Live-model rejection path,
 // which would be wrong for the GA model.
 var (
-	_ provider.Experimental_RealtimeModelV4    = (*OpenAIRealtimeModel)(nil)
-	_ provider.RealtimeClientSecretCreator     = (*OpenAIRealtimeModel)(nil)
-	_ provider.RealtimeWebSocketConfigProvider = (*OpenAIRealtimeModel)(nil)
+	_ provider.Experimental_RealtimeModelV4     = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator      = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider  = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeServerConnectionProvider = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeIntentCodec              = (*OpenAIRealtimeModel)(nil)
 )
+
+// openAIRealtimeIntent resolves an intent (empty = conversation) and rejects
+// unknown ones (TS assertSupportedOpenAIIntent, 892af4dab7).
+func openAIRealtimeIntent(intent provider.RealtimeSessionIntent) (provider.RealtimeSessionIntent, error) {
+	switch intent {
+	case "":
+		return provider.RealtimeSessionIntentConversation, nil
+	case provider.RealtimeSessionIntentConversation, provider.RealtimeSessionIntentTranscription:
+		return intent, nil
+	}
+	return "", fmt.Errorf("OpenAI realtime session intent '%s' is not supported.", intent)
+}
+
+// GetServerConnection returns the upstream WebSocket for a trusted server
+// (TS getServerWebSocketConfig({intent}), 892af4dab7): the provider headers
+// with the long-lived API key, and <ws base>/realtime?model=<id> for a
+// conversation or ?intent=transcription for transcription (the model then
+// goes in session.update). ConnectRealtime keeps the client-secret flow
+// unless the caller asks for an intent.
+func (m *OpenAIRealtimeModel) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	headers, err := m.provider.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	intent, err := openAIRealtimeIntent(opts.Intent)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	base := m.provider.config.BaseURL
+	if base == "" {
+		base = DefaultBaseURL
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	scheme := "wss"
+	if u.Scheme == "http" {
+		scheme = "ws"
+	}
+	wsBase := scheme + "://" + u.Host + strings.TrimSuffix(u.EscapedPath(), "/")
+	wsURL := wsBase + "/realtime?model=" + providerutils.EncodeURIComponent(m.modelID)
+	if intent == provider.RealtimeSessionIntentTranscription {
+		wsURL = wsBase + "/realtime?intent=transcription"
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: headers}, nil
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent (TS
+// buildSessionConfig(config, {intent})).
+func (m *OpenAIRealtimeModel) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	intent, err := openAIRealtimeIntent(intent)
+	if err != nil {
+		return nil, err
+	}
+	return buildOpenAIRealtimeSession(config, m.modelID, intent)
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent (TS
+// serializeClientEvent(event, {intent})).
+func (m *OpenAIRealtimeModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	intent, err := openAIRealtimeIntent(intent)
+	if err != nil {
+		return nil, err
+	}
+	var buildErr error
+	out, err := serializeOpenAICompatibleRealtimeClientEvent(event, func(cfg provider.RealtimeSessionConfig) any {
+		session, err := buildOpenAIRealtimeSession(cfg, m.modelID, intent)
+		buildErr = err
+		return session
+	}, true)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	return out, err
+}
+
+// buildOpenAIRealtimeSession is TS buildOpenAISessionConfig with an intent:
+// a transcription session has type "transcription", no model, always an
+// audio.input.transcription (model defaulting to the model ID), and rejects
+// the conversation-only settings.
+func buildOpenAIRealtimeSession(config provider.RealtimeSessionConfig, modelID string, intent provider.RealtimeSessionIntent) (map[string]interface{}, error) {
+	if intent == provider.RealtimeSessionIntentTranscription {
+		for _, c := range []struct {
+			key string
+			set bool
+		}{
+			{"instructions", config.Instructions != nil},
+			{"voice", config.Voice != nil},
+			{"outputModalities", config.OutputModalities != nil},
+			{"outputAudioFormat", config.OutputAudioFormat != nil},
+			{"outputAudioTranscription", config.OutputAudioTranscription != nil},
+			{"tools", config.Tools != nil},
+		} {
+			if c.set {
+				return nil, fmt.Errorf("OpenAI realtime transcription sessions do not support '%s'.", c.key)
+			}
+		}
+		session := map[string]interface{}{"type": "transcription"}
+		addOpenAIRealtimeSessionFields(session, config, modelID, true)
+		return session, nil
+	}
+	session := map[string]interface{}{"type": "realtime", "model": modelID}
+	addOpenAIRealtimeSessionFields(session, config, modelID, false)
+	return session, nil
+}
 
 func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	session := map[string]interface{}{"type": "realtime", "model": m.modelID}
@@ -169,7 +278,7 @@ func (m *OpenAIRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.W
 
 func (m *OpenAIRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	session := map[string]interface{}{"type": "realtime", "model": m.modelID}
-	addOpenAIRealtimeSessionFields(session, config)
+	addOpenAIRealtimeSessionFields(session, config, m.modelID, false)
 	return session
 }
 
@@ -183,15 +292,15 @@ func (m *OpenAIRealtimeModel) SerializeClientEvent(event provider.RealtimeClient
 	}, true)
 }
 
-func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provider.RealtimeSessionConfig) {
-	if config.Instructions != nil {
+func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provider.RealtimeSessionConfig, modelID string, transcription bool) {
+	if config.Instructions != nil && !transcription {
 		session["instructions"] = *config.Instructions
 	}
-	if config.OutputModalities != nil {
+	if config.OutputModalities != nil && !transcription {
 		session["output_modalities"] = config.OutputModalities
 	}
 	audio := map[string]interface{}{}
-	if config.InputAudioFormat != nil || config.InputAudioTranscription != nil || config.TurnDetection != nil {
+	if transcription || config.InputAudioFormat != nil || config.InputAudioTranscription != nil || config.TurnDetection != nil {
 		input := map[string]interface{}{}
 		if config.InputAudioFormat != nil {
 			input["format"] = audioFormatMap(config.InputAudioFormat)
@@ -201,23 +310,32 @@ func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provi
 		} else if config.TurnDetection != nil {
 			input["turn_detection"] = turnDetectionMap(config.TurnDetection, true)
 		}
-		if config.InputAudioTranscription != nil {
+		if transcription || config.InputAudioTranscription != nil {
+			// A transcription session's model defaults to the model ID
+			// (TS 892af4dab7); a conversation's to gpt-realtime-whisper.
 			model := "gpt-realtime-whisper"
-			if config.InputAudioTranscription.Model != nil {
-				model = *config.InputAudioTranscription.Model
+			if transcription {
+				model = modelID
 			}
-			transcription := map[string]interface{}{"model": model}
-			if config.InputAudioTranscription.Language != nil {
-				transcription["language"] = *config.InputAudioTranscription.Language
+			t := config.InputAudioTranscription
+			if t == nil {
+				t = &provider.RealtimeAudioTranscriptionConfig{}
 			}
-			if config.InputAudioTranscription.Prompt != nil {
-				transcription["prompt"] = *config.InputAudioTranscription.Prompt
+			if t.Model != nil {
+				model = *t.Model
 			}
-			input["transcription"] = transcription
+			entry := map[string]interface{}{"model": model}
+			if t.Language != nil {
+				entry["language"] = *t.Language
+			}
+			if t.Prompt != nil {
+				entry["prompt"] = *t.Prompt
+			}
+			input["transcription"] = entry
 		}
 		audio["input"] = input
 	}
-	if config.OutputAudioFormat != nil || config.Voice != nil {
+	if !transcription && (config.OutputAudioFormat != nil || config.Voice != nil) {
 		output := map[string]interface{}{}
 		if config.OutputAudioFormat != nil {
 			output["format"] = audioFormatMap(config.OutputAudioFormat)
@@ -230,7 +348,7 @@ func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provi
 	if len(audio) > 0 {
 		session["audio"] = audio
 	}
-	if len(config.Tools) > 0 {
+	if len(config.Tools) > 0 && !transcription {
 		session["tools"] = realtimeTools(config.Tools)
 		session["tool_choice"] = "auto"
 	}
@@ -320,6 +438,7 @@ func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) pro
 		e.Type = "input-transcription-completed"
 		e.ItemID = stringField(event, "item_id")
 		e.Transcript = stringField(event, "transcript")
+		e.Usage = openAIRealtimeTranscriptionUsage(event["usage"])
 	case "response.created":
 		e.Type = "response-created"
 		if responseID, ok := nestedStringField(event, "response", "id"); ok {
@@ -339,6 +458,17 @@ func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) pro
 		} else {
 			e.Status = "completed"
 		}
+		// TS 892af4dab7: response.usage (xAI: event.usage ?? response.usage).
+		var usage interface{}
+		if xai {
+			usage = event["usage"]
+		}
+		if usage == nil {
+			if response, ok := event["response"].(map[string]interface{}); ok {
+				usage = response["usage"]
+			}
+		}
+		e.Usage = openAIRealtimeResponseUsage(usage)
 	case "response.output_item.added":
 		e.Type = "output-item-added"
 		e.ResponseID = stringField(event, "response_id")
@@ -561,4 +691,73 @@ func nestedStringField(m map[string]interface{}, key, nested string) (string, bo
 		return "", false
 	}
 	return stringFieldPresent(child, nested)
+}
+
+// openAIRealtimeUsageNumber reads a token count (TS numbers; nil when absent
+// or not a number).
+func openAIRealtimeUsageNumber(m map[string]interface{}, key string) *int {
+	if f, ok := m[key].(float64); ok {
+		n := int(f)
+		return &n
+	}
+	return nil
+}
+
+// openAIRealtimeResponseUsage is TS mapResponseUsage (892af4dab7): gross
+// input/output totals, cache-inclusive input buckets and the cached
+// portions; nil when nothing is reported.
+func openAIRealtimeResponseUsage(raw interface{}) *provider.RealtimeUsage {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	input, _ := usage["input_token_details"].(map[string]interface{})
+	output, _ := usage["output_token_details"].(map[string]interface{})
+	cached, _ := input["cached_tokens_details"].(map[string]interface{})
+	u := provider.RealtimeUsage{
+		InputTokens:            openAIRealtimeUsageNumber(usage, "input_tokens"),
+		OutputTokens:           openAIRealtimeUsageNumber(usage, "output_tokens"),
+		CachedInputTokens:      openAIRealtimeUsageNumber(input, "cached_tokens"),
+		InputAudioTokens:       openAIRealtimeUsageNumber(input, "audio_tokens"),
+		InputTextTokens:        openAIRealtimeUsageNumber(input, "text_tokens"),
+		OutputAudioTokens:      openAIRealtimeUsageNumber(output, "audio_tokens"),
+		OutputTextTokens:       openAIRealtimeUsageNumber(output, "text_tokens"),
+		CachedInputAudioTokens: openAIRealtimeUsageNumber(cached, "audio_tokens"),
+		CachedInputTextTokens:  openAIRealtimeUsageNumber(cached, "text_tokens"),
+	}
+	if u.HasSeconds() {
+		return nil // no token field: nothing observable
+	}
+	return &u
+}
+
+// openAIRealtimeTranscriptionUsage is TS mapTranscriptionUsage: duration
+// billing reports seconds, token billing the token counts (output tokens
+// are output text).
+func openAIRealtimeTranscriptionUsage(raw interface{}) *provider.RealtimeUsage {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if usage["type"] == "duration" {
+		seconds, ok := usage["seconds"].(float64)
+		if !ok {
+			return nil
+		}
+		u := provider.RealtimeUsage{}
+		u.SetSeconds(seconds)
+		return &u
+	}
+	input, _ := usage["input_token_details"].(map[string]interface{})
+	u := provider.RealtimeUsage{
+		InputTokens:      openAIRealtimeUsageNumber(usage, "input_tokens"),
+		OutputTokens:     openAIRealtimeUsageNumber(usage, "output_tokens"),
+		InputAudioTokens: openAIRealtimeUsageNumber(input, "audio_tokens"),
+		InputTextTokens:  openAIRealtimeUsageNumber(input, "text_tokens"),
+		OutputTextTokens: openAIRealtimeUsageNumber(usage, "output_tokens"),
+	}
+	if u.HasSeconds() {
+		return nil
+	}
+	return &u
 }

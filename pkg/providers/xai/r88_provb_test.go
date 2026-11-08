@@ -156,3 +156,42 @@ func TestR88provbXAITranscriptionWords(t *testing.T) {
 		t.Errorf("words %+v, warnings %+v", res.Words, res.Warnings)
 	}
 }
+
+// TS 892af4dab7 (xai-realtime-event-mapper.test.ts usage block and
+// xai-realtime-model.test.ts getServerWebSocketConfig / intents).
+func TestR88provbXAIRealtimeUsageAndConnection(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "test-key"}), "grok-voice-latest")
+	for _, tc := range []struct{ raw, want string }{
+		{`{"type":"response.done","response":{"id":"response","status":"completed","usage":{}},"usage":{"input_tokens":4,"output_tokens":37,"input_token_details":{"text_tokens":4,"audio_tokens":0},"output_token_details":{"text_tokens":1,"audio_tokens":36}}}`,
+			`{"inputTokens":4,"outputTokens":37,"inputTextTokens":4,"inputAudioTokens":0,"outputTextTokens":1,"outputAudioTokens":36}`},
+		{`{"type":"conversation.item.input_audio_transcription.completed","item_id":"i","transcript":"x","usage":{"type":"duration","seconds":2}}`, `{"seconds":2}`},
+		{`{"type":"response.done","response":{"id":"response","usage":{"input_tokens":10,"output_tokens":0,"input_token_details":{"cached_tokens":4,"image_tokens":10}}}}`, `{"inputTokens":10,"outputTokens":0,"cachedInputTokens":4}`},
+		{`{"type":"response.done","response":{"id":"r","status":"completed"}}`, `null`},
+		{`{"type":"response.done","response":{"id":"r","usage":{"input_tokens":2}},"usage":null}`, `{"inputTokens":2}`},
+	} {
+		events, _ := m.ParseServerEvent(json.RawMessage(tc.raw))
+		if got, _ := json.Marshal(events[0].Usage); string(got) != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.raw, got, tc.want)
+		}
+	}
+
+	ctx := context.Background()
+	conn, err := m.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{})
+	if err != nil || conn.URL != "wss://api.x.ai/v1/realtime?model=grok-voice-latest" || conn.Headers["authorization"] != "Bearer test-key" {
+		t.Errorf("connection = %+v, %v", conn, err)
+	}
+	wantErr := "xAI realtime does not support the 'transcription' session intent."
+	if _, err := m.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{Intent: provider.RealtimeSessionIntentTranscription}); err == nil || err.Error() != wantErr {
+		t.Errorf("connection err = %v", err)
+	}
+	if _, err := m.SerializeClientEventForIntent(provider.RealtimeClientEvent{Type: "response-create"}, provider.RealtimeSessionIntentTranscription); err == nil || err.Error() != wantErr {
+		t.Errorf("serialize err = %v", err)
+	}
+	if _, err := m.BuildSessionConfigForIntent(provider.RealtimeSessionConfig{}, provider.RealtimeSessionIntentTranscription); err == nil || err.Error() != wantErr {
+		t.Errorf("build err = %v", err)
+	}
+	local := NewRealtimeModel(New(Config{APIKey: "k", BaseURL: "http://localhost:9000/v1/"}), "grok-voice-latest")
+	if conn, _ := local.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{}); conn.URL != "ws://localhost:9000/v1/realtime?model=grok-voice-latest" {
+		t.Errorf("local url = %s", conn.URL)
+	}
+}

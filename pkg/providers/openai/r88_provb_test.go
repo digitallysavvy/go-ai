@@ -437,3 +437,104 @@ func TestR88provbImageGPTImage26Options(t *testing.T) {
 		t.Error("max images: want 10")
 	}
 }
+
+// TS 892af4dab7 (openai-realtime-event-mapper.test.ts "usage" block).
+func TestR88provbRealtimeUsage(t *testing.T) {
+	for _, tc := range []struct {
+		raw, want string
+	}{
+		{`{"type":"response.done","response":{"id":"response","usage":{"input_tokens":10,"output_tokens":0,"input_token_details":{"cached_tokens":4,"image_tokens":10}}}}`,
+			`{"inputTokens":10,"outputTokens":0,"cachedInputTokens":4}`},
+		{`{"type":"response.done","response":{"id":"resp_1","status":"completed","usage":{"input_token_details":{"audio_tokens":100,"text_tokens":40,"cached_tokens_details":{"audio_tokens":30,"text_tokens":10}},"output_token_details":{"audio_tokens":200,"text_tokens":12}}}}`,
+			`{"inputTextTokens":40,"inputAudioTokens":100,"outputTextTokens":12,"outputAudioTokens":200,"cachedInputTextTokens":10,"cachedInputAudioTokens":30}`},
+		{`{"type":"response.done","response":{"id":"resp_1","status":"completed"}}`, `null`},
+		{`{"type":"conversation.item.input_audio_transcription.completed","item_id":"item_1","transcript":"hello","usage":{"type":"duration","seconds":3.5}}`, `{"seconds":3.5}`},
+		{`{"type":"conversation.item.input_audio_transcription.completed","item_id":"item_1","transcript":"hello","usage":{"type":"tokens","input_token_details":{"audio_tokens":50,"text_tokens":4},"output_tokens":8}}`,
+			`{"outputTokens":8,"inputTextTokens":4,"inputAudioTokens":50,"outputTextTokens":8}`},
+	} {
+		events, err := (&OpenAIRealtimeModel{}).ParseServerEvent(json.RawMessage(tc.raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(events[0].Usage)
+		if string(got) != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// TS 892af4dab7 (openai-realtime-model.test.ts getServerWebSocketConfig and
+// the transcription session builder; openai-realtime-model-live.test.ts).
+func TestR88provbRealtimeServerConnectionAndIntent(t *testing.T) {
+	ctx := context.Background()
+	m := NewRealtimeModel(New(Config{APIKey: "test-key", BaseURL: "https://api.openai.com/v1", Headers: map[string]string{"x-custom": "custom-header"}}), "gpt-realtime")
+	conn, err := m.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.URL != "wss://api.openai.com/v1/realtime?model=gpt-realtime" || conn.Headers["authorization"] != "Bearer test-key" || conn.Headers["x-custom"] != "custom-header" {
+		t.Errorf("conversation connection = %+v", conn)
+	}
+	conn, err = m.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{Intent: provider.RealtimeSessionIntentTranscription})
+	if err != nil || conn.URL != "wss://api.openai.com/v1/realtime?intent=transcription" {
+		t.Errorf("transcription connection = %+v, %v", conn, err)
+	}
+	if _, err := m.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{Intent: "translation"}); err == nil || err.Error() != "OpenAI realtime session intent 'translation' is not supported." {
+		t.Errorf("translation err = %v", err)
+	}
+	local := NewRealtimeModel(New(Config{APIKey: "test-key", BaseURL: "http://localhost:8787/v1"}), "gpt-realtime")
+	if conn, _ := local.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{}); conn.URL != "ws://localhost:8787/v1/realtime?model=gpt-realtime" {
+		t.Errorf("local url = %s", conn.URL)
+	}
+
+	rate := 24000
+	model, lang, prompt := "gpt-realtime-whisper", "en", "Medical vocabulary."
+	session, err := m.BuildSessionConfigForIntent(provider.RealtimeSessionConfig{
+		InputAudioFormat:        &provider.RealtimeAudioFormat{Type: "audio/pcm", Rate: &rate},
+		InputAudioTranscription: &provider.RealtimeAudioTranscriptionConfig{Model: &model, Language: &lang, Prompt: &prompt},
+	}, provider.RealtimeSessionIntentTranscription)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(session); string(got) != `{"audio":{"input":{"format":{"rate":24000,"type":"audio/pcm"},"transcription":{"language":"en","model":"gpt-realtime-whisper","prompt":"Medical vocabulary."}}},"type":"transcription"}` {
+		t.Errorf("transcription session = %s", got)
+	}
+	voice, instr := "alloy", "hello"
+	for _, cfg := range []provider.RealtimeSessionConfig{{Voice: &voice}, {Instructions: &instr}, {Tools: []provider.RealtimeToolDefinition{}}, {OutputModalities: []string{"audio"}}} {
+		if _, err := m.BuildSessionConfigForIntent(cfg, provider.RealtimeSessionIntentTranscription); err == nil || !strings.Contains(err.Error(), "transcription sessions do not support") {
+			t.Errorf("%+v: err = %v", cfg, err)
+		}
+	}
+	if _, err := m.BuildSessionConfigForIntent(provider.RealtimeSessionConfig{}, "translation"); err == nil || !strings.Contains(err.Error(), "is not supported") {
+		t.Errorf("translation build err = %v", err)
+	}
+	whisper := NewRealtimeModel(New(Config{APIKey: "k"}), "gpt-realtime-whisper")
+	out, err := whisper.SerializeClientEventForIntent(provider.RealtimeClientEvent{Type: "session-update"}, provider.RealtimeSessionIntentTranscription)
+	if err != nil || string(out) != `{"session":{"audio":{"input":{"transcription":{"model":"gpt-realtime-whisper"}}},"type":"transcription"},"type":"session.update"}` {
+		t.Errorf("serialize = %s, %v", out, err)
+	}
+	// The conversation intent keeps the v0.5 session.
+	conv, _ := m.BuildSessionConfigForIntent(provider.RealtimeSessionConfig{Voice: &voice}, "")
+	if got, want := r88provbJSON(conv), r88provbJSON(m.BuildSessionConfig(provider.RealtimeSessionConfig{Voice: &voice})); got != want {
+		t.Errorf("conversation session %s != %s", got, want)
+	}
+
+	live := NewRealtimeModelLive(New(Config{APIKey: "k"}), "gpt-live-1")
+	if _, err := live.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{Intent: provider.RealtimeSessionIntentTranscription}); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("live connection err = %v", err)
+	}
+	if _, err := live.SerializeClientEventForIntent(provider.RealtimeClientEvent{Type: "response-create"}, provider.RealtimeSessionIntentTranscription); err == nil {
+		t.Error("live serialize: want an error")
+	}
+	if _, err := live.BuildSessionConfigForIntent(provider.RealtimeSessionConfig{}, provider.RealtimeSessionIntentTranscription); err == nil {
+		t.Error("live build: want an error")
+	}
+	if _, err := live.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{}); err != nil {
+		t.Errorf("live conversation: %v", err)
+	}
+}
+
+func r88provbJSON(v interface{}) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
