@@ -458,19 +458,22 @@ func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[stri
 }
 
 // convertCohereUsage decodes a raw Cohere v2 usage object into SDK usage
-// format, matching TS convertCohereUsage (cohere/src/convert-cohere-usage.ts):
-// Raw preserves the complete usage object -- tokens, billed_units and
-// cached_tokens -- rather than a hand-built subset (0599400).
+// format, matching TS convertCohereUsage (cohere/src/convert-cohere-usage.ts,
+// 3aad18a417): only `tokens` gives token counts (billed_units is kept in Raw
+// only); input and output stay unset when tokens or its fields are missing
+// or null; noCache subtracts cached_tokens only when both are present. Raw
+// preserves the complete usage object.
 func convertCohereUsage(raw json.RawMessage) types.Usage {
 	if len(raw) == 0 || string(raw) == "null" {
 		return types.Usage{}
 	}
 
 	var usage struct {
-		// TS z.number(): a fractional count parses (Go keeps the integer part).
-		Tokens struct {
-			InputTokens  float64 `json:"input_tokens"`
-			OutputTokens float64 `json:"output_tokens"`
+		// TS z.number().nullish(): a fractional count parses (Go keeps the
+		// integer part).
+		Tokens *struct {
+			InputTokens  *float64 `json:"input_tokens"`
+			OutputTokens *float64 `json:"output_tokens"`
 		} `json:"tokens"`
 		CachedTokens *float64 `json:"cached_tokens"`
 	}
@@ -481,21 +484,43 @@ func convertCohereUsage(raw json.RawMessage) types.Usage {
 	var rawMap map[string]interface{}
 	_ = json.Unmarshal(raw, &rawMap)
 
-	inputTokens := int64(usage.Tokens.InputTokens)
-	outputTokens := int64(usage.Tokens.OutputTokens)
-	totalTokens := inputTokens + outputTokens
-	inputDetails := &types.InputTokenDetails{NoCacheTokens: &inputTokens}
+	var inputTokens, outputTokens, totalTokens, cacheRead, noCache *int64
+	if usage.Tokens != nil {
+		if usage.Tokens.InputTokens != nil {
+			v := int64(*usage.Tokens.InputTokens)
+			inputTokens = &v
+		}
+		if usage.Tokens.OutputTokens != nil {
+			v := int64(*usage.Tokens.OutputTokens)
+			outputTokens = &v
+		}
+	}
 	if usage.CachedTokens != nil {
-		cacheRead := int64(*usage.CachedTokens)
-		noCache := inputTokens - cacheRead
-		inputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cacheRead}
+		v := int64(*usage.CachedTokens)
+		cacheRead = &v
+	}
+	noCache = inputTokens
+	if inputTokens != nil && cacheRead != nil {
+		v := *inputTokens - *cacheRead
+		noCache = &v
+	}
+	// TS core addTokenCounts: unset only when both sides are unset.
+	if inputTokens != nil || outputTokens != nil {
+		var v int64
+		if inputTokens != nil {
+			v += *inputTokens
+		}
+		if outputTokens != nil {
+			v += *outputTokens
+		}
+		totalTokens = &v
 	}
 	return types.Usage{
-		InputTokens:   &inputTokens,
-		OutputTokens:  &outputTokens,
-		TotalTokens:   &totalTokens,
-		InputDetails:  inputDetails,
-		OutputDetails: &types.OutputTokenDetails{TextTokens: &outputTokens},
+		InputTokens:   inputTokens,
+		OutputTokens:  outputTokens,
+		TotalTokens:   totalTokens,
+		InputDetails:  &types.InputTokenDetails{NoCacheTokens: noCache, CacheReadTokens: cacheRead},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: outputTokens},
 		Raw:           rawMap,
 	}
 }
@@ -524,37 +549,13 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 		}
 	}
 
-	// citations -> source content parts, matching TS doGenerate's citation
-	// loop (cohere-chat-language-model.ts:196-214). Only doGenerate emits
-	// these; Cohere's streaming citation-start/citation-end events carry no
-	// accumulable citation payload in the TS SDK's limited chunk schema, so
-	// streaming intentionally ignores them (see cohereV2Stream.Next default
-	// case).
+	// citations -> source content parts (TS doGenerate citation loop,
+	// mapCohereCitationToSource): tool-only citations have no document and
+	// are skipped.
 	for _, citation := range resp.Message.Citations {
-		title := "Document"
-		if len(citation.Sources) > 0 && citation.Sources[0].Document != nil && citation.Sources[0].Document.Title != "" {
-			title = citation.Sources[0].Document.Title
+		if source := mapCohereCitationToSource(citation); source != nil {
+			result.Content = append(result.Content, *source)
 		}
-		cohereMeta := map[string]interface{}{
-			"start":   citation.Start,
-			"end":     citation.End,
-			"text":    citation.Text,
-			"sources": citation.Sources,
-		}
-		if citation.Type != "" {
-			cohereMeta["citationType"] = citation.Type
-		}
-		metaJSON, err := json.Marshal(map[string]interface{}{"cohere": cohereMeta})
-		if err != nil {
-			return nil, err
-		}
-		result.Content = append(result.Content, types.SourceContent{
-			SourceType:       "document",
-			ID:               streaming.GenerateID(),
-			MediaType:        "text/plain",
-			Title:            title,
-			ProviderMetadata: metaJSON,
-		})
 	}
 
 	for _, tc := range resp.Message.ToolCalls {
@@ -627,34 +628,12 @@ type cohereV2Response struct {
 				Arguments string `json:"arguments"`
 			} `json:"function"`
 		} `json:"tool_calls"`
-		Citations []cohereCitation `json:"citations"`
+		// Kept raw: the loose document keys and tool_output survive into
+		// the source metadata (TS cohereCitationSchema).
+		Citations []json.RawMessage `json:"citations"`
 	} `json:"message"`
 	FinishReason string          `json:"finish_reason"`
 	Usage        json.RawMessage `json:"usage"`
-}
-
-// cohereCitation mirrors the Cohere v2 chat citation shape, matching TS
-// cohere-chat-language-model.ts's inline citation type used in the
-// `cohereChatResponseSchema.message.citations` field.
-type cohereCitation struct {
-	// TS z.number(): a fractional offset parses and is kept as is.
-	Start   float64                `json:"start"`
-	End     float64                `json:"end"`
-	Text    string                 `json:"text"`
-	Sources []cohereCitationSource `json:"sources"`
-	Type    string                 `json:"type,omitempty"`
-}
-
-type cohereCitationSource struct {
-	Type     string             `json:"type,omitempty"`
-	ID       string             `json:"id,omitempty"`
-	Document *cohereCitationDoc `json:"document,omitempty"`
-}
-
-type cohereCitationDoc struct {
-	ID    string `json:"id,omitempty"`
-	Text  string `json:"text"`
-	Title string `json:"title"`
 }
 
 type cohereV2Stream struct {

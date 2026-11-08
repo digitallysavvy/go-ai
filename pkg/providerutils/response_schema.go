@@ -195,7 +195,21 @@ var (
 		)),
 	)
 
-	zCohereTokens = zObj(fl("input_tokens", zNum), fl("output_tokens", zNum))
+	// cohereUsageSchema (TS 3aad18a417): every field is nullish, and
+	// billed_units / tokens are nullish loose objects with nullish numbers.
+	zCohereTokens = zObj(fl("input_tokens", nNum), fl("output_tokens", nNum))
+
+	// cohereCitationSchema (TS cohere-citations.ts): every citation field is
+	// nullish; a source references a document (loose object) or tool output.
+	zCohereCitation = zObj(
+		fl("start", nNum), fl("end", nNum), fl("text", nStr),
+		fl("sources", zNullish(zArr(zObj(
+			fl("type", nStr), fl("id", nStr),
+			fl("document", zNullish(zObj(fl("id", nStr), fl("text", nStr), fl("title", nStr)))),
+			fl("tool_output", zNullish(zObj())),
+		)))),
+		fl("type", nStr),
+	)
 
 	zCohereResponse = zObj(
 		fl("generation_id", nStr),
@@ -210,21 +224,14 @@ var (
 				fl("id", zStr), fl("type", zLit("function")),
 				fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
 			)))),
-			fl("citations", zNullish(zArr(zObj(
-				fl("start", zNum), fl("end", zNum), fl("text", zStr),
-				fl("sources", zArr(zObj(
-					fl("type", zOptional(zStr)), fl("id", zOptional(zStr)),
-					fl("document", zObj(fl("id", zOptional(zStr)), fl("text", zStr), fl("title", zStr))),
-				))),
-				fl("type", zOptional(zStr)),
-			)))),
+			fl("citations", zNullish(zArr(zCohereCitation))),
 		)),
 		fl("finish_reason", zStr),
-		fl("usage", zObj(
+		fl("usage", zNullish(zObj(
 			fl("billed_units", zNullish(zCohereTokens)),
-			fl("tokens", zCohereTokens),
+			fl("tokens", zNullish(zCohereTokens)),
 			fl("cached_tokens", nNum),
-		)),
+		))),
 	)
 
 	zAlibabaResponse = zObj(

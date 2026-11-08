@@ -3,8 +3,7 @@ package cohere
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
-)
+	"fmt")
 
 // validateCohereChunk mirrors the TS cohereChatChunkSchema discriminated
 // union: an unknown or missing `type`, or a member with a missing/ill-typed
@@ -78,14 +77,21 @@ func validateCohereChunk(data []byte) error {
 		if usage == nil {
 			return fail("delta.usage", "object")
 		}
-		tokens := obj(usage["tokens"])
-		if tokens == nil || !num(tokens["input_tokens"]) || !num(tokens["output_tokens"]) {
-			return fail("delta.usage.tokens", "input_tokens/output_tokens numbers")
-		}
-		if billed, ok := usage["billed_units"]; ok && billed != nil {
-			b := obj(billed)
-			if b == nil || !num(b["input_tokens"]) || !num(b["output_tokens"]) {
-				return fail("delta.usage.billed_units", "input_tokens/output_tokens numbers")
+		// cohereUsageSchema (TS 3aad18a417): tokens and billed_units are
+		// nullish objects whose counts are nullish numbers.
+		for _, key := range []string{"tokens", "billed_units"} {
+			v, ok := usage[key]
+			if !ok || v == nil {
+				continue
+			}
+			b := obj(v)
+			if b == nil {
+				return fail("delta.usage."+key, "object")
+			}
+			for _, f := range []string{"input_tokens", "output_tokens"} {
+				if c, ok := b[f]; ok && c != nil && !num(c) {
+					return fail("delta.usage."+key+"."+f, "number")
+				}
 			}
 		}
 		if c, ok := usage["cached_tokens"]; ok && c != nil && !num(c) {
