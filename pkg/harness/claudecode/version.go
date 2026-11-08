@@ -4,4 +4,4 @@ package claudecode
 // attribution string sent with AI Gateway requests. Mirrors TS `VERSION`
 // (packages/harness-claude-code/src/version.ts), pinned to the ai@7.0.162
 // release this port targets.
-const version = "1.0.177"
+const version = "1.0.180"
