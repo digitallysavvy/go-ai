@@ -97,7 +97,7 @@ func (t *gatewayAuthTransport) roundTrip(req *http.Request) (*http.Response, err
 	// runs once per hop, while TS adds the headers once per call and fetch
 	// drops Authorization on a cross-origin redirect (credential transport
 	// class sweep, S2).
-	if gatewayCrossOriginRedirectHop(req) {
+	if providerutils.IsCrossOriginRedirectHop(req) {
 		resp, err := t.base.RoundTrip(req.Clone(req.Context()))
 		if err != nil && t.custom {
 			return nil, customFetchError(err)
@@ -123,23 +123,6 @@ func (t *gatewayAuthTransport) roundTrip(req *http.Request) (*http.Response, err
 		return nil, customFetchError(err)
 	}
 	return resp, err
-}
-
-// gatewayCrossOriginRedirectHop reports whether req is a net/http redirect
-// hop whose origin differs from the first request of the chain (fails
-// closed on an unparsable URL).
-func gatewayCrossOriginRedirectHop(req *http.Request) bool {
-	if req == nil || req.Response == nil {
-		return false
-	}
-	first := req
-	for first.Response != nil && first.Response.Request != nil {
-		first = first.Response.Request
-	}
-	if first == req || first.URL == nil || req.URL == nil {
-		return true
-	}
-	return !providerutils.IsSameOrigin(req.URL.String(), first.URL.String())
 }
 
 func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver) *http.Client {
