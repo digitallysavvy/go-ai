@@ -4,6 +4,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -99,4 +100,13 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// baseURL is the configured API base URL without a trailing slash, defaulting
+// like New.
+func (p *Provider) baseURL() string {
+	if p.config.BaseURL == "" {
+		return "https://api.deepgram.com"
+	}
+	return strings.TrimRight(p.config.BaseURL, "/")
 }

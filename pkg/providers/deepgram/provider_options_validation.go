@@ -75,6 +75,25 @@ var deepgramTranscriptionOptionsSchema = providerutils.OptionSchema{
 	"utterances":     nullBool,
 	"uttSplit":       nullNum,
 	"fillerWords":    nullBool,
+	// TS 5b89b2560c: streaming members are .optional() (null rejected).
+	"streaming": providerutils.OptObject(providerutils.OptionSchema{
+		"interimResults": providerutils.OptBool,
+		"endpointing":    optEndpointing,
+		"channels":       providerutils.OptPositive(true),
+		"multichannel":   providerutils.OptBool,
+		"vadEvents":      providerutils.OptBool,
+		"utteranceEndMs": providerutils.OptInt(intPtr(1000), nil),
+	}),
+}
+
+func intPtr(v int) *int { return &v }
+
+// optEndpointing is z.union([z.number().int().nonnegative(), z.literal(false)]).
+func optEndpointing(path string, v interface{}) error {
+	if b, ok := v.(bool); ok && !b {
+		return nil
+	}
+	return providerutils.OptInt(intPtr(0), nil)(path, v)
 }
 
 // validateSpeechOptions / validateTranscriptionOptions are parseProviderOptions
