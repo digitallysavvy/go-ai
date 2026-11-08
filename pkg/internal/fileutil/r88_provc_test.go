@@ -112,3 +112,28 @@ func TestR88provcHTTPSDowngradeRedirectBlocked(t *testing.T) {
 		}
 	})
 }
+
+// TS detect-media-type.test.ts (cab9c1f452): inherited object keys are not
+// signature tables.
+func TestR88provcDetectMediaTypeInheritedTables(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	for _, top := range []string{"constructor", "__proto__", "toString", "hasOwnProperty"} {
+		if mt, ok := DetectMediaTypeSignature(png, top); ok || mt != "" {
+			t.Fatalf("%s: %q", top, mt)
+		}
+	}
+	if mt, ok := DetectMediaTypeSignature(png, "image"); !ok || mt != "image/png" {
+		t.Fatalf("image: %q", mt)
+	}
+}
+
+func TestR88provcMediaTypeHelpers(t *testing.T) {
+	for in, want := range map[string]bool{"image/png": true, "image/*": false, "image": false, "image/": false, "": false, "/": false} {
+		if IsFullMediaType(in) != want {
+			t.Fatalf("IsFullMediaType(%q)", in)
+		}
+	}
+	if TopLevelMediaType("audio/mpeg") != "audio" || TopLevelMediaType("audio") != "audio" {
+		t.Fatal("TopLevelMediaType")
+	}
+}
