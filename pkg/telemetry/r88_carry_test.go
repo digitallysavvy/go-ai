@@ -437,7 +437,7 @@ func r88carrySpanNames(spans []sdktrace.ReadOnlySpan) []string {
 	return out
 }
 
-// Rerank start: query and documents are inputs (TS `query: ''`,
+// Rerank start: query and documents are inputs (TS `query: ”`,
 // `documents: []`).
 func TestR88carryFilterRerankStart(t *testing.T) {
 	rec := &r88carryRecorder{}

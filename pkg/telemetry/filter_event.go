@@ -318,7 +318,7 @@ func filterStruct(s reflect.Value, hideInputs, hideOutputs bool) {
 }
 
 // blankRankingDocuments copies a ranking list with each entry's Document
-// replaced by "" (string) or an empty object (TS `{...entry, document: ''
+// replaced by "" (string) or an empty object (TS `{...entry, document: ”
 // | {}}`).
 func blankRankingDocuments(f reflect.Value) reflect.Value {
 	out := reflect.MakeSlice(f.Type(), f.Len(), f.Len())
