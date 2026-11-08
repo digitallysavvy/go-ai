@@ -107,6 +107,26 @@ func (c *wsConn) Send(data []byte) error {
 	return websocket.Message.Send(c.ws, string(data))
 }
 
+// CloseWithReason sends a close frame with code and reason, then closes the
+// socket (TS `ws.close(code, reason)`). Safe to call more than once.
+func (c *wsConn) CloseWithReason(code int, reason string) error {
+	if !c.closed.Load() {
+		c.writeMu.Lock()
+		if c.writeTimeout > 0 {
+			_ = c.ws.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+		}
+		c.ws.PayloadType = websocket.CloseFrame
+		_, _ = c.ws.Write(append([]byte{byte(code >> 8), byte(code)}, reason...))
+		c.writeMu.Unlock()
+	}
+	return c.Close()
+}
+
+// reasonCloser is a Conn that can close with a close code and reason.
+type reasonCloser interface {
+	CloseWithReason(code int, reason string) error
+}
+
 // Close closes the socket. Safe to call more than once.
 func (c *wsConn) Close() error {
 	c.closed.Store(true)

@@ -81,6 +81,13 @@ type Settings struct {
 	// query. When it is exceeded, the query stops and the turn ends with an
 	// error. Nil means no limit.
 	MaxBudgetUSD *float64
+	// AdditionalDirectories are absolute paths of directories Claude can
+	// access in addition to the session working directory; the bridge also
+	// trusts reads under them in approvals. Nil sends nothing; a non-nil
+	// empty slice is sent as []. Paths are forwarded as given (relative
+	// entries are not trusted by the bridge). Mirrors TS
+	// `additionalDirectories` (ae4e2363a2).
+	AdditionalDirectories []string
 	// StrictMCPConfig, when true, uses only the MCP servers configured with
 	// MCPServers and ignores any other MCP configuration such as a project
 	// `.mcp.json` or user settings. Nil leaves the Claude Code default.
@@ -129,6 +136,13 @@ type Settings struct {
 	// included, fails the turn on the first timer tick after the start was
 	// sent; there is no value that disables the deadline.
 	TurnStartTimeout time.Duration
+	// HostDisconnectTimeout makes the bridge abort a running turn when its
+	// host disconnects and does not reconnect within this duration, so the
+	// turn stops spending. A suspended turn is exempt. Zero (or negative)
+	// keeps the turn running until it finishes. Mirrors TS
+	// `hostDisconnectTimeoutMs` (a54f0fd8c6), passed as
+	// --host-disconnect-timeout-ms.
+	HostDisconnectTimeout time.Duration
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions

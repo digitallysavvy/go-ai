@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 
@@ -23,7 +24,7 @@ func languageModelToolDefinition(t types.Tool) *jsonorder.Object {
 		def.Set("name", t.Name)
 		def.Set("id", t.ProviderID)
 		if t.ProviderArgs != nil {
-			def.Set("args", t.ProviderArgs)
+			def.Set("args", redactProviderToolArgs(t.ProviderID, t.ProviderArgs))
 		} else {
 			def.Set("args", map[string]interface{}{})
 		}
@@ -144,4 +145,130 @@ func isNilValue(v interface{}) bool {
 		return rv.IsNil()
 	}
 	return false
+}
+
+const redactedToolValue = "[redacted]"
+
+// redactProviderToolArgs removes provider credentials from a telemetry-only
+// copy of a provider tool's args (TS otel redactToolDefinition, 7bb309d132):
+// the openai.mcp authorization and every header value, and the value of each
+// domain secret in the openai.code_interpreter container / openai.shell
+// environment network policy. args itself is never modified (the provider
+// request needs the real values); other tools pass through unchanged.
+func redactProviderToolArgs(id string, args map[string]interface{}) map[string]interface{} {
+	if id == "openai.mcp" {
+		out := copyRecord(args)
+		if v, ok := args["authorization"]; ok && !isNilValue(v) {
+			out["authorization"] = redactedToolValue
+		}
+		if headers, ok := asToolRecord(args["headers"]); ok {
+			redacted := make(map[string]interface{}, len(headers))
+			for name := range headers {
+				redacted[name] = redactedToolValue
+			}
+			out["headers"] = redacted
+		}
+		return out
+	}
+	var containerKey string
+	switch id {
+	case "openai.code_interpreter":
+		containerKey = "container"
+	case "openai.shell":
+		containerKey = "environment"
+	default:
+		return args
+	}
+	container, ok := asToolRecord(args[containerKey])
+	if !ok {
+		return args
+	}
+	policy, ok := asToolRecord(container["networkPolicy"])
+	if !ok {
+		return args
+	}
+	secrets, ok := asToolList(policy["domainSecrets"])
+	if !ok {
+		return args
+	}
+	redacted := make([]interface{}, len(secrets))
+	for i, secret := range secrets {
+		if rec, ok := asToolRecord(secret); ok {
+			if _, has := rec["value"]; has {
+				cp := copyRecord(rec)
+				cp["value"] = redactedToolValue
+				redacted[i] = cp
+				continue
+			}
+		}
+		redacted[i] = secret
+	}
+	newPolicy := copyRecord(policy)
+	newPolicy["domainSecrets"] = redacted
+	newContainer := copyRecord(container)
+	newContainer["networkPolicy"] = newPolicy
+	out := copyRecord(args)
+	out[containerKey] = newContainer
+	return out
+}
+
+func copyRecord(m map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// asToolRecord gives v as a JSON object (TS isRecord: non-null, an object,
+// not an array). Values that are not a map[string]interface{} (typed maps,
+// structs, pointers) are read through their JSON form, so a credential in
+// any Go shape is found.
+func asToolRecord(v interface{}) (map[string]interface{}, bool) {
+	switch m := v.(type) {
+	case nil:
+		return nil, false
+	case map[string]interface{}:
+		return m, m != nil
+	case map[string]string:
+		if m == nil {
+			return nil, false
+		}
+		out := make(map[string]interface{}, len(m))
+		for k, s := range m {
+			out[k] = s
+		}
+		return out, true
+	}
+	if isNilValue(v) {
+		return nil, false
+	}
+	var out interface{}
+	if b, err := json.Marshal(v); err != nil || json.Unmarshal(b, &out) != nil {
+		return nil, false
+	}
+	m, ok := out.(map[string]interface{})
+	return m, ok
+}
+
+// asToolList gives v as a JSON array (TS Array.isArray).
+func asToolList(v interface{}) ([]interface{}, bool) {
+	switch l := v.(type) {
+	case nil:
+		return nil, false
+	case []interface{}:
+		return l, l != nil
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, false
+	}
+	if rv.Kind() == reflect.Slice && rv.IsNil() {
+		return nil, false
+	}
+	out := make([]interface{}, rv.Len())
+	for i := range out {
+		out[i] = rv.Index(i).Interface()
+	}
+	return out, true
 }

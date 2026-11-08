@@ -43,6 +43,9 @@ type sessionOptions struct {
 	continueOnFirstPrompt bool
 	rerunContinue         bool
 	resumeSessionID       string
+	// startID is the start of the attached or replayed turn (TS
+	// `createSession({startId})`); "" otherwise.
+	startID string
 	// deferredToolUseID is sent on the rerun-continue start (TS
 	// `deferredToolUseId`).
 	deferredToolUseID string
@@ -91,6 +94,7 @@ type sessionOptions struct {
 type startSettings struct {
 	skillOverrides         map[string]SkillOverride
 	maxBudgetUSD           *float64
+	additionalDirectories  []string
 	strictMCPConfig        *bool
 	questionTimeoutMs      *int
 	excludeDynamicSections *bool
@@ -100,7 +104,8 @@ type startSettings struct {
 func startSettingsFrom(settings Settings) startSettings {
 	return startSettings{
 		skillOverrides: settings.SkillOverrides, maxBudgetUSD: settings.MaxBudgetUSD,
-		strictMCPConfig: settings.StrictMCPConfig, questionTimeoutMs: settings.QuestionTimeoutMs,
+		additionalDirectories: settings.AdditionalDirectories,
+		strictMCPConfig:       settings.StrictMCPConfig, questionTimeoutMs: settings.QuestionTimeoutMs,
 		excludeDynamicSections: settings.ExcludeDynamicSections, toolHints: settings.ToolHints,
 	}
 }
@@ -118,10 +123,13 @@ type session struct {
 	// rerunContinue is the live copy of opts.rerunContinue: true until the
 	// single recovery start has been sent. Mirrors TS `rerunContinue`.
 	rerunContinue bool
+	// activeStartID is the start of the current (or last) turn, persisted on
+	// detach / suspend. Mirrors TS `activeStartId`.
+	activeStartID string
 }
 
 func newSession(opts sessionOptions) *session {
-	return &session{opts: opts, pendingResumeFlag: opts.continueOnFirstPrompt, lastSessionID: opts.resumeSessionID, rerunContinue: opts.rerunContinue, finishAttachment: opts.finishListenerAttachment}
+	return &session{opts: opts, pendingResumeFlag: opts.continueOnFirstPrompt, lastSessionID: opts.resumeSessionID, rerunContinue: opts.rerunContinue, finishAttachment: opts.finishListenerAttachment, activeStartID: opts.startID}
 }
 
 func (s *session) SessionID() string { return s.opts.sessionID }
@@ -156,7 +164,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 			return nil, err
 		}
 	}
-	control := s.wireTurn(ctx, opts.Emit)
+	control := s.wireTurn(ctx, opts.Emit, newStartID())
 	if ctx.Err() != nil {
 		return control, nil
 	}
@@ -178,7 +186,15 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 	if err := s.prepareTurn(ctx, opts.Skills, opts.ResponseFormat); err != nil {
 		return nil, err
 	}
-	control := s.wireTurn(ctx, opts.Emit)
+	// TS `startId: rerunContinue ? generateId() : activeStartId`: an attached
+	// or replayed turn keeps its own start.
+	s.mu.Lock()
+	startID := s.activeStartID
+	if s.rerunContinue {
+		startID = newStartID()
+	}
+	s.mu.Unlock()
+	control := s.wireTurn(ctx, opts.Emit, startID)
 	s.mu.Lock()
 	rerun := s.rerunContinue && ctx.Err() == nil
 	if rerun {
@@ -233,6 +249,10 @@ func (s *session) buildStartFrame(prompt harnessutil.PromptContent, ts harness.T
 	extra := s.opts.startSettings
 	frame.SkillOverrides = extra.skillOverrides
 	frame.MaxBudgetUSD = extra.maxBudgetUSD
+	if extra.additionalDirectories != nil {
+		dirs := append([]string{}, extra.additionalDirectories...)
+		frame.AdditionalDirectories = &dirs
+	}
 	frame.StrictMCPConfig = extra.strictMCPConfig
 	frame.QuestionTimeoutMs = extra.questionTimeoutMs
 	frame.ExcludeDynamicSections = extra.excludeDynamicSections
@@ -300,7 +320,7 @@ func (s *session) resumeData(lastSeenEventID float64) resumeStateData {
 		ClaudeSessionID:              s.lastSessionID,
 	}
 	if lastSeenEventID >= 0 {
-		data.Bridge = &bridgeCoords{Port: s.opts.bridgePort, Token: s.opts.bridgeToken, LastSeenEventID: lastSeenEventID, SandboxID: s.opts.sandboxID}
+		data.Bridge = &bridgeCoords{Port: s.opts.bridgePort, Token: s.opts.bridgeToken, LastSeenEventID: lastSeenEventID, StartID: s.activeStartID, SandboxID: s.opts.sandboxID}
 	}
 	return data
 }
@@ -413,9 +433,33 @@ func waitForProcOrTimeout(proc providerutils.SandboxProcess, d time.Duration) {
 }
 
 // wireTurn subscribes to one turn's worth of bridge events and returns the
-// control surface. Mirrors TS `wireTurn`.
-func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
-	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{}), bridgeHello: s.opts.bridgeHello, turnStartTimeout: s.opts.turnStartTimeout}
+// control surface. startID is the turn's start ("" adopts the first one an
+// event carries). Mirrors TS `wireTurn`.
+func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, startID string) *promptControl {
+	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{}), bridgeHello: s.opts.bridgeHello, turnStartTimeout: s.opts.turnStartTimeout, expectedStartID: startID}
+	s.mu.Lock()
+	s.activeStartID = startID
+	s.mu.Unlock()
+	// belongsToTurn drops late events of another (aborted) turn and every
+	// event after this turn settled. An event without a startId (an older
+	// bridge) belongs. Mirrors TS `belongsToTurn` (5a05735ed0).
+	belongsToTurn := func(f bridge.StreamPartFrame) bool {
+		pc.mu.Lock()
+		defer pc.mu.Unlock()
+		if pc.settled {
+			return false
+		}
+		if f.StartID == "" {
+			return true
+		}
+		if pc.expectedStartID == "" {
+			pc.expectedStartID = f.StartID
+			s.mu.Lock()
+			s.activeStartID = f.StartID
+			s.mu.Unlock()
+		}
+		return f.StartID == pc.expectedStartID
+	}
 	pc.checkpoint = bridge.NewCheckpointRecorder(s.opts.channel)
 	forward := func(part harness.StreamPart) {
 		pc.clearPendingStart()
@@ -462,17 +506,19 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	for _, t := range eventTypes {
 		t := t
 		pc.subs.Add(s.opts.channel.On(t, func(e bridge.Event) {
+			f, ok := e.Message.(bridge.StreamPartFrame)
+			if !ok || !belongsToTurn(f) {
+				return
+			}
 			if t == harness.PartTypeFinishStep {
 				pc.checkpoint.Record(e)
 			}
-			if f, ok := e.Message.(bridge.StreamPartFrame); ok {
-				forward(f.Part)
-			}
+			forward(f.Part)
 		}))
 	}
 	pc.subs.Add(s.opts.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
-		if !ok {
+		if !ok || !belongsToTurn(f) {
 			return
 		}
 		if fp, ok := f.Part.(*harness.FinishPart); ok {
@@ -492,7 +538,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	// then removes each later listener as soon as it is added.
 	pc.subs.Add(s.opts.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
-		if !ok {
+		if !ok || !belongsToTurn(f) {
 			return
 		}
 		forward(f.Part)
@@ -550,8 +596,11 @@ type promptControl struct {
 	// Mirrors TS `pendingStart`, `awaitingStartSend`, `startCursor`.
 	pendingStart      *StartFrame
 	awaitingStartSend bool
-	startCursor       float64
-	startTimer        *time.Timer
+	// expectedStartID is the start this turn's events must carry (TS
+	// `expectedStartId`); "" until the first tagged event when unknown.
+	expectedStartID string
+	startCursor     float64
+	startTimer      *time.Timer
 
 	once sync.Once
 	done chan struct{}
@@ -594,8 +643,8 @@ func (c *promptControl) clearPendingStartLocked() {
 	}
 }
 
-// sendStart sends the turn's start frame with a fresh StartID and arms the
-// first-event deadline. A send error settles the turn and is returned.
+// sendStart sends the turn's start frame with the turn's StartID (TS
+// `startId: expectedStartId`) and arms the first-event deadline. A send error settles the turn and is returned.
 // Mirrors TS `sendStart`.
 func (c *promptControl) sendStart(frame *StartFrame) error {
 	cursor := c.channel.LastSeenEventID()
@@ -608,7 +657,10 @@ func (c *promptControl) sendStart(frame *StartFrame) error {
 		return nil
 	}
 	c.startCursor = cursor
-	frame.StartID = newStartID()
+	if c.expectedStartID == "" {
+		c.expectedStartID = newStartID()
+	}
+	frame.StartID = c.expectedStartID
 	c.pendingStart = frame
 	if timeout := c.turnStartTimeout; timeout != 0 {
 		// Node's setTimeout runs a delay below 1 ms (negative included) after
@@ -677,11 +729,14 @@ func (c *promptControl) retryStartAfterReconnect() {
 	cursor := c.startCursor
 	c.mu.Unlock()
 	hello := c.hello()
-	if hello == nil || hello.State != "waiting" || hello.LastSeq == nil || *hello.LastSeq > cursor {
+	// TS 5a05735ed0: a bridge that drops a repeated startId always gets the
+	// pending start again; only one without that capability goes through
+	// the waiting / cursor check, and then fails.
+	if hello != nil && hello.SupportsIdempotentStart() {
+		_ = c.sendPendingStart()
 		return
 	}
-	if hello.SupportsIdempotentStart() {
-		_ = c.sendPendingStart()
+	if hello == nil || hello.State != "waiting" || hello.LastSeq == nil || *hello.LastSeq > cursor {
 		return
 	}
 	c.failStart(errors.New("claude-code bridge is waiting for a start after reconnect and does not support safe start retries.")) //nolint:staticcheck // matches TS SDK's exact error text

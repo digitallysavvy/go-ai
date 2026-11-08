@@ -1123,10 +1123,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				if err := d.joinOutstandingExecutions(); err != nil {
 					return false, false, err
 				}
-				// A built-in approval blocks the runtime, so the echoes of
-				// host results it holds back never arrive before the answer
-				// (TS 6eab0f7b11).
-				if d.awaitingEchoCount() == 0 || d.hasBuiltinPendingApproval() {
+				// A pending approval can block the runtime from handling
+				// other host tools, so their echoes are not awaited while any
+				// approval remains pending (TS 8e8033a73d; built-in only
+				// before, 6eab0f7b11).
+				if d.awaitingEchoCount() == 0 || len(d.pendingApprovalsByApprovalID) > 0 {
 					if err := d.pauseAtHostInputBoundary(fs); err != nil {
 						return false, false, err
 					}
@@ -1660,18 +1661,6 @@ func (d *turnDriver) clearAwaitingEcho(toolCallID string) {
 	d.execMu.Lock()
 	delete(d.hostToolCallIDsAwaitingEcho, toolCallID)
 	d.execMu.Unlock()
-}
-
-// hasBuiltinPendingApproval reports whether any pending approval is for a
-// built-in tool (TS `[...pendingApprovalsByApprovalId.values()].some(approval
-// => approval.kind === 'builtin')`).
-func (d *turnDriver) hasBuiltinPendingApproval() bool {
-	for _, approval := range d.pendingApprovalsByApprovalID {
-		if approval.Kind == PendingToolApprovalBuiltin {
-			return true
-		}
-	}
-	return false
 }
 
 func (d *turnDriver) awaitingEchoCount() int {
@@ -2993,6 +2982,11 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	}
 
 	d.settledHostIDs[approval.ToolCallID] = struct{}{}
+	// TS 8e8033a73d: keep the raw call, so the runtime's later echo of this
+	// result is classified as a host (client-executed) result and a pause
+	// after a resume can rebuild it.
+	rc := rawToolCall
+	d.rawToolCallsByID[approval.ToolCallID] = &rc
 	if !continuation.Approved {
 		output := executionDeniedOutput(continuation.Reason)
 		if err := d.submitToolResult(deniedSubmission(approval.ToolCallID, approval.ToolName, output, continuation.Reason)); err != nil {

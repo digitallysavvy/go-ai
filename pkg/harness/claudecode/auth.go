@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,12 +144,25 @@ func readAPIKeyHelper() string {
 	if command == "" {
 		return ""
 	}
-	out, err := exec.Command("sh", "-c", command).Output()
+	// TS 7a5a9c6c50: `sh -c` first; only when sh is not on PATH (ENOENT,
+	// e.g. a PowerShell or cmd session on Windows) the platform shell runs
+	// it (Node execSync: /bin/sh -c, or %ComSpec% /d /s /c). Any other
+	// failure, a non-zero exit included, never runs the helper twice.
+	out, err := apiKeyHelperOutput(exec.Command("sh", "-c", command))
 	if err != nil {
-		return ""
+		if !errors.Is(err, exec.ErrNotFound) {
+			return ""
+		}
+		if out, err = apiKeyHelperOutput(systemShellCommand(command)); err != nil {
+			return ""
+		}
 	}
 	return providerutils.JSTrim(string(out))
 }
+
+// apiKeyHelperOutput runs a helper command with stdin and stderr ignored
+// (TS stdio ['ignore', 'pipe', 'ignore']). A variable for tests.
+var apiKeyHelperOutput = func(cmd *exec.Cmd) ([]byte, error) { return cmd.Output() }
 
 func extractAPIKeyHelperCommand(raw []byte) string {
 	var settings struct {

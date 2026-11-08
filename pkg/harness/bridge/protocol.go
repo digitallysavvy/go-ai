@@ -57,6 +57,11 @@ type OutboundMessage interface {
 // StreamPartFrame wraps a stream part received from the bridge.
 type StreamPartFrame struct {
 	Part harness.StreamPart
+	// StartID is the frame's optional `startId`: the start a claude-code
+	// bridge event belongs to (TS claude-code outboundMessageSchema
+	// `startId: z.string().optional()`, 5a05735ed0). "" when absent or not a
+	// string. The host filters events by it and never forwards it.
+	StartID string
 }
 
 // FrameType returns the stream part discriminator.
@@ -158,7 +163,14 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 		if err != nil {
 			return nil, seq, err
 		}
-		return StreamPartFrame{Part: part}, seq, nil
+		frame := StreamPartFrame{Part: part}
+		if rawStartID, ok := fields["startId"]; ok {
+			var startID string
+			if json.Unmarshal(rawStartID, &startID) == nil {
+				frame.StartID = startID
+			}
+		}
+		return frame, seq, nil
 	}
 
 	var target OutboundMessage
@@ -242,7 +254,17 @@ var controlFrameOptionalKeys = map[string][]string{
 // tests and by tooling).
 func MarshalOutbound(msg OutboundMessage) ([]byte, error) {
 	if f, ok := msg.(StreamPartFrame); ok {
-		return harness.MarshalStreamPart(f.Part)
+		data, err := harness.MarshalStreamPart(f.Part)
+		if err != nil || f.StartID == "" {
+			return data, err
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return nil, err
+		}
+		id, _ := json.Marshal(f.StartID)
+		obj["startId"] = id
+		return json.Marshal(obj)
 	}
 	return harness.MarshalTagged(msg.FrameType(), msg)
 }

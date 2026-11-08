@@ -432,7 +432,21 @@ func TestR87carryDoesNotDuplicateAcceptedTurn(t *testing.T) {
 			turn := r87carryStartTurn(t, r87carryTurnOpts{drop: true, acceptBeforeDrop: true, finishBeforeReconnect: finished, notIdempotent: notIdempotent})
 			turn.mustFinish(t)
 			frames, accepted := turn.bridge.snapshot()
-			if starts := r87carryStarts(frames); len(starts) != 1 || accepted != 1 {
+			// TS 5a05735ed0: an idempotent bridge gets the pending start
+			// again (it drops the repeated startId); an older one is not
+			// resent the accepted start. Go reads the new socket while the
+			// reconnect handlers run, so the bridge's finish (sent on resume)
+			// can settle the turn first, and then nothing is resent.
+			starts := r87carryStarts(frames)
+			ids := map[string]bool{}
+			for _, s := range starts {
+				ids[s.StartID] = true
+			}
+			okStarts := len(starts) == 2 || len(starts) == 1
+			if notIdempotent {
+				okStarts = len(starts) == 1
+			}
+			if !okStarts || len(ids) != 1 || accepted != 1 {
 				t.Fatalf("finished=%v notIdempotent=%v: starts = %+v, accepted = %d", finished, notIdempotent, starts, accepted)
 			}
 		}

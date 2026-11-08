@@ -1241,6 +1241,10 @@ func legacyRecordSpanError(span trace.Span, err error) {
 	if err == nil {
 		return
 	}
+	if isHiddenToolError(err) {
+		span.SetStatus(codes.Error, "")
+		return
+	}
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
 }
@@ -3096,6 +3100,7 @@ func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnStart, e)
 	result := ctx
 	for _, i := range snapshotFor(e.Settings) {
@@ -3111,6 +3116,7 @@ func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Con
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepStart, e)
 	for _, i := range snapshotFor(e.Settings) {
 		callIntegration(func() { ctx = i.OnStepStart(ctx, e) })
@@ -3129,6 +3135,7 @@ func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartE
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallStartHandler); ok {
@@ -3144,6 +3151,7 @@ func FireOnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallEndHandler); ok {
@@ -3158,6 +3166,7 @@ func FireOnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnEmbedStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(embedStartHandler); ok {
@@ -3172,6 +3181,7 @@ func FireOnEmbedEnd(ctx context.Context, e EmbeddingModelCallEndEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnEmbedEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(embedEndHandler); ok {
@@ -3197,6 +3207,7 @@ func FireOnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnRerankStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(rerankStartHandler); ok {
@@ -3211,6 +3222,7 @@ func FireOnRerankEnd(ctx context.Context, e RerankingModelCallEndEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnRerankEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(rerankEndHandler); ok {
@@ -3237,6 +3249,7 @@ func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) con
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionStart, e)
 	for _, i := range snapshotFor(e.Settings) {
 		callIntegration(func() { ctx = i.OnToolExecutionStart(ctx, e) })
@@ -3250,6 +3263,7 @@ func FireOnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionEnd, e)
 	for _, i := range snapshotFor(e.Settings) {
 		callIntegration(func() { i.OnToolExecutionEnd(ctx, e) })
@@ -3272,6 +3286,7 @@ func FireOnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepEnd, e)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepFinish, e)
 	// TS mergeCallbacks(onStepEnd, onStepFinish): every integration's
@@ -3300,6 +3315,7 @@ func FireOnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnEnd, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if handler, ok := i.(endHandler); ok {
@@ -3323,6 +3339,7 @@ func FireOnError(ctx context.Context, e TelemetryErrorEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnError, e)
 	for _, i := range snapshotFor(e.Settings) {
 		callIntegration(func() { i.OnError(ctx, e) })
@@ -3335,6 +3352,7 @@ func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnAbort, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if h, ok := i.(abortHandler); ok {
@@ -3364,6 +3382,7 @@ func FireOnStepError(ctx context.Context, e TelemetryErrorEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepError, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if h, ok := i.(stepErrorHandler); ok {
@@ -3412,6 +3431,17 @@ func FireExecuteToolWithSettings(
 	}
 	// Build chain from the innermost (execute) outward.
 	fn := execute
+	if !settings.ShouldRecordInputs() {
+		// TS filterTelemetryEvent hides toolCall.input from the executeTool
+		// wrappers, while the tool itself still runs with its real input
+		// (TS execute takes no arguments). The integrations see nil args;
+		// the innermost call ignores what they pass and uses the original.
+		original := args
+		fn = func(ctx context.Context, _ map[string]interface{}) (interface{}, error) {
+			return execute(ctx, original)
+		}
+		args = nil
+	}
 	// TS wraps in registration order, so the last integration is outermost.
 	for i := 0; i < len(is); i++ {
 		fn = makeToolFn(is[i], toolName, fn)
