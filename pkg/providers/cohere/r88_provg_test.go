@@ -80,7 +80,7 @@ func r88provgCohereServer(t *testing.T, contentType, body string) *LanguageModel
 // tokens, no longer fail the response; counts are unset, tool-only
 // citations are not sources.
 func TestR88provgCohereGeneratePartialCitationsAndUsage(t *testing.T) {
-	body := `{"message":{"role":"assistant","content":[{"type":"text","text":"It is sunny."}],"citations":[` +
+	body := `{"id":"resp-1","message":{"role":"assistant","content":[{"type":"text","text":"It is sunny."}],"citations":[` +
 		`{"start":6,"end":11,"text":"sunny","sources":[{"type":"document","id":"doc:0","document":{"id":"doc:0","text":"It is sunny."}}]},` +
 		`{"start":0,"end":5,"text":"It is","sources":[{"type":"tool","id":"getWeather:0","tool_output":{"sunny":true}}],"type":"TEXT_CONTENT"}` +
 		`]},"finish_reason":"COMPLETE","usage":{"billed_units":{"input_tokens":3,"output_tokens":4}}}`
@@ -177,5 +177,29 @@ func TestR88provgCohereStreamCitationSources(t *testing.T) {
 	}
 	if errors != 1 {
 		t.Fatalf("error parts = %d, want 1 (malformed citation)", errors)
+	}
+}
+
+// TS 73400b299d: the response id is `id ?? generation_id`.
+func TestR88provgCohereResponseID(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"id":"resp-1","generation_id":"gen-1","message":{"role":"assistant"},"finish_reason":"COMPLETE"}`, "resp-1"},
+		{`{"id":"resp-1","message":{"role":"assistant"},"finish_reason":"COMPLETE"}`, "resp-1"},
+		{`{"generation_id":"gen-1","message":{"role":"assistant"},"finish_reason":"COMPLETE"}`, "gen-1"},
+		{`{"id":null,"generation_id":"gen-1","message":{"role":"assistant"},"finish_reason":"COMPLETE"}`, "gen-1"},
+	} {
+		m := r88provgCohereServer(t, "application/json", tc.body)
+		res, err := m.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.ResponseMetadata == nil || res.ResponseMetadata.ID != tc.want {
+			t.Fatalf("%s: id = %+v, want %q", tc.body, res.ResponseMetadata, tc.want)
+		}
+	}
+	// A non-string id fails the response schema.
+	m := r88provgCohereServer(t, "application/json", `{"id":1,"message":{"role":"assistant"},"finish_reason":"COMPLETE"}`)
+	if _, err := m.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err == nil {
+		t.Fatal("want Invalid JSON response for a numeric id")
 	}
 }

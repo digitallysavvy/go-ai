@@ -98,13 +98,18 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	result.RawRequest = reqBody
 	result.Warnings = append(warnings, result.Warnings...)
-	// TS: response { id: generation_id, headers } (no timestamp/model id).
+	// TS 73400b299d: response { id: id ?? generation_id, headers } (no
+	// timestamp/model id); v2 returns `id`, generation_id is the v1 field.
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
 	// TS response.body is the raw parsed JSON, not the schema-filtered value.
 	if len(httpResp.Body) > 0 {
 		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
 	}
-	result.ResponseMetadata = &types.ResponseMetadata{ID: response.GenerationID, Headers: result.ResponseHeaders}
+	responseID := response.GenerationID
+	if response.ID != nil {
+		responseID = *response.ID
+	}
+	result.ResponseMetadata = &types.ResponseMetadata{ID: responseID, Headers: result.ResponseHeaders}
 	return result, nil
 }
 
@@ -612,7 +617,8 @@ func mapCohereV2FinishReason(reason string) types.FinishReason {
 }
 
 type cohereV2Response struct {
-	GenerationID string `json:"generation_id"`
+	ID           *string `json:"id"`
+	GenerationID string  `json:"generation_id"`
 	Message      struct {
 		Role    string `json:"role"`
 		Content []struct {

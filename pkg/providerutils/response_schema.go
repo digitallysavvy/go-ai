@@ -212,6 +212,7 @@ var (
 	)
 
 	zCohereResponse = zObj(
+		fl("id", nStr),
 		fl("generation_id", nStr),
 		fl("message", zObj(
 			fl("role", zStr),
