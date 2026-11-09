@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"math"
 	"net/http"
 	"regexp"
 	"sort"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -565,7 +566,8 @@ func deepseekPromptCacheTokens(raw json.RawMessage) (hit, miss *int) {
 		return nil, nil
 	}
 	var usage deepseekUsage
-	if err := json.Unmarshal(raw, &usage); err != nil {
+	// TS z.number(): a fractional count decodes (truncated into the int).
+	if err := providerutils.UnmarshalChunk(raw, &usage); err != nil {
 		return nil, nil
 	}
 	return usage.PromptCacheHitTokens, usage.PromptCacheMissTokens
@@ -577,7 +579,9 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 	}
 
 	var usage deepseekUsage
-	_ = json.Unmarshal(raw, &usage)
+	// TS z.number(): a fractional count decodes (truncated into the int
+	// Usage fields) instead of zeroing the field.
+	_ = providerutils.UnmarshalChunk(raw, &usage)
 
 	p, c := int64(usage.PromptTokens), int64(usage.CompletionTokens)
 	t := p + c // TS core: input total + output total

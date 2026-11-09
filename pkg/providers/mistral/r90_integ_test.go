@@ -33,3 +33,12 @@ func TestR90integTranscriptionFractionalUsage(t *testing.T) {
 		t.Fatalf("ProviderUsage = %#v, want %#v", res.ProviderUsage, want)
 	}
 }
+
+// provg r90 low class: a fractional chat usage count zeroed the Go field; it
+// is truncated into the int64 Usage field now (S1).
+func TestR90integChatFractionalUsageNotZeroed(t *testing.T) {
+	u := convertMistralUsage([]byte(`{"prompt_tokens":2.5,"completion_tokens":3.5,"total_tokens":6}`))
+	if u.InputTokens == nil || *u.InputTokens != 2 || u.OutputTokens == nil || *u.OutputTokens != 3 {
+		t.Fatalf("usage = %+v, want input 2, output 3", u)
+	}
+}

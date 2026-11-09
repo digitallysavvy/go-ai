@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strconv"
+	"strings"
 	"sync/atomic"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -828,6 +829,11 @@ func openResponsesLenientUnmarshal(data []byte, v interface{}) error {
 	err := json.Unmarshal(data, v)
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {
+		// A fractional number in an integer field (TS z.number() keeps it)
+		// is truncated into the field instead of left at zero.
+		if strings.HasPrefix(typeErr.Value, "number") && providerutils.UnmarshalChunk(data, v) != nil {
+			_ = json.Unmarshal(data, v)
+		}
 		return nil
 	}
 	return err

@@ -509,7 +509,9 @@ func convertMistralUsage(raw json.RawMessage) types.Usage {
 	}
 	var usage mistralUsage
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &usage)
+		// TS z.number(): a fractional count decodes (truncated into the
+		// int Usage fields) instead of zeroing the field.
+		_ = providerutils.UnmarshalChunk(raw, &usage)
 	}
 
 	promptTokens := int64(usage.PromptTokens)

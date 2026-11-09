@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 
@@ -1322,7 +1323,9 @@ func convertBedrockConverseUsage(raw json.RawMessage) types.Usage {
 		CacheReadInputTokens  int `json:"cacheReadInputTokens"`
 		CacheWriteInputTokens int `json:"cacheWriteInputTokens"`
 	}
-	_ = json.Unmarshal(raw, &usage)
+	// TS z.number(): a fractional count decodes (truncated into the int
+	// Usage fields) instead of zeroing the field.
+	_ = providerutils.UnmarshalChunk(raw, &usage)
 
 	inputTokens := int64(usage.InputTokens)
 	outputTokens := int64(usage.OutputTokens)
