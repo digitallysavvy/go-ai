@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -87,5 +88,30 @@ func TestR89provbVideoStartStatusPollDefaults(t *testing.T) {
 	i, to := m.VideoStartStatusPollDefaults(map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 250, "pollTimeoutMs": 90000}})
 	if i != 250 || to != 90000 {
 		t.Errorf("poll options = %d, %d; want 250, 90000", i, to)
+	}
+}
+
+// The video status poll URL is built from the base URL and the request id
+// (TS getFromApi validateUrl: false). A cross-origin redirect of that poll
+// must not carry the API key (fetch drops Authorization on a cross-origin
+// redirect; net/http does the same).
+func TestR89provbVideoStatusRedirectDropsCredentials(t *testing.T) {
+	var gotAuth string
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"pending"}`))
+	}))
+	defer foreign.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, strings.Replace(foreign.URL, "127.0.0.1", "localhost", 1)+"/elsewhere", http.StatusFound)
+	}))
+	defer origin.Close()
+	op, _ := json.Marshal(xaiVideoOperation{RequestID: "r1"})
+	if _, err := NewVideoModel(New(Config{APIKey: "secret", BaseURL: origin.URL}), "grok-imagine-video").DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op}); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "" {
+		t.Fatalf("foreign hop got Authorization %q", gotAuth)
 	}
 }
