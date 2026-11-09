@@ -248,13 +248,18 @@ type GatewayProviderOptions struct {
 	// the primary answers; every other entry (and every entry for
 	// non-evaluation requests) must be a plain model ID (built with
 	// GatewayModel).
-	Models                 []GatewayModelFallback         `json:"models,omitempty"`
-	BYOK                   map[string][]map[string]any    `json:"byok,omitempty"`
-	ZeroDataRetention      *bool                          `json:"zeroDataRetention,omitempty"`
-	DisallowPromptTraining *bool                          `json:"disallowPromptTraining,omitempty"`
-	QuotaEntityID          string                         `json:"quotaEntityId,omitempty"`
-	ProviderTimeouts       *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
-	ServiceTier            string                         `json:"serviceTier,omitempty"`
+	Models                 []GatewayModelFallback      `json:"models,omitempty"`
+	BYOK                   map[string][]map[string]any `json:"byok,omitempty"`
+	ZeroDataRetention      *bool                       `json:"zeroDataRetention,omitempty"`
+	DisallowPromptTraining *bool                       `json:"disallowPromptTraining,omitempty"`
+	// Headquarters routes only to providers headquartered in these countries
+	// (ISO 3166-1 alpha-2 codes, e.g. []string{"US", "DE"}), or prefix every
+	// code with "!" to exclude countries instead (e.g. []string{"!US"}). A
+	// list can't mix the two.
+	Headquarters     []string                       `json:"headquarters,omitempty"`
+	QuotaEntityID    string                         `json:"quotaEntityId,omitempty"`
+	ProviderTimeouts *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
+	ServiceTier      string                         `json:"serviceTier,omitempty"`
 
 	// Has restricts routing to provider models that satisfy every given
 	// entry. Entries are capability tags (GatewayHasImplicitCaching,
@@ -348,6 +353,9 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	}
 	if o.DisallowPromptTraining != nil {
 		out["disallowPromptTraining"] = *o.DisallowPromptTraining
+	}
+	if len(o.Headquarters) > 0 {
+		out["headquarters"] = o.Headquarters
 	}
 	if o.QuotaEntityID != "" {
 		out["quotaEntityId"] = o.QuotaEntityID

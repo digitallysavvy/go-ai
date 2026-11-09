@@ -1,0 +1,82 @@
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// TestR90provgHeadquartersOption ports TS 44db2252f0
+// (gateway-provider-options.ts `headquarters?: string[]`): the typed option
+// reaches providerOptions.gateway.headquarters on the wire.
+func TestR90provgHeadquartersOption(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"ok","finishReason":"stop","usage":{}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hq := range [][]string{{"US", "DE"}, {"!US"}} {
+		_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
+			Prompt:          types.Prompt{Text: "hello"},
+			ProviderOptions: GatewayProviderOptions{Headquarters: hq}.ToProviderOptions(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gw, _ := body["providerOptions"].(map[string]interface{})["gateway"].(map[string]interface{})
+		got, _ := gw["headquarters"].([]interface{})
+		want := make([]interface{}, len(hq))
+		for i, c := range hq {
+			want[i] = c
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("headquarters = %#v, want %#v", gw["headquarters"], want)
+		}
+	}
+	if _, ok := (GatewayProviderOptions{}).toMap()["headquarters"]; ok {
+		t.Fatal("unset Headquarters must not be sent")
+	}
+	b, _ := json.Marshal(GatewayProviderOptions{Headquarters: []string{"US"}})
+	if string(b) != `{"headquarters":["US"]}` {
+		t.Fatalf("json = %s", b)
+	}
+}
+
+// TestR90provgModelIDs: TS 84208104a4 (Claude Fable 5.2) and 6d65092d9e
+// (Meta Muse Ember) gateway model IDs.
+func TestR90provgModelIDs(t *testing.T) {
+	want := map[GatewayLanguageModelID]string{
+		GatewayLanguageModelAnthropicClaudeFable52:      "anthropic/claude-fable-5.2",
+		GatewayLanguageModelAnthropicClaudeFable52Batch: "anthropic/claude-fable-5.2-batch",
+		GatewayLanguageModelMetaMuseEmber:               "meta/muse-ember",
+	}
+	listed := map[GatewayLanguageModelID]bool{}
+	for _, id := range GatewayLanguageModelIDs {
+		listed[id] = true
+	}
+	for id, s := range want {
+		if string(id) != s {
+			t.Errorf("%s != %s", id, s)
+		}
+		if !listed[id] {
+			t.Errorf("%s missing from GatewayLanguageModelIDs", id)
+		}
+	}
+}
