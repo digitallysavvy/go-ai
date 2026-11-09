@@ -1,7 +1,10 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -93,5 +96,36 @@ func TestR89provaEmptyRequiredStrings(t *testing.T) {
 	}
 	if _, err := prepare(map[string]interface{}{"mcpServers": []interface{}{map[string]interface{}{"type": "url", "url": "u"}}}); err == nil {
 		t.Fatal("a missing mcpServers name must fail")
+	}
+}
+
+// TestR89provaFileSizeBytesNumber: anthropicUploadFileResponseSchema reads
+// size_bytes as z.number() (TS files/anthropic-files-api.ts), so a
+// fractional size does not fail the upload; providerMetadata keeps the
+// number (an integral size stays int64 as in v0.5) and ByteSize truncates.
+func TestR89provaFileSizeBytesNumber(t *testing.T) {
+	for _, tc := range []struct {
+		size     string
+		wantMeta interface{}
+		wantSize int64
+	}{
+		{"12.5", 12.5, 12},
+		{"1024", int64(1024), 1024},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"file_1","size_bytes":` + tc.size + `}`))
+		}))
+		res, err := New(Config{APIKey: "k", BaseURL: srv.URL}).Files().UploadFile(context.Background(), types.UploadFileOptions{
+			Data: types.FileData{Type: types.FileDataTypeData, Data: []byte("x")}, MediaType: "text/plain",
+		})
+		srv.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", tc.size, err)
+		}
+		meta := res.ProviderMetadata["anthropic"].(map[string]interface{})
+		if meta["sizeBytes"] != tc.wantMeta || res.ByteSize == nil || *res.ByteSize != tc.wantSize {
+			t.Fatalf("%s: sizeBytes = %#v, ByteSize = %v", tc.size, meta["sizeBytes"], res.ByteSize)
+		}
 	}
 }
