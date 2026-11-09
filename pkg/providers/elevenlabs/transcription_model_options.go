@@ -3,6 +3,7 @@ package elevenlabs
 import (
 	"encoding/json"
 	"errors"
+	"unicode/utf16"
 
 	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -222,7 +223,8 @@ func validateTranscriptionOptions(providerOptions map[string]interface{}) error 
 				return false
 			}
 			for _, s := range list {
-				if maxLen > 0 && len([]rune(s)) > maxLen {
+				// zod string max counts UTF-16 code units (JS length).
+				if maxLen > 0 && len(utf16.Encode([]rune(s))) > maxLen {
 					return false
 				}
 			}
