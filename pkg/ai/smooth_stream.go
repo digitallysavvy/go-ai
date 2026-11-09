@@ -37,8 +37,9 @@ func (f *streamTransformFailure) Unwrap() error { return f.err }
 // SmoothStreamOptions configures SmoothStream.
 //
 // Mirrors the TypeScript SDK's smoothStream options (generate-text/smooth-stream.ts),
-// minus the browser-only Intl.Segmenter and hidden-document handling, which
-// have no Go equivalent.
+// minus Intl.Segmenter chunking (ICU word segmentation, which Go's standard
+// library does not have; pass a ChunkDetector instead) and the browser-only
+// hidden-document handling.
 type SmoothStreamOptions struct {
 	// DelayInMs is the delay between emitted chunks. nil means unset and
 	// defaults to 10ms (TS default); a non-nil pointer to 0 disables the
