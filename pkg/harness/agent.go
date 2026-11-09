@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"sort"
 
@@ -68,6 +69,11 @@ func NewAgent(settings AgentSettings) (*Agent, error) {
 	if settings.Harness == nil {
 		return nil, errors.New("HarnessAgent: `harness` is required.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	if settings.Sandbox != nil {
+		// TS HarnessAgent constructor: console.warn for the deprecated
+		// `sandbox` setting.
+		log.Println("HarnessAgent: `Sandbox` is deprecated. Supply `SandboxSession` to CreateSession() instead.")
+	}
 	if err := ValidateSandboxBootstrapSettings(settings.SandboxConfig); err != nil {
 		return nil, err
 	}
@@ -127,6 +133,20 @@ func NewAgent(settings AgentSettings) (*Agent, error) {
 		permissionMode:       permissionMode,
 		headers:              headers,
 	}, nil
+}
+
+// preparedTurnTools is the turn's tool set after PrepareCall returned
+// prepared: the harness builtins overlaid with prepared (TS
+// `{...harness.builtinTools, ...userTools}`), each named by its key.
+func preparedTurnTools(h Harness, prepared map[string]types.Tool) map[string]types.Tool {
+	merged := make(map[string]types.Tool, len(prepared))
+	for name, bt := range h.BuiltinTools() {
+		merged[name] = bt.Tool
+	}
+	for name, t := range prepared {
+		merged[name] = t
+	}
+	return withToolNames(merged)
 }
 
 // withToolNames returns tools with each entry's Name set to its map key (TS
@@ -650,7 +670,10 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 			instructionsRaw = prepared.Instructions
 		}
 		if prepared.Tools != nil {
-			tools = withToolNames(prepared.Tools)
+			// TS _prepareTurnSettings: `{...harness.builtinTools,
+			// ...preparedTools}`, so the harness builtins stay available
+			// when PrepareCall returns only user tools.
+			tools = preparedTurnTools(a.settings.Harness, prepared.Tools)
 		}
 		if prepared.ToolsContext != nil {
 			toolsContext = prepared.ToolsContext
@@ -741,7 +764,8 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// turn above.
 	responseFormat, err := resolveOutputResponseFormat(ctx, a.settings.Output)
 	if err != nil {
-		return nil, fmt.Errorf("harness: output.ResponseFormat failed: %w", err)
+		// TS awaits `output.responseFormat` and lets its error through.
+		return nil, err
 	}
 
 	turnID, active, err := session.startTrackedTurn(mode, cur)
@@ -868,7 +892,9 @@ func resolvePromptTurnInput(opts agent.AgentGenerateOptions) (Prompt, error) {
 			return Prompt{Message: &m}, nil
 		}
 	}
-	if len(opts.Messages) > 0 {
+	// TS `Array.isArray(messages)`: a non-nil empty list is a message list
+	// without a user entry.
+	if opts.Messages != nil {
 		return Prompt{}, errors.New("HarnessAgent: messages must contain at least one `role: \"user\"` entry.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return Prompt{}, errors.New("HarnessAgent: either `prompt` or `messages` is required.") //nolint:staticcheck // matches TS SDK's exact error text

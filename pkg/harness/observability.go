@@ -50,7 +50,11 @@ type resolvedDebugConfig struct {
 // settings with env-var fallbacks. HARNESS_DEBUG, HARNESS_DEBUG_LEVEL and
 // HARNESS_DEBUG_SUBSYSTEMS only fill fields the caller left unset: code is
 // always authoritative. Mirrors TS `resolveDebugConfig`.
-func resolveDebugConfig(debug *DebugConfig, getenv func(string) string) resolvedDebugConfig {
+func resolveDebugConfig(debug *DebugConfig, lookupEnv func(string) (string, bool)) resolvedDebugConfig {
+	getenv := func(key string) string {
+		v, _ := lookupEnv(key)
+		return v
+	}
 	var out resolvedDebugConfig
 	if debug != nil && debug.Enabled != nil {
 		out.Enabled = *debug.Enabled
@@ -60,9 +64,13 @@ func resolveDebugConfig(debug *DebugConfig, getenv func(string) string) resolved
 	switch {
 	case debug != nil && debug.Level != "":
 		out.Level = debug.Level
-	case DebugLevel(getenv("HARNESS_DEBUG_LEVEL")).Valid():
-		out.Level = DebugLevel(getenv("HARNESS_DEBUG_LEVEL"))
 	default:
+		// TS `env.HARNESS_DEBUG_LEVEL ?? 'debug'`: a set variable is used as
+		// given (unvalidated, "" included).
+		if level, ok := lookupEnv("HARNESS_DEBUG_LEVEL"); ok {
+			out.Level = DebugLevel(level)
+			break
+		}
 		out.Level = DebugLevelDebug
 	}
 	if debug != nil && debug.Subsystems != nil {
@@ -99,7 +107,7 @@ func formatDiagnosticForStderr(d Diagnostic) string {
 // AgentSettings.Telemetry.Integrations that implements DiagnosticConsumer.
 // Mirrors TS `buildObservability`.
 func buildObservability(settings AgentSettings) *Observability {
-	resolved := resolveDebugConfig(settings.Debug, os.Getenv)
+	resolved := resolveDebugConfig(settings.Debug, os.LookupEnv)
 	if !resolved.Enabled {
 		return nil
 	}

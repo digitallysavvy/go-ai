@@ -279,14 +279,11 @@ type genAIRequestSettings struct {
 // instruction message (TS formatSystemInstructions of a message array), else
 // the system string.
 func systemInstructionsAttr(system string, instructionMessages []types.Message) (attribute.KeyValue, bool) {
-	var parts []semConvPart
+	var parts []SemConvSystemInstruction
 	if len(instructionMessages) > 0 {
-		parts = make([]semConvPart, 0, len(instructionMessages))
-		for _, m := range instructionMessages {
-			parts = append(parts, semConvPart{"type": "text", "content": systemMessageText(m)})
-		}
+		parts = FormatSystemMessages(instructionMessages)
 	} else if system != "" {
-		parts = formatSystemInstructions(system)
+		parts = FormatSystemInstructions(system)
 	} else {
 		return attribute.KeyValue{}, false
 	}
@@ -1661,41 +1658,14 @@ func (i OpenTelemetry) endSupplementalAttrs(e TelemetryFinishEvent) []attribute.
 // the way TS onGenerateEnd does: final-step reasoning and text, then the tool
 // calls and results and the files of every step.
 func formatOutputMessagesFromFinish(e TelemetryFinishEvent) []semConvOutputMessage {
-	parts := make([]semConvPart, 0, len(e.ReasoningParts)+len(e.ToolCalls)+len(e.ToolResults)+len(e.Files)+1)
-	for _, r := range e.ReasoningParts {
-		if r.Text != "" {
-			parts = append(parts, semConvPart{"type": "reasoning", "content": r.Text})
-		}
-	}
-	if e.Text != "" {
-		parts = append(parts, semConvPart{"type": "text", "content": e.Text})
-	}
-	for _, tc := range e.ToolCalls {
-		parts = append(parts, semConvPart{
-			"type":      "tool_call",
-			"id":        nullableString(tc.ID),
-			"name":      tc.ToolName,
-			"arguments": tc.Arguments,
-		})
-	}
-	for _, tr := range e.ToolResults {
-		if tr.Error != nil || tr.Preliminary {
-			continue
-		}
-		parts = append(parts, semConvPart{
-			"type":     "tool_call_response",
-			"id":       nullableString(tr.ToolCallID),
-			"response": tr.Result,
-		})
-	}
-	for _, f := range e.Files {
-		parts = append(parts, generatedFileToSemConv(f))
-	}
-	return []semConvOutputMessage{{
-		Role:         "assistant",
-		Parts:        parts,
-		FinishReason: mapFinishReasonSemConv(e.FinishReason),
-	}}
+	return FormatOutputMessages(FormatOutputMessagesOptions{
+		Text:         e.Text,
+		Reasoning:    e.ReasoningParts,
+		ToolCalls:    e.ToolCalls,
+		ToolResults:  e.ToolResults,
+		Files:        e.Files,
+		FinishReason: e.FinishReason,
+	})
 }
 
 // onAudioOperationEnd sets the final attributes for "ai.generateSpeech"/
