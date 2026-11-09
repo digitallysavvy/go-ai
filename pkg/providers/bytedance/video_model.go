@@ -449,6 +449,26 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}, nil
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// ByteDanceVideoModel has no doGenerate), so ai.GenerateVideo drives it
+// through the core start/status flow. It returns the deprecated
+// pollIntervalMs / pollTimeoutMs provider options (0 when unset: the core
+// 5000 / 600000 defaults): TS warns that they are ignored, Go keeps honoring
+// them (v0.5.2 contract) and still reports the deprecation warning.
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, err := extractProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
+}
+
 // buildRequestBody builds the API request body from call options
 func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, error) {
 	body, _, err := m.buildRequestBodyWithWarnings(opts, provOpts)

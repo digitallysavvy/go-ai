@@ -229,13 +229,17 @@ func runVideoCall(ctx context.Context, opts GenerateVideoOptions, normalized *no
 		Headers:         videoHeadersWithUserAgent(opts.Headers),
 	}
 
-	// Determine whether to use the start/status flow: hasStartStatus &&
-	// (Poll != nil || Webhook != nil). Unlike TS, DoGenerate is always
-	// present on VideoModelV3, so there is no "model has no doGenerate" case.
+	// Determine whether to use the start/status flow (TS useStartStatus:
+	// hasStartStatus && (poll != null || webhook != null || model.doGenerate
+	// == null)). VideoModelV3 always has DoGenerate, so a model whose TS twin
+	// implements only doStart/doStatus marks itself with
+	// videoStartStatusOnlyModel; its DoGenerate is a convenience shim that
+	// GenerateVideo does not use.
 	starter, hasStarter := opts.Model.(provider.VideoModelStarter)
 	checker, hasChecker := opts.Model.(provider.VideoModelStatusChecker)
 	hasStartStatus := hasStarter && hasChecker
-	useStartStatus := hasStartStatus && (opts.Poll != nil || opts.Webhook != nil)
+	startStatusOnly, isStartStatusOnly := opts.Model.(videoStartStatusOnlyModel)
+	useStartStatus := hasStartStatus && (opts.Poll != nil || opts.Webhook != nil || isStartStatusOnly)
 
 	if (opts.Poll != nil || opts.Webhook != nil) && !hasStartStatus {
 		logModelWarnings([]types.Warning{{
@@ -245,7 +249,7 @@ func runVideoCall(ctx context.Context, opts GenerateVideoOptions, normalized *no
 	}
 
 	if useStartStatus {
-		statusResult, err := executeStartStatusFlow(ctx, startStatusFlowOptions{
+		flow := startStatusFlowOptions{
 			model:      opts.Model,
 			starter:    starter,
 			checker:    checker,
@@ -253,7 +257,11 @@ func runVideoCall(ctx context.Context, opts GenerateVideoOptions, normalized *no
 			poll:       opts.Poll,
 			webhook:    opts.Webhook,
 			maxRetries: opts.MaxRetries,
-		})
+		}
+		if isStartStatusOnly {
+			flow.defaultIntervalMs, flow.defaultTimeoutMs = startStatusOnly.VideoStartStatusPollDefaults(opts.ProviderOptions)
+		}
+		statusResult, err := executeStartStatusFlow(ctx, flow)
 		if err != nil {
 			return nil, err
 		}
@@ -301,6 +309,22 @@ type startStatusFlowOptions struct {
 	poll       *VideoPollOptions
 	webhook    provider.VideoWebhookFactory
 	maxRetries *int
+	// defaultIntervalMs / defaultTimeoutMs replace the core defaults (5000 /
+	// 600000) when positive and Poll leaves the value unset.
+	defaultIntervalMs int
+	defaultTimeoutMs  int
+}
+
+// videoStartStatusOnlyModel is implemented by a video model whose TS twin has
+// no doGenerate (only doStart/doStatus), such as KlingAI, fal, Replicate and
+// ByteDance. TS generateVideo always drives such a model through the core
+// start/status flow: one idempotency key per start, doStatus retried on its
+// own (never a second billable start), and the core poll defaults and error
+// texts. VideoStartStatusPollDefaults returns the poll interval and timeout
+// in milliseconds that the model's v0.5.2 provider options set (0 for the
+// core default); GenerateVideoOptions.Poll values win over them.
+type videoStartStatusOnlyModel interface {
+	VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int)
 }
 
 // videoPollingTimeoutError is returned when a polling loop exceeds its
@@ -365,10 +389,14 @@ func executeStartStatusFlow(ctx context.Context, opts startStatusFlowOptions) (*
 	intervalMs := 5000
 	if opts.poll != nil && opts.poll.IntervalMs != nil {
 		intervalMs = *opts.poll.IntervalMs
+	} else if opts.defaultIntervalMs > 0 {
+		intervalMs = opts.defaultIntervalMs
 	}
 	timeoutMs := 600000
 	if opts.poll != nil && opts.poll.TimeoutMs != nil {
 		timeoutMs = *opts.poll.TimeoutMs
+	} else if opts.defaultTimeoutMs > 0 {
+		timeoutMs = opts.defaultTimeoutMs
 	}
 	delayFn := defaultVideoPollDelay
 	if opts.poll != nil && opts.poll.Delay != nil {

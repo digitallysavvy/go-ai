@@ -994,6 +994,25 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 	return warnings
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// KlingAIVideoModel has no doGenerate), so ai.GenerateVideo drives it through
+// the core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, err := extractProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
+}
+
 // getPollOptions extracts polling options from provider options
 func (m *VideoModel) getPollOptions(provOpts *ProviderOptions) polling.PollOptions {
 	opts := polling.DefaultPollOptions()
