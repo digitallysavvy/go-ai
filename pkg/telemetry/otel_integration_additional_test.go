@@ -923,7 +923,7 @@ func TestLegacyOpenTelemetryStreamFirstChunkFinishEvents(t *testing.T) {
 	if v, ok := attrValue(stepSpan, "ai.response.msToFinish"); !ok || v.(int64) != 500 {
 		t.Errorf("ai.response.msToFinish = %v (ok=%v), want 500", v, ok)
 	}
-	if v, ok := attrValue(stepSpan, "ai.response.avgOutputTokensPerSecond"); !ok || v.(float64) != 20 {
+	if v, ok := attrValue(stepSpan, "ai.response.avgOutputTokensPerSecond"); !ok || v.(int64) != 20 {
 		t.Errorf("ai.response.avgOutputTokensPerSecond = %v (ok=%v), want 20", v, ok)
 	}
 	events := stepSpan.Events()

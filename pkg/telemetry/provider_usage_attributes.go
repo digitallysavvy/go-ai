@@ -143,11 +143,11 @@ func getProviderUsageAttributes(usage map[string]interface{}, prefix string) []a
 			}
 			name := prefix + "." + strings.Join(path, ".")
 			if i, seen := index[name]; seen {
-				attrs[i] = attribute.Float64(name, n)
+				attrs[i] = jsNumberAttr(name, n)
 				return
 			}
 			index[name] = len(attrs)
-			attrs = append(attrs, attribute.Float64(name, n))
+			attrs = append(attrs, jsNumberAttr(name, n))
 			return
 		}
 		keys, get, ok := usageEntries(v)

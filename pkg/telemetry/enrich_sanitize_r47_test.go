@@ -40,7 +40,8 @@ func TestEnrichSpanValuesSanitizedLikeTS(t *testing.T) {
 	if v := got["strs"]; v.Type() != attribute.STRINGSLICE || len(v.AsStringSlice()) != 2 {
 		t.Errorf("strs = %v", v.String())
 	}
-	if v := got["nums"]; v.Type() != attribute.FLOAT64SLICE || len(v.AsFloat64Slice()) != 2 {
+	// OpenTelemetry JS exports integral numbers as intValue (r90).
+	if v := got["nums"]; v.Type() != attribute.INT64SLICE || len(v.AsInt64Slice()) != 2 {
 		t.Errorf("nums = %v", v.String())
 	}
 	if v := got["i32"]; v.Type() != attribute.INT64 || v.AsInt64() != 7 {

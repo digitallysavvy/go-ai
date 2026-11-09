@@ -3,11 +3,13 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type r90carryMeta struct {
@@ -213,4 +215,40 @@ func TestR90carryRedactsOrderedToolDefinitions(t *testing.T) {
 	if r90carryJSON(t, def) != `{"type":"provider","name":"docs","id":"openai.mcp","args":{"authorization":"ordered-secret"}}` {
 		t.Error("original mutated")
 	}
+}
+
+// OpenTelemetry JS exports a number attribute as intValue when
+// Number.isInteger(value) (@opentelemetry/otlp-transformer toAnyValue), so
+// temperature 1, provider usage counts and integral rates are int64
+// attributes; other values stay float64.
+func TestR90carryIntegralNumberAttributesAreInts(t *testing.T) {
+	if kv, ok := finiteFloat64Attr("gen_ai.request.temperature", 1); !ok || kv.Value.Type() != attribute.INT64 || kv.Value.AsInt64() != 1 {
+		t.Errorf("temperature 1 = %v", kv.Value.Emit())
+	}
+	if kv, ok := finiteFloat64Attr("gen_ai.request.temperature", 0.7); !ok || kv.Value.Type() != attribute.FLOAT64 {
+		t.Errorf("temperature 0.7 = %v", kv.Value.Emit())
+	}
+	if _, ok := finiteFloat64Attr("x", math.NaN()); ok {
+		t.Error("NaN kept")
+	}
+	attrs := getProviderUsageAttributes(map[string]interface{}{"characters": 11.0, "seconds": 1.5}, "gen_ai.usage")
+	got := map[string]attribute.Value{}
+	for _, kv := range attrs {
+		got[string(kv.Key)] = kv.Value
+	}
+	if v := got["gen_ai.usage.characters"]; v.Type() != attribute.INT64 || v.AsInt64() != 11 {
+		t.Errorf("characters = %v", v.Emit())
+	}
+	if v := got["gen_ai.usage.seconds"]; v.Type() != attribute.FLOAT64 || v.AsFloat64() != 1.5 {
+		t.Errorf("seconds = %v", v.Emit())
+	}
+}
+
+// r90carryNumber reads a number attribute as float64 whatever its OTel type
+// (integral values are int64 attributes since r90), other values as given.
+func r90carryNumber(v attribute.Value) interface{} {
+	if v.Type() == attribute.INT64 {
+		return float64(v.AsInt64())
+	}
+	return v.AsInterface()
 }

@@ -23,7 +23,7 @@ import (
 func r87bcarryUsageKV(attrs []attribute.KeyValue) [][2]interface{} {
 	out := make([][2]interface{}, 0, len(attrs))
 	for _, a := range attrs {
-		out = append(out, [2]interface{}{string(a.Key), a.Value.AsInterface()})
+		out = append(out, [2]interface{}{string(a.Key), r90carryNumber(a.Value)})
 	}
 	return out
 }
@@ -134,14 +134,14 @@ func TestR87bcarryRuntimeContextSanitizedLaterValueRemoves(t *testing.T) {
 	t.Parallel()
 	// Sorted map order equals the TS JSON order here ("a" < "a.b" < "c").
 	ctx := map[string]interface{}{"a": map[string]interface{}{"b": 1}, "a.b": math.NaN(), "c": 3}
-	want := [][2]interface{}{{"ai.settings.context.c", int64(3)}}
+	want := [][2]interface{}{{"ai.settings.context.c", 3.0}}
 	for i := 0; i < 50; i++ {
 		if got := r87bcarryUsageKV(runtimeContextAttributes(ctx)); !reflect.DeepEqual(got, want) {
 			t.Fatalf("run %d: attrs = %v, want %v (TS output)", i, got, want)
 		}
 	}
 	ctx = map[string]interface{}{"a": map[string]interface{}{"b": 1}, "a.b": nil}
-	want = [][2]interface{}{{"ai.settings.context.a.b", int64(1)}}
+	want = [][2]interface{}{{"ai.settings.context.a.b", 1.0}}
 	if got := r87bcarryUsageKV(runtimeContextAttributes(ctx)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("null entry: attrs = %v, want %v (TS skips null)", got, want)
 	}
