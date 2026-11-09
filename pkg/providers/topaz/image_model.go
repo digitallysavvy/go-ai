@@ -253,16 +253,18 @@ func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpt
 
 	width, height := parseSize(opts.Size)
 	if topazOpts != nil && topazOpts.OutputWidth != nil {
-		width = topazOpts.OutputWidth
+		v := strconv.Itoa(*topazOpts.OutputWidth)
+		width = &v
 	}
 	if topazOpts != nil && topazOpts.OutputHeight != nil {
-		height = topazOpts.OutputHeight
+		v := strconv.Itoa(*topazOpts.OutputHeight)
+		height = &v
 	}
 
-	if err := writeIntField(writer, "output_width", width); err != nil {
+	if err := writeStringField(writer, "output_width", width); err != nil {
 		return nil, "", err
 	}
-	if err := writeIntField(writer, "output_height", height); err != nil {
+	if err := writeStringField(writer, "output_height", height); err != nil {
 		return nil, "", err
 	}
 
@@ -340,16 +342,26 @@ func writeFloatField(w *multipart.Writer, key string, value *float64) error {
 	return w.WriteField(key, providerutils.JSNumberString(*value))
 }
 
-// parseSize parses a "{width}x{height}" call option.
-func parseSize(size string) (width, height *int) {
+// parseSize is TS `size.split('x').map(Number)` sent with String(): the
+// first part is the width and the second the height (absent without an
+// "x"), each as JS Number text ("" is 0, non-numeric text is NaN).
+func parseSize(size string) (width, height *string) {
 	if size == "" {
 		return nil, nil
 	}
-	var w, h int
-	if _, err := fmt.Sscanf(size, "%dx%d", &w, &h); err != nil {
-		return nil, nil
+	parts := strings.Split(size, "x")
+	jsNumberText := func(s string) *string {
+		text := "NaN"
+		if f, ok := providerutils.JSNumber(s); ok {
+			text = providerutils.JSNumberString(f)
+		}
+		return &text
 	}
-	return &w, &h
+	width = jsNumberText(parts[0])
+	if len(parts) > 1 {
+		height = jsNumberText(parts[1])
+	}
+	return width, height
 }
 
 // imageMimeType derives the result's MIME type from the status response's
