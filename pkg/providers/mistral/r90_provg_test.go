@@ -1,6 +1,7 @@
 package mistral
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -234,5 +235,19 @@ func TestR90provgSpeechRequestBodyText(t *testing.T) {
 	want := `{"model":"voxtral-mini-tts-latest","input":"a < b & c","voice_id":"v1","response_format":"mp3","stream":false}`
 	if res.Request == nil || res.Request.Body != want {
 		t.Fatalf("request body = %v, want %s", res.Request, want)
+	}
+}
+
+// TestR90provgTranscriptionTemperatureText: TS appendFormValue sends
+// String(temperature), JS number text (1e-7, not 0.0000001).
+func TestR90provgTranscriptionTemperatureText(t *testing.T) {
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), "voxtral-mini-latest")
+	body, _, err := m.buildMultipartBody(&provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav", ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{"temperature": 1e-7}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(body)
+	if !bytes.Contains(b, []byte("\r\n\r\n1e-7\r\n")) {
+		t.Fatalf("temperature field not 1e-7: %q", b)
 	}
 }

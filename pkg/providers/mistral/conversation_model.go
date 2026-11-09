@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	"context"
@@ -591,7 +590,7 @@ func (s *conversationStream) handle(data string) {
 		// z.number(): content_index may be fractional (`${id}-${index}` in JS).
 		idx := "0"
 		if ev.ContentIndex != nil {
-			idx = strconv.FormatFloat(*ev.ContentIndex, 'f', -1, 64)
+			idx = providerutils.JSNumberString(*ev.ContentIndex)
 		}
 		id := ev.ID + "-" + idx
 		for _, chunk := range parseConversationContent(ev.Content) {

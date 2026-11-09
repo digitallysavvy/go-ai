@@ -438,7 +438,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 			}
 		}
 		if mistralOpts.Temperature != nil {
-			if err := writer.WriteField("temperature", strconv.FormatFloat(*mistralOpts.Temperature, 'f', -1, 64)); err != nil {
+			if err := writer.WriteField("temperature", providerutils.JSNumberString(*mistralOpts.Temperature)); err != nil {
 				return nil, "", err
 			}
 		}
