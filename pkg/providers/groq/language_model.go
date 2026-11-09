@@ -482,22 +482,12 @@ func (m *LanguageModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
-	if parsed := parseGroqProviderError(err); parsed != nil {
-		return parsed
-	}
-	statusCode := 0
-	message := err.Error()
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		statusCode = statusErr.StatusCode
-		// TS createJsonErrorResponseHandler: an empty body, or one that does
-		// not parse (secureJsonParse) or match the error schema, gives the
-		// response status text.
-		if text := http.StatusText(statusCode); text != "" {
-			message = text
-		}
+		perr, _ := groqHTTPError(statusErr, err)
+		return perr
 	}
-	return providererrors.NewProviderError("groq", statusCode, "", message, err)
+	return providererrors.NewProviderError("groq", 0, "", err.Error(), err)
 }
 
 type groqResponse struct {

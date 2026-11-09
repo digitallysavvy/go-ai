@@ -3,12 +3,14 @@ package groq
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // groqErrorPayload mirrors TS groqErrorDataSchema:
@@ -30,15 +32,43 @@ func parseGroqProviderError(err error) error {
 	if !errors.As(err, &statusErr) {
 		return nil
 	}
-	var payload groqErrorPayload
+	if perr, matched := groqHTTPError(statusErr, err); matched {
+		return perr
+	}
+	return nil
+}
+
+// groqHTTPError applies TS groqFailedResponseHandler
+// (createJsonErrorResponseHandler) to a failed response: the APICallError
+// keeps the status, response headers and decoded body in both branches; a
+// body matching groqErrorDataSchema gives error.message, error.type as the
+// code and the parsed error as data, any other body (empty, not JSON, or
+// another shape) the response status text and no data. matched reports the
+// schema branch.
+func groqHTTPError(statusErr *internalhttp.HTTPStatusError, cause error) (perr *providererrors.ProviderError, matched bool) {
 	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
 	// invalid UTF-8 replaced).
+	body := textdecode.UTF8(statusErr.Body)
+	var payload groqErrorPayload
 	// The TS schema requires both as strings; "" is a valid message
 	// (errorToMessage: data.error.message).
-	if jsonErr := securejson.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &payload); jsonErr != nil || payload.Error.Message == nil || payload.Error.Type == nil {
-		return nil
+	matched = securejson.Unmarshal([]byte(body), &payload) == nil && payload.Error.Message != nil && payload.Error.Type != nil
+	if matched {
+		perr = providererrors.NewProviderErrorFromResponse("groq", statusErr.StatusCode, *payload.Error.Type, *payload.Error.Message, cause)
+		// zod strips the keys the schema does not declare.
+		perr.Data = map[string]interface{}{"error": map[string]interface{}{
+			"message": *payload.Error.Message, "type": *payload.Error.Type,
+		}}
+	} else {
+		message := http.StatusText(statusErr.StatusCode)
+		if message == "" && cause != nil {
+			message = cause.Error()
+		}
+		perr = providererrors.NewProviderErrorFromResponse("groq", statusErr.StatusCode, "", message, cause)
 	}
-	return providererrors.NewProviderError("groq", statusErr.StatusCode, *payload.Error.Type, *payload.Error.Message, err)
+	perr.ResponseBody = body
+	perr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
+	return perr, matched
 }
 
 // groqStreamErrorMetadata returns the inferred (statusCode, isRetryable)
