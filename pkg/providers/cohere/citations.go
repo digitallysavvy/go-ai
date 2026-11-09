@@ -17,6 +17,15 @@ import (
 // kept, other unknown source keys are stripped) and citationType, each only
 // when non-null. raw is a citation already checked against the TS schema.
 func mapCohereCitationToSource(raw json.RawMessage) *types.SourceContent {
+	return mapCohereCitationToSourceID(raw, nil)
+}
+
+// mapCohereCitationToSourceID is mapCohereCitationToSource with the source id
+// generator (TS config.generateId; nil uses the default generator).
+func mapCohereCitationToSourceID(raw json.RawMessage, generateID func() string) *types.SourceContent {
+	if generateID == nil {
+		generateID = streaming.GenerateID
+	}
 	parsed, ok := jsonorder.Parse(raw)
 	if !ok {
 		return nil
@@ -70,7 +79,7 @@ func mapCohereCitationToSource(raw json.RawMessage) *types.SourceContent {
 	metaJSON := json.RawMessage(jsonorder.Stringify(outer))
 	return &types.SourceContent{
 		SourceType:       "document",
-		ID:               streaming.GenerateID(),
+		ID:               generateID(),
 		MediaType:        "text/plain",
 		Title:            title,
 		ProviderMetadata: metaJSON,

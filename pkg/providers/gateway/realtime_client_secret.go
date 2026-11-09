@@ -88,17 +88,25 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, p.gatewayAPIErrorWithAuthMethod(response, authMethod)
 	}
+	// TS gatewayClientSecretResponseSchema: token is z.string() (an empty
+	// string passes) and expiresAt z.number().nullish() (read as float64 so
+	// a fractional value parses; truncated into the v0.5.2 *int64, S1).
 	var parsed struct {
-		Token     string `json:"token"`
-		ExpiresAt *int64 `json:"expiresAt"`
+		Token     *string  `json:"token"`
+		ExpiresAt *float64 `json:"expiresAt"`
 	}
-	if err := json.Unmarshal([]byte(textdecode.UTF8(response.Body)), &parsed); err != nil || parsed.Token == "" {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(response.Body)), &parsed); err != nil || parsed.Token == nil {
 		if err == nil {
 			err = fmt.Errorf("missing token")
 		}
 		return nil, p.gatewayUnknownError(fmt.Errorf("invalid realtime client secret response: %w", err))
 	}
-	return &RealtimeClientSecret{Token: parsed.Token, ExpiresAt: parsed.ExpiresAt}, nil
+	secret := &RealtimeClientSecret{Token: *parsed.Token}
+	if parsed.ExpiresAt != nil {
+		expiresAt := int64(*parsed.ExpiresAt)
+		secret.ExpiresAt = &expiresAt
+	}
+	return secret, nil
 }
 
 func gatewayOriginURL(baseURL string, path string) string {

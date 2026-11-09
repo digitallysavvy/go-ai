@@ -106,7 +106,9 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) (m
 		body["image"] = encodedImage
 	}
 
-	if len(opts.FrameImages) > 0 {
+	// TS `frameImages && ...` / `inputReferences && ...`: a present empty
+	// list is sent as [].
+	if opts.FrameImages != nil {
 		frames := make([]map[string]interface{}, 0, len(opts.FrameImages))
 		for _, frame := range opts.FrameImages {
 			encodedImage, err := m.encodeVideoFile(&frame.Image)
@@ -121,7 +123,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) (m
 		body["frameImages"] = frames
 	}
 
-	if len(opts.InputReferences) > 0 {
+	if opts.InputReferences != nil {
 		refs := make([]interface{}, 0, len(opts.InputReferences))
 		for i := range opts.InputReferences {
 			encoded, err := m.encodeVideoFile(&opts.InputReferences[i])

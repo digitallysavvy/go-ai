@@ -222,7 +222,7 @@ func validateGatewayTextBatchRequests(requests []provider.BatchV4Request) (strin
 	for _, req := range requests {
 		if req.Text.ModelID != modelID {
 			return "", providererrors.NewArgumentError("requests", fmt.Sprintf(
-				"The AI Gateway Batch API requires all requests in a batch to use the same model. Found %q and %q.",
+				"The AI Gateway Batch API requires all requests in a batch to use the same model. Found \"%s\" and \"%s\".",
 				modelID, req.Text.ModelID,
 			), nil)
 		}
@@ -233,7 +233,7 @@ func validateGatewayTextBatchRequests(requests []provider.BatchV4Request) (strin
 func unsupportedGatewayBatchRequestType(requestType provider.BatchRequestType) error {
 	return &providererrors.UnsupportedFunctionalityError{
 		Functionality: fmt.Sprintf("batch request type: %s", requestType),
-		Message:       fmt.Sprintf("The AI Gateway Batch API does not support batch requests with type %q.", requestType),
+		Message:       fmt.Sprintf("The AI Gateway Batch API does not support batch requests with type \"%s\".", requestType),
 	}
 }
 

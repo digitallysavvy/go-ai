@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"reflect"
 
@@ -519,16 +520,24 @@ func parseEmbeddingProviderOptionsRaw(opts *provider.EmbedModelOptions) (GoogleE
 func parseEmbeddingOptionsMap(raw map[string]interface{}) (GoogleEmbeddingProviderOptions, error) {
 	var opts GoogleEmbeddingProviderOptions
 	if v, ok := raw["outputDimensionality"]; ok {
-		switch n := v.(type) {
-		case int:
-			opts.OutputDimensionality = &n
-			opts.outputDimensionality = n
-		case int64:
-			i := int(n)
+		// z.number(): every Go integer kind, or a finite float (sent as is).
+		rv := reflect.ValueOf(v)
+		switch {
+		case v == nil:
+			return opts, fmt.Errorf("google embedding outputDimensionality must be a number")
+		case rv.Kind() >= reflect.Int && rv.Kind() <= reflect.Int64:
+			i := int(rv.Int())
 			opts.OutputDimensionality = &i
-			opts.outputDimensionality = n
-		case float64:
-			opts.outputDimensionality = n
+			opts.outputDimensionality = v
+		case rv.Kind() >= reflect.Uint && rv.Kind() <= reflect.Uint64:
+			i := int(rv.Uint())
+			opts.OutputDimensionality = &i
+			opts.outputDimensionality = v
+		case rv.Kind() == reflect.Float32 || rv.Kind() == reflect.Float64:
+			if f := rv.Float(); math.IsNaN(f) || math.IsInf(f, 0) {
+				return opts, fmt.Errorf("google embedding outputDimensionality must be a number")
+			}
+			opts.outputDimensionality = v
 		default:
 			return opts, fmt.Errorf("google embedding outputDimensionality must be a number")
 		}

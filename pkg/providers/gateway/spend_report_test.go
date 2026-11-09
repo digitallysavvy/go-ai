@@ -9,18 +9,8 @@ import (
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
-func TestGetSpendReportValidatesRequiredFields(t *testing.T) {
-	p, err := New(Config{APIKey: "k", BaseURL: "https://example.com/v4/ai"})
-	if err != nil {
-		t.Fatalf("New error = %v", err)
-	}
-	if _, err := p.GetSpendReport(context.Background(), SpendReportParams{EndDate: "2026-05-01"}); err == nil || err.Error() != "start date is required" {
-		t.Fatalf("expected start date error, got %v", err)
-	}
-	if _, err := p.GetSpendReport(context.Background(), SpendReportParams{StartDate: "2026-05-01"}); err == nil || err.Error() != "end date is required" {
-		t.Fatalf("expected end date error, got %v", err)
-	}
-}
+// TS sends empty dates to the API (no client-side check): see
+// TestR90provgSpendReportFractionalAndEmptyDates.
 
 func TestGetSpendReportBuildsQueryAndMapsSnakeCase(t *testing.T) {
 	var seenPath string

@@ -44,6 +44,10 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// GenerateID generates the ids of the document sources made from chat
+	// citations (TS generateId setting). Nil uses the default generator.
+	GenerateID func() string `json:"-"`
 }
 
 // New creates a new Cohere provider with the given configuration

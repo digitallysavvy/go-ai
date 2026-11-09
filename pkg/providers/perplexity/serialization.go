@@ -9,6 +9,7 @@ import (
 func init() {
 	provider.RegisterModelDeserializer("perplexity", deserializeModel)
 	provider.RegisterEmbeddingModelDeserializer("perplexity", deserializeEmbeddingModel)
+	provider.RegisterEmbeddingModelDeserializer("perplexity.embedding", deserializeEmbeddingModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

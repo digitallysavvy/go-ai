@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
@@ -248,13 +249,18 @@ type GatewayProviderOptions struct {
 	// the primary answers; every other entry (and every entry for
 	// non-evaluation requests) must be a plain model ID (built with
 	// GatewayModel).
-	Models                 []GatewayModelFallback         `json:"models,omitempty"`
-	BYOK                   map[string][]map[string]any    `json:"byok,omitempty"`
-	ZeroDataRetention      *bool                          `json:"zeroDataRetention,omitempty"`
-	DisallowPromptTraining *bool                          `json:"disallowPromptTraining,omitempty"`
-	QuotaEntityID          string                         `json:"quotaEntityId,omitempty"`
-	ProviderTimeouts       *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
-	ServiceTier            string                         `json:"serviceTier,omitempty"`
+	Models                 []GatewayModelFallback      `json:"models,omitempty"`
+	BYOK                   map[string][]map[string]any `json:"byok,omitempty"`
+	ZeroDataRetention      *bool                       `json:"zeroDataRetention,omitempty"`
+	DisallowPromptTraining *bool                       `json:"disallowPromptTraining,omitempty"`
+	// Headquarters routes only to providers headquartered in these countries
+	// (ISO 3166-1 alpha-2 codes, e.g. []string{"US", "DE"}), or prefix every
+	// code with "!" to exclude countries instead (e.g. []string{"!US"}). A
+	// list can't mix the two.
+	Headquarters     []string                       `json:"headquarters,omitempty"`
+	QuotaEntityID    string                         `json:"quotaEntityId,omitempty"`
+	ProviderTimeouts *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
+	ServiceTier      string                         `json:"serviceTier,omitempty"`
 
 	// Has restricts routing to provider models that satisfy every given
 	// entry. Entries are capability tags (GatewayHasImplicitCaching,
@@ -349,6 +355,9 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	if o.DisallowPromptTraining != nil {
 		out["disallowPromptTraining"] = *o.DisallowPromptTraining
 	}
+	if len(o.Headquarters) > 0 {
+		out["headquarters"] = o.Headquarters
+	}
 	if o.QuotaEntityID != "" {
 		out["quotaEntityId"] = o.QuotaEntityID
 	}
@@ -419,7 +428,9 @@ type modelMetadataWire struct {
 	Description   *string                `json:"description"`
 	Pricing       *modelPricingWire      `json:"pricing"`
 	Specification modelSpecificationWire `json:"specification"`
-	ModelType     string                 `json:"modelType"`
+	// ModelType is a pointer: TS keeps only a null/absent or known
+	// modelType, so an empty string is filtered out like any unknown type.
+	ModelType *string `json:"modelType"`
 }
 
 type modelPricingWire struct {
@@ -698,11 +709,13 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 	}
 	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
 	for _, model := range wire.Models {
-		if model.ModelType != "" {
-			if _, ok := knownGatewayModelTypes[model.ModelType]; !ok {
+		modelType := ""
+		if model.ModelType != nil {
+			if _, ok := knownGatewayModelTypes[*model.ModelType]; !ok {
 				// TS parity: unknown modelType entries are filtered out instead of failing parsing.
 				continue
 			}
+			modelType = *model.ModelType
 		}
 		var pricing *ModelPricing
 		if model.Pricing != nil {
@@ -723,7 +736,7 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 				Provider:             model.Specification.Provider,
 				ModelID:              model.Specification.ModelID,
 			},
-			ModelType: model.ModelType,
+			ModelType: modelType,
 		})
 	}
 
@@ -865,6 +878,11 @@ func gatewayErrorMessage(body []byte, statusCode int) string {
 	}
 	if str, ok := value.(string); ok {
 		return str
+	}
+	// TS JSON.stringify of the parsed body: JS key order, HTML characters
+	// left unescaped.
+	if ordered, ok := jsonorder.Parse(body); ok {
+		return jsonorder.Stringify(ordered)
 	}
 	serialized, err := json.Marshal(value)
 	if err != nil {

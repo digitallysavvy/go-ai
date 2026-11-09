@@ -60,7 +60,9 @@ const (
 	GatewayLanguageModelAnthropicClaudeFable5            GatewayLanguageModelID = "anthropic/claude-fable-5"
 	GatewayLanguageModelAnthropicClaudeFable5Batch       GatewayLanguageModelID = "anthropic/claude-fable-5-batch"
 	GatewayLanguageModelAnthropicClaudeFable51           GatewayLanguageModelID = "anthropic/claude-fable-5.1"
+	GatewayLanguageModelAnthropicClaudeFable52           GatewayLanguageModelID = "anthropic/claude-fable-5.2"
 	GatewayLanguageModelAnthropicClaudeFable51Batch      GatewayLanguageModelID = "anthropic/claude-fable-5.1-batch"
+	GatewayLanguageModelAnthropicClaudeFable52Batch      GatewayLanguageModelID = "anthropic/claude-fable-5.2-batch"
 	GatewayLanguageModelAnthropicClaudeHaiku45           GatewayLanguageModelID = "anthropic/claude-haiku-4.5"
 	GatewayLanguageModelAnthropicClaudeHaiku45Batch      GatewayLanguageModelID = "anthropic/claude-haiku-4.5-batch"
 	GatewayLanguageModelAnthropicClaudeHaiku55           GatewayLanguageModelID = "anthropic/claude-haiku-5.5"
@@ -157,6 +159,7 @@ const (
 	GatewayLanguageModelMetaLlama3370b                   GatewayLanguageModelID = "meta/llama-3.3-70b"
 	GatewayLanguageModelMetaLlama4Maverick               GatewayLanguageModelID = "meta/llama-4-maverick"
 	GatewayLanguageModelMetaLlama4Scout                  GatewayLanguageModelID = "meta/llama-4-scout"
+	GatewayLanguageModelMetaMuseEmber                    GatewayLanguageModelID = "meta/muse-ember"
 	GatewayLanguageModelMetaMuseGlimmer30b               GatewayLanguageModelID = "meta/muse-glimmer-30b"
 	GatewayLanguageModelMetaMuseSpark11                  GatewayLanguageModelID = "meta/muse-spark-1.1"
 	GatewayLanguageModelMetaMuseSpark12                  GatewayLanguageModelID = "meta/muse-spark-1.2"
@@ -591,7 +594,9 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAnthropicClaudeFable5,
 	GatewayLanguageModelAnthropicClaudeFable5Batch,
 	GatewayLanguageModelAnthropicClaudeFable51,
+	GatewayLanguageModelAnthropicClaudeFable52,
 	GatewayLanguageModelAnthropicClaudeFable51Batch,
+	GatewayLanguageModelAnthropicClaudeFable52Batch,
 	GatewayLanguageModelAnthropicClaudeHaiku45,
 	GatewayLanguageModelAnthropicClaudeHaiku45Batch,
 	GatewayLanguageModelAnthropicClaudeHaiku55,
@@ -688,6 +693,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelMetaLlama3370b,
 	GatewayLanguageModelMetaLlama4Maverick,
 	GatewayLanguageModelMetaLlama4Scout,
+	GatewayLanguageModelMetaMuseEmber,
 	GatewayLanguageModelMetaMuseGlimmer30b,
 	GatewayLanguageModelMetaMuseSpark11,
 	GatewayLanguageModelMetaMuseSpark12,

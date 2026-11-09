@@ -176,7 +176,17 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		audio = decoded
 	}
 
-	reqBodyJSON, _ := json.Marshal(reqBody)
+	// TS JSON.stringify(requestBody): literal key order, HTML characters
+	// left unescaped.
+	reqBodyJSON := providerutils.StringifyOrdered(map[string]interface{}{
+		"input":       reqBody.Vals["input"],
+		"voice":       reqBody.Vals["voice"],
+		"audioConfig": reqBody.Vals["audioConfig"],
+	}, map[string][]string{
+		"":            {"input", "voice", "audioConfig"},
+		"voice":       {"languageCode", "name"},
+		"audioConfig": {"audioEncoding", "speakingRate"},
+	})
 
 	return &types.SpeechResult{
 		Audio:    audio,
@@ -184,7 +194,7 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		ProviderMetadata: map[string]interface{}{
 			"google": map[string]interface{}{"mimeType": "audio/wav"},
 		},
-		Request: &types.StepRequest{Body: string(reqBodyJSON)},
+		Request: &types.StepRequest{Body: reqBodyJSON},
 		Response: &types.ResponseMetadata{
 			Timestamp: currentDate,
 			ModelID:   m.modelID,

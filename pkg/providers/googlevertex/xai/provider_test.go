@@ -116,12 +116,12 @@ func TestProvider_LanguageModel_And_ChatModel(t *testing.T) {
 		lm, err := prov.LanguageModel(modelID)
 		require.NoError(t, err)
 		assert.Equal(t, modelID, lm.ModelID())
-		assert.Equal(t, "googleVertex.xai", lm.Provider())
+		assert.Equal(t, "googleVertex.xai.chat", lm.Provider())
 
 		cm, err := prov.ChatModel(modelID)
 		require.NoError(t, err)
 		assert.Equal(t, modelID, cm.ModelID())
-		assert.Equal(t, "googleVertex.xai", cm.Provider())
+		assert.Equal(t, "googleVertex.xai.chat", cm.Provider())
 	}
 }
 

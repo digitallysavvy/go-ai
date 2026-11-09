@@ -54,15 +54,16 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	// Typed Go containers in Instructions / Criteria take their JSON form
 	// (TS providers always receive JSON).
 	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
+	// TS converts the state (rejecting non-inline files) before it parses
+	// the gateway provider options.
+	stateParts, err := encodeGatewayDecisionState(provider.DecisionStateParts(opts.State))
+	if err != nil {
+		return nil, err
+	}
 	if gatewayOptions, ok := opts.ProviderOptions["gateway"]; ok {
 		if err := validateGatewayDecisionProviderOptions(gatewayOptions); err != nil {
 			return nil, err
 		}
-	}
-
-	stateParts, err := encodeGatewayDecisionState(provider.DecisionStateParts(opts.State))
-	if err != nil {
-		return nil, err
 	}
 
 	body := map[string]interface{}{

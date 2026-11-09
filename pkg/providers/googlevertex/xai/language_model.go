@@ -31,8 +31,9 @@ type LanguageModel struct {
 // SpecificationVersion returns the specification version.
 func (m *LanguageModel) SpecificationVersion() string { return "v4" }
 
-// Provider returns the provider name. Matches TS's `name: 'googleVertex.xai'`.
-func (m *LanguageModel) Provider() string { return "googleVertex.xai" }
+// Provider returns the provider ID: TS createOpenAICompatible({name:
+// 'googleVertex.xai'}) chat models report `${name}.chat`.
+func (m *LanguageModel) Provider() string { return "googleVertex.xai.chat" }
 
 // ModelID returns the model ID.
 func (m *LanguageModel) ModelID() string { return m.modelID }
@@ -321,7 +322,7 @@ func (m *LanguageModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
-	return providererrors.NewProviderError("googleVertex.xai", 0, "", err.Error(), err)
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
 // convertVertexXaiUsage mirrors TS convertGoogleVertexXaiUsage exactly:

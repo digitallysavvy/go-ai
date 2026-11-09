@@ -992,7 +992,7 @@ func TestGatewayErrorMessage(t *testing.T) {
 		{"whitespace-only null", " null \n", http.StatusInternalServerError, "unknown error"},
 		{"JSON string body used as-is", `"boom"`, http.StatusInternalServerError, "boom"},
 		{"JSON empty string body", `""`, http.StatusInternalServerError, ""},
-		{"JSON object body re-serialized", `{"b":2,"a":1}`, http.StatusInternalServerError, `{"a":1,"b":2}`},
+		{"JSON object body re-serialized", `{"b":2,"a":1}`, http.StatusInternalServerError, `{"b":2,"a":1}`}, // TS JSON.stringify keeps insertion order
 		{"JSON number body re-serialized", `42`, http.StatusInternalServerError, "42"},
 		{"JSON boolean body re-serialized", `false`, http.StatusInternalServerError, "false"},
 	}

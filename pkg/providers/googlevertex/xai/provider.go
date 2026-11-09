@@ -45,6 +45,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	vertexinternal "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/internal"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/oauth2"
 )
 
@@ -164,8 +165,10 @@ func (p *Provider) resolve() (Config, *internalhttp.Client, error) {
 	}
 
 	p.client = internalhttp.NewClient(internalhttp.Config{
-		BaseURL:    baseURL,
-		Headers:    internalhttp.MergeHeaders(map[string]string{"Content-Type": "application/json"}, cfg.Headers),
+		BaseURL: baseURL,
+		// TS createOpenAICompatible tags requests with its own
+		// `ai-sdk-openai-compatible/VERSION` user agent suffix.
+		Headers:    version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"Content-Type": "application/json"}, cfg.Headers), version.ProviderUserAgent("openai-compatible")),
 		HTTPClient: authedClient,
 	})
 	p.config = Config{Project: cfg.Project, Location: location, BaseURL: baseURL, Headers: cfg.Headers}

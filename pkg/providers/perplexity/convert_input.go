@@ -159,7 +159,7 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 			}
 
 		default:
-			return nil, nil, fmt.Errorf("perplexity: unsupported role %q", msg.Role)
+			return nil, nil, fmt.Errorf("Unsupported role: %s", msg.Role) //nolint:staticcheck // TS text
 		}
 	}
 
@@ -261,7 +261,7 @@ func resolvePerplexityImageMediaType(mediaType string, data []byte, dataString s
 		return detected, nil
 	}
 	return "", &providererrors.UnsupportedFunctionalityError{
-		Functionality: fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType),
+		Functionality: fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType),
 	}
 }
 

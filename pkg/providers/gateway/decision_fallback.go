@@ -8,6 +8,7 @@ import (
 	"unicode/utf16"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Bounds for DecisionFallbackCondition trees. Mirror TS
@@ -276,6 +277,10 @@ func conditionsToWire(conditions []DecisionFallbackCondition) []interface{} {
 // `.catchall(z.unknown())`). Returns nil when there is nothing to
 // validate (gatewayOptions is not an object, or has no "models" key).
 func validateGatewayDecisionProviderOptions(gatewayOptions interface{}) error {
+	// TS validates the JSON value: Go-typed containers ([]string,
+	// []map[string]interface{}, a GatewayProviderOptions value, ...) are
+	// checked in their JSON form.
+	gatewayOptions = providerutils.NormalizeOptionsJSON(map[string]interface{}{"gateway": gatewayOptions})["gateway"]
 	m, ok := gatewayOptions.(map[string]interface{})
 	if !ok {
 		return nil

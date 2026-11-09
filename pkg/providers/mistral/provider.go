@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -35,6 +36,19 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// GenerateID generates the ids TS takes from the generateId setting:
+	// streamed reasoning block ids and missing tool call ids of chat models,
+	// and the ids of conversation models. Nil uses the default generator.
+	GenerateID func() string `json:"-"`
+}
+
+// generateID returns Config.GenerateID's id, or a default one.
+func (p *Provider) generateID() string {
+	if p.config.GenerateID != nil {
+		return p.config.GenerateID()
+	}
+	return streaming.GenerateID()
 }
 
 // New creates a new Mistral AI provider with the given configuration

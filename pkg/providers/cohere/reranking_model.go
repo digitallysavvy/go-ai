@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
+	"reflect"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -85,14 +89,15 @@ func (m *RerankingModel) buildRequestBodyWithWarnings(opts *provider.RerankOptio
 	case nil:
 		body["documents"] = []string{}
 	default:
+		// Object documents are JSON.stringify'd: raw JSON keeps its key
+		// order and HTML characters stay literal (a Go map's keys are
+		// sorted). Any slice of documents is accepted, as TS takes any
+		// object values.
 		var items []interface{}
-		switch typed := docs.(type) {
-		case []map[string]interface{}:
-			for _, d := range typed {
-				items = append(items, d)
+		if rv := reflect.ValueOf(docs); rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+			for i := 0; i < rv.Len(); i++ {
+				items = append(items, rv.Index(i).Interface())
 			}
-		case []interface{}:
-			items = typed
 		}
 		strs := make([]string, 0, len(items))
 		allText := true
@@ -102,8 +107,7 @@ func (m *RerankingModel) buildRequestBodyWithWarnings(opts *provider.RerankOptio
 				continue
 			}
 			allText = false
-			raw, _ := json.Marshal(item)
-			strs = append(strs, string(raw))
+			strs = append(strs, cohereStringifyDocument(item))
 		}
 		if !allText {
 			warnings = append(warnings, types.Warning{
@@ -129,6 +133,21 @@ func (m *RerankingModel) buildRequestBodyWithWarnings(opts *provider.RerankOptio
 		}
 	}
 	return body, warnings
+}
+
+// cohereStringifyDocument is TS JSON.stringify(value) for an object
+// document.
+func cohereStringifyDocument(doc interface{}) string {
+	if raw, ok := providerutils.RawJSONObject(doc); ok {
+		if parsed, ok := jsonorder.Parse(raw); ok {
+			return jsonorder.Stringify(parsed)
+		}
+	}
+	b, err := jsonstr.Marshal(doc)
+	if err != nil {
+		return "null"
+	}
+	return string(b)
 }
 
 // convertResponse converts a Cohere response to RerankResult

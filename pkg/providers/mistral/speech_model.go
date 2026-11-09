@@ -84,11 +84,8 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	// TS request.body is JSON.stringify(requestBodyValues): the literal's key
-	// order, not Go's sorted map order.
-	requestBytes, err := json.Marshal(providerutils.OrderedMap{Keys: mistralSpeechBodyKeys, Vals: redactedSpeechRequestBody(reqBody)})
-	if err != nil {
-		return nil, fmt.Errorf("mistral: failed to marshal speech request metadata: %w", err)
-	}
+	// order, not Go's sorted map order, and HTML characters stay literal.
+	requestBytes := []byte(providerutils.StringifyOrdered(redactedSpeechRequestBody(reqBody), map[string][]string{"": mistralSpeechBodyKeys}))
 
 	return &types.SpeechResult{
 		Audio:    audio,

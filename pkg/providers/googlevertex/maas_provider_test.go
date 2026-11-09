@@ -39,8 +39,8 @@ func TestNewMaaS_DefaultLocationAndEnvFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
-	if model.Provider() != "vertex.maas" {
-		t.Fatalf("Provider() = %q, want vertex.maas", model.Provider())
+	if model.Provider() != "vertex.maas.chat" {
+		t.Fatalf("Provider() = %q, want vertex.maas.chat", model.Provider())
 	}
 	if p.provider == nil {
 		t.Fatal("expected provider to be initialized")
@@ -435,8 +435,8 @@ func TestNewMaaS_ProviderErrorsUseVertexProviderName(t *testing.T) {
 	if !errors.As(err, &providerErr) {
 		t.Fatalf("expected ProviderError, got %T", err)
 	}
-	if providerErr.Provider != "vertex.maas" {
-		t.Fatalf("provider = %q, want %q", providerErr.Provider, "vertex.maas")
+	if providerErr.Provider != "vertex.maas.chat" {
+		t.Fatalf("provider = %q, want %q", providerErr.Provider, "vertex.maas.chat")
 	}
 }
 

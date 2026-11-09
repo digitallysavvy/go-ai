@@ -52,21 +52,23 @@ type spendReportResponseWire struct {
 }
 
 type spendReportRowWire struct {
-	Day                      string  `json:"day,omitempty"`
-	Hour                     string  `json:"hour,omitempty"`
-	User                     string  `json:"user,omitempty"`
-	Model                    string  `json:"model,omitempty"`
-	Tag                      string  `json:"tag,omitempty"`
-	Provider                 string  `json:"provider,omitempty"`
-	CredentialType           string  `json:"credential_type,omitempty"`
-	TotalCost                float64 `json:"total_cost"`
-	MarketCost               float64 `json:"market_cost,omitempty"`
-	InputTokens              int64   `json:"input_tokens,omitempty"`
-	OutputTokens             int64   `json:"output_tokens,omitempty"`
-	CachedInputTokens        int64   `json:"cached_input_tokens,omitempty"`
-	CacheCreationInputTokens int64   `json:"cache_creation_input_tokens,omitempty"`
-	ReasoningTokens          int64   `json:"reasoning_tokens,omitempty"`
-	RequestCount             int64   `json:"request_count,omitempty"`
+	Day            string  `json:"day,omitempty"`
+	Hour           string  `json:"hour,omitempty"`
+	User           string  `json:"user,omitempty"`
+	Model          string  `json:"model,omitempty"`
+	Tag            string  `json:"tag,omitempty"`
+	Provider       string  `json:"provider,omitempty"`
+	CredentialType string  `json:"credential_type,omitempty"`
+	TotalCost      float64 `json:"total_cost"`
+	MarketCost     float64 `json:"market_cost,omitempty"`
+	// The counts are z.number() in TS: decoded as float64 so a fractional
+	// value parses, then truncated into the v0.5.2 integer fields (S1).
+	InputTokens              float64 `json:"input_tokens,omitempty"`
+	OutputTokens             float64 `json:"output_tokens,omitempty"`
+	CachedInputTokens        float64 `json:"cached_input_tokens,omitempty"`
+	CacheCreationInputTokens float64 `json:"cache_creation_input_tokens,omitempty"`
+	ReasoningTokens          float64 `json:"reasoning_tokens,omitempty"`
+	RequestCount             float64 `json:"request_count,omitempty"`
 }
 
 // validateSpendReportRows applies the TS row schema's required and enum
@@ -95,13 +97,6 @@ func validateSpendReportRows(body []byte) error {
 }
 
 func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams) (*SpendReportResponse, error) {
-	if params.StartDate == "" {
-		return nil, fmt.Errorf("start date is required")
-	}
-	if params.EndDate == "" {
-		return nil, fmt.Errorf("end date is required")
-	}
-
 	// Same order and escaping as the TS URLSearchParams.set calls.
 	param := func(key, value string) string {
 		return internalhttp.EncodeQuery(map[string]string{key: value})
@@ -146,7 +141,23 @@ func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams)
 
 	response := &SpendReportResponse{Results: make([]SpendReportRow, 0, len(wire.Results))}
 	for _, row := range wire.Results {
-		response.Results = append(response.Results, SpendReportRow(row))
+		response.Results = append(response.Results, SpendReportRow{
+			Day:                      row.Day,
+			Hour:                     row.Hour,
+			User:                     row.User,
+			Model:                    row.Model,
+			Tag:                      row.Tag,
+			Provider:                 row.Provider,
+			CredentialType:           row.CredentialType,
+			TotalCost:                row.TotalCost,
+			MarketCost:               row.MarketCost,
+			InputTokens:              int64(row.InputTokens),
+			OutputTokens:             int64(row.OutputTokens),
+			CachedInputTokens:        int64(row.CachedInputTokens),
+			CacheCreationInputTokens: int64(row.CacheCreationInputTokens),
+			ReasoningTokens:          int64(row.ReasoningTokens),
+			RequestCount:             int64(row.RequestCount),
+		})
 	}
 
 	return response, nil

@@ -185,16 +185,16 @@ func parseOffsetSeconds(offset string) (float64, bool) {
 var leadingFloatRE = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?`)
 
 type transcriptionWordAnnotation struct {
-	Type        string `json:"type"`
-	Text        string `json:"text,omitempty"`
-	Speaker     string `json:"speaker,omitempty"`
-	StartOffset string `json:"start_offset,omitempty"`
-	EndOffset   string `json:"end_offset,omitempty"`
+	Type        string  `json:"type"`
+	Text        *string `json:"text,omitempty"`
+	Speaker     string  `json:"speaker,omitempty"`
+	StartOffset string  `json:"start_offset,omitempty"`
+	EndOffset   string  `json:"end_offset,omitempty"`
 }
 
 type transcriptionResponseContent struct {
 	Type        string                        `json:"type"`
-	Text        string                        `json:"text,omitempty"`
+	Text        *string                       `json:"text,omitempty"`
 	Annotations []transcriptionWordAnnotation `json:"annotations,omitempty"`
 }
 
@@ -265,12 +265,15 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	var segments []types.TranscriptionTimestamp
 	for _, step := range response.Steps {
 		for _, content := range step.Content {
-			if content.Type != "text" {
+			// TS skips a content without text (null/absent), annotations
+			// included; an empty string still counts.
+			if content.Type != "text" || content.Text == nil {
 				continue
 			}
-			text.WriteString(content.Text)
+			text.WriteString(*content.Text)
 			for _, annotation := range content.Annotations {
-				if annotation.Type != "word_info" || annotation.Text == "" {
+				// TS skips only a null/absent word text.
+				if annotation.Type != "word_info" || annotation.Text == nil {
 					continue
 				}
 				startSecond, ok1 := parseOffsetSeconds(annotation.StartOffset)
@@ -279,7 +282,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 					continue
 				}
 				segments = append(segments, types.TranscriptionTimestamp{
-					Text:  annotation.Text,
+					Text:  *annotation.Text,
 					Start: startSecond,
 					End:   endSecond,
 				})
@@ -287,21 +290,23 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}
 	}
 
+	// TS `response.usage != null`: an empty usage object is still reported.
 	var providerMetadata map[string]interface{}
-	if len(response.Usage) > 0 {
+	if response.Usage != nil {
 		providerMetadata = map[string]interface{}{
 			"google": map[string]interface{}{"usage": response.Usage},
 		}
 	}
 
 	var providerUsage map[string]interface{}
-	if len(response.Usage) > 0 {
+	if response.Usage != nil {
 		providerUsage = response.Usage
 	}
 
 	return &types.TranscriptionResult{
 		Text:             text.String(),
 		Segments:         segments,
+		Warnings:         []types.Warning{}, // TS always returns warnings: []
 		ProviderMetadata: providerMetadata,
 		ProviderUsage:    providerUsage,
 		Response: &types.ResponseMetadata{

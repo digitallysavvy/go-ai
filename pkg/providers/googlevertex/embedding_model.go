@@ -174,7 +174,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	// TS maps every prediction and does not compare their number with the
 	// number of inputs.
 	embeddings := make([][]float64, len(response.Predictions))
-	var totalTokens int
+	var totalTokens float64
 	for i, pred := range response.Predictions {
 		embeddings[i] = pred.Embeddings.Values
 		totalTokens += pred.Embeddings.Statistics.TokenCount
@@ -187,9 +187,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
-			Tokens:      float64(totalTokens),
-			InputTokens: totalTokens,
-			TotalTokens: totalTokens,
+			Tokens:      totalTokens,
+			InputTokens: int(totalTokens),
+			TotalTokens: int(totalTokens),
 			// TS always returns usage for :predict (the summed
 			// statistics.token_count).
 			Reported: true,
@@ -251,9 +251,9 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 	if response.UsageMetadata != nil && response.UsageMetadata.PromptTokenCount != nil {
 		count := *response.UsageMetadata.PromptTokenCount
 		usage = types.EmbeddingUsage{
-			Tokens:      float64(count),
-			InputTokens: count,
-			TotalTokens: count,
+			Tokens:      count,
+			InputTokens: int(count),
+			TotalTokens: int(count),
 			Reported:    true,
 		}
 	}
@@ -275,7 +275,7 @@ type vertexEmbedContentResponse struct {
 		Values []float64 `json:"values"`
 	} `json:"embedding"`
 	UsageMetadata *struct {
-		PromptTokenCount *int `json:"promptTokenCount"`
+		PromptTokenCount *float64 `json:"promptTokenCount"`
 	} `json:"usageMetadata,omitempty"`
 }
 
@@ -331,7 +331,8 @@ type vertexEmbeddingResponse struct {
 		Embeddings struct {
 			Values     []float64 `json:"values"`
 			Statistics struct {
-				TokenCount int `json:"token_count"`
+				// TS z.number(): usage.tokens is the exact sum.
+				TokenCount float64 `json:"token_count"`
 			} `json:"statistics"`
 		} `json:"embeddings"`
 	} `json:"predictions"`

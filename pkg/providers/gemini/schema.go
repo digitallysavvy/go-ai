@@ -191,9 +191,11 @@ func sanitizeSchemaMap(schema map[string]interface{}) map[string]interface{} {
 			result[key] = v
 		}
 	}
+	// TS keeps $defs in the rest object and only replaces it when it is not
+	// null, so a null $defs stays null.
 	if defs, ok := schema["$defs"].(map[string]interface{}); ok {
 		result["$defs"] = sanitizeDefinitions(defs)
-	} else if v, ok := schema["$defs"]; ok && v != nil {
+	} else if v, ok := schema["$defs"]; ok {
 		result["$defs"] = v
 	}
 	return result

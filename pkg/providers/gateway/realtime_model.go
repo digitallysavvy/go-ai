@@ -60,15 +60,14 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	}, nil
 }
 
-// GetWebSocketConfig mirrors TS GatewayRealtimeModel#getWebSocketConfig. The
-// team scope rides the subprotocol from the provider's resolved header set
-// (gatewayTeamFromHeaders), not the raw TeamIDOrSlug config field directly,
-// matching how transcription_stream.go sources it so the two handshakes
-// can't drift if a header override is layered on later.
+// GetWebSocketConfig mirrors TS GatewayRealtimeModel#getWebSocketConfig:
+// the team scope is the provider's teamIdOrSlug setting (TS
+// config.teamIdOrSlug), not a custom x-vercel-ai-gateway-team header (which
+// only the streaming transcription and speech handshakes read).
 func (m *RealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
 	return provider.WebSocketConfig{
 		URL:       wsURL,
-		Protocols: GetGatewayRealtimeProtocols(token, gatewayTeamFromHeaders(m.provider.headers)),
+		Protocols: GetGatewayRealtimeProtocols(token, m.provider.config.TeamIDOrSlug),
 	}
 }
 
