@@ -1,6 +1,10 @@
 package minimax
 
-import "fmt"
+import (
+	"fmt"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
 
 // Error represents a MiniMax video generation error, matching the TS
 // AISDKError name/message pairs used by MiniMaxVideoModel.
@@ -13,6 +17,25 @@ type Error struct {
 	// APICallError statusCode / responseBody); zero otherwise.
 	StatusCode   int
 	ResponseBody string
+	// ResponseHeaders are the response headers of a non-2xx API response
+	// (TS APICallError responseHeaders), when known.
+	ResponseHeaders map[string]string
+}
+
+// Unwrap exposes a non-2xx API response as a *providererrors.ProviderError
+// (TS APICallError), so the retry loop honors retry-after(-ms) and
+// classifies the status like every other provider. Nil otherwise.
+func (e *Error) Unwrap() error {
+	if e == nil || e.StatusCode == 0 {
+		return nil
+	}
+	return &providererrors.ProviderError{
+		Provider:        "minimax",
+		StatusCode:      e.StatusCode,
+		Message:         e.Message,
+		ResponseBody:    e.ResponseBody,
+		ResponseHeaders: e.ResponseHeaders,
+	}
 }
 
 // IsRetryable reports whether the call may be retried: only an API response
