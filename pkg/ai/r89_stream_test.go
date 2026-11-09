@@ -182,3 +182,58 @@ func TestR89streamValidateUIMessagesStripsSteeringTextExtras(t *testing.T) {
 		t.Errorf("messages:\n got %s\nwant %s", got, want)
 	}
 }
+
+// TS (node, packages/ai/dist at 382d0b8eaf): a transform that adds an empty
+// text delta to the step's second text block. The output stage stages only
+// the first block, so the delta reaches toUIMessageStream, which maps it
+// (toUIMessageChunk 'text-delta') and calls messageMetadata for it.
+func TestR89streamEmptyTextDeltaReachesUIStream(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r88streamModel([]provider.StreamChunk{
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "a"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeTextStart, ID: "2"}, {Type: provider.ChunkTypeText, ID: "2", Text: "b"}, {Type: provider.ChunkTypeTextEnd, ID: "2"},
+			r88streamFinishStop,
+		}),
+		Prompt: "p",
+		ExperimentalTransform: []StreamTransformFunc{func(_ context.Context, c provider.StreamChunk) []provider.StreamChunk {
+			if c.Type == provider.ChunkTypeText {
+				return []provider.StreamChunk{c, {Type: provider.ChunkTypeText, ID: c.ID}}
+			}
+			return []provider.StreamChunk{c}
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, errCh := r.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			if part["type"] != "text-delta" {
+				return nil
+			}
+			c, _ := part["part"].(provider.StreamChunk)
+			return map[string]interface{}{"d": c.Text}
+		},
+	})
+	var got []string
+	for c := range ch {
+		b, err := marshalUIChunkInTSOrder(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, string(b))
+	}
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{`{"type":"start"}`, `{"type":"start-step"}`, `{"type":"text-start","id":"1"}`,
+		`{"type":"text-delta","id":"1","delta":"a"}`, `{"type":"message-metadata","messageMetadata":{"d":"a"}}`,
+		`{"type":"text-end","id":"1"}`, `{"type":"text-start","id":"2"}`,
+		`{"type":"text-delta","id":"2","delta":"b"}`, `{"type":"message-metadata","messageMetadata":{"d":"b"}}`,
+		`{"type":"text-delta","id":"2","delta":""}`, `{"type":"message-metadata","messageMetadata":{"d":""}}`,
+		`{"type":"text-end","id":"2"}`, `{"type":"finish-step"}`, `{"type":"finish","finishReason":"stop"}`}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("UI chunks:\n got %s\nwant %s", strings.Join(got, "\n     "), strings.Join(want, "\n     "))
+	}
+}
