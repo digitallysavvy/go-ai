@@ -595,6 +595,16 @@ func main() {
 }
 ```
 
+### Credential redaction
+
+OpenAI code interpreter and shell network policy domain secrets, and MCP
+`authorization` and header values, are replaced with `"[redacted]"` in tool
+definitions (`Tools`, `StepTools`, `ProviderArgs`, `ProviderOptions`) and in
+request and response bodies before an event reaches a telemetry integration
+or a diagnostics channel subscriber, also when recording is enabled. The SDK
+redacts telemetry-only copies: provider requests and the results returned to
+your application keep the original values.
+
 ## Best Practices
 
 ### 1. Disable Sensitive Data Recording

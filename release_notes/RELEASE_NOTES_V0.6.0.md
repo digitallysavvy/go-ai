@@ -154,6 +154,10 @@ Also new:
 - **Telemetry: GenAI message formatting helpers are exported** (TS 382d0b8eaf): `telemetry.FormatInputMessages`, `FormatModelMessages` (`FormatModelMessagesOptions`), `FormatOutputMessages` (`FormatOutputMessagesOptions`), `FormatObjectOutputMessages`, `FormatSystemInstructions` / `FormatSystemMessages` and the `SemConvPart`, `SemConvInputMessage`, `SemConvOutputMessage`, `SemConvSystemInstruction` types build the OTel GenAI `gen_ai.*.messages` / `gen_ai.system_instructions` shapes outside the built-in integration (review round 89).
 - **`ObjectOnStepFinishEvent.MsToFirstChunk`**: StreamObject's time from the start of the stream to its first chunk (TS `msToFirstChunk`); nil for GenerateObject. `WithSteerID("")` is an id like any other, as in TS (review round 89).
 - **`anthropicaws.Config.GenerateID`** (TS `createAnthropicAws` `generateId`, source ids), **`openai.Config.CompatErrorStructure`** (an OpenAI-compatible wrapper's TS error structure), **`providererrors.NewSchemaProviderError`** / **`providererrors.ErrorSchema`** (TS createJsonErrorResponseHandler with an error schema) and **`InvalidArgumentError.Value`** (the TS error's `value`) (review round 89).
+- **Claude Fable 5.2** (TS 84208104a4): `anthropic.ClaudeFable5_2`, Bedrock `ModelAnthropicClaudeFable5_2` / `ModelUSAnthropicClaudeFable5_2` / `ModelGlobalAnthropicClaudeFable5_2`, Vertex Anthropic `ClaudeFable5_2`, Gateway `anthropic/claude-fable-5.2` (+ `-batch`), with the Fable 5.1 capabilities (128k output, adaptive thinking only, xhigh / max effort, no sampling parameters, no forced tool use) (review round 90).
+- **OpenAI-compatible `PrepareRequest` / `ConvertResponse`** (TS c9c6402cbd): on `openai.LanguageModel` (the OpenAI-compatible chat model of the wrappers), Fireworks, Together, GMI Cloud and Cerebras chat models: the body and warnings `DoGenerate` would send, without a network call, and the generate result of a Chat Completions body. `providerutils.OpenAICompatibleErrorData` / `PickSchemaKeys` (review round 90).
+- **Gateway** (review round 90): takoSearch `VariableCost`, `MaxVariableCostUSD`, `NoMaxVariableCost`, `ExtraBody` (TS 0e869b40fa); typed `GatewayProviderOptions.Headquarters` (TS 44db2252f0); `meta/muse-ember` (TS 6d65092d9e). `anthropicaws.Config.APIKeyFunc` (TS `apiKey: Resolvable<string>`), `cohere.Config.GenerateID`, `mistral.Config.GenerateID`, `anthropic.Config.ResolveConfigHeaders` (per-call config headers for wrapper providers), `topaz.Error`, `providerutils.FormDataFilePartHeader` / `CreateFormDataFile` / `WriteFormDataField`, `InvalidToolApprovalSignatureError.ErrorName()`.
+- **Bridges pinned at ai@7.0.167** (TS 9f7a842ae1): acp 1.0.118, claude-code 1.0.182, codex 1.0.180, deepagents 1.0.178, github-copilot 1.0.75, grok-build 1.0.117, opencode 1.0.181, cursor 1.0.93 (review round 90).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -327,6 +331,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **CosineSimilarity length error text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cosine-similarity-error-text)
 - **GenerateVideo drives start/status-only video models itself** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#video-start-status-only-models)
 - **Downloads have no client timeout; set a context deadline** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#download-no-timeout)
+- **OutputErr reports a stream failure or abort** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-output-err-failure)
+- **Cancelling during a step's end callbacks aborts the run** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-abort-at-step-end)
 
 #### Prompts and validation
 
@@ -349,6 +355,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Validated downloads reject HTTPS to HTTP redirects** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#download-https-downgrade)
 - **Data URLs without a ;base64 marker are accepted** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#data-url-without-base64-marker)
 - **ExperimentalDownload is called on every prompt conversion** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#download-called-with-empty-plan)
+- **File media types are passed on as given** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#file-media-type-unvalidated)
+- **A data URL in the data file variant reports the TS text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#data-variant-data-url-text)
 
 #### Tools
 
@@ -440,6 +448,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ExperimentalDecide checks the model's specification version** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-model-version)
 - **ToolLoopAgent checks the prompt after the call options and PrepareCall** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-prompt-after-prepare-call)
 - **The agent loop lists invalid tool call errors first** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-invalid-tool-errors-first)
+- **The agent loop keeps the user-approval reason** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-user-approval-reason)
+- **The agent loop parses JSON output from the provider's structured output text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-structured-output-text)
+- **WorkflowAgent approval resume error text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-approval-error-text)
 
 #### UI message streams
 
@@ -472,6 +483,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI message metadata merges non-object values like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-metadata-merge-mergeobjects)
 - **Agent UI stream helpers end a failed run without [DONE]** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-ui-helpers-stream-errors)
 - **Empty text deltas from transforms reach the UI stream** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-stream-empty-text-delta)
+- **UI stream callback order and provider tool errors** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-stream-metadata-before-onerror)
+- **WorkflowChatTransport reconnect error text for a malformed frame** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-chat-transport-parse-error-text)
 
 #### Telemetry and events
 
@@ -510,6 +523,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Recording flags filter what integrations and diagnostic subscribers see** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-recording-flags-filter)
 - **Telemetry tool definitions redact provider credentials** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-tool-definition-redaction)
 - **GenAI output messages keep an empty tool call ID and media type** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#genai-output-empty-ids)
+- **Telemetry copies redact provider tool credentials** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-credential-redaction)
+- **Telemetry: integral numbers are int attributes** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-int-attributes)
+- **OnError without an error still marks the span as an error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-onerror-nil-status)
 
 #### Errors
 
@@ -527,6 +543,11 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Provider errors follow each provider's TS error schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#error-schema-message-data)
 - **VideoGenerationError text is the provider message** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#video-generation-error-text)
 - **Missing settings return LoadSettingError** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#load-setting-error-typed)
+- **Error and warning texts quote values like TS (round 90)** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#r90-template-quotes)
+- **ProviderError.Data is the TS error schema output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-error-data-schema)
+- **Open Responses error message follows its schema** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-error-schema)
+- **Generated-image download errors are not wrapped** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#image-download-errors)
+- **KlingAI and ByteDance AISDKError texts** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#video-aisdk-error-text)
 
 #### Providers
 
@@ -780,6 +801,24 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Bedrock option fallback, error data and guard content follow TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-r89-options-and-errors)
 - **ElevenLabs conflict text, keyterm length and realtime errors follow TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#elevenlabs-r89)
 - **Anthropic and Bedrock error texts quote values like TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-template-quotes)
+- **Anthropic results have one text part per text block** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-text-block-parts)
+- **A null Anthropic tool input stays null** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-null-tool-input)
+- **Anthropic and Anthropic AWS error texts and types** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-r90-error-texts)
+- **Anthropic prompt details follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#prova-r90-details)
+- **Gemini streamed tool arguments: dotted array indexes** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gemini-dotted-array-indexes)
+- **Gateway takoSearch: variable cost options and output schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-tako-search-variable-cost)
+- **Mistral: generated reasoning ids and normalized conversation errors** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mistral-r90-stream-ids-errors)
+- **Provider request text follows TS JSON.stringify and defaults** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provg-r90-request-text)
+- **Numeric options and usage counts follow z.number()** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provg-r90-numbers)
+- **Gateway option and response parsing** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-r90-parsing)
+- **Google and Vertex transcription and live streams** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-r90-transcription)
+- **OpenAI parallel tool call metadata keeps the input once** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-parallel-wrapper-input)
+- **xAI video options error text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-video-option-error)
+- **OpenAI and Azure media details follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-azure-r90-details)
+- **Multipart uploads use the TS FormData part format** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#multipart-formdata-parts)
+- **QuiverAI reasoning history without QuiverAI metadata has no item id** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#quiverai-reasoning-replay-item-id)
+- **QuiverAI, MiniMax, Voyage, DeepInfra and Topaz request details follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-providers-r90-wire)
+- **Cartesia, Replicate, fal and Baseten details follow TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provc-r90-details)
 
 #### MCP
 
@@ -869,6 +908,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **HarnessAgent error texts** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-agent-error-texts)
 - **Vercel legacy sandbox provider warns and honors a cancelled ctx** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-legacy-provider-deprecation-warnings)
 - **Vercel sandbox reads treat file-not-found errors as missing files** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-sandbox-file-not-found)
+- **Codex: an empty CODEX_HOME and empty refresh tokens** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codex-home-empty)
+- **Harness auth files and lifecycle state follow TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-r90-details)
 
 #### Policy
 
@@ -1521,6 +1562,7 @@ in v0.5.3.
 - A UI stream piped with `PipeUIMessageStreamToResponseWithInit` on the request ctx reports `isCancelled` on a client disconnect every time; Go's child-context cancellation order let StreamText's abort part through about once in 4,000 runs (`isAborted`) (review round 85).
 - The harness deferred sandbox session forwards `Stat`, `ListDirectory` and `DeleteFile` (TS `delegateSandboxOperations`) (review round 85).
 - Review round 86b (low edge inputs): JS trim / regexp / lowercase / URLSearchParams / one-trailing-slash rules across core, providers, MCP and harness; Ajv u-mode patterns for serializable tools; `jsonorder.Parse` rejects trailing text like `JSON.parse`; `ExtractAPIErrorMessage` keeps the message as sent; the workflow tail index skips a Latin-1 0xA0; `ValidateUIMessages` drops `rawInput: null` from states without it; a panicking tool-end callback keeps live tool results; Decide accepts an `""` choice option and typed criteria; invalid tool calls take `Title` / `ToolMetadata` from the tool; fx checks the WHATWG pathname for Gateway model requests (V061 7).
+- **Round 90** (TS 9f7a842ae1): `InvalidArgumentError.Value` is set where TS passes `value` (object generation input, `maxOutputTokens` / `maxRetries` / `streamRetries` / `toolCallConcurrency`, batch requests and provider, data URLs, Output array bounds, `ValidateUIMessages`, tool search, tool callers, steering, Decide input, `ExtractReasoningMiddleware` delimiters, Embed dimensions and chunk size, WorkflowAgent options, bash and web fetch tool options); the Gateway default OIDC path reads the `ContextWithVercelOIDCToken` token before `VERCEL_OIDC_TOKEN`; MCP event subscriptions store the WHATWG href of the callback URL, reject null webhook fields and order the `events/subscribe` params like TS; Vertex MaaS foreign-origin image downloads are pinned by tests to the validated transport (TS acdccac63d); the OpenAI Responses parallel wrapper input is kept once (TS 22b8158276); the Moonshot schema normalizer visits array children once (TS c480f3f726).
 
 ### Providers
 
@@ -1884,8 +1926,24 @@ Notable ones:
 - **Anthropic empty string option fields**: `""` values of five string options are omitted (S1) (round 89).
 - **Anthropic Files byte size**: `ByteSize` truncates a fractional size (S1) (round 89).
 - **Video response header keys**: xAI / Alibaba keep Go canonical keys (S6) (round 89).
-- **OpenAI speech default voice**: `voice: "alloy"` is sent when unset (S6) (round 89).
 - **Empty binary response**: Fireworks sync images reject an empty 200 body (S3) (round 89).
+- **SmoothStream Intl.Segmenter chunking**: `Chunking` takes word, line, a regexp or a `ChunkDetector` (S3) (round 90).
+- **Telemetry credential redaction of other providers' MCP tools**: every body with such a wire tool is redacted (S2) (round 90).
+- **Custom telemetry redactors**: no `withTelemetryRedaction` hook (S4) (round 90).
+- **WorkflowAgent missing provider result warning**: reported through `LogWarnings` (S3) (round 90).
+- **Google Interactions warnings**: both `Message` and `Details` are set (S6) (round 90).
+- **Fractional counts in integer fields**: truncated into the integer fields (S1) (round 90).
+- **Gemini non-streaming string functionCall args**: used verbatim (S7) (round 90).
+- **Invalid video operation references**: a plain decode error (S1) (round 90).
+- **Gemini streamed tool arguments with conflicting paths**: the stream fails at the conflicting entry (S7) (round 90).
+- **Z.AI PrepareRequest / ConvertResponse**: not exposed (S7) (round 90).
+- **Vertex Anthropic missing project or location**: an error before sending (S7) (round 90).
+- **Bedrock empty endpoint variable**: ignored (S7) (round 90).
+- **Bedrock image without a prompt**: `text: ""` is sent (S1) (round 90).
+- **Anthropic MCP tool result without its tool use**: converted without a crash (S7) (round 90).
+- **Bedrock Converse JSON instruction schema key order**: sorted for a Go map schema (S3) (round 90).
+- **Codex tool description ""**: same fingerprint as no description (S1) (round 90).
+- **UI message chunk validation on client reads**: any JSON object chunk is accepted (S3) (round 90).
 - **TS test replays skipped in round 88**: Replicate cancel timing, a Gladia pre-aborted call, DeepInfra and Google tests with injected functions (round 88).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred

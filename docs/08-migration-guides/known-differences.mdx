@@ -688,7 +688,7 @@ Anthropic client-side provider tool calls (bash, memory, text editor, computer) 
 Go skips a user block that converts to no content (TS sends `{role: user, content: []}`), sends a truthy non-object `cachePoint` as `{type: "default"}` (TS sends the raw value), and sends `anthropicBeta` only as `anthropic_beta` (TS also spreads it into the top-level command). Bedrock rejects each TS form (S7: copying TS would send a request the API rejects; review round 89).
 
 ## Bedrock and Anthropic null option values
-Bedrock option validators, and the Bedrock Converse / Anthropic file part option validators, accept an explicit `null` for an optional key, which TS zod `.optional()` rejects (S6: v0.5.2 accepted null values; review round 89).
+Bedrock option validators, and the Bedrock Converse / Anthropic file part option validators, accept an explicit `null` for an optional key, which TS zod `.optional()` rejects (S6: v0.5.2 accepted null values; review round 89). Round 90: Google / Vertex transcription and Google language-model options also treat an explicit `nil` like an absent key, as v0.5.2 did.
 
 ## Anthropic empty string option fields
 Anthropic `metadata.userId: ""`, `mcpServers[].authorizationToken: ""`, `container.id: ""`, skills `displayTitle: ""` and the batch list `cursor: ""` are omitted; TS sends the empty string (`!= null`) (S1: plain string fields; a presence flag per field is API sprawl; review round 89).
@@ -699,11 +699,59 @@ A fractional Files API `size_bytes` is truncated in `ByteSize`; the provider met
 ## Video response header keys
 xAI and Alibaba video results report response headers with Go canonical keys (the v0.5.2 shape), where TS uses lower case. Repeated values are joined with ", " as in TS (S6; review round 89).
 
-## OpenAI speech default voice
-With no voice, Go sends `voice: "alloy"` (v0.5.2 behavior). TS sends no voice, and the API rejects the request (S6; review round 89).
-
 ## Empty binary response
 TS `createBinaryResponseHandler` fails only for a null body (204 / 205 / 304); an empty 200 gives empty bytes. Go's Fireworks sync image path rejects any empty body ("Response body is empty"), as before (S3: Go cannot tell a null body from an empty one; review round 89).
+
+## SmoothStream Intl.Segmenter chunking
+TS `smoothStream({ chunking })` also accepts an `Intl.Segmenter` (ICU word segmentation, recommended for CJK text). Go's standard library has no ICU segmenter, so `SmoothStreamOptions.Chunking` takes `"word"`, `"line"`, a `*regexp.Regexp` or a `ChunkDetector`; pass a `ChunkDetector` that returns the first segment of your own segmenter (S3: ICU / Intl.Segmenter is a JS runtime facility; review round 90).
+
+## Telemetry credential redaction of other providers' MCP tools
+Telemetry copies of request and response bodies redact MCP `authorization` and header values and code interpreter / shell domain secrets for any provider's wire tools, not only OpenAI's. TS redacts only the bodies its OpenAI Responses model annotated (S2: Go bodies carry no provider annotation, and narrowing the rule would expose credentials; review round 90).
+
+## Custom telemetry redactors
+Go has no counterpart of TS `withTelemetryRedaction` (attach a telemetry redactor to a custom provider tool or body). The SDK redacts the OpenAI code interpreter, shell and MCP credentials by tool id and wire type; a redacted typed OpenAI tool config appears as its JSON object form in the telemetry copy (S4: coordinator ruling, round 90, keeps the credential rules in `pkg/telemetry` without a provider hook).
+
+## WorkflowAgent missing provider result warning
+TS WorkflowAgent writes "Provider-executed tool ... did not receive a result from the stream" with `console.warn`. Go reports it through `ai.LogWarnings` (stderr, with the step's provider and model, suppressible with `AI_SDK_LOG_WARNINGS=false` or `SetLogWarnings`) (S3: `console.warn` is a JS runtime facility; review round 90).
+
+## Google Interactions warnings carry message and details
+TS Interactions warnings are `{type: 'other', message}` or `{type: 'unsupported', feature, details}`. Go sets both `Message` and `Details` on each, as v0.5.2 did; callers that read either field keep working (S6; review round 90).
+
+## Fractional counts in integer fields
+Where a Go field that v0.5.2 already exposed is an integer, a fractional count from the API is truncated; TS keeps the fraction: `Usage` token counts (`*int64`), Gateway `GenerationInfo` latencies and token counts, `SpendReportRow` counts, `RealtimeClientSecret.ExpiresAt`, and a Gateway video SSE error `statusCode` (`SSEVideoEvent.StatusCode *int`; a fractional value fails the event parse) (S1: exported integer field types; review round 90).
+
+## Gemini non-streaming string functionCall args
+When a non-streaming Gemini response carries `functionCall.args` as a string, Go uses it verbatim; TS JSON.stringify's the value into a quoted JSON string that no tool can parse as arguments (S7: TS defect; review round 90).
+
+## Invalid video operation references
+HeyGen, Google and Vertex `DoStatus` return a plain Go error when the opaque operation JSON does not decode; TS reads the operation object and fails later with a JS TypeError (S1: the operation is opaque `json.RawMessage`; review round 90).
+
+## Gemini streamed tool arguments with conflicting paths
+When streamed Gemini `partialArgs` address a path that conflicts with an earlier value (a key under a string or number, a key on an array, an index on an object, a string continuation of a non-string), TS either throws a TypeError or silently builds corrupted arguments (`"[object Object]x"`, keys `JSON.stringify` drops, text deltas that are not JSON). Go fails the stream with an error at that entry (S7: TS defect, the corrupted arguments would reach the tool; review round 90).
+
+## Z.AI PrepareRequest and ConvertResponse
+TS `ZaiChatLanguageModel` inherits `prepareRequest` / `convertResponse` from the OpenAI-compatible model; they skip Z.AI's call-option normalization (penalties, seed, non-auto tool choice that Z.AI does not support) and its finish-reason mapping, so the body differs from what `doGenerate` sends. Go does not expose them on `zai.LanguageModel` (S7: TS defect; review round 90).
+
+## Vertex Anthropic missing project or location
+TS builds `https://undefined-aiplatform...` and sends the request; Go returns an error before sending (S7: TS defect; review round 90).
+
+## Bedrock base URL from an empty endpoint variable
+TS uses an empty `AWS_ENDPOINT_URL` / `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` value as the base URL (an invalid URL); Go ignores an empty variable (S7: TS defect; review round 90).
+
+## Bedrock image text-to-image without a prompt
+Bedrock image text-to-image without a prompt sends `text: ""`; TS omits the key (S1: plain string field; review round 90).
+
+## Anthropic MCP tool result without its tool use
+TS crashes ("reading 'toolName'") on an `mcp_tool_result` block without its `mcp_tool_use`; Go converts the result without the tool name (S7: TS defect; review round 90).
+
+## Bedrock Converse JSON instruction schema key order
+The JSON-instruction text Bedrock Converse injects for a JSON response format prints a schema given as a Go map with sorted keys; TS keeps the object's insertion order (S3: Go map iteration order; pass an ordered schema to keep the order; review round 90).
+
+## Codex tool description ""
+A harness tool with `Description: ""` gives the same Codex turn fingerprint as one without a description; TS includes `description: ""` (S1: `harness.ToolSpec.Description` is a plain string, and a presence flag would break unkeyed literals; review round 90).
+
+## UI message chunk validation on client reads
+TS chat transports validate every received chunk against `uiMessageChunkSchema` and report an `AI_TypeValidationError` for a chunk of the wrong shape; Go's `ReadUIMessageStream` and `WorkflowChatTransport` accept any JSON object. A frame that is not JSON is an `AI_JSONParseError`-style error in both, but Go's parser message is not V8's (S3: the TS transports are browser `useChat` APIs, and the parser text is V8's; review round 90).
 
 ## Features that are TypeScript-only (not ported)
 
@@ -716,6 +764,10 @@ TS `createBinaryResponseHandler` fails only for a null body (204 / 205 / 304); a
   adapters run vendor Node SDKs in-process (they embed a Node.js runtime and
   the vendor's own TypeScript SDK). There is no Go equivalent; use the
   TypeScript SDK for Cline or Pi harness integrations.
+- **Exported model catalogs (`googleVertexAnthropicModelCatalog` and the
+  other `ModelEntry` catalogs)** — TS exports capability metadata objects; Go
+  has no catalog API. Runtime behavior (for example Claude Fable 5.2 on Vertex
+  Anthropic) comes from the Anthropic capability rules, as in TS.
 - **DeepSeek batch API / extra Files methods** — TS's `@ai-sdk/deepseek` does
   not implement these either, so this is parity, not a gap; the existing
   DeepSeek file support already matches TS.
