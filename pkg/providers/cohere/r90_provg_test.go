@@ -70,3 +70,23 @@ func TestR90provgCitationSourceIDsUseGenerateID(t *testing.T) {
 		t.Fatalf("stream source id = %q, want src-2", id)
 	}
 }
+
+// TestR90provgEmbedFractionalTokens: TS cohereTextEmbeddingResponseSchema
+// meta.billed_units.input_tokens is z.number(), so a fractional count is a
+// valid response and usage.tokens is that number.
+func TestR90provgEmbedFractionalTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"embeddings":{"float":[[0.1,0.2]]},"meta":{"billed_units":{"input_tokens":3.5}}}`)
+	}))
+	defer server.Close()
+	p := New(Config{APIKey: "k", BaseURL: server.URL + "/v2"})
+	model, _ := p.EmbeddingModel("embed-v4.0")
+	res, err := model.DoEmbedMany(context.Background(), []string{"a"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.Tokens != 3.5 || res.Usage.InputTokens != 3 {
+		t.Fatalf("usage = %+v, want tokens 3.5", res.Usage)
+	}
+}

@@ -181,9 +181,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Meta.BilledUnits.InputTokens),
-			InputTokens: response.Meta.BilledUnits.InputTokens,
-			TotalTokens: response.Meta.BilledUnits.InputTokens,
+			Tokens:      response.Meta.BilledUnits.InputTokens,
+			InputTokens: int(response.Meta.BilledUnits.InputTokens),
+			TotalTokens: int(response.Meta.BilledUnits.InputTokens),
 			// TS always returns `usage: { tokens: meta.billed_units.input_tokens }`.
 			Reported: true,
 		},
@@ -205,7 +205,9 @@ type cohereEmbedResponse struct {
 	Embeddings json.RawMessage `json:"embeddings"`
 	Meta       struct {
 		BilledUnits struct {
-			InputTokens int `json:"input_tokens"`
+			// TS z.number(): a fractional count is valid; Tokens keeps it
+			// exactly, the int fields keep the integer part.
+			InputTokens float64 `json:"input_tokens"`
 		} `json:"billed_units"`
 	} `json:"meta"`
 }
