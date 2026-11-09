@@ -46,3 +46,14 @@ func TestR90provbImageDownloadErrorUnchanged(t *testing.T) {
 		t.Fatalf("err = %T %v", err, err)
 	}
 }
+
+// TestR90provbVideoOptionsErrorText: TS parseProviderOptions throws
+// InvalidArgumentError with the message "invalid xai provider options" (the
+// details stay in the cause). CR from prova (cr-r90-prova-to-provb.md).
+func TestR90provbVideoOptionsErrorText(t *testing.T) {
+	_, _, err := extractVideoProviderOptions(map[string]interface{}{"xai": map[string]interface{}{"mode": "bogus"}})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Message != "invalid xai provider options" || errors.Unwrap(err) == nil {
+		t.Fatalf("err = %#v", err)
+	}
+}

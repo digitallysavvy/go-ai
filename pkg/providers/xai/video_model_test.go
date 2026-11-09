@@ -3,6 +3,7 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -403,7 +404,9 @@ func TestVideoModel_ReferenceImagesValidation(t *testing.T) {
 				},
 			})
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "referenceImageUrls")
+			assert.Equal(t, "invalid xai provider options", err.Error())
+			require.NotNil(t, errors.Unwrap(err))
+			assert.Contains(t, errors.Unwrap(err).Error(), "referenceImageUrls")
 		})
 	}
 }

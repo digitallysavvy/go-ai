@@ -1081,7 +1081,7 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 	if err != nil {
 		// TS parseProviderOptions: any schema violation is an
 		// InvalidArgumentError("invalid xai provider options").
-		return nil, nil, providererrors.NewArgumentError("providerOptions", "invalid xai provider options: "+err.Error(), err)
+		return nil, nil, providererrors.NewArgumentError("providerOptions", "invalid xai provider options", err)
 	}
 	return provOpts, extra, nil
 }
