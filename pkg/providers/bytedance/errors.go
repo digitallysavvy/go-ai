@@ -24,6 +24,10 @@ type Error struct {
 	httpStatus  int
 	httpBody    []byte
 	httpHeaders map[string]string
+
+	// textOnly makes Error() the bare Message: the TS AISDKError
+	// BYTEDANCE_VIDEO_GENERATION_ERROR text, with no Go prefix.
+	textOnly bool
 }
 
 // HTTPStatusDetails implements providererrors.HTTPStatusDetails.
@@ -47,11 +51,38 @@ func (e *Error) Unwrap() error {
 		ResponseHeaders: e.httpHeaders,
 		ResponseBody:    string(e.httpBody),
 	}
-	var data interface{}
-	if len(e.httpBody) > 0 && securejson.Unmarshal(e.httpBody, &data) == nil {
-		pe.Data = data
-	}
+	pe.Data = byteDanceErrorData(e.httpBody)
 	return pe
+}
+
+// byteDanceErrorData is the zod output of byteDanceErrorSchema ({error?:
+// {message, code?}, message?}, undeclared keys stripped, explicit nulls
+// kept) for a matching body, else nil (TS APICallError.data is undefined
+// for an off-schema body).
+func byteDanceErrorData(body []byte) interface{} {
+	if _, matched := byteDanceErrorParse(0, body); !matched {
+		return nil
+	}
+	var obj map[string]interface{}
+	if securejson.Unmarshal(body, &obj) != nil {
+		return nil
+	}
+	data := map[string]interface{}{}
+	if v, ok := obj["error"]; ok {
+		if inner, isObj := v.(map[string]interface{}); isObj {
+			e := map[string]interface{}{"message": inner["message"]}
+			if code, has := inner["code"]; has {
+				e["code"] = code
+			}
+			data["error"] = e
+		} else {
+			data["error"] = nil
+		}
+	}
+	if v, ok := obj["message"]; ok {
+		data["message"] = v
+	}
+	return data
 }
 
 // newHTTPError builds the error for a non-2xx response, following TS
@@ -63,13 +94,20 @@ func newHTTPError(statusCode int, headers http.Header, body []byte) *Error {
 }
 
 func byteDanceErrorMessage(statusCode int, body []byte) string {
+	message, _ := byteDanceErrorParse(statusCode, body)
+	return message
+}
+
+// byteDanceErrorParse is byteDanceErrorMessage plus whether the body matched
+// byteDanceErrorSchema.
+func byteDanceErrorParse(statusCode int, body []byte) (string, bool) {
 	var raw struct {
 		Error   json.RawMessage `json:"error"`
 		Message json.RawMessage `json:"message"`
 	}
 	statusText := http.StatusText(statusCode)
 	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &raw) != nil {
-		return statusText
+		return statusText, false
 	}
 	var nested, top *string
 	if isJSONPresent(raw.Error) {
@@ -78,12 +116,12 @@ func byteDanceErrorMessage(statusCode int, body []byte) string {
 			Code    json.RawMessage `json:"code"`
 		}
 		if json.Unmarshal(raw.Error, &e) != nil || e.Message == nil {
-			return statusText
+			return statusText, false
 		}
 		if isJSONPresent(e.Code) {
 			var code string
 			if json.Unmarshal(e.Code, &code) != nil {
-				return statusText
+				return statusText, false
 			}
 		}
 		nested = e.Message
@@ -91,17 +129,17 @@ func byteDanceErrorMessage(statusCode int, body []byte) string {
 	if isJSONPresent(raw.Message) {
 		var m string
 		if json.Unmarshal(raw.Message, &m) != nil {
-			return statusText
+			return statusText, false
 		}
 		top = &m
 	}
 	switch {
 	case nested != nil:
-		return *nested
+		return *nested, true
 	case top != nil:
-		return *top
+		return *top, true
 	}
-	return "Unknown error"
+	return "Unknown error", true
 }
 
 // isJSONPresent reports whether a raw JSON member is present and not null.
@@ -111,6 +149,9 @@ func isJSONPresent(raw json.RawMessage) bool {
 
 // Error implements the error interface
 func (e *Error) Error() string {
+	if e.textOnly {
+		return e.Message
+	}
 	if e.Details != "" {
 		return fmt.Sprintf("bytedance error (code %d): %s - %s", e.Code, e.Message, e.Details)
 	}
@@ -142,4 +183,11 @@ func NewTimeoutError(duration string) *Error {
 		Message: "Video generation timed out",
 		Details: fmt.Sprintf("Generation timed out after %s", duration),
 	}
+}
+
+// newVideoGenerationErrorText is a video generation error whose whole text
+// is the TS AISDKError message (BYTEDANCE_VIDEO_GENERATION_ERROR thrown by
+// doStart / doStatus); it is still a *Error with Code 500.
+func newVideoGenerationErrorText(message string) *Error {
+	return &Error{Code: 500, Message: message, textOnly: true}
 }

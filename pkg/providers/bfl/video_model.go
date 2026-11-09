@@ -156,7 +156,7 @@ func getDraftEnhanceArgs(opts *provider.VideoModelV3CallOptions, bflOpts *VideoM
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: p.feature,
-				Details: fmt.Sprintf("FLUX 3 draft enhance replays the draft bundle as it was generated, so %q was ignored. Set it on the original draft request instead.", p.feature),
+				Details: fmt.Sprintf("FLUX 3 draft enhance replays the draft bundle as it was generated, so \"%s\" was ignored. Set it on the original draft request instead.", p.feature),
 			})
 		}
 	}
@@ -230,13 +230,13 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 			if !ok {
 				warnings = append(warnings, types.Warning{
 					Type: "unsupported", Feature: "resolution",
-					Details: fmt.Sprintf("Unrecognized resolution %q. FLUX 3 video supports \"hd\" and \"fhd\", so providerOptions.blackForestLabs.resolution (%q) was used instead.", opts.Resolution, resolution),
+					Details: fmt.Sprintf("Unrecognized resolution \"%s\". FLUX 3 video supports \"hd\" and \"fhd\", so providerOptions.blackForestLabs.resolution (\"%s\") was used instead.", opts.Resolution, resolution),
 				})
 			}
 		} else if !ok {
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "resolution",
-				Details: fmt.Sprintf("Unrecognized resolution %q. FLUX 3 video supports \"hd\" and \"fhd\", or a {width}x{height} value to map onto one.", opts.Resolution),
+				Details: fmt.Sprintf("Unrecognized resolution \"%s\". FLUX 3 video supports \"hd\" and \"fhd\", or a {width}x{height} value to map onto one.", opts.Resolution),
 			})
 		} else {
 			resolution = tier
@@ -244,7 +244,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 			if derived {
 				warnings = append(warnings, types.Warning{
 					Type: "compatibility", Feature: "resolution",
-					Details: fmt.Sprintf("FLUX 3 video renders at \"hd\" or \"fhd\"; the requested resolution %q was mapped to %q.", opts.Resolution, tier),
+					Details: fmt.Sprintf("FLUX 3 video renders at \"hd\" or \"fhd\"; the requested resolution \"%s\" was mapped to \"%s\".", opts.Resolution, tier),
 				})
 			}
 		}
@@ -264,7 +264,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 		} else {
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "aspectRatio",
-				Details: fmt.Sprintf("FLUX 3 video does not support the aspect ratio %q. Using the provider default (auto).", opts.AspectRatio),
+				Details: fmt.Sprintf("FLUX 3 video does not support the aspect ratio \"%s\". Using the provider default (auto).", opts.AspectRatio),
 			})
 		}
 	}
@@ -288,7 +288,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 			if mt == "video" {
 				details = "FLUX 3 video does not accept a video as a keyframe. Pass it as an inputReference to continue from it instead."
 			} else {
-				details = fmt.Sprintf("FLUX 3 video only accepts an image as a keyframe; the %q file was ignored.", firstFrame.MediaType)
+				details = fmt.Sprintf("FLUX 3 video only accepts an image as a keyframe; the \"%s\" file was ignored.", firstFrame.MediaType)
 			}
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: feature, Details: details})
 			firstFrame = nil
@@ -307,7 +307,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 			if mt == "video" {
 				details = "FLUX 3 video does not accept a video as a keyframe. The last_frame video was ignored."
 			} else {
-				details = fmt.Sprintf("FLUX 3 video only accepts an image as a keyframe; the %q last_frame was ignored.", lastFrame.MediaType)
+				details = fmt.Sprintf("FLUX 3 video only accepts an image as a keyframe; the \"%s\" last_frame was ignored.", lastFrame.MediaType)
 			}
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frameImages", Details: details})
 			lastFrame = nil
@@ -367,7 +367,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 		default:
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "inputReferences",
-				Details: fmt.Sprintf("FLUX 3 video only accepts a video reference; the %q reference was ignored.", file.MediaType),
+				Details: fmt.Sprintf("FLUX 3 video only accepts a video reference; the \"%s\" reference was ignored.", file.MediaType),
 			})
 		}
 	}
@@ -744,7 +744,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	if videoTerminalFailureStatuses[status] {
 		detail := describePollDetails(pollResp.Details)
-		errMsg := fmt.Sprintf("Black Forest Labs video generation failed with status %q", status)
+		errMsg := fmt.Sprintf("Black Forest Labs video generation failed with status \"%s\"", status)
 		if detail != "" {
 			errMsg += ": " + detail
 		}

@@ -35,19 +35,31 @@ func handleError(providerName string, err error) error {
 		// strings; anything else gives the HTTP status text.
 		message := http.StatusText(statusErr.StatusCode)
 		code := ""
+		matched := false
 		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.ErrCode != nil && payload.ErrMsg != nil && requestIDValid(payload.RequestID) {
 			message = *payload.ErrMsg
 			code = *payload.ErrCode
+			matched = true
 		} else {
 			payload = deepgramErrorPayload{}
 		}
 		providerErr := providererrors.NewProviderErrorFromResponse(providerName, 0, code, message, err)
-		var requestID string
-		if payload.RequestID != nil {
-			_ = json.Unmarshal(payload.RequestID, &requestID)
-		}
-		if requestID != "" {
-			providerErr.Data = map[string]interface{}{"requestId": requestID}
+		// TS APICallError.data: the zod-parsed body ({err_code, err_msg,
+		// request_id?}, undeclared keys stripped) when it matches the schema,
+		// else undefined.
+		providerErr.Data = nil
+		if matched {
+			data := map[string]interface{}{"err_code": *payload.ErrCode, "err_msg": *payload.ErrMsg}
+			var requestID string
+			if payload.RequestID != nil {
+				_ = json.Unmarshal(payload.RequestID, &requestID)
+				data["request_id"] = requestID
+			}
+			// v0.5.2 shape kept alongside (S6): Data["requestId"].
+			if requestID != "" {
+				data["requestId"] = requestID
+			}
+			providerErr.Data = data
 		}
 		return providerErr
 	}

@@ -506,7 +506,9 @@ func (m *TranscriptionModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := assemblyAIErrorMessage(statusErr.StatusCode, statusErr.Body)
-		return providererrors.NewProviderErrorFromResponse("assemblyai", 0, code, message, err)
+		perr := providererrors.NewProviderErrorFromResponse("assemblyai", 0, code, message, err)
+		perr.Data = assemblyAIErrorData(statusErr.Body)
+		return perr
 	}
 	var validationErr *providererrors.ValidationError
 	if errors.As(err, &validationErr) {
@@ -515,4 +517,25 @@ func (m *TranscriptionModel) handleError(err error) error {
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.
 	return err
+}
+
+// assemblyAIErrorData is the zod output of assemblyaiErrorDataSchema for a
+// matching body ({error: string} or {error: {message, code}}, undeclared keys
+// stripped), else nil (TS APICallError.data is undefined).
+func assemblyAIErrorData(body []byte) interface{} {
+	var obj map[string]interface{}
+	if securejson.Unmarshal(body, &obj) != nil {
+		return nil
+	}
+	switch e := obj["error"].(type) {
+	case string:
+		return map[string]interface{}{"error": e}
+	case map[string]interface{}:
+		message, okMessage := e["message"].(string)
+		code, okCode := e["code"].(float64)
+		if okMessage && okCode {
+			return map[string]interface{}{"error": map[string]interface{}{"message": message, "code": code}}
+		}
+	}
+	return nil
 }

@@ -82,7 +82,7 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 		*warnings = append(*warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "outputFormat",
-			Details: fmt.Sprintf("Unknown output format %q. Falling back to mp3. Use providerOptions.cartesia to configure container, encoding, and sampleRate directly.", outputFormat),
+			Details: fmt.Sprintf("Unknown output format \"%s\". Falling back to mp3. Use providerOptions.cartesia to configure container, encoding, and sampleRate directly.", outputFormat),
 		})
 	} else if hasSampleRate {
 		// TS Number(sampleRateText) + Number.isInteger + the rate list.
@@ -93,7 +93,7 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 			*warnings = append(*warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "outputFormat",
-				Details: fmt.Sprintf("Unsupported Cartesia sample rate in output format %q. Using %d Hz instead.", outputFormat, resolved.SampleRate),
+				Details: fmt.Sprintf("Unsupported Cartesia sample rate in output format \"%s\". Using %d Hz instead.", outputFormat, resolved.SampleRate),
 			})
 		}
 	}

@@ -238,7 +238,7 @@ func (m *RealtimeModel) SerializeClientEventRaw(event provider.RealtimeClientEve
 		}
 		return []byte("finalize"), false, true, nil
 	default:
-		return nil, false, true, fmt.Errorf("Cartesia Ink 2 does not support realtime client event %q.", event.Type) //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, false, true, fmt.Errorf("Cartesia Ink 2 does not support realtime client event \"%s\".", event.Type) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 }
 

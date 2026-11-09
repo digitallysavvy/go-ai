@@ -33,7 +33,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 	}
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &raw) != nil {
-		return providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(statusCode), cause)
+		return bflOffSchemaError(statusCode, cause)
 	}
 
 	taskStatus := ""
@@ -47,7 +47,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 	var messageText string
 	if len(raw.Message) > 0 {
 		if string(raw.Message) == "null" || json.Unmarshal(raw.Message, &messageText) != nil {
-			return providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(statusCode), cause)
+			return bflOffSchemaError(statusCode, cause)
 		}
 	}
 	var message string
@@ -78,9 +78,30 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 	}
 
 	perr := providererrors.NewProviderErrorFromResponse("bfl", 0, "", message, cause)
+	// TS APICallError.data: the zod output of bflErrorSchema (message,
+	// detail, status, state when present; undeclared keys stripped).
+	var obj map[string]interface{}
+	if securejson.Unmarshal(body, &obj) == nil {
+		data := map[string]interface{}{}
+		for _, k := range []string{"message", "detail", "status", "state"} {
+			if v, ok := obj[k]; ok {
+				data[k] = v
+			}
+		}
+		perr.Data = data
+	}
 	if bflTerminalTaskStatus(taskStatus) {
 		notRetryable := false
 		perr.Retryable = &notRetryable
 	}
+	return perr
+}
+
+// bflOffSchemaError is the error for a body that does not match
+// bflErrorSchema: the HTTP status text and no data (TS
+// createJsonErrorResponseHandler's fallback).
+func bflOffSchemaError(statusCode int, cause error) error {
+	perr := providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(statusCode), cause)
+	perr.Data = nil
 	return perr
 }

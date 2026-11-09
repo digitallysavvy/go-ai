@@ -168,9 +168,10 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 	cartesiaOpts := extractTranscriptionModelOptions(opts.ProviderOptions)
 
+	// TS `language != null && language !== 'en'`: an empty string is
+	// rejected too.
 	var language *string
-	if cartesiaOpts != nil && cartesiaOpts.Language != "" {
-		l := cartesiaOpts.Language
+	if l, ok := transcriptionLanguageOption(opts.ProviderOptions, cartesiaOpts); ok {
 		language = &l
 	}
 	if language != nil && *language != "en" {

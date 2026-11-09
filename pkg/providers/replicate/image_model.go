@@ -228,6 +228,14 @@ func (m *ImageModel) handleError(err error) error {
 // message is `detail ?? error ?? 'Unknown Replicate error'` of a JSON object
 // error body; a body that is not that shape falls back to the status text.
 func replicateErrorMessage(status int, body []byte) string {
+	message, _ := replicateErrorMessageData(status, body)
+	return message
+}
+
+// replicateErrorMessageData is replicateErrorMessage plus the TS
+// APICallError.data: the zod output of replicateErrorSchema ({detail?,
+// error?}, undeclared keys stripped) for a matching body, else nil.
+func replicateErrorMessageData(status int, body []byte) (string, interface{}) {
 	// z.string().optional(): absent is fine, null or a non-string is off-schema.
 	var parsed struct {
 		Detail json.RawMessage `json:"detail"`
@@ -246,16 +254,23 @@ func replicateErrorMessage(status int, body []byte) string {
 		detail, hasDetail, detailOK := optional(parsed.Detail)
 		errorField, hasError, errorOK := optional(parsed.Error)
 		if detailOK && errorOK {
+			data := map[string]interface{}{}
+			if hasDetail {
+				data["detail"] = detail
+			}
+			if hasError {
+				data["error"] = errorField
+			}
 			switch {
 			case hasDetail:
-				return detail
+				return detail, data
 			case hasError:
-				return errorField
+				return errorField, data
 			}
-			return "Unknown Replicate error"
+			return "Unknown Replicate error", data
 		}
 	}
-	return http.StatusText(status)
+	return http.StatusText(status), nil
 }
 
 // replicateAPIError builds the provider error for a non-2xx Replicate
@@ -263,7 +278,10 @@ func replicateErrorMessage(status int, body []byte) string {
 // replicateErrorMessage.
 func replicateAPIError(status int, headers http.Header, body []byte) error {
 	cause := &internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body}
-	return providererrors.NewProviderErrorFromResponse("replicate", 0, "", replicateErrorMessage(status, body), cause)
+	message, data := replicateErrorMessageData(status, body)
+	perr := providererrors.NewProviderErrorFromResponse("replicate", 0, "", message, cause)
+	perr.Data = data
+	return perr
 }
 
 // buildRequest builds the prediction request body, warnings and Prefer header.
@@ -511,7 +529,9 @@ func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateIm
 			if errors.As(err, &dlErr) && dlErr.StatusCode >= 400 {
 				return nil, replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 			}
-			return nil, fmt.Errorf("failed to download image: %w", err)
+			// TS getFromApi lets any other failure (a URL rejected by
+			// validateUrl, an abort) propagate unchanged.
+			return nil, err
 		}
 		images = append(images, data)
 		if mimeType == "" {

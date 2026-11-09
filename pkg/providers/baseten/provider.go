@@ -2,7 +2,7 @@ package baseten
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
@@ -197,8 +197,10 @@ func basetenEmbeddingURL(modelURL string) string {
 
 // LanguageModel returns an OpenAI-compatible Chat Completions model.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	if p.modelURL != "" && strings.Contains(p.modelURL, "/predict") {
-		return nil, fmt.Errorf("baseten: not supported; you must use a /sync/v1 endpoint for chat models")
+	// TS createChatModel: a /sync/v1 URL wins, then a /predict URL throws
+	// (the TS Error text).
+	if p.modelURL != "" && !strings.Contains(p.modelURL, "/sync/v1") && strings.Contains(p.modelURL, "/predict") {
+		return nil, errors.New("Not supported. You must use a /sync/v1 endpoint for chat models.") //nolint:staticcheck // TS error text
 	}
 	if modelID == "" {
 		// TS: modelId ?? 'placeholder' for a custom /sync/v1 deployment
@@ -224,9 +226,9 @@ func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	if p.embedding == nil {
 		if p.modelURL == "" {
-			return nil, fmt.Errorf("baseten: no model URL provided for embeddings; set ModelURL to a /sync or /sync/v1 endpoint")
+			return nil, errors.New("No model URL provided for embeddings. Please set modelURL option for embeddings.") //nolint:staticcheck // TS error text
 		}
-		return nil, fmt.Errorf("baseten: not supported; you must use a /sync or /sync/v1 endpoint for embeddings")
+		return nil, errors.New("Not supported. You must use a /sync or /sync/v1 endpoint for embeddings.") //nolint:staticcheck // TS error text
 	}
 	if modelID == "" {
 		modelID = "embeddings"

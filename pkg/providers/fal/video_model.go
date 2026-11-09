@@ -194,7 +194,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, providererrors.NewVideoGenerationError("fal", m.modelID, "No response URL returned from queue endpoint", nil)
 	}
 
-	operation, _ := json.Marshal(falVideoOperation{ResponseURL: queueResp.ResponseURL, SubmitURL: queuePath})
+	// TS operation.submitUrl is the URL the job was submitted to, including
+	// the fal_webhook query (fal-video-model.ts submitToQueue).
+	operation, _ := json.Marshal(falVideoOperation{ResponseURL: queueResp.ResponseURL, SubmitURL: submitURL})
 
 	return &provider.VideoModelV3OperationStartResult{
 		Operation: operation,
@@ -479,8 +481,7 @@ func (m *VideoModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message := parseFalErrorMessage(statusErr.Body, http.StatusText(statusErr.StatusCode))
-		return providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", message, err)
+		return falAPIError(m.Provider(), statusErr, err)
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.

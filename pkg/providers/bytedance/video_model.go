@@ -252,7 +252,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse creation response: %v", err))
 	}
 	if createResp.ID == "" {
-		return nil, NewVideoGenerationError("No task ID returned from API")
+		return nil, newVideoGenerationErrorText("No task ID returned from API")
 	}
 
 	operation, _ := json.Marshal(bytedanceOperation{TaskID: createResp.ID})
@@ -316,7 +316,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			lastFrameURL = statusResp.Content.LastFrameURL
 		}
 		if videoURL == "" {
-			return nil, NewVideoGenerationError(fmt.Sprintf("No video URL in response. Task ID: %s", operation.TaskID))
+			return nil, newVideoGenerationErrorText("No video URL in response. Task ID: " + operation.TaskID)
 		}
 
 		// Assign through an interface{} local rather than the *taskUsageField

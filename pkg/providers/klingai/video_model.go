@@ -873,6 +873,7 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 			Code:      400,
 			ErrorCode: ErrCodeKlingVideoMissingOptions,
 			Message:   "KlingAI Motion Control requires providerOptions.klingai with videoUrl, characterOrientation, and mode.",
+			textOnly:  true, // TS AISDKError text
 		}
 	}
 

@@ -726,7 +726,15 @@ func handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := parseGladiaErrorBody(statusErr.StatusCode, statusErr.Body)
-		return providererrors.NewProviderErrorFromResponse("gladia", 0, code, message, err)
+		perr := providererrors.NewProviderErrorFromResponse("gladia", 0, code, message, err)
+		// TS APICallError.data: the schema-parsed body ({error: {message,
+		// code}}, undeclared keys stripped), else undefined.
+		perr.Data = nil
+		if code != "" {
+			codeNumber, _ := strconv.ParseFloat(code, 64)
+			perr.Data = map[string]interface{}{"error": map[string]interface{}{"message": message, "code": codeNumber}}
+		}
+		return perr
 	}
 
 	var downloadErr *providererrors.DownloadError

@@ -246,7 +246,49 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // message).
 func (m *ImageModel) statusError(status int, headers http.Header, body []byte) error {
 	cause := &internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body}
-	return providererrors.NewProviderErrorFromResponse("fal", 0, "", falImageErrorMessage(status, body), cause)
+	perr := providererrors.NewProviderErrorFromResponse("fal", 0, "", falImageErrorMessage(status, body), cause)
+	perr.Data = falImageErrorData(body)
+	return perr
+}
+
+// falImageErrorData is the zod output of the image model's falErrorSchema
+// union for a matching body: {detail: [{loc, msg, type}]} or {message},
+// undeclared keys stripped; nil for an off-schema body (TS data undefined).
+func falImageErrorData(body []byte) interface{} {
+	var top map[string]interface{}
+	if securejson.Unmarshal([]byte(textdecode.UTF8(body)), &top) != nil || top == nil {
+		return nil
+	}
+	if detail, ok := top["detail"].([]interface{}); ok {
+		entries := make([]interface{}, 0, len(detail))
+		valid := true
+		for _, raw := range detail {
+			d, _ := raw.(map[string]interface{})
+			loc, okLoc := d["loc"].([]interface{})
+			msg, okMsg := d["msg"].(string)
+			typ, okType := d["type"].(string)
+			if !okLoc || !okMsg || !okType {
+				valid = false
+				break
+			}
+			for _, l := range loc {
+				if _, isStr := l.(string); !isStr {
+					valid = false
+				}
+			}
+			if !valid {
+				break
+			}
+			entries = append(entries, map[string]interface{}{"loc": loc, "msg": msg, "type": typ})
+		}
+		if valid {
+			return map[string]interface{}{"detail": entries}
+		}
+	}
+	if message, ok := top["message"].(string); ok {
+		return map[string]interface{}{"message": message}
+	}
+	return nil
 }
 
 // falImageErrorMessage mirrors the image model's TS falFailedResponseHandler:
