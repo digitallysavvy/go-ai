@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // MCPClient represents an MCP client that can communicate with MCP servers
@@ -1291,6 +1293,18 @@ func pendingKey(id interface{}) interface{} {
 		if n, err := v.Int64(); err == nil {
 			return uint64(n)
 		}
+	case string:
+		// TS onResponse looks the handler up by Number(response.id), so a
+		// numeric string id ("1", " 1 ", "1e0") answers request 1.
+		if f, ok := providerutils.JSNumber(v); ok && f >= 0 && f == math.Trunc(f) && f < 1<<63 {
+			return uint64(f)
+		}
+	case bool:
+		// Number(true) is 1 and Number(false) is 0.
+		if v {
+			return uint64(1)
+		}
+		return uint64(0)
 	}
 	return id
 }
