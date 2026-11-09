@@ -193,15 +193,22 @@ func quiverAIStripReasoningText(messages []types.Message) []types.Message {
 				continue
 			}
 			changed = true
-			itemID, reasoningSummary := quiverAIReasoningMetadata(rc)
 			newOptions := map[string]interface{}{}
 			for k, v := range rc.ProviderOptions {
 				newOptions[k] = v
 			}
-			newOptions["quiverai"] = map[string]interface{}{
-				"itemId":           itemID,
-				"reasoningSummary": reasoningSummary,
+			// TS {itemId: metadata?.itemId, reasoningSummary:
+			// metadata?.reasoningSummary}: each value as given (undefined
+			// when absent), so the Open Responses converter sends an item id
+			// only for a string itemId.
+			replay := map[string]interface{}{}
+			metadata := quiverAIReasoningMetadata(rc)
+			for _, key := range []string{"itemId", "reasoningSummary"} {
+				if v, ok := metadata[key]; ok && v != nil {
+					replay[key] = v
+				}
 			}
+			newOptions["quiverai"] = replay
 			rc.Text = ""
 			rc.EncryptedContent = ""
 			rc.ProviderOptions = newOptions
@@ -223,16 +230,12 @@ func quiverAIStripReasoningText(messages []types.Message) []types.Message {
 // when providerOptions carries no quiverai key at all -- mirrors TS's
 // `part.providerOptions?.quiverai ?? part.providerMetadata?.quiverai`
 // (checked as a whole, not per-field).
-func quiverAIReasoningMetadata(rc types.ReasoningContent) (itemID string, reasoningSummary interface{}) {
+func quiverAIReasoningMetadata(rc types.ReasoningContent) map[string]interface{} {
 	metadata, ok := rc.ProviderOptions["quiverai"].(map[string]interface{})
 	if !ok {
 		metadata = decodeQuiverAIProviderMetadata(rc.ProviderMetadata)
 	}
-	if metadata == nil {
-		return "", nil
-	}
-	id, _ := metadata["itemId"].(string)
-	return id, metadata["reasoningSummary"]
+	return metadata
 }
 
 // decodeQuiverAIProviderMetadata decodes the "quiverai" key out of a
