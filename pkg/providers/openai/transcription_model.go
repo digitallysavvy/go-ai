@@ -574,9 +574,9 @@ type openaiTranscriptionResponse struct {
 	} `json:"languages"`
 	Usage    map[string]interface{} `json:"usage,omitempty"`
 	Segments []struct {
-		Text    string  `json:"text"`
-		Start   float64 `json:"start"`
-		End     float64 `json:"end"`
+		Text  string  `json:"text"`
+		Start float64 `json:"start"`
+		End   float64 `json:"end"`
 		// Type and Speaker identify a diarized segment (TS union member
 		// {type: 'transcript.text.segment', ..., speaker: string}).
 		Type    string  `json:"type,omitempty"`

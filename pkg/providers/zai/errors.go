@@ -61,6 +61,7 @@ func parseZaiProviderError(err error) error {
 	pe.Data = data
 	return pe
 }
+
 // zaiErrorCode normalizes an error code, which may be a JSON string or
 // number, to a string.
 func zaiErrorCode(code interface{}) string {
