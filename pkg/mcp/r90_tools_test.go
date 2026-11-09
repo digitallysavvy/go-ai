@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -29,5 +31,37 @@ func TestR90toolsMCPEventNullFieldsRejected(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`{"id":"sub_1","refreshBefore":null,"truncated":false}`), &r); err != nil {
 		t.Errorf("valid subscribe result rejected: %v", err)
+	}
+}
+
+// TS createMCPEvents.subscribe (mcp-events.ts 104-131) parses the callback
+// URL with WHATWG `new URL`, checks url.hash (empty for a bare "#") and
+// stores url.href after searchParams.set, so the host is lowercased and a
+// default port dropped. An unparseable URL is the TypeError "Invalid URL".
+func TestR90toolsMCPEventCallbackURLIsWHATWGHref(t *testing.T) {
+	store := newMemEventStore()
+	tr := newEventsTransport()
+	client := connectEventsClient(t, tr, &MCPEventsConfig{Store: store})
+	ev := client.ExperimentalEvents()
+	ctx := context.Background()
+
+	o := subOpts
+	o.Delivery.URL = "HTTPS://App.Example:443/events?tenant=one"
+	if _, err := ev.Subscribe(ctx, o); err != nil {
+		t.Fatal(err)
+	}
+	delivery := tr.last("events/subscribe")["delivery"].(map[string]interface{})
+	if u := delivery["url"].(string); !strings.HasPrefix(u, "https://app.example/events?tenant=one&"+MCPEventCallbackKey+"=") {
+		t.Errorf("callback url = %q", u)
+	}
+
+	o.Delivery.URL = "https://app.example/events#"
+	if _, err := ev.Subscribe(ctx, o); err != nil {
+		t.Errorf("empty fragment rejected: %v", err)
+	}
+
+	o.Delivery.URL = "not a url"
+	if _, err := ev.Subscribe(ctx, o); err == nil || err.Error() != "Invalid URL" {
+		t.Errorf("invalid url error = %v", err)
 	}
 }

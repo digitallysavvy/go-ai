@@ -5,8 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // MCPEventCallbackKey is the query parameter that routes a webhook delivery
@@ -122,14 +122,18 @@ func (e *MCPEvents) Subscribe(ctx context.Context, options SubscribeEventOptions
 	if err != nil {
 		return nil, err
 	}
-	u, err := url.Parse(options.Delivery.URL)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return nil, NewMCPClientError(0, fmt.Sprintf("Invalid MCP event callback URL: %s", options.Delivery.URL), nil)
+	// TS `new URL(delivery.url)` (WHATWG): an unparseable URL is its
+	// TypeError "Invalid URL"; the checks read url.protocol, url.hostname,
+	// url.username / url.password and url.hash ("" for an empty fragment),
+	// and the stored callback URL is url.href.
+	u, err := urlnorm.Parse(options.Delivery.URL)
+	if err != nil {
+		return nil, urlnorm.ErrInvalidURL
 	}
 	localHTTP := options.Delivery.AllowInsecureLocalhost &&
 		u.Scheme == "http" &&
-		(u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")
-	if (u.Scheme != "https" && !localHTTP) || u.User != nil || u.Fragment != "" || strings.Contains(options.Delivery.URL, "#") {
+		(u.Host == "127.0.0.1" || u.Host == "[::1]")
+	if (u.Scheme != "https" && !localHTTP) || u.Username != "" || u.Password != "" || (u.Fragment != nil && *u.Fragment != "") {
 		return nil, NewMCPClientError(0, "MCP event callback URLs must use HTTPS without credentials or fragments", nil)
 	}
 	if options.Delivery.Mode != "" && options.Delivery.Mode != MCPEventDeliveryWebhook {
@@ -206,7 +210,12 @@ func (e *MCPEvents) Subscribe(ctx context.Context, options SubscribeEventOptions
 	if err != nil {
 		return nil, err
 	}
-	u.RawQuery = appendMCPEventQuery(u.RawQuery, MCPEventCallbackKey, key)
+	rawQuery := ""
+	if u.Query != nil {
+		rawQuery = *u.Query
+	}
+	query := appendMCPEventQuery(rawQuery, MCPEventCallbackKey, key)
+	u.Query = &query
 	sub := MCPEventSubscription{
 		Key:        key,
 		Name:       options.Name,
