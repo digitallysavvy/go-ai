@@ -84,3 +84,20 @@ func TestR89provbChatErrorMessageFollowsSchema(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// OpenAI-compatible wrappers keep their own error structures (TS
+// errorStructure, e.g. Baseten's string error), so the strict OpenAI schema
+// applies to the native models only.
+func TestR89provbCompatModeKeepsWrapperErrorShape(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"error":"please check the model you provided"}`))
+	}))
+	defer srv.Close()
+	chat, _ := New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: true}).ChatModel("m")
+	_, err := chat.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "please check the model you provided" {
+		t.Fatalf("err = %#v", err)
+	}
+}

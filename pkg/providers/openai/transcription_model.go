@@ -82,7 +82,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok {
+		if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok && !m.provider.config.OpenAICompatible {
 			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)

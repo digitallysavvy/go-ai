@@ -103,9 +103,6 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok {
-			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
-		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 	images := make([][]byte, 0, len(response.Data))
