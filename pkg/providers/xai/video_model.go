@@ -881,7 +881,7 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 	if !isEdit && !isExtension && provOpts.Resolution == nil && opts.Resolution != "" && mapResolution(opts.Resolution) == "" {
 		warnings = append(warnings, unsupportedVideoWarning(
 			"resolution",
-			fmt.Sprintf("Unrecognized resolution %q. Use providerOptions.xai.resolution with \"480p\", \"720p\", or \"1080p\" instead.", opts.Resolution),
+			fmt.Sprintf("Unrecognized resolution \"%s\". Use providerOptions.xai.resolution with \"480p\", \"720p\", or \"1080p\" instead.", opts.Resolution),
 		))
 	}
 

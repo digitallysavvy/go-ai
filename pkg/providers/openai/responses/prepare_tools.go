@@ -75,7 +75,7 @@ func PrepareToolsWithOptionsName(tools []types.Tool, providerOptionsName string)
 						namespaces[namespace.Name] = namespaceDef
 						result = append(result, namespaceDef)
 					} else if namespaceDef.Description != namespace.Description {
-						functionality := fmt.Sprintf("conflicting descriptions for OpenAI tool namespace %q", namespace.Name)
+						functionality := fmt.Sprintf("conflicting descriptions for OpenAI tool namespace \"%s\"", namespace.Name)
 						return nil, &providererrors.UnsupportedFunctionalityError{
 							Functionality: functionality,
 							Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
@@ -728,7 +728,7 @@ func CheckOmittedToolChoice(tools []types.Tool, toolChoice types.ToolChoice) err
 			continue
 		}
 		if functionToolOmitFromRequestTools(t.ProviderOptions) {
-			functionality := fmt.Sprintf("forcing tool %q omitted from the request tools array; use automatic tool choice for history-loaded tools", t.Name)
+			functionality := fmt.Sprintf("forcing tool \"%s\" omitted from the request tools array; use automatic tool choice for history-loaded tools", t.Name)
 			return &providererrors.UnsupportedFunctionalityError{
 				Functionality: functionality,
 				Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
@@ -1056,7 +1056,7 @@ func ResolveAllowedToolsWithOptionsName(tools []types.Tool, toolNames []string, 
 		if hasDirect && hasAlias {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
-				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Feature: fmt.Sprintf("allowedTools entry \"%s\"", name),
 				Details: "this name is both a tool name and the provider tool name of another tool in this request; the tool with this name is allowed",
 			})
 		}
@@ -1064,7 +1064,7 @@ func ResolveAllowedToolsWithOptionsName(tools []types.Tool, toolNames []string, 
 		if !hasDirect && hasAlias && alias.aliasAmbiguous {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
-				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Feature: fmt.Sprintf("allowedTools entry \"%s\"", name),
 				Details: "several tools in this request share this provider tool name; use the tool name from the tools for this request instead",
 			})
 			dropped = append(dropped, name)
@@ -1079,7 +1079,7 @@ func ResolveAllowedToolsWithOptionsName(tools []types.Tool, toolNames []string, 
 		if !ok {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
-				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Feature: fmt.Sprintf("allowedTools entry \"%s\"", name),
 				Details: "the tool is not part of the tools for this request and is sent as a function tool",
 			})
 			entries = append(entries, AllowedToolsToolEntry{Type: "function", Name: name})
@@ -1088,7 +1088,7 @@ func ResolveAllowedToolsWithOptionsName(tools []types.Tool, toolNames []string, 
 		if !resolution.supported {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
-				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Feature: fmt.Sprintf("allowedTools entry \"%s\"", name),
 				Details: resolution.reason + "; the tool is removed from the allowed tools",
 			})
 			dropped = append(dropped, name)

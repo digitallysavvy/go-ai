@@ -309,7 +309,7 @@ func resolveXAIResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) (int
 		if _, isProvider := xaiProviderToolID(t); isProvider {
 			return nil, []types.Warning{{
 				Type:    "unsupported",
-				Feature: fmt.Sprintf("toolChoice for server-side tool %q", t.Name),
+				Feature: fmt.Sprintf("toolChoice for server-side tool \"%s\"", t.Name),
 			}}
 		}
 		return convertXAIResponsesToolChoice(tc), nil

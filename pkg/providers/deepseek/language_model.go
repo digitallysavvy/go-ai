@@ -352,7 +352,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if effort, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort"); ok {
 		mapped, remapped := deepseekProviderReasoningEffort(effort)
 		if remapped {
-			details := fmt.Sprintf("reasoningEffort %q is not a canonical DeepSeek value. mapped to %q.", effort, mapped)
+			details := fmt.Sprintf("reasoningEffort \"%s\" is not a canonical DeepSeek value. mapped to \"%s\".", effort, mapped)
 			effortWarnings = append(effortWarnings, types.Warning{Type: "compatibility", Feature: "reasoningEffort", Details: details, Message: details})
 		}
 		body["reasoning_effort"] = mapped

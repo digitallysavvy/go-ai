@@ -82,7 +82,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 					details := "Moonshot documents dynamic tool loading only for Kimi K3. The dynamic system message has been omitted."
 					warnings = append(warnings, types.Warning{
 						Type:    "unsupported",
-						Feature: fmt.Sprintf("dynamic tool loading for model %q", modelID),
+						Feature: fmt.Sprintf("dynamic tool loading for model \"%s\"", modelID),
 						Details: details,
 						Message: details,
 					})

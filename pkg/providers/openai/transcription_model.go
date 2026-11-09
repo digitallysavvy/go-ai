@@ -221,7 +221,7 @@ func (m *TranscriptionModel) timestampGranularities(opts *provider.Transcription
 		for _, g := range opts.TimestampGranularities {
 			if !stringListContains(openaiOpts.TimestampGranularities, g) {
 				warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "timestampGranularities",
-					Details: fmt.Sprintf("The %q timestamp granularity is excluded by providerOptions.openai.timestampGranularities.", g)})
+					Details: fmt.Sprintf("The \"%s\" timestamp granularity is excluded by providerOptions.openai.timestampGranularities.", g)})
 			}
 		}
 	}

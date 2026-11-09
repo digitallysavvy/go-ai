@@ -419,7 +419,7 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) *aliba
 				warnings = append(warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "resolution",
-					Details: fmt.Sprintf("%s models only support the %s resolution tiers. The resolution %q was ignored.", modelName, strings.Join(supportedTiers, ", "), opts.Resolution),
+					Details: fmt.Sprintf("%s models only support the %s resolution tiers. The resolution \"%s\" was ignored.", modelName, strings.Join(supportedTiers, ", "), opts.Resolution),
 				})
 			} else {
 				parameters["resolution"] = resolutionTier

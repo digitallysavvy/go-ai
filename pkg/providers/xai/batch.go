@@ -80,7 +80,7 @@ func assertXAISupportedBatchRequests(requests []provider.BatchV4Request) error {
 		if req.Type != provider.BatchRequestTypeText && req.Type != provider.BatchRequestTypeImage {
 			return &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("batch request type: %s", req.Type),
-				Message:       fmt.Sprintf("The xAI Batch API does not support batch requests with type %q.", req.Type),
+				Message:       fmt.Sprintf("The xAI Batch API does not support batch requests with type \"%s\".", req.Type),
 			}
 		}
 	}
@@ -334,7 +334,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, err
 	}
 	if convertXAIBatchStatus(*resp).Status == provider.BatchStatusPending {
-		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("xAI batch %q is not complete.", opts.BatchID), nil)
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("xAI batch \"%s\" is not complete.", opts.BatchID), nil)
 	}
 	return newXAIBatchResultsStream(ctx, b, opts.BatchID, opts.Headers), nil
 }
@@ -432,13 +432,13 @@ func convertXAIBatchStatus(b xaiBatchResponseWire) provider.BatchV4Status {
 	}
 	switch {
 	case isCancelled:
-		msg := fmt.Sprintf("xAI batch %q was cancelled.", b.BatchID)
+		msg := fmt.Sprintf("xAI batch \"%s\" was cancelled.", b.BatchID)
 		if b.CancelByXAIMessage != nil {
 			msg = *b.CancelByXAIMessage
 		}
 		result.Error = &provider.BatchError{Message: msg, Code: "batch_cancelled"}
 	case isExpired:
-		result.Error = &provider.BatchError{Message: fmt.Sprintf("xAI batch %q expired.", b.BatchID), Code: "batch_expired"}
+		result.Error = &provider.BatchError{Message: fmt.Sprintf("xAI batch \"%s\" expired.", b.BatchID), Code: "batch_expired"}
 	}
 	return result
 }

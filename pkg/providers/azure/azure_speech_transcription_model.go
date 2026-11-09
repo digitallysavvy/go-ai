@@ -143,7 +143,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 			}
 		case (wantsWord && timestamps != "word") || (wantsSegment && timestamps == "none"):
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "timestampGranularities",
-				Details: fmt.Sprintf("providerOptions.azure.timestamps is %q and overrides the requested timestamp granularities.", timestamps)})
+				Details: fmt.Sprintf("providerOptions.azure.timestamps is \"%s\" and overrides the requested timestamp granularities.", timestamps)})
 		}
 	}
 	if timestamps == "" && (!isMAI || maiModel.SupportsTimestamps) {

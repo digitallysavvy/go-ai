@@ -212,7 +212,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoningEffort",
-				Details: fmt.Sprintf("reasoningEffort is only supported by Kimi K3 and has been omitted for model %q.", m.modelID),
+				Details: fmt.Sprintf("reasoningEffort is only supported by Kimi K3 and has been omitted for model \"%s\".", m.modelID),
 			})
 		}
 	}
@@ -220,7 +220,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	preservedUnsupportedWarning := func() {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
-			Feature: fmt.Sprintf("reasoningHistory 'preserved' is not supported by model %q", m.modelID),
+			Feature: fmt.Sprintf("reasoningHistory 'preserved' is not supported by model \"%s\"", m.modelID),
 		})
 	}
 
@@ -292,14 +292,14 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "thinking",
-				Details: fmt.Sprintf("thinking is not supported by model %q and has been omitted.", m.modelID),
+				Details: fmt.Sprintf("thinking is not supported by model \"%s\" and has been omitted.", m.modelID),
 			})
 		}
 		if isCustomReasoning(opts.Reasoning) && !reasoningNone {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoning",
-				Details: fmt.Sprintf("reasoning is not supported by model %q.", m.modelID),
+				Details: fmt.Sprintf("reasoning is not supported by model \"%s\".", m.modelID),
 			})
 		}
 		if preserveReasoning {
@@ -479,7 +479,7 @@ func moonshotFixedSamplingWarning(feature, modelID string) types.Warning {
 	return types.Warning{
 		Type:    "unsupported",
 		Feature: feature,
-		Details: fmt.Sprintf("%s is fixed by model %q and has been omitted.", feature, modelID),
+		Details: fmt.Sprintf("%s is fixed by model \"%s\" and has been omitted.", feature, modelID),
 	}
 }
 

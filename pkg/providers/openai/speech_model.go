@@ -187,7 +187,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "language",
-			Details: fmt.Sprintf("OpenAI speech models do not support language selection. Language parameter %q was ignored.", opts.Language),
+			Details: fmt.Sprintf("OpenAI speech models do not support language selection. Language parameter \"%s\" was ignored.", opts.Language),
 		})
 	}
 	return body, warnings

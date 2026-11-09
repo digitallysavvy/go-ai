@@ -521,7 +521,7 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoning",
-				Details: fmt.Sprintf("reasoning %q is not supported by this model.", string(*opts.Reasoning)),
+				Details: fmt.Sprintf("reasoning \"%s\" is not supported by this model.", string(*opts.Reasoning)),
 			})
 		} else {
 			effortMap := map[types.ReasoningLevel]string{
