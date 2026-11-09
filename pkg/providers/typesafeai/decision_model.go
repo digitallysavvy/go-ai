@@ -378,15 +378,47 @@ func (m *DecisionModel) handleError(err error) error {
 		return err // includes the schema failure (Invalid JSON response)
 	}
 
-	message := typesafeErrorMessage(httpErr.StatusCode, httpErr.Body)
+	message, matched := typesafeErrorMessageMatched(httpErr.StatusCode, httpErr.Body)
 
-	return &providererrors.ProviderError{
+	providerErr := &providererrors.ProviderError{
 		Provider:        m.Provider(),
 		StatusCode:      httpErr.StatusCode,
 		Message:         message,
 		ResponseHeaders: providerutils.ExtractHeaders(httpErr.Headers),
 		ResponseBody:    string(httpErr.Body),
+		Cause:           err,
 	}
+	if matched {
+		providerErr.Data = typesafeErrorData(httpErr.Body)
+	}
+	return providerErr
+}
+
+// typesafeErrorData is TS APICallError.data for a body that matched
+// typesafeFailedResponseHandler's zod schema: only the declared keys that are
+// present (null kept), with an object `error` stripped to its `message`.
+func typesafeErrorData(body []byte) map[string]interface{} {
+	var fields map[string]interface{}
+	if securejson.Unmarshal(body, &fields) != nil || fields == nil {
+		return nil
+	}
+	data := map[string]interface{}{}
+	for _, key := range []string{"message", "detail", "error_type"} {
+		if v, ok := fields[key]; ok {
+			data[key] = v
+		}
+	}
+	if v, ok := fields["error"]; ok {
+		if obj, isObj := v.(map[string]interface{}); isObj {
+			stripped := map[string]interface{}{}
+			if m, has := obj["message"]; has {
+				stripped["message"] = m
+			}
+			v = stripped
+		}
+		data["error"] = v
+	}
+	return data
 }
 
 // typesafeErrorMessage mirrors TS typesafeFailedResponseHandler. A body that
@@ -397,10 +429,17 @@ func (m *DecisionModel) handleError(err error) error {
 // it, which is the text "null" for an explicit null), then error_type, then
 // "TypeSafe request failed".
 func typesafeErrorMessage(statusCode int, body []byte) string {
+	message, _ := typesafeErrorMessageMatched(statusCode, body)
+	return message
+}
+
+// typesafeErrorMessageMatched is typesafeErrorMessage plus whether the body
+// matched the TS error schema (false: the status text fallback).
+func typesafeErrorMessageMatched(statusCode int, body []byte) (string, bool) {
 	statusText := http.StatusText(statusCode)
 	var fields map[string]json.RawMessage
 	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &fields) != nil {
-		return statusText
+		return statusText, false
 	}
 	// A map keeps an explicit null distinguishable from an absent key, which
 	// a RawMessage struct field does not.
@@ -422,11 +461,11 @@ func typesafeErrorMessage(statusCode int, body []byte) string {
 
 	message, haveMessage, ok := nullableString(raw.Message)
 	if !ok {
-		return statusText
+		return statusText, false
 	}
 	errorType, haveErrorType, ok := nullableString(raw.ErrorType)
 	if !ok {
-		return statusText
+		return statusText, false
 	}
 	var errorText string
 	haveError := false
@@ -440,12 +479,12 @@ func typesafeErrorMessage(statusCode int, body []byte) string {
 			}
 			trimmed := bytes.TrimSpace(raw.Error)
 			if trimmed[0] != '{' || json.Unmarshal(raw.Error, &obj) != nil {
-				return statusText
+				return statusText, false
 			}
 			var present bool
 			errorText, present, ok = nullableString(obj.Message)
 			if !ok {
-				return statusText
+				return statusText, false
 			}
 			haveError = present
 		}
@@ -453,30 +492,30 @@ func typesafeErrorMessage(statusCode int, body []byte) string {
 
 	switch {
 	case haveMessage:
-		return message
+		return message, true
 	case haveError:
-		return errorText
+		return errorText, true
 	}
 	// `detail` is z.unknown().nullish(): absent skips this step, anything
 	// else (including an explicit null) is stringified.
 	if _, present := fields["detail"]; present {
 		if isNull(raw.Detail) {
-			return "null"
+			return "null", true
 		}
 		var s string
 		if json.Unmarshal(raw.Detail, &s) == nil {
-			return s
+			return s, true
 		}
 		// JSON.stringify of the parsed value: numbers read through a double
 		// (1.0 gives 1), keys in JS order, JS string escaping.
 		if tree, ok := jsonorder.Parse(raw.Detail); ok {
-			return jsonorder.Stringify(tree)
+			return jsonorder.Stringify(tree), true
 		}
 	}
 	if haveErrorType {
-		return errorType
+		return errorType, true
 	}
-	return "TypeSafe request failed"
+	return "TypeSafe request failed", true
 }
 
 // typesafeResponseWire is the wire shape of a successful /systemone response.
