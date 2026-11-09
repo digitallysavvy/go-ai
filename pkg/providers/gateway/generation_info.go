@@ -50,34 +50,33 @@ type generationInfoEnvelope struct {
 }
 
 type generationInfoWire struct {
-	ID                     string   `json:"id"`
-	Model                  string   `json:"model"`
-	ProviderName           string   `json:"provider_name"`
-	FinishReason           string   `json:"finish_reason"`
-	TotalCost              float64  `json:"total_cost"`
-	MarketCost             *float64 `json:"market_cost"`
-	SurchargeCost          *float64 `json:"surcharge_cost"`
-	GatewayCost            *float64 `json:"gateway_cost"`
-	UpstreamInferenceCost  float64  `json:"upstream_inference_cost"`
-	Usage                  float64  `json:"usage"`
-	IsByok                 bool     `json:"is_byok"`
-	Streamed               bool     `json:"streamed"`
-	CreatedAt              string   `json:"created_at"`
-	PromptTokens           int64    `json:"native_tokens_prompt"`
-	CompletionTokens       int64    `json:"native_tokens_completion"`
-	ReasoningTokens        int64    `json:"native_tokens_reasoning"`
-	CachedTokens           int64    `json:"native_tokens_cached"`
-	CacheCreationTokens    int64    `json:"native_tokens_cache_creation"`
-	Latency                int64    `json:"latency"`
-	GenerationTime         int64    `json:"generation_time"`
-	BillableWebSearchCalls int      `json:"billable_web_search_calls"`
+	ID                    string   `json:"id"`
+	Model                 string   `json:"model"`
+	ProviderName          string   `json:"provider_name"`
+	FinishReason          string   `json:"finish_reason"`
+	TotalCost             float64  `json:"total_cost"`
+	MarketCost            *float64 `json:"market_cost"`
+	SurchargeCost         *float64 `json:"surcharge_cost"`
+	GatewayCost           *float64 `json:"gateway_cost"`
+	UpstreamInferenceCost float64  `json:"upstream_inference_cost"`
+	Usage                 float64  `json:"usage"`
+	IsByok                bool     `json:"is_byok"`
+	Streamed              bool     `json:"streamed"`
+	CreatedAt             string   `json:"created_at"`
+	// The counts and times are z.number() in TS: decoded as float64 so a
+	// fractional value parses, then truncated into the v0.5.2 integer
+	// fields (S1).
+	PromptTokens           float64 `json:"native_tokens_prompt"`
+	CompletionTokens       float64 `json:"native_tokens_completion"`
+	ReasoningTokens        float64 `json:"native_tokens_reasoning"`
+	CachedTokens           float64 `json:"native_tokens_cached"`
+	CacheCreationTokens    float64 `json:"native_tokens_cache_creation"`
+	Latency                float64 `json:"latency"`
+	GenerationTime         float64 `json:"generation_time"`
+	BillableWebSearchCalls float64 `json:"billable_web_search_calls"`
 }
 
 func (p *Provider) GetGenerationInfo(ctx context.Context, params GenerationInfoParams) (*GenerationInfo, error) {
-	if params.ID == "" {
-		return nil, fmt.Errorf("generation ID is required")
-	}
-
 	body, err := p.doOriginRequest(ctx, "/v1/generation?id="+providerutils.EncodeURIComponent(params.ID))
 	if err != nil {
 		return nil, err
@@ -105,13 +104,13 @@ func (p *Provider) GetGenerationInfo(ctx context.Context, params GenerationInfoP
 		IsByok:                 envelope.Data.IsByok,
 		Streamed:               envelope.Data.Streamed,
 		CreatedAt:              envelope.Data.CreatedAt,
-		PromptTokens:           envelope.Data.PromptTokens,
-		CompletionTokens:       envelope.Data.CompletionTokens,
-		ReasoningTokens:        envelope.Data.ReasoningTokens,
-		CachedTokens:           envelope.Data.CachedTokens,
-		CacheCreationTokens:    envelope.Data.CacheCreationTokens,
-		Latency:                envelope.Data.Latency,
-		GenerationTime:         envelope.Data.GenerationTime,
-		BillableWebSearchCalls: envelope.Data.BillableWebSearchCalls,
+		PromptTokens:           int64(envelope.Data.PromptTokens),
+		CompletionTokens:       int64(envelope.Data.CompletionTokens),
+		ReasoningTokens:        int64(envelope.Data.ReasoningTokens),
+		CachedTokens:           int64(envelope.Data.CachedTokens),
+		CacheCreationTokens:    int64(envelope.Data.CacheCreationTokens),
+		Latency:                int64(envelope.Data.Latency),
+		GenerationTime:         int64(envelope.Data.GenerationTime),
+		BillableWebSearchCalls: int(envelope.Data.BillableWebSearchCalls),
 	}, nil
 }

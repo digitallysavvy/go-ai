@@ -119,3 +119,41 @@ func TestR90provgErrorMessageStringify(t *testing.T) {
 		t.Fatalf("message = %s, want %s", got, want)
 	}
 }
+
+// TestR90provgGenerationInfoFractional: TS gatewayGenerationInfoResponseSchema
+// reads latency, generation_time and the token counts as z.number(), so a
+// fractional value parses instead of failing the call.
+func TestR90provgGenerationInfoFractional(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"id":"gen_1","model":"m","provider_name":"p","finish_reason":"stop","total_cost":1,"upstream_inference_cost":0,"usage":1,"is_byok":false,"streamed":true,"created_at":"x","native_tokens_prompt":10,"native_tokens_completion":5,"native_tokens_reasoning":0,"native_tokens_cached":0,"native_tokens_cache_creation":0,"latency":200.5,"generation_time":1500.25,"billable_web_search_calls":0}}`))
+	}))
+	defer server.Close()
+	p, _ := New(Config{APIKey: "k", BaseURL: server.URL + "/v3/ai"})
+	info, err := p.GetGenerationInfo(context.Background(), GenerationInfoParams{ID: "gen_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Latency != 200 || info.GenerationTime != 1500 || info.PromptTokens != 10 {
+		t.Fatalf("info = %+v", info)
+	}
+}
+
+// TestR90provgGenerationInfoEmptyID: TS sends the request for an empty id
+// (`id=`) and reports the API's answer; there is no client-side check.
+func TestR90provgGenerationInfoEmptyID(t *testing.T) {
+	var query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"not found","type":"not_found"}}`))
+	}))
+	defer server.Close()
+	p, _ := New(Config{APIKey: "k", BaseURL: server.URL + "/v3/ai"})
+	if _, err := p.GetGenerationInfo(context.Background(), GenerationInfoParams{}); err == nil {
+		t.Fatal("expected the API error")
+	}
+	if query != "id=" {
+		t.Fatalf("query = %q, want id=", query)
+	}
+}
