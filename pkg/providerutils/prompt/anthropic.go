@@ -1947,12 +1947,19 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		inputMap, _ := part.input.(map[string]interface{})
 		inputType, _ := inputMap["type"].(string)
 
+		// TS sends part.input as is: a JSON null input stays null.
+		providerInput := func(input interface{}) interface{} {
+			if input == nil && part.inputNull {
+				return nil
+			}
+			return inputOrEmpty(input)
+		}
 		serverToolUse := func(name string, input interface{}) {
 			block := map[string]interface{}{
 				"type":  "server_tool_use",
 				"id":    part.id,
 				"name":  name,
-				"input": inputOrEmpty(input),
+				"input": providerInput(input),
 			}
 			if caller != nil {
 				block["caller"] = caller
@@ -1973,7 +1980,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 				"type":        "mcp_tool_use",
 				"id":          part.id,
 				"name":        part.toolName,
-				"input":       orderedInput(inputOrEmpty(part.input), part.inputRaw),
+				"input":       orderedInput(providerInput(part.input), part.inputRaw),
 				"server_name": serverName,
 			}
 			setIfNotNil(block, "cache_control", cacheControl)

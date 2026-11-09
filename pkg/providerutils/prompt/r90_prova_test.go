@@ -89,3 +89,26 @@ func TestR90provaEmptyToolsetName(t *testing.T) {
 		t.Errorf("messages = %s\nwant %s", got, want)
 	}
 }
+
+// TS sends a provider-executed call's input as is: a JSON null input is
+// `input: null` on server_tool_use and mcp_tool_use (TS recorded at
+// 9f7a842ae1).
+func TestR90provaProviderExecutedNullInput(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "q"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "web_search", Input: "null", ProviderExecuted: true},
+			types.ToolCallContent{ToolCallID: "c2", ToolName: "m", Input: "null", ProviderExecuted: true,
+				ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"type": "mcp-tool-use", "serverName": "s"}}},
+		}},
+	}
+	out, err := ConvertToAnthropicPrompt(msgs, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(out.Messages[1])
+	want := `{"content":[{"id":"c1","input":null,"name":"web_search","type":"server_tool_use"},{"id":"c2","input":null,"name":"m","server_name":"s","type":"mcp_tool_use"}],"role":"assistant"}`
+	if string(got) != want {
+		t.Errorf("message = %s\nwant %s", got, want)
+	}
+}
