@@ -105,7 +105,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
 	}
 	if submitResp.StatusCode >= 400 {
-		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode)
+		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, providerutils.ExtractHeaders(submitResp.Headers))
 	}
 
 	if err := providerutils.MediaResponseValidator("minimax", providerutils.SchemaMiniMaxCreate)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
@@ -265,7 +265,7 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 			msg += ": " + task.Error.Message
 		}
 		if task.Error != nil && task.Error.Code != nil {
-			msg += fmt.Sprintf(" (%v)", task.Error.Code)
+			msg += " (" + providerutils.JSString(task.Error.Code) + ")" // TS `${task.error.code}`
 		}
 		msg += fmt.Sprintf(". Task ID: %s", op.TaskID)
 		return &provider.VideoModelV3OperationStatusResult{
@@ -758,7 +758,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
-				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %v was rounded to %v.", m.modelID, raw, rounded),
+				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %s was rounded to %s.", m.modelID, providerutils.JSNumberString(raw), providerutils.JSNumberString(rounded)),
 			})
 		}
 		var d int
@@ -767,14 +767,14 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
-				Details: fmt.Sprintf("%s supports at most %d seconds. The requested duration of %v was clamped to %d.", m.modelID, minimaxMaxDuration, raw, minimaxMaxDuration),
+				Details: fmt.Sprintf("%s supports at most %d seconds. The requested duration of %s was clamped to %d.", m.modelID, minimaxMaxDuration, providerutils.JSNumberString(raw), minimaxMaxDuration),
 			})
 			d = minimaxMaxDuration
 		case rounded < float64(minDurationSeconds):
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
-				Details: fmt.Sprintf("%s requires at least %d seconds. The requested duration of %v was clamped to %d.", m.modelID, minDurationSeconds, raw, minDurationSeconds),
+				Details: fmt.Sprintf("%s requires at least %d seconds. The requested duration of %s was clamped to %d.", m.modelID, minDurationSeconds, providerutils.JSNumberString(raw), minDurationSeconds),
 			})
 			d = minDurationSeconds
 		default:
@@ -872,7 +872,7 @@ func minimaxEncodeFile(f *provider.VideoModelV3File) (string, error) {
 
 // parseAPIError parses a MiniMax API error response (TS
 // minimaxVideoFailedResponseHandler / minimaxVideoErrorSchema).
-func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
+func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers map[string]string) error {
 	// TS createJsonErrorResponseHandler: the message is
 	// `error?.message ?? 'MiniMax video generation error'`; a body that is
 	// empty or not a JSON object gives the HTTP status text.
@@ -888,7 +888,7 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
 			message = *errResp.Error.Message
 		}
 	}
-	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body)}
+	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body), ResponseHeaders: headers}
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
@@ -897,7 +897,7 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return m.parseAPIError(dlErr.Body, dlErr.StatusCode)
+		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
 	}
 	return NewVideoGenerationError(fmt.Sprintf("failed to check status: %v", err))
 }

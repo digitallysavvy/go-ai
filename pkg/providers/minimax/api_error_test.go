@@ -23,7 +23,7 @@ func TestParseAPIErrorFollowsTSHandler(t *testing.T) {
 	}
 	for _, tc := range cases {
 		var e *Error
-		if err := m.parseAPIError([]byte(tc.body), tc.status); !errors.As(err, &e) {
+		if err := m.parseAPIError([]byte(tc.body), tc.status, nil); !errors.As(err, &e) {
 			t.Fatalf("err = %v, want *Error", err)
 		} else if e.Message != tc.want || e.StatusCode != tc.status || e.ResponseBody != tc.body || e.IsRetryable() != tc.retryable {
 			t.Errorf("body %q: %+v retryable=%v, want %q/%d/%v", tc.body, e, e.IsRetryable(), tc.want, tc.status, tc.retryable)

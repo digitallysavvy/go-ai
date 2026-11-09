@@ -129,7 +129,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		// img2vid: multipart/form-data request.
 		imageData, imageMIME, err := resolveVideoImage(ctx, opts.Image)
 		if err != nil {
-			return nil, fmt.Errorf("prodia: failed to resolve input image: %w", err)
+			return nil, err // TS: downloadBlob's DownloadError propagates unchanged
 		}
 
 		buf, contentType, err := buildMultipartJobRequest(body, imageData, imageMIME)
@@ -141,11 +141,13 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	} else {
 		// txt2vid: JSON request.
 		resp, err := m.prov.client.Do(ctx, internalhttp.Request{
-			Method:  "POST",
-			Path:    "/job",
-			Body:    body,
+			Method: "POST",
+			Path:   "/job",
+			// TS postToApi content JSON.stringify(body): {type, config:
+			// {prompt, seed, resolution}} in that key order.
+			Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, prodiaJobBodyOrder)),
 			Query:   map[string]string{"price": "true"},
-			Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; video/mp4"}, opts.Headers),
+			Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Accept": "multipart/form-data; video/mp4", "Content-Type": "application/json"}),
 		})
 		if err != nil {
 			reqErr = internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged
@@ -268,15 +270,17 @@ func prodiaErrorMessage(statusCode int, body []byte) string {
 func resolveVideoImage(ctx context.Context, file *provider.VideoModelV3File) ([]byte, string, error) {
 	switch file.Type {
 	case "file":
-		mimeType := file.MediaType
-		if mimeType == "" {
-			mimeType = "image/png"
+		// TS new Blob([...], {type: file.mediaType}): no default; an empty
+		// type is sent as application/octet-stream with filename "input".
+		data := file.Data
+		if data == nil {
+			data = []byte{} // TS appends the input part even for empty data
 		}
-		return file.Data, mimeType, nil
+		return data, file.MediaType, nil
 	case "url":
 		download, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.DefaultDownloadOptions())
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to fetch image URL: %w", err)
+			return nil, "", err
 		}
 		mimeType := download.ContentType
 		if mimeType == "" {

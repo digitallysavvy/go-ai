@@ -389,8 +389,13 @@ func TestHTTPTransportInboundSSEExpiresSessionOn404(t *testing.T) {
 	if transport.SessionID() != "" {
 		t.Fatalf("SessionID() = %q, want empty after expiry", transport.SessionID())
 	}
-	if atomic.LoadInt32(&httpErrs) == 0 {
-		t.Fatal("expected OnError to be called for the 404 GET SSE failure")
+	// TS expires the session before reporting the error, so OnError can
+	// follow OnSessionExpired slightly later.
+	for atomic.LoadInt32(&httpErrs) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("expected OnError to be called for the 404 GET SSE failure")
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 

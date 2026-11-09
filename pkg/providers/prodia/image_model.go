@@ -1,6 +1,7 @@
 package prodia
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -127,11 +128,14 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	reqBody := m.buildRequestBody(opts, provOpts)
 
 	resp, err := m.prov.client.Do(ctx, internalhttp.Request{
-		Method:  "POST",
-		Path:    "/job",
-		Body:    reqBody,
+		Method: "POST",
+		Path:   "/job",
+		// TS postToApi content JSON.stringify(body) in the getArgs key
+		// order, and headers {...combined, Accept, 'Content-Type'}: the
+		// fixed Accept wins over a call header.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(reqBody, prodiaJobBodyOrder)),
 		Query:   m.buildQuery(),
-		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; image/png"}, opts.Headers),
+		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Accept": "multipart/form-data; image/png", "Content-Type": "application/json"}),
 	})
 	if err != nil {
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged

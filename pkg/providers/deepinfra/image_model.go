@@ -9,6 +9,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -112,9 +114,15 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	// Some DeepInfra models support size while others support aspect ratio;
 	// allow passing either and leave validation to the server.
-	if width, height, ok := splitImageSize(opts.Size); ok {
-		body["width"] = width
-		body["height"] = height
+	// TS `...(splitSize && {width: splitSize[0], height: splitSize[1]})`
+	// with size.split('x'): a size without "x" sends only width, and parts
+	// after the second are ignored.
+	if opts.Size != "" {
+		parts := strings.Split(opts.Size, "x")
+		body["width"] = parts[0]
+		if len(parts) > 1 {
+			body["height"] = parts[1]
+		}
 	}
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
@@ -176,30 +184,25 @@ func stripDataURLPrefix(image string) string {
 	return dataURLPrefix.ReplaceAllString(image, "")
 }
 
-func splitImageSize(size string) (width, height string, ok bool) {
-	if size == "" {
-		return "", "", false
-	}
-	parts := strings.SplitN(size, "x", 2)
-	if len(parts) != 2 {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
-}
-
 type deepInfraGenerateError struct {
-	Detail struct {
-		Error string `json:"error"`
+	Detail *struct {
+		Error *string `json:"error"`
 	} `json:"detail"`
 }
 
+// parseGenerateError is TS createJsonErrorResponseHandler with
+// deepInfraErrorSchema ({detail: {error: string}}): a blank body or one that
+// does not match the schema gives the status text; a matching body gives
+// detail.error, even "".
 func (m *ImageModel) parseGenerateError(resp *internalhttp.Response) error {
 	var errResp deepInfraGenerateError
-	message := string(resp.Body)
-	if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail.Error != "" {
-		message = errResp.Detail.Error
+	message, matched := http.StatusText(resp.StatusCode), false
+	if strings.TrimSpace(string(resp.Body)) != "" {
+		if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail != nil && errResp.Detail.Error != nil {
+			message, matched = *errResp.Detail.Error, true
+		}
 	}
-	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
+	return deepInfraAPIError(resp, message, matched)
 }
 
 // doEdit performs image editing via DeepInfra's OpenAI-compatible
@@ -259,19 +262,42 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	return result, nil
 }
 
-type deepInfraEditError struct {
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+// parseEditError is TS createJsonErrorResponseHandler with
+// deepInfraEditErrorSchema ({error?: {message: string}}) and
+// `error.error?.message ?? 'Unknown error'`: a blank body or one that does
+// not match the schema (error null or not an object, message not a string)
+// gives the status text; a matching body without error gives "Unknown
+// error".
+func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
+	message, matched := http.StatusText(resp.StatusCode), false
+	if strings.TrimSpace(string(resp.Body)) != "" {
+		var fields map[string]json.RawMessage
+		if err := securejson.Unmarshal(resp.Body, &fields); err == nil && fields != nil {
+			raw, present := fields["error"]
+			var errObj map[string]json.RawMessage
+			var text *string
+			switch {
+			case !present:
+				message, matched = "Unknown error", true
+			case json.Unmarshal(raw, &errObj) == nil && errObj != nil && json.Unmarshal(errObj["message"], &text) == nil && text != nil:
+				message, matched = *text, true
+			}
+		}
+	}
+	return deepInfraAPIError(resp, message, matched)
 }
 
-func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
-	var errResp deepInfraEditError
-	message := "Unknown error"
-	if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Error != nil && errResp.Error.Message != "" {
-		message = errResp.Error.Message
+// deepInfraAPIError is the APICallError of createJsonErrorResponseHandler:
+// status, response headers (so retry-after(-ms) reaches the retry loop) and
+// body, with the parsed body as data only when it matched the error schema.
+func deepInfraAPIError(resp *internalhttp.Response, message string, matched bool) error {
+	cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+	perr := providererrors.NewProviderErrorFromResponse("deepinfra", 0, "", message, cause)
+	perr.Message = message
+	if !matched {
+		perr.Data = nil
 	}
-	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
+	return perr
 }
 
 func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.ImageGenerateOptions) (io.Reader, string, error) {
@@ -280,41 +306,61 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 
 	go func() {
 		err := func() error {
-			if err := writer.WriteField("model", m.modelID); err != nil {
-				return err
-			}
-			if opts.Prompt != "" {
-				if err := writer.WriteField("prompt", opts.Prompt); err != nil {
+			// TS convertToFormData({model, prompt, image, mask, n, size,
+			// ...deepInfraOptions}, {useArrayBrackets: false}): fields in
+			// that order, an option with one of those names replaces it in
+			// place, null/undefined values are skipped, and an array is
+			// appended as repeated fields. Other option keys follow, sorted
+			// (a Go map keeps no insertion order).
+			options := deepInfraImageOptions(opts.ProviderOptions)
+			fixed := []string{"model", "prompt", "image", "mask", "n", "size"}
+			for _, key := range fixed {
+				if value, overridden := options[key]; overridden {
+					if err := writeDeepInfraFormValue(writer, key, value); err != nil {
+						return err
+					}
+					continue
+				}
+				var err error
+				switch key {
+				case "model":
+					err = writer.WriteField("model", m.modelID)
+				case "prompt":
+					if opts.Prompt != "" {
+						err = writer.WriteField("prompt", opts.Prompt)
+					}
+				case "image":
+					for _, file := range opts.Files {
+						if err = writeImageFilePart(ctx, writer, "image", "", file); err != nil {
+							break
+						}
+					}
+				case "mask":
+					if opts.Mask != nil {
+						err = writeImageFilePart(ctx, writer, "mask", "", *opts.Mask)
+					}
+				case "n":
+					if opts.N != nil {
+						err = writer.WriteField("n", strconv.Itoa(*opts.N))
+					}
+				case "size":
+					if opts.Size != "" {
+						err = writer.WriteField("size", opts.Size)
+					}
+				}
+				if err != nil {
 					return err
 				}
 			}
-			if opts.N != nil {
-				if err := writer.WriteField("n", strconv.Itoa(*opts.N)); err != nil {
-					return err
+			rest := make([]string, 0, len(options))
+			for key := range options {
+				if !slices.Contains(fixed, key) {
+					rest = append(rest, key)
 				}
 			}
-			if opts.Size != "" {
-				if err := writer.WriteField("size", opts.Size); err != nil {
-					return err
-				}
-			}
-			for key, value := range deepInfraImageOptions(opts.ProviderOptions) {
-				if value == nil {
-					continue // convertToFormData skips null/undefined values
-				}
-				if err := writer.WriteField(key, fmt.Sprintf("%v", value)); err != nil {
-					return err
-				}
-			}
-
-			// TS convertToFormData(..., { useArrayBrackets: false }): repeated "image".
-			for _, file := range opts.Files {
-				if err := writeImageFilePart(ctx, writer, "image", "", file); err != nil {
-					return err
-				}
-			}
-			if opts.Mask != nil {
-				if err := writeImageFilePart(ctx, writer, "mask", "", *opts.Mask); err != nil {
+			sort.Strings(rest)
+			for _, key := range rest {
+				if err := writeDeepInfraFormValue(writer, key, options[key]); err != nil {
 					return err
 				}
 			}
@@ -328,6 +374,43 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 	}()
 
 	return pr, writer.FormDataContentType(), nil
+}
+
+// writeDeepInfraFormValue appends a provider option like TS
+// convertToFormData: null is skipped, an array is appended element by
+// element under the same name, and other values use JS String(value).
+func writeDeepInfraFormValue(writer *multipart.Writer, key string, value interface{}) error {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		for _, item := range v {
+			if err := writer.WriteField(key, deepInfraFormString(item)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []string:
+		for _, item := range v {
+			if err := writer.WriteField(key, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return writer.WriteField(key, deepInfraFormString(value))
+}
+
+func deepInfraFormString(value interface{}) string {
+	switch v := value.(type) {
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case float32:
+		return providerutils.JSNumberString(float64(v))
+	}
+	return providerutils.JSString(value)
 }
 
 func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {

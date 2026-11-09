@@ -45,5 +45,7 @@ func parseCerebrasHTTPStatusError(candidate error, cause error) error {
 	if code == "" {
 		code = *payload.Type
 	}
-	return providererrors.NewProviderError("cerebras", statusErr.StatusCode, code, *payload.Message, cause)
+	perr := providererrors.NewProviderErrorFromResponse("cerebras", 0, code, *payload.Message, cause)
+	perr.Message = *payload.Message
+	return perr
 }
