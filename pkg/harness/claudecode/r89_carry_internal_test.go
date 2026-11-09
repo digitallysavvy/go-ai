@@ -41,3 +41,22 @@ func TestR89carryHelperSkippedWithDirectCredential(t *testing.T) {
 		t.Errorf("apiKeyHelper ran: %q", *runs)
 	}
 }
+
+// TS readApiKeyHelper reads `settings.apiKeyHelper` from JSON.parse: the
+// key is case-sensitive, the last duplicate wins, a non-string is ignored.
+func TestR89carryAPIKeyHelperKeyExact(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"apiKeyHelper":"echo a"}`:                         "echo a",
+		`{"ApiKeyHelper":"echo a"}`:                         "",
+		`{"APIKEYHELPER":"echo a","apiKeyHelper":"echo b"}`: "echo b",
+		`{"apiKeyHelper":"echo a","ApiKeyHelper":"echo b"}`: "echo a",
+		`{"apiKeyHelper":"echo a","apiKeyHelper":"echo c"}`: "echo c",
+		`{"apiKeyHelper":1}`:                                "",
+		`{"apiKeyHelper":null}`:                             "",
+		`[]`:                                                "",
+	} {
+		if got := extractAPIKeyHelperCommand([]byte(raw)); got != want {
+			t.Errorf("%s: got %q, want %q", raw, got, want)
+		}
+	}
+}

@@ -170,13 +170,18 @@ func readAPIKeyHelper() string {
 var apiKeyHelperOutput = func(cmd *exec.Cmd) ([]byte, error) { return cmd.Output() }
 
 func extractAPIKeyHelperCommand(raw []byte) string {
-	var settings struct {
-		APIKeyHelper string `json:"apiKeyHelper"`
-	}
+	// TS JSON.parse + settings.apiKeyHelper: the key matches exactly (a Go
+	// struct tag would also match "ApiKeyHelper"), the last duplicate wins,
+	// and a non-string value is no command.
+	var settings map[string]json.RawMessage
 	if json.Unmarshal(raw, &settings) != nil {
 		return ""
 	}
-	return settings.APIKeyHelper
+	var command string
+	if json.Unmarshal(settings["apiKeyHelper"], &command) != nil {
+		return ""
+	}
+	return command
 }
 
 // requestTransformations mirrors TS `createClaudeCodeRequestTransformations`
