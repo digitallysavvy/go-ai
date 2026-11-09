@@ -157,3 +157,13 @@ func TestR89provgHeyGenVideoStartStatusPollDefaults(t *testing.T) {
 		t.Fatalf("defaults = %d, %d; want 250, 90000", i, to)
 	}
 }
+
+// TS parseProviderOptions: the message is "invalid heygen provider options"
+// with the schema failure as the cause.
+func TestR89provgHeyGenOptionErrorText(t *testing.T) {
+	_, err := parseVideoModelOptions(map[string]interface{}{"heygen": map[string]interface{}{"mode": "bogus"}})
+	var ae *providererrors.InvalidArgumentError
+	if !errors.As(err, &ae) || ae.Field != "providerOptions" || ae.Message != "invalid heygen provider options" || ae.Cause == nil {
+		t.Fatalf("error = %#v", err)
+	}
+}

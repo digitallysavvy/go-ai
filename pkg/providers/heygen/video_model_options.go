@@ -2,6 +2,7 @@ package heygen
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -55,8 +56,10 @@ type VideoModelOptions struct {
 	ReferenceAudio []VideoAsset `json:"referenceAudio,omitempty"`
 }
 
+// invalidOptions is the TS parseProviderOptions failure: the message is
+// "invalid heygen provider options" and the schema problem is the cause.
 func invalidOptions(msg string) error {
-	return providererrors.NewArgumentError("providerOptions", "invalid heygen provider options: "+msg, nil)
+	return providererrors.NewArgumentError("providerOptions", "invalid heygen provider options", errors.New(msg))
 }
 
 func isHTTPSURL(raw string) bool {

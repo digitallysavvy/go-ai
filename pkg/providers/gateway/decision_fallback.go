@@ -285,7 +285,9 @@ func validateGatewayDecisionProviderOptions(gatewayOptions interface{}) error {
 		return nil
 	}
 	if err := validateGatewayDecisionModelsOption(modelsRaw); err != nil {
-		return providererrors.NewArgumentError("providerOptions.gateway.models", fmt.Sprintf("invalid gateway provider options: %v", err), nil)
+		// TS parseProviderOptions: argument providerOptions, message
+		// "invalid gateway provider options", the schema failure as cause.
+		return providererrors.NewArgumentError("providerOptions", "invalid gateway provider options", err)
 	}
 	return nil
 }
