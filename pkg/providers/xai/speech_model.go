@@ -87,11 +87,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	// xAI returns a trace id on every response, success and error.
 	traceID := providerutils.FetchHeaderText(http.Header(resp.Headers), "x-trace-id")
 	if resp.StatusCode >= 400 {
-		message := parseXAIErrorMessage(resp.Body)
-		if traceID != "" {
-			message = fmt.Sprintf("%s (trace: %s)", message, traceID)
-		}
-		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", message, nil)
+		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, http.Header(resp.Headers), resp.Body)
 	}
 
 	requestBytes, err := json.Marshal(body)

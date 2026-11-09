@@ -92,7 +92,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, resp.Body)
+		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced

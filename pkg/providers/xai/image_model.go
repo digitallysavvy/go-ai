@@ -161,7 +161,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, m.handleError(err)
 	}
 	if httpResp.StatusCode >= 400 {
-		return nil, newXAIProviderError("xai.image", httpResp.StatusCode, httpResp.Body)
+		return nil, newXAIProviderError("xai.image", httpResp.StatusCode, httpResp.Headers, httpResp.Body)
 	}
 	if err := providerutils.MediaResponseValidator("xai.image", providerutils.SchemaXAIImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {
 		return nil, err
@@ -487,6 +487,9 @@ func (m *ImageModel) handleError(err error) error {
 	}
 	if provErr, ok := err.(*providererrors.ProviderError); ok {
 		return provErr
+	}
+	if provErr, ok := xaiStatusError("xai.image", err); ok {
+		return provErr // TS xaiFailedResponseHandler
 	}
 	return providererrors.NewProviderError("xai.image", 0, "", err.Error(), err)
 }

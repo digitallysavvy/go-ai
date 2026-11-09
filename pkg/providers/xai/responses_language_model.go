@@ -1209,6 +1209,9 @@ func (m *ResponsesLanguageModel) wrapErr(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
+	if provErr, ok := xaiStatusError("xai.responses", err); ok {
+		return provErr // TS xaiFailedResponseHandler
+	}
 	return providererrors.NewProviderError("xai.responses", 0, "", err.Error(), err)
 }
 

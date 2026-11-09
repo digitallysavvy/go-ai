@@ -3,12 +3,14 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestSpeechModel_Metadata(t *testing.T) {
@@ -220,8 +222,11 @@ func TestSpeechModel_DoGenerate_ErrorShape(t *testing.T) {
 	if !strings.Contains(err.Error(), "speed must be between 0.7 and 1.5") {
 		t.Errorf("error = %q, want to contain the speed message", err.Error())
 	}
-	if !strings.Contains(err.Error(), "trace-123") {
-		t.Errorf("error = %q, want to contain the trace id", err.Error())
+	// TS xaiFailedResponseHandler: the trace id is a response header of the
+	// APICallError, not part of the message.
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "speed must be between 0.7 and 1.5" || pe.ResponseHeaders["x-trace-id"] != "trace-123" {
+		t.Errorf("error = %#v, want the speech message and the trace id header", err)
 	}
 }
 

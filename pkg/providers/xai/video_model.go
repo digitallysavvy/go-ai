@@ -549,8 +549,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
-			parseXAIErrorMessage(resp.Body), nil)
+		return nil, nil, newXAIProviderError("xai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	// TS xaiVideoStatusJsonResponseHandler: createJsonResponseHandler(schema),
@@ -1295,6 +1294,9 @@ func (m *VideoModel) handleError(err error) error {
 	}
 	if provErr, ok := err.(*providererrors.ProviderError); ok {
 		return provErr
+	}
+	if provErr, ok := xaiStatusError("xai", err); ok {
+		return provErr // TS xaiFailedResponseHandler
 	}
 	return providererrors.NewProviderError("xai", 0, "", err.Error(), err)
 }
