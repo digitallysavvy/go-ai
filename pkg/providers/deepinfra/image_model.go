@@ -1,6 +1,7 @@
 package deepinfra
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -133,9 +134,11 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	client := m.provider.imageClient(m.baseURL)
 	resp, err := client.Do(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/" + m.modelID,
-		Body:    body,
+		Method: http.MethodPost,
+		Path:   "/" + m.modelID,
+		// TS JSON.stringify({prompt, num_images, aspect_ratio, width, height,
+		// seed, ...options}): that key order, not sorted keys.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, map[string][]string{"": {"prompt", "num_images", "aspect_ratio", "width", "height", "seed"}})),
 		Headers: opts.Headers,
 	})
 	if err != nil {

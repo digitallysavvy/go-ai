@@ -99,6 +99,19 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 }
 
 // SpecificationVersion returns the specification version.
+// topazExpressBodyOrder is the key order of the TS /video/express body
+// ({source: {container, duration, frameCount, frameRate, resolution,
+// external | size}, output: buildOutput(...), filters: [{model, ...}]}).
+var topazExpressBodyOrder = map[string][]string{
+	"":                  {"source", "output", "filters"},
+	"source":            {"container", "duration", "frameCount", "frameRate", "resolution", "external", "size"},
+	"source.resolution": {"width", "height"},
+	"source.external":   {"provider", "presignedUrl"},
+	"output":            {"resolution", "frameRate", "audioTransfer", "audioCodec", "audioBitrate", "videoEncoder", "videoProfile", "videoBitrate", "dynamicCompressionLevel", "cropToFit", "container"},
+	"output.resolution": {"width", "height"},
+	"filters":           {"model"},
+}
+
 func (m *VideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
@@ -200,9 +213,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	defer cancel()
 
 	resp, err := m.prov.client.Do(callCtx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/video/express",
-		Body:    body,
+		Method: http.MethodPost,
+		Path:   "/video/express",
+		// TS JSON.stringify of the express body literal: the key order of
+		// source, output (buildOutput) and the filter, not sorted keys.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, topazExpressBodyOrder)),
 		Headers: opts.Headers,
 	})
 	if err != nil {
