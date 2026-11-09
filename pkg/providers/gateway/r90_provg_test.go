@@ -181,3 +181,22 @@ func TestR90provgSpendReportFractionalAndEmptyDates(t *testing.T) {
 		t.Fatalf("results = %+v", res.Results)
 	}
 }
+
+// TestR90provgClientSecretSchema: TS gatewayClientSecretResponseSchema takes
+// token: z.string() (an empty string passes) and expiresAt: z.number()
+// (a fractional value parses).
+func TestR90provgClientSecretSchema(t *testing.T) {
+	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"","expiresAt":1893456000.5}`))
+	}))
+	defer closeServer()
+	p, _ := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+	secret, err := p.MintRealtimeClientSecret(context.Background(), MintRealtimeClientSecretParams{ModelID: "openai/gpt-realtime"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret.Token != "" || secret.ExpiresAt == nil || *secret.ExpiresAt != 1893456000 {
+		t.Fatalf("secret = %+v", secret)
+	}
+}
