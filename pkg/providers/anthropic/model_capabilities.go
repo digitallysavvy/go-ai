@@ -116,7 +116,7 @@ func GetModelCapabilities(modelID string) ModelCapabilities {
 			RejectsThinkingDisabledAboveHighEffort: true,
 			IsKnownModel:                           true,
 		}
-	case strings.Contains(modelID, "claude-fable-5-1"):
+	case strings.Contains(modelID, "claude-fable-5-2") || strings.Contains(modelID, "claude-fable-5-1"):
 		return ModelCapabilities{
 			MaxOutputTokens:           128000,
 			SupportsStructuredOutput:  true,

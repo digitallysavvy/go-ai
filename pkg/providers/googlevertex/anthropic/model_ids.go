@@ -11,6 +11,7 @@ const (
 	ClaudeHaiku5_5             GoogleVertexAnthropicModelID = "claude-haiku-5-5"
 	ClaudeFable5               GoogleVertexAnthropicModelID = "claude-fable-5"
 	ClaudeFable5_1             GoogleVertexAnthropicModelID = "claude-fable-5-1"
+	ClaudeFable5_2             GoogleVertexAnthropicModelID = "claude-fable-5-2"
 	ClaudeOpus5                GoogleVertexAnthropicModelID = "claude-opus-5"
 	ClaudeOpus5_5              GoogleVertexAnthropicModelID = "claude-opus-5-5"
 	ClaudeOpus4_8              GoogleVertexAnthropicModelID = "claude-opus-4-8"
