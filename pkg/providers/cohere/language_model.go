@@ -140,6 +140,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newCohereV2Stream(httpResp.Body)
+	inner.generateID = m.provider.config.GenerateID
 	inner.requestBody = reqBody
 	inner.includeRawChunks = opts.IncludeRawChunks
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
@@ -558,7 +559,7 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 	// mapCohereCitationToSource): tool-only citations have no document and
 	// are skipped.
 	for _, citation := range resp.Message.Citations {
-		if source := mapCohereCitationToSource(citation); source != nil {
+		if source := mapCohereCitationToSourceID(citation, m.provider.config.GenerateID); source != nil {
 			result.Content = append(result.Content, *source)
 		}
 	}
@@ -682,6 +683,10 @@ type cohereV2Stream struct {
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
 	requestBody interface{}
+
+	// generateID is Config.GenerateID (TS config.generateId) for citation
+	// source ids.
+	generateID func() string
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
@@ -989,7 +994,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				list = []json.RawMessage{raw}
 			}
 			for _, c := range list {
-				if source := mapCohereCitationToSource(c); source != nil {
+				if source := mapCohereCitationToSourceID(c, s.generateID); source != nil {
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 						Type:          provider.ChunkTypeSource,
 						SourceContent: source,
