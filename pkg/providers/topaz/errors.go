@@ -136,3 +136,27 @@ func newTopazAPIError(statusCode int, body []byte, headers http.Header) error {
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
 	return providererrors.NewProviderErrorFromResponse("topaz", 0, errorCode, message, cause)
 }
+
+// Error is a Topaz error TS throws as an AISDKError with a name
+// (TOPAZ_IMAGE_ENHANCEMENT_FAILED, TOPAZ_IMAGE_ENHANCEMENT_TIMEOUT). Error()
+// is the message, as the TS error's message.
+type Error struct {
+	// Name is the AISDKError name.
+	Name    string
+	Message string
+}
+
+func (e *Error) Error() string { return e.Message }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *Error) ErrorName() string { return e.Name }
+
+// topazStringField reports whether the JSON object body has key with a
+// non-null value (TS `value == null` is false), and returns the parsed body
+// for an InvalidResponseDataError.
+func topazStringField(body []byte, key string) (parsed interface{}, present bool) {
+	_ = securejson.Unmarshal(body, &parsed)
+	obj, _ := parsed.(map[string]interface{})
+	v, ok := obj[key]
+	return parsed, ok && v != nil
+}

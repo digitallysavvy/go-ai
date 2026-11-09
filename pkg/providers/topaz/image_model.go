@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -103,7 +104,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, fmt.Errorf("topaz: failed to decode enhance response: %w", err)
 	}
 	if submit.ProcessID == "" {
-		return nil, fmt.Errorf("Topaz did not return a process_id for the enhance request.") //nolint:staticcheck // matches TS SDK's exact error text
+		// TS `processId == null`: an InvalidResponseDataError carrying the
+		// parsed response.
+		if raw, present := topazStringField(resp.Body, "process_id"); !present {
+			return nil, providererrors.NewInvalidResponseDataError(raw, "Topaz did not return a process_id for the enhance request.")
+		}
 	}
 
 	pollInterval := defaultImagePollIntervalMillis * time.Millisecond
@@ -409,14 +414,14 @@ func (m *ImageModel) waitForCompletion(ctx context.Context, processID string, he
 			return status, nil
 		}
 		if status.Status == "Failed" || status.Status == "Cancelled" {
-			return nil, fmt.Errorf("Topaz image enhancement %s for process %s.", providerutils.JSToLower(status.Status), processID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, &Error{Name: "TOPAZ_IMAGE_ENHANCEMENT_FAILED", Message: "Topaz image enhancement " + providerutils.JSToLower(status.Status) + " for process " + processID + "."}
 		}
 
 		if time.Now().Add(pollInterval).After(deadline) {
 			m.cancelQuietly(context.WithoutCancel(ctx), processID, headers)
-			return nil, fmt.Errorf( //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, &Error{Name: "TOPAZ_IMAGE_ENHANCEMENT_TIMEOUT", Message: fmt.Sprintf(
 				"Topaz image enhancement did not finish within %dms (process %s, last status %s). Increase the `pollTimeoutMillis` provider option if the job needs longer.",
-				pollTimeout.Milliseconds(), processID, lastStatus)
+				pollTimeout.Milliseconds(), processID, lastStatus)}
 		}
 
 		select {
@@ -492,7 +497,11 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		return nil, nil, fmt.Errorf("topaz: failed to decode download response: %w", err)
 	}
 	if downloadResp.DownloadURL == "" {
-		return nil, nil, fmt.Errorf("Topaz did not return a download URL for process %s.", processID) //nolint:staticcheck // matches TS SDK's exact error text
+		// TS `downloadUrl == null`: an InvalidResponseDataError carrying the
+		// parsed response.
+		if raw, present := topazStringField(resp.Body, "download_url"); !present {
+			return nil, nil, providererrors.NewInvalidResponseDataError(raw, "Topaz did not return a download URL for process "+processID+".")
+		}
 	}
 
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.baseURL(), nil)
