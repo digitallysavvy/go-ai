@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -62,5 +63,34 @@ func TestR90provbImageDownloadErrorUnchanged(t *testing.T) {
 	var pe *providererrors.ProviderError
 	if !errors.As(err, &dl) || errors.As(err, &pe) {
 		t.Fatalf("compat download err = %T %v", err, err)
+	}
+}
+
+// TestR90provbRealtimeTranscriptionEmptyItemID: TS finish(text, id) sends
+// the transcript-final part when item_id != null, an empty id included
+// (openai-transcription-model.ts createOpenAIRealtimeTranscriptionStream).
+func TestR90provbRealtimeTranscriptionEmptyItemID(t *testing.T) {
+	server := newRealtimeTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestTranscriptionModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio: newChanTestAudioStream(), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForReceived(t, "session.update", time.Second)
+	server.toSend <- map[string]interface{}{"type": "conversation.item.input_audio_transcription.completed", "item_id": "", "transcript": "hi"}
+	var types []string
+	for {
+		part, err := result.Stream.Next()
+		if err != nil {
+			break
+		}
+		types = append(types, string(part.Type))
+	}
+	if len(types) != 3 || types[1] != string(provider.TranscriptionStreamPartTypeFinal) || types[2] != string(provider.TranscriptionStreamPartTypeFinish) {
+		t.Fatalf("parts = %v", types)
 	}
 }

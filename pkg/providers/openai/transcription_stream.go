@@ -453,9 +453,11 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 				}
 
 			case "conversation.item.input_audio_transcription.completed":
-				itemID, _ := raw["item_id"].(string)
+				// TS finish(text, id): the final part is sent when
+				// item_id != null, an empty id included.
+				itemID, hasItemID := raw["item_id"].(string)
 				transcript, _ := raw["transcript"].(string)
-				if itemID != "" {
+				if hasItemID {
 					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: itemID, Text: transcript}) {
 						return
 					}
