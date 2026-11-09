@@ -598,12 +598,12 @@ func assetBody(asset VideoAsset, kind string) (map[string]interface{}, error) {
 	return nil, invalidArg(kind, "Unsupported HeyGen asset type.")
 }
 
+// flattenHeader is TS extractResponseHeaders: a repeated header's values are
+// joined with ", ".
 func flattenHeader(h http.Header) map[string]string {
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
+	out := providerutils.ExtractHeaders(h)
+	if out == nil {
+		out = map[string]string{}
 	}
 	return out
 }

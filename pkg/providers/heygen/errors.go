@@ -1,6 +1,7 @@
 package heygen
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -31,8 +32,13 @@ func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
 	var parsed heygenErrorBody
 	message := ""
 	code := ""
+	var data map[string]interface{}
 	if securejson.Unmarshal(body, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != nil {
 		message = *parsed.Error.Message
+		// TS data: the parsed error; zod strips the keys the schema does
+		// not declare.
+		inner := map[string]interface{}{"message": *parsed.Error.Message}
+		data = map[string]interface{}{"error": inner}
 		if parsed.Error.Code != nil {
 			code = *parsed.Error.Code
 			message += fmt.Sprintf(" (%s)", code)
@@ -40,9 +46,27 @@ func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
 		if parsed.Error.Param != nil {
 			message += fmt.Sprintf(" [%s]", *parsed.Error.Param)
 		}
+		var present struct {
+			Error map[string]json.RawMessage `json:"error"`
+		}
+		_ = json.Unmarshal(body, &present)
+		for _, key := range []string{"code", "param"} {
+			if raw, ok := present.Error[key]; ok {
+				var v interface{}
+				_ = json.Unmarshal(raw, &v)
+				inner[key] = v // a present null stays null
+			}
+		}
 	} else {
 		message = http.StatusText(statusCode)
 	}
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
-	return providererrors.NewProviderErrorFromResponse("heygen", 0, code, message, cause)
+	perr := providererrors.NewProviderErrorFromResponse("heygen", 0, code, message, cause)
+	// TS createJsonErrorResponseHandler: data only for a body matching the
+	// error schema.
+	perr.Data = nil
+	if data != nil {
+		perr.Data = data
+	}
+	return perr
 }

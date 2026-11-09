@@ -114,3 +114,31 @@ func TestR89provgHeyGenStatusRedirects(t *testing.T) {
 		}
 	})
 }
+
+// TS heygen-error.ts + createJsonErrorResponseHandler: data is the parsed
+// error (undeclared keys stripped) only when the body matches the schema;
+// response headers are extractResponseHeaders (repeated values joined).
+func TestR89provgHeyGenErrorDataAndHeaders(t *testing.T) {
+	cases := []struct {
+		body string
+		want interface{}
+	}{
+		{`{"error":{"message":"Bad","code":"c1","param":null,"extra":1},"other":2}`,
+			map[string]interface{}{"error": map[string]interface{}{"message": "Bad", "code": "c1", "param": nil}}},
+		{`{"error":{"message":"Bad"}}`, map[string]interface{}{"error": map[string]interface{}{"message": "Bad"}}},
+		{`{"detail":"not the schema"}`, nil},
+	}
+	for _, tc := range cases {
+		err := newHeyGenAPIError(400, []byte(tc.body), http.Header{"X-Multi": {"a", "b"}})
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) {
+			t.Fatalf("error = %T", err)
+		}
+		if !reflect.DeepEqual(pe.Data, tc.want) {
+			t.Fatalf("%s: Data = %#v, want %#v", tc.body, pe.Data, tc.want)
+		}
+	}
+	if got := flattenHeader(http.Header{"X-Multi": {"a", "b"}}); got["X-Multi"] != "a, b" {
+		t.Fatalf("headers = %#v", got)
+	}
+}
