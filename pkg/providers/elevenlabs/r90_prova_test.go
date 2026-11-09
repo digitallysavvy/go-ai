@@ -31,3 +31,18 @@ func TestR90provaSpeechTimestampsInvalidJSONResponse(t *testing.T) {
 		}
 	}
 }
+
+// TS elevenlabsErrorDataSchema is a zod union: a body whose detail does not
+// match the {detail} member but whose error object does is read as the
+// {error} member (zod strips detail), so the message is error.message.
+func TestR90provaErrorDetailMismatchUsesErrorObject(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"detail":5,"error":{"message":"boom","code":1}}`:     "boom",
+		`{"detail":null,"error":{"message":"boom2","code":2}}`: "boom2",
+		`{"detail":"d","error":{"message":"x","code":1}}`:      "d",
+	} {
+		if got, _ := elevenlabsErrorMessage(400, []byte(body)); got != want {
+			t.Errorf("%s: message = %q, want %q", body, got, want)
+		}
+	}
+}
