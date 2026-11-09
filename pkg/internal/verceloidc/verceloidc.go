@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
 	"math"
 	"net/http"
@@ -299,7 +300,7 @@ func (r *Resolver) requestOIDCToken(ctx context.Context, authToken, projectID, t
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(client).Do(req)
 	if err != nil {
 		return "", err
 	}

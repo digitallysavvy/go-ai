@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -975,7 +976,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	httpClient := m.provider.Client().HTTPClient()
-	resp, err := httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(httpClient).Do(req)
 	if err != nil {
 		return nil, providerErrorFromTransport(err)
 	}
@@ -1357,7 +1358,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	httpClient := m.provider.Client().HTTPClient()
-	resp, err := httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(httpClient).Do(req)
 	if err != nil {
 		return nil, providerErrorFromTransport(err)
 	}

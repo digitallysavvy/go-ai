@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -346,7 +347,7 @@ func requestOpenCodeGitLabDirectAccessWith(ctx context.Context, httpClient *http
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(httpClient).Do(req)
 	if err != nil {
 		return nil, err
 	}

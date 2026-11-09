@@ -69,7 +69,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, err
 	}
 
-	resp, err := m.provider.Client().HTTPClient().Do(req)
+	resp, err := internalhttp.WithFetchRedirects(m.provider.Client().HTTPClient()).Do(req)
 	if err != nil {
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged

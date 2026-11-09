@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/modelcatalog"
@@ -38,7 +39,7 @@ func (r ModelCatalogRefresher) Fetch(ctx context.Context) ([]modelcatalog.ModelI
 	}
 	req.Header.Set("Authorization", "Bearer "+r.APIKey)
 
-	resp, err := client.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(client).Do(req)
 	if err != nil {
 		return nil, err
 	}
