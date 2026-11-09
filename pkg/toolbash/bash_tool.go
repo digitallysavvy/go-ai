@@ -80,6 +80,7 @@ func CreateBashTool(ctx context.Context, opts Options) (types.Tool, error) {
 	if opts.TimeoutMs != nil && (*opts.TimeoutMs < 1 || *opts.TimeoutMs > MaxTimeoutMs) {
 		return types.Tool{}, &providerrors.InvalidArgumentError{
 			Field:   "timeout",
+			Value:   *opts.TimeoutMs,
 			Message: "Must be an integer between 1 and 2147483647 milliseconds.",
 		}
 	}
@@ -87,13 +88,13 @@ func CreateBashTool(ctx context.Context, opts Options) (types.Tool, error) {
 	if opts.MaxOutputLength != nil {
 		maxOutput = *opts.MaxOutputLength
 		if maxOutput < 1 || int64(maxOutput) > maxSafeInteger {
-			return types.Tool{}, &providerrors.InvalidArgumentError{Field: "maxOutputLength", Message: "Must be a positive safe integer."}
+			return types.Tool{}, &providerrors.InvalidArgumentError{Field: "maxOutputLength", Value: maxOutput, Message: "Must be a positive safe integer."}
 		}
 	}
 	workingDirectory := opts.WorkingDirectory
 	if workingDirectory != "" {
 		if !strings.HasPrefix(workingDirectory, "/") {
-			return types.Tool{}, &providerrors.InvalidArgumentError{Field: "workingDirectory", Message: "Must be an absolute path in the sandbox."}
+			return types.Tool{}, &providerrors.InvalidArgumentError{Field: "workingDirectory", Value: workingDirectory, Message: "Must be an absolute path in the sandbox."}
 		}
 		workingDirectory = normalizePosix(workingDirectory)
 

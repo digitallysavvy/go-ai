@@ -224,6 +224,7 @@ func startSteeringRun(s *Steering) (*steeringRun, error) {
 	if s.state != steeringIdle {
 		return nil, &providererrors.InvalidArgumentError{
 			Field:   "ExperimentalSteering",
+			Value:   s,
 			Message: "The steering object was already used by a generation. Create a new one with NewSteering() for each call.",
 		}
 	}

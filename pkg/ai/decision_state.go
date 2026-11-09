@@ -37,19 +37,19 @@ func validateDecisionState(state interface{}) error {
 			case "text":
 			case "json":
 				if !isJSONCompatible(part.Value) {
-					return invalidDecisionInput("state", invalidDecisionStateMessage)
+					return invalidDecisionInput("state", state, invalidDecisionStateMessage)
 				}
 			case "file":
 				if part.File == nil {
-					return invalidDecisionInput("state", invalidDecisionStateMessage)
+					return invalidDecisionInput("state", state, invalidDecisionStateMessage)
 				}
 			default:
-				return invalidDecisionInput("state", invalidDecisionStateMessage)
+				return invalidDecisionInput("state", state, invalidDecisionStateMessage)
 			}
 		}
 		return nil
 	}
-	return invalidDecisionInput("state", invalidDecisionStateMessage)
+	return invalidDecisionInput("state", state, invalidDecisionStateMessage)
 }
 
 // prepareDecisionState converts a validated state into ordered parts and

@@ -92,6 +92,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 	if raw == nil {
 		return fail(&providererrors.InvalidArgumentError{
 			Field:   "messages",
+			Value:   opts.Messages,
 			Message: "messages parameter must be provided",
 		})
 	}

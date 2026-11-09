@@ -80,6 +80,7 @@ func ToolSearch(config ...ToolSearchConfig) types.Tool {
 	if maxResults < 1 {
 		panic(&providererrors.InvalidArgumentError{
 			Field:   "maxResults",
+			Value:   maxResults,
 			Message: "maxResults must be a positive safe integer.",
 		})
 	}
@@ -201,6 +202,7 @@ func NewToolSearchState(tools []types.Tool, toolCallers ResolvedToolCallers) (*T
 		if invalid || (tool.IsToolSearch && tool.DeferLoading) {
 			return nil, &providererrors.InvalidArgumentError{
 				Field: "tools",
+				Value: name,
 				Message: fmt.Sprintf(
 					"tool \"%s\" must be callable directly or through code mode with toolDiscovery: 'conversation'. The search tool itself must not defer loading.",
 					name,

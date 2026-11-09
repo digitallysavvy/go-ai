@@ -47,6 +47,7 @@ func GetTextFromDataURL(dataURL string) (string, error) {
 	if !hasMediaType || len(parts) < 2 {
 		return "", &providererrors.InvalidArgumentError{
 			Field:   "dataUrl",
+			Value:   dataURL,
 			Message: "Invalid data URL format",
 		}
 	}
@@ -58,6 +59,7 @@ func GetTextFromDataURL(dataURL string) (string, error) {
 	if err != nil {
 		return "", &providererrors.InvalidArgumentError{
 			Field:   "dataUrl",
+			Value:   dataURL,
 			Message: "Error decoding data URL",
 		}
 	}
@@ -71,6 +73,7 @@ func GetTextFromDataURL(dataURL string) (string, error) {
 	if err != nil {
 		return "", &providererrors.InvalidArgumentError{
 			Field:   "dataUrl",
+			Value:   dataURL,
 			Message: "Error decoding data URL",
 		}
 	}

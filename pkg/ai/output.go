@@ -486,6 +486,7 @@ func ArrayOutput[ELEMENT any](opts ArrayOutputOptions[ELEMENT]) Output[[]ELEMENT
 	if opts.MinItems != nil && opts.MaxItems != nil && *opts.MinItems > *opts.MaxItems {
 		o.constructErr = &providererrors.InvalidArgumentError{
 			Field:   "minItems",
+			Value:   *opts.MinItems,
 			Message: "minItems must be less than or equal to maxItems",
 		}
 	}
@@ -501,6 +502,7 @@ func validateArrayBound(name string, value *int) error {
 	if *value < 0 {
 		return &providererrors.InvalidArgumentError{
 			Field:   name,
+			Value:   *value,
 			Message: fmt.Sprintf("%s must be greater than or equal to 0", name),
 		}
 	}

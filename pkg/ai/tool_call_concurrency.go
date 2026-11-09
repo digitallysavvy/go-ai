@@ -21,6 +21,7 @@ func prepareToolCallConcurrency(toolCallConcurrency *int) (int, error) {
 		return 0, &providererrors.InvalidArgumentError{
 			Field:   "toolCallConcurrency",
 			Message: "toolCallConcurrency must be >= 1",
+			Value:   *toolCallConcurrency,
 		}
 	}
 	return *toolCallConcurrency, nil

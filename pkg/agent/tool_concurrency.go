@@ -16,6 +16,7 @@ func validateToolCallConcurrency(n *int) error {
 		return &providererrors.InvalidArgumentError{
 			Field:   "toolCallConcurrency",
 			Message: "toolCallConcurrency must be >= 1",
+			Value:   *n,
 		}
 	}
 	return nil
@@ -28,6 +29,7 @@ func validateAgentMaxRetries(n *int) error {
 		return &providererrors.InvalidArgumentError{
 			Field:   "maxRetries",
 			Message: "maxRetries must be >= 0",
+			Value:   *n,
 		}
 	}
 	return nil
@@ -40,6 +42,7 @@ func validateAgentMaxOutputTokens(n *int) error {
 		return &providererrors.InvalidArgumentError{
 			Field:   "maxOutputTokens",
 			Message: "maxOutputTokens must be >= 1",
+			Value:   *n,
 		}
 	}
 	return nil

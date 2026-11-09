@@ -55,6 +55,7 @@ func validateMaxRetries(maxRetries *int) error {
 		return &providererrors.InvalidArgumentError{
 			Field:   "maxRetries",
 			Message: "maxRetries must be >= 0",
+			Value:   *maxRetries,
 		}
 	}
 	return nil
@@ -67,6 +68,7 @@ func validateMaxOutputTokens(maxOutputTokens *int) error {
 		return &providererrors.InvalidArgumentError{
 			Field:   "maxOutputTokens",
 			Message: "maxOutputTokens must be >= 1",
+			Value:   *maxOutputTokens,
 		}
 	}
 	return nil
@@ -88,6 +90,7 @@ func validateStreamRetries(streamRetries *int) error {
 		return &providererrors.InvalidArgumentError{
 			Field:   "streamRetries",
 			Message: "streamRetries must be >= 0",
+			Value:   *streamRetries,
 		}
 	}
 	return nil

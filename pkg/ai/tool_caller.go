@@ -41,6 +41,7 @@ func ResolveToolCallerConfiguration(tools []types.Tool, toolCallers Experimental
 		if _, ok := byName[toolName]; !ok {
 			return nil, &providererrors.InvalidArgumentError{
 				Field:   "experimental_toolCallers",
+				Value:   toolCallers,
 				Message: fmt.Sprintf("unknown tool \"%s\".", toolName),
 			}
 		}

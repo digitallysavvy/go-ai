@@ -27,6 +27,7 @@ func normalizeDomains(parameter string, domains []string) ([]string, error) {
 		}) {
 			return nil, &providerrors.InvalidArgumentError{
 				Field:   parameter,
+				Value:   domains,
 				Message: `Invalid domain "` + domain + `". Use bare domains such as "example.com"; subdomains are included automatically.`,
 			}
 		}
@@ -34,7 +35,7 @@ func normalizeDomains(parameter string, domains []string) ([]string, error) {
 		// hosts net/url accepts (e.g. a C1 control such as U+0085).
 		parsed, ok := canonicalURL("https://" + trimmed)
 		if !ok || parsed.Hostname() == "" {
-			return nil, &providerrors.InvalidArgumentError{Field: parameter, Message: `Invalid domain "` + domain + `".`}
+			return nil, &providerrors.InvalidArgumentError{Field: parameter, Value: domains, Message: `Invalid domain "` + domain + `".`}
 		}
 		out = append(out, normalizeHostname(parsed.Hostname()))
 	}

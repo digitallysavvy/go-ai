@@ -157,6 +157,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		return nil, &providererrors.InvalidArgumentError{
 			Field:   "maxOutputTokens",
 			Message: "maxOutputTokens must be >= 1",
+			Value:   *opts.MaxOutputTokens,
 		}
 	}
 	// TS takes any JSON array or object: typed Go containers ([]string
@@ -635,8 +636,10 @@ func isDecisionInput(value interface{}) bool {
 	}
 }
 
-func invalidDecisionInput(field string, message string) error {
-	return &providererrors.InvalidArgumentError{Field: field, Message: message}
+// invalidDecisionInput is TS invalidInput: the rejected argument is the
+// error's value.
+func invalidDecisionInput(field string, value interface{}, message string) error {
+	return &providererrors.InvalidArgumentError{Field: field, Value: value, Message: message}
 }
 
 // validateDecisionInput mirrors TypeScript's validateDecisionInput.
@@ -647,26 +650,26 @@ func invalidDecisionInput(field string, message string) error {
 // structural checks from recursing into a cycle.
 func validateDecisionInput(state interface{}, questions map[string]provider.DecisionQuestion, order []string) error {
 	if !isSerializableDecisionJSON(decisionStateJSON(state)) {
-		return invalidDecisionInput("state", invalidDecisionStateJSONMessage)
+		return invalidDecisionInput("state", state, invalidDecisionStateJSONMessage)
 	}
 	if err := validateDecisionState(state); err != nil {
 		return err
 	}
 	if len(questions) == 0 {
-		return invalidDecisionInput("questions", "must be a nonempty question map")
+		return invalidDecisionInput("questions", questions, "must be a nonempty question map")
 	}
 
 	for _, id := range orderedQuestionIDs(questions, order) {
 		q := questions[id]
 		field := fmt.Sprintf("questions.%s", id)
 		if !isSerializableDecisionJSON(q.Instructions) || !isSerializableDecisionJSON(q.Criteria) {
-			return invalidDecisionInput(field, invalidDecisionQuestionJSONMessage)
+			return invalidDecisionInput(field, q, invalidDecisionQuestionJSONMessage)
 		}
 		// Instructions may be omitted (nil) for every question type when the
 		// provider supports it (TS #23470; box since c70adf670b, whose
 		// DecisionModelV4Question types box instructions `?: ... | null`).
 		if q.Instructions != nil && !isDecisionInput(q.Instructions) {
-			return invalidDecisionInput(field, "instructions must be a JSON-compatible string, object, or array")
+			return invalidDecisionInput(field, q, "instructions must be a JSON-compatible string, object, or array")
 		}
 
 		switch q.Type {
@@ -675,21 +678,21 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 		case "choice":
 			criteria, ok := isDecisionRecord(q.Criteria)
 			if !ok || len(criteria) == 0 {
-				return invalidDecisionInput(field, "choice criteria must be a nonempty option map")
+				return invalidDecisionInput(field, q, "choice criteria must be a nonempty option map")
 			}
 			for _, v := range criteria {
 				if v != nil && !isDecisionInput(v) {
-					return invalidDecisionInput(field, "criteria descriptions must be JSON-compatible strings, objects, arrays, or null")
+					return invalidDecisionInput(field, q, "criteria descriptions must be JSON-compatible strings, objects, arrays, or null")
 				}
 			}
 		case "score":
 			criteria, ok := q.Criteria.([]interface{})
 			if !ok || len(criteria) == 0 {
-				return invalidDecisionInput(field, "score criteria must contain at least one ordered level")
+				return invalidDecisionInput(field, q, "score criteria must contain at least one ordered level")
 			}
 			for _, v := range criteria {
 				if v != nil && !isDecisionInput(v) {
-					return invalidDecisionInput(field, "criteria descriptions must be JSON-compatible strings, objects, arrays, or null")
+					return invalidDecisionInput(field, q, "criteria descriptions must be JSON-compatible strings, objects, arrays, or null")
 				}
 			}
 		case "boolean":
@@ -705,28 +708,28 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 					}
 				}
 				if !described {
-					return invalidDecisionInput(field, "boolean questions require instructions or at least one non-null criterion")
+					return invalidDecisionInput(field, q, "boolean questions require instructions or at least one non-null criterion")
 				}
 			}
 			if q.Criteria != nil {
 				criteria, ok := isDecisionRecord(q.Criteria)
 				if !ok {
-					return invalidDecisionInput(field, "boolean criteria may only describe true and false")
+					return invalidDecisionInput(field, q, "boolean criteria may only describe true and false")
 				}
 				// TS checks every key before any description.
 				for k := range criteria {
 					if k != "true" && k != "false" {
-						return invalidDecisionInput(field, "boolean criteria may only describe true and false")
+						return invalidDecisionInput(field, q, "boolean criteria may only describe true and false")
 					}
 				}
 				for _, v := range criteria {
 					if v != nil && !isDecisionInput(v) {
-						return invalidDecisionInput(field, "criteria descriptions must be JSON-compatible strings, objects, arrays, or null")
+						return invalidDecisionInput(field, q, "criteria descriptions must be JSON-compatible strings, objects, arrays, or null")
 					}
 				}
 			}
 		default:
-			return invalidDecisionInput(field, "question type must be choice, score, boolean, or box")
+			return invalidDecisionInput(field, q, "question type must be choice, score, boolean, or box")
 		}
 	}
 	return nil

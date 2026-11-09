@@ -24,13 +24,13 @@ func TestValidateObjectGenerationInputReportsInvalidArgumentError(t *testing.T) 
 		{ObjectOutputMode("bogus"), false, "", nil, "output", "Invalid output type."},
 	}
 	for _, c := range cases {
-		err := validateObjectGenerationInput(c.mode, c.schema, c.name, "", c.enum)
+		err := validateObjectGenerationInput(c.mode, c.schema, nil, c.name, "", c.enum)
 		var ia *providererrors.InvalidArgumentError
 		if !errors.As(err, &ia) || ia.Field != c.field || ia.Message != c.message {
 			t.Errorf("%v: err=%v", c.mode, err)
 		}
 	}
-	if err := validateObjectGenerationInput(ObjectModeEnum, false, "", "", []string{"a"}); err != nil {
+	if err := validateObjectGenerationInput(ObjectModeEnum, false, nil, "", "", []string{"a"}); err != nil {
 		t.Fatal(err)
 	}
 }

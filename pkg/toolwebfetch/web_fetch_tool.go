@@ -114,7 +114,7 @@ type ErrorOutput struct {
 // Experimental: mirrors the TypeScript experimental web fetch tool.
 func CreateWebFetchTool(opts Options) (types.Tool, error) {
 	if opts.AllowedDomains != nil && opts.BlockedDomains != nil {
-		return types.Tool{}, &providerrors.InvalidArgumentError{Field: "allowedDomains", Message: "Cannot be combined with blockedDomains."}
+		return types.Tool{}, &providerrors.InvalidArgumentError{Field: "allowedDomains", Value: opts.AllowedDomains, Message: "Cannot be combined with blockedDomains."}
 	}
 	maxLength, err := positiveOption("maxLength", opts.MaxLength, DefaultMaxLength, maxSafeInteger)
 	if err != nil {
@@ -247,6 +247,7 @@ func positiveOption(name string, value *int, def int, max int64) (int, error) {
 	if *value < 1 || int64(*value) > max {
 		return 0, &providerrors.InvalidArgumentError{
 			Field:   name,
+			Value:   *value,
 			Message: fmt.Sprintf("Must be an integer between 1 and %d.", max),
 		}
 	}

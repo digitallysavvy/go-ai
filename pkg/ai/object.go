@@ -913,7 +913,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	}
 	// Validate mode-specific requirements (TS validateObjectGenerationInput),
 	// before maxRetries as TS calls prepareRetries after it.
-	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
+	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.Schema, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
 		return nil, err
 	}
 	maxRetries, maxRetryErr := normalizeObjectMaxRetries(opts.MaxRetries)
@@ -1881,7 +1881,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	}
 	// TS streamObject validates the output settings before its result's
 	// constructor calls prepareRetries.
-	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
+	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.Schema, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
 		return nil, err
 	}
 	maxRetries, maxRetryErr := normalizeObjectMaxRetries(opts.MaxRetries)
@@ -2448,9 +2448,16 @@ func deepEqual(a, b interface{}) bool {
 
 // validateObjectGenerationInput mirrors TS validateObjectGenerationInput: the
 // same checks, parameter names and messages, reported as InvalidArgumentError.
-func validateObjectGenerationInput(mode ObjectOutputMode, hasSchema bool, schemaName, schemaDescription string, enumValues []string) error {
+//
+// schemaValue is the schema the caller passed (TS reports it as the error's
+// value); hasSchema tells whether one was given.
+func validateObjectGenerationInput(mode ObjectOutputMode, hasSchema bool, schemaValue interface{}, schemaName, schemaDescription string, enumValues []string) error {
 	invalid := func(field, message string) error {
 		return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	}
+	// TS passes the rejected argument as the error's value.
+	invalidValue := func(field string, value interface{}, message string) error {
+		return &providererrors.InvalidArgumentError{Field: field, Message: message, Value: value}
 	}
 	switch mode {
 	case ObjectModeObject:
@@ -2458,40 +2465,40 @@ func validateObjectGenerationInput(mode ObjectOutputMode, hasSchema bool, schema
 			return invalid("schema", "Schema is required for object output.")
 		}
 		if len(enumValues) != 0 {
-			return invalid("enumValues", "Enum values are not supported for object output.")
+			return invalidValue("enumValues", enumValues, "Enum values are not supported for object output.")
 		}
 	case ObjectModeArray:
 		if !hasSchema {
 			return invalid("schema", "Element schema is required for array output.")
 		}
 		if len(enumValues) != 0 {
-			return invalid("enumValues", "Enum values are not supported for array output.")
+			return invalidValue("enumValues", enumValues, "Enum values are not supported for array output.")
 		}
 	case ObjectModeEnum:
 		if hasSchema {
-			return invalid("schema", "Schema is not supported for enum output.")
+			return invalidValue("schema", schemaValue, "Schema is not supported for enum output.")
 		}
 		if schemaDescription != "" {
-			return invalid("schemaDescription", "Schema description is not supported for enum output.")
+			return invalidValue("schemaDescription", schemaDescription, "Schema description is not supported for enum output.")
 		}
 		if schemaName != "" {
-			return invalid("schemaName", "Schema name is not supported for enum output.")
+			return invalidValue("schemaName", schemaName, "Schema name is not supported for enum output.")
 		}
 		if len(enumValues) == 0 {
 			return invalid("enumValues", "Enum values are required for enum output.")
 		}
 	case ObjectModeNoSchema:
 		if hasSchema {
-			return invalid("schema", "Schema is not supported for no-schema output.")
+			return invalidValue("schema", schemaValue, "Schema is not supported for no-schema output.")
 		}
 		if schemaDescription != "" {
-			return invalid("schemaDescription", "Schema description is not supported for no-schema output.")
+			return invalidValue("schemaDescription", schemaDescription, "Schema description is not supported for no-schema output.")
 		}
 		if schemaName != "" {
-			return invalid("schemaName", "Schema name is not supported for no-schema output.")
+			return invalidValue("schemaName", schemaName, "Schema name is not supported for no-schema output.")
 		}
 		if len(enumValues) != 0 {
-			return invalid("enumValues", "Enum values are not supported for no-schema output.")
+			return invalidValue("enumValues", enumValues, "Enum values are not supported for no-schema output.")
 		}
 	default:
 		return invalid("output", "Invalid output type.")

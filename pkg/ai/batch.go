@@ -639,6 +639,7 @@ func validateBatchRequests(requests []BatchRequest) error {
 	if len(requests) == 0 {
 		return &providererrors.InvalidArgumentError{
 			Field:   "requests",
+			Value:   requests,
 			Message: "requests must not be empty",
 		}
 	}
@@ -653,12 +654,14 @@ func validateBatchRequests(requests []BatchRequest) error {
 		if providerutils.JSTrim(id) == "" {
 			return &providererrors.InvalidArgumentError{
 				Field:   "requests",
+				Value:   requests,
 				Message: "request IDs must not be empty",
 			}
 		}
 		if _, ok := seen[id]; ok {
 			return &providererrors.InvalidArgumentError{
 				Field: "requests",
+				Value: requests,
 				// TS template literal: the ID is not escaped.
 				Message: fmt.Sprintf(`request IDs must be unique; duplicate ID "%s"`, id),
 			}
@@ -674,12 +677,13 @@ func validateBatchRequests(requests []BatchRequest) error {
 // isDeepEqualData). tools are the request's tools after the descriptions are
 // resolved and toolOrder is applied; toolsByName carries the definitions of
 // the earlier requests.
-func validateCompatibleBatchTools(tools []types.Tool, toolsByName map[string]interface{}) error {
+func validateCompatibleBatchTools(requestID string, tools []types.Tool, toolsByName map[string]interface{}) error {
 	for i := range tools {
 		def := preparedBatchToolDefinition(&tools[i])
 		if prev, ok := toolsByName[tools[i].Name]; ok && !reflect.DeepEqual(prev, def) {
 			return &providererrors.InvalidArgumentError{
 				Field:   "requests",
+				Value:   requestID,
 				Message: fmt.Sprintf(`tool "%s" must have the same definition in every batch request`, tools[i].Name),
 			}
 		}
@@ -738,6 +742,7 @@ func validateBatchReference(batchAPI provider.BatchV4, batch BatchReference) err
 	if batch.Provider != batchAPI.Provider() {
 		return &providererrors.InvalidArgumentError{
 			Field:   "provider",
+			Value:   batchAPI,
 			Message: fmt.Sprintf("provider %s is not compatible with batch provider %s", batchAPI.Provider(), batch.Provider),
 		}
 	}
@@ -778,7 +783,7 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		// TS then runs validateCompatibleTools on the prepared tools.
 		resolvedTools := resolveStepTools(ctx, t.Tools, t.ToolsContext, nil)
 		resolvedTools = orderStepTools(resolvedTools, t.ToolOrder)
-		if err := validateCompatibleBatchTools(toolutil.ResolveToolSchemas(resolvedTools), toolsByName); err != nil {
+		if err := validateCompatibleBatchTools(req.id(), toolutil.ResolveToolSchemas(resolvedTools), toolsByName); err != nil {
 			return provider.BatchV4Request{}, err
 		}
 		// TS prepareLanguageModelCallOptions(request), before the prompt is
