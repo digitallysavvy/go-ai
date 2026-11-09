@@ -255,10 +255,10 @@ func (p *MaaSProvider) init() error {
 	}
 
 	p.provider = openai.New(openai.Config{
-		Name:             "vertex.maas",
-		NoAPIKey:         true,
-		BaseURL:          baseURL,
-		HTTPClient:       httpClient,
+		Name:       "vertex.maas",
+		NoAPIKey:   true,
+		BaseURL:    baseURL,
+		HTTPClient: httpClient,
 		// TS createOpenAICompatible({name: 'vertex.maas'}) chat models report
 		// `${name}.chat`.
 		ChatProviderName: "vertex.maas.chat",
