@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -48,8 +50,8 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	headers := internalhttp.MergeHeaders(authHeaders, opts.Headers)
 
 	var displayName *string
-	pollIntervalMs := int64(2000)
-	pollTimeoutMs := int64(300000)
+	pollIntervalMs := float64(2000)
+	pollTimeoutMs := float64(300000)
 	if raw, present := opts.ProviderOptions["google"]; present && raw != nil {
 		// TS parseProviderOptions with z.looseObject({displayName: string,
 		// pollIntervalMs/pollTimeoutMs: positive number}, all nullish).
@@ -66,7 +68,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		}
 		for _, f := range []struct {
 			key string
-			dst *int64
+			dst *float64
 		}{{"pollIntervalMs", &pollIntervalMs}, {"pollTimeoutMs", &pollTimeoutMs}} {
 			v := google[f.key]
 			if v == nil {
@@ -150,8 +152,8 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	start := time.Now()
 	for file.State == "PROCESSING" {
-		if time.Since(start) > time.Duration(pollTimeoutMs)*time.Millisecond {
-			return nil, googleFilesError("GOOGLE_FILES_UPLOAD_TIMEOUT", fmt.Sprintf("File processing timed out after %dms", pollTimeoutMs))
+		if float64(time.Since(start))/float64(time.Millisecond) > pollTimeoutMs {
+			return nil, googleFilesError("GOOGLE_FILES_UPLOAD_TIMEOUT", fmt.Sprintf("File processing timed out after %sms", providerutils.JSNumberString(pollTimeoutMs)))
 		}
 		// select on ctx.Done() during the wait (not a plain time.Sleep), so
 		// cancellation/timeout is honored promptly instead of being delayed
@@ -159,7 +161,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(time.Duration(pollIntervalMs) * time.Millisecond):
+		case <-time.After(time.Duration(pollIntervalMs * float64(time.Millisecond))):
 		}
 
 		pollReq, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/"+googleFilePath(file.Name), nil)
@@ -286,24 +288,35 @@ func googleFilePath(name string) string {
 	return providerutils.EncodePathSegment(name)
 }
 
-// googleFilesNumber reads a numeric provider option given as any Go number type.
-func googleFilesNumber(v interface{}) (int64, bool) {
+// googleFilesNumber reads a numeric provider option given as any Go number
+// type, like TS z.number(): fractions are kept and NaN / Infinity are not
+// numbers.
+func googleFilesNumber(v interface{}) (float64, bool) {
+	var f float64
 	switch n := v.(type) {
-	case int:
-		return int64(n), true
-	case int32:
-		return int64(n), true
-	case int64:
-		return n, true
-	case float32:
-		return int64(n), true
-	case float64:
-		return int64(n), true
 	case json.Number:
-		i, err := n.Int64()
-		return i, err == nil
+		parsed, err := n.Float64()
+		if err != nil {
+			return 0, false
+		}
+		f = parsed
+	default:
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			f = float64(rv.Int())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			f = float64(rv.Uint())
+		case reflect.Float32, reflect.Float64:
+			f = rv.Float()
+		default:
+			return 0, false
+		}
 	}
-	return 0, false
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return f, true
 }
 
 // handleFilesError builds the ProviderError for a failed Files API response

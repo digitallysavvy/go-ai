@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"math"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TestR90provgEmbeddingOutputDimensionalityNumber: googleEmbeddingModelOptions
@@ -154,5 +156,38 @@ func TestR90provgInteractionsMediaTypeQuoting(t *testing.T) {
 	_, err := resolveInteractionMediaType(`image\x`, []byte{0}, "")
 	if err == nil || !strings.Contains(err.Error(), `file of media type "image\x" must specify subtype`) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestR90provgFilesFractionalPollOptions: TS googleFilesUploadOptionsSchema
+// reads pollIntervalMs / pollTimeoutMs as z.number().positive(), so 0.5 is a
+// valid interval and NaN is not a number.
+func TestR90provgFilesFractionalPollOptions(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/upload/v1beta/files" {
+			w.Header().Set("x-goog-upload-url", srv.URL+"/upload-session")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": map[string]interface{}{"name": "files/a", "mimeType": "text/plain", "uri": "u", "state": "ACTIVE"}})
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	upload := func(v interface{}) error {
+		_, err := p.Files().UploadFile(context.Background(), types.UploadFileOptions{
+			Data:            types.FileData{Type: types.FileDataTypeData, Data: []byte{1}},
+			MediaType:       "text/plain",
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"pollIntervalMs": v}},
+		})
+		return err
+	}
+	if err := upload(0.5); err != nil {
+		t.Fatalf("0.5 rejected: %v", err)
+	}
+	if err := upload(uint8(5)); err != nil {
+		t.Fatalf("uint8 rejected: %v", err)
+	}
+	if err := upload(math.NaN()); err == nil {
+		t.Fatal("NaN accepted")
 	}
 }
