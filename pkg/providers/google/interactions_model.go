@@ -408,7 +408,7 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		SystemInstruction:     systemInstruction,
 		Tools:                 toolsForBody,
 		ResponseFormat:        responseFormatEntries,
-		ResponseModalities:    interactionsOpts.ResponseModalities,
+		ResponseModalities:    interactionsResponseModalities(interactionsOpts.ResponseModalities),
 		PreviousInteractionID: interactionsOpts.PreviousInteractionID,
 		ServiceTier:           interactionsOpts.ServiceTier,
 		Store:                 interactionsOpts.Store,
@@ -634,6 +634,7 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 		if modalities, ok := v["responseModalities"].([]string); ok {
 			out.ResponseModalities = modalities
 		} else if modalities, ok := v["responseModalities"].([]interface{}); ok {
+			out.ResponseModalities = []string{}
 			for _, item := range modalities {
 				if s, ok := item.(string); ok {
 					out.ResponseModalities = append(out.ResponseModalities, s)
@@ -1431,4 +1432,14 @@ func encodeData(data []byte, dataString string) string {
 		return dataString
 	}
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// interactionsResponseModalities is the request's response_modalities: TS
+// sends the option whenever it is not null, so a given empty list is sent as
+// [] and only an absent (nil) one is left out.
+func interactionsResponseModalities(modalities []string) *[]string {
+	if modalities == nil {
+		return nil
+	}
+	return &modalities
 }

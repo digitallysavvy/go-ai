@@ -54,16 +54,18 @@ type interactionsRequest struct {
 	// ResponseFormat is a polymorphic array of entries (TS
 	// `GoogleInteractionsResponseFormatEntry`: text/image/audio/video), not a
 	// bare JSON Schema. There is no `response_mime_type` field on the wire.
-	ResponseFormat        []map[string]interface{} `json:"response_format,omitempty"`
-	ResponseModalities    []string                 `json:"response_modalities,omitempty"`
-	PreviousInteractionID string                   `json:"previous_interaction_id,omitempty"`
-	ServiceTier           string                   `json:"service_tier,omitempty"`
-	Store                 *bool                    `json:"store,omitempty"`
-	GenerationConfig      map[string]interface{}   `json:"generation_config,omitempty"`
-	AgentConfig           map[string]interface{}   `json:"agent_config,omitempty"`
-	Environment           interface{}              `json:"environment,omitempty"`
-	Background            *bool                    `json:"background,omitempty"`
-	Stream                bool                     `json:"stream,omitempty"`
+	ResponseFormat []map[string]interface{} `json:"response_format,omitempty"`
+	// ResponseModalities is sent whenever the option is given, an empty
+	// list included (TS `responseModalities != null`).
+	ResponseModalities    *[]string              `json:"response_modalities,omitempty"`
+	PreviousInteractionID string                 `json:"previous_interaction_id,omitempty"`
+	ServiceTier           string                 `json:"service_tier,omitempty"`
+	Store                 *bool                  `json:"store,omitempty"`
+	GenerationConfig      map[string]interface{} `json:"generation_config,omitempty"`
+	AgentConfig           map[string]interface{} `json:"agent_config,omitempty"`
+	Environment           interface{}            `json:"environment,omitempty"`
+	Background            *bool                  `json:"background,omitempty"`
+	Stream                bool                   `json:"stream,omitempty"`
 }
 
 type interactionsResponse struct {
