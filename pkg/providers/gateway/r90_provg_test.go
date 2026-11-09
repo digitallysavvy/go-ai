@@ -80,3 +80,32 @@ func TestR90provgModelIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestR90provgRerankDocumentsUnion: TS core rerank sends {type: 'text'} when
+// the first document is a string, else {type: 'object'}, for any document
+// values (rerank.ts documentsToSend); a []json.RawMessage or struct slice is
+// still wrapped.
+func TestR90provgRerankDocumentsUnion(t *testing.T) {
+	type doc struct {
+		A int `json:"a"`
+	}
+	cases := []struct {
+		docs interface{}
+		want string
+	}{
+		{[]string{"x"}, `{"type":"text","values":["x"]}`},
+		{[]map[string]interface{}{{"a": 1}}, `{"type":"object","values":[{"a":1}]}`},
+		{[]json.RawMessage{json.RawMessage(`{"a":1}`)}, `{"type":"object","values":[{"a":1}]}`},
+		{[]doc{{A: 1}}, `{"type":"object","values":[{"a":1}]}`},
+		{[]interface{}{map[string]interface{}{"a": 1}}, `{"type":"object","values":[{"a":1}]}`},
+	}
+	for _, tc := range cases {
+		b, err := json.Marshal(gatewayRerankDocuments(tc.docs))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != tc.want {
+			t.Errorf("%T: got %s, want %s", tc.docs, b, tc.want)
+		}
+	}
+}

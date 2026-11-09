@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -97,22 +98,19 @@ type gatewayRerankResponse struct {
 }
 
 // gatewayRerankDocuments wraps documents in the V4 reranking documents union
-// ({type: 'text', values} or {type: 'object', values}) that TS sends.
+// that TS core rerank sends: {type: 'text', values} when the first document
+// is a string, else {type: 'object', values} (rerank.ts documentsToSend).
+// Any slice is accepted (strings, maps, json.RawMessage, structs).
 func gatewayRerankDocuments(docs interface{}) interface{} {
-	switch d := docs.(type) {
-	case []string:
-		return map[string]interface{}{"type": "text", "values": d}
-	case []map[string]interface{}:
-		return map[string]interface{}{"type": "object", "values": d}
-	case []interface{}:
-		kind := "text"
-		for _, v := range d {
-			if _, ok := v.(string); !ok {
-				kind = "object"
-				break
-			}
-		}
-		return map[string]interface{}{"type": kind, "values": d}
+	rv := reflect.ValueOf(docs)
+	if docs == nil || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) {
+		return docs
 	}
-	return docs
+	kind := "object"
+	if rv.Len() > 0 {
+		if _, ok := rv.Index(0).Interface().(string); ok {
+			kind = "text"
+		}
+	}
+	return map[string]interface{}{"type": kind, "values": docs}
 }
