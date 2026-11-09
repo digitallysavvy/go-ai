@@ -2339,6 +2339,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// providerMetadata); metadata on other chunks belongs to their parts.
 		var stepProviderMetadataRaw json.RawMessage
 		var stepSawTerminal bool
+		// stepSawFinish: the model call sent its finish part. TS checks the
+		// tool choice only there (stream-language-model-call.ts 'finish'),
+		// so a stream that ends without one raises no violation.
+		var stepSawFinish bool
 		// stepSawErrorChunk: the step's stream carried a terminal error part (not
 		// retried). With InternalOptions.StopOnStreamError the step's tool calls
 		// are not processed and the loop ends (TS hasTerminalError).
@@ -2780,6 +2784,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Update finish reason and context management
 			if chunk.Type == provider.ChunkTypeFinish {
 				stepSawTerminal = true
+				stepSawFinish = true
 				r.finishReason = chunk.FinishReason
 				stepProviderMetadataRaw = chunk.ProviderMetadata
 				if chunk.RawFinishReason != "" {
@@ -3118,6 +3123,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					// TS retry boundary: stepRawFinishReason = undefined.
 					r.rawFinishReason = ""
 					stepSawTerminal = false
+					stepSawFinish = false
 					stepSawErrorChunk = false
 					stepSawOutput = false
 					streamedToolResults = make(map[string]types.ToolResult)
@@ -3322,7 +3328,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepContent = replaceToolResultContentParts(stepContent, stepToolCalls)
 
 		var violation error
-		if !transformStopped {
+		if !transformStopped && stepSawFinish {
 			violation = checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepModelID, stepContent)
 		}
 		if violation != nil {
@@ -5964,7 +5970,9 @@ func resetChunkDeadlineOnOutput(stepCtx context.Context, tc *TimeoutConfig, prev
 // replacement from the original ID instead (e.g. "0" -> "0-2") would let a
 // provider's own later block ID collide with an earlier remap's output.
 func remapDuplicateBlockID(chunk *provider.StreamChunk, used map[string]bool, remap map[string]string, startType, deltaType, endType provider.ChunkType, generateID IDGenerator) {
-	if chunk == nil || chunk.ID == "" {
+	// An empty ID is reserved like any other (TS usedIds.has('')), so a
+	// later step's "" block gets a generated ID.
+	if chunk == nil {
 		return
 	}
 	switch chunk.Type {
