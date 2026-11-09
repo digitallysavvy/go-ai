@@ -1059,11 +1059,11 @@ func (f anthropicFile) resolveFullMediaType() (string, error) {
 			return detected, nil
 		}
 		return "", &providererrors.UnsupportedFunctionalityError{
-			Functionality: fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", f.mediaType),
+			Functionality: fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", f.mediaType),
 		}
 	}
 	return "", &providererrors.UnsupportedFunctionalityError{
-		Functionality: fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", f.mediaType),
+		Functionality: fmt.Sprintf("file of media type \"%s\" must specify subtype since it is not passed as inline bytes", f.mediaType),
 	}
 }
 

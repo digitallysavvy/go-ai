@@ -351,7 +351,7 @@ func resolveBedrockDataMediaType(mediaType string, payload bedrockFilePayload) (
 			return detected, nil
 		}
 	}
-	return "", bedrockUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType), "")
+	return "", bedrockUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType), "")
 }
 
 // requireFullURLMediaType is TS resolveFullMediaType for a url part: a bare or
@@ -360,7 +360,7 @@ func requireFullURLMediaType(mediaType string) error {
 	if isFullMediaType(mediaType) {
 		return nil
 	}
-	return bedrockUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", mediaType), "")
+	return bedrockUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it is not passed as inline bytes", mediaType), "")
 }
 
 // mediaSourceBlock builds an image/video `source` block: either inline bytes

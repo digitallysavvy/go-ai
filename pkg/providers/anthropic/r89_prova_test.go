@@ -153,3 +153,23 @@ func TestR89provaForcedFallbackEmptyTools(t *testing.T) {
 		t.Fatalf("body = %s", got)
 	}
 }
+
+// TestR89provaTemplateQuotes: TS error and warning texts quote values with a
+// template literal ("${id}"), not with escapes (anthropic-batch.ts
+// validateRequestIds, anthropic-language-model.ts unknown-model warning).
+func TestR89provaTemplateQuotes(t *testing.T) {
+	err := validateAnthropicBatchRequestIDs([]provider.BatchV4Request{{
+		Type: provider.BatchRequestTypeText, Text: &provider.TextBatchV4Request{ID: `a"é`},
+	}})
+	if err == nil || !strings.Contains(err.Error(), `Anthropic batch request ID "a"é" must match`) {
+		t.Fatalf("err = %v", err)
+	}
+	model := NewLanguageModel(New(Config{APIKey: "k"}), `my"model`, nil)
+	req, err := model.prepareRequest(&provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.warnings) == 0 || !strings.HasPrefix(req.warnings[0].Details, `The model "my"model" is unknown.`) {
+		t.Fatalf("warnings = %+v", req.warnings)
+	}
+}
