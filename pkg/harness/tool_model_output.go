@@ -76,17 +76,7 @@ func NormalizeToolModelOutput(output types.ToolResultOutput) (types.ToolResultOu
 			if dataType := fileBlockDataType(b); dataType != types.FileDataTypeData {
 				return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content 'file' (%s, %s).", b.MediaType, dataType))
 			}
-			data := b.Data
-			if len(data) == 0 {
-				data = b.FileData.Data
-			}
-			mediaType := b.MediaType
-			if mediaType == "" {
-				mediaType = b.FileData.MediaType
-			}
-			if topLevelMediaType(mediaType) != "image" && (mediaType != "" || len(data) == 0) {
-				return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content 'file' (%s, data).", mediaType))
-			}
+			data, mediaType := fileBlockInline(b)
 			img, err := normalizeInlineImage(data, mediaType, b.ProviderOptions, "file")
 			if err != nil {
 				return types.ToolResultOutput{}, err
@@ -121,6 +111,25 @@ func fileBlockDataType(b types.FileContentBlock) types.FileDataType {
 	return types.FileDataTypeData
 }
 
+// fileBlockInline is the inline bytes and media type of a file block whose
+// data is inline.
+func fileBlockInline(b types.FileContentBlock) ([]byte, string) {
+	data := b.Data
+	if len(data) == 0 {
+		data = b.FileData.Data
+	}
+	if len(data) == 0 && b.FileData.DataString != "" {
+		if decoded, err := types.DecodeFileDataString(b.FileData.DataString); err == nil {
+			data = decoded
+		}
+	}
+	mediaType := b.MediaType
+	if mediaType == "" {
+		mediaType = b.FileData.MediaType
+	}
+	return data, mediaType
+}
+
 // isFullMediaType mirrors TS isFullMediaType: `type/subtype` with a
 // non-empty subtype that is not "*".
 func isFullMediaType(mediaType string) bool {
@@ -132,7 +141,9 @@ func isFullMediaType(mediaType string) bool {
 // the part's type, partType, for a non-image), then detects the media type
 // of an image whose media type is not a full one.
 func normalizeInlineImage(data []byte, mediaType string, providerOptions map[string]interface{}, partType string) (types.ImageContentBlock, error) {
-	if mediaType != "" && topLevelMediaType(mediaType) != "image" {
+	// TS getTopLevelMediaType(mediaType) !== 'image': an empty media type
+	// fails here too.
+	if topLevelMediaType(mediaType) != "image" {
 		return types.ImageContentBlock{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content '%s' (%s, data).", partType, mediaType))
 	}
 	if !isFullMediaType(mediaType) {
@@ -183,17 +194,42 @@ func ConvertToolModelOutput(output types.ToolResultOutput) ([]ToolModelOutputCon
 			case types.TextContentBlock:
 				out = append(out, ToolModelOutputContent{Type: ToolModelOutputContentText, Text: b.Text})
 			case types.ImageContentBlock:
+				// TS getNormalizedInlineImage: a full image/* media type only.
+				if !isNormalizedImageMediaType(b.MediaType) {
+					return nil, false, unsupportedConvertContent("image-data")
+				}
 				out = append(out, ToolModelOutputContent{Type: ToolModelOutputContentImage, Data: base64Std(b.Data), MediaType: b.MediaType})
+			case types.FileContentBlock:
+				// TS accepts a normalized `file` part: inline data with a full
+				// image/* media type.
+				data, mediaType := fileBlockInline(b)
+				if fileBlockDataType(b) != types.FileDataTypeData || !isNormalizedImageMediaType(mediaType) {
+					return nil, false, unsupportedConvertContent(block.ToolResultContentType())
+				}
+				out = append(out, ToolModelOutputContent{Type: ToolModelOutputContentImage, Data: base64Std(data), MediaType: mediaType})
 			default:
 				// TS throws HarnessBridgeCapabilityUnsupportedError with this exact
 				// text (the host translates it to the capability error).
-				return nil, false, NewCapabilityUnsupportedError(fmt.Sprintf(
-					"Harnesses support only text and inline images in tool model output; unsupported content '%s'.", block.ToolResultContentType()), "", nil)
+				return nil, false, unsupportedConvertContent(block.ToolResultContentType())
 			}
 		}
 		return out, false, nil
 	}
 	return nil, false, unsupportedModelOutput(fmt.Sprintf("unsupported output type '%s'.", output.Type))
+}
+
+// isNormalizedImageMediaType is TS getNormalizedInlineImage's media type
+// check: starts with "image/" and is not "image/*".
+func isNormalizedImageMediaType(mediaType string) bool {
+	return strings.HasPrefix(mediaType, "image/") && mediaType != "image/*"
+}
+
+// unsupportedConvertContent is the TS HarnessBridgeCapabilityUnsupportedError
+// text of convertHarnessToolModelOutput (the host translates it to the
+// capability error).
+func unsupportedConvertContent(partType string) error {
+	return NewCapabilityUnsupportedError(fmt.Sprintf(
+		"Harnesses support only text and inline images in tool model output; unsupported content '%s'.", partType), "", nil)
 }
 
 func base64Std(b []byte) string { return base64.StdEncoding.EncodeToString(b) }

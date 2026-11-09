@@ -82,3 +82,47 @@ func TestR89carryResponseFormatKeepsOrderedSchema(t *testing.T) {
 		})
 	}
 }
+
+// TS normalize-harness-tool-model-output.ts checks the top-level media type
+// before detection: an empty media type fails (getTopLevelMediaType('') is
+// '').
+func TestR89carryNormalizeEmptyMediaType(t *testing.T) {
+	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+	const prefix = "Harnesses support only text and inline images in tool model output. "
+	for _, tc := range []struct {
+		block types.ToolResultContentBlock
+		want  string
+	}{
+		{types.ImageContentBlock{Data: png}, prefix + "Unsupported content 'image-data' (, data)."},
+		{types.FileContentBlock{Data: png}, prefix + "Unsupported content 'file' (, data)."},
+	} {
+		_, err := NormalizeToolModelOutput(types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{tc.block}})
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("err = %v, want %s", err, tc.want)
+		}
+	}
+}
+
+// TS convert-harness-tool-model-output.ts getNormalizedInlineImage: only a
+// file part with inline data and a full image/* media type converts.
+func TestR89carryConvertToolModelOutputImages(t *testing.T) {
+	const prefix = "Harnesses support only text and inline images in tool model output; unsupported content "
+	_, _, err := ConvertToolModelOutput(types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+		types.ImageContentBlock{Data: []byte{1}, MediaType: "image/*"},
+	}})
+	if err == nil || err.Error() != prefix+"'image-data'." {
+		t.Fatalf("image/*: err = %v", err)
+	}
+	out, isErr, err := ConvertToolModelOutput(types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+		types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2}}, MediaType: "image/png"},
+	}})
+	if err != nil || isErr || len(out) != 1 || out[0].Type != ToolModelOutputContentImage || out[0].Data != "AQI=" || out[0].MediaType != "image/png" {
+		t.Fatalf("file: out = %#v, err = %v", out, err)
+	}
+	_, _, err = ConvertToolModelOutput(types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+		types.FileContentBlock{URL: "https://x/a.png", MediaType: "image/png"},
+	}})
+	if err == nil || err.Error() != prefix+"'file'." {
+		t.Fatalf("file url: err = %v", err)
+	}
+}
