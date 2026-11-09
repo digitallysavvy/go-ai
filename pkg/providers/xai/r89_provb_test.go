@@ -135,3 +135,21 @@ func TestR89provbVideoHeadersJoinRepeatedLines(t *testing.T) {
 		t.Fatalf("X-Multi = %q, want %q", got, "a, b")
 	}
 }
+
+// TS xai-transcription-model.ts: providerMetadata.xai.words is the
+// zod-parsed word list, so a present `speaker: null` is kept.
+func TestR89provbTranscriptionWordsKeepNullSpeaker(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"a b","words":[{"text":"a","start":0,"end":1,"speaker":0},{"text":"b","start":1,"end":2,"speaker":null}]}`))
+	}))
+	defer srv.Close()
+	res, err := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "").DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(res.ProviderMetadata)
+	if want := `{"xai":{"words":[{"end":1,"speaker":0,"start":0,"text":"a"},{"end":2,"speaker":null,"start":1,"text":"b"}]}}`; string(raw) != want {
+		t.Fatalf("metadata = %s, want %s", raw, want)
+	}
+}

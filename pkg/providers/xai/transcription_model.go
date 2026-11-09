@@ -121,11 +121,20 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		if word.Speaker == nil {
 			continue
 		}
+		// TS reports the zod-parsed words: a present `speaker: null` stays.
+		var rawWords struct {
+			Words []map[string]json.RawMessage `json:"words"`
+		}
+		_ = json.Unmarshal(resp.Body, &rawWords)
 		words := make([]map[string]interface{}, 0, len(parsed.Words))
-		for _, w := range parsed.Words {
+		for i, w := range parsed.Words {
 			entry := map[string]interface{}{"text": w.Text, "start": w.Start, "end": w.End}
 			if w.Speaker != nil {
 				entry["speaker"] = *w.Speaker
+			} else if i < len(rawWords.Words) {
+				if _, present := rawWords.Words[i]["speaker"]; present {
+					entry["speaker"] = nil
+				}
 			}
 			words = append(words, entry)
 		}
