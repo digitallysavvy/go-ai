@@ -420,7 +420,7 @@ func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName
 		return err
 	}
 	if file.Type == "url" && file.URL != "" {
-		data, err := fileutil.Download(ctx, file.URL, fileutil.DefaultDownloadOptions())
+		data, err := fileutil.Download(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
 			return err
 		}

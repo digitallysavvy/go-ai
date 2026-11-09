@@ -463,7 +463,7 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 func writeOpenAIImageMarkup(ctx context.Context, writer *multipart.Writer, markup openAIImageMarkupInput) error {
 	data, mediaType := markup.data, markup.mediaType
 	if markup.url != "" {
-		res, err := fileutil.DownloadWithMetadata(ctx, markup.url, fileutil.DefaultDownloadOptions())
+		res, err := fileutil.DownloadWithMetadata(ctx, markup.url, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
 			return err
 		}
@@ -494,7 +494,7 @@ func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.W
 		// reach an internal address (e.g. a cloud metadata endpoint) with no
 		// SSRF check, no DNS pinning and no size limit; its response body
 		// would be forwarded to OpenAI as image data.
-		data, err := fileutil.Download(ctx, file.URL, fileutil.DefaultDownloadOptions())
+		data, err := fileutil.Download(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
 			return fmt.Errorf("failed to download image %s: %w", file.URL, err)
 		}

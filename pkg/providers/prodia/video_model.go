@@ -278,7 +278,7 @@ func resolveVideoImage(ctx context.Context, file *provider.VideoModelV3File) ([]
 		}
 		return data, file.MediaType, nil
 	case "url":
-		download, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.DefaultDownloadOptions())
+		download, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
 			return nil, "", err
 		}

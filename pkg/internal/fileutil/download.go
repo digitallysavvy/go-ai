@@ -277,6 +277,15 @@ const maxDownloadRedirects = 10
 // off; the caller's context still cancels the request.
 const NoTimeout time.Duration = -1
 
+// NoTimeoutDownloadOptions is DefaultDownloadOptions with NoTimeout: the
+// redirect, size and SSRF limits stay, and only the context ends the request
+// (TS download / downloadBlob set no timeout).
+func NoTimeoutDownloadOptions() DownloadOptions {
+	opts := DefaultDownloadOptions()
+	opts.Timeout = NoTimeout
+	return opts
+}
+
 // NewDownloadClient builds a per-download HTTP client using opts.Transport. Every redirect hop is
 // validated with opts.URLValidator before it is requested, and all caller
 // headers except User-Agent are dropped when a redirect crosses origin (TS

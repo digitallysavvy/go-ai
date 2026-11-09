@@ -17,6 +17,7 @@ const DefaultToolResultDownloadMaxBytes = 7 * 1024 * 1024
 func defaultToolResultDownload(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
 	opts := fileutil.DefaultDownloadOptions()
 	opts.MaxSize = maxBytes
+	opts.Timeout = fileutil.NoTimeout // TS download sets no timeout
 	res, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 	if err != nil {
 		return nil, "", err

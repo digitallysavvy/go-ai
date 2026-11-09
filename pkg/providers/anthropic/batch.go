@@ -263,6 +263,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	baseURL := b.provider.config.BaseURL
 	isTrusted := func(raw string) bool { return providerutils.IsSameOrigin(raw, baseURL) }
 	downloadOpts := fileutil.DefaultDownloadOptions()
+	downloadOpts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
 	downloadOpts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
 	downloadOpts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, fileutil.SafeTransport())
 	if err := downloadOpts.URLValidator(resultsURL); err != nil {

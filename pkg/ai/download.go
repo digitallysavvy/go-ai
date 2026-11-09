@@ -72,6 +72,9 @@ func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMeta
 
 	return func(ctx context.Context, url string) (*DownloadResult, error) {
 		opts := fileutil.DefaultDownloadOptions()
+		// TS createDownload sets no timeout: the caller's ctx bounds the
+		// download, so a large file on a slow link is not cut off at 60 s.
+		opts.Timeout = fileutil.NoTimeout
 
 		if options.MaxBytes > 0 {
 			opts.MaxSize = options.MaxBytes

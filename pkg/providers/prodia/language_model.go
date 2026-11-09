@@ -346,6 +346,7 @@ func lastUserImageFile(p types.Prompt) (*types.FileContent, error) {
 var promptImageDownloadOptions = func() fileutil.DownloadOptions {
 	opts := fileutil.DefaultDownloadOptions()
 	opts.MaxSize = maxPromptImageBytes
+	opts.Timeout = fileutil.NoTimeout // TS download sets no timeout
 	return opts
 }
 

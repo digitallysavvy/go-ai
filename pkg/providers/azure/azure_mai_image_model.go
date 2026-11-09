@@ -383,7 +383,7 @@ func (m *azureMaiImageModel) fileToImage(ctx context.Context, file provider.Imag
 	var data []byte
 	mediaType := file.MediaType
 	if file.Type == "url" {
-		result, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.DefaultDownloadOptions())
+		result, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
 			return azureMaiImageFile{}, err
 		}
