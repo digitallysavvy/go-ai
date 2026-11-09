@@ -20,6 +20,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 const (
@@ -143,7 +144,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		})
 	}
 
-	requestBytes, err := json.Marshal(googleSpeechOrderedBody(requestBody))
+	// TS request.body is JSON.stringify(requestBody): literal key order,
+	// HTML characters left unescaped.
+	requestBytes, err := jsonstr.Marshal(googleSpeechOrderedBody(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Gemini TTS request metadata: %w", err)
 	}

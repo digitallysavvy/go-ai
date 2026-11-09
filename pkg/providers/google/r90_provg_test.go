@@ -2,7 +2,10 @@ package google
 
 import (
 	"context"
+	"io"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -94,5 +97,26 @@ func TestR90provgSpeechTranslationRawChunkForMismatchedMessage(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out")
+	}
+}
+
+// TestR90provgSpeechRequestBodyText: TS google-speech-model.ts returns
+// request.body = JSON.stringify(requestBody), which leaves HTML characters
+// literal.
+func TestR90provgSpeechRequestBodyText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"AQI="}}]}}]}`)
+	}))
+	defer server.Close()
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	model, _ := p.SpeechModel(ModelGemini38FlashTTS)
+	result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "<b>Tom & Jerry</b>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"contents":[{"role":"user","parts":[{"text":"<b>Tom & Jerry</b>"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}}}`
+	if got := result.Request.Body; got != want {
+		t.Fatalf("request body = %v, want %s", got, want)
 	}
 }
