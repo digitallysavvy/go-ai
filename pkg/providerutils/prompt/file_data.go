@@ -1109,7 +1109,9 @@ func NormalizeReasoningFileContent(part types.ReasoningFileContent) (types.Reaso
 	return part, nil
 }
 
-// ParseDataURL converts an RFC 2397 base64 data URL into a data FileData value.
+// ParseDataURL converts a data URL into a data FileData value: the text after
+// the first comma is decoded as base64, with or without a ";base64" marker
+// (TS splitDataUrl).
 func ParseDataURL(value string) (types.FileData, error) {
 	prefix, rest, ok := strings.Cut(value, ":")
 	if !ok || prefix != "data" {
@@ -1119,16 +1121,13 @@ func ParseDataURL(value string) (types.FileData, error) {
 	if !ok {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("missing comma separator")}
 	}
-	parts := strings.Split(meta, ";")
-	// TS splitDataUrl: `data:;base64,...` has the empty media type "" (not
-	// text/plain), and "" is not nullish so it wins over the declared one.
-	mediaType := parts[0]
-	if err := validateMediaType(mediaType); err != nil {
-		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
-	}
-	if len(parts) == 1 || parts[len(parts)-1] != "base64" {
-		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("only base64 data URLs are supported")}
-	}
+	// TS splitDataUrl: the media type is header.split(';')[0].split(':')[1],
+	// taken as given (`data:;base64,...` has the empty media type "", which
+	// is not nullish and wins over the declared one). TS checks neither a
+	// ";base64" marker nor the media type: the text after the comma is the
+	// base64 data (file-part-data.ts 32-47, split-data-url.ts).
+	mediaType, _, _ := strings.Cut(meta, ";")
+	mediaType, _, _ = strings.Cut(mediaType, ":")
 	// TS keeps the text after the first comma and later decodes it with atob
 	// after mapping the URL-safe alphabet (convertBase64ToUint8Array): the
 	// forgiving decode accepts whitespace and missing padding.
