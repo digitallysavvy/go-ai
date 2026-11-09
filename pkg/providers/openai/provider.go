@@ -170,7 +170,7 @@ type Config struct {
 	// MaaS). nil keeps the generic extraction (wrappers with their own
 	// structure, such as Baseten's string error). Native OpenAI models always
 	// use the OpenAI error schema.
-	CompatErrorStructure func(provider string, err error) (*providererrors.ProviderError, bool)
+	CompatErrorStructure func(provider string, err error) (*providererrors.ProviderError, bool) `json:"-"`
 
 	// SupportsStructuredOutputs, for OpenAI-compatible hosts (TS
 	// supportsStructuredOutputs): nil keeps the legacy behavior (json_schema
