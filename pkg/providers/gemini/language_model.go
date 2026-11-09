@@ -161,8 +161,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 			}
 		}
 	}
-	// TS response.body is the last request's rawValue, not the summed usage.
-	result.RawResponse = response
+	// TS response.body is the last request's rawValue: the parsed raw JSON
+	// (every key the API sent), not the schema-filtered value or the summed
+	// usage.
+	result.RawResponse = providerutils.RawJSONBody(resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.RawRequest = reqBody
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
