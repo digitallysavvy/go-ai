@@ -316,12 +316,13 @@ func (m *SpeechModel) buildAudioGenerationRequest(opts *provider.SpeechGenerateO
 		req.bodyOrder = musicBodyOrder
 		body := map[string]interface{}{"model_id": m.modelID}
 		if o.CompositionPlan != nil {
-			// The API rejects prompt-only options alongside a composition plan.
-			if o.MusicLengthMs != nil {
-				return nil, compositionPlanConflict("musicLengthMs")
-			}
+			// The API rejects prompt-only options alongside a composition plan
+			// (checked in the TS order: forceInstrumental, then musicLengthMs).
 			if o.ForceInstrumental != nil {
 				return nil, compositionPlanConflict("forceInstrumental")
+			}
+			if o.MusicLengthMs != nil {
+				return nil, compositionPlanConflict("musicLengthMs")
 			}
 			if opts.Text != "" {
 				warnings = append(warnings, types.Warning{
