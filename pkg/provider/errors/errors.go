@@ -263,6 +263,40 @@ func canonicalResponseHeaders(cause error, headers map[string]string) map[string
 	return out
 }
 
+// ErrorSchema is a provider's TS error response schema with its
+// errorToMessage: given the securely parsed JSON body, it reports whether the
+// body matches the schema, the message, and the parsed data (zod output, with
+// undeclared keys stripped).
+type ErrorSchema func(body interface{}) (message string, data interface{}, ok bool)
+
+// NewSchemaProviderError builds the error of a provider whose TS model uses
+// createJsonErrorResponseHandler({errorSchema, errorToMessage}). For an HTTP
+// status cause it keeps the status, response headers and body; Message and
+// Data come from schema when the body is JSON that matches it, and otherwise
+// Message is the HTTP status text and Data is nil, exactly as TS. A schema of
+// nil gives the TS createStatusCodeErrorResponseHandler shape (status text,
+// no data). Any other cause gives NewProviderError(provider, 0, "",
+// cause.Error(), cause).
+func NewSchemaProviderError(provider string, cause error, schema ErrorSchema) *ProviderError {
+	e := newProviderError(provider, 0, "", cause.Error(), cause, false)
+	var hs HTTPStatusDetails
+	if e.StatusCode == 0 || !errors.As(cause, &hs) || e.Message == InvalidJSONResponseMessage {
+		return e
+	}
+	e.Message, e.Data = http.StatusText(e.StatusCode), nil
+	if schema == nil || strings.TrimSpace(e.ResponseBody) == "" {
+		return e
+	}
+	var parsed interface{}
+	if securejson.Unmarshal([]byte(e.ResponseBody), &parsed) != nil {
+		return e
+	}
+	if msg, data, ok := schema(parsed); ok {
+		e.Message, e.Data = msg, data
+	}
+	return e
+}
+
 // ExtractAPIErrorMessage pulls a human-readable message out of a JSON error
 // body using the shapes common to provider APIs: {"error":{"message"}},
 // {"error":"msg"}, {"message"}, {"detail"}, {"errors":[{"message"}]}.

@@ -111,7 +111,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
+		return nil, providererrors.NewSchemaProviderError("together", err, togetherErrorSchema)
 	}
 
 	ranking := make([]types.RerankItem, 0, len(response.Results))
@@ -177,4 +177,23 @@ type togetherRerankingResponse struct {
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
 	} `json:"usage,omitempty"`
+}
+
+// togetherErrorSchema is the TS togetheraiErrorSchema of the image and
+// reranking models: z.object({error: z.object({message: z.string()})}),
+// errorToMessage data.error.message.
+func togetherErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	inner, ok := obj["error"].(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	msg, ok := inner["message"].(string)
+	if !ok {
+		return "", nil, false
+	}
+	return msg, map[string]interface{}{"error": map[string]interface{}{"message": msg}}, true
 }

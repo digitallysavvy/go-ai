@@ -122,7 +122,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
+		return nil, providererrors.NewSchemaProviderError("mistral", err, mistralErrorSchema)
 	}
 	embeddings := make([][]float64, len(response.Data))
 	for i, item := range response.Data {

@@ -112,6 +112,8 @@ func TestR88integErrorBodiesParseSecurely(t *testing.T) {
 	probes := []string{
 		`{"error":{"message":"` + marker + `","type":"invalid_request_error","code":400,"param":"p","status":"INVALID_ARGUMENT"},"message":"` + marker + `","type":"t","code":"c","param":"p"}`,
 		`{"error":{"message":"` + marker + `","type":"invalid_request_error","code":"bad","param":"p"}}`,
+		// mistral-error.ts: {object: "error", message, type, param, code} (r89).
+		`{"object":"error","message":"` + marker + `","type":"t","param":null,"code":null}`,
 	}
 	opts := &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}}}
 	for name, mk := range models {

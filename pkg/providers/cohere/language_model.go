@@ -598,7 +598,21 @@ func (m *LanguageModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
-	return providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
+	return providererrors.NewSchemaProviderError("cohere", err, cohereErrorSchema)
+}
+
+// cohereErrorSchema is TS cohereFailedResponseHandler (cohere-error.ts):
+// z.object({message: z.string()}), errorToMessage data.message.
+func cohereErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	msg, ok := obj["message"].(string)
+	if !ok {
+		return "", nil, false
+	}
+	return msg, map[string]interface{}{"message": msg}, true
 }
 
 func mapCohereV2FinishReason(reason string) types.FinishReason {

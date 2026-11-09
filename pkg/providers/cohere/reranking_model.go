@@ -161,7 +161,7 @@ func (m *RerankingModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}
-	return providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
+	return providererrors.NewSchemaProviderError("cohere", err, cohereErrorSchema)
 }
 
 // cohereRerankResponse represents the Cohere rerank API response

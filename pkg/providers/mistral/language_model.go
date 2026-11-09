@@ -459,7 +459,34 @@ func (m *LanguageModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
-	return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
+	return providererrors.NewSchemaProviderError("mistral", err, mistralErrorSchema)
+}
+
+// mistralErrorSchema is TS mistralFailedResponseHandler (mistral-error.ts):
+// {object: "error", message, type: string, param, code: string | null},
+// errorToMessage data.message.
+func mistralErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok || obj["object"] != "error" {
+		return "", nil, false
+	}
+	msg, okMsg := obj["message"].(string)
+	typ, okType := obj["type"].(string)
+	if !okMsg || !okType {
+		return "", nil, false
+	}
+	data := map[string]interface{}{"object": "error", "message": msg, "type": typ}
+	for _, k := range []string{"param", "code"} {
+		v, present := obj[k]
+		if !present {
+			return "", nil, false
+		}
+		if _, isStr := v.(string); v != nil && !isStr {
+			return "", nil, false
+		}
+		data[k] = v
+	}
+	return msg, data, true
 }
 
 // convertMistralUsage converts Mistral usage to detailed Usage struct

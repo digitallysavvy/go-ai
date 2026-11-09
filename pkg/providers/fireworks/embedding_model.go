@@ -111,7 +111,12 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
+		// TS OpenAICompatibleEmbeddingModel with fireworksErrorStructure: a
+		// body outside the schema gives the status text and no data.
+		if parsed := parseFireworksProviderError(err); parsed != nil {
+			return nil, parsed
+		}
+		return nil, providererrors.NewSchemaProviderError("fireworks", err, nil)
 	}
 	embeddings := make([][]float64, len(response.Data))
 	for i, item := range response.Data {
