@@ -378,6 +378,23 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// TopazVideoModel has no doGenerate), so ai.GenerateVideo drives it through
+// the core start/status flow (one idempotency key per start, status retried
+// without a second start). It returns the Go-only Config
+// VideoPollIntervalMillis / VideoPollTimeoutMillis when positive, else 0
+// (the core 5000 / 600000 defaults); GenerateVideoOptions.Poll wins.
+// Topaz has no poll provider options. provc CR r89.
+func (m *VideoModel) VideoStartStatusPollDefaults(map[string]interface{}) (intervalMs, timeoutMs int) {
+	if v := m.prov.config.VideoPollIntervalMillis; v > 0 {
+		intervalMs = v
+	}
+	if v := m.prov.config.VideoPollTimeoutMillis; v > 0 {
+		timeoutMs = v
+	}
+	return intervalMs, timeoutMs
+}
+
 // DoGenerate generates a video synchronously by starting the operation and
 // polling DoStatus at a fixed interval until it completes or the configured
 // timeout elapses. Topaz's TS provider has no doGenerate of its own (the TS
