@@ -214,7 +214,9 @@ type AgentSettings struct {
 
 	// Sandbox is the provider used to create or resume network sandbox
 	// sessions. When nil, every CreateSession call must provide an existing
-	// sandbox session.
+	// sandbox session. It is deprecated, as TS `sandbox` is: supply
+	// CreateSessionOptions.SandboxSession (or SandboxCreator) instead.
+	// NewAgent logs a deprecation warning when it is set.
 	Sandbox SandboxProvider
 
 	// SandboxConfig is the sandbox working-directory and lifecycle-hook

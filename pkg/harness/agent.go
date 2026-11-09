@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"sort"
 
@@ -67,6 +68,11 @@ type Agent struct {
 func NewAgent(settings AgentSettings) (*Agent, error) {
 	if settings.Harness == nil {
 		return nil, errors.New("HarnessAgent: `harness` is required.") //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	if settings.Sandbox != nil {
+		// TS HarnessAgent constructor: console.warn for the deprecated
+		// `sandbox` setting.
+		log.Println("HarnessAgent: `Sandbox` is deprecated. Supply `SandboxSession` to CreateSession() instead.")
 	}
 	if err := ValidateSandboxBootstrapSettings(settings.SandboxConfig); err != nil {
 		return nil, err
