@@ -3,6 +3,7 @@ package topaz
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -29,5 +30,19 @@ func TestR90integImageNamedErrors(t *testing.T) {
 	var ire *providererrors.InvalidResponseDataError
 	if !errors.As(err, &ire) || ire.Error() != "Topaz did not return a download URL for process "+processID+"." {
 		t.Fatalf("err = %T %v, want InvalidResponseDataError", err, err)
+	}
+}
+
+// provc r90 V061 class (error data = TS schema output): topazErrorDataSchema
+// output (declared keys present) for a matching body, undefined otherwise.
+func TestR90integErrorDataIsSchemaOutput(t *testing.T) {
+	var pe *providererrors.ProviderError
+	err := newTopazAPIError(400, []byte(`{"message":"m","errorCode":"E1","other":2}`), nil)
+	if !errors.As(err, &pe) || pe.Message != "m (E1)" || !reflect.DeepEqual(pe.Data, map[string]interface{}{"message": "m", "errorCode": "E1"}) {
+		t.Fatalf("schema body: %#v", err)
+	}
+	err = newTopazAPIError(400, []byte(`{"error":{"message":"bad"}}`), nil)
+	if !errors.As(err, &pe) || pe.Message != "Bad Request" || pe.Data != nil {
+		t.Fatalf("off-schema body: %#v", err)
 	}
 }

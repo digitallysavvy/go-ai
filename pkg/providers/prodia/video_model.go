@@ -212,7 +212,9 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *providererrors.ProviderError {
 	message := prodiaErrorMessage(statusCode, body)
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
-	return providererrors.NewProviderErrorFromResponse("prodia", 0, "", message, cause)
+	perr := providererrors.NewProviderErrorFromResponse("prodia", 0, "", message, cause)
+	perr.Data = prodiaErrorData(body)
+	return perr
 }
 
 // prodiaErrorMessage mirrors TS prodiaFailedResponseHandler: the body must
@@ -290,4 +292,29 @@ func resolveVideoImage(ctx context.Context, file *provider.VideoModelV3File) ([]
 	default:
 		return nil, "", fmt.Errorf("unsupported image file type %q", file.Type)
 	}
+}
+
+// prodiaErrorData is TS APICallError.data: the prodiaErrorSchema output
+// ({message?: string, detail?: unknown, error?: string}, only the present
+// declared keys) for a matching body, else nil.
+func prodiaErrorData(body []byte) interface{} {
+	body = []byte(textdecode.UTF8(body))
+	var obj map[string]interface{}
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &obj) != nil || obj == nil {
+		return nil
+	}
+	out := map[string]interface{}{}
+	for _, key := range []string{"message", "error"} {
+		if v, present := obj[key]; present {
+			s, ok := v.(string)
+			if !ok {
+				return nil // z.string().optional() rejects null and other types
+			}
+			out[key] = s
+		}
+	}
+	if v, present := obj["detail"]; present {
+		out["detail"] = v
+	}
+	return out
 }

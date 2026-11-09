@@ -2,6 +2,7 @@ package cerebras
 
 import (
 	"errors"
+	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -39,7 +40,12 @@ func parseCerebrasHTTPStatusError(candidate error, cause error) error {
 	var payload cerebrasErrorPayload
 	if err := securejson.Unmarshal(statusErr.Body, &payload); err != nil ||
 		payload.Message == nil || payload.Type == nil || payload.Param == nil || payload.Code == nil {
-		return nil
+		// TS createJsonErrorResponseHandler: a body that fails
+		// cerebrasErrorSchema gives the status text and no data.
+		perr := providererrors.NewProviderErrorFromResponse("cerebras", 0, "", http.StatusText(statusErr.StatusCode), cause)
+		perr.Message = http.StatusText(statusErr.StatusCode)
+		perr.Data = nil
+		return perr
 	}
 	code := *payload.Code
 	if code == "" {
@@ -47,5 +53,7 @@ func parseCerebrasHTTPStatusError(candidate error, cause error) error {
 	}
 	perr := providererrors.NewProviderErrorFromResponse("cerebras", 0, code, *payload.Message, cause)
 	perr.Message = *payload.Message
+	// TS APICallError.data is the schema output: the four declared keys.
+	perr.Data = map[string]interface{}{"message": *payload.Message, "type": *payload.Type, "param": *payload.Param, "code": *payload.Code}
 	return perr
 }

@@ -8,6 +8,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // fishAudioErrorPayload documents Fish Audio's error envelope for documented
@@ -40,14 +41,22 @@ func handleError(err error) error {
 		// object matches and the message is `message ?? 'Unknown Fish Audio
 		// error'`; a body that is not such an object gives the status text.
 		message := http.StatusText(statusErr.StatusCode)
+		// TS APICallError.data: the schema output ({status?, message?},
+		// only the keys present) for a matching body, else undefined.
+		var data interface{}
 		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil && isJSONObject(statusErr.Body) {
 			if payload.Message != nil {
 				message = *payload.Message
 			} else {
 				message = "Unknown Fish Audio error"
 			}
+			var raw map[string]interface{}
+			_ = securejson.Unmarshal(statusErr.Body, &raw)
+			data = providerutils.PickSchemaKeys(raw, "status", "message")
 		}
-		return providererrors.NewProviderErrorFromResponse("fish-audio", 0, "", message, err)
+		perr := providererrors.NewProviderErrorFromResponse("fish-audio", 0, "", message, err)
+		perr.Data = data
+		return perr
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.

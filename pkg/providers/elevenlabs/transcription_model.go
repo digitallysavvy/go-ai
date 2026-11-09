@@ -347,7 +347,9 @@ func handleTranscriptionError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := elevenlabsErrorMessage(statusErr.StatusCode, statusErr.Body)
-		return providererrors.NewProviderErrorFromResponse("elevenlabs", 0, code, message, err)
+		perr := providererrors.NewProviderErrorFromResponse("elevenlabs", 0, code, message, err)
+		perr.Data = elevenlabsErrorData(statusErr.Body)
+		return perr
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.
@@ -380,4 +382,20 @@ func schemaWord(raw map[string]interface{}) map[string]interface{} {
 		out["characters"] = nil
 	}
 	return out
+}
+
+// elevenlabsErrorData is TS APICallError.data: the elevenlabsErrorDataSchema
+// output for a matching body, else nil. The {detail} member keeps its loose
+// detail as sent; the {error} member keeps message and code.
+func elevenlabsErrorData(body []byte) interface{} {
+	var data map[string]interface{}
+	body = []byte(textdecode.UTF8(body))
+	if securejson.Unmarshal(body, &data) != nil || elevenlabsErrorDataSchema(data, true, nil) != nil {
+		return nil
+	}
+	if elevenlabsErrorDetailSchema(data, true, nil) == nil {
+		return map[string]interface{}{"detail": data["detail"]}
+	}
+	e, _ := data["error"].(map[string]interface{})
+	return map[string]interface{}{"error": map[string]interface{}{"message": e["message"], "code": e["code"]}}
 }

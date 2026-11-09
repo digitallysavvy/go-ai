@@ -107,6 +107,8 @@ func New(cfg Config) *Provider {
 		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
 		IncludeUsage:              true,
 		UserAgentName:             "baseten",
+		// TS basetenErrorStructure.
+		CompatErrorStructure: basetenErrorStructure,
 
 		TransformRequestBodyWithWarnings: transform,
 	})
@@ -128,6 +130,8 @@ func New(cfg Config) *Provider {
 			OpenAICompatible:  true,
 			IncludeUsage:      true,
 			UserAgentName:     "baseten",
+			// TS basetenErrorStructure.
+			CompatErrorStructure: basetenErrorStructure,
 		})
 	}
 

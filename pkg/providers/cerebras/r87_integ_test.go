@@ -18,8 +18,11 @@ func TestR87integCerebrasErrorSchema(t *testing.T) {
 		t.Errorf("empty message: got %#v", err)
 	}
 	for _, body := range []string{`{"message":"m","type":"t"}`, `{"message":"m","type":"t","param":null,"code":"c"}`, `{"type":"t","param":"p","code":"c"}`} {
-		if err := parseCerebrasHTTPStatusError(&internalhttp.HTTPStatusError{StatusCode: 400, Body: []byte(body)}, nil); err != nil {
-			t.Errorf("%s: got %v, want no Cerebras error", body, err)
+		// r90: a body that fails the schema is the status-text APICallError
+		// without data (TS createJsonErrorResponseHandler).
+		err := parseCerebrasHTTPStatusError(&internalhttp.HTTPStatusError{StatusCode: 400, Body: []byte(body)}, nil)
+		if !errors.As(err, &pe) || pe.Message != "Bad Request" || pe.Data != nil {
+			t.Errorf("%s: got %#v, want the status text without data", body, err)
 		}
 	}
 }

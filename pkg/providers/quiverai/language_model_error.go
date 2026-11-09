@@ -26,6 +26,8 @@ func quiverAIFailedResponseHandler(statusErr *internalhttp.HTTPStatusError) erro
 		return perr
 	}
 	perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, "", http.StatusText(statusErr.StatusCode), statusErr)
+	// TS: a body that fails quiveraiErrorSchema gives no data.
+	perr.Data = nil
 	perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 	return perr
 }

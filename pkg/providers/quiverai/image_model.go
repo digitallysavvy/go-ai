@@ -577,10 +577,14 @@ func (m *ImageModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		code, message := "", http.StatusText(statusErr.StatusCode)
+		// TS APICallError.data: the quiveraiErrorSchema output for a
+		// matching body, else undefined.
+		var data interface{}
 		if apiErr, ok := parseQuiverAIErrorBody(statusErr.Body); ok {
-			code, message = apiErr.Code, apiErr.Message
+			code, message, data = apiErr.Code, apiErr.Message, apiErr
 		}
 		perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, code, message, err)
+		perr.Data = data
 		perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 		return perr
 	}

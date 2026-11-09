@@ -23,7 +23,9 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return providererrors.NewProviderErrorFromResponse("voyage", 0, "", voyageErrorMessage(statusErr.StatusCode, statusErr.Body), err)
+		perr := providererrors.NewProviderErrorFromResponse("voyage", 0, "", voyageErrorMessage(statusErr.StatusCode, statusErr.Body), err)
+		perr.Data = voyageErrorData(statusErr.Body)
+		return perr
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.
@@ -47,4 +49,16 @@ func optsHeaders(opts *provider.EmbedModelOptions) map[string]string {
 		return nil
 	}
 	return opts.Headers
+}
+
+// voyageErrorData is TS APICallError.data: the voyageErrorDataSchema output
+// ({detail}) for a matching body, else nil.
+func voyageErrorData(body []byte) interface{} {
+	var payload struct {
+		Detail *string `json:"detail"`
+	}
+	if securejson.Unmarshal(body, &payload) == nil && payload.Detail != nil {
+		return map[string]interface{}{"detail": *payload.Detail}
+	}
+	return nil
 }

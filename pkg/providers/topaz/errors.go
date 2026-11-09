@@ -9,6 +9,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // topazErrorData mirrors the shapes Topaz uses to report errors: the image
@@ -134,7 +135,17 @@ func newTopazAPIError(statusCode int, body []byte, headers http.Header) error {
 		errorCode = *data.ErrorCode
 	}
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
-	return providererrors.NewProviderErrorFromResponse("topaz", 0, errorCode, message, cause)
+	perr := providererrors.NewProviderErrorFromResponse("topaz", 0, errorCode, message, cause)
+	// TS APICallError.data: the topazErrorDataSchema output (the declared
+	// keys present; loose issue objects kept) for a matching body, else
+	// undefined.
+	perr.Data = nil
+	if ok {
+		var raw map[string]interface{}
+		_ = securejson.Unmarshal(body, &raw)
+		perr.Data = providerutils.PickSchemaKeys(raw, "detail", "message", "error", "errorCode", "errors")
+	}
+	return perr
 }
 
 // Error is a Topaz error TS throws as an AISDKError with a name

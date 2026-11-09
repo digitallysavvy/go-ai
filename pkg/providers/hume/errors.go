@@ -30,7 +30,9 @@ func handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
-		return providererrors.NewProviderErrorFromResponse("hume", 0, code, message, err)
+		perr := providererrors.NewProviderErrorFromResponse("hume", 0, code, message, err)
+		perr.Data = humeErrorData(statusErr.Body)
+		return perr
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.
@@ -48,4 +50,15 @@ func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
 		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
 	}
 	return http.StatusText(statusCode), ""
+}
+
+// humeErrorData is TS APICallError.data: the humeErrorDataSchema output
+// ({error: {message, code}}) for a matching body, else nil.
+func humeErrorData(body []byte) interface{} {
+	var payload humeErrorPayload
+	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+		payload.Error.Message != nil && payload.Error.Code != nil {
+		return map[string]interface{}{"error": map[string]interface{}{"message": *payload.Error.Message, "code": *payload.Error.Code}}
+	}
+	return nil
 }
