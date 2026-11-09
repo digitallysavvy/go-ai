@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -730,7 +732,10 @@ func readAuthStore(providerID string, env map[string]string, homeDirectoryOverri
 			continue
 		}
 		authPath := authPath
-		return &authStore{Value: parsed, Write: func(value map[string]any) error { return writeAuthStore(authPath, value) }}, nil
+		hint := openCodeAuthKeyOrder(data, providerID)
+		return &authStore{Value: parsed, Write: func(value map[string]any) error {
+			return writeAuthStore(authPath, jsonorder.Hinted{V: value, Hint: hint})
+		}}, nil
 	}
 	return nil, nil
 }
@@ -738,7 +743,7 @@ func readAuthStore(providerID string, env map[string]string, homeDirectoryOverri
 // writeAuthStore mirrors TS `writeStore`: write-then-rename so a concurrent
 // reader never observes a partial file, with owner-only permissions
 // throughout (the file holds live OAuth credentials).
-func writeAuthStore(authPath string, value map[string]any) error {
+func writeAuthStore(authPath string, value any) error {
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
 		return err
 	}
@@ -755,4 +760,27 @@ func writeAuthStore(authPath string, value map[string]any) error {
 		return err
 	}
 	return os.Rename(temporaryPath, authPath)
+}
+
+// openCodeAuthKeyOrder is the key order TS writes a refreshed auth store in:
+// stored.value[providerId] = {...candidate, access, refresh, expires,
+// accountId} keeps every key the entry had in place and appends new ones in
+// that order. It is the hint for jsonorder.Hinted.
+func openCodeAuthKeyOrder(raw []byte, providerID string) interface{} {
+	parsed, _ := jsonorder.Parse(raw)
+	root, ok := parsed.(*jsonorder.Object)
+	if !ok {
+		return nil
+	}
+	entry, _ := root.Get(providerID)
+	entryObj, isObj := entry.(*jsonorder.Object)
+	if !isObj {
+		return root
+	}
+	for _, k := range []string{"access", "refresh", "expires", "accountId"} {
+		if _, has := entryObj.Get(k); !has {
+			entryObj.Set(k, nil)
+		}
+	}
+	return root
 }

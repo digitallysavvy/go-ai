@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -200,8 +201,9 @@ func readCodexAuthStore(ctx context.Context, codexHome, authPath, mode string) *
 		if value == nil {
 			return nil
 		}
+		hint := codexAuthKeyOrder(raw)
 		return &codexAuthStore{value: value, write: func(updated map[string]any) error {
-			return writeCodexAuthFile(authPath, updated)
+			return writeCodexAuthFile(authPath, jsonorder.Hinted{V: updated, Hint: hint})
 		}}
 	}
 	readKeyringStore := func() *codexAuthStore {
@@ -224,8 +226,9 @@ func readCodexAuthStore(ctx context.Context, codexHome, authPath, mode string) *
 		if value == nil {
 			return nil
 		}
+		hint := codexAuthKeyOrder([]byte(text))
 		return &codexAuthStore{value: value, write: func(updated map[string]any) error {
-			data, err := jsstr.Marshal(updated)
+			data, err := jsstr.Marshal(jsonorder.Hinted{V: updated, Hint: hint})
 			if err != nil {
 				return err
 			}
@@ -286,7 +289,7 @@ func readStoreModeFromConfig(codexHome string) string {
 
 // writeCodexAuthFile atomically rewrites the auth file (temp file in the
 // same directory at mode 0600, then rename) after a token refresh.
-func writeCodexAuthFile(path string, value map[string]any) error {
+func writeCodexAuthFile(path string, value any) error {
 	data, err := jsstr.MarshalIndent(value)
 	if err != nil {
 		return err
@@ -303,4 +306,33 @@ func writeCodexAuthFile(path string, value map[string]any) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// codexAuthKeyOrder is the key order TS writes a refreshed auth store in:
+// {...stored.value, last_refresh, tokens: {...tokens, access_token,
+// refresh_token}} keeps every key the store had in place and appends new
+// ones in that order. It is the hint for jsonorder.Hinted.
+func codexAuthKeyOrder(raw []byte) interface{} {
+	parsed, _ := jsonorder.Parse(raw)
+	root, ok := parsed.(*jsonorder.Object)
+	if !ok {
+		return nil
+	}
+	for _, k := range []string{"last_refresh", "tokens"} {
+		if _, has := root.Get(k); !has {
+			root.Set(k, nil)
+		}
+	}
+	tokens, ok := root.Get("tokens")
+	tokensObj, isObj := tokens.(*jsonorder.Object)
+	if !ok || !isObj {
+		tokensObj = jsonorder.New()
+		root.Set("tokens", tokensObj)
+	}
+	for _, k := range []string{"access_token", "refresh_token"} {
+		if _, has := tokensObj.Get(k); !has {
+			tokensObj.Set(k, nil)
+		}
+	}
+	return root
 }
