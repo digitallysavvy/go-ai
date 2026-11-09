@@ -97,18 +97,18 @@ func TestKlingAIErrorConstructors(t *testing.T) {
 
 func TestParseKlingAIErrorBodyStatusTextAndRetry(t *testing.T) {
 	// Off-schema body: TS message is the HTTP status text.
-	err := parseKlingAIErrorBody(502, []byte(`<html>bad gateway</html>`))
+	err := parseKlingAIErrorBody(502, nil, []byte(`<html>bad gateway</html>`))
 	var ke *Error
 	if !errors.As(err, &ke) || ke.Message != "Bad Gateway" {
 		t.Fatalf("got %T %v", err, err)
 	}
 	// code is required by the TS schema.
-	err = parseKlingAIErrorBody(400, []byte(`{"message":"nope"}`))
+	err = parseKlingAIErrorBody(400, nil, []byte(`{"message":"nope"}`))
 	if !errors.As(err, &ke) || ke.Message != "Bad Request" {
 		t.Fatalf("missing code: %v", err)
 	}
 	for status, want := range map[int]bool{400: false, 401: false, 408: true, 429: true, 503: true} {
-		err := parseKlingAIErrorBody(status, []byte(`{"code":1200,"message":"x"}`))
+		err := parseKlingAIErrorBody(status, nil, []byte(`{"code":1200,"message":"x"}`))
 		if got := retry.IsRetryable(err); got != want {
 			t.Errorf("status %d retryable = %v, want %v", status, got, want)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	stdhttp "net/http"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -133,7 +134,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	if httpResp.StatusCode >= 400 {
-		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode)
+		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode, httpResp.Headers)
 	}
 	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {
 		return nil, err
@@ -234,8 +235,8 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteD
 
 // parseAPIError parses a ByteDance image API error response (TS
 // byteDanceFailedResponseHandler).
-func (m *ImageModel) parseAPIError(body []byte, statusCode int) error {
-	return newHTTPError(statusCode, body)
+func (m *ImageModel) parseAPIError(body []byte, statusCode int, headers stdhttp.Header) error {
+	return newHTTPError(statusCode, headers, body)
 }
 
 // encodeImageFile encodes a provider.ImageFile to the string form ByteDance

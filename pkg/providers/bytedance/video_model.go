@@ -241,7 +241,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	if submitResp.StatusCode >= 400 {
-		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode)
+		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, submitResp.Headers)
 	}
 
 	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceTask)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
@@ -599,8 +599,8 @@ func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3Cal
 }
 
 // parseAPIError parses a ByteDance API error response
-func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
-	return newHTTPError(statusCode, body)
+func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers stdhttp.Header) error {
+	return newHTTPError(statusCode, headers, body)
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
@@ -609,7 +609,7 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return m.parseAPIError(dlErr.Body, dlErr.StatusCode)
+		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, stdhttp.Header(dlErr.Headers))
 	}
 	// TS getFromApi lets any other failure (an abort, "Cannot connect to
 	// API", a URL rejected by validateUrl) propagate unchanged.

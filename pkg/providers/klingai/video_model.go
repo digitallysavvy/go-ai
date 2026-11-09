@@ -128,7 +128,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
-		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Body)
+		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Headers, submitResp.Body)
 	}
 
 	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAICreate)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
@@ -347,7 +347,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return parseKlingAIErrorBody(dlErr.StatusCode, dlErr.Body)
+		return parseKlingAIErrorBody(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 	}
 	// TS getFromApi lets any other failure (an abort, "Cannot connect to
 	// API", a URL rejected by validateUrl) propagate unchanged.
@@ -358,19 +358,19 @@ func (m *VideoModel) handlePollError(err error) error {
 // {code, message} error envelope (TS klingaiFailedResponseHandler /
 // klingaiErrorDataSchema), falling back to a generic error carrying the raw
 // body when the envelope cannot be parsed or carries no message.
-func parseKlingAIErrorBody(statusCode int, body []byte) error {
+func parseKlingAIErrorBody(statusCode int, headers http.Header, body []byte) error {
 	var envelope struct {
 		Code    *float64 `json:"code"`
 		Message *string  `json:"message"`
 	}
 	if jsonErr := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil {
 		e := NewError(int(*envelope.Code), *envelope.Message, "")
-		e.httpStatus, e.httpBody = statusCode, body
+		e.httpStatus, e.httpBody, e.httpHeaders = statusCode, body, providerutils.ExtractHeaders(headers)
 		return e
 	}
 	// TS createJsonErrorResponseHandler: a body that does not match the
 	// error schema gives the HTTP status text as the message.
-	return &Error{Code: statusCode, Message: http.StatusText(statusCode), httpStatus: statusCode, httpBody: body}
+	return &Error{Code: statusCode, Message: http.StatusText(statusCode), httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers)}
 }
 
 // detectMode detects the video generation mode from the model ID suffix
