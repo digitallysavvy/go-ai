@@ -1743,14 +1743,13 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	// state behind.
 	defer genAIDeleteState(i.stateKey(e.CallID))
 	i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: inferenceErrorType(e.Error)})
-	i.closeOpenChildSpans(e.CallID, e.Error)
+	spanErr := errorEventSpanError(e.Error)
+	i.closeOpenChildSpans(e.CallID, spanErr)
 	span := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
-	if e.Error != nil {
-		RecordErrorOnSpan(span, e.Error)
-	}
+	RecordErrorOnSpan(span, spanErr)
 	span.End()
 	genAIDeleteState(i.stateKey(e.CallID))
 }

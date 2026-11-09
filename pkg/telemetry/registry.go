@@ -1276,7 +1276,7 @@ func legacyRecordSpanError(span trace.Span, err error) {
 	if err == nil {
 		return
 	}
-	if isHiddenToolError(err) {
+	if _, statusOnly := err.(errorEventWithoutError); statusOnly || isHiddenToolError(err) {
 		span.SetStatus(codes.Error, "")
 		return
 	}
@@ -2906,14 +2906,13 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 	// Terminal for the call (also when it arrives after OnEnd, as for a
 	// generateText output parse failure): never leave state behind.
 	defer legacyDeleteState(i.stateKey(e.CallID))
-	i.closeOpenChildSpans(e.CallID, e.Error)
+	spanErr := errorEventSpanError(e.Error)
+	i.closeOpenChildSpans(e.CallID, spanErr)
 	span := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
-	if e.Error != nil {
-		legacyRecordSpanError(span, e.Error)
-	}
+	legacyRecordSpanError(span, spanErr)
 	span.End()
 	legacyDeleteState(i.stateKey(e.CallID))
 }
@@ -3493,4 +3492,19 @@ func makeToolFn(
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 		return integration.ExecuteTool(ctx, toolName, args, next)
 	}
+}
+
+// errorEventWithoutError stands for an OnError event without an error: TS
+// onError records `event.error ?? event`, a non-Error value, so the spans
+// get an ERROR status without a message or an exception event.
+type errorEventWithoutError struct{}
+
+func (errorEventWithoutError) Error() string { return "" }
+
+// errorEventSpanError is the error OnError records on its spans.
+func errorEventSpanError(err error) error {
+	if err == nil {
+		return errorEventWithoutError{}
+	}
+	return err
 }

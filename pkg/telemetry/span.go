@@ -62,7 +62,7 @@ func RecordErrorOnSpan(span trace.Span, err error) {
 	if err == nil {
 		return
 	}
-	if isHiddenToolError(err) {
+	if _, statusOnly := err.(errorEventWithoutError); statusOnly || isHiddenToolError(err) {
 		span.SetStatus(codes.Error, "")
 		return
 	}
