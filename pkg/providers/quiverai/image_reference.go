@@ -543,7 +543,7 @@ func toQuiverAIAnimationSource(file provider.ImageFile) (map[string]interface{},
 // referenceImagesToWire converts validated providerOptions.quiverai.referenceImages
 // entries into the wire shape expected by the SVG editing endpoint.
 func referenceImagesToWire(refs []QuiverAIReferenceImageOption) ([]map[string]interface{}, error) {
-	if len(refs) == 0 {
+	if refs == nil {
 		return nil, nil
 	}
 	result := make([]map[string]interface{}, 0, len(refs))

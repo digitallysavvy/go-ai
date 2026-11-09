@@ -1,6 +1,7 @@
 package voyage
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"sort"
@@ -96,8 +97,12 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaVoyageEmbedding),
 		Method:           http.MethodPost,
 		Path:             "/embeddings",
-		Body:             reqBody,
-		Headers:          optsHeaders(opts),
+		// TS JSON.stringify({input, model, input_type, truncation,
+		// output_dimension, output_dtype}): that key order, not sorted keys.
+		Body: bytes.NewBufferString(providerutils.StringifyOrdered(reqBody, map[string][]string{
+			"": {"input", "model", "input_type", "truncation", "output_dimension", "output_dtype"},
+		})),
+		Headers: optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, handleError(err)

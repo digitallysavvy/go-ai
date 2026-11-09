@@ -1,6 +1,7 @@
 package deepinfra
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -133,9 +134,11 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	client := m.provider.imageClient(m.baseURL)
 	resp, err := client.Do(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/" + m.modelID,
-		Body:    body,
+		Method: http.MethodPost,
+		Path:   "/" + m.modelID,
+		// TS JSON.stringify({prompt, num_images, aspect_ratio, width, height,
+		// seed, ...options}): that key order, not sorted keys.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, map[string][]string{"": {"prompt", "num_images", "aspect_ratio", "width", "height", "seed"}})),
 		Headers: opts.Headers,
 	})
 	if err != nil {
@@ -414,20 +417,22 @@ func deepInfraFormString(value interface{}) string {
 }
 
 func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
-	// TS appends a typed Blob (filename "blob").
-	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", file.MediaType)
-	if err != nil {
-		return err
-	}
+	data, mediaType := file.Data, file.MediaType
 	if file.Type == "url" && file.URL != "" {
-		data, err := fileutil.Download(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
+		// TS fileToBlob: downloadBlob(file.url) types the Blob with the
+		// response content-type (none without one), not file.mediaType.
+		res, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
 			return err
 		}
-		_, err = part.Write(data)
+		data, mediaType = res.Data, res.ContentType
+	}
+	// TS appends a typed Blob (filename "blob").
+	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", mediaType)
+	if err != nil {
 		return err
 	}
-	_, err = part.Write(file.Data)
+	_, err = part.Write(data)
 	return err
 }
 

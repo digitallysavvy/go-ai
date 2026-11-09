@@ -1,6 +1,6 @@
 // Package githubcopilot is the Go port of the TypeScript
 // `@ai-sdk/harness-github-copilot` package (pinned to
-// ai@7.0.165, TS 0f3a85f92d).
+// ai@7.0.167, TS 9f7a842ae1).
 //
 // Like pkg/harness/cursor, GitHub Copilot is an "ACP-derived" adapter: TS
 // `createGitHubCopilot()` is a thin configuration layer over `createACP()`
@@ -31,7 +31,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-github-copilot"
-	ClientAppVersion = "1.0.73" // TS VERSION: the bridge manifest's source version
+	ClientAppVersion = "1.0.75" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "github-copilot"
 
 	githubOAuthTokenBodyLength         = 36

@@ -74,7 +74,7 @@ function convertHarnessToolModelOutput({ output }) {
 }
 //#endregion
 //#region src/v1/bridge/host-tool-mcp-server.ts
-const VERSION = "1.0.116";
+const VERSION = "1.0.118";
 function createHostToolMCPServer({ tools, revision = 1, invoke, onListTools }) {
 	let catalog = createCatalog({
 		revision,

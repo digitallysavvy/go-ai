@@ -367,7 +367,7 @@ func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, 
 		case <-time.After(snapshotPollInterval):
 		}
 	}
-	return "", fmt.Errorf("Timed out waiting for snapshot of template %q to publish.", name) //nolint:staticcheck // matches TS SDK's exact error text
+	return "", fmt.Errorf("Timed out waiting for snapshot of template \"%s\" to publish.", name) //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 // sandboxNameConflictPattern is TS /sandbox.*name.*already exists/i: JS `.`

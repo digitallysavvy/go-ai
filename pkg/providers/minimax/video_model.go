@@ -1,6 +1,7 @@
 package minimax
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -99,7 +100,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Method:  "POST",
 		Path:    "/v2/video_generation",
 		Headers: submitHeaders,
-		Body:    body,
+		// TS postJsonToApi JSON.stringify({...body, callback_url}): the getArgs
+		// key order, not sorted map keys.
+		Body: bytes.NewBufferString(providerutils.StringifyOrdered(body, minimaxVideoBodyOrder)),
 	})
 	if err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
@@ -429,7 +432,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	quoted := make([]string, len(supportedResolutions))
 	for i, r := range supportedResolutions {
 		supportedResSet[r] = true
-		quoted[i] = fmt.Sprintf("%q", r)
+		quoted[i] = fmt.Sprintf("\"%s\"", r)
 	}
 	supportedResNames := strings.Join(quoted, " or ")
 
@@ -441,7 +444,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "resolution",
-			Details: fmt.Sprintf("%s supports %s. The provider resolution %q was ignored.", m.modelID, supportedResNames, resolution),
+			Details: fmt.Sprintf("%s supports %s. The provider resolution \"%s\" was ignored.", m.modelID, supportedResNames, resolution),
 		})
 		resolution = ""
 	}
@@ -454,21 +457,21 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				warnings = append(warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "resolution",
-					Details: fmt.Sprintf("Unrecognized resolution %q. %s supports %s, so providerOptions.minimax.resolution (%q) was used instead.", opts.Resolution, m.modelID, supportedResNames, resolution),
+					Details: fmt.Sprintf("Unrecognized resolution \"%s\". %s supports %s, so providerOptions.minimax.resolution (\"%s\") was used instead.", opts.Resolution, m.modelID, supportedResNames, resolution),
 				})
 			} else if mapped != resolution {
 				warnings = append(warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "resolution",
-					Details: fmt.Sprintf("The resolution %q selects %s, but providerOptions.minimax.resolution (%q) was used instead.", opts.Resolution, mapped, resolution),
+					Details: fmt.Sprintf("The resolution \"%s\" selects %s, but providerOptions.minimax.resolution (\"%s\") was used instead.", opts.Resolution, mapped, resolution),
 				})
 			}
 		case mappedOK && supportedResSet[mapped]:
 			resolution = mapped
 		default:
-			details := fmt.Sprintf("Unrecognized resolution %q. %s supports %s.", opts.Resolution, m.modelID, supportedResNames)
+			details := fmt.Sprintf("Unrecognized resolution \"%s\". %s supports %s.", opts.Resolution, m.modelID, supportedResNames)
 			if mappedOK {
-				details = fmt.Sprintf("%s does not support the resolution %q. It supports %s.", m.modelID, mapped, supportedResNames)
+				details = fmt.Sprintf("%s does not support the resolution \"%s\". It supports %s.", m.modelID, mapped, supportedResNames)
 			}
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "resolution", Details: details})
 		}
@@ -501,7 +504,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 			if firstFrameImage != nil {
 				feature = "frameImages"
 			}
-			details := fmt.Sprintf("%s only accepts an image as a frame image; the %q file was ignored.", m.modelID, firstFrame.MediaType)
+			details := fmt.Sprintf("%s only accepts an image as a frame image; the \"%s\" file was ignored.", m.modelID, firstFrame.MediaType)
 			if mt == "video" {
 				details = fmt.Sprintf("%s does not accept a video as a frame image. The video was ignored.", m.modelID)
 			}
@@ -519,7 +522,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 			})
 			lastFrame = nil
 		} else if mt := minimaxNonImageFrameMediaType(lastFrame); mt != "" {
-			details := fmt.Sprintf("%s only accepts an image as a frame image; the %q last_frame was ignored.", m.modelID, lastFrame.MediaType)
+			details := fmt.Sprintf("%s only accepts an image as a frame image; the \"%s\" last_frame was ignored.", m.modelID, lastFrame.MediaType)
 			if mt == "video" {
 				details = fmt.Sprintf("%s does not accept a video as a frame image. The last_frame video was ignored.", m.modelID)
 			}
@@ -615,7 +618,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				warnings = append(warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "inputReferences",
-					Details: fmt.Sprintf("MiniMax-H3 only accepts image and video references; the %q reference was ignored. Pass reference audio via providerOptions.minimax.referenceAudioUrls.", file.MediaType),
+					Details: fmt.Sprintf("MiniMax-H3 only accepts image and video references; the \"%s\" reference was ignored. Pass reference audio via providerOptions.minimax.referenceAudioUrls.", file.MediaType),
 				})
 			}
 		}
@@ -712,9 +715,9 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 		if minimaxVideoRatios[opts.AspectRatio] {
 			ratio = opts.AspectRatio
 		} else {
-			details := fmt.Sprintf("%s does not support the aspect ratio %q. Using the provider default (adaptive).", m.modelID, opts.AspectRatio)
+			details := fmt.Sprintf("%s does not support the aspect ratio \"%s\". Using the provider default (adaptive).", m.modelID, opts.AspectRatio)
 			if isTextToVideo {
-				details = fmt.Sprintf("%s does not support the aspect ratio %q. Using the default (%s).", m.modelID, opts.AspectRatio, minimaxDefaultAspectRatio)
+				details = fmt.Sprintf("%s does not support the aspect ratio \"%s\". Using the default (%s).", m.modelID, opts.AspectRatio, minimaxDefaultAspectRatio)
 			}
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "aspectRatio", Details: details})
 			if isTextToVideo {
@@ -797,6 +800,14 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	}
 
 	return body, warnings, minimaxResolvedInputs{ImageCount: sentImageCount, ReferenceVideoIndices: sentReferenceVideoIndices}, nil
+}
+
+// minimaxVideoBodyOrder is the key order of the TS getArgs body
+// ({model, content, resolution, duration, ratio?, aigc_watermark?} plus
+// doStart's callback_url) and of its content items.
+var minimaxVideoBodyOrder = map[string][]string{
+	"":        {"model", "content", "resolution", "duration", "ratio", "aigc_watermark", "callback_url"},
+	"content": {"type", "text", "image_url", "video_url", "audio_url", "role"},
 }
 
 // minimaxGetFirstFrame returns the frameImages first_frame entry, if any.

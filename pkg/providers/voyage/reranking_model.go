@@ -1,6 +1,7 @@
 package voyage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -63,8 +64,12 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaVoyageRerank),
 		Method:           http.MethodPost,
 		Path:             "/rerank",
-		Body:             reqBody,
-		Headers:          opts.Headers,
+		// TS JSON.stringify({query, documents, model, top_k, return_documents,
+		// truncation}): that key order, not sorted keys.
+		Body: bytes.NewBufferString(providerutils.StringifyOrdered(reqBody, map[string][]string{
+			"": {"query", "documents", "model", "top_k", "return_documents", "truncation"},
+		})),
+		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, handleError(err)

@@ -1,5 +1,5 @@
 // Package cursor is the Go port of the TypeScript `@ai-sdk/harness-cursor`
-// package (pinned to ai@7.0.165, TS 0f3a85f92d).
+// package (pinned to ai@7.0.167, TS 9f7a842ae1).
 //
 // Cursor is one of the "ACP-derived" harness adapters (see
 // state/parity/sep_23_2026/harness.md §2): TS `createCursor()` is a thin
@@ -23,15 +23,16 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 )
 
 // ClientAppName / ClientAppVersion are the ai-sdk client-app identity Cursor
 // requests are made with. ClientAppVersion is TS VERSION, the
 // @ai-sdk/harness-cursor package version at the TS release this SDK tracks
-// (0f3a85f92d); bump it with the harness bridges.
+// (9f7a842ae1); bump it with the harness bridges.
 const (
 	ClientAppName    = "ai-sdk-harness-cursor"
-	ClientAppVersion = "1.0.91"
+	ClientAppVersion = "1.0.93"
 	HarnessID        = "cursor"
 )
 
@@ -200,7 +201,8 @@ func WarnAuthenticationConfiguration(auth string) {
 	if auth == harness.AuthModeAIGateway {
 		detail = "Configure an AI Gateway API key as Cursor's OpenAI API key and set Override OpenAI Base URL to https://ai-gateway.vercel.sh/cursor/v1."
 	}
-	Warn(fmt.Sprintf("[cursor] auth: %q cannot configure Cursor provider authentication. %s CURSOR_API_KEY is still required for Cursor CLI authentication.", auth, detail))
+	quoted, _ := jsstr.Marshal(auth) // TS JSON.stringify(auth)
+	Warn(fmt.Sprintf("[cursor] auth: %s cannot configure Cursor provider authentication. %s CURSOR_API_KEY is still required for Cursor CLI authentication.", quoted, detail))
 }
 
 // Warn receives adapter warnings (TS console.warn). Replaceable for tests.

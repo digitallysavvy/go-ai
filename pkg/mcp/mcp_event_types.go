@@ -161,11 +161,21 @@ func (r *SubscribeEventResult) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("invalid events/subscribe result: cursor must be a string")
 		}
 	}
-	if err := json.Unmarshal(raw["truncated"], &out.Truncated); err != nil {
+	if err := unmarshalNonNullJSON(raw["truncated"], &out.Truncated); err != nil {
 		return fmt.Errorf("invalid events/subscribe result: truncated must be a boolean")
 	}
 	*r = out
 	return nil
+}
+
+// unmarshalNonNullJSON is json.Unmarshal that rejects JSON null: zod's
+// z.string() / z.boolean() reject null, while encoding/json leaves a string
+// or bool unchanged for it.
+func unmarshalNonNullJSON(raw json.RawMessage, v interface{}) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("unexpected null")
+	}
+	return json.Unmarshal(raw, v)
 }
 
 func isISODatetimeWithOffset(s string) bool {
@@ -260,7 +270,7 @@ func parseMCPEventControl(raw map[string]json.RawMessage) (*MCPEventGap, *MCPEve
 	switch typ {
 	case "gap":
 		var cursor string
-		if err := json.Unmarshal(raw["cursor"], &cursor); err != nil {
+		if err := unmarshalNonNullJSON(raw["cursor"], &cursor); err != nil {
 			return nil, nil, fmt.Errorf("invalid MCP event control: gap cursor must be a string")
 		}
 		return &MCPEventGap{Type: "gap", Cursor: cursor, Truncated: true}, nil, nil
@@ -280,7 +290,7 @@ func parseMCPEventControl(raw map[string]json.RawMessage) (*MCPEventGap, *MCPEve
 			return nil, nil, fmt.Errorf("invalid MCP event control: error code must be an integer")
 		}
 		var message string
-		if err := json.Unmarshal(errObj["message"], &message); err != nil {
+		if err := unmarshalNonNullJSON(errObj["message"], &message); err != nil {
 			return nil, nil, fmt.Errorf("invalid MCP event control: error message must be a string")
 		}
 		term := &MCPEventTermination{Type: "terminated", Error: MCPEventTerminationError{Code: int(codeInt), Message: message}}
