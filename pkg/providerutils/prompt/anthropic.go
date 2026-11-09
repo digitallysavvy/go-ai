@@ -1379,7 +1379,7 @@ func (c *anthropicConverter) convertToolResult(msg types.Message, part types.Too
 		"type":        "tool_result",
 		"tool_use_id": part.ToolCallID,
 	}
-	if toolsetName := c.toolsetName(part.ToolName, part.ProviderOptions); toolsetName != "" {
+	if toolsetName, ok := c.toolsetName(part.ToolName, part.ProviderOptions); ok {
 		result["toolset_name"] = toolsetName
 	}
 	result["content"] = contentValue
@@ -2002,7 +2002,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		return
 	}
 
-	if toolsetName := c.toolsetName(part.toolName, part.providerOptions); toolsetName != "" {
+	if toolsetName, ok := c.toolsetName(part.toolName, part.providerOptions); ok {
 		// toolset member call: the `action` is the member tool name. A
 		// malformed call (action missing, null, or not a string -- e.g. the
 		// raw input isn't even an object) is preserved rather than dropped,
@@ -2499,12 +2499,15 @@ func moveToolUseBlocksToEnd(content []map[string]interface{}) []map[string]inter
 	return result
 }
 
-func (c *anthropicConverter) toolsetName(toolName string, providerOptions map[string]interface{}) string {
-	if name, ok := c.opts.ToolsetNames[toolName]; ok && name != "" {
-		return name
+// toolsetName is TS getAnthropicToolsetName: ok is false when the call is
+// no toolset member (a string toolsetName in the metadata, an empty one
+// included, makes it one).
+func (c *anthropicConverter) toolsetName(toolName string, providerOptions map[string]interface{}) (string, bool) {
+	if name, ok := c.opts.ToolsetNames[toolName]; ok {
+		return name, true
 	}
-	name, _ := anthropicOptions(providerOptions)["toolsetName"].(string)
-	return name
+	name, ok := anthropicOptions(providerOptions)["toolsetName"].(string)
+	return name, ok
 }
 
 func anthropicCaller(providerOptions map[string]interface{}) map[string]interface{} {

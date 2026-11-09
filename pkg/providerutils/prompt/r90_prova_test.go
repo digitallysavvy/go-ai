@@ -68,3 +68,24 @@ func TestR90provaReasoningCacheControlUsesBreakpoint(t *testing.T) {
 		t.Errorf("warnings = %#v", out.Warnings)
 	}
 }
+
+// TS getAnthropicToolsetName: any string toolsetName in the metadata, ""
+// included, makes the call and its result toolset members (TS recorded at
+// 9f7a842ae1).
+func TestR90provaEmptyToolsetName(t *testing.T) {
+	opts := map[string]interface{}{"anthropic": map[string]interface{}{"toolsetName": ""}}
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "q"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: `{"action":"x"}`, ProviderOptions: opts}}},
+		{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "c1", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "ok"}, ProviderOptions: opts}}},
+	}
+	out, err := ConvertToAnthropicPrompt(msgs, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(out.Messages[1:])
+	want := `[{"content":[{"id":"c1","input":{"action":"x"},"name":"x","toolset_name":"","type":"tool_use"}],"role":"assistant"},{"content":[{"content":"ok","tool_use_id":"c1","toolset_name":"","type":"tool_result"}],"role":"user"}]`
+	if string(got) != want {
+		t.Errorf("messages = %s\nwant %s", got, want)
+	}
+}
