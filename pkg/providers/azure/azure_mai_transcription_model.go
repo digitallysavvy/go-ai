@@ -202,10 +202,12 @@ type azureMaiRealtimeEvent struct {
 	ItemID       string `json:"item_id"`
 	Delta        string `json:"delta"`
 	Intermediate string `json:"intermediate"`
-	Transcript   string `json:"transcript"`
-	Error        *struct {
-		Message string `json:"message"`
-		Code    string `json:"code"`
+	// Transcript, Message and Code are pointers: TS reads them with ?? and
+	// != null, so a present "" is a value.
+	Transcript *string `json:"transcript"`
+	Error      *struct {
+		Message *string `json:"message"`
+		Code    *string `json:"code"`
 	} `json:"error"`
 }
 
@@ -320,11 +322,11 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				if finished {
 					return
 				}
-				if wsutil.IsCleanClose(res.Err) && committed {
-					// A clean close after the commit with no completed event
-					// yet is still an abnormal end: MAI should emit
-					// .completed before closing. Fail explicitly rather than
-					// finishing silently, mirroring TS onClose.
+				if wsutil.IsCleanClose(res.Err) {
+					// A close before the transcript completed (before or
+					// after the commit) is an abnormal end, as TS onClose
+					// reports it. x/net/websocket does not expose the close
+					// code and reason TS appends.
 					fail(errors.New("Azure MAI transcription connection closed before the transcript completed")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 					return
 				}
@@ -375,9 +377,9 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				}
 
 			case "conversation.item.input_audio_transcription.completed":
-				transcript := event.Transcript
-				if transcript == "" {
-					transcript = deltas
+				transcript := deltas
+				if event.Transcript != nil {
+					transcript = *event.Transcript
 				}
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: event.ItemID, Text: transcript}) {
 					return
@@ -389,16 +391,14 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 
 			case "conversation.item.input_audio_transcription.failed", "error":
 				message := "unknown error"
-				code := ""
-				if event.Error != nil {
-					if event.Error.Message != "" {
-						message = event.Error.Message
-					}
-					code = event.Error.Code
-				}
 				prefix := "Azure MAI transcription error"
-				if code != "" {
-					prefix += " (" + code + ")"
+				if event.Error != nil {
+					if event.Error.Message != nil {
+						message = *event.Error.Message
+					}
+					if event.Error.Code != nil {
+						prefix += " (" + *event.Error.Code + ")"
+					}
 				}
 				fail(fmt.Errorf("%s: %s", prefix, message))
 				return
