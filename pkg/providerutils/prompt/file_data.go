@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -852,6 +853,15 @@ func NormalizeFileData(data types.FileData) (types.FileData, error) {
 			return types.FileData{}, &InvalidInlineDataURLError{
 				Value: data.URL,
 				Cause: fmt.Errorf("data URLs must use the %q variant, not %q", types.FileDataTypeURL, types.FileDataTypeData),
+			}
+		}
+		if len(data.Data) == 0 && strings.HasPrefix(data.DataString, "data:") {
+			// TS convertToLanguageModelV4FilePart: a `data:` string in the
+			// data variant is an InvalidDataContentError (file-part-data.ts
+			// 95-103).
+			return types.FileData{}, &InvalidInlineDataURLError{
+				Value: data.DataString,
+				Cause: errors.New(`Data URLs are not valid inline data. Pass them as { type: "url", url } instead.`), //nolint:staticcheck // TS text
 			}
 		}
 		return data, nil

@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -27,5 +28,16 @@ func TestR90genFileMediaTypeNotValidated(t *testing.T) {
 				t.Fatalf("%s %q: media type %q / %q", data.Type, mediaType, got.MediaType, got.FileData.MediaType)
 			}
 		}
+	}
+}
+
+// TS convertToLanguageModelV4FilePart rejects a data: string in the data
+// variant with "Data URLs are not valid inline data. Pass them as { type:
+// "url", url } instead." (file-part-data.ts 95-103).
+func TestR90genDataVariantDataURLString(t *testing.T) {
+	_, err := NormalizeFileContent(types.FileContent{FileData: types.FileData{Type: types.FileDataTypeData, DataString: "data:text/plain;base64,aGk=", MediaType: "text/plain"}})
+	var invalid *InvalidInlineDataURLError
+	if !errors.As(err, &invalid) || invalid.Cause == nil || invalid.Cause.Error() != `Data URLs are not valid inline data. Pass them as { type: "url", url } instead.` {
+		t.Fatalf("err = %v", err)
 	}
 }
