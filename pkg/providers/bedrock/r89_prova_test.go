@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TestR89provaNullAmazonBedrockKeyFallsBack: TS reads
@@ -87,5 +89,24 @@ func TestR89provaRegionLoadSettingError(t *testing.T) {
 	err := errRegionMissing()
 	if !errors.As(err, &lse) || err.Error() != "AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable." {
 		t.Fatalf("err = %T %v", err, err)
+	}
+}
+
+// TestR89provaGuardContentEmptyQualifiers: TS sends
+// qualifiers: guardContentQualifiers as given, so an empty list is sent as
+// [] (convert-to-amazon-bedrock-chat-messages.ts text guardContent).
+func TestR89provaGuardContentEmptyQualifiers(t *testing.T) {
+	_, msgs, err := convertToBedrockChatMessages([]types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.TextContent{Text: "hi", ProviderOptions: map[string]interface{}{
+			"bedrock": map[string]interface{}{"guardContent": true, "guardContentQualifiers": []interface{}{}},
+		}}},
+	}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(msgs)
+	if string(got) != `[{"content":[{"guardContent":{"text":{"qualifiers":[],"text":"hi"}}}],"role":"user"}]` {
+		t.Fatalf("messages = %s", got)
 	}
 }

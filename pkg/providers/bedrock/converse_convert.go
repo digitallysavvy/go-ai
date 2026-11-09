@@ -571,6 +571,8 @@ func bedrockTextGuardContentOptions(providerOptions map[string]interface{}) (gua
 		if !isArray {
 			return false, nil, invalidProviderOptions(providerName, fmt.Errorf("guardContentQualifiers: expected array, received %T", v))
 		}
+		// A present list, even empty, is sent (TS qualifiers: guardContentQualifiers).
+		qualifiers = []string{}
 		for _, q := range qs {
 			s, _ := q.(string)
 			if s != "grounding_source" && s != "query" && s != "guard_content" {
@@ -726,7 +728,7 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 							}
 							if guard {
 								textBlock := map[string]interface{}{"text": p.Text}
-								if len(qualifiers) > 0 {
+								if qualifiers != nil {
 									textBlock["qualifiers"] = qualifiers
 								}
 								content = append(content, map[string]interface{}{"guardContent": map[string]interface{}{"text": textBlock}})
