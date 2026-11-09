@@ -230,3 +230,55 @@ func TestR90streamUIMessageMetadataBeforeOnError(t *testing.T) {
 		t.Fatalf("callback order\n got %s\nwant %s", got, want)
 	}
 }
+
+// to-ui-message-chunk.ts 'tool-error': a provider-executed tool error keeps
+// its own error text and bypasses onError. TS output (node, packages/ai/dist
+// at 9f7a842ae1): no onError call and
+// {"type":"tool-output-error","toolCallId":"p1","errorText":"{\"code\":\"X\"}","providerExecuted":true}.
+func TestR90streamProviderToolErrorBypassesUIOnError(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "p1", ToolName: "web_search", Arguments: map[string]interface{}{}, RawArguments: "{}", ProviderExecuted: true, Dynamic: true}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "p1", ToolName: "web_search", Result: map[string]interface{}{"code": "X"}, IsError: r90streamTrue()}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage},
+		}),
+		Prompt:  "x",
+		OnError: func(context.Context, error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	onErrorCalls := 0
+	chunks, errs := r.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		OnError: func(error) string {
+			mu.Lock()
+			defer mu.Unlock()
+			onErrorCalls++
+			return "masked"
+		},
+	})
+	var toolErr []byte
+	for c := range chunks {
+		if c["type"] == "tool-output-error" {
+			toolErr, _ = uiSSEEventBytes(c)
+		}
+	}
+	for range errs {
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if onErrorCalls != 0 {
+		t.Fatalf("onError calls = %d, want 0", onErrorCalls)
+	}
+	want := `data: {"type":"tool-output-error","toolCallId":"p1","errorText":"{\"code\":\"X\"}","providerExecuted":true}` + "\n\n"
+	if string(toolErr) != want {
+		t.Fatalf("chunk\n got %s\nwant %s", toolErr, want)
+	}
+}
+
+func r90streamTrue() *bool {
+	v := true
+	return &v
+}

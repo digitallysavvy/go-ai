@@ -3839,10 +3839,13 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 		}
 		if chunk.ToolResult.Error != nil {
-			errorText := opts.OnError(chunk.ToolResult.Error)
-			if chunk.ToolResult.ProviderExecuted {
-				// TS: typeof error === 'string' ? error : JSON.stringify(error).
-				// A structured provider error travels in Result.
+			var errorText string
+			if !chunk.ToolResult.ProviderExecuted {
+				errorText = opts.OnError(chunk.ToolResult.Error)
+			} else {
+				// TS: typeof error === 'string' ? error : JSON.stringify(error),
+				// without calling onError. A structured provider error travels
+				// in Result.
 				errorText = chunk.ToolResult.Error.Error()
 				switch v := chunk.ToolResult.Result.(type) {
 				case nil:
