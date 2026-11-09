@@ -260,3 +260,16 @@ func TestR89carryPrepareCallToolsKeepBuiltinsInTurn(t *testing.T) {
 		t.Fatalf("turn tools = %v", tools)
 	}
 }
+
+// TS _resolvePromptTurnInput: an empty messages array has no user entry;
+// only absent input asks for prompt or messages.
+func TestR89carryResolvePromptTurnInputEmptyMessages(t *testing.T) {
+	_, err := resolvePromptTurnInput(agent.AgentGenerateOptions{Messages: []types.Message{}})
+	if err == nil || err.Error() != "HarnessAgent: messages must contain at least one `role: \"user\"` entry." {
+		t.Fatalf("empty: %v", err)
+	}
+	_, err = resolvePromptTurnInput(agent.AgentGenerateOptions{})
+	if err == nil || err.Error() != "HarnessAgent: either `prompt` or `messages` is required." {
+		t.Fatalf("absent: %v", err)
+	}
+}

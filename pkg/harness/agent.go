@@ -892,7 +892,9 @@ func resolvePromptTurnInput(opts agent.AgentGenerateOptions) (Prompt, error) {
 			return Prompt{Message: &m}, nil
 		}
 	}
-	if len(opts.Messages) > 0 {
+	// TS `Array.isArray(messages)`: a non-nil empty list is a message list
+	// without a user entry.
+	if opts.Messages != nil {
 		return Prompt{}, errors.New("HarnessAgent: messages must contain at least one `role: \"user\"` entry.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return Prompt{}, errors.New("HarnessAgent: either `prompt` or `messages` is required.") //nolint:staticcheck // matches TS SDK's exact error text
