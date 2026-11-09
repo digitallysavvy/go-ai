@@ -10,7 +10,7 @@ import (
 )
 
 // TS readCodexSubscription (codex-subscription.ts 136, 303-312): CODEX_HOME
-// is read with `??`, so a set but empty value resolves (path.resolve('')) to
+// is read with `??`, so a set but empty value resolves (path.resolve of an empty string) to
 // the working directory; toCodexCredential accepts any string refresh token,
 // "" included.
 func TestR90toolsCodexHomeEmptyAndEmptyRefreshToken(t *testing.T) {
