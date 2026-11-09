@@ -38,7 +38,10 @@ func isHiddenToolError(err error) bool {
 // The caller's event is never modified; application callbacks and results
 // keep their full content.
 //
-// When neither flag is false the event is returned unchanged. Otherwise,
+// Known provider credentials are then redacted in the copy (TS
+// redactTelemetryCredentials, see redactCredentials), whatever the flags.
+//
+// When neither flag is false nothing else changes. Otherwise,
 // field by name (the Go spelling of the TS keys):
 //   - inputs hidden: Instructions, InstructionMessages, System, Prompt,
 //     Tools, StepTools, Schema, SchemaName, SchemaDescription, Args and a
@@ -66,14 +69,14 @@ func isHiddenToolError(err error) bool {
 func FilterEvent[E any](event E, settings *Options) E {
 	hideInputs := !settings.ShouldRecordInputs()
 	hideOutputs := !settings.ShouldRecordOutputs()
-	if !hideInputs && !hideOutputs {
-		return event
+	if hideInputs || hideOutputs {
+		v := reflect.ValueOf(&event).Elem()
+		if out, ok := filterAny(v, hideInputs, hideOutputs); ok {
+			v.Set(out)
+		}
 	}
-	v := reflect.ValueOf(&event).Elem()
-	if out, ok := filterAny(v, hideInputs, hideOutputs); ok {
-		v.Set(out)
-	}
-	return event
+	// TS augmentEvent: redactTelemetryCredentials(filterTelemetryEvent(...)).
+	return redactCredentials(event)
 }
 
 // filterAny filters a struct, a pointer to a struct or an interface holding
