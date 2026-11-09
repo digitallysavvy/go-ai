@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // r89streamEmptyCitationMessages is a UI message whose text part carries a
@@ -235,5 +236,41 @@ func TestR89streamEmptyTextDeltaReachesUIStream(t *testing.T) {
 		`{"type":"text-end","id":"2"}`, `{"type":"finish-step"}`, `{"type":"finish","finishReason":"stop"}`}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("UI chunks:\n got %s\nwant %s", strings.Join(got, "\n     "), strings.Join(want, "\n     "))
+	}
+}
+
+// TS (node, packages/ai/dist at 382d0b8eaf): with toolChoice required, a
+// model stream that ends without a finish part after text gives
+// `finish-step: other`, `finish: other` and no error. TS checks the tool
+// choice only when the finish part arrives (stream-language-model-call.ts
+// 'finish'); the incomplete stream keeps its partial result.
+func TestR89streamNoToolChoiceViolationWithoutFinishPart(t *testing.T) {
+	var errs []error
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r88streamModel([]provider.StreamChunk{
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "a"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+		}),
+		Prompt:     "p",
+		ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
+		Tools:      r88streamWeatherTool(func() {}),
+		OnError:    func(_ context.Context, e error) { errs = append(errs, e) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range r88streamParts(r) {
+		s := string(p.Type)
+		if p.Type == provider.ChunkTypeFinishStep || p.Type == provider.ChunkTypeFinish {
+			s += ":" + string(p.FinishReason)
+		}
+		got = append(got, s)
+	}
+	want := []string{"start", "start-step", "text-start", "text", "text-end", "finish-step:other", "finish:other"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parts = %q\nwant %q", got, want)
+	}
+	if len(errs) != 0 || r.Err() != nil {
+		t.Errorf("OnError = %v, Err() = %v; want no error", errs, r.Err())
 	}
 }
