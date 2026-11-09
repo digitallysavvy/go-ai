@@ -241,3 +241,30 @@ func TestR89genSteeringEmptyIDIsAnID(t *testing.T) {
 	}
 }
 
+// TS parsePartialJson returns a parsed JSON null as a value (only a failed
+// parse is undefined), and isDeepEqualData(undefined, null) is false, so
+// streamObject publishes a null partial object (stream-object.ts 711-744).
+func TestR89genStreamObjectPublishesNullPartial(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "null"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	var partials []interface{}
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:      model,
+		Prompt:     "p",
+		OutputMode: ObjectModeNoSchema,
+		OnChunk:    func(p interface{}) { partials = append(partials, p) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(partials) != 1 || partials[0] != nil {
+		t.Fatalf("partials = %#v, want one nil partial", partials)
+	}
+	_ = result
+}

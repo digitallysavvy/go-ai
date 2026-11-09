@@ -494,7 +494,9 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 }
 
 func parseStreamPartial(mode ObjectOutputMode, s schema.Schema, enumValues []string, parseResult jsonparser.ParseResult) (interface{}, bool) {
-	if parseResult.Value == nil {
+	// TS parsePartialJson: a parsed JSON null is a value (only
+	// failed-parse is undefined), so a partial null is published.
+	if parseResult.State != jsonparser.ParseStateSuccessful && parseResult.State != jsonparser.ParseStateRepaired {
 		return nil, false
 	}
 
@@ -2039,6 +2041,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	var accumulatedText string
 	var accumulatedReasoning string
 	var lastObject interface{}
+	havePartial := false
 	var usage types.Usage
 	var finishReason types.FinishReason
 	var streamWarnings []types.Warning
@@ -2111,8 +2114,11 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			parseResult := parsePartialJSON(accumulatedText)
 
 			// If we successfully parsed something and it's different from last
-			if partial, ok := parseStreamPartial(opts.OutputMode, opts.Schema, opts.EnumValues, parseResult); ok && !deepEqual(partial, lastObject) {
+			// TS isDeepEqualData(latestObject, partial): no partial yet
+			// (undefined) differs from every value, null included.
+			if partial, ok := parseStreamPartial(opts.OutputMode, opts.Schema, opts.EnumValues, parseResult); ok && (!havePartial || !deepEqual(partial, lastObject)) {
 				lastObject = partial
+				havePartial = true
 				if opts.OnChunk != nil {
 					safeInvoke(func() { opts.OnChunk(lastObject) })
 				}
