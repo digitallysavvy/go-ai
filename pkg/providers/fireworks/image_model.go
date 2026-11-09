@@ -354,9 +354,11 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string, callHea
 		mimeType = strings.TrimSpace(mimeType[:idx])
 	}
 
+	// TS doGenerateAsync returns the image download's response headers.
 	return &types.ImageResult{
 		Image:    data,
 		MimeType: mimeType,
+		Response: &types.ResponseMetadata{Headers: providerutils.ExtractHeaders(http.Header(downloaded.Headers))},
 	}, nil
 }
 
