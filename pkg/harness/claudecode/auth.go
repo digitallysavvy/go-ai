@@ -80,7 +80,12 @@ func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authenti
 func pickAnthropic(ctx context.Context, env map[string]string, readHelper func() string, trySubscription bool, authModeString string) (map[string]string, error) {
 	if trySubscription {
 		hasDirect := env["ANTHROPIC_API_KEY"] != "" || env["ANTHROPIC_AUTH_TOKEN"] != "" || env["CLAUDE_CODE_OAUTH_TOKEN"] != ""
-		if harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
+		if !harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
+			// TS resolveClaudeCodeAuthentication returns the environment
+			// resolved without the apiKeyHelper here: the helper runs only
+			// when neither a direct credential nor a subscription exists.
+			readHelper = func() string { return "" }
+		} else {
 			subEnv, ok, err := resolveClaudeCodeSubscription(ctx)
 			if err != nil {
 				return nil, err
