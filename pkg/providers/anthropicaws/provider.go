@@ -47,6 +47,9 @@ type Config struct {
 	Headers            map[string]string  `json:"headers,omitempty"`
 	HTTPClient         *http.Client       `json:"-"`
 	CredentialProvider CredentialProvider `json:"-"`
+	// GenerateID creates the ids of generated sources (TS generateId
+	// provider setting). Defaults to a random id.
+	GenerateID func() string `json:"-"`
 }
 
 type Provider struct {
@@ -111,6 +114,7 @@ func New(cfg Config) (*Provider, error) {
 		Headers:       headers,
 		HTTPClient:    httpClient,
 		UserAgentName: "anthropic-aws",
+		GenerateID:    cfg.GenerateID,
 	})
 
 	return &Provider{config: cfg, inner: inner, region: region, baseURL: baseURL, transport: transport}, nil
