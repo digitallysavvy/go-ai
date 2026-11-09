@@ -130,7 +130,7 @@ func TestR90carryApprovalResumeErrorTextIsToString(t *testing.T) {
 		Tools: []types.Tool{{
 			Name:         "getWeather",
 			ToolApproval: true,
-			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "integer"}}},
+			Parameters:   map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "integer"}}},
 			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
 				return "sunny", nil
 			},
