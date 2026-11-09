@@ -216,3 +216,20 @@ func TestR90provgLiveRawChunkForMismatchedMessage(t *testing.T) {
 		t.Fatalf("part = %+v, want the raw serverContent message", part)
 	}
 }
+
+// TestR90provgCloudTTSRequestBodyText: TS request.body is
+// JSON.stringify(requestBody), which leaves HTML characters literal.
+func TestR90provgCloudTTSRequestBodyText(t *testing.T) {
+	server, _ := newChirpTestServer(t, map[string]interface{}{"audioContent": chirpAudioBase64})
+	defer server.Close()
+	p := newChirpProvider(t, server.URL)
+	model, _ := p.SpeechModel("chirp-3-hd")
+	result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "<b>Tom & Jerry</b>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"input":{"text":"<b>Tom & Jerry</b>"},"voice":{"languageCode":"en-US","name":"en-US-Chirp3-HD-Kore"},"audioConfig":{"audioEncoding":"LINEAR16"}}`
+	if got := result.Request.Body; got != want {
+		t.Fatalf("request body = %v, want %s", got, want)
+	}
+}
