@@ -135,6 +135,20 @@ func NewAgent(settings AgentSettings) (*Agent, error) {
 	}, nil
 }
 
+// preparedTurnTools is the turn's tool set after PrepareCall returned
+// prepared: the harness builtins overlaid with prepared (TS
+// `{...harness.builtinTools, ...userTools}`), each named by its key.
+func preparedTurnTools(h Harness, prepared map[string]types.Tool) map[string]types.Tool {
+	merged := make(map[string]types.Tool, len(prepared))
+	for name, bt := range h.BuiltinTools() {
+		merged[name] = bt.Tool
+	}
+	for name, t := range prepared {
+		merged[name] = t
+	}
+	return withToolNames(merged)
+}
+
 // withToolNames returns tools with each entry's Name set to its map key (TS
 // `tools` is keyed by name).
 func withToolNames(tools map[string]types.Tool) map[string]types.Tool {
@@ -656,7 +670,10 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 			instructionsRaw = prepared.Instructions
 		}
 		if prepared.Tools != nil {
-			tools = withToolNames(prepared.Tools)
+			// TS _prepareTurnSettings: `{...harness.builtinTools,
+			// ...preparedTools}`, so the harness builtins stay available
+			// when PrepareCall returns only user tools.
+			tools = preparedTurnTools(a.settings.Harness, prepared.Tools)
 		}
 		if prepared.ToolsContext != nil {
 			toolsContext = prepared.ToolsContext
@@ -747,7 +764,8 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// turn above.
 	responseFormat, err := resolveOutputResponseFormat(ctx, a.settings.Output)
 	if err != nil {
-		return nil, fmt.Errorf("harness: output.ResponseFormat failed: %w", err)
+		// TS awaits `output.responseFormat` and lets its error through.
+		return nil, err
 	}
 
 	turnID, active, err := session.startTrackedTurn(mode, cur)

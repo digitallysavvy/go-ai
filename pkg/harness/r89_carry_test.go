@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"log"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -178,4 +181,82 @@ func (r89carrySandboxProvider) SpecificationVersion() string { return "harness-s
 func (r89carrySandboxProvider) ProviderID() string           { return "r89carry" }
 func (r89carrySandboxProvider) CreateSession(context.Context, CreateSandboxSessionOptions) (NetworkSandboxSession, error) {
 	return nil, nil
+}
+
+// TS harness-agent.ts _prepareTurnSettings: the prepared tools are merged
+// over the harness builtins, so a PrepareCall that returns only user tools
+// keeps the builtins.
+func TestR89carryPreparedToolsKeepBuiltins(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{builtinTools: map[string]BuiltinTool{"bash": {Tool: types.Tool{Description: "builtin"}}}})
+	got := preparedTurnTools(mock.harness, map[string]types.Tool{"weather": {Description: "user"}})
+	if len(got) != 2 || got["bash"].Name != "bash" || got["weather"].Name != "weather" {
+		t.Fatalf("tools = %#v", got)
+	}
+	got = preparedTurnTools(mock.harness, map[string]types.Tool{"bash": {Description: "user bash"}})
+	if got["bash"].Description != "user bash" {
+		t.Fatalf("user tool must win: %#v", got["bash"])
+	}
+}
+
+type r89carryFailingOutput struct{}
+
+func (r89carryFailingOutput) ResponseFormat(context.Context) (*provider.ResponseFormat, error) {
+	return nil, r89carryErrFormat
+}
+
+var r89carryErrFormat = errors.New("format boom")
+
+// TS awaits `output.responseFormat` and lets its error through unchanged.
+func TestR89carryResponseFormatErrorUnwrapped(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, Output: r89carryFailingOutput{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.Stream(context.Background(), agent.AgentStreamOptions{AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: s}})
+	if err != r89carryErrFormat {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The PrepareCall path of a turn uses the merged tool set.
+func TestR89carryPrepareCallToolsKeepBuiltinsInTurn(t *testing.T) {
+	gate := make(chan struct{})
+	mock := newMockHarness(mockHarnessOptions{
+		builtinTools: map[string]BuiltinTool{"bash": {Tool: types.Tool{Description: "builtin"}}},
+		emitGate:     func() <-chan struct{} { return gate },
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, PrepareCall: func(ctx context.Context, opts PrepareCallOptions) (PrepareCallResult, error) {
+		return PrepareCallResult{Tools: map[string]types.Tool{"weather": {Description: "user"}}}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Stream(context.Background(), agent.AgentStreamOptions{AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: s}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	tools := s.activeTurn.tools
+	s.mu.Unlock()
+	close(gate)
+	_ = res.ConsumeStream()
+	if _, ok := tools["bash"]; !ok {
+		t.Fatalf("turn tools = %v", tools)
+	}
 }
