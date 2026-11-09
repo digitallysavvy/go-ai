@@ -38,3 +38,22 @@ func TestR90toolsMiniMaxVideoBodyKeyOrder(t *testing.T) {
 		t.Errorf("body\n got %s\nwant %s", body, want)
 	}
 }
+
+// TS template literals `"${options.aspectRatio}"` (minimax-video-model.ts
+// 488-489) insert the value as is; Go %q escaped it (here the backslash).
+func TestR90toolsMiniMaxWarningQuotesLikeTemplateLiteral(t *testing.T) {
+	model := newVideoModel(New(Config{APIKey: "k", VideoBaseURL: "http://127.0.0.1:1"}), ModelH3)
+	opts := minimaxDefaultCallOptions(map[string]interface{}{})
+	opts.AspectRatio = `9\16`
+	_, warnings, _, err := model.buildRequestBody(opts, &VideoModelOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `MiniMax-H3 does not support the aspect ratio "9\16". Using the default (16:9).`
+	for _, w := range warnings {
+		if w.Feature == "aspectRatio" && w.Details == want {
+			return
+		}
+	}
+	t.Fatalf("warnings = %+v", warnings)
+}

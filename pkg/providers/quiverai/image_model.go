@@ -214,7 +214,7 @@ func quiverBodyOrder(operation string) map[string][]string {
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, operation string, quiverOpts *QuiverAIImageModelOptions) (map[string]interface{}, error) {
 	if isArrow2Model(m.modelID) && quiverOpts.MaxOutputTokens != nil && *quiverOpts.MaxOutputTokens > maxArrow2OutputTokens {
-		return nil, invalidQuiverArgument("maxOutputTokens", fmt.Sprintf("QuiverAI model %q supports at most %d output tokens.", m.modelID, maxArrow2OutputTokens))
+		return nil, invalidQuiverArgument("maxOutputTokens", fmt.Sprintf("QuiverAI model \"%s\" supports at most %d output tokens.", m.modelID, maxArrow2OutputTokens))
 	}
 
 	if operation != OperationEdit {
@@ -283,7 +283,7 @@ func (m *ImageModel) buildGenerateBody(opts *provider.ImageGenerateOptions, quiv
 	}
 	maxReferences := getGenerateReferenceLimit(m.modelID)
 	if len(opts.Files) > maxReferences {
-		return nil, invalidQuiverArgument("files", fmt.Sprintf("QuiverAI generate supports up to %d reference images for model %q.", maxReferences, m.modelID))
+		return nil, invalidQuiverArgument("files", fmt.Sprintf("QuiverAI generate supports up to %d reference images for model \"%s\".", maxReferences, m.modelID))
 	}
 
 	body := map[string]interface{}{

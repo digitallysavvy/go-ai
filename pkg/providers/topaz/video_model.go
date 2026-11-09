@@ -611,7 +611,7 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 		container := mediaTypeContainers[providerutils.JSToLower(input.MediaType)]
 		if container == "" {
 			return "", invalidArgument("inputReferences",
-				fmt.Sprintf("Could not map the media type %q onto a Topaz container. Set the `source.container` provider option explicitly.", input.MediaType), nil)
+				fmt.Sprintf("Could not map the media type \"%s\" onto a Topaz container. Set the `source.container` provider option explicitly.", input.MediaType), nil)
 		}
 		return container, nil
 	}
@@ -625,7 +625,7 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 	}
 	if container == "" {
 		return "", invalidArgument("inputReferences",
-			fmt.Sprintf("Could not determine the container of the input video at %q. Set the `source.container` provider option, or pass `mediaType` on the reference.", input.URL), nil)
+			fmt.Sprintf("Could not determine the container of the input video at \"%s\". Set the `source.container` provider option, or pass `mediaType` on the reference.", input.URL), nil)
 	}
 	return container, nil
 }

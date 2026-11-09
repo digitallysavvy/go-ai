@@ -23,6 +23,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 )
 
 // ClientAppName / ClientAppVersion are the ai-sdk client-app identity Cursor
@@ -200,7 +201,8 @@ func WarnAuthenticationConfiguration(auth string) {
 	if auth == harness.AuthModeAIGateway {
 		detail = "Configure an AI Gateway API key as Cursor's OpenAI API key and set Override OpenAI Base URL to https://ai-gateway.vercel.sh/cursor/v1."
 	}
-	Warn(fmt.Sprintf("[cursor] auth: %q cannot configure Cursor provider authentication. %s CURSOR_API_KEY is still required for Cursor CLI authentication.", auth, detail))
+	quoted, _ := jsstr.Marshal(auth) // TS JSON.stringify(auth)
+	Warn(fmt.Sprintf("[cursor] auth: %s cannot configure Cursor provider authentication. %s CURSOR_API_KEY is still required for Cursor CLI authentication.", quoted, detail))
 }
 
 // Warn receives adapter warnings (TS console.warn). Replaceable for tests.
