@@ -139,10 +139,10 @@ func (g *GoogleJSONAccumulator) processPartialArgs(partialArgs []PartialArg) (ac
 			failure = err
 			break
 		}
-		// TS 26fc2a998f: an array index that leaves a gap is skipped (no
-		// state change, no text), which also bounds allocation by the
-		// input size.
-		if !hasContiguousIndexes(g.accumulatedArgs, segments) {
+		// TS 26fc2a998f / 304dec5081: dotted array indexes are normalized,
+		// and an array index that leaves a gap is skipped (no state change,
+		// no text), which also bounds allocation by the input size.
+		if !normalizeAndCheckIndexes(g.accumulatedArgs, segments) {
 			continue
 		}
 
@@ -440,7 +440,7 @@ func parseJSONPath(rawPath string) ([]interface{}, error) {
 			n, err := strconv.Atoi(m[1])
 			if err != nil {
 				// Too large for an int: never contiguous, so the argument
-				// is skipped by hasContiguousIndexes.
+				// is skipped by normalizeAndCheckIndexes.
 				n = math.MaxInt
 			}
 			segments = append(segments, n)
@@ -483,17 +483,28 @@ func getNestedValue(root *orderedMap, segments []interface{}) (interface{}, bool
 	return current, true
 }
 
-// hasContiguousIndexes ports TS hasContiguousIndexes
-// (google-json-accumulator.ts, 26fc2a998f): every array index on the path is
-// an existing element or the next one. A missing or null parent counts as
-// length 0 (it is replaced with a new array); an object parent is not
-// checked.
+// normalizeAndCheckIndexes ports TS normalizeAndCheckIndexes
+// (google-json-accumulator.ts, 26fc2a998f and 304dec5081): a dotted segment
+// that is a canonical array index on an existing array is turned into that
+// index (in place), and every array index on the path must be an existing
+// element or the next one. A missing or null parent counts as length 0 (it is
+// replaced with a new array); an object parent is not checked.
 //
-// Input: ({items:["a"]}, ["items",1]) or ({items:["a"]}, ["items",5])
+// Input: ({items:["a"]}, ["items",1]) or ({items:["a"]}, ["items","5"])
 // Output: true or false
-func hasContiguousIndexes(root *orderedMap, segments []interface{}) bool {
+func normalizeAndCheckIndexes(root *orderedMap, segments []interface{}) bool {
 	var current interface{} = root
-	for _, seg := range segments {
+	for i, seg := range segments {
+		if key, isKey := seg.(string); isKey {
+			if _, isArray := current.([]interface{}); isArray {
+				// Only canonical array-index keys affect length. Keep object
+				// keys as strings.
+				if idx, ok := canonicalArrayIndex(key); ok {
+					seg = idx
+					segments[i] = idx
+				}
+			}
+		}
 		if idx, isIndex := seg.(int); isIndex {
 			switch c := current.(type) {
 			case []interface{}:
@@ -525,6 +536,29 @@ func hasContiguousIndexes(root *orderedMap, segments []interface{}) bool {
 		current = next
 	}
 	return true
+}
+
+// canonicalArrayIndex reports whether key is a JS canonical array index
+// (TS: Number.isInteger(n) && n >= 0 && n < 2**32 - 1 && String(n) === key)
+// and returns it. An index beyond int (32-bit builds) is clamped to
+// math.MaxInt, which is never contiguous.
+func canonicalArrayIndex(key string) (int, bool) {
+	if key == "" || (len(key) > 1 && key[0] == '0') {
+		return 0, false
+	}
+	for _, c := range key {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseUint(key, 10, 64)
+	if err != nil || n >= 1<<32-1 {
+		return 0, false
+	}
+	if n > uint64(math.MaxInt) {
+		return math.MaxInt, true
+	}
+	return int(n), true
 }
 
 // arrayHole marks an array slot that no path has written. A JS sparse array
