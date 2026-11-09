@@ -337,7 +337,8 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 func bedrockImageOptions(providerOptions map[string]interface{}) map[string]interface{} {
 	for _, key := range []string{"amazonBedrock", "bedrock"} {
 		raw, ok := providerOptions[key]
-		if !ok {
+		if !ok || raw == nil {
+			// TS parseProviderOptions: a null key falls back to the next.
 			continue
 		}
 		if values, ok := raw.(map[string]interface{}); ok {

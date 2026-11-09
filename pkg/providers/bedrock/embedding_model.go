@@ -381,7 +381,8 @@ func bedrockEmbeddingTokenCount(tokens float64) int {
 func bedrockEmbeddingOptions(providerOptions map[string]interface{}) *EmbeddingOptions {
 	for _, key := range []string{"amazonBedrock", "bedrock"} {
 		raw, ok := providerOptions[key]
-		if !ok {
+		if !ok || raw == nil {
+			// TS parseProviderOptions: a null key falls back to the next.
 			continue
 		}
 		values, ok := raw.(map[string]interface{})
