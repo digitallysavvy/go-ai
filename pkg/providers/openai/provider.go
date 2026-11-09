@@ -162,6 +162,16 @@ type Config struct {
 	// references resolve the wrapper's own provider key instead of "openai".
 	OpenAICompatible bool
 
+	// CompatErrorStructure, for OpenAICompatible wrappers, converts an HTTP
+	// error response the way the wrapper's TS errorStructure does (message
+	// and data of a matching body, else the status text). Set it to
+	// providerutils.OpenAICompatibleAPIError for a wrapper whose TS model
+	// uses defaultOpenAICompatibleErrorStructure (deepinfra, together, vertex
+	// MaaS). nil keeps the generic extraction (wrappers with their own
+	// structure, such as Baseten's string error). Native OpenAI models always
+	// use the OpenAI error schema.
+	CompatErrorStructure func(provider string, err error) (*providererrors.ProviderError, bool)
+
 	// SupportsStructuredOutputs, for OpenAI-compatible hosts (TS
 	// supportsStructuredOutputs): nil keeps the legacy behavior (json_schema
 	// whenever a schema is present); an explicit value follows TS, where
@@ -513,4 +523,18 @@ func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, er
 		return nil, err
 	}
 	return provider.AsEvaluationModel(model), nil
+}
+
+// apiError converts an HTTP error response with the model family's TS error
+// structure: the OpenAI error schema for native models, the wrapper's
+// CompatErrorStructure in OpenAICompatible mode. ok is false when neither
+// applies (no HTTP response, or a compat wrapper without a structure).
+func (p *Provider) apiError(name string, err error) (*providererrors.ProviderError, bool) {
+	if !p.config.OpenAICompatible {
+		return providerutils.OpenAICompatibleAPIError(name, err)
+	}
+	if p.config.CompatErrorStructure != nil {
+		return p.config.CompatErrorStructure(name, err)
+	}
+	return nil, false
 }

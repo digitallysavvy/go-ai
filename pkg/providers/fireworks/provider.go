@@ -109,8 +109,10 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		Headers:           p.config.Headers,
 		Name:              "fireworks",
 		OpenAICompatible:  true,
-		IncludeUsage:      true,
-		UserAgentName:     "fireworks",
+		// TS fireworksErrorStructure.
+		CompatErrorStructure: fireworksCompatAPIError,
+		IncludeUsage:         true,
+		UserAgentName:        "fireworks",
 	}).CompletionModel(modelID)
 }
 

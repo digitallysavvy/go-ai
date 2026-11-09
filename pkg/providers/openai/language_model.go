@@ -1261,7 +1261,7 @@ func (m *LanguageModel) handleError(err error) error {
 		return err // TS createJsonResponseHandler failure
 	}
 	// Try to parse as OpenAI error response
-	if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok && !m.provider.config.OpenAICompatible {
+	if pe, ok := m.provider.apiError(m.Provider(), err); ok {
 		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)

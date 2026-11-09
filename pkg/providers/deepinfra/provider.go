@@ -81,7 +81,9 @@ func New(cfg Config) *Provider {
 		AllowVideo:                true,
 		OpenAICompatible:          true,
 		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
-		UserAgentName:             "deepinfra",
+		// TS deepinfra models use defaultOpenAICompatibleErrorStructure.
+		CompatErrorStructure: providerutils.OpenAICompatibleAPIError,
+		UserAgentName:        "deepinfra",
 	})
 
 	return &Provider{

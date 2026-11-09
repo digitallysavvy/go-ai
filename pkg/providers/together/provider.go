@@ -138,8 +138,10 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		Headers:           p.config.Headers,
 		Name:              "togetherai",
 		OpenAICompatible:  true,
-		IncludeUsage:      true,
-		UserAgentName:     "togetherai",
+		// TS togetherai builds on openai-compatible with its default errorStructure.
+		CompatErrorStructure: providerutils.OpenAICompatibleAPIError,
+		IncludeUsage:         true,
+		UserAgentName:        "togetherai",
 	}).CompletionModel(modelID)
 }
 

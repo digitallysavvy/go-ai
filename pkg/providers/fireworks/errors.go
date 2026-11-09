@@ -71,3 +71,20 @@ func fireworksErrorCode(raw json.RawMessage) string {
 	}
 	return ""
 }
+
+// fireworksCompatAPIError is TS fireworksErrorStructure for the
+// OpenAI-compatible completion model: the Fireworks error envelope's message
+// for a matching body, else the status text with no data.
+func fireworksCompatAPIError(provider string, err error) (*providererrors.ProviderError, bool) {
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return nil, false
+	}
+	if parsed := parseFireworksProviderError(err); parsed != nil {
+		if pe, ok := parsed.(*providererrors.ProviderError); ok {
+			pe.Provider = provider
+			return pe, true
+		}
+	}
+	return providererrors.NewSchemaProviderError(provider, err, nil), true
+}

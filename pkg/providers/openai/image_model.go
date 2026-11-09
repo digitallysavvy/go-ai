@@ -202,7 +202,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok && !m.provider.config.OpenAICompatible {
+		if pe, ok := m.provider.apiError(m.Provider(), err); ok {
 			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
@@ -356,7 +356,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok && !m.provider.config.OpenAICompatible {
+		if pe, ok := m.provider.apiError(m.Provider(), err); ok {
 			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)

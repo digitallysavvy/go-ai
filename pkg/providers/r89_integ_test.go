@@ -12,6 +12,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/cohere"
+	"github.com/digitallysavvy/go-ai/pkg/providers/deepinfra"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/mistral"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
@@ -79,6 +80,50 @@ func TestR89integErrorSchemaMessageAndData(t *testing.T) {
 		}
 		if pe.StatusCode != 400 || pe.ResponseBody != tc.body || pe.ResponseHeaders["Retry-After"] == "" && pe.ResponseHeaders["retry-after"] == "" {
 			t.Fatalf("%s: status %d body %q headers %v", tc.name, pe.StatusCode, pe.ResponseBody, pe.ResponseHeaders)
+		}
+	}
+}
+
+// OpenAI-compatible wrappers whose TS model uses the default
+// openai-compatible error structure (deepinfra, together completions) or
+// fireworksErrorStructure give the schema message for a matching body and
+// the status text otherwise; compat mode used the generic extraction
+// (provb r89 open item, openai.Config.CompatErrorStructure).
+func TestR89integCompatWrapperErrorStructure(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	prompt := &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}
+	models := map[string]func() (provider.LanguageModel, error){
+		"deepinfra": func() (provider.LanguageModel, error) {
+			return deepinfra.New(deepinfra.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+		},
+		"together-completion": func() (provider.LanguageModel, error) {
+			return together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).CompletionModel("m")
+		},
+		"fireworks-completion": func() (provider.LanguageModel, error) {
+			return fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).CompletionModel("m")
+		},
+	}
+	for name, mk := range models {
+		m, err := mk()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, tc := range []struct{ body, msg string }{
+			{`{"error":{"message":"schema message","type":"t"}}`, "schema message"},
+			{`{"message":"top-level message"}`, "Bad Request"},
+		} {
+			body = tc.body
+			_, err := m.DoGenerate(context.Background(), prompt)
+			var pe *providererrors.ProviderError
+			if !errors.As(err, &pe) || pe.Message != tc.msg {
+				t.Fatalf("%s %s: err = %v, want message %q", name, tc.body, err, tc.msg)
+			}
 		}
 	}
 }
