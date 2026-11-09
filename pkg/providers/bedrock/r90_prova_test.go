@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -21,5 +22,31 @@ func TestR90provaFable52StrictWarning(t *testing.T) {
 		if len(res.Warnings) != 1 || res.Warnings[0].Type != "unsupported" || res.Warnings[0].Feature != "strict" || res.Warnings[0].Details != want {
 			t.Errorf("%s: warnings = %#v", id, res.Warnings)
 		}
+	}
+}
+
+// TS amazon-bedrock-chat-language-model.ts 906 / 916: the json response tool
+// text is JSON.stringify(toolUse.input) and a tool call input
+// JSON.stringify(toolUse.input ?? {}), so a null input is "null" / "{}" and a
+// non-object input keeps its JSON text (TS recorded at 9f7a842ae1).
+func TestR90provaConverseNonObjectToolInput(t *testing.T) {
+	m := &LanguageModel{modelID: "us.anthropic.claude-opus-4-7"}
+	res, err := m.convertConverseResponse([]byte(`{"output":{"message":{"role":"assistant","content":[{"toolUse":{"toolUseId":"j","name":"json","input":null}}]}},"stopReason":"tool_use","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`), false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "null" {
+		t.Errorf("json tool text = %q, want null", res.Text)
+	}
+	res, err = m.convertConverseResponse([]byte(`{"output":{"message":{"role":"assistant","content":[{"toolUse":{"toolUseId":"a","name":"t","input":null}},{"toolUse":{"toolUseId":"b","name":"t","input":[1]}},{"toolUse":{"toolUseId":"c","name":"t","input":"s"}},{"toolUse":{"toolUseId":"d","name":"t","input":{"z":1,"a":2}}}]}},"stopReason":"tool_use","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`), false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tc := range res.ToolCalls {
+		got = append(got, tc.RawArguments)
+	}
+	if want := `{}|[1]|"s"|{"z":1,"a":2}`; strings.Join(got, "|") != want {
+		t.Errorf("inputs = %s, want %s", strings.Join(got, "|"), want)
 	}
 }
