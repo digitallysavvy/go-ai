@@ -408,19 +408,14 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 	return meta
 }
 
-// convertXAIHeaders flattens net/http.Header into map[string]string, taking
-// the first value for each header key.
+// convertXAIHeaders is the response headers of a video call: TS
+// extractResponseHeaders joins repeated lines with ", " (the last Set-Cookie
+// wins). Keys keep the Go canonical form of v0.5.2 (TS: lower case; S6).
 func convertXAIHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
+	if out := providerutils.ExtractHeaders(h); out != nil {
+		return out
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	return map[string]string{}
 }
 
 // DoGenerate generates a video synchronously by starting the operation and

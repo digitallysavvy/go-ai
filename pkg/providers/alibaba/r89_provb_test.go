@@ -15,3 +15,12 @@ func TestR89provbVideoStartStatusPollDefaults(t *testing.T) {
 		t.Errorf("poll options = %d, %d; want 250, 90000", i, to)
 	}
 }
+
+// TS extractResponseHeaders: repeated lines are joined with ", " (keys stay
+// Go canonical, S6).
+func TestR89provbVideoHeadersJoinRepeatedLines(t *testing.T) {
+	got := flattenHTTPHeaders(map[string][]string{"X-Multi": {"a", "b"}})
+	if got["X-Multi"] != "a, b" {
+		t.Fatalf("headers = %v", got)
+	}
+}

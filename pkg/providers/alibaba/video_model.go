@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -798,13 +799,13 @@ func (m *VideoModel) handleError(err error) error {
 }
 
 func flattenHTTPHeaders(headers map[string][]string) map[string]string {
-	out := make(map[string]string, len(headers))
-	for k, vs := range headers {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
+	// TS extractResponseHeaders joins repeated lines with ", " (the last
+	// Set-Cookie wins). Keys keep the Go canonical form of v0.5.2 (TS: lower
+	// case; S6).
+	if out := providerutils.ExtractHeaders(http.Header(headers)); out != nil {
+		return out
 	}
-	return out
+	return map[string]string{}
 }
 
 // alibabaCreateSpec is TS alibabaVideoCreateTaskSchema's shape.

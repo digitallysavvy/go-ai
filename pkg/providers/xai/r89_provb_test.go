@@ -115,3 +115,23 @@ func TestR89provbVideoStatusRedirectDropsCredentials(t *testing.T) {
 		t.Fatalf("foreign hop got Authorization %q", gotAuth)
 	}
 }
+
+// TS extractResponseHeaders: repeated response header lines are joined with
+// ", " in the video result headers (keys stay Go canonical, S6).
+func TestR89provbVideoHeadersJoinRepeatedLines(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("X-Multi", "a")
+		w.Header().Add("X-Multi", "b")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"pending"}`))
+	}))
+	defer srv.Close()
+	op, _ := json.Marshal(xaiVideoOperation{RequestID: "r1"})
+	res, err := NewVideoModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "grok-imagine-video").DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Response.Headers["X-Multi"]; got != "a, b" {
+		t.Fatalf("X-Multi = %q, want %q", got, "a, b")
+	}
+}
