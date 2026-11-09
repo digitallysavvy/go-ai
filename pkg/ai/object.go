@@ -2094,10 +2094,10 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		}
 
 		// Record the first chunk's arrival time, mirroring TS's isFirstChunk
-		// flag (stream-object.ts): TS skips its synthetic 'stream-start'
-		// chunk before setting msToFirstChunk, so ChunkTypeStreamStart (a
-		// warnings-only marker, handled above) is excluded here too.
-		if firstChunkAt.IsZero() && chunk.Type != provider.ChunkTypeStreamStart {
+		// flag (stream-object.ts 703-706): only the parts TS's first
+		// transformer forwards (text-delta, response-metadata, finish, error;
+		// 'stream-start' returns before the flag) start the clock.
+		if firstChunkAt.IsZero() && streamObjectTimedChunk(chunk.Type) {
 			firstChunkAt = time.Now()
 		}
 
@@ -2245,6 +2245,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			FinishReason:     finishReason,
 			Usage:            usage,
 			ObjectText:       accumulatedText,
+			MsToFirstChunk:   msSinceStart(telStep.start, firstChunkAt),
 			Reasoning:        "", // TS SDK always passes reasoning: undefined in streaming callbacks
 			Warnings:         streamWarnings,
 			Request:          streamReqMeta,
@@ -2379,6 +2380,28 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	}
 
 	return result, nil
+}
+
+// streamObjectTimedChunk reports whether a part of the model stream starts
+// StreamObject's first-chunk clock: TS stream-object.ts forwards only
+// text-delta, response-metadata, finish, error and stream-start parts to the
+// transform that sets msToFirstChunk, and stream-start returns before it.
+func streamObjectTimedChunk(t provider.ChunkType) bool {
+	switch t {
+	case provider.ChunkTypeText, provider.ChunkTypeResponseMetadata, provider.ChunkTypeFinish, provider.ChunkTypeError:
+		return true
+	}
+	return false
+}
+
+// msSinceStart is the whole milliseconds from start to at, or nil when at is
+// zero (TS msToFirstChunk undefined when no chunk arrived).
+func msSinceStart(start, at time.Time) *int64 {
+	if at.IsZero() {
+		return nil
+	}
+	ms := at.Sub(start).Milliseconds()
+	return &ms
 }
 
 // fireStreamObjectTelemetryEnd ends a StreamObject call's telemetry the way
