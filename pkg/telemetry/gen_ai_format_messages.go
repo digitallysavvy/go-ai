@@ -523,7 +523,8 @@ func generatedFileToSemConv(f types.GeneratedFileContent) semConvPart {
 	case len(f.Data) > 0:
 		content = base64.StdEncoding.EncodeToString(f.Data)
 	}
-	return semConvPart{"type": "blob", "modality": modalityForMediaType(mediaType), "mime_type": nullableString(mediaType), "content": content}
+	// TS formatOutputMessages: `mime_type: file.mediaType`, as given.
+	return semConvPart{"type": "blob", "modality": modalityForMediaType(mediaType), "mime_type": mediaType, "content": content}
 }
 
 // formatOutputMessagesFromContent converts an ordered content-part list (as
@@ -546,16 +547,17 @@ func formatOutputMessagesFromContent(content []types.ContentPart, finishReason s
 				reasoningParts = append(reasoningParts, semConvPart{"type": "reasoning", "content": p.Text})
 			}
 		case types.ToolCallContent:
+			// TS formatOutputMessages: `id: tc.toolCallId`, as given.
 			toolCallParts = append(toolCallParts, semConvPart{
 				"type":      "tool_call",
-				"id":        nullableString(p.ToolCallID),
+				"id":        p.ToolCallID,
 				"name":      p.ToolName,
 				"arguments": toolCallArgumentsValue(p),
 			})
 		case types.ToolResultContent:
 			toolResultParts = append(toolResultParts, semConvPart{
 				"type":     "tool_call_response",
-				"id":       nullableString(p.ToolCallID),
+				"id":       p.ToolCallID,
 				"response": toolResultResponseValue(p),
 			})
 		case types.GeneratedFileContent:
@@ -689,9 +691,7 @@ func FormatOutputMessages(opts FormatOutputMessagesOptions) []SemConvOutputMessa
 		parts = append(parts, SemConvPart{"type": "tool_call_response", "id": tr.ToolCallID, "response": tr.Result})
 	}
 	for _, f := range opts.Files {
-		part := generatedFileToSemConv(f)
-		part["mime_type"] = f.MediaType
-		parts = append(parts, part)
+		parts = append(parts, generatedFileToSemConv(f))
 	}
 	return []SemConvOutputMessage{{
 		Role:         "assistant",

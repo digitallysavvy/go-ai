@@ -1,11 +1,10 @@
-package telemetry_test
+package telemetry
 
 import (
 	"encoding/json"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // TS 382d0b8eaf exports the GenAI formatting helpers from @ai-sdk/otel.
@@ -39,16 +38,16 @@ func r89carrySystem(text string) types.Message {
 
 // formatSystemInstructions: 'should format a system string into SemConv system instructions'.
 func TestR89carryFormatSystemInstructions(t *testing.T) {
-	r89carryExpect(t, telemetry.FormatSystemInstructions("You are a helpful assistant."),
+	r89carryExpect(t, FormatSystemInstructions("You are a helpful assistant."),
 		`[{"type":"text","content":"You are a helpful assistant."}]`)
 	// TS returns one text instruction for any string, the empty one included.
-	r89carryExpect(t, telemetry.FormatSystemInstructions(""), `[{"type":"text","content":""}]`)
+	r89carryExpect(t, FormatSystemInstructions(""), `[{"type":"text","content":""}]`)
 }
 
 // TS formatSystemInstructions with a system message array: one text
 // instruction per message.
 func TestR89carryFormatSystemMessages(t *testing.T) {
-	r89carryExpect(t, telemetry.FormatSystemMessages([]types.Message{r89carrySystem("A"), r89carrySystem("B")}),
+	r89carryExpect(t, FormatSystemMessages([]types.Message{r89carrySystem("A"), r89carrySystem("B")}),
 		`[{"type":"text","content":"A"},{"type":"text","content":"B"}]`)
 }
 
@@ -105,7 +104,7 @@ func TestR89carryFormatInputMessages(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r89carryExpect(t, telemetry.FormatInputMessages(tc.prompt), tc.want)
+			r89carryExpect(t, FormatInputMessages(tc.prompt), tc.want)
 		})
 	}
 }
@@ -117,22 +116,22 @@ func r89carryPNG(base64 string, mediaType string) types.GeneratedFileContent {
 func TestR89carryFormatOutputMessages(t *testing.T) {
 	cases := []struct {
 		name string
-		opts telemetry.FormatOutputMessagesOptions
+		opts FormatOutputMessagesOptions
 		want string
 	}{
 		{
 			name: "should format text-only output",
-			opts: telemetry.FormatOutputMessagesOptions{Text: "Hello world", FinishReason: "stop"},
+			opts: FormatOutputMessagesOptions{Text: "Hello world", FinishReason: "stop"},
 			want: `[{"role":"assistant","parts":[{"type":"text","content":"Hello world"}],"finish_reason":"stop"}]`,
 		},
 		{
 			name: "should format output with reasoning",
-			opts: telemetry.FormatOutputMessagesOptions{Text: "The answer is 42", Reasoning: []types.ReasoningContent{{Text: "Let me think..."}}, FinishReason: "stop"},
+			opts: FormatOutputMessagesOptions{Text: "The answer is 42", Reasoning: []types.ReasoningContent{{Text: "Let me think..."}}, FinishReason: "stop"},
 			want: `[{"role":"assistant","parts":[{"type":"reasoning","content":"Let me think..."},{"type":"text","content":"The answer is 42"}],"finish_reason":"stop"}]`,
 		},
 		{
 			name: "should format output with tool calls",
-			opts: telemetry.FormatOutputMessagesOptions{
+			opts: FormatOutputMessagesOptions{
 				ToolCalls:    []types.ToolCall{{ID: "call_abc", ToolName: "get_weather", Arguments: map[string]interface{}{"city": "Paris"}}},
 				FinishReason: "tool-calls",
 			},
@@ -140,7 +139,7 @@ func TestR89carryFormatOutputMessages(t *testing.T) {
 		},
 		{
 			name: "should format output with tool results",
-			opts: telemetry.FormatOutputMessagesOptions{
+			opts: FormatOutputMessagesOptions{
 				ToolResults:  []types.ToolResult{{ToolCallID: "call_abc", Result: map[string]interface{}{"temperature": 21}}},
 				FinishReason: "stop",
 			},
@@ -148,12 +147,12 @@ func TestR89carryFormatOutputMessages(t *testing.T) {
 		},
 		{
 			name: "should format output with files",
-			opts: telemetry.FormatOutputMessagesOptions{Files: []types.GeneratedFileContent{r89carryPNG("abc123", "image/png")}, FinishReason: "stop"},
+			opts: FormatOutputMessagesOptions{Files: []types.GeneratedFileContent{r89carryPNG("abc123", "image/png")}, FinishReason: "stop"},
 			want: `[{"role":"assistant","parts":[{"type":"blob","modality":"image","mime_type":"image/png","content":"abc123"}],"finish_reason":"stop"}]`,
 		},
 		{
 			name: "should combine reasoning, text, tool calls, and files",
-			opts: telemetry.FormatOutputMessagesOptions{
+			opts: FormatOutputMessagesOptions{
 				Text:         "Here is the result",
 				Reasoning:    []types.ReasoningContent{{Text: "Thinking..."}},
 				ToolCalls:    []types.ToolCall{{ID: "tc1", ToolName: "search", Arguments: map[string]interface{}{"q": "test"}}},
@@ -165,19 +164,19 @@ func TestR89carryFormatOutputMessages(t *testing.T) {
 		{
 			// TS: `'text' in r && r.text` skips empty reasoning; an empty text adds no part.
 			name: "empty reasoning and text add no parts",
-			opts: telemetry.FormatOutputMessagesOptions{Reasoning: []types.ReasoningContent{{Text: ""}}, FinishReason: "other"},
+			opts: FormatOutputMessagesOptions{Reasoning: []types.ReasoningContent{{Text: ""}}, FinishReason: "other"},
 			want: `[{"role":"assistant","parts":[],"finish_reason":"stop"}]`,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r89carryExpect(t, telemetry.FormatOutputMessages(tc.opts), tc.want)
+			r89carryExpect(t, FormatOutputMessages(tc.opts), tc.want)
 		})
 	}
 
 	t.Run("should map finish reasons correctly", func(t *testing.T) {
 		for reason, want := range map[string]string{"stop": "stop", "length": "length", "tool-calls": "tool_call", "content-filter": "content_filter"} {
-			if got := telemetry.FormatOutputMessages(telemetry.FormatOutputMessagesOptions{FinishReason: reason})[0].FinishReason; got != want {
+			if got := FormatOutputMessages(FormatOutputMessagesOptions{FinishReason: reason})[0].FinishReason; got != want {
 				t.Errorf("%s: got %q, want %q", reason, got, want)
 			}
 		}
@@ -186,7 +185,7 @@ func TestR89carryFormatOutputMessages(t *testing.T) {
 
 // formatObjectOutputMessages: 'should format object output as text content'.
 func TestR89carryFormatObjectOutputMessages(t *testing.T) {
-	r89carryExpect(t, telemetry.FormatObjectOutputMessages(`{"name":"test"}`, "stop"),
+	r89carryExpect(t, FormatObjectOutputMessages(`{"name":"test"}`, "stop"),
 		`[{"role":"assistant","parts":[{"type":"text","content":"{\"name\":\"test\"}"}],"finish_reason":"stop"}]`)
 }
 
@@ -196,46 +195,66 @@ func TestR89carryFormatModelMessages(t *testing.T) {
 	}}}
 	cases := []struct {
 		name string
-		opts telemetry.FormatModelMessagesOptions
+		opts FormatModelMessagesOptions
 		want string
 	}{
 		{
 			name: "should convert a prompt string to a user message",
-			opts: telemetry.FormatModelMessagesOptions{Prompt: "Hello"},
+			opts: FormatModelMessagesOptions{Prompt: "Hello"},
 			want: `[{"role":"user","parts":[{"type":"text","content":"Hello"}]}]`,
 		},
 		{
 			// TS's array form of prompt maps to Messages.
 			name: "should convert ModelMessage array from prompt",
-			opts: telemetry.FormatModelMessagesOptions{Messages: []types.Message{r89carryUser("Hi there"), toolCallMsg}},
+			opts: FormatModelMessagesOptions{Messages: []types.Message{r89carryUser("Hi there"), toolCallMsg}},
 			want: `[{"role":"user","parts":[{"type":"text","content":"Hi there"}]},{"role":"assistant","parts":[{"type":"tool_call","id":"tc1","name":"weather","arguments":{"city":"NYC"}}]}]`,
 		},
 		{
 			name: "should preserve system messages in message order",
-			opts: telemetry.FormatModelMessagesOptions{Messages: []types.Message{r89carryUser("First"), r89carrySystem("Be helpful"), r89carryUser("Second")}},
+			opts: FormatModelMessagesOptions{Messages: []types.Message{r89carryUser("First"), r89carrySystem("Be helpful"), r89carryUser("Second")}},
 			want: `[{"role":"user","parts":[{"type":"text","content":"First"}]},{"role":"system","parts":[{"type":"text","content":"Be helpful"}]},{"role":"user","parts":[{"type":"text","content":"Second"}]}]`,
 		},
 		{
 			name: "should convert tool messages",
-			opts: telemetry.FormatModelMessagesOptions{Messages: []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{
+			opts: FormatModelMessagesOptions{Messages: []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{
 				ToolCallID: "tc1", ToolName: "weather", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "Sunny"},
 			}}}}},
 			want: `[{"role":"tool","parts":[{"type":"tool_call_response","id":"tc1","response":"Sunny"}]}]`,
 		},
 		{
 			name: "should combine prompt and messages",
-			opts: telemetry.FormatModelMessagesOptions{Prompt: "First message", Messages: []types.Message{r89carryUser("Second message")}},
+			opts: FormatModelMessagesOptions{Prompt: "First message", Messages: []types.Message{r89carryUser("Second message")}},
 			want: `[{"role":"user","parts":[{"type":"text","content":"First message"}]},{"role":"user","parts":[{"type":"text","content":"Second message"}]}]`,
 		},
 		{
 			name: "should return empty array when both prompt and messages are undefined",
-			opts: telemetry.FormatModelMessagesOptions{},
+			opts: FormatModelMessagesOptions{},
 			want: `[]`,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r89carryExpect(t, telemetry.FormatModelMessages(tc.opts), tc.want)
+			r89carryExpect(t, FormatModelMessages(tc.opts), tc.want)
 		})
 	}
+}
+
+// TS open-telemetry.ts builds the step and root gen_ai.output.messages with
+// formatOutputMessages, which writes `id: tc.toolCallId` and `mime_type:
+// file.mediaType` as given: an empty tool call id or media type stays "",
+// not null.
+func TestR89carryOutputMessagesKeepEmptyIDs(t *testing.T) {
+	content := []types.ContentPart{
+		types.ToolCallContent{ToolCallID: "", ToolName: "t", Arguments: map[string]interface{}{}},
+		types.ToolResultContent{ToolCallID: "", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "r"}},
+		types.GeneratedFileContent{FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AA=="}},
+	}
+	want := `[{"role":"assistant","parts":[{"type":"tool_call","id":"","name":"t","arguments":{}},{"type":"tool_call_response","id":"","response":"r"},{"type":"blob","modality":"image","mime_type":"","content":"AA=="}],"finish_reason":"tool_call"}]`
+	r89carryExpect(t, formatOutputMessagesFromContent(content, "tool-calls"), want)
+	r89carryExpect(t, formatOutputMessagesFromFinish(TelemetryFinishEvent{
+		ToolCalls:    []types.ToolCall{{ID: "", ToolName: "t", Arguments: map[string]interface{}{}}},
+		ToolResults:  []types.ToolResult{{ToolCallID: "", Result: "r"}},
+		Files:        []types.GeneratedFileContent{{FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AA=="}}},
+		FinishReason: "tool-calls",
+	}), want)
 }
