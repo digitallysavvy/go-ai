@@ -78,3 +78,28 @@ func TestR89toolsCerebrasErrorKeepsResponse(t *testing.T) {
 		t.Fatalf("headers = %v", perr.ResponseHeaders)
 	}
 }
+
+// provg CR (cr-r89-provg-to-tools): DoStream errors keep headers and body
+// too (TS createJsonErrorResponseHandler for streaming calls).
+func TestR89toolsCerebrasStreamErrorKeepsResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"m","type":"t","code":"c","param":"p"}`)
+	}))
+	defer srv.Close()
+	_, err := r88toolsModel(t, srv, nil).DoStream(context.Background(), r88toolsOpts(nil))
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) || perr.Message != "m" || perr.ResponseBody == "" {
+		t.Fatalf("err = %#v", err)
+	}
+	found := false
+	for k, v := range perr.ResponseHeaders {
+		if strings.EqualFold(k, "retry-after") && v == "7" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("headers = %v", perr.ResponseHeaders)
+	}
+}
