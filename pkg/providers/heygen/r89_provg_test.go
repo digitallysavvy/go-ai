@@ -142,3 +142,18 @@ func TestR89provgHeyGenErrorDataAndHeaders(t *testing.T) {
 		t.Fatalf("headers = %#v", got)
 	}
 }
+
+// provc CR (TS generate-video.ts useStartStatus): TS HeyGenVideoModel has no
+// doGenerate, so the model marks itself start/status only for ai.GenerateVideo.
+func TestR89provgHeyGenVideoStartStatusPollDefaults(t *testing.T) {
+	var model interface {
+		VideoStartStatusPollDefaults(map[string]interface{}) (int, int)
+	} = NewVideoModel(New(Config{APIKey: "k"}), "heygen-video-1")
+	if i, to := model.VideoStartStatusPollDefaults(map[string]interface{}{}); i != 0 || to != 0 {
+		t.Fatalf("defaults = %d, %d; want 0, 0", i, to)
+	}
+	model = NewVideoModel(New(Config{APIKey: "k", PollIntervalMillis: 250, PollTimeoutMillis: 90000}), "heygen-video-1")
+	if i, to := model.VideoStartStatusPollDefaults(nil); i != 250 || to != 90000 {
+		t.Fatalf("defaults = %d, %d; want 250, 90000", i, to)
+	}
+}

@@ -564,6 +564,21 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// HeyGenVideoModel has no doGenerate), so ai.GenerateVideo drives it through the
+// core start/status flow (TS generate-video.ts useStartStatus). It returns the
+// Config.PollIntervalMillis / PollTimeoutMillis that DoGenerate polls with
+// (0 when unset: the core 5000 / 600000 defaults).
+func (m *VideoModel) VideoStartStatusPollDefaults(map[string]interface{}) (intervalMs, timeoutMs int) {
+	if v := m.prov.config.PollIntervalMillis; v > 0 {
+		intervalMs = v
+	}
+	if v := m.prov.config.PollTimeoutMillis; v > 0 {
+		timeoutMs = v
+	}
+	return intervalMs, timeoutMs
+}
+
 // toAsset converts a standard video file input into a HeyGen asset.
 func toAsset(file provider.VideoModelV3File, kind string) (VideoAsset, error) {
 	if file.MediaType != "" && !strings.HasPrefix(file.MediaType, kind+"/") {
