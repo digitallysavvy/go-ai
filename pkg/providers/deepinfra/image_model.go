@@ -188,16 +188,22 @@ func splitImageSize(size string) (width, height string, ok bool) {
 }
 
 type deepInfraGenerateError struct {
-	Detail struct {
-		Error string `json:"error"`
+	Detail *struct {
+		Error *string `json:"error"`
 	} `json:"detail"`
 }
 
+// parseGenerateError is TS createJsonErrorResponseHandler with
+// deepInfraErrorSchema ({detail: {error: string}}): a blank body or one that
+// does not match the schema gives the status text; a matching body gives
+// detail.error, even "".
 func (m *ImageModel) parseGenerateError(resp *internalhttp.Response) error {
 	var errResp deepInfraGenerateError
-	message := string(resp.Body)
-	if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail.Error != "" {
-		message = errResp.Detail.Error
+	message := http.StatusText(resp.StatusCode)
+	if strings.TrimSpace(string(resp.Body)) != "" {
+		if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail != nil && errResp.Detail.Error != nil {
+			message = *errResp.Detail.Error
+		}
 	}
 	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
 }
@@ -259,17 +265,27 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	return result, nil
 }
 
-type deepInfraEditError struct {
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
+// parseEditError is TS createJsonErrorResponseHandler with
+// deepInfraEditErrorSchema ({error?: {message: string}}) and
+// `error.error?.message ?? 'Unknown error'`: a blank body or one that does
+// not match the schema (error null or not an object, message not a string)
+// gives the status text; a matching body without error gives "Unknown
+// error".
 func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
-	var errResp deepInfraEditError
-	message := "Unknown error"
-	if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Error != nil && errResp.Error.Message != "" {
-		message = errResp.Error.Message
+	message := http.StatusText(resp.StatusCode)
+	if strings.TrimSpace(string(resp.Body)) != "" {
+		var fields map[string]json.RawMessage
+		if err := securejson.Unmarshal(resp.Body, &fields); err == nil && fields != nil {
+			raw, present := fields["error"]
+			var errObj map[string]json.RawMessage
+			var text *string
+			switch {
+			case !present:
+				message = "Unknown error"
+			case json.Unmarshal(raw, &errObj) == nil && errObj != nil && json.Unmarshal(errObj["message"], &text) == nil && text != nil:
+				message = *text
+			}
+		}
 	}
 	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
 }
