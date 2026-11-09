@@ -1,6 +1,7 @@
 package quiverai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -98,8 +99,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaQuiverSVG),
 		Method:           http.MethodPost,
 		Path:             operationPath(operation),
-		Body:             body,
-		Headers:          opts.Headers,
+		// TS postJsonToApi JSON.stringify(body): the keys in the order of the
+		// TS body literal of each operation.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, quiverBodyOrder(operation))),
+		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -184,6 +187,29 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		},
 	}
 	return result, nil
+}
+
+// quiverBodyOrder is the key order of the TS request body literals
+// (quiverai-image-model.ts buildRequestBody, buildEditRequestBody and
+// buildAnimationRequestBody, with sharedOptions spread in place).
+func quiverBodyOrder(operation string) map[string][]string {
+	shared := []string{"temperature", "top_p", "presence_penalty", "max_output_tokens", "reasoning_effort", "attributes", "stream"}
+	orders := map[string][]string{
+		"attributes":         {"viewBox"},
+		"attributes.viewBox": {"minX", "minY", "width", "height"},
+		"settings":           {"max_output_tokens", "orchestrator_max_output_tokens", "shallow_max_output_tokens", "temperature"},
+	}
+	switch operation {
+	case OperationVectorize:
+		orders[""] = append(append([]string{"model", "image"}, shared...), "auto_crop", "target_size")
+	case OperationEdit:
+		orders[""] = []string{"model", "prompt", "svg_source", "reference_images", "max_review_steps", "reasoning_effort", "settings", "stream"}
+	case OperationAnimate:
+		orders[""] = []string{"model", "svg_source", "prompt", "temperature", "max_output_tokens", "reasoning_effort", "stream"}
+	default:
+		orders[""] = append(append([]string{"model", "n", "prompt"}, shared...), "instructions", "references")
+	}
+	return orders
 }
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, operation string, quiverOpts *QuiverAIImageModelOptions) (map[string]interface{}, error) {
@@ -467,7 +493,7 @@ func (m *ImageModel) buildAnimateBody(opts *provider.ImageGenerateOptions, quive
 // mirroring the TS SDK's rejectEditOnlyOptions.
 func rejectEditOnlyOptions(operation string, opts *QuiverAIImageModelOptions) error {
 	var unsupported []string
-	if len(opts.ReferenceImages) > 0 {
+	if opts.ReferenceImages != nil { // TS `value == null`: an empty list is given
 		unsupported = append(unsupported, "referenceImages")
 	}
 	if opts.MaxReviewSteps != nil {
