@@ -201,10 +201,10 @@ func TestR89carryPreparedToolsKeepBuiltins(t *testing.T) {
 type r89carryFailingOutput struct{}
 
 func (r89carryFailingOutput) ResponseFormat(context.Context) (*provider.ResponseFormat, error) {
-	return nil, r89carryErrFormat
+	return nil, errR89carryFormat
 }
 
-var r89carryErrFormat = errors.New("format boom")
+var errR89carryFormat = errors.New("format boom")
 
 // TS awaits `output.responseFormat` and lets its error through unchanged.
 func TestR89carryResponseFormatErrorUnwrapped(t *testing.T) {
@@ -218,7 +218,7 @@ func TestR89carryResponseFormatErrorUnwrapped(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = a.Stream(context.Background(), agent.AgentStreamOptions{AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: s}})
-	if err != r89carryErrFormat {
+	if err != errR89carryFormat {
 		t.Fatalf("err = %v", err)
 	}
 }
