@@ -809,6 +809,13 @@ consumeLoop:
 		}
 		r.outputErr = parseErr
 		r.mu.Unlock()
+	} else if r.err != nil {
+		// TS HarnessStreamTextResult fail / abort reject every delayed
+		// promise with the error, so `.output` (finalStep.then) rejects
+		// with it too.
+		r.mu.Lock()
+		r.outputErr = r.err
+		r.mu.Unlock()
 	}
 
 	r.mu.Lock()

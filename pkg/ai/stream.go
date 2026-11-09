@@ -1910,6 +1910,17 @@ func (r *StreamTextResult) setNoOutputErr(ctx context.Context, err error) {
 	r.outputErr = &NoOutputGeneratedError{Message: "No output generated. Check the stream for errors."}
 }
 
+// setStreamFailureOutputErr records OutputErr for a run whose stream errored
+// or was aborted: TS rejects result.output with that error (consumeStream) or
+// the abort reason (cancelOnAbort). WorkflowAgent (EndOnError) keeps its own
+// output handling. Call it with r.mu held.
+func (r *StreamTextResult) setStreamFailureOutputErr(err error) {
+	if r.outputErr != nil || r.endOnError || err == nil {
+		return
+	}
+	r.outputErr = err
+}
+
 // notifyStreamDone runs InternalOptions.onStreamDone once, on the processing
 // goroutine, before the chunk buffer and processingDone close.
 func (r *StreamTextResult) notifyStreamDone() {
@@ -4560,10 +4571,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 		r.mu.Lock()
-		var noFinish *NoOutputGeneratedError
-		if len(allSteps) == 0 || errors.As(r.err, &noFinish) {
-			r.setNoOutputErr(ctx, r.err)
-		}
+		// Every failure that reaches here errored or aborted TS's stream (an
+		// incomplete model stream and a transform that stopped without a step
+		// are this error already): TS consumeStream and cancelOnAbort reject
+		// the result promises, result.output among them, with the stream's
+		// error or the abort reason, whether or not a step was recorded.
+		r.setStreamFailureOutputErr(r.err)
 		r.status = StreamStatusDone
 		r.mu.Unlock()
 		return
@@ -5195,8 +5208,9 @@ func (r *StreamTextResult) Output() any {
 }
 
 // OutputErr returns any error that occurred during final output parsing.
-// Only relevant after streaming completes when an Output option was provided.
-// Safe to call concurrently with streaming.
+// When the stream failed or was aborted it is that error (TS rejects
+// `.output` with it), or a NoOutputGeneratedError when the run failed
+// before any step without one. Safe to call concurrently with streaming.
 func (r *StreamTextResult) OutputErr() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
