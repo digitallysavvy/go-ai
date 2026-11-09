@@ -75,3 +75,17 @@ func TestR89provbAPIErrorsKeepResponse(t *testing.T) {
 	_, err = NewVideoModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "grok-imagine-video").DoStart(ctx, &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "p"}})
 	check("video start", err, 429, "too many")
 }
+
+// provc CR (TS generate-video.ts useStartStatus: XaiVideoModel has no
+// doGenerate): the model reports its v0.5.2 poll options to the core
+// start/status flow.
+func TestR89provbVideoStartStatusPollDefaults(t *testing.T) {
+	m := NewVideoModel(New(Config{APIKey: "k"}), "grok-imagine-video")
+	if i, to := m.VideoStartStatusPollDefaults(nil); i != 0 || to != 0 {
+		t.Errorf("empty options = %d, %d; want 0, 0", i, to)
+	}
+	i, to := m.VideoStartStatusPollDefaults(map[string]interface{}{"xai": map[string]interface{}{"pollIntervalMs": 250, "pollTimeoutMs": 90000}})
+	if i != 250 || to != 90000 {
+		t.Errorf("poll options = %d, %d; want 250, 90000", i, to)
+	}
+}

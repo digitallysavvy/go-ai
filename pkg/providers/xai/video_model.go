@@ -477,6 +477,25 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}, nil
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// XaiVideoModel has no doGenerate), so ai.GenerateVideo drives it through the
+// core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract, S6).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, _, err := extractVideoProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs > 0 {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil && *provOpts.PollTimeoutMs > 0 {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
+}
+
 // getPollOptions extracts polling options from XAIVideoProviderOptions,
 // applying the same 5s/600s defaults DoGenerate previously hardcoded.
 func (m *VideoModel) getPollOptions(provOpts *XAIVideoProviderOptions) polling.PollOptions {

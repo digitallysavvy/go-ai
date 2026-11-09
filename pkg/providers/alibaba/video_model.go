@@ -698,6 +698,25 @@ func (m *VideoModel) buildCompletedResult(statusResp *alibabaVideoStatusResponse
 	}, nil
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// AlibabaVideoModel has no doGenerate), so ai.GenerateVideo drives it through
+// the core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract, S6).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	alibabaOpts := parseAlibabaVideoModelOptions(providerOptions)
+	if alibabaOpts == nil {
+		return 0, 0
+	}
+	if alibabaOpts.PollIntervalMs != nil && *alibabaOpts.PollIntervalMs > 0 {
+		intervalMs = *alibabaOpts.PollIntervalMs
+	}
+	if alibabaOpts.PollTimeoutMs != nil && *alibabaOpts.PollTimeoutMs > 0 {
+		timeoutMs = *alibabaOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
+}
+
 // DoGenerate generates a video synchronously by starting the operation and
 // polling DoStatus until it completes, honoring providerOptions.alibaba's
 // pollIntervalMs/pollTimeoutMs. Go's VideoModelV3 always requires DoGenerate
