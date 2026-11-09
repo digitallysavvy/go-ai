@@ -114,9 +114,15 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	// Some DeepInfra models support size while others support aspect ratio;
 	// allow passing either and leave validation to the server.
-	if width, height, ok := splitImageSize(opts.Size); ok {
-		body["width"] = width
-		body["height"] = height
+	// TS `...(splitSize && {width: splitSize[0], height: splitSize[1]})`
+	// with size.split('x'): a size without "x" sends only width, and parts
+	// after the second are ignored.
+	if opts.Size != "" {
+		parts := strings.Split(opts.Size, "x")
+		body["width"] = parts[0]
+		if len(parts) > 1 {
+			body["height"] = parts[1]
+		}
 	}
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
@@ -176,17 +182,6 @@ var dataURLPrefix = regexp.MustCompile(`^data:image/\w+;base64,`)
 
 func stripDataURLPrefix(image string) string {
 	return dataURLPrefix.ReplaceAllString(image, "")
-}
-
-func splitImageSize(size string) (width, height string, ok bool) {
-	if size == "" {
-		return "", "", false
-	}
-	parts := strings.SplitN(size, "x", 2)
-	if len(parts) != 2 {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
 }
 
 type deepInfraGenerateError struct {

@@ -2,6 +2,7 @@ package deepinfra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -168,6 +169,34 @@ func TestR89toolsDeepInfraImageErrorKeepsResponse(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("headers = %v", perr.ResponseHeaders)
+		}
+	}
+}
+
+// TS deepinfra-image-model.ts: size.split('x') gives width = [0] and
+// height = [1] (absent without an "x", later parts ignored).
+func TestR89toolsDeepInfraSizeSplit(t *testing.T) {
+	for _, tc := range []struct {
+		size          string
+		width, height interface{}
+	}{
+		{"1024x768", "1024", "768"},
+		{"1024x768x2", "1024", "768"},
+		{"1024", "1024", nil},
+	} {
+		var body map[string]interface{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_, _ = w.Write([]byte(`{"images":["AQID"]}`))
+		}))
+		model, _ := New(Config{APIKey: "k", BaseURL: server.URL + "/inference"}).ImageModel("stabilityai/sd3.5")
+		_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "a cat", Size: tc.size})
+		server.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body["width"] != tc.width || body["height"] != tc.height {
+			t.Fatalf("size %q: width %v height %v", tc.size, body["width"], body["height"])
 		}
 	}
 }
