@@ -28,7 +28,7 @@ func TestR90integStatusCodeDownloadErrorHasNoData(t *testing.T) {
 // Expected values recorded with Node 24 (undici): new Response(formData).text()
 // for fd.append('fi"e\nld', new Blob([..], {type: 'Application/PDF'}),
 // 'a"b\\c\nd\re.pdf'), fd.append('f2', new Blob([..], {type: 'tëxt/plain'}),
-// ''), fd.append('f3', new Blob([..], {type: ''}), 'blob') and
+// an empty name), fd.append('f3', new Blob([..]), 'blob') and
 // fd.append('s"x', 'v\nw').
 func TestR90integFormDataPartHeaders(t *testing.T) {
 	for _, tc := range []struct {
