@@ -390,6 +390,10 @@ type InvalidArgumentError struct {
 	Field   string
 	Message string
 	Cause   error
+	// Value is the TS error's `value`: the argument value that was rejected,
+	// when the check reports one (for example ai.CosineSimilarity's
+	// {vector1Length, vector2Length}). It is not part of Error().
+	Value interface{}
 
 	// bare marks the @ai-sdk/provider class (NewArgumentError): Error() is
 	// the message alone.

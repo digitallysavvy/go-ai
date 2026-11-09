@@ -721,6 +721,7 @@ func CosineSimilarity(a, b []float64) (float64, error) {
 			// TS cosineSimilarity: the lengths are the error's value, not
 			// part of its message.
 			Message: "Vectors must have the same length",
+			Value:   map[string]interface{}{"vector1Length": len(a), "vector2Length": len(b)},
 		}
 	}
 
