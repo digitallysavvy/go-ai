@@ -41,7 +41,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if extras, ok := ctx.Value(cerebrasOptionsContextKey{}).(cerebrasRequestExtras); ok {
 		applyCerebrasRequestExtras(result.RawRequest, extras)
 	}
-	if cerebrasJSONMode(opts) && result.Text != "" && result.FinishReason == types.FinishReasonToolCalls {
+	// TS isStructuredOutputWithToolCallsFinishReason compares the raw
+	// reason: a legacy `function_call` finish keeps its tool calls.
+	if cerebrasJSONMode(opts) && result.Text != "" && result.RawFinishReason == "tool_calls" {
 		result.ToolCalls = nil
 		result.FinishReason = types.FinishReasonStop
 	}

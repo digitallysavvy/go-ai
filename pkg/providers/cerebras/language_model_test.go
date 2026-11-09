@@ -44,9 +44,10 @@ func TestCerebrasErrorShapeIsParsed(t *testing.T) {
 func TestCerebrasStructuredJSONSuppressesIncidentalToolCalls(t *testing.T) {
 	base := &mockCerebrasBaseModel{
 		result: &types.GenerateResult{
-			Text:         `{"ok":true}`,
-			FinishReason: types.FinishReasonToolCalls,
-			ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "emit_json"}},
+			Text:            `{"ok":true}`,
+			FinishReason:    types.FinishReasonToolCalls,
+			RawFinishReason: "tool_calls",
+			ToolCalls:       []types.ToolCall{{ID: "call-1", ToolName: "emit_json"}},
 		},
 	}
 	model := &LanguageModel{base: base}
