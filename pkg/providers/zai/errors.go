@@ -7,6 +7,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // zaiErrorDetails is TS zaiErrorDetailsSchema: {code?: number | string |
@@ -44,15 +45,21 @@ func parseZaiProviderError(err error) error {
 		return nil
 	}
 
+	// TS APICallError.data: the matching member's output (undeclared keys
+	// stripped).
 	code, message, ok := zaiErrorDetails(payload)
+	data := map[string]interface{}(providerutils.PickSchemaKeys(payload, "code", "message"))
 	if !ok {
 		obj, _ := payload.(map[string]interface{})
 		if code, message, ok = zaiErrorDetails(obj["error"]); !ok {
 			return nil
 		}
+		data = map[string]interface{}{"error": providerutils.PickSchemaKeys(obj["error"], "code", "message")}
 	}
 
-	return providererrors.NewProviderErrorFromResponse("zai", 0, zaiErrorCode(code), message, err)
+	pe := providererrors.NewProviderErrorFromResponse("zai", 0, zaiErrorCode(code), message, err)
+	pe.Data = data
+	return pe
 }
 // zaiErrorCode normalizes an error code, which may be a JSON string or
 // number, to a string.

@@ -390,7 +390,9 @@ func (m *LanguageModel) handleError(err error) error {
 	}
 	// The status code, response headers, body and data come from the HTTP
 	// cause (TS APICallError), so retries honor retry-after headers.
-	return providererrors.NewProviderErrorFromResponse("fireworks", 0, "", message, err)
+	pe := providererrors.NewProviderErrorFromResponse("fireworks", 0, "", message, err)
+	pe.Data = nil // TS: no data for a body that does not match the error schema
+	return pe
 }
 
 // convertFireworksUsage converts Fireworks usage to detailed Usage struct

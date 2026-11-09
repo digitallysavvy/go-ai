@@ -397,6 +397,7 @@ func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.He
 	var parsed azureSpeechErrorBody
 	parseOK := securejson.Unmarshal(body, &parsed) == nil
 	var message string
+	var data interface{}
 	if speechSynthesis {
 		switch {
 		case parseOK && parsed.Error != nil && parsed.Error.Message != nil:
@@ -408,10 +409,13 @@ func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.He
 		}
 	} else {
 		switch {
+		// TS APICallError.data: the matching union member's output.
 		case parseOK && parsed.Error != nil && parsed.Error.Message != nil:
 			message = *parsed.Error.Message
+			data = map[string]interface{}{"error": map[string]interface{}{"message": message}}
 		case parseOK && parsed.Message != nil:
 			message = *parsed.Message
+			data = map[string]interface{}{"message": message}
 		default:
 			message = stdhttp.StatusText(statusCode)
 		}
@@ -422,5 +426,6 @@ func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.He
 		Message:         message,
 		ResponseHeaders: providerutils.ExtractHeaders(headers),
 		ResponseBody:    string(body),
+		Data:            data,
 	}
 }

@@ -44,6 +44,7 @@ func parseGmicloudProviderError(err error) error {
 
 	message := http.StatusText(statusErr.StatusCode)
 	code := ""
+	var data interface{}
 	var payload gmicloudErrorPayload
 	if unmarshalErr := securejson.Unmarshal(statusErr.Body, &payload); unmarshalErr == nil && payload.Error != nil &&
 		payload.Error.Message != nil && gmicloudCodeMatchesSchema(payload.Error.Code) {
@@ -53,13 +54,19 @@ func parseGmicloudProviderError(err error) error {
 				message = inner
 			}
 		}
+		var raw map[string]interface{}
+		_ = securejson.Unmarshal(statusErr.Body, &raw)
+		// TS APICallError.data: the gmicloudErrorDataSchema output.
+		data = map[string]interface{}{"error": providerutils.PickSchemaKeys(raw["error"], "message", "type", "param", "code", "details")}
 		code = gmicloudErrorCode(payload.Error.Code)
 		if code == "" && payload.Error.Type != nil {
 			code = *payload.Error.Type
 		}
 	}
 
-	return providererrors.NewProviderErrorFromResponse("gmicloud", 0, code, message, err)
+	pe := providererrors.NewProviderErrorFromResponse("gmicloud", 0, code, message, err)
+	pe.Data = data
+	return pe
 }
 
 // gmicloudCodeMatchesSchema reports whether raw is absent, null, a string or

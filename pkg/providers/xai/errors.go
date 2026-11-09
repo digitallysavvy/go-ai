@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // newXAIProviderError is TS xaiFailedResponseHandler
@@ -19,7 +20,7 @@ import (
 // parsed data (TS APICallError), so retries honor retry-after headers.
 func newXAIProviderError(provider string, statusCode int, headers http.Header, body []byte) *providererrors.ProviderError {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
-	message, matched := xaiErrorMessage(body)
+	message, data, matched := xaiErrorMessageData(body)
 	if !matched {
 		message = http.StatusText(statusCode)
 	}
@@ -51,6 +52,9 @@ func newXAIProviderError(provider string, statusCode int, headers http.Header, b
 	pe := providererrors.NewProviderErrorFromResponse(provider, 0, errorCode, message, cause)
 	// TS APICallError.responseHeaders keys are lower case.
 	_, pe.ResponseHeaders, _ = cause.HTTPStatusDetails()
+	// TS APICallError.data: the matching xaiErrorDataSchema member's output,
+	// else undefined.
+	pe.Data = data
 	return pe
 }
 
@@ -218,7 +222,16 @@ func (e *XAIStreamFailed) Error() string {
 //
 // matched is false when none of these shapes match.
 func xaiErrorMessage(body []byte) (message string, matched bool) {
+	message, _, matched = xaiErrorMessageData(body)
+	return message, matched
+}
+
+// xaiErrorMessageData is xaiErrorMessage plus the zod output of the matching
+// union member (undeclared keys stripped).
+func xaiErrorMessageData(body []byte) (message string, data interface{}, matched bool) {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
+	var raw map[string]interface{}
+	_ = securejson.Unmarshal(body, &raw)
 	// 1. Structured API error shape (object under "error").
 	// Each member's strings are required (z.string()), so an empty string
 	// matches and is the message.
@@ -231,7 +244,7 @@ func xaiErrorMessage(body []byte) (message string, matched bool) {
 		} `json:"error"`
 	}
 	if err := securejson.Unmarshal(body, &apiErr); err == nil && apiErr.Error != nil && apiErr.Error.Message != nil && xaiStringOrNumber(apiErr.Error.Code) {
-		return *apiErr.Error.Message, true
+		return *apiErr.Error.Message, map[string]interface{}{"error": providerutils.PickSchemaKeys(raw["error"], "message", "type", "param", "code")}, true
 	}
 
 	// 2. Responses API shape: {"code": "...", "error": "..."}.
@@ -241,7 +254,7 @@ func xaiErrorMessage(body []byte) (message string, matched bool) {
 	}
 	if err := securejson.Unmarshal(body, &responsesErr); err == nil &&
 		responsesErr.Code != nil && responsesErr.Error != nil {
-		return *responsesErr.Code + ": " + *responsesErr.Error, true
+		return *responsesErr.Code + ": " + *responsesErr.Error, map[string]interface{}{"code": *responsesErr.Code, "error": *responsesErr.Error}, true
 	}
 
 	// 3. Plain speech error shape: {"error": "some string"}.
@@ -249,10 +262,10 @@ func xaiErrorMessage(body []byte) (message string, matched bool) {
 		Error *string `json:"error"`
 	}
 	if err := securejson.Unmarshal(body, &speechErr); err == nil && speechErr.Error != nil {
-		return *speechErr.Error, true
+		return *speechErr.Error, map[string]interface{}{"error": *speechErr.Error}, true
 	}
 
-	return "", false
+	return "", nil, false
 }
 
 // xaiStringOrNumber reports whether a decoded value is absent, null, a

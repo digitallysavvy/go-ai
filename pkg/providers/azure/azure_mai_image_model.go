@@ -503,6 +503,7 @@ func azureMaiImageAPIError(status int, headers map[string]string, body []byte) e
 	if message == "" {
 		message = "Azure MAI image request failed with status " + strconv.Itoa(status) + "."
 	}
+	var data interface{}
 	// TS maiErrorSchema: { error: { code?: string | number | null, message:
 	// string } }; a body that fails it gets the status text.
 	var parsed struct {
@@ -514,6 +515,10 @@ func azureMaiImageAPIError(status int, headers map[string]string, body []byte) e
 	if len(body) > 0 && securejson.Unmarshal(body, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != nil &&
 		azureMaiErrorCodeValid(parsed.Error.Code) {
 		message = *parsed.Error.Message
+		// TS APICallError.data: the maiErrorSchema output.
+		var raw map[string]interface{}
+		_ = securejson.Unmarshal(body, &raw)
+		data = map[string]interface{}{"error": providerutils.PickSchemaKeys(raw["error"], "code", "message")}
 	}
 	return &providererrors.ProviderError{
 		Provider:        "azure.image",
@@ -521,6 +526,7 @@ func azureMaiImageAPIError(status int, headers map[string]string, body []byte) e
 		Message:         message,
 		ResponseHeaders: headers,
 		ResponseBody:    string(body),
+		Data:            data,
 	}
 }
 

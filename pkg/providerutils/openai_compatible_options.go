@@ -375,5 +375,40 @@ func OpenAICompatibleAPIError(provider string, err error) (*providererrors.Provi
 	}
 	pe := providererrors.NewProviderErrorFromResponse(provider, 0, "", message, err)
 	pe.ResponseHeaders = headers
+	// TS APICallError.data: the schema output for a matching body, else
+	// undefined.
+	pe.Data = OpenAICompatibleErrorData([]byte(textdecode.UTF8(body)))
 	return pe, true
+}
+
+// OpenAICompatibleErrorData is the zod output of openaiErrorDataSchema for a
+// body that matches it ({error: {message, type, param, code}} with only the
+// present keys; undeclared keys stripped), else nil (TS
+// createJsonErrorResponseHandler leaves data undefined).
+func OpenAICompatibleErrorData(body []byte) interface{} {
+	if _, ok := OpenAICompatibleErrorMessage(body); !ok {
+		return nil
+	}
+	var parsed map[string]interface{}
+	if securejson.Unmarshal(body, &parsed) != nil {
+		return nil
+	}
+	return map[string]interface{}{"error": PickSchemaKeys(parsed["error"], "message", "type", "param", "code")}
+}
+
+// PickSchemaKeys is the zod output of a (non-strict) object schema for a
+// decoded JSON object: only the declared keys that are present, null values
+// included. It returns nil when v is not an object.
+func PickSchemaKeys(v interface{}, keys ...string) map[string]interface{} {
+	obj, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := map[string]interface{}{}
+	for _, k := range keys {
+		if val, present := obj[k]; present {
+			out[k] = val
+		}
+	}
+	return out
 }

@@ -620,7 +620,9 @@ func (m *LanguageModel) handleError(err error) error {
 	if parsed := parseMoonshotProviderError(err); parsed != err {
 		return parsed
 	}
-	return providererrors.NewProviderError("moonshot", 0, "", err.Error(), err)
+	pe := providererrors.NewProviderError("moonshot", 0, "", err.Error(), err)
+	pe.Data = nil // TS: no data for a body that does not match the error schema
+	return pe
 }
 
 // moonshotResponse represents the response from Moonshot chat API

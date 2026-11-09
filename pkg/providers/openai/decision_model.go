@@ -332,7 +332,10 @@ func (m *DecisionModel) handleError(err error) error {
 	}
 	// The status code, response headers, body and data come from the HTTP
 	// cause (TS APICallError), so retries honor retry-after headers.
-	return providererrors.NewProviderErrorFromResponse(m.Provider(), 0, errorCode, message, err)
+	pe := providererrors.NewProviderErrorFromResponse(m.Provider(), 0, errorCode, message, err)
+	// TS APICallError.data: the openaiErrorDataSchema output, else undefined.
+	pe.Data = providerutils.OpenAICompatibleErrorData([]byte(textdecode.UTF8(statusErr.Body)))
+	return pe
 }
 
 func floatToIntPtr(v *float64) *int {

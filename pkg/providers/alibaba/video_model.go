@@ -794,8 +794,7 @@ func (m *VideoModel) handleError(err error) error {
 		// "Cannot connect to API") propagate unchanged.
 		return err
 	}
-	message, code := alibabaNativeErrorMessage(httpErr.StatusCode, httpErr.Body)
-	return providererrors.NewProviderErrorFromResponse("alibaba", 0, code, message, err)
+	return alibabaNativeStatusError("alibaba", httpErr.StatusCode, httpErr.Body, err)
 }
 
 func flattenHTTPHeaders(headers map[string][]string) map[string]string {
