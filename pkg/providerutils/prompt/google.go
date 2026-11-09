@@ -563,7 +563,7 @@ func (f googleFile) resolveInlineMediaType() (string, error) {
 	if ok {
 		return detected, nil
 	}
-	return "", googleUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", f.mediaType))
+	return "", googleUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", f.mediaType))
 }
 
 // googleResolveFullMediaType ports TS resolveFullMediaType for a user file
@@ -578,9 +578,9 @@ func googleResolveFullMediaType(mediaType string, data []byte, inline bool) (str
 		if detected, ok := fileutil.DetectMediaTypeSignature(data, top); ok {
 			return detected, nil
 		}
-		return "", googleUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType))
+		return "", googleUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType))
 	}
-	return "", googleUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", mediaType))
+	return "", googleUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it is not passed as inline bytes", mediaType))
 }
 
 // googleUnsupported is the UnsupportedFunctionalityError TS throws.

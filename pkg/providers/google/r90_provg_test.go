@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,5 +145,14 @@ func TestR90provgUnaryTranscriptionNullTexts(t *testing.T) {
 	}
 	if res.ProviderUsage == nil || res.ProviderMetadata == nil || res.Warnings == nil {
 		t.Fatalf("usage = %v, metadata = %v, warnings = %v", res.ProviderUsage, res.ProviderMetadata, res.Warnings)
+	}
+}
+
+// TestR90provgInteractionsMediaTypeQuoting: TS resolveFullMediaType writes
+// `file of media type "${part.mediaType}" ...`, quoting the value as is.
+func TestR90provgInteractionsMediaTypeQuoting(t *testing.T) {
+	_, err := resolveInteractionMediaType(`image\x`, []byte{0}, "")
+	if err == nil || !strings.Contains(err.Error(), `file of media type "image\x" must specify subtype`) {
+		t.Fatalf("err = %v", err)
 	}
 }

@@ -415,7 +415,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 	status := operation.toStatus()
 	if status.Status == provider.BatchStatusPending {
-		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Google batch %q is not complete.", opts.BatchID), nil)
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Google batch \"%s\" is not complete.", opts.BatchID), nil)
 	}
 
 	if inlined := operation.inlinedResponses(); inlined != nil {
@@ -426,7 +426,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if !hasResponsesFile {
 		if status.Status == provider.BatchStatusCompleted {
 			return nil, providererrors.NewInvalidResponseDataError(operation,
-				fmt.Sprintf("Google batch %q completed without batch output.", opts.BatchID))
+				fmt.Sprintf("Google batch \"%s\" completed without batch output.", opts.BatchID))
 		}
 		return newGoogleBatchInlineResultsStream(b, nil), nil
 	}
@@ -496,20 +496,20 @@ func validateGoogleBatchRequests(requests []provider.BatchV4Request) error {
 			if req.Text == nil {
 				return &providererrors.UnsupportedFunctionalityError{
 					Functionality: fmt.Sprintf("batch request type: %s", req.Type),
-					Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type %q.", req.Type),
+					Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type \"%s\".", req.Type),
 				}
 			}
 		case provider.BatchRequestTypeImage:
 			if req.Image == nil {
 				return &providererrors.UnsupportedFunctionalityError{
 					Functionality: fmt.Sprintf("batch request type: %s", req.Type),
-					Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type %q.", req.Type),
+					Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type \"%s\".", req.Type),
 				}
 			}
 		default:
 			return &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("batch request type: %s", req.Type),
-				Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type %q.", req.Type),
+				Message:       fmt.Sprintf("The Google Batch API does not support batch requests with type \"%s\".", req.Type),
 			}
 		}
 	}
@@ -841,7 +841,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 				ID:     key,
 				Status: provider.BatchItemFailed,
 				Error: &provider.BatchError{
-					Message: fmt.Sprintf("Google returned a %q content block, but that content is not supported in AI SDK text batches.", part.ContentType()),
+					Message: fmt.Sprintf("Google returned a \"%s\" content block, but that content is not supported in AI SDK text batches.", part.ContentType()),
 					Code:    "unsupported_content",
 				},
 			}

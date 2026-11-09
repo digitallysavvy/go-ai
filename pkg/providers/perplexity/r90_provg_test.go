@@ -3,6 +3,7 @@ package perplexity
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -29,5 +30,14 @@ func TestR90provgEmbeddingProviderID(t *testing.T) {
 		if err != nil || restored.Provider() != "perplexity.embedding" {
 			t.Fatalf("restore %q: %v %v", key, restored, err)
 		}
+	}
+}
+
+// TestR90provgMediaTypeQuoting: TS resolveFullMediaType writes
+// `file of media type "${part.mediaType}" ...`, quoting the value as is.
+func TestR90provgMediaTypeQuoting(t *testing.T) {
+	_, err := resolvePerplexityImageMediaType(`image\x`, []byte{0}, "")
+	if err == nil || !strings.Contains(err.Error(), `file of media type "image\x" must specify subtype`) {
+		t.Fatalf("err = %v", err)
 	}
 }

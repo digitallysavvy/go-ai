@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -238,5 +239,22 @@ func TestR90provgVideoEmptyLists(t *testing.T) {
 	}
 	if _, ok := body["inputReferences"]; !ok {
 		t.Fatalf("inputReferences missing: %v", body)
+	}
+}
+
+// TestR90provgBatchModelMismatchQuoting: TS validateSingleModel writes
+// `Found "${modelId}" and "${request.modelId}".` (gateway-batch.ts), quoting
+// the ids as is.
+func TestR90provgBatchModelMismatchQuoting(t *testing.T) {
+	_, err := validateGatewayTextBatchRequests([]provider.BatchV4Request{
+		{Type: provider.BatchRequestTypeText, Text: &provider.TextBatchV4Request{ID: "1", ModelID: `a\b`}},
+		{Type: provider.BatchRequestTypeText, Text: &provider.TextBatchV4Request{ID: "2", ModelID: "c"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `Found "a\b" and "c".`) {
+		t.Fatalf("err = %v", err)
+	}
+	err = unsupportedGatewayBatchRequestType(`x\y`)
+	if !strings.Contains(err.Error(), `with type "x\y".`) {
+		t.Fatalf("err = %v", err)
 	}
 }

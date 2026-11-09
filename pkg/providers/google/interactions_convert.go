@@ -215,10 +215,10 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 					continue
 				}
 			}
-			msg := fmt.Sprintf("google.interactions: unsupported or invalid custom assistant content part %q; part dropped.", p.Kind)
+			msg := fmt.Sprintf("google.interactions: unsupported or invalid custom assistant content part \"%s\"; part dropped.", p.Kind)
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 		default:
-			msg := fmt.Sprintf("google.interactions: unsupported assistant content part type %q; part dropped.", part.ContentType())
+			msg := fmt.Sprintf("google.interactions: unsupported assistant content part type \"%s\"; part dropped.", part.ContentType())
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 		}
 	}
@@ -247,7 +247,7 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 		return map[string]interface{}{"type": "text", "text": firstNonEmpty(part.FileData.Text, part.Text)}, nil, nil
 	}
 	if kind == "" {
-		msg := fmt.Sprintf("google.interactions: unsupported file media type %q; part dropped.", mediaType)
+		msg := fmt.Sprintf("google.interactions: unsupported file media type \"%s\"; part dropped.", mediaType)
 		return nil, []types.Warning{{Type: "other", Message: msg, Details: msg}}, nil
 	}
 	var warnings []types.Warning
@@ -390,7 +390,7 @@ func convertToolResults(parts []types.ContentPart) ([]map[string]interface{}, []
 	for _, part := range parts {
 		tr, ok := part.(types.ToolResultContent)
 		if !ok {
-			msg := fmt.Sprintf("google.interactions: unsupported tool message part type %q; part dropped.", part.ContentType())
+			msg := fmt.Sprintf("google.interactions: unsupported tool message part type \"%s\"; part dropped.", part.ContentType())
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 			continue
 		}
@@ -479,7 +479,7 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 		case types.FileContentBlock:
 			// TS getTopLevelMediaType(mediaType) !== 'image'.
 			if top, _, _ := strings.Cut(b.MediaType, "/"); top != "image" {
-				msg := fmt.Sprintf("google.interactions: tool-result file with mediaType %q is not supported (Interactions %s accepts only text and image content); part dropped.", b.MediaType, "`function_result.result`")
+				msg := fmt.Sprintf("google.interactions: tool-result file with mediaType \"%s\" is not supported (Interactions %s accepts only text and image content); part dropped.", b.MediaType, "`function_result.result`")
 				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 				continue
 			}
@@ -500,7 +500,7 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 			}
 			out = append(out, ib)
 		default:
-			msg := fmt.Sprintf("google.interactions: tool-result content part type %q is not supported; part dropped.", block.ToolResultContentType())
+			msg := fmt.Sprintf("google.interactions: tool-result content part type \"%s\" is not supported; part dropped.", block.ToolResultContentType())
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 		}
 	}
@@ -1067,7 +1067,7 @@ func resolveInteractionMediaType(mediaType string, data []byte, dataString strin
 	if ok {
 		return detected, nil
 	}
-	functionality := fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType)
+	functionality := fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType)
 	return "", &providererrors.UnsupportedFunctionalityError{
 		Functionality: functionality,
 		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
