@@ -480,10 +480,7 @@ func writeOpenAIImageMarkup(ctx context.Context, writer *multipart.Writer, marku
 func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
 	// TS appends a Blob typed with the file's media type; FormData names a
 	// Blob "blob". Providers reject application/octet-stream image parts.
-	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", file.MediaType)
-	if err != nil {
-		return err
-	}
+	data, mediaType := file.Data, file.MediaType
 	if file.Type == "url" && file.URL != "" {
 		// file.URL is caller-supplied data (an image-edit input or mask
 		// URL), not the provider's own endpoint, so it must go through the
@@ -494,14 +491,21 @@ func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.W
 		// reach an internal address (e.g. a cloud metadata endpoint) with no
 		// SSRF check, no DNS pinning and no size limit; its response body
 		// would be forwarded to OpenAI as image data.
-		data, err := fileutil.Download(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
+		res, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
 			return fmt.Errorf("failed to download image %s: %w", file.URL, err)
 		}
-		_, err = part.Write(data)
+		// TS downloadBlob types the Blob with the response content type.
+		data = res.Data
+		if res.ContentType != "" {
+			mediaType = res.ContentType
+		}
+	}
+	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", mediaType)
+	if err != nil {
 		return err
 	}
-	_, err = part.Write(file.Data)
+	_, err = part.Write(data)
 	return err
 }
 

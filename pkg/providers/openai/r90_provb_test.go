@@ -278,3 +278,36 @@ func TestR90provbDiarizedEmptySpeaker(t *testing.T) {
 		t.Fatalf("metadata = %v", got)
 	}
 }
+
+// TestR90provbImageEditURLPartType: an image URL input is downloaded and the
+// part is typed with the response content type (TS downloadBlob), not left
+// as application/octet-stream.
+func TestR90provbImageEditURLPartType(t *testing.T) {
+	var mu sync.Mutex
+	types := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err == nil {
+			mu.Lock()
+			for name, files := range r.MultipartForm.File {
+				types[name] = files[0].Header.Get("Content-Type")
+			}
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"AQI="}]}`))
+	}))
+	defer srv.Close()
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "gpt-image-1")
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "edit",
+		Files:  []provider.ImageFile{{Type: "url", URL: "data:image/webp;base64,AQI="}},
+		Mask:   &provider.ImageFile{Type: "url", URL: "data:image/png;base64,AQI="},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if types["image"] != "image/webp" || types["mask"] != "image/png" {
+		t.Fatalf("part types = %v", types)
+	}
+}
