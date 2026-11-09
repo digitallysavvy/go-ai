@@ -31,6 +31,7 @@ func fakeJWT(t *testing.T, expUnixSeconds int64) string {
 func TestReadCodexSubscription_NoFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CODEX_HOME", "")
+	_ = os.Unsetenv("CODEX_HOME")
 	if _, ok := readCodexSubscription(context.Background()); ok {
 		t.Fatal("expected (_, false) when no auth.json exists")
 	}
@@ -41,6 +42,7 @@ func TestReadCodexSubscription_WrongAuthMode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
+	_ = os.Unsetenv("CODEX_HOME")
 	writeAuthFile(t, home, map[string]any{
 		"auth_mode": "apikey",
 		"tokens":    map[string]any{"access_token": fakeJWT(t, time.Now().Add(24*time.Hour).Unix()), "refresh_token": "r"},
@@ -56,6 +58,7 @@ func TestReadCodexSubscription_ValidNonExpiring(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
+	_ = os.Unsetenv("CODEX_HOME")
 	accessToken := fakeJWT(t, time.Now().Add(24*time.Hour).Unix())
 	path := writeAuthFile(t, home, map[string]any{
 		"auth_mode": "chatgpt",
@@ -118,6 +121,7 @@ func TestReadCodexSubscription_RefreshesExpiringToken(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
+	_ = os.Unsetenv("CODEX_HOME")
 
 	refreshedAccessToken := fakeJWT(t, time.Now().Add(24*time.Hour).Unix())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +249,7 @@ func TestReadCodexSubscription_StoreModeIsolation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
+	_ = os.Unsetenv("CODEX_HOME")
 	access := fakeJWT(t, time.Now().Add(24*time.Hour).Unix())
 	writeAuthFile(t, home, chatgptAuth(t, access))
 	useFakeKeyring(t, &fakeKeyring{store: map[string]string{}})
@@ -265,6 +270,7 @@ func TestReadCodexSubscription_ConfigTomlStoreMode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
+	_ = os.Unsetenv("CODEX_HOME")
 	access := fakeJWT(t, time.Now().Add(24*time.Hour).Unix())
 	writeAuthFile(t, home, chatgptAuth(t, access))
 	cfg := filepath.Join(home, ".codex", "config.toml")
@@ -333,6 +339,7 @@ func TestResolveAuthentication_RefreshFailureFailsStart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
+	_ = os.Unsetenv("CODEX_HOME")
 	for _, k := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"} {
 		t.Setenv(k, "")
 	}

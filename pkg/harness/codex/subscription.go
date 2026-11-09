@@ -111,8 +111,10 @@ func resolveCodexSubscription(ctx context.Context, storeMode string) (codexSubsc
 	if err != nil || home == "" {
 		return codexSubscription{}, false, nil
 	}
-	codexHome := os.Getenv("CODEX_HOME")
-	if codexHome == "" {
+	// TS `env.CODEX_HOME ?? join(homeDirectory, '.codex')`: a set but empty
+	// CODEX_HOME resolves to the working directory.
+	codexHome, set := os.LookupEnv("CODEX_HOME")
+	if !set {
 		codexHome = filepath.Join(home, ".codex")
 	}
 	if abs, err := filepath.Abs(codexHome); err == nil {
@@ -138,9 +140,11 @@ func resolveCodexSubscription(ctx context.Context, storeMode string) (codexSubsc
 	if !ok {
 		return codexSubscription{}, false, nil
 	}
-	accessToken, _ := tokens["access_token"].(string)
-	refreshToken, _ := tokens["refresh_token"].(string)
-	if accessToken == "" || refreshToken == "" {
+	// TS toCodexCredential requires string tokens (an empty refresh token is
+	// kept; an empty access token has no JWT expiry and is rejected below).
+	accessToken, accessOK := tokens["access_token"].(string)
+	refreshToken, refreshOK := tokens["refresh_token"].(string)
+	if !accessOK || !refreshOK {
 		return codexSubscription{}, false, nil
 	}
 	expiresAt, hasExpiry := subscription.GetJWTExpiresAt(accessToken)
