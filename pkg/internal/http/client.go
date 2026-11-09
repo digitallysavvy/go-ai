@@ -420,7 +420,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	// Perform request
-	httpResp, err := c.client.Do(httpReq)
+	httpResp, err := withFetchRedirects(c.client).Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
 	}
@@ -560,6 +560,47 @@ func (c *Client) streamClient() *http.Client {
 	return c.client
 }
 
+// withFetchRedirects returns a shallow copy of client whose redirect policy
+// drops Authorization once the redirect chain crosses an origin (scheme,
+// host and port), as fetch does (HTTP-redirect fetch: "if request's current
+// URL's origin is not same origin with locationURL's origin, remove
+// Authorization"). net/http alone compares only the host, so a redirect to
+// another port or scheme of the same host kept the credential. The client's
+// own CheckRedirect still runs afterwards (net/http's 10-hop limit when it
+// has none). The caller's client is not modified.
+func withFetchRedirects(client *http.Client) *http.Client {
+	cp := *client
+	next := client.CheckRedirect
+	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if redirectChainCrossesOrigin(req, via) {
+			req.Header.Del("Authorization")
+		}
+		if next != nil {
+			return next(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &cp
+}
+
+// redirectChainCrossesOrigin reports whether any hop of via followed by req
+// changed the origin. Fetch removes Authorization from the request on the
+// first cross-origin hop and never adds it back, while net/http copies the
+// first request's headers onto every hop, so every hop is checked.
+func redirectChainCrossesOrigin(req *http.Request, via []*http.Request) bool {
+	chain := append(append([]*http.Request{}, via...), req)
+	for i := 1; i < len(chain); i++ {
+		if chain[i].URL == nil || chain[i-1].URL == nil ||
+			!providerutils.IsSameOrigin(chain[i].URL.String(), chain[i-1].URL.String()) {
+			return true
+		}
+	}
+	return false
+}
+
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
 	baseURL, defaultHeaders, err := c.requestDefaults(ctx)
@@ -621,7 +662,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// so a timeout set on the shared default client would cut off
 	// long-running streams (TS fetch has no overall timeout; callers cancel
 	// via ctx); streamClient drops it.
-	httpResp, err := c.streamClient().Do(httpReq)
+	httpResp, err := withFetchRedirects(c.streamClient()).Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
 	}
