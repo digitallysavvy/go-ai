@@ -1636,6 +1636,71 @@ func withoutEmptyText(parts []types.ContentPart) []types.ContentPart {
 	return out
 }
 
+// assistantPartProviderOptions is TS part.providerOptions of an assistant
+// content part (a tool call reads its metadata when it has no options, as
+// convertToolCall does).
+func assistantPartProviderOptions(part types.ContentPart) map[string]interface{} {
+	switch p := part.(type) {
+	case types.TextContent:
+		return p.ProviderOptions
+	case *types.TextContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.ReasoningContent:
+		return p.ProviderOptions
+	case *types.ReasoningContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.ToolCallContent:
+		return toolCallFromContent(p).providerOptions
+	case *types.ToolCallContent:
+		if p != nil {
+			return toolCallFromContent(*p).providerOptions
+		}
+	case legacyToolCallPart:
+		return p.call.ProviderMetadata
+	case types.ToolResultContent:
+		return p.ProviderOptions
+	case *types.ToolResultContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.CustomContent:
+		return p.ProviderOptions
+	case *types.CustomContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.FileContent:
+		return p.ProviderOptions
+	case *types.FileContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.ImageContent:
+		return p.ProviderOptions
+	case *types.ImageContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.GeneratedFileContent:
+		return p.ProviderOptions
+	case *types.GeneratedFileContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.ReasoningFileContent:
+		return p.ProviderOptions
+	case *types.ReasoningFileContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	}
+	return nil
+}
+
 // legacyToolCallPart adapts a Message.ToolCalls entry to a content part.
 type legacyToolCallPart struct{ call types.ToolCall }
 
@@ -1655,15 +1720,15 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 
 		for k, part := range parts {
 			isLastContentPart := k == len(parts)-1
-			cacheControl := func(partOptions map[string]interface{}) interface{} {
-				if cc := c.validator.GetCacheControl(partOptions, "assistant message part", true); cc != nil {
-					return cc
-				}
-				if isLastContentPart {
-					return c.validator.GetCacheControl(msg.ProviderOptions, "assistant message", true)
-				}
-				return nil
+			// TS evaluates the cache control of every part before the switch,
+			// so a reasoning, custom or file part (which never carries
+			// cache_control) still uses a breakpoint, and a message's cache
+			// control is read at its last part whatever that part is.
+			partCacheControl := c.validator.GetCacheControl(assistantPartProviderOptions(part), "assistant message part", true)
+			if partCacheControl == nil && isLastContentPart {
+				partCacheControl = c.validator.GetCacheControl(msg.ProviderOptions, "assistant message", true)
 			}
+			cacheControl := func(map[string]interface{}) interface{} { return partCacheControl }
 
 			switch p := part.(type) {
 			case *types.TextContent:
