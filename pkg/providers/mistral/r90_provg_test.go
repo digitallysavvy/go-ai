@@ -1,0 +1,101 @@
+package mistral
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// r90provgMockID is TS mockId(): id-0, id-1, ...
+func r90provgMockID() func() string {
+	n := 0
+	return func() string {
+		id := "id-" + strconv.Itoa(n)
+		n++
+		return id
+	}
+}
+
+// TestR90provgChatStreamIDs ports the mistral-chat-language-model.test.ts
+// doStream reasoning snapshots: createMistral({generateId}) gives each new
+// reasoning block a generateId() id (a second block after text gets a new
+// one) and a streamed tool call without an id a generated one.
+func TestR90provgChatStreamIDs(t *testing.T) {
+	sse := `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"a"}]}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"t"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"b"}]}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer server.Close()
+	m, _ := New(Config{APIKey: "k", BaseURL: server.URL, GenerateID: r90provgMockID()}).LanguageModel("magistral-medium-2507")
+	stream, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var reasoningIDs, reasoning []string
+	toolID := ""
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		switch c.Type {
+		case provider.ChunkTypeReasoningStart:
+			reasoningIDs = append(reasoningIDs, c.ID)
+		case provider.ChunkTypeReasoning:
+			reasoning = append(reasoning, c.Reasoning)
+		case provider.ChunkTypeToolCall:
+			toolID = c.ToolCall.ID
+		}
+	}
+	if len(reasoningIDs) != 2 || reasoningIDs[0] != "id-0" || reasoningIDs[1] != "id-1" {
+		t.Fatalf("reasoning block ids = %v, want [id-0 id-1]", reasoningIDs)
+	}
+	if len(reasoning) != 2 || reasoning[0] != "a" || reasoning[1] != "b" {
+		t.Fatalf("reasoning deltas = %q, want [a b]", reasoning)
+	}
+	if toolID != "id-2" {
+		t.Fatalf("tool call id = %q, want id-2", toolID)
+	}
+}
+
+// TestR90provgConversationSourceIDs: TS createMistral passes generateId to
+// the conversation model, whose tool_reference sources take
+// generateId() ids (mistral-conversation-language-model.ts
+// createContentConverter).
+func TestR90provgConversationSourceIDs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"conversation_id":"c","outputs":[{"type":"message.output","content":[{"type":"text","text":"hi"},{"type":"tool_reference","tool":"web_search","title":"T","url":"https://example.com/a"}]}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer server.Close()
+	m := New(Config{APIKey: "k", BaseURL: server.URL, GenerateID: r90provgMockID()}).ConversationModel("mistral-medium-latest")
+	res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := ""
+	for _, c := range res.Content {
+		if s, ok := c.(types.SourceContent); ok {
+			id = s.ID
+		}
+	}
+	if id != "id-0" {
+		t.Fatalf("source id = %q, want id-0", id)
+	}
+}

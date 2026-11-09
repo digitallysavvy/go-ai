@@ -147,7 +147,8 @@ func TestR78prova_TSCasesChatAsserts(t *testing.T) {
 		if id == "" {
 			id = "mistral-small-latest"
 		}
-		m, err := New(Config{APIKey: "k", BaseURL: base}).LanguageModel(id)
+		// TS createMistral({generateId: mockId()}) (r90: Config.GenerateID).
+		m, err := New(Config{APIKey: "k", BaseURL: base, GenerateID: r90provgMockID()}).LanguageModel(id)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -257,6 +257,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newMistralStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.generateID = m.provider.generateID
+	inner.toolCallTracker = streaming.NewStreamingToolCallTrackerWithIDGenerator(m.provider.config.GenerateID)
 	inner.requestBody = reqBody
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
@@ -695,12 +697,16 @@ type mistralUsage struct {
 // It handles delta.content as either a plain string or an array of content
 // parts (type "text" or "thinking") for thinking-enabled models.
 type mistralStream struct {
-	reader                  io.ReadCloser
-	parser                  *streaming.SSEParser
-	err                     error
-	toolCallTracker         *streaming.StreamingToolCallTracker
-	flushQueue              []*provider.StreamChunk
-	isActiveReasoning       bool
+	reader            io.ReadCloser
+	parser            *streaming.SSEParser
+	err               error
+	toolCallTracker   *streaming.StreamingToolCallTracker
+	flushQueue        []*provider.StreamChunk
+	isActiveReasoning bool
+	// reasoningID is the open reasoning block's id: TS activeReasoningId =
+	// generateId() for every new block.
+	reasoningID             string
+	generateID              func() string
 	isActiveText            bool // TS activeText: the text block "0" is open
 	includeRawChunks        bool
 	responseHeaders         map[string]string
@@ -888,12 +894,13 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 						// TS ends an open text block before reasoning starts.
 						s.endText()
 						s.isActiveReasoning = true
-						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+						s.reasoningID = s.newReasoningID()
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: s.reasoningID})
 					}
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 						Type:      provider.ChunkTypeReasoning,
 						Reasoning: thinkingText.String(),
-						ID:        "reasoning-0",
+						ID:        s.reasoningID,
 					})
 				}
 				var text strings.Builder
@@ -953,7 +960,7 @@ func (s *mistralStream) queueText(text string) {
 	if !s.isActiveText {
 		if s.isActiveReasoning {
 			s.isActiveReasoning = false
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.reasoningID})
 		}
 		s.isActiveText = true
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
@@ -969,10 +976,18 @@ func (s *mistralStream) endText() {
 	}
 }
 
+// newReasoningID is TS generateId() for a new reasoning block.
+func (s *mistralStream) newReasoningID() string {
+	if s.generateID != nil {
+		return s.generateID()
+	}
+	return streaming.GenerateID()
+}
+
 func (s *mistralStream) closeReasoningAndTools() {
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.reasoningID})
 	}
 	s.endText()
 	for _, chunk := range s.toolCallTracker.Flush() {

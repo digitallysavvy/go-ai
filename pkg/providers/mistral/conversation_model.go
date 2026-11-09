@@ -208,10 +208,20 @@ func parseConversationContent(raw json.RawMessage) []conversationContent {
 type conversationConverter struct {
 	names      conversationToolNames
 	sourceURLs map[string]bool
+	// generateID is TS config.generateId (source ids).
+	generateID func() string
 }
 
 func newConversationConverter(tools []types.Tool) *conversationConverter {
-	return &conversationConverter{names: newConversationToolNames(tools), sourceURLs: map[string]bool{}}
+	return &conversationConverter{names: newConversationToolNames(tools), sourceURLs: map[string]bool{}, generateID: streaming.GenerateID}
+}
+
+// newConverter is newConversationConverter with Config.GenerateID (TS
+// createContentConverter({generateId})).
+func (m *ConversationLanguageModel) newConverter(tools []types.Tool) *conversationConverter {
+	c := newConversationConverter(tools)
+	c.generateID = m.provider.generateID
+	return c
 }
 
 type conversationPart struct {
@@ -244,7 +254,7 @@ func (c *conversationConverter) convertChunk(chunk conversationContent) []conver
 			title = *chunk.Title
 		}
 		return []conversationPart{{kind: "source", source: &types.SourceContent{
-			SourceType: "url", ID: streaming.GenerateID(), URL: *chunk.URL, Title: title,
+			SourceType: "url", ID: c.generateID(), URL: *chunk.URL, Title: title,
 		}}}
 	}
 	return nil
@@ -315,7 +325,7 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode conversation response: %w", err)
 	}
-	converter := newConversationConverter(opts.Tools)
+	converter := m.newConverter(opts.Tools)
 	result := &types.GenerateResult{Warnings: warnings, RawRequest: body, RawResponse: raw}
 	hasFunctionCalls := false
 	modelID := ""
@@ -396,8 +406,8 @@ func (m *ConversationLanguageModel) DoStream(ctx context.Context, opts *provider
 	s := &conversationStream{
 		reader:           httpResp.Body,
 		parser:           streaming.NewSSEParser(httpResp.Body),
-		converter:        newConversationConverter(opts.Tools),
-		tracker:          streaming.NewStreamingToolCallTracker(),
+		converter:        m.newConverter(opts.Tools),
+		tracker:          streaming.NewStreamingToolCallTrackerWithIDGenerator(m.provider.config.GenerateID),
 		executions:       map[string]*conversationExecution{},
 		includeRawChunks: opts.IncludeRawChunks,
 		requestBody:      body,

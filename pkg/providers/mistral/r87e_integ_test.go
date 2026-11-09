@@ -52,8 +52,10 @@ data: {"choices":[{"index":0,"delta":{"content":"b","tool_calls":[{"index":0,"id
 data: [DONE]
 
 `
-	got := r87eintegParts(t, newMistralStream(io.NopCloser(strings.NewReader(sse))))
-	want := []string{"text-start:0", "text:0", "text-end:0", "reasoning-start:reasoning-0", "reasoning:reasoning-0", "reasoning-end:reasoning-0", "text-start:0", "text:0", "tool", "text-end:0", "tool", "tool-call", "finish"}
+	stream := newMistralStream(io.NopCloser(strings.NewReader(sse)))
+	stream.generateID = r90provgMockID() // TS mockId (reasoning block ids, r90)
+	got := r87eintegParts(t, stream)
+	want := []string{"text-start:0", "text:0", "text-end:0", "reasoning-start:id-0", "reasoning:id-0", "reasoning-end:id-0", "text-start:0", "text:0", "tool", "text-end:0", "tool", "tool-call", "finish"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parts\n got %q\nwant %q", got, want)
 	}
