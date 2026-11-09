@@ -324,9 +324,10 @@ func hasAgentUserAgentSegment(headers map[string]string) bool {
 // Generate runs the agent with per-call options, mirroring TypeScript
 // ToolLoopAgent.generate with an idiomatic Go options struct.
 func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error) {
-	if err := validateAgentPromptOptions(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
+	// TS ToolLoopAgent.generate validates the call options and runs
+	// prepareCall before generateText checks the prompt, so the prompt is
+	// checked by GenerateText on the prepared call (a PrepareCall may supply
+	// it) and the error gets the v0.5.2 cause below.
 	config := a.config.withGenerateOptions(opts)
 	if config.Model == nil {
 		return nil, fmt.Errorf("model is required")
@@ -345,6 +346,12 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		prompt = ""
 	} else {
 		prompt = callConfig.Prompt
+	}
+	// A call that gives both a prompt and messages fails after the call
+	// options and PrepareCall, as in TS; Messages from PrepareCall still win
+	// over the call's prompt, as in v0.5.2 (S6).
+	if opts.Prompt != "" && len(opts.Messages) > 0 {
+		return nil, validateAgentPromptOptions(opts.Prompt, opts.Messages)
 	}
 	cbs := mergeCallbacks(config, agentCallbacks{
 		onStart:          opts.OnStart,
@@ -410,6 +417,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		OnStepEndEvent:                 cbs.onStepFinish,
 		OnEndEvent:                     cbs.onFinish,
 	})
+	genErr = withAgentPromptCause(genErr, prompt, messages)
 	// GenerateText has no error callback, so report the error before it is
 	// returned. Aborts and timeouts are not reported, like in Stream.
 	if genErr != nil && config.ErrorHandler != nil && ctx.Err() == nil &&
@@ -452,9 +460,6 @@ func (a *ToolLoopAgent) GenerateAgent(ctx context.Context, opts AgentGenerateOpt
 // Stream streams an agent response using the SDK's StreamTextResult. This is
 // the Go equivalent of TypeScript ToolLoopAgent.stream.
 func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error) {
-	if err := validateAgentPromptOptions(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
 	config := a.config.withGenerateOptions(opts.AgentGenerateOptions)
 	if config.Model == nil {
 		return nil, fmt.Errorf("model is required")
@@ -472,6 +477,16 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		prompt = ""
 	} else {
 		prompt = callConfig.Prompt
+	}
+	// TS validates the call options and runs prepareCall first; the prompt
+	// of the prepared call is checked after them. Stream keeps returning a
+	// prompt error from the call itself, as v0.5.2 did (TS streamText
+	// reports it on the stream).
+	if opts.Prompt != "" && len(opts.Messages) > 0 {
+		return nil, validateAgentPromptOptions(opts.Prompt, opts.Messages)
+	}
+	if err := validateAgentPromptOptions(prompt, messages); err != nil {
+		return nil, err
 	}
 	cbs := mergeCallbacks(config, agentCallbacks{
 		onStart:          opts.OnStart,
@@ -1904,6 +1919,22 @@ func cloneAgentStringAnyMap(in map[string]interface{}) map[string]interface{} {
 		out[k] = v
 	}
 	return out
+}
+
+// withAgentPromptCause gives a GenerateText prompt-input error the cause
+// validateAgentPromptOptions sets (the *ValidationError v0.5.2 returned).
+func withAgentPromptCause(err error, prompt string, messages []types.Message) error {
+	var invalid *providererrors.InvalidPromptError
+	if err == nil || !errors.As(err, &invalid) || invalid.Cause != nil {
+		return err
+	}
+	if inputErr := validateAgentPromptOptions(prompt, messages); inputErr != nil {
+		var own *providererrors.InvalidPromptError
+		if errors.As(inputErr, &own) && own.Message == invalid.Message {
+			invalid.Cause = own.Cause
+		}
+	}
+	return err
 }
 
 func validateAgentPromptOptions(prompt string, messages []types.Message) error {
