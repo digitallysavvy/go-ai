@@ -39,5 +39,12 @@ func StatusCodeDownloadError(provider string, err error) error {
 		headers[strings.ToLower(k)] = IsomorphicDecode(FetchHeaderEntry(k, v))
 	}
 	cause := &downloadStatusCause{status: dl.StatusCode, headers: headers, body: dl.Body}
-	return providererrors.NewProviderErrorFromResponse(provider, 0, "", http.StatusText(dl.StatusCode), cause)
+	pe := providererrors.NewProviderErrorFromResponse(provider, 0, "", http.StatusText(dl.StatusCode), cause)
+	// TS createStatusCodeErrorResponseHandler builds the APICallError
+	// without data, and its message is the status text even when the body
+	// is JSON with an error message (the cause's text equals the message,
+	// which NewProviderErrorFromResponse would replace from the body).
+	pe.Data = nil
+	pe.Message = http.StatusText(dl.StatusCode)
+	return pe
 }
