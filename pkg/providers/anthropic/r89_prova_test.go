@@ -65,3 +65,33 @@ func TestR89provaThinkingStripsUndeclaredKeys(t *testing.T) {
 		})
 	}
 }
+
+// TestR89provaEmptyRequiredStrings: z.string() accepts an empty string, so
+// an empty mcpServers name / url, anthropic skillId or fallback model is
+// sent as is; only a missing key fails (TS anthropic-language-model-
+// options.ts; recorded with TS createAnthropic at 382d0b8eaf).
+func TestR89provaEmptyRequiredStrings(t *testing.T) {
+	model := NewLanguageModel(New(Config{APIKey: "k"}), "claude-sonnet-4-5", nil)
+	prepare := func(o map[string]interface{}) (*preparedRequest, error) {
+		return model.prepareRequest(&provider.GenerateOptions{
+			Prompt:          types.Prompt{Text: "Hello"},
+			ProviderOptions: map[string]interface{}{"anthropic": o},
+		}, false)
+	}
+	req, err := prepare(map[string]interface{}{
+		"mcpServers": []interface{}{map[string]interface{}{"type": "url", "name": "", "url": ""}},
+		"container":  map[string]interface{}{"skills": []interface{}{map[string]interface{}{"type": "anthropic", "skillId": ""}}},
+		"fallbacks":  []interface{}{map[string]interface{}{"model": ""}},
+	})
+	if err != nil {
+		t.Fatalf("prepareRequest: %v", err)
+	}
+	got, _ := json.Marshal(map[string]interface{}{"m": req.body["mcp_servers"], "c": req.body["container"], "f": req.body["fallbacks"]})
+	want := `{"c":{"skills":[{"skill_id":"","type":"anthropic"}]},"f":[{"model":""}],"m":[{"name":"","type":"url","url":""}]}`
+	if string(got) != want {
+		t.Fatalf("body = %s, want %s", got, want)
+	}
+	if _, err := prepare(map[string]interface{}{"mcpServers": []interface{}{map[string]interface{}{"type": "url", "url": "u"}}}); err == nil {
+		t.Fatal("a missing mcpServers name must fail")
+	}
+}

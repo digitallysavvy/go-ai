@@ -198,11 +198,47 @@ func decodeAnthropicCallOptions(raw map[string]interface{}) (*ModelOptions, erro
 		}
 	}
 
+	if err := checkRequiredAnthropicStrings(raw); err != nil {
+		return nil, err
+	}
 	if err := validateAnthropicCallOptions(&overlay); err != nil {
 		return nil, err
 	}
 
 	return &overlay, nil
+}
+
+// checkRequiredAnthropicStrings checks the required z.string() keys of the
+// list options in the raw provider options: the key must be present, and an
+// empty string is valid (mcpServers[].name / url, container.skills[].skillId
+// of an anthropic skill, fallbacks[].model).
+func checkRequiredAnthropicStrings(raw map[string]interface{}) error {
+	check := func(list interface{}, path string, keys []string, applies func(map[string]interface{}) bool) error {
+		items, _ := list.([]interface{})
+		for _, item := range items {
+			m, ok := item.(map[string]interface{})
+			if !ok || (applies != nil && !applies(m)) {
+				continue
+			}
+			for _, key := range keys {
+				if _, ok := m[key].(string); !ok {
+					return fmt.Errorf("%s.%s: invalid input, expected string", path, key)
+				}
+			}
+		}
+		return nil
+	}
+	if err := check(raw["mcpServers"], "mcpServers[]", []string{"name", "url"}, nil); err != nil {
+		return err
+	}
+	if container, ok := raw["container"].(map[string]interface{}); ok {
+		if err := check(container["skills"], "container.skills[]", []string{"skillId"}, func(m map[string]interface{}) bool {
+			return m["type"] == "anthropic"
+		}); err != nil {
+			return err
+		}
+	}
+	return check(raw["fallbacks"], "fallbacks[]", []string{"model"}, nil)
 }
 
 // validateAnthropicCallOptions performs light structural validation of the
@@ -308,17 +344,11 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 		if s.Type != "url" {
 			return fmt.Errorf("mcpServers[].type: invalid value %q", s.Type)
 		}
-		if s.Name == "" || s.URL == "" {
-			return fmt.Errorf("mcpServers[]: name and url are required")
-		}
 	}
 	if o.Container != nil {
 		for _, sk := range o.Container.Skills {
 			if sk.Type != "anthropic" && sk.Type != "custom" {
 				return fmt.Errorf("container.skills[].type: invalid value %q", sk.Type)
-			}
-			if sk.Type == "anthropic" && sk.SkillID == "" {
-				return fmt.Errorf("container.skills[].skillId: required")
 			}
 			if sk.Type == "custom" && sk.ProviderReference == nil {
 				return fmt.Errorf("container.skills[].providerReference: required")
@@ -326,9 +356,6 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 		}
 	}
 	for _, fb := range o.Fallbacks {
-		if fb.Model == "" {
-			return fmt.Errorf("fallbacks[].model: required")
-		}
 		if fb.Speed != "" && fb.Speed != SpeedFast && fb.Speed != SpeedStandard {
 			return fmt.Errorf("fallbacks[].speed: invalid value %q", fb.Speed)
 		}
