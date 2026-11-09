@@ -65,15 +65,16 @@ func NormalizeToolModelOutput(output types.ToolResultOutput) (types.ToolResultOu
 		case types.TextContentBlock:
 			blocks = append(blocks, b)
 		case types.ImageContentBlock:
-			img, err := normalizeInlineImage(b.Data, b.MediaType, b.ProviderOptions)
+			img, err := normalizeInlineImage(b.Data, b.MediaType, b.ProviderOptions, "image-data")
 			if err != nil {
 				return types.ToolResultOutput{}, err
 			}
 			blocks = append(blocks, img)
 		case types.FileContentBlock:
-			if b.URL != "" || b.Reference != "" || b.Text != "" ||
-				(!b.FileData.IsZero() && b.FileData.Type != types.FileDataTypeData) {
-				return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content 'file' (%s).", b.MediaType))
+			// TS: a file whose data is not inline fails with its data type,
+			// "Unsupported content 'file' (<mediaType>, <data.type>).".
+			if dataType := fileBlockDataType(b); dataType != types.FileDataTypeData {
+				return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content 'file' (%s, %s).", b.MediaType, dataType))
 			}
 			data := b.Data
 			if len(data) == 0 {
@@ -86,7 +87,7 @@ func NormalizeToolModelOutput(output types.ToolResultOutput) (types.ToolResultOu
 			if topLevelMediaType(mediaType) != "image" && (mediaType != "" || len(data) == 0) {
 				return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content 'file' (%s, data).", mediaType))
 			}
-			img, err := normalizeInlineImage(data, mediaType, b.ProviderOptions)
+			img, err := normalizeInlineImage(data, mediaType, b.ProviderOptions, "file")
 			if err != nil {
 				return types.ToolResultOutput{}, err
 			}
@@ -105,16 +106,41 @@ func topLevelMediaType(mediaType string) string {
 	return top
 }
 
-func normalizeInlineImage(data []byte, mediaType string, providerOptions map[string]interface{}) (types.ImageContentBlock, error) {
-	if mediaType == "" || mediaType == "image" || mediaType == "image/*" {
+// fileBlockDataType is the TS `file.data.type` of a file block.
+func fileBlockDataType(b types.FileContentBlock) types.FileDataType {
+	switch {
+	case !b.FileData.IsZero():
+		return b.FileData.Type
+	case b.URL != "":
+		return types.FileDataTypeURL
+	case b.Reference != "":
+		return types.FileDataTypeReference
+	case b.Text != "":
+		return types.FileDataTypeText
+	}
+	return types.FileDataTypeData
+}
+
+// isFullMediaType mirrors TS isFullMediaType: `type/subtype` with a
+// non-empty subtype that is not "*".
+func isFullMediaType(mediaType string) bool {
+	_, subtype, ok := strings.Cut(mediaType, "/")
+	return ok && subtype != "" && subtype != "*"
+}
+
+// normalizeInlineImage checks the top-level media type first (TS reports
+// the part's type, partType, for a non-image), then detects the media type
+// of an image whose media type is not a full one.
+func normalizeInlineImage(data []byte, mediaType string, providerOptions map[string]interface{}, partType string) (types.ImageContentBlock, error) {
+	if mediaType != "" && topLevelMediaType(mediaType) != "image" {
+		return types.ImageContentBlock{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content '%s' (%s, data).", partType, mediaType))
+	}
+	if !isFullMediaType(mediaType) {
 		detected, ok := fileutil.DetectMediaTypeSignature(data, "image")
 		if !ok {
 			return types.ImageContentBlock{}, unsupportedModelOutput("Cannot detect the inline image media type.")
 		}
 		mediaType = detected
-	}
-	if topLevelMediaType(mediaType) != "image" {
-		return types.ImageContentBlock{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content 'file' (%s, data).", mediaType))
 	}
 	return types.ImageContentBlock{Data: data, MediaType: mediaType, ProviderOptions: providerOptions}, nil
 }
