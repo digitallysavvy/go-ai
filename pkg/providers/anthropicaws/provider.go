@@ -241,7 +241,7 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 	// missing even if a custom baseURL made it unnecessary for routing.
 	region := firstNonEmpty(t.region, os.Getenv("AWS_REGION"))
 	if region == "" {
-		return nil, internalhttp.RejectFetch(fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable"))
+		return nil, internalhttp.RejectFetch(providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION"))
 	}
 	creds, err := t.credentials(req.Context())
 	if err != nil {

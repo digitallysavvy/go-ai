@@ -78,3 +78,14 @@ func TestR89provaAPIErrorData(t *testing.T) {
 }
 
 func r89provaStr(s string) *string { return &s }
+
+// TestR89provaRegionLoadSettingError: a missing region is TS loadSetting's
+// LoadSettingError ("AWS region setting is missing. ... environment
+// variable.").
+func TestR89provaRegionLoadSettingError(t *testing.T) {
+	var lse *providererrors.LoadSettingError
+	err := errRegionMissing()
+	if !errors.As(err, &lse) || err.Error() != "AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable." {
+		t.Fatalf("err = %T %v", err, err)
+	}
+}
