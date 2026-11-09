@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf16"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -409,17 +411,23 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		return nil, err
 	}
-	resp, err := m.prov.client.Do(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/v3/models/videos/" + providerutils.EncodePathSegment(op.VideoID),
-		Headers: headers,
-	})
+	// TS getFromApi({validateUrl: true, trustedOrigin: baseURL,
+	// credentialedOrigin: baseURL}): hops on the configured origin skip
+	// target validation, any other hop is validated (private targets
+	// blocked, DownloadError) and a redirect that leaves the origin drops
+	// the caller headers, the x-api-key included.
+	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, nil)
+	downloadOpts.Headers = headers
+	statusURL := m.prov.config.BaseURL + "/v3/models/videos/" + providerutils.EncodePathSegment(op.VideoID)
+	result, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {
+		var dlErr *providererrors.DownloadError
+		if errors.As(err, &dlErr) && dlErr.StatusCode >= 400 {
+			return nil, newHeyGenAPIError(dlErr.StatusCode, dlErr.Body, http.Header(dlErr.Headers))
+		}
 		return nil, err
 	}
-	if resp.StatusCode >= 400 {
-		return nil, newHeyGenAPIError(resp.StatusCode, resp.Body, resp.Headers)
-	}
+	resp := &internalhttp.Response{StatusCode: http.StatusOK, Headers: http.Header(result.Headers), Body: result.Data}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := providerutils.MediaResponseValidator("heygen", providerutils.SchemaHeyGenVideoStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
