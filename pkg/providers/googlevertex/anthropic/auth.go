@@ -3,11 +3,12 @@ package anthropic
 import (
 	"context"
 	"fmt"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"golang.org/x/oauth2"
@@ -59,7 +60,12 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	for k, v := range t.headers {
 		config.Set(k, v)
 	}
-	if t.headersFunc != nil {
+	if resolved, ok := req.Context().Value(resolvedConfigHeadersKey{}).(map[string]string); ok {
+		// Resolved once for this call by the model (ResolveConfigHeaders).
+		for k, v := range resolved {
+			config.Set(k, v)
+		}
+	} else if t.headersFunc != nil {
 		headers, err := t.headersFunc(req.Context())
 		if err != nil {
 			return nil, internalhttp.RejectFetch(err)
@@ -173,4 +179,28 @@ func (p *GoogleVertexAnthropicProvider) tokenSource(ctx context.Context) (oauth2
 		return nil, fmt.Errorf("failed to load Google application default credentials: %w", err)
 	}
 	return creds.TokenSource, nil
+}
+
+// resolvedConfigHeadersKey carries the HeadersResolver values a call
+// resolved once (resolveConfigHeadersWith) to the auth transport.
+type resolvedConfigHeadersKey struct{}
+
+// resolveConfigHeadersWith returns the anthropic Config.ResolveConfigHeaders
+// hook for a HeadersResolver: TS resolves the config headers once at the
+// start of each call, reads their anthropic-beta as user-supplied betas and
+// sends the same values. nil when no resolver is configured.
+func resolveConfigHeadersWith(resolver HeadersResolver) func(context.Context) (context.Context, map[string]string, error) {
+	if resolver == nil {
+		return nil
+	}
+	return func(ctx context.Context) (context.Context, map[string]string, error) {
+		headers, err := resolver(ctx)
+		if err != nil {
+			return ctx, nil, err
+		}
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		return context.WithValue(ctx, resolvedConfigHeadersKey{}, headers), headers, nil
+	}
 }

@@ -118,6 +118,17 @@ type Config struct {
 	// returned error aborts the request before it is sent.
 	TransformRequestHeaders func(headers map[string]string, providerOptions map[string]interface{}) (map[string]string, error) `json:"-"`
 
+	// ResolveConfigHeaders resolves per-call config headers (TS Resolvable
+	// config headers, resolved once at the start of doGenerate / doStream).
+	// The anthropic-beta value it returns replaces the one in Headers for
+	// the user-supplied betas (TS getBetasFromHeaders over the config
+	// headers), so its betas take the TS position in the beta set. It
+	// returns the context for the call's HTTP requests, so the provider's
+	// transport can send the resolved values without resolving them again.
+	// Wrapper providers (Vertex Anthropic) set it; an error fails the call
+	// before the request is built.
+	ResolveConfigHeaders func(ctx context.Context) (context.Context, map[string]string, error) `json:"-"`
+
 	// TransformStreamBody wraps the streaming response body before SSE
 	// parsing (for example to convert an AWS event stream into SSE).
 	TransformStreamBody func(body io.ReadCloser, header stdhttp.Header) io.ReadCloser `json:"-"`

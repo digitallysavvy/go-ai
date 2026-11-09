@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -81,6 +82,13 @@ func (b *betaSet) add(values ...string) {
 // userSuppliedBetas returns the anthropic-beta values from the provider
 // config headers and the call headers (TS getBetasFromHeaders).
 func (m *LanguageModel) userSuppliedBetas(opts *provider.GenerateOptions) []string {
+	return m.userSuppliedBetasWith(opts, nil)
+}
+
+// userSuppliedBetasWith is userSuppliedBetas with the per-call config
+// headers of Config.ResolveConfigHeaders: a resolved anthropic-beta replaces
+// the static Config.Headers one.
+func (m *LanguageModel) userSuppliedBetasWith(opts *provider.GenerateOptions, resolved map[string]string) []string {
 	var out []string
 	collect := func(headers map[string]string) {
 		for k, v := range headers {
@@ -93,7 +101,14 @@ func (m *LanguageModel) userSuppliedBetas(opts *provider.GenerateOptions) []stri
 			}
 		}
 	}
-	collect(m.provider.config.Headers)
+	configHeaders := m.provider.config.Headers
+	for k := range resolved {
+		if strings.EqualFold(k, "anthropic-beta") {
+			configHeaders = resolved
+			break
+		}
+	}
+	collect(configHeaders)
 	if opts != nil {
 		collect(opts.Headers)
 	}
@@ -118,6 +133,23 @@ type effectiveThinking struct {
 // ai@7.0.113).
 func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bool) (*preparedRequest, error) {
 	return m.prepareRequestWithBetas(opts, stream, m.userSuppliedBetas(opts))
+}
+
+// prepareCallRequest is prepareRequest for DoGenerate / DoStream: it first
+// resolves the per-call config headers (Config.ResolveConfigHeaders, TS
+// `await resolve(this.config.headers)` at the start of the call) and
+// returns the context for the call's HTTP requests.
+func (m *LanguageModel) prepareCallRequest(ctx context.Context, opts *provider.GenerateOptions, stream bool) (context.Context, *preparedRequest, error) {
+	var resolved map[string]string
+	if resolve := m.provider.config.ResolveConfigHeaders; resolve != nil {
+		var err error
+		ctx, resolved, err = resolve(ctx)
+		if err != nil {
+			return ctx, nil, err
+		}
+	}
+	req, err := m.prepareRequestWithBetas(opts, stream, m.userSuppliedBetasWith(opts, resolved))
+	return ctx, req, err
 }
 
 // prepareRequestWithBetas is prepareRequest with an explicit userSuppliedBetas

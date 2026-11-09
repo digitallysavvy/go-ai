@@ -128,7 +128,7 @@ func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []s
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	req, err := m.prepareRequest(opts, false)
+	ctx, req, err := m.prepareCallRequest(ctx, opts, false)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +177,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	req, err := m.prepareRequest(opts, true)
+	ctx, req, err := m.prepareCallRequest(ctx, opts, true)
 	if err != nil {
 		return nil, err
 	}

@@ -88,8 +88,9 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 	// TS reads a configured anthropic-beta as user-supplied betas
 	// (getBetasFromHeaders over the config headers), which take their place
 	// in the beta set after the computed and tool betas and before the call
-	// and anthropicBeta-option betas. The model sees the static value here;
-	// the auth transport still merges a HeadersResolver value.
+	// and anthropicBeta-option betas. The model sees the static value here,
+	// and a HeadersResolver value through ResolveConfigHeaders (resolved
+	// once per call, then reused by the auth transport).
 	var configBetaHeaders map[string]string
 	for k, v := range p.options.Headers {
 		if strings.EqualFold(k, "anthropic-beta") {
@@ -99,6 +100,7 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 	anthropicProvider := anthropicprovider.New(anthropicprovider.Config{
 		Name:                           DefaultProviderName,
 		Headers:                        configBetaHeaders,
+		ResolveConfigHeaders:           resolveConfigHeadersWith(p.options.HeadersResolver),
 		BaseURL:                        baseURL,
 		OmitAPIVersionHeader:           true,
 		HTTPClient:                     httpClient,
