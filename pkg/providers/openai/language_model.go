@@ -140,31 +140,87 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 
-	// TS: a response without choices is InvalidResponseDataError.
-	if len(response.Choices) == 0 {
-		return nil, providererrors.NewInvalidResponseDataError(response, "Response did not contain any choices.")
+	// TS result.response.body: the response as received.
+	var rawResponse interface{}
+	rawErr := json.Unmarshal(resp.Body, &rawResponse)
+	result, err := m.convertGenerateResponse(ctx, response, resp.Body, rawResponse, opts.ProviderOptions)
+	if err != nil {
+		return nil, err
 	}
-
-	// Convert response to GenerateResult and attach HTTP headers.
-	result := m.convertResponse(response)
 	// TS result.request.body / result.response.body: the request as sent and
 	// the response as received.
 	result.RawRequest = reqBody
 	// TS 934100cad4: request: {body, url}; core reduces the URL to its origin.
 	result.RequestURL = m.chatRequestURL()
-	var rawResponse interface{}
-	if json.Unmarshal(resp.Body, &rawResponse) == nil {
-		result.RawResponse = rawResponse
+	result.RawResponse = rawResponse
+	if rawErr != nil {
+		result.RawResponse = response
 	}
-	m.applyChatLogprobs(result, resp.Body)
+	result.Warnings = append(warnings, result.Warnings...)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	result.ResponseMetadata.Headers = result.ResponseHeaders
+	return result, nil
+}
+
+// PrepareRequest returns the Chat Completions body and warnings DoGenerate
+// would send, without a network call and without stream fields (TS
+// OpenAICompatibleChatLanguageModel.prepareRequest, c9c6402cbd). Call
+// headers are not applied.
+func (m *LanguageModel) PrepareRequest(ctx context.Context, opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	if opts == nil {
+		opts = &provider.GenerateOptions{}
+	}
+	return m.buildRequestBodyWithWarnings(opts, false)
+}
+
+// ConvertResponse converts a Chat Completions response body (JSON) into a
+// generate result, without a network call (TS
+// OpenAICompatibleChatLanguageModel.convertResponse, c9c6402cbd): content,
+// finish reason, usage, provider metadata and the response id, model id and
+// timestamp. The result has no warnings, request, response headers or
+// response body. providerOptions are the request's provider options, so the
+// provider metadata key matches DoGenerate. A body that fails the response
+// schema returns a *providererrors.ValidationError, one without choices an
+// InvalidResponseDataError.
+func (m *LanguageModel) ConvertResponse(ctx context.Context, body []byte, providerOptions map[string]interface{}) (*types.GenerateResult, error) {
+	if err := streaming.ValidateChatResponseBody(body, m.responseKind()); err != nil {
+		return nil, err
+	}
+	var response openAIResponse
+	if err := providerutils.UnmarshalChunk(body, &response); err != nil {
+		_, typed := providerutils.ChunkParseFailure(string(body), err)
+		return nil, typed
+	}
+	var rawResponse interface{}
+	_ = json.Unmarshal(body, &rawResponse) //nolint:errcheck // validated above
+	result, err := m.convertGenerateResponse(ctx, response, body, rawResponse, providerOptions)
+	if err != nil {
+		return nil, err
+	}
+	result.Warnings = []types.Warning{}
+	return result, nil
+}
+
+// convertGenerateResponse is the response conversion DoGenerate and
+// ConvertResponse share (TS convertGenerateResponse).
+func (m *LanguageModel) convertGenerateResponse(ctx context.Context, response openAIResponse, body []byte, rawResponse interface{}, providerOptions map[string]interface{}) (*types.GenerateResult, error) {
+	// TS: a response without choices is InvalidResponseDataError carrying
+	// the raw response.
+	if len(response.Choices) == 0 {
+		return nil, providererrors.NewInvalidResponseDataError(rawResponse, "Response did not contain any choices.")
+	}
+
+	result := m.convertResponse(response)
+	result.RawResponse = nil
+	m.applyChatLogprobs(result, body)
 	if m.provider.config.OpenAICompatible {
-		m.applyCompatMetadataKey(result, opts.ProviderOptions)
+		m.applyCompatMetadataKey(result, providerOptions)
 		if ex := m.provider.config.MetadataExtractor; ex != nil {
 			extracted, err := ex.ExtractMetadata(ctx, rawResponse)
 			if err != nil {
 				return nil, err
 			}
-			key := providerutils.ResolveOpenAICompatibleMetadataKey(m.compatName(), opts.ProviderOptions)
+			key := providerutils.ResolveOpenAICompatibleMetadataKey(m.compatName(), providerOptions)
 			result.ProviderMetadata = mergeExtractedMetadata(result.ProviderMetadata, key, extracted)
 		}
 		// The compat usage schema is loose: extra wire fields are kept in raw.
@@ -174,12 +230,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 			}
 		}
 	}
-	result.Warnings = append(warnings, result.Warnings...)
-	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{
 		ID:      response.ID,
 		ModelID: response.Model,
-		Headers: result.ResponseHeaders,
 	}
 	// TS getResponseMetadata: `created || undefined` -- a missing/zero
 	// timestamp stays unset instead of becoming the Unix epoch.

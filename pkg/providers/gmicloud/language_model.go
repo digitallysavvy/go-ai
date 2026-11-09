@@ -55,17 +55,10 @@ func (m *LanguageModel) SupportsImageInput() bool { return false }
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "gmicloud"); err != nil {
+	reqBody, warnings, err := m.PrepareRequest(ctx, opts)
+	if err != nil {
 		return nil, err
 	}
-	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "gmicloud"); err != nil {
-		return nil, err
-	}
-	// TS openai-compatible prepareTools throws for an unknown tool choice type.
-	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
-		return nil, err
-	}
-	reqBody, warnings := m.buildRequestBody(opts, false)
 	var response gmicloudResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:           stdhttp.MethodPost,
@@ -77,11 +70,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response)
-	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), "gmicloud"); err != nil {
+	result, err := m.convertGenerateResponse(response, resp.Body, providerutils.ExtractHeaders(resp.Headers))
+	if err != nil {
 		return nil, err
 	}
-	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	// TS result.request.body: the request as sent.
@@ -90,6 +82,67 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if len(resp.Body) > 0 {
 		result.RawResponse = providerutils.RawJSONBody(resp.Body)
 	}
+	return result, nil
+}
+
+// PrepareRequest returns the Chat Completions body and warnings DoGenerate
+// would send, without a network call and without stream fields (TS
+// OpenAICompatibleChatLanguageModel.prepareRequest, c9c6402cbd). Call
+// headers are not applied.
+func (m *LanguageModel) PrepareRequest(ctx context.Context, opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	if opts == nil {
+		opts = &provider.GenerateOptions{}
+	}
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "gmicloud"); err != nil {
+		return nil, nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "gmicloud"); err != nil {
+		return nil, nil, err
+	}
+	// TS openai-compatible prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, nil, err
+	}
+	reqBody, warnings := m.buildRequestBody(opts, false)
+	return reqBody, warnings, nil
+}
+
+// ConvertResponse converts a Chat Completions response body (JSON) into a
+// generate result, without a network call (TS
+// OpenAICompatibleChatLanguageModel.convertResponse, c9c6402cbd): content,
+// finish reason, usage, provider metadata and the response id, model id and
+// timestamp. The result has no warnings, request, response headers or
+// response body. The provider metadata key is "gmicloud" (its raw and
+// camelCase provider options names are the same, so providerOptions does not
+// change it). A body that fails the response schema returns a
+// *providererrors.ValidationError, one without choices an
+// InvalidResponseDataError.
+func (m *LanguageModel) ConvertResponse(ctx context.Context, body []byte, providerOptions map[string]interface{}) (*types.GenerateResult, error) {
+	if err := streaming.ValidateChatResponseBody(body, providerutils.ResponseKindOpenAICompatible); err != nil {
+		return nil, err
+	}
+	var response gmicloudResponse
+	if err := streaming.DecodeChatResponseBody(body, &response); err != nil {
+		_, typed := providerutils.ChunkParseFailure(string(body), err)
+		return nil, typed
+	}
+	result, err := m.convertGenerateResponse(response, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	result.RawResponse = nil
+	result.Warnings = []types.Warning{}
+	return result, nil
+}
+
+// convertGenerateResponse is the response conversion DoGenerate and
+// ConvertResponse share (TS convertGenerateResponse).
+func (m *LanguageModel) convertGenerateResponse(response gmicloudResponse, body []byte, headers map[string]string) (*types.GenerateResult, error) {
+	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, body, headers, "gmicloud"); err != nil {
+		return nil, err
+	}
+	providerutils.ApplyWireUsageRaw(result, body)
 	return result, nil
 }
 
