@@ -2,6 +2,7 @@ package deepgram
 
 import (
 	"testing"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -42,7 +43,7 @@ func TestDeepgramConvertResponseHandlesEmptyAndWords(t *testing.T) {
 			RequestID      string  `json:"request_id"`
 			Duration       float64 `json:"duration"`
 		}{Duration: 3.2},
-	}, &internalhttp.Response{})
+	}, &internalhttp.Response{}, time.Now())
 	if empty.Text != "" || empty.Usage.DurationSeconds != 3.2 || len(empty.Timestamps) != 0 {
 		t.Fatalf("empty response mismatch: %#v", empty)
 	}
@@ -98,7 +99,7 @@ func TestDeepgramConvertResponseHandlesEmptyAndWords(t *testing.T) {
 			},
 		},
 	}
-	converted := m.convertResponse(resp, &internalhttp.Response{})
+	converted := m.convertResponse(resp, &internalhttp.Response{}, time.Now())
 	if converted.Text != "hello world" || len(converted.Timestamps) != 2 || converted.Usage.DurationSeconds != 5.5 {
 		t.Fatalf("converted mismatch: %#v", converted)
 	}
