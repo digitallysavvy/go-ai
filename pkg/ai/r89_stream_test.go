@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -272,5 +273,44 @@ func TestR89streamNoToolChoiceViolationWithoutFinishPart(t *testing.T) {
 	}
 	if len(errs) != 0 || r.Err() != nil {
 		t.Errorf("OnError = %v, Err() = %v; want no error", errs, r.Err())
+	}
+}
+
+// TS (node, packages/ai/dist at 382d0b8eaf, generateId gen-0, gen-1, ...):
+// text block IDs are reserved across steps, "" included, so the second
+// step's "" block is remapped to a generated ID (createPartIdReserver,
+// stream-text.ts 1562-1585). The call ID and the first step's response ID
+// take gen-0 and gen-1; Go matches the TS IDs exactly.
+func TestR89streamEmptyTextIDReservedAcrossSteps(t *testing.T) {
+	n := 0
+	gen := func() string { id := fmt.Sprintf("gen-%d", n); n++; return id }
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r88streamModel(
+			[]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart}, {Type: provider.ChunkTypeText, Text: "a"}, {Type: provider.ChunkTypeTextEnd},
+				r88streamToolCallChunks[0], r88streamToolCallChunks[1],
+			},
+			[]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart}, {Type: provider.ChunkTypeText, Text: "b"}, {Type: provider.ChunkTypeTextEnd},
+				r88streamFinishStop,
+			},
+		),
+		Prompt:   "p",
+		Tools:    r88streamWeatherTool(func() {}),
+		StopWhen: []StopCondition{IsStepCount(3)},
+		Internal: &InternalOptions{GenerateID: gen},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range r88streamParts(r) {
+		if p.Type == provider.ChunkTypeTextStart || p.Type == provider.ChunkTypeText || p.Type == provider.ChunkTypeTextEnd {
+			got = append(got, string(p.Type)+":"+p.ID)
+		}
+	}
+	want := []string{"text-start:", "text:", "text-end:", "text-start:gen-2", "text:gen-2", "text-end:gen-2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("text parts = %q\nwant %q", got, want)
 	}
 }
