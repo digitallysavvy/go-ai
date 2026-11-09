@@ -2,12 +2,15 @@ package cerebras
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -44,5 +47,34 @@ func r89toolsJSONBody(body string) func(http.ResponseWriter) {
 	return func(w http.ResponseWriter) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, strings.Replace(body, "%s", "", 1))
+	}
+}
+
+// provb CR (cr-r89-provb-to-tools 2): the openai-compatible
+// createJsonErrorResponseHandler APICallError keeps response headers, body
+// and data, so retry-after(-ms) reaches the retry loop.
+func TestR89toolsCerebrasErrorKeepsResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After-Ms", "10")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"slow down","type":"rate_limit","param":"","code":"too_many"}`)
+	}))
+	defer srv.Close()
+	_, err := r88toolsModel(t, srv, nil).DoGenerate(context.Background(), r88toolsOpts(nil))
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %T %v", err, err)
+	}
+	if perr.Message != "slow down" || perr.ErrorCode != "too_many" || perr.StatusCode != 429 || perr.ResponseBody == "" || perr.Data == nil {
+		t.Fatalf("err = %#v", perr)
+	}
+	found := false
+	for k, v := range perr.ResponseHeaders {
+		if strings.EqualFold(k, "retry-after-ms") && v == "10" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("headers = %v", perr.ResponseHeaders)
 	}
 }
