@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -1054,22 +1055,23 @@ func injectMistralJSONInstruction(body map[string]interface{}, schema interface{
 }
 
 // mistralOptionNumber reads a numeric provider option given as any Go numeric
-// type (or json.Number), not only the float64 encoding/json produces.
+// type (or json.Number), not only the float64 encoding/json produces: every
+// value the z.number() validation accepts.
 func mistralOptionNumber(v interface{}) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	case int32:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case json.Number:
+	if n, ok := v.(json.Number); ok {
 		f, err := n.Float64()
 		return f, err == nil
+	}
+	if v == nil {
+		return 0, false
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
 	}
 	return 0, false
 }

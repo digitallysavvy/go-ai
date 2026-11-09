@@ -204,3 +204,15 @@ func TestR90provgConversationMissingExecutionStart(t *testing.T) {
 		}
 	}
 }
+
+// TestR90provgDocumentLimitNumberKinds: documentImageLimit is z.number(), so
+// every Go integer kind the validation accepts reaches the wire.
+func TestR90provgDocumentLimitNumberKinds(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), "mistral-small-latest")
+	for _, v := range []interface{}{uint16(3), int8(3), uint(3)} {
+		body := m.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{"documentImageLimit": v}}}, false)
+		if body["document_image_limit"] != 3.0 {
+			t.Errorf("%T: document_image_limit = %#v, want 3", v, body["document_image_limit"])
+		}
+	}
+}
