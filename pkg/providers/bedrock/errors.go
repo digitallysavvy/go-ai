@@ -40,17 +40,38 @@ func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *pr
 	}
 	// TS: error.type == null ? error.message : `${error.type}: ${error.message}`;
 	// an empty string is a valid message or type.
+	var data interface{}
 	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != nil && secureJSON(body) {
 		if parsed.Type != nil {
 			message = *parsed.Type + ": " + *parsed.Message
 		} else {
 			message = *parsed.Message
 		}
+		data = bedrockErrorData(body, parsed)
 	}
 	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", message, nil)
 	providerErr.ResponseHeaders = headers
 	providerErr.ResponseBody = string(body)
+	providerErr.Data = data
 	return providerErr
+}
+
+// bedrockErrorData is TS APICallError.data for a body that matched
+// AmazonBedrockErrorSchema: the zod output {message, type?} (unknown keys
+// stripped, a null type kept).
+func bedrockErrorData(body []byte, parsed bedrockErrorBody) map[string]interface{} {
+	data := map[string]interface{}{"message": *parsed.Message}
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(body, &keys) == nil {
+		if _, ok := keys["type"]; ok {
+			if parsed.Type != nil {
+				data["type"] = *parsed.Type
+			} else {
+				data["type"] = nil
+			}
+		}
+	}
+	return data
 }
 
 // bedrockConverseGenerateAPIError is the Converse (non-streaming) variant:
@@ -67,6 +88,7 @@ func bedrockConverseGenerateAPIError(statusCode int, body []byte, headers map[st
 	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", *parsed.Message, nil)
 	providerErr.ResponseHeaders = headers
 	providerErr.ResponseBody = string(body)
+	providerErr.Data = bedrockErrorData(body, parsed)
 	return providerErr
 }
 
