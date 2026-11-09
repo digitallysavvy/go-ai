@@ -277,21 +277,21 @@ var elevenlabsErrorDataSchema = zodlite.Union(elevenlabsErrorDetailSchema, eleve
 
 // elevenlabsErrorDetailSchema is the first union member ({detail}).
 var elevenlabsErrorDetailSchema = zodlite.Object(zodlite.F("detail", zodlite.Union(
-		zodlite.Object(
-			zodlite.F("message", zodlite.String),
-			zodlite.F("code", zodlite.Nullish(zodlite.String)),
-			zodlite.F("status", zodlite.Nullish(zodlite.String)),
-			zodlite.F("type", zodlite.Nullish(zodlite.String)),
-			zodlite.F("request_id", zodlite.Nullish(zodlite.String)),
-			zodlite.F("param", zodlite.Nullish(zodlite.String)),
-		),
-		zodlite.Array(zodlite.Object(
-			zodlite.F("msg", zodlite.String),
-			zodlite.F("loc", zodlite.Nullish(zodlite.Array(zodlite.Union(zodlite.String, zodlite.Number)))),
-			zodlite.F("type", zodlite.Nullish(zodlite.String)),
-		)),
-		zodlite.String,
-	)))
+	zodlite.Object(
+		zodlite.F("message", zodlite.String),
+		zodlite.F("code", zodlite.Nullish(zodlite.String)),
+		zodlite.F("status", zodlite.Nullish(zodlite.String)),
+		zodlite.F("type", zodlite.Nullish(zodlite.String)),
+		zodlite.F("request_id", zodlite.Nullish(zodlite.String)),
+		zodlite.F("param", zodlite.Nullish(zodlite.String)),
+	),
+	zodlite.Array(zodlite.Object(
+		zodlite.F("msg", zodlite.String),
+		zodlite.F("loc", zodlite.Nullish(zodlite.Array(zodlite.Union(zodlite.String, zodlite.Number)))),
+		zodlite.F("type", zodlite.Nullish(zodlite.String)),
+	)),
+	zodlite.String,
+)))
 
 // elevenlabsErrorObjectSchema is the second union member ({error}).
 var elevenlabsErrorObjectSchema = zodlite.Object(zodlite.F("error", zodlite.Object(
