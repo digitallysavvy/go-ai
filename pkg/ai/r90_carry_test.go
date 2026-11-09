@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
@@ -194,5 +196,15 @@ func TestR90carryObjectDiagnosticBodyRedacted(t *testing.T) {
 	}
 	if body["tools"].([]interface{})[0].(map[string]interface{})["authorization"] != secret {
 		t.Error("caller body mutated")
+	}
+}
+
+// TS validateEmbeddingDimensions / splitArray pass the rejected value as
+// the InvalidArgumentError's value.
+func TestR90carryInvalidArgumentValues(t *testing.T) {
+	dims := -3
+	var iae *providererrors.InvalidArgumentError
+	if err := validateEmbeddingDimensions(&dims); !errors.As(err, &iae) || iae.Value != -3 {
+		t.Errorf("dimensions error = %#v", err)
 	}
 }

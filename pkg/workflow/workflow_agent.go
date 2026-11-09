@@ -684,7 +684,7 @@ func resolveToolCallConcurrency(values ...*int) (int, error) {
 			continue
 		}
 		if *v < 1 {
-			return 0, &providererrors.InvalidArgumentError{Field: "toolCallConcurrency", Message: "toolCallConcurrency must be >= 1"}
+			return 0, &providererrors.InvalidArgumentError{Field: "toolCallConcurrency", Value: *v, Message: "toolCallConcurrency must be >= 1"}
 		}
 		return *v, nil
 	}
@@ -1879,7 +1879,7 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		mutated, err := hook(ctx, opts)
 		if err == nil && mutated.MaxRetries != nil && *mutated.MaxRetries < 0 {
 			// TS prepareRetries rejects the step's maxRetries.
-			err = &providererrors.InvalidArgumentError{Field: "maxRetries", Message: "maxRetries must be >= 0"}
+			err = &providererrors.InvalidArgumentError{Field: "maxRetries", Value: *mutated.MaxRetries, Message: "maxRetries must be >= 0"}
 		}
 		if err != nil {
 			base := o.Model

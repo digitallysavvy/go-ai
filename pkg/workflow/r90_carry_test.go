@@ -2,12 +2,14 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -104,5 +106,15 @@ func TestR90carryWorkflowRedactsProviderToolsInTelemetry(t *testing.T) {
 				t.Error("the model did not receive the real credential")
 			}
 		})
+	}
+}
+
+// TS prepareToolCallConcurrency passes the rejected value.
+func TestR90carryToolCallConcurrencyErrorValue(t *testing.T) {
+	n := 0
+	_, err := resolveToolCallConcurrency(&n)
+	var iae *providererrors.InvalidArgumentError
+	if !errors.As(err, &iae) || iae.Value != 0 || iae.Error() != "Invalid argument for parameter toolCallConcurrency: toolCallConcurrency must be >= 1" {
+		t.Errorf("err = %#v", err)
 	}
 }
