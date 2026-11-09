@@ -388,7 +388,8 @@ func (m *azureMaiImageModel) fileToImage(ctx context.Context, file provider.Imag
 			return azureMaiImageFile{}, err
 		}
 		data = result.Data
-		if mediaType == "" {
+		// TS downloadBlob types the Blob with the response content type.
+		if result.ContentType != "" {
 			mediaType = result.ContentType
 		}
 	} else {
