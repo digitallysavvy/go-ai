@@ -124,11 +124,11 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 
 	if shouldNormalizeTemperature && temperature != nil {
 		if *temperature > 1 {
-			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: fmt.Sprintf("%v exceeds bedrock maximum of 1.0. clamped to 1.0", *temperature)})
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: providerutils.JSNumberString(*temperature) + " exceeds bedrock maximum of 1.0. clamped to 1.0"})
 			clamped := 1.0
 			temperature = &clamped
 		} else if *temperature < 0 {
-			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: fmt.Sprintf("%v is below bedrock minimum of 0. clamped to 0", *temperature)})
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: providerutils.JSNumberString(*temperature) + " is below bedrock minimum of 0. clamped to 0"})
 			clamped := 0.0
 			temperature = &clamped
 		}

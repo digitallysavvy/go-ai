@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -48,5 +49,24 @@ func TestR90provaConverseNonObjectToolInput(t *testing.T) {
 	}
 	if want := `{}|[1]|"s"|{"z":1,"a":2}`; strings.Join(got, "|") != want {
 		t.Errorf("inputs = %s, want %s", strings.Join(got, "|"), want)
+	}
+}
+
+// TS amazon-bedrock-chat-language-model.ts 257 / 268: `${temperature}` is a
+// JS number, not Go's %v exponent form.
+func TestR90provaTemperatureWarningNumberFormat(t *testing.T) {
+	for temp, want := range map[float64]string{
+		1234567:  "1234567 exceeds bedrock maximum of 1.0. clamped to 1.0",
+		-0.00001: "-0.00001 is below bedrock minimum of 0. clamped to 0",
+	} {
+		temp := temp
+		args := r85provaArgs(t, "anthropic.claude-3-haiku-20240307-v1:0", &provider.GenerateOptions{Temperature: &temp})
+		found := false
+		for _, w := range args.Warnings {
+			found = found || w.Details == want
+		}
+		if !found {
+			t.Errorf("warnings = %#v, want %q", args.Warnings, want)
+		}
 	}
 }

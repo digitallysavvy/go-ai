@@ -173,3 +173,26 @@ func TestR90provaCircularRefUnderNonRecordMapKeyword(t *testing.T) {
 		t.Error("properties array with a $ref to the root: want circular")
 	}
 }
+
+// TS `${temperature} exceeds ...`: the temperature is formatted like a JS
+// number (1234567, -0.00001), not with Go's %v exponent form.
+func TestR90provaTemperatureWarningNumberFormat(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), "claude-sonnet-4-6", nil)
+	for temp, want := range map[float64]string{
+		1234567:  "1234567 exceeds anthropic maximum of 1.0. clamped to 1.0",
+		-0.00001: "-0.00001 is below anthropic minimum of 0. clamped to 0",
+	} {
+		temp := temp
+		req, err := m.prepareRequest(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Temperature: &temp}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, w := range req.warnings {
+			found = found || w.Details == want
+		}
+		if !found {
+			t.Errorf("warnings = %#v, want %q", req.warnings, want)
+		}
+	}
+}
