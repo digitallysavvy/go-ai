@@ -147,7 +147,9 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 
 	// TS createBinaryResponseHandler: an empty body is an error.
 	if len(resp.Body) == 0 {
-		return nil, providererrors.NewProviderError("fireworks", resp.StatusCode, "", "Response body is empty", nil)
+		empty := providererrors.NewProviderError("fireworks", resp.StatusCode, "", "Response body is empty", nil)
+		_, empty.ResponseHeaders, _ = (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails() // TS APICallError responseHeaders
+		return nil, empty
 	}
 
 	mimeType := "image/png"

@@ -68,3 +68,17 @@ func TestR89provbAPIErrorKeepsResponse(t *testing.T) {
 		}
 	}
 }
+
+// TS createBinaryResponseHandler: an empty image body is an APICallError
+// with the response headers (provg CR r89).
+func TestR89provbEmptyImageBodyKeepsHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "r1")
+	}))
+	defer srv.Close()
+	_, err := NewImageModel(providerForAsyncServer(srv.URL), "accounts/fireworks/models/flux-1-dev-fp8").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "Response body is empty" || pe.ResponseHeaders["x-request-id"] != "r1" {
+		t.Fatalf("err = %#v", err)
+	}
+}

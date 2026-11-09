@@ -73,14 +73,18 @@ func parseMoonshotProviderError(err error) error {
 		code = envelope.Error.Type
 	}
 
+	// TS APICallError.responseHeaders (lower-case keys): retries honor
+	// retry-after(-ms).
+	_, headers, _ := statusErr.HTTPStatusDetails()
 	return &providererrors.ProviderError{
-		Provider:     "moonshot",
-		StatusCode:   statusErr.StatusCode,
-		ErrorCode:    code,
-		Message:      envelope.Error.Message,
-		Cause:        err,
-		ResponseBody: string(statusErr.Body),
-		Data:         raw,
+		Provider:        "moonshot",
+		StatusCode:      statusErr.StatusCode,
+		ErrorCode:       code,
+		Message:         envelope.Error.Message,
+		Cause:           err,
+		ResponseHeaders: headers,
+		ResponseBody:    string(statusErr.Body),
+		Data:            raw,
 	}
 }
 
