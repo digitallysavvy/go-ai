@@ -29,7 +29,7 @@ func TestR60WorkflowChatTransportErrorAfterFinishCountsAsReconnectError(t *testi
 			OnChatEnd: func(WorkflowChatTransportEndEvent) error { ended = true; return nil }})
 		out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: "c"})
 		chunks, err := collectChunks(out, errs, 3*time.Second)
-		if err == nil || !strings.Contains(err.Error(), "Failed to reconnect after 1 consecutive errors. Last error: Error: invalid UI message chunk") {
+		if err == nil || !strings.Contains(err.Error(), "Failed to reconnect after 1 consecutive errors. Last error: AI_JSONParseError: JSON parsing failed: Text: not json.\nError message: SyntaxError: ") {
 			t.Fatalf("err = %v", err)
 		}
 		if len(chunks) != 2 || ended {

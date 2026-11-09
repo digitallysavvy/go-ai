@@ -363,7 +363,11 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		// The message mirrors TS getErrorMessage(error), which is
 		// error.toString(): "Error: <message>".
 		lastErr := "Error: Reconnect stream ended without receiving chunks."
-		if streamErr != nil {
+		var parseErr *uiChunkJSONParseError
+		if errors.As(streamErr, &parseErr) {
+			// TS throws chunk.error, an AI_JSONParseError.
+			lastErr = parseErr.toString()
+		} else if streamErr != nil {
 			lastErr = "Error: " + streamErr.Error()
 		}
 		// A stream that fails after its finish chunk still counts (TS's catch
@@ -457,7 +461,7 @@ func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Rea
 			// silently skipped: stop the pump so the caller's reconnect path
 			// runs, matching TS instead of dropping one frame and continuing
 			// on the same (possibly desynced) connection.
-			return read, gotFinish, fmt.Errorf("invalid UI message chunk: %w", err)
+			return read, gotFinish, &uiChunkJSONParseError{text: data, cause: err}
 		}
 		read++
 		// The orphan filter runs on the raw chunk, before framing repair —
@@ -676,4 +680,25 @@ func encodeURIComponent(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// uiChunkJSONParseError is the AI_JSONParseError TS parseJsonEventStream
+// returns for a frame whose data is not JSON.
+type uiChunkJSONParseError struct {
+	text  string
+	cause error
+}
+
+func (e *uiChunkJSONParseError) Error() string {
+	return "invalid UI message chunk: " + e.cause.Error()
+}
+
+func (e *uiChunkJSONParseError) Unwrap() error { return e.cause }
+
+// toString is TS getErrorMessage(error) for the AI_JSONParseError:
+// "AI_JSONParseError: JSON parsing failed: Text: <text>.\nError message:
+// SyntaxError: <parser message>". The parser message is Go's, not V8's
+// (known difference, S3).
+func (e *uiChunkJSONParseError) toString() string {
+	return "AI_JSONParseError: JSON parsing failed: Text: " + e.text + ".\nError message: SyntaxError: " + e.cause.Error()
 }
