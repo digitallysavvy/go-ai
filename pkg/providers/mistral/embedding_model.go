@@ -194,8 +194,9 @@ type mistralEmbedResponse struct {
 	} `json:"data"`
 	Model string `json:"model"`
 	Usage *struct {
-		PromptTokens int `json:"prompt_tokens"`
-		TotalTokens  int `json:"total_tokens"`
+		// TS z.number(): a fractional count is valid; Tokens keeps it.
+		PromptTokens float64 `json:"prompt_tokens"`
+		TotalTokens  float64 `json:"total_tokens"`
 	} `json:"usage"`
 }
 
@@ -207,9 +208,9 @@ func (r mistralEmbedResponse) embeddingUsage() types.EmbeddingUsage {
 		return types.EmbeddingUsage{}
 	}
 	return types.EmbeddingUsage{
-		Tokens:      float64(r.Usage.PromptTokens),
-		InputTokens: r.Usage.PromptTokens,
-		TotalTokens: r.Usage.TotalTokens,
+		Tokens:      r.Usage.PromptTokens,
+		InputTokens: int(r.Usage.PromptTokens),
+		TotalTokens: int(r.Usage.TotalTokens),
 		Reported:    true,
 	}
 }

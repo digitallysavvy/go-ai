@@ -99,3 +99,21 @@ func TestR90provgConversationSourceIDs(t *testing.T) {
 		t.Fatalf("source id = %q, want id-0", id)
 	}
 }
+
+// TestR90provgEmbedFractionalTokens: TS MistralTextEmbeddingResponseSchema
+// usage.prompt_tokens is z.number(); usage.tokens is that number.
+func TestR90provgEmbedFractionalTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"model":"mistral-embed","usage":{"prompt_tokens":2.5,"total_tokens":2.5}}`)
+	}))
+	defer server.Close()
+	m, _ := New(Config{APIKey: "k", BaseURL: server.URL}).EmbeddingModel("mistral-embed")
+	res, err := m.DoEmbedMany(context.Background(), []string{"a"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.Tokens != 2.5 {
+		t.Fatalf("tokens = %v, want 2.5", res.Usage.Tokens)
+	}
+}
