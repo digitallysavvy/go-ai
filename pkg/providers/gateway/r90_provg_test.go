@@ -222,3 +222,21 @@ func TestR90provgMetadataEmptyModelType(t *testing.T) {
 		t.Fatalf("models = %+v", meta.Models)
 	}
 }
+
+// TestR90provgVideoEmptyLists: TS buildRequestBody sends frameImages and
+// inputReferences whenever they are present (`frameImages && ...`), an empty
+// list included.
+func TestR90provgVideoEmptyLists(t *testing.T) {
+	p, _ := New(Config{APIKey: "k", BaseURL: "https://example.com/v4/ai"})
+	m := NewVideoModel(p, "google/veo-3.0-generate-001")
+	body, err := m.buildRequestBody(&provider.VideoModelV3CallOptions{Prompt: "p", FrameImages: []provider.VideoFrameImage{}, InputReferences: []provider.VideoModelV3File{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["frameImages"]; !ok {
+		t.Fatalf("frameImages missing: %v", body)
+	}
+	if _, ok := body["inputReferences"]; !ok {
+		t.Fatalf("inputReferences missing: %v", body)
+	}
+}
