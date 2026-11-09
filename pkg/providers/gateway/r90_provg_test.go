@@ -275,3 +275,21 @@ func TestR90provgDecisionStateBeforeOptions(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestR90provgDecisionTypedModels: TS gatewayModelFallbacksSchema accepts any
+// array of model ids; a Go []string (and typed nested lists) is the same
+// value.
+func TestR90provgDecisionTypedModels(t *testing.T) {
+	for _, models := range []interface{}{
+		[]string{"a", "b"},
+		[]map[string]interface{}{{"model": "m", "when": map[string]interface{}{"any": []map[string]interface{}{{"confidenceBelow": 0.5}}}}},
+		[]interface{}{map[string]interface{}{"model": "m", "when": map[string]interface{}{"atLeast": map[string]interface{}{"count": 1, "conditions": []map[string]interface{}{{"probabilityBetween": []float64{0.1, 0.2}}}}}}},
+	} {
+		if err := validateGatewayDecisionProviderOptions(map[string]interface{}{"models": models}); err != nil {
+			t.Errorf("models %#v rejected: %v", models, err)
+		}
+	}
+	if err := validateGatewayDecisionProviderOptions(map[string]interface{}{"models": []int{1}}); err == nil {
+		t.Error("[]int accepted")
+	}
+}
