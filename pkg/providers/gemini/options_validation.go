@@ -3,6 +3,7 @@ package gemini
 import (
 	"fmt"
 	"math"
+	"reflect"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -230,15 +231,18 @@ func stringField(field string, v interface{}) error {
 	return nil
 }
 
+// numberField is z.number(): any Go integer kind, or a finite float (zod 4
+// rejects NaN and ±Infinity).
 func numberField(field string, v interface{}) error {
 	if v == nil {
 		return nil
 	}
-	switch x := v.(type) {
-	case int, int32, int64, uint, uint32, uint64, float32:
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return nil
-	case float64:
-		if !math.IsNaN(x) {
+	case reflect.Float32, reflect.Float64:
+		if f := rv.Float(); !math.IsNaN(f) && !math.IsInf(f, 0) {
 			return nil
 		}
 	}

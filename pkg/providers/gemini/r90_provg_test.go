@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -84,6 +85,22 @@ func TestR90provgCanonicalArrayIndex(t *testing.T) {
 	for key, want := range map[string]bool{"0": true, "7": true, "4294967294": true, "4294967295": false, "01": false, "-0": false, "1e0": false, "": false, " 1": false} {
 		if _, ok := canonicalArrayIndex(key); ok != want {
 			t.Errorf("canonicalArrayIndex(%q) = %v, want %v", key, ok, want)
+		}
+	}
+}
+
+// TestR90provgOptionNumbers: googleLanguageModelOptions number fields are
+// z.number(): every Go integer kind is a number, and zod 4 rejects NaN and
+// ±Infinity (google-language-model-options.ts thinkingBudget).
+func TestR90provgOptionNumbers(t *testing.T) {
+	for _, v := range []interface{}{int8(1), int16(2), uint8(3), uint16(4), 5, 6.5, float32(7)} {
+		if err := checkLanguageModelOptions(map[string]interface{}{"thinkingConfig": map[string]interface{}{"thinkingBudget": v}}); err != nil {
+			t.Errorf("thinkingBudget %T(%v) rejected: %v", v, v, err)
+		}
+	}
+	for _, v := range []interface{}{math.Inf(1), math.Inf(-1), math.NaN(), "1"} {
+		if err := checkLanguageModelOptions(map[string]interface{}{"thinkingConfig": map[string]interface{}{"thinkingBudget": v}}); err == nil {
+			t.Errorf("thinkingBudget %v accepted", v)
 		}
 	}
 }
