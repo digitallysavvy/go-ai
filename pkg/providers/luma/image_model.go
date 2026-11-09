@@ -386,15 +386,46 @@ func (m *ImageModel) parseErrorResponseWithHeaders(body []byte, statusCode int, 
 	// TS createJsonErrorResponseHandler: a body that does not match the error
 	// schema (or is empty) gives the HTTP status text as the message.
 	msg := stdhttp.StatusText(statusCode)
+	var data interface{}
 	var errResp lumaErrorResponse
 	if err := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &errResp); err == nil && errResp.valid() {
 		// detail[0].msg is a required string, so `?? 'Unknown error'` never
 		// applies; an empty detail array makes errorToMessage throw, which
 		// the handler also turns into the status text.
 		msg = *errResp.Detail[0].Msg
+		data = lumaErrorData(body)
 	}
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
-	return providererrors.NewProviderErrorFromResponse("luma", 0, "", msg, cause)
+	perr := providererrors.NewProviderErrorFromResponse("luma", 0, "", msg, cause)
+	// TS APICallError.data: the zod-parsed body when it matches
+	// lumaErrorSchema (undeclared keys stripped), else undefined.
+	perr.Data = data
+	return perr
+}
+
+// lumaErrorData is the zod output of lumaErrorSchema for a body that
+// matched it (valid): each detail entry keeps type, loc, msg, input and a
+// present ctx ({expected}, or an explicit null), nothing else.
+func lumaErrorData(body []byte) interface{} {
+	var top struct {
+		Detail []map[string]interface{} `json:"detail"`
+	}
+	if securejson.Unmarshal([]byte(textdecode.UTF8(body)), &top) != nil {
+		return nil
+	}
+	detail := make([]interface{}, 0, len(top.Detail))
+	for _, d := range top.Detail {
+		entry := map[string]interface{}{"type": d["type"], "loc": d["loc"], "msg": d["msg"], "input": d["input"]}
+		if ctx, ok := d["ctx"]; ok {
+			if obj, isObj := ctx.(map[string]interface{}); isObj {
+				entry["ctx"] = map[string]interface{}{"expected": obj["expected"]}
+			} else {
+				entry["ctx"] = nil
+			}
+		}
+		detail = append(detail, entry)
+	}
+	return map[string]interface{}{"detail": detail}
 }
 
 func flattenHeaders(headers map[string][]string) map[string]string {

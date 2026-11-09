@@ -196,8 +196,7 @@ func (m *SpeechModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message := parseFalErrorMessage(statusErr.Body, http.StatusText(statusErr.StatusCode))
-		return providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", message, err)
+		return falAPIError(m.Provider(), statusErr, err)
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.

@@ -3,11 +3,15 @@ package fal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestR90provcVideoOperationKeepsWebhookSubmitURL: TS submitToQueue returns
@@ -41,5 +45,39 @@ func TestR90provcVideoOperationKeepsWebhookSubmitURL(t *testing.T) {
 	}
 	if !strings.HasSuffix(op.ResponseURL, "/requests/id") {
 		t.Fatalf("responseUrl = %q", op.ResponseURL)
+	}
+}
+
+// TestR90provcErrorDataIsSchemaOutput: TS APICallError.data is the zod
+// output of the fal error schema (undeclared keys stripped) for a matching
+// body and undefined otherwise; the image model uses its union schema.
+func TestR90provcErrorDataIsSchemaOutput(t *testing.T) {
+	asData := func(err error) interface{} {
+		var perr *providererrors.ProviderError
+		if !errors.As(err, &perr) {
+			t.Fatalf("not a ProviderError: %v", err)
+		}
+		return perr.Data
+	}
+	httpErr := func(body string) error {
+		return &internalhttp.HTTPStatusError{StatusCode: 400, Body: []byte(body)}
+	}
+	want := map[string]interface{}{"error": map[string]interface{}{"message": "m", "code": float64(400)}}
+	if got := asData((&SpeechModel{}).handleError(httpErr(`{"error":{"message":"m","code":400,"x":1},"y":2}`))); !reflect.DeepEqual(got, want) {
+		t.Errorf("speech data = %#v, want %#v", got, want)
+	}
+	if got := asData((&TranscriptionModel{}).handleError(httpErr(`{"detail":"nope"}`))); got != nil {
+		t.Errorf("off-schema data = %#v, want nil", got)
+	}
+	img := &ImageModel{}
+	wantDetail := map[string]interface{}{"detail": []interface{}{map[string]interface{}{"loc": []interface{}{"body", "prompt"}, "msg": "required", "type": "missing"}}}
+	if got := asData(img.statusError(422, nil, []byte(`{"detail":[{"loc":["body","prompt"],"msg":"required","type":"missing","input":null}]}`))); !reflect.DeepEqual(got, wantDetail) {
+		t.Errorf("image validation data = %#v, want %#v", got, wantDetail)
+	}
+	if got := asData(img.statusError(400, nil, []byte(`{"message":"m","request_id":"r"}`))); !reflect.DeepEqual(got, map[string]interface{}{"message": "m"}) {
+		t.Errorf("image message data = %#v", got)
+	}
+	if got := asData(img.statusError(400, nil, []byte(`{"status":"x"}`))); got != nil {
+		t.Errorf("image off-schema data = %#v, want nil", got)
 	}
 }

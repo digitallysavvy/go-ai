@@ -5,9 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -95,5 +97,25 @@ func TestR90provcStreamRejectsEmptyLanguage(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&requests); n != 0 {
 		t.Fatalf("requests = %d, want 0", n)
+	}
+}
+
+// TestR90provcErrorDataIsSchemaOutput: TS APICallError.data is the zod
+// output of cartesiaErrorDataSchema (undeclared keys stripped) for a
+// matching body and undefined otherwise.
+func TestR90provcErrorDataIsSchemaOutput(t *testing.T) {
+	data := func(body string) interface{} {
+		var perr *providererrors.ProviderError
+		if !errors.As(handleError(&internalhttp.HTTPStatusError{StatusCode: 400, Body: []byte(body)}), &perr) {
+			t.Fatalf("not a ProviderError for %s", body)
+		}
+		return perr.Data
+	}
+	want := map[string]interface{}{"error_code": nil, "title": "T", "message": "m", "request_id": "r"}
+	if got := data(`{"error_code":null,"title":"T","message":"m","request_id":"r","extra":1}`); !reflect.DeepEqual(got, want) {
+		t.Errorf("matched data = %#v, want %#v", got, want)
+	}
+	if got := data(`{"message":"m","other":true}`); got != nil {
+		t.Errorf("off-schema data = %#v, want nil", got)
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestR90provcVideoErrorTextIsTSMessage: TS doStart / doStatus throw
@@ -36,4 +38,24 @@ func TestR90provcVideoErrorTextIsTSMessage(t *testing.T) {
 			t.Fatalf("err = %v, want the bare TS message", err)
 		}
 	})
+}
+
+// TestR90provcErrorDataIsSchemaOutput: TS APICallError.data is the zod
+// output of byteDanceErrorSchema ({error?: {message, code?}, message?},
+// undeclared keys stripped) for a matching body and undefined otherwise.
+func TestR90provcErrorDataIsSchemaOutput(t *testing.T) {
+	data := func(body string) interface{} {
+		var perr *providererrors.ProviderError
+		if !errors.As(newHTTPError(400, nil, []byte(body)), &perr) {
+			t.Fatalf("not a ProviderError for %s", body)
+		}
+		return perr.Data
+	}
+	want := map[string]interface{}{"error": map[string]interface{}{"message": "m", "code": "InvalidParameter"}}
+	if got := data(`{"error":{"message":"m","code":"InvalidParameter","param":"p","type":"t"}}`); !reflect.DeepEqual(got, want) {
+		t.Errorf("matched data = %#v, want %#v", got, want)
+	}
+	if got := data(`{"error":{"code":"x"}}`); got != nil {
+		t.Errorf("off-schema data = %#v, want nil", got)
+	}
 }

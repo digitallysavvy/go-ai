@@ -1,9 +1,12 @@
 package bfl
 
 import (
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestR90provcVideoWarningsQuoteLikeTS: the TS warnings are template literals
@@ -31,5 +34,24 @@ func TestR90provcVideoWarningsQuoteLikeTS(t *testing.T) {
 		if got[feature] != details {
 			t.Errorf("%s warning = %q, want %q", feature, got[feature], details)
 		}
+	}
+}
+
+// TestR90provcErrorDataIsSchemaOutput: TS APICallError.data is the zod
+// output of bflErrorSchema (message, detail, status, state; undeclared keys
+// stripped) for a matching body and undefined otherwise.
+func TestR90provcErrorDataIsSchemaOutput(t *testing.T) {
+	data := func(body string) interface{} {
+		var perr *providererrors.ProviderError
+		if !errors.As(bflStatusError(400, nil, []byte(body)), &perr) {
+			t.Fatalf("not a ProviderError for %s", body)
+		}
+		return perr.Data
+	}
+	if got := data(`{"detail":"bad","status":"Error","id":"x"}`); !reflect.DeepEqual(got, map[string]interface{}{"detail": "bad", "status": "Error"}) {
+		t.Errorf("matched data = %#v", got)
+	}
+	if got := data(`{"message":7}`); got != nil {
+		t.Errorf("off-schema data = %#v, want nil", got)
 	}
 }

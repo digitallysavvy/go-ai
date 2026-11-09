@@ -53,11 +53,24 @@ func (e *Error) Unwrap() error {
 		ResponseHeaders: e.httpHeaders,
 		ResponseBody:    string(e.httpBody),
 	}
-	var data interface{}
-	if len(e.httpBody) > 0 && securejson.Unmarshal(e.httpBody, &data) == nil {
-		pe.Data = data
-	}
+	pe.Data = klingaiErrorData(e.httpBody)
 	return pe
+}
+
+// klingaiErrorData is the zod output of klingaiErrorDataSchema ({code,
+// message}, undeclared keys stripped) for a matching body, else nil (TS
+// APICallError.data is undefined for an off-schema body).
+func klingaiErrorData(body []byte) interface{} {
+	var obj map[string]interface{}
+	if len(body) == 0 || securejson.Unmarshal(body, &obj) != nil {
+		return nil
+	}
+	code, okCode := obj["code"].(float64)
+	message, okMessage := obj["message"].(string)
+	if !okCode || !okMessage {
+		return nil
+	}
+	return map[string]interface{}{"code": code, "message": message}
 }
 
 // Error implements the error interface

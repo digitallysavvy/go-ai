@@ -37,9 +37,11 @@ func handleError(err error) error {
 		// required strings; a body that does not match gives the HTTP status
 		// text.
 		message := http.StatusText(statusErr.StatusCode)
+		var data interface{}
 		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil &&
 			payload.Title != nil && payload.Message != nil && payload.RequestID != nil && docURLMatchesSchema(payload.DocURL) {
 			message = *payload.Title + ": " + *payload.Message
+			data = schemaErrorData(statusErr.Body, "error_code", "title", "message", "request_id", "doc_url")
 		} else {
 			payload = cartesiaErrorPayload{}
 		}
@@ -47,7 +49,11 @@ func handleError(err error) error {
 		if payload.ErrorCode != nil {
 			errorCode = *payload.ErrorCode
 		}
-		return providererrors.NewProviderErrorFromResponse("cartesia", 0, errorCode, message, err)
+		perr := providererrors.NewProviderErrorFromResponse("cartesia", 0, errorCode, message, err)
+		// TS APICallError.data: the zod-parsed body (undeclared keys
+		// stripped) when it matches the schema, else undefined.
+		perr.Data = data
+		return perr
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.
@@ -65,4 +71,21 @@ func docURLMatchesSchema(raw json.RawMessage) bool {
 	}
 	var s string
 	return json.Unmarshal(raw, &s) == nil
+}
+
+// schemaErrorData is the zod object output of an error body that matched its
+// schema: the declared keys that are present (an explicit null kept), every
+// undeclared key stripped.
+func schemaErrorData(body []byte, keys ...string) interface{} {
+	var obj map[string]interface{}
+	if securejson.Unmarshal(body, &obj) != nil || obj == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(keys))
+	for _, k := range keys {
+		if v, ok := obj[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
 }
