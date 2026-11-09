@@ -183,7 +183,7 @@ func (p *MaaSProvider) init() error {
 			project = os.Getenv("GOOGLE_VERTEX_PROJECT")
 		}
 		if project == "" {
-			p.initErr = fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+			p.initErr = providererrors.NewLoadSettingError("Google Vertex project", "project", "GOOGLE_VERTEX_PROJECT") // TS loadSetting
 			return p.initErr
 		}
 

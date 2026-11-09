@@ -321,7 +321,7 @@ func (p *Provider) location() string {
 func (p *Provider) loadLocation() (string, error) {
 	location := p.location()
 	if location == "" {
-		return "", fmt.Errorf("Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+		return "", providererrors.NewLoadSettingError("Google Vertex location", "location", "GOOGLE_VERTEX_LOCATION") // TS loadSetting
 	}
 	// Location is interpolated directly into the request host
 	// (https://{location}-aiplatform.googleapis.com/...), so only a
@@ -338,7 +338,7 @@ func (p *Provider) loadLocation() (string, error) {
 func (p *Provider) loadProject() (string, error) {
 	project := p.project()
 	if project == "" {
-		return "", fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+		return "", providererrors.NewLoadSettingError("Google Vertex project", "project", "GOOGLE_VERTEX_PROJECT") // TS loadSetting
 	}
 	return project, nil
 }

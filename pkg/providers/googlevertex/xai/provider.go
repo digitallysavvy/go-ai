@@ -137,7 +137,7 @@ func (p *Provider) resolve() (Config, *internalhttp.Client, error) {
 			location = os.Getenv("GOOGLE_VERTEX_LOCATION")
 		}
 		if cfg.Project == "" {
-			return Config{}, nil, fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+			return Config{}, nil, providererrors.NewLoadSettingError("Google Vertex project", "project", "GOOGLE_VERTEX_PROJECT") // TS loadSetting
 		}
 		if location == "" {
 			location = "global"

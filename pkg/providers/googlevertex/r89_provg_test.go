@@ -55,3 +55,23 @@ func TestR89provgVertexEmbeddingTypedOptions(t *testing.T) {
 		t.Fatalf("error = %#v", err)
 	}
 }
+
+// prova CR (TS provider-utils load-setting.ts): a missing project or location
+// is a typed LoadSettingError with the TS text.
+func TestR89provgVertexLoadSettingErrors(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "")
+	check := func(err error, want string) {
+		t.Helper()
+		var lse *providererrors.LoadSettingError
+		if !errors.As(err, &lse) || err.Error() != want {
+			t.Fatalf("error = %T %v", err, err)
+		}
+	}
+	p := &Provider{}
+	_, err := p.loadProject()
+	check(err, "Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.")
+	_, err = p.loadLocation()
+	check(err, "Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.")
+	check(NewMaaS(MaaSConfig{}).init(), "Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.")
+}
