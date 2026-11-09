@@ -282,3 +282,102 @@ func r90streamTrue() *bool {
 	v := true
 	return &v
 }
+
+// stream-text.ts pull(): the outer stream checks the abort signal whenever
+// it reads the next part, so an abort during the final step's onStepEnd ends
+// the run with `abort` instead of `finish`: onAbort runs, onEnd does not, and
+// the result promises reject with the abort reason. TS output (node,
+// packages/ai/dist at 9f7a842ae1): parts start, start-step, text-start,
+// text-delta, text-end, finish-step, abort; callbacks onStepEnd, onAbort;
+// text rejected with AbortError.
+func TestR90streamAbortInOnStepEndEndsWithAbort(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var log []string
+	add := func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		log = append(log, s)
+	}
+	r, err := StreamText(ctx, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Hi"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage},
+		}),
+		Prompt: "x",
+		OnStepEnd: func(context.Context, types.StepResult, interface{}) {
+			add("onStepEnd")
+			cancel()
+		},
+		OnEndEvent:   func(context.Context, OnFinishEvent) { add("onEnd") },
+		OnAbortEvent: func(context.Context, GenerateTextAbortEvent) { add("onAbort") },
+		OnError:      func(context.Context, error) { add("onError") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parts []string
+	s := r.Stream()
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		parts = append(parts, string(c.Type))
+	}
+	if got, want := strings.Join(parts, ","), "start,start-step,text-start,text,text-end,finish-step,abort"; got != want {
+		t.Fatalf("parts\n got %s\nwant %s", got, want)
+	}
+	if !errors.Is(r.Err(), context.Canceled) {
+		t.Fatalf("Err = %v", r.Err())
+	}
+	if !errors.Is(r.OutputErr(), context.Canceled) {
+		t.Fatalf("OutputErr = %v", r.OutputErr())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := strings.Join(log, ","), "onStepEnd,onAbort"; got != want {
+		t.Fatalf("callbacks = %s, want %s", got, want)
+	}
+}
+
+// The same check before a later step: an abort during a tool step's
+// onStepEnd ends the stream with finish-step, abort (TS output from node:
+// start, start-step, tool-call, tool-result, finish-step, abort; onAbort, no
+// onEnd). TS's pipeline has already started the next step's model call with
+// the aborted signal by then (queue timing, S3); Go makes no further call.
+func TestR90streamAbortInOnStepEndStopsBeforeNextStep(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	calls := 0
+	r, err := StreamText(ctx, StreamTextOptions{
+		Model: r90streamModel(func(c context.Context) provider.TextStream {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			return r90streamToolStep(c)
+		}),
+		Tools:     r90streamTools,
+		StopWhen:  []StopCondition{StepCountIs(3)},
+		Prompt:    "x",
+		OnStepEnd: func(context.Context, types.StepResult, interface{}) { cancel() },
+		OnError:   func(context.Context, error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if !errors.Is(r.Err(), context.Canceled) {
+		t.Fatalf("Err = %v", r.Err())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("model calls = %d, want 1", calls)
+	}
+}

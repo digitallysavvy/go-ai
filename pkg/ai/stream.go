@@ -4000,6 +4000,20 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		logModelWarnings(stepWarnings, stepProvider, stepModelID)
 		cancelStep()
 
+		// TS's outer stream checks the abort signal whenever it reads the next
+		// part: a cancellation during the step's end callbacks ends the run
+		// with `abort` (onAbort, no onEnd) instead of the call's `finish` or
+		// the next step.
+		if ctx.Err() != nil {
+			abortErr := ctx.Err()
+			if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+				abortErr = r.timeout.timeoutError(TimeoutReasonTotal, abortErr)
+			}
+			r.err = abortErr
+			fireAbort(r.err)
+			break
+		}
+
 		if violation != nil {
 			steeringEndReason = SteeringError
 			break
