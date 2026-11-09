@@ -38,7 +38,9 @@ func (t *sigV4Transport) sameOrigin(req *http.Request) bool {
 		return false
 	}
 	baseURL, err := t.baseURL()
-	return err == nil && providerutils.IsSameOrigin(req.URL.String(), baseURL)
+	// A hop back to the endpoint after a foreign hop (A -> B -> A) is not
+	// re-signed: fetch never adds a dropped Authorization back.
+	return err == nil && providerutils.IsSameOrigin(req.URL.String(), baseURL) && !providerutils.IsCrossOriginRedirectHop(req)
 }
 
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {

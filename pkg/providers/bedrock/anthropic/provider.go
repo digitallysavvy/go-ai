@@ -267,6 +267,12 @@ func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response
 	if strings.Contains(req.URL.Path, "invoke-with-response-stream") {
 		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	}
+	// A hop back to the runtime origin after a foreign hop (A -> B -> A)
+	// gets no bearer token or signature: fetch dropped Authorization on the
+	// foreign hop and never adds it back.
+	if providerutils.IsCrossOriginRedirectHop(req) {
+		return t.base.RoundTrip(req)
+	}
 
 	if t.provider.config.BearerTokenFunc != nil {
 		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{

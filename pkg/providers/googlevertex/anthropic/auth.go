@@ -42,15 +42,20 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	if !providerutils.IsSameOrigin(req.URL.String(), t.baseURL) {
 		return t.base.RoundTrip(clone)
 	}
-	token, err := t.tokenFunc(req.Context())
-	if err != nil {
-		return nil, internalhttp.RejectFetch(err)
-	}
 	// TS config headers: {Authorization: Bearer <token>, ...options.headers},
 	// combined below the call headers (combineHeaders(configHeaders,
 	// headers, betas)), so a header the request already carries wins.
 	config := http.Header{}
-	config.Set("Authorization", "Bearer "+token)
+	// A hop back to the API origin after a foreign hop (A -> B -> A) gets
+	// no token: fetch dropped Authorization on the foreign hop and never
+	// adds it back (the other headers it keeps).
+	if !providerutils.IsCrossOriginRedirectHop(req) {
+		token, err := t.tokenFunc(req.Context())
+		if err != nil {
+			return nil, internalhttp.RejectFetch(err)
+		}
+		config.Set("Authorization", "Bearer "+token)
+	}
 	for k, v := range t.headers {
 		config.Set(k, v)
 	}

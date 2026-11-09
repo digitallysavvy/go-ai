@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"mime/multipart"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -59,5 +60,38 @@ func TestR90integFormDataPartHeaders(t *testing.T) {
 	}
 	if want := "Content-Disposition: form-data; name=\"s%22x\"\r\n\r\nv\r\nw\r\n"; !strings.Contains(buf.String(), want) {
 		t.Fatalf("field part = %q, want it to contain %q", buf.String(), want)
+	}
+}
+
+// prova r90 open item: fetch drops Authorization on a cross-origin redirect
+// and never adds it back, so the third hop of A -> B -> A is a hop that
+// must not get credentials again.
+func TestR90integCrossOriginRedirectHopChain(t *testing.T) {
+	mk := func(raw string, prev *http.Request) *http.Request {
+		r, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prev != nil {
+			r.Response = &http.Response{Request: prev}
+		}
+		return r
+	}
+	a1 := mk("https://api.example/v1/x", nil)
+	b := mk("https://other.example/y", a1)
+	a2 := mk("https://api.example/v1/z", b)
+	a3 := mk("https://api.example/v1/w", a1)
+	for name, tc := range map[string]struct {
+		req  *http.Request
+		want bool
+	}{
+		"first request":        {a1, false},
+		"foreign hop":          {b, true},
+		"back after foreign":   {a2, true},
+		"same-origin redirect": {a3, false},
+	} {
+		if got := IsCrossOriginRedirectHop(tc.req); got != tc.want {
+			t.Errorf("%s: IsCrossOriginRedirectHop = %v, want %v", name, got, tc.want)
+		}
 	}
 }

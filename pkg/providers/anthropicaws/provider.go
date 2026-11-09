@@ -249,7 +249,11 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 		req.Header.Set("x-api-key", key)
 		return t.base.RoundTrip(req)
 	}
-	if req.Method != http.MethodPost || req.Body == nil {
+	// A hop back to the API origin after a foreign hop (A -> B -> A) is not
+	// re-signed: fetch dropped the signed Authorization on the foreign hop
+	// and never adds it back (the x-api-key header above is kept, as fetch
+	// keeps it).
+	if req.Method != http.MethodPost || req.Body == nil || providerutils.IsCrossOriginRedirectHop(req) {
 		return t.base.RoundTrip(req)
 	}
 	body, err := io.ReadAll(req.Body)

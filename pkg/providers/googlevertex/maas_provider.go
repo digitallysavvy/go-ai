@@ -151,6 +151,12 @@ func (t *maasAuthTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, 
 			clone.Header.Set(k, v)
 		}
 	}
+	// A hop back to the API origin after a foreign hop (A -> B -> A) gets
+	// no token: fetch dropped Authorization on the foreign hop and never
+	// adds it back.
+	if providerutils.IsCrossOriginRedirectHop(req) {
+		return t.base.RoundTrip(clone)
+	}
 	token, err := t.authToken(req.Context())
 	if err != nil {
 		return nil, internalhttp.RejectFetch(err)
