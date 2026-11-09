@@ -24,6 +24,10 @@ type Error struct {
 	httpStatus  int
 	httpBody    []byte
 	httpHeaders map[string]string
+
+	// textOnly makes Error() the bare Message: the TS AISDKError
+	// BYTEDANCE_VIDEO_GENERATION_ERROR text, with no Go prefix.
+	textOnly bool
 }
 
 // HTTPStatusDetails implements providererrors.HTTPStatusDetails.
@@ -111,6 +115,9 @@ func isJSONPresent(raw json.RawMessage) bool {
 
 // Error implements the error interface
 func (e *Error) Error() string {
+	if e.textOnly {
+		return e.Message
+	}
 	if e.Details != "" {
 		return fmt.Sprintf("bytedance error (code %d): %s - %s", e.Code, e.Message, e.Details)
 	}
@@ -142,4 +149,11 @@ func NewTimeoutError(duration string) *Error {
 		Message: "Video generation timed out",
 		Details: fmt.Sprintf("Generation timed out after %s", duration),
 	}
+}
+
+// newVideoGenerationErrorText is a video generation error whose whole text
+// is the TS AISDKError message (BYTEDANCE_VIDEO_GENERATION_ERROR thrown by
+// doStart / doStatus); it is still a *Error with Code 500.
+func newVideoGenerationErrorText(message string) *Error {
+	return &Error{Code: 500, Message: message, textOnly: true}
 }
