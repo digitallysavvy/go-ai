@@ -90,7 +90,8 @@ func unwrapGmicloudDetailsMessage(details string) string {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal([]byte(details), &inner); err != nil {
+	// TS secureJsonParse: a __proto__ / constructor.prototype key fails.
+	if err := securejson.Unmarshal([]byte(details), &inner); err != nil {
 		return ""
 	}
 	// TS checks message.trim() !== '' but returns the message untrimmed.

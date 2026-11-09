@@ -312,21 +312,25 @@ func (m *DecisionModel) handleError(err error) error {
 	if !errors.As(err, &statusErr) {
 		return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
-	message := string(statusErr.Body)
+	// TS createJsonErrorResponseHandler: a body that does not match
+	// openaiErrorDataSchema gives the status text.
+	message := http.StatusText(statusErr.StatusCode)
 	errorCode := ""
 	var envelope struct {
 		Error *struct {
-			Message string      `json:"message"`
+			Message *string     `json:"message"`
 			Code    interface{} `json:"code"`
 		} `json:"error"`
 	}
-	if securejson.Unmarshal(statusErr.Body, &envelope) == nil && envelope.Error != nil && envelope.Error.Message != "" {
-		message = envelope.Error.Message
+	if securejson.Unmarshal(statusErr.Body, &envelope) == nil && envelope.Error != nil && envelope.Error.Message != nil {
+		message = *envelope.Error.Message
 		if code, ok := envelope.Error.Code.(string); ok {
 			errorCode = code
 		}
 	}
-	return providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, errorCode, message, err)
+	// The status code, response headers, body and data come from the HTTP
+	// cause (TS APICallError), so retries honor retry-after headers.
+	return providererrors.NewProviderErrorFromResponse(m.Provider(), 0, errorCode, message, err)
 }
 
 func floatToIntPtr(v *float64) *int {

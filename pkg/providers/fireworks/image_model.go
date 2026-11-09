@@ -147,7 +147,9 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 
 	// TS createBinaryResponseHandler: an empty body is an error.
 	if len(resp.Body) == 0 {
-		return nil, providererrors.NewProviderError("fireworks", resp.StatusCode, "", "Response body is empty", nil)
+		empty := providererrors.NewProviderError("fireworks", resp.StatusCode, "", "Response body is empty", nil)
+		_, empty.ResponseHeaders, _ = (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails() // TS APICallError responseHeaders
+		return nil, empty
 	}
 
 	mimeType := "image/png"
@@ -354,9 +356,11 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string, callHea
 		mimeType = strings.TrimSpace(mimeType[:idx])
 	}
 
+	// TS doGenerateAsync returns the image download's response headers.
 	return &types.ImageResult{
 		Image:    data,
 		MimeType: mimeType,
+		Response: &types.ResponseMetadata{Headers: providerutils.ExtractHeaders(http.Header(downloaded.Headers))},
 	}, nil
 }
 

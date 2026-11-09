@@ -408,19 +408,14 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 	return meta
 }
 
-// convertXAIHeaders flattens net/http.Header into map[string]string, taking
-// the first value for each header key.
+// convertXAIHeaders is the response headers of a video call: TS
+// extractResponseHeaders joins repeated lines with ", " (the last Set-Cookie
+// wins). Keys keep the Go canonical form of v0.5.2 (TS: lower case; S6).
 func convertXAIHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
+	if out := providerutils.ExtractHeaders(h); out != nil {
+		return out
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	return map[string]string{}
 }
 
 // DoGenerate generates a video synchronously by starting the operation and
@@ -475,6 +470,25 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		ProviderMetadata: finalStatus.ProviderMetadata,
 		Response:         finalStatus.Response,
 	}, nil
+}
+
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// XaiVideoModel has no doGenerate), so ai.GenerateVideo drives it through the
+// core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract, S6).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, _, err := extractVideoProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs > 0 {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil && *provOpts.PollTimeoutMs > 0 {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
 }
 
 // getPollOptions extracts polling options from XAIVideoProviderOptions,
@@ -549,8 +563,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
-			parseXAIErrorMessage(resp.Body), nil)
+		return nil, nil, newXAIProviderError("xai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	// TS xaiVideoStatusJsonResponseHandler: createJsonResponseHandler(schema),
@@ -1295,6 +1308,9 @@ func (m *VideoModel) handleError(err error) error {
 	}
 	if provErr, ok := err.(*providererrors.ProviderError); ok {
 		return provErr
+	}
+	if provErr, ok := xaiStatusError("xai", err); ok {
+		return provErr // TS xaiFailedResponseHandler
 	}
 	return providererrors.NewProviderError("xai", 0, "", err.Error(), err)
 }

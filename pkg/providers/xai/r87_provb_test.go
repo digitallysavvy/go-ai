@@ -70,9 +70,9 @@ func TestR87provbErrorMessageEmptyStrings(t *testing.T) {
 		`{"error":""}`:              "",
 		`{"error":{"message":"m"}}`: "m",
 		`{"code":7,"error":"e"}`:    "e",
-		`{"error":{"message":1}}`:   `{"error":{"message":1}}`,
+		`{"error":{"message":1}}`:   "Bad Request", // no member matches: status text
 	} {
-		if got := parseXAIErrorMessage([]byte(body)); got != want {
+		if got := newXAIProviderError("xai", 400, nil, []byte(body)).Message; got != want {
 			t.Errorf("%s: message = %q, want %q", body, got, want)
 		}
 	}

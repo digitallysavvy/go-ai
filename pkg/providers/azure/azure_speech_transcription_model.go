@@ -235,7 +235,10 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	}
 	var parsed azureSpeechTranscribeResponse
 	if err := providerutils.UnmarshalChunk(respBody, &parsed); err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", "failed to parse Azure Speech transcription response: "+err.Error(), err)
+		invalid := providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", "failed to parse Azure Speech transcription response: "+err.Error(), err)
+		_, invalid.ResponseHeaders, _ = (&internalhttp.HTTPStatusError{Headers: resp.Header}).HTTPStatusDetails() // TS APICallError responseHeaders / responseBody
+		invalid.ResponseBody = string(respBody)
+		return nil, invalid
 	}
 
 	var textParts []string

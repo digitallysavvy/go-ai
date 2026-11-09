@@ -102,7 +102,7 @@ func TestR85provbAPIKeyFunc(t *testing.T) {
 
 // R85 reviewer item 3: BOM-prefixed JSON bodies parse as in TS.
 func TestR85provbBOMBodies(t *testing.T) {
-	if got := parseXAIErrorMessage([]byte("\xEF\xBB\xBF{\"error\":{\"message\":\"bad\"}}")); got != "bad" {
+	if got, _ := xaiErrorMessage([]byte("\xEF\xBB\xBF{\"error\":{\"message\":\"bad\"}}")); got != "bad" {
 		t.Errorf("error message = %q", got)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

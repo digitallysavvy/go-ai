@@ -1,38 +1,42 @@
 package xai
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
-func newXAIProviderError(provider string, statusCode int, body []byte) *providererrors.ProviderError {
+// newXAIProviderError is TS xaiFailedResponseHandler
+// (createJsonErrorResponseHandler over xaiErrorDataSchema): the message
+// follows the matching union member, or is the status text when the body
+// matches none; the error keeps the status, response headers, body and
+// parsed data (TS APICallError), so retries honor retry-after headers.
+func newXAIProviderError(provider string, statusCode int, headers http.Header, body []byte) *providererrors.ProviderError {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
+	message, matched := xaiErrorMessage(body)
+	if !matched {
+		message = http.StatusText(statusCode)
+	}
+	errorCode := ""
 	var responsesError struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
+		Code  *string `json:"code"`
+		Error *string `json:"error"`
 	}
-	if err := securejson.Unmarshal(body, &responsesError); err == nil && responsesError.Code != "" && responsesError.Error != "" {
-		return providererrors.NewProviderError(provider, statusCode, responsesError.Code, responsesError.Code+": "+responsesError.Error, nil)
-	}
-
 	var parsed struct {
 		Error struct {
-			Message string      `json:"message"`
-			Type    string      `json:"type"`
-			Code    interface{} `json:"code"`
+			Type string      `json:"type"`
+			Code interface{} `json:"code"`
 		} `json:"error"`
 	}
-
-	// TS xaiErrorDataSchema is a union of three shapes (API error object,
-	// responses {code, error}, speech {error: string}); the message follows
-	// xaiFailedResponseHandler's errorToMessage for whichever matches.
-	message := parseXAIErrorMessage(body)
-	errorCode := ""
-	if err := securejson.Unmarshal(body, &parsed); err == nil {
+	if securejson.Unmarshal(body, &responsesError) == nil && responsesError.Code != nil && responsesError.Error != nil {
+		errorCode = *responsesError.Code
+	} else if securejson.Unmarshal(body, &parsed) == nil {
 		switch code := parsed.Error.Code.(type) {
 		case string:
 			errorCode = code
@@ -43,8 +47,21 @@ func newXAIProviderError(provider string, statusCode int, body []byte) *provider
 			errorCode = parsed.Error.Type
 		}
 	}
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	pe := providererrors.NewProviderErrorFromResponse(provider, 0, errorCode, message, cause)
+	// TS APICallError.responseHeaders keys are lower case.
+	_, pe.ResponseHeaders, _ = cause.HTTPStatusDetails()
+	return pe
+}
 
-	return providererrors.NewProviderError(provider, statusCode, errorCode, message, nil)
+// xaiStatusError converts an HTTP status error of an xAI API call with
+// newXAIProviderError; ok is false for any other error.
+func xaiStatusError(provider string, err error) (*providererrors.ProviderError, bool) {
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode < 400 {
+		return nil, false
+	}
+	return newXAIProviderError(provider, statusErr.StatusCode, statusErr.Headers, statusErr.Body), true
 }
 
 func formatXAIResponseError(code string, message string) string {
@@ -192,15 +209,15 @@ func (e *XAIStreamFailed) Error() string {
 	return "xai.responses stream failed"
 }
 
-// parseXAIErrorMessage extracts a human-readable error message from a raw
-// xAI error response body, mirroring the TS SDK's xaiFailedResponseHandler /
-// xaiErrorDataSchema union. It tries, in order:
+// xaiErrorMessage extracts the message of a raw xAI error response body,
+// mirroring the TS SDK's xaiFailedResponseHandler / xaiErrorDataSchema
+// union. It tries, in order:
 //  1. The structured API error shape: {"error": {"message": "..."}}.
 //  2. The Responses API shape: {"code": "...", "error": "..."} -> "code: error".
 //  3. The plain speech error shape: {"error": "some string"}.
 //
-// If none of these shapes match, the raw body (trimmed) is returned as-is.
-func parseXAIErrorMessage(body []byte) string {
+// matched is false when none of these shapes match.
+func xaiErrorMessage(body []byte) (message string, matched bool) {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	// 1. Structured API error shape (object under "error").
 	// Each member's strings are required (z.string()), so an empty string
@@ -212,7 +229,7 @@ func parseXAIErrorMessage(body []byte) string {
 		} `json:"error"`
 	}
 	if err := securejson.Unmarshal(body, &apiErr); err == nil && apiErr.Error != nil && apiErr.Error.Message != nil {
-		return *apiErr.Error.Message
+		return *apiErr.Error.Message, true
 	}
 
 	// 2. Responses API shape: {"code": "...", "error": "..."}.
@@ -222,7 +239,7 @@ func parseXAIErrorMessage(body []byte) string {
 	}
 	if err := securejson.Unmarshal(body, &responsesErr); err == nil &&
 		responsesErr.Code != nil && responsesErr.Error != nil {
-		return *responsesErr.Code + ": " + *responsesErr.Error
+		return *responsesErr.Code + ": " + *responsesErr.Error, true
 	}
 
 	// 3. Plain speech error shape: {"error": "some string"}.
@@ -230,10 +247,10 @@ func parseXAIErrorMessage(body []byte) string {
 		Error *string `json:"error"`
 	}
 	if err := securejson.Unmarshal(body, &speechErr); err == nil && speechErr.Error != nil {
-		return *speechErr.Error
+		return *speechErr.Error, true
 	}
 
-	return string(body)
+	return "", false
 }
 
 // xaiWireValuePresent reports whether the decoded JSON value holds a non-null

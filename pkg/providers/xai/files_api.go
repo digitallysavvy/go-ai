@@ -148,7 +148,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
+		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -208,7 +208,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
+		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -247,7 +247,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 	if err != nil {
 		var statusErr *internalhttp.HTTPStatusError
 		if errors.As(err, &statusErr) {
-			return nil, newXAIProviderError(f.Provider(), statusErr.StatusCode, statusErr.Body)
+			return nil, newXAIProviderError(f.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body)
 		}
 		return nil, err
 	}
@@ -283,7 +283,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
+		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced

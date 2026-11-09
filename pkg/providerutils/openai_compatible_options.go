@@ -1,9 +1,15 @@
 package providerutils
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -302,4 +308,72 @@ func ResolveOpenAICompatibleMetadataKey(rawName string, providerOptions map[stri
 		return camel
 	}
 	return rawName
+}
+
+// openAIErrorBody is TS openaiErrorDataSchema / openaiCompatibleErrorDataSchema:
+// {error: {message: string, type?: string | null, param?: any,
+// code?: string | number | null}}.
+type openAIErrorBody struct {
+	Error *struct {
+		Message *string         `json:"message"`
+		Type    json.RawMessage `json:"type"`
+		Code    json.RawMessage `json:"code"`
+	} `json:"error"`
+}
+
+// OpenAICompatibleErrorMessage returns error.message of a body matching
+// openaiErrorDataSchema (an empty message included); ok is false for any
+// other body, including one TS secureJsonParse rejects.
+func OpenAICompatibleErrorMessage(body []byte) (message string, ok bool) {
+	var parsed openAIErrorBody
+	if securejson.Unmarshal(body, &parsed) != nil || parsed.Error == nil || parsed.Error.Message == nil {
+		return "", false
+	}
+	if !openAIErrorFieldIs(parsed.Error.Type, false) || !openAIErrorFieldIs(parsed.Error.Code, true) {
+		return "", false
+	}
+	return *parsed.Error.Message, true
+}
+
+// openAIErrorFieldIs reports a nullish string (or, with number, a nullish
+// string or number) JSON value.
+func openAIErrorFieldIs(raw json.RawMessage, number bool) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return true
+	}
+	var v interface{}
+	if json.Unmarshal(raw, &v) != nil {
+		return false
+	}
+	switch v.(type) {
+	case string:
+		return true
+	case float64:
+		return number
+	}
+	return false
+}
+
+// OpenAICompatibleAPIError is TS createJsonErrorResponseHandler with
+// openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure for an
+// HTTP error response: the message is error.message of a matching body, else
+// the status text; the status, response headers (lower-case keys), body and
+// data come from the HTTP cause. ok is false when err carries no HTTP
+// response.
+func OpenAICompatibleAPIError(provider string, err error) (*providererrors.ProviderError, bool) {
+	var hs providererrors.HTTPStatusDetails
+	if !errors.As(err, &hs) {
+		return nil, false
+	}
+	status, headers, body := hs.HTTPStatusDetails()
+	if status == 0 {
+		return nil, false
+	}
+	message, ok := OpenAICompatibleErrorMessage([]byte(textdecode.UTF8(body)))
+	if !ok {
+		message = http.StatusText(status)
+	}
+	pe := providererrors.NewProviderErrorFromResponse(provider, 0, "", message, err)
+	pe.ResponseHeaders = headers
+	return pe, true
 }

@@ -324,11 +324,10 @@ func (m *LanguageModel) handleError(err error) error {
 	// even in its catch-all branch; preserve the real HTTP status here too
 	// instead of hardcoding 0 (which several retry-classification paths treat
 	// as "unknown", i.e. retryable).
-	statusCode := 0
 	message := err.Error()
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		statusCode = statusErr.StatusCode
+		statusCode := statusErr.StatusCode
 		// TS createJsonErrorResponseHandler: an empty body, or one that does
 		// not parse (secureJsonParse) or match the error schema, gives the
 		// response status text.
@@ -336,7 +335,9 @@ func (m *LanguageModel) handleError(err error) error {
 			message = text
 		}
 	}
-	return providererrors.NewProviderError("fireworks", statusCode, "", message, err)
+	// The status code, response headers, body and data come from the HTTP
+	// cause (TS APICallError), so retries honor retry-after headers.
+	return providererrors.NewProviderErrorFromResponse("fireworks", 0, "", message, err)
 }
 
 // convertFireworksUsage converts Fireworks usage to detailed Usage struct

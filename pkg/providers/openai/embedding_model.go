@@ -185,6 +185,9 @@ func (m *EmbeddingModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}
+	if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok && !m.provider.config.OpenAICompatible {
+		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 

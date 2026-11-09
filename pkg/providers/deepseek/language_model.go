@@ -544,6 +544,9 @@ func (m *LanguageModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
+	if pe, ok := providerutils.OpenAICompatibleAPIError("deepseek", err); ok {
+		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
+	}
 	return providererrors.NewProviderError("deepseek", 0, "", err.Error(), err)
 }
 

@@ -63,11 +63,14 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
+		if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok && !m.provider.config.OpenAICompatible {
+			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
+		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 	requestBytes, err := json.Marshal(reqBody)
 	if err != nil {

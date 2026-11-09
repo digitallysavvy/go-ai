@@ -119,6 +119,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		perr := providererrors.NewProviderError(m.provider.config.Name, statusCode, response.Error.Code, response.Error.Message, nil)
 		perr.Retryable = retryable
 		perr.Data = response.Error
+		perr.ResponseHeaders, perr.ResponseBody = openResponsesErrorResponse(httpResp)
 		return nil, perr
 	}
 
@@ -144,6 +145,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		noOutput := providererrors.NewProviderError(m.provider.config.Name, 500, "", message, nil)
 		notRetryable := false
 		noOutput.Retryable = &notRetryable
+		noOutput.ResponseHeaders, noOutput.ResponseBody = openResponsesErrorResponse(httpResp)
 		return nil, noOutput
 	}
 
@@ -2107,4 +2109,15 @@ func openResponsesCreatedAt(body []byte) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return time.UnixMilli(int64(ms)), true
+}
+
+// openResponsesErrorResponse is the responseHeaders (lower-case keys, TS
+// extractResponseHeaders) and responseBody of an APICallError TS throws for a
+// successful HTTP response.
+func openResponsesErrorResponse(resp *internalhttp.Response) (map[string]string, string) {
+	if resp == nil {
+		return nil, ""
+	}
+	_, headers, _ := (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails()
+	return headers, string(resp.Body)
 }

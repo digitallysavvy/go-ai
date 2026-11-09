@@ -317,11 +317,10 @@ func (m *LanguageModel) handleError(err error) error {
 	if parsed := parseZaiProviderError(err); parsed != nil {
 		return parsed
 	}
-	statusCode := 0
 	message := err.Error()
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		statusCode = statusErr.StatusCode
+		statusCode := statusErr.StatusCode
 		// TS createJsonErrorResponseHandler: an empty body, or one that does
 		// not parse (secureJsonParse) or match the error schema, gives the
 		// response status text.
@@ -329,7 +328,9 @@ func (m *LanguageModel) handleError(err error) error {
 			message = text
 		}
 	}
-	return providererrors.NewProviderError("zai", statusCode, "", message, err)
+	// The status code, response headers, body and data come from the HTTP
+	// cause (TS APICallError), so retries honor retry-after headers.
+	return providererrors.NewProviderErrorFromResponse("zai", 0, "", message, err)
 }
 
 // mapZaiFinishReason remaps Z.AI-specific raw finish_reason strings that the

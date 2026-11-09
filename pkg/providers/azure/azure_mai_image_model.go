@@ -485,7 +485,10 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 	}
 	var parsed azureMaiImageResponse
 	if err := providerutils.UnmarshalChunk(respBody, &parsed); err != nil {
-		return azureMaiImageCallResult{}, providererrors.NewProviderError("azure.image", resp.StatusCode, "", "Invalid JSON response", err)
+		invalid := providererrors.NewProviderError("azure.image", resp.StatusCode, "", "Invalid JSON response", err)
+		_, invalid.ResponseHeaders, _ = (&internalhttp.HTTPStatusError{Headers: resp.Header}).HTTPStatusDetails() // TS APICallError responseHeaders / responseBody
+		invalid.ResponseBody = string(respBody)
+		return azureMaiImageCallResult{}, invalid
 	}
 	return azureMaiImageCallResult{response: parsed, headers: headers}, nil
 }

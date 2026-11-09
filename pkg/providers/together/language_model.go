@@ -258,6 +258,9 @@ func (m *LanguageModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
+	if pe, ok := providerutils.OpenAICompatibleAPIError("together", err); ok {
+		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
+	}
 	return providererrors.NewProviderError("together", 0, "", err.Error(), err)
 }
 
