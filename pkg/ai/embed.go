@@ -717,7 +717,7 @@ func telemetryInputValue(settings *TelemetrySettings, value interface{}) string 
 func CosineSimilarity(a, b []float64) (float64, error) {
 	if len(a) != len(b) {
 		return 0, &providererrors.InvalidArgumentError{
-			Field:   "vector1,vector2",
+			Field: "vector1,vector2",
 			// TS cosineSimilarity: the lengths are the error's value, not
 			// part of its message.
 			Message: "Vectors must have the same length",
