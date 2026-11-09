@@ -258,3 +258,20 @@ func TestR90provgBatchModelMismatchQuoting(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestR90provgDecisionStateBeforeOptions: TS doDecide runs
+// toGatewayDecisionState (which rejects URL file data) before
+// parseProviderOptions, so a URL file fails first even with invalid gateway
+// options.
+func TestR90provgDecisionStateBeforeOptions(t *testing.T) {
+	p, _ := New(Config{APIKey: "k", BaseURL: "https://example.com/v4/ai"})
+	m := NewDecisionModel(p, "openai/gpt-5")
+	_, err := m.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:           []provider.DecisionStatePart{{Type: "file", File: &types.FileContent{FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://x/y.png"}, MediaType: "image/png"}}},
+		Questions:       map[string]provider.DecisionQuestion{"q": {Type: "boolean"}},
+		ProviderOptions: map[string]interface{}{"gateway": map[string]interface{}{"models": 5}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Gateway decision file input: url data") {
+		t.Fatalf("err = %v", err)
+	}
+}
