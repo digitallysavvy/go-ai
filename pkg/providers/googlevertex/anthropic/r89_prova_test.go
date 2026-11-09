@@ -89,7 +89,9 @@ func TestR89provaLabelsHeaderPrecedence(t *testing.T) {
 	if v := run(Options{Headers: map[string]string{LabelsHeader: "provider"}}, nil); v != "provider" {
 		t.Errorf("provider vs generated: %q", v)
 	}
-	resolver := func(context.Context) (map[string]string, error) { return map[string]string{LabelsHeader: "resolved"}, nil }
+	resolver := func(context.Context) (map[string]string, error) {
+		return map[string]string{LabelsHeader: "resolved"}, nil
+	}
 	if v := run(Options{HeadersResolver: resolver}, nil); v != "resolved" {
 		t.Errorf("resolver vs generated: %q", v)
 	}
