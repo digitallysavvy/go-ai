@@ -23,7 +23,7 @@ func TestR90integErrorDataIsSchemaOutput(t *testing.T) {
 		message string
 		data    interface{}
 	}{
-		`{"error":{"message":"bad","type":"x"},"other":2}`:                {"Bad Request", nil},
+		`{"error":{"message":"bad","type":"x"},"other":2}`:               {"Bad Request", nil},
 		`{"message":"m","type":"t","param":"p","code":"c","extra":true}`: {"m", map[string]interface{}{"message": "m", "type": "t", "param": "p", "code": "c"}},
 	} {
 		b := body
