@@ -5,7 +5,17 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 )
+
+// The TS assertion that the input schema is unchanged reads a variable the
+// case evaluator does not hold; TestR90provbMFJSArrayChildrenOnce checks it.
+func init() {
+	tsfixture.RegisterPorted(map[string]string{
+		tsfixture.PortedKey("normalizes existing prefixItems and tuple children in positional order", "schema.properties.row.items", "toEqual"): "TestR90provbMFJSArrayChildrenOnce",
+	})
+}
 
 func r90provbJSON(t *testing.T, s string) interface{} {
 	t.Helper()
@@ -54,6 +64,10 @@ func TestR90provbMFJSArrayChildrenOnce(t *testing.T) {
 	want := r90provbJSON(t, `{"type":"object","properties":{"row":{"type":"array","prefixItems":[{"anyOf":[{"type":"string","minLength":1}]},true,{"type":"array","prefixItems":[{"type":"number"},false]}]},"flags":{"type":"array","items":false}}}`)
 	if got := r90provbNormalized(t, schema); !reflect.DeepEqual(got, want) {
 		t.Fatalf("positional order: got %v", got)
+	}
+	rowItems := schema.(map[string]interface{})["properties"].(map[string]interface{})["row"].(map[string]interface{})["items"]
+	if !reflect.DeepEqual(rowItems, r90provbJSON(t, `[{"type":"array","items":[{"type":"number"},false]}]`)) {
+		t.Fatalf("input schema changed: %v", rowItems)
 	}
 }
 
