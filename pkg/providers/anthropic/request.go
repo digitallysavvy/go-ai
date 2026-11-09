@@ -170,11 +170,11 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		temperatureProvider = m.providerOptionsName()
 	}
 	if temperature != nil && *temperature > maxTemperature {
-		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v exceeds %s maximum of %.1f. clamped to %.1f", *temperature, temperatureProvider, maxTemperature, maxTemperature))
+		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%s exceeds %s maximum of %.1f. clamped to %.1f", providerutils.JSNumberString(*temperature), temperatureProvider, maxTemperature, maxTemperature))
 		clamped := maxTemperature
 		temperature = &clamped
 	} else if temperature != nil && *temperature < 0 {
-		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v is below %s minimum of 0. clamped to 0", *temperature, temperatureProvider))
+		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%s is below %s minimum of 0. clamped to 0", providerutils.JSNumberString(*temperature), temperatureProvider))
 		zero := 0.0
 		temperature = &zero
 	}

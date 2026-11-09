@@ -827,11 +827,24 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	// Content slice that includes the text, so text is no longer hoisted ahead
 	// of the thinking or tool blocks that precede it.
 	ordered := textInContent
+	textPartCount, emptyText := 0, false
 	for i, c := range response.Content {
 		// A json-tool text part alone stays on result.Text, like plain text.
 		if c.Type != "text" && !jsonToolBlocks[i] && len(byBlock[i]) > 0 {
 			ordered = true
 		}
+		for _, part := range byBlock[i] {
+			if t, ok := part.(types.TextContent); ok {
+				textPartCount++
+				emptyText = t.Text == ""
+			}
+		}
+	}
+	// TS content has one text part per text block: several text blocks, or a
+	// single empty one (which result.Text cannot carry), are emitted as
+	// parts too.
+	if textPartCount > 1 || (textPartCount == 1 && emptyText) {
+		ordered = true
 	}
 	if ordered {
 		var text strings.Builder
@@ -2535,7 +2548,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					if args == nil {
 						args = map[string]interface{}{}
 					}
-					inputJSON := inputText(part.RawInput, args)
+					// TS JSON.stringify(part.input ?? {}).
+					inputJSON := inputText(nonNullRaw(part.RawInput), args)
 					// Go maps provider tool names back to SDK names here as
 					// for streamed tool_use blocks (Known difference since
 					// r34; TS passes part.name through raw).

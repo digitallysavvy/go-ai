@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // LabelsHeader is the HTTP header Vertex AI reads request labels from.
@@ -14,26 +14,26 @@ const LabelsHeader = "x-vertex-ai-labels"
 
 // transformRequestHeaders forwards providerOptions.vertex.labels as the
 // base64-encoded JSON x-vertex-ai-labels header (TS #23348). An explicit
-// request header of the same name (any casing, even empty) wins. Invalid labels return an
-// InvalidArgumentError before any request is sent. Note that Go map keys are
+// request header of the same name (any casing, even empty) wins. Invalid
+// labels return TS parseProviderOptions' InvalidArgumentError before any
+// request is sent. Note that Go map keys are
 // marshaled in sorted order, unlike TS which keeps insertion order.
 func transformRequestHeaders(headers map[string]string, providerOptions map[string]interface{}) (map[string]string, error) {
-	raw, ok := providerOptions["vertex"]
-	if !ok || raw == nil {
-		return headers, nil
-	}
-	vertexOptions, ok := raw.(map[string]interface{})
-	if !ok {
-		return nil, invalidLabels("providerOptions.vertex must be an object")
+	// TS parseProviderOptions({provider: 'vertex', schema:
+	// googleVertexAnthropicProviderOptions}): labels is
+	// z.record(z.string(), z.string()).optional(); a mismatch is the
+	// InvalidArgumentError "invalid vertex provider options".
+	vertexOptions, err := providerutils.ParseProviderOptions("vertex", providerOptions, providerutils.OptionSchema{
+		"labels": providerutils.OptRecord(nil, providerutils.OptString),
+	})
+	if err != nil {
+		return nil, err
 	}
 	rawLabels, present := vertexOptions["labels"]
 	if !present {
 		return headers, nil
 	}
-	labels, err := parseLabels(rawLabels)
-	if err != nil {
-		return nil, err
-	}
+	labels := parseLabels(rawLabels)
 	for name := range headers {
 		if strings.EqualFold(name, LabelsHeader) {
 			return headers, nil
@@ -44,7 +44,7 @@ func transformRequestHeaders(headers map[string]string, providerOptions map[stri
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false) // match JSON.stringify
 	if err := enc.Encode(labels); err != nil {
-		return nil, invalidLabels(err.Error())
+		return nil, err
 	}
 	encoded := base64.StdEncoding.EncodeToString(bytes.TrimRight(buf.Bytes(), "\n"))
 
@@ -91,25 +91,21 @@ func transformRequestHeadersWith(static map[string]string) func(map[string]strin
 	}
 }
 
-func parseLabels(raw interface{}) (map[string]string, error) {
+// parseLabels reads the validated labels record.
+func parseLabels(raw interface{}) map[string]string {
 	switch v := raw.(type) {
 	case map[string]string:
-		return v, nil
+		return v
 	case map[string]interface{}:
 		out := make(map[string]string, len(v))
 		for k, val := range v {
-			s, ok := val.(string)
-			if !ok {
-				return nil, invalidLabels("labels values must be strings")
-			}
-			out[k] = s
+			out[k], _ = val.(string)
 		}
-		return out, nil
-	default:
-		return nil, invalidLabels("labels must be an object of string values")
+		return out
 	}
-}
-
-func invalidLabels(msg string) error {
-	return providererrors.NewArgumentError("providerOptions.vertex.labels", "Invalid Google Vertex Anthropic provider options: "+msg, nil)
+	out := map[string]string{}
+	if encoded, err := json.Marshal(raw); err == nil {
+		_ = json.Unmarshal(encoded, &out)
+	}
+	return out
 }

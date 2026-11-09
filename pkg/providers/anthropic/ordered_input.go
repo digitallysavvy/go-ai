@@ -22,8 +22,9 @@ func inputText(raw json.RawMessage, fallback map[string]interface{}) string {
 }
 
 // UnmarshalJSON decodes the block and keeps the wire form of its input. An
-// input that is not a JSON object (TS tool_use `input: z.unknown()`) leaves
-// Input nil and is kept in RawInput, so the block still decodes.
+// input that is not a JSON object (TS tool_use `input: z.unknown()`, null
+// included) leaves Input nil and is kept in RawInput, so the block still
+// decodes.
 func (c *anthropicContent) UnmarshalJSON(b []byte) error {
 	type plain anthropicContent
 	var p struct {
@@ -44,10 +45,12 @@ func (c *anthropicContent) UnmarshalJSON(b []byte) error {
 		// TS `part.signature != null`: an empty string still counts.
 		c.HasSignature = true
 	}
-	if len(p.Input) > 0 && string(p.Input) != "null" {
+	if len(p.Input) > 0 {
+		// A null input is kept too: TS JSON.stringify(part.input) gives
+		// "null" for it.
 		c.RawInput = p.Input
 		var obj map[string]interface{}
-		if json.Unmarshal(p.Input, &obj) == nil {
+		if string(p.Input) != "null" && json.Unmarshal(p.Input, &obj) == nil {
 			c.Input = obj
 		}
 	}
@@ -68,4 +71,12 @@ func (c *anthropicContent) rawInputValue() interface{} {
 		return nil
 	}
 	return v
+}
+
+// nonNullRaw is raw unless it is the JSON literal null (TS `part.input ?? {}`).
+func nonNullRaw(raw json.RawMessage) json.RawMessage {
+	if string(raw) == "null" {
+		return nil
+	}
+	return raw
 }

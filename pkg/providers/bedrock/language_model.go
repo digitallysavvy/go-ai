@@ -124,11 +124,11 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 
 	if shouldNormalizeTemperature && temperature != nil {
 		if *temperature > 1 {
-			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: fmt.Sprintf("%v exceeds bedrock maximum of 1.0. clamped to 1.0", *temperature)})
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: providerutils.JSNumberString(*temperature) + " exceeds bedrock maximum of 1.0. clamped to 1.0"})
 			clamped := 1.0
 			temperature = &clamped
 		} else if *temperature < 0 {
-			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: fmt.Sprintf("%v is below bedrock minimum of 0. clamped to 0", *temperature)})
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Details: providerutils.JSNumberString(*temperature) + " is below bedrock minimum of 0. clamped to 0"})
 			clamped := 0.0
 			temperature = &clamped
 		}
@@ -1166,7 +1166,7 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				isJSONResponseFromTool = true
 				// TS: text = JSON.stringify(toolUse.input), appended after any
 				// text the model produced before the tool call.
-				jsonText := jsonorder.Text(part.ToolUse.Input, nil)
+				jsonText := converseInputText(part.ToolUse.Input, false)
 				if len(ordered) > 0 {
 					hasNonText = true // several text parts: keep the ordered content
 				}
@@ -1192,7 +1192,7 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				ToolName:  name,
 				Arguments: args,
 				// TS: input: JSON.stringify(toolUse.input ?? {}), wire key order.
-				RawArguments: jsonorder.Text(part.ToolUse.Input, args),
+				RawArguments: converseInputText(part.ToolUse.Input, true),
 			}
 			result.ToolCalls = append(result.ToolCalls, call)
 			ordered = append(ordered, types.ToolCallContent{ToolCallID: call.ID, ToolName: call.ToolName, Arguments: args, Input: call.RawArguments})
@@ -1268,6 +1268,17 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	}
 
 	return result, nil
+}
+
+// converseInputText is TS JSON.stringify(toolUse.input) (orEmpty: of
+// `toolUse.input ?? {}`), keeping the wire key order: a non-object input
+// (z.unknown()) gives its own JSON text, a null one "null" ("{}" with
+// orEmpty).
+func converseInputText(raw json.RawMessage, orEmpty bool) string {
+	if v, ok := jsonorder.Parse(raw); ok && (v != nil || !orEmpty) {
+		return jsonorder.Stringify(v)
+	}
+	return "{}"
 }
 
 func mustMarshalProviderMetadata(v interface{}) json.RawMessage {

@@ -158,6 +158,10 @@ func serverToolUseCall(content anthropicContent, toolNameMap map[string]string, 
 		tc.ToolName = mapAnthropicToolName(content.Name, toolNameMap)
 		tc.Arguments = args
 		tc.RawArguments = ordered.String()
+		if content.Input == nil && len(content.RawInput) > 0 {
+			// TS JSON.stringify(part.input) of a null input is "null".
+			tc.RawArguments = inputText(content.RawInput, nil)
+		}
 	case "tool_search_tool_regex", "tool_search_tool_bm25", "advisor":
 		tc.ToolName = mapAnthropicToolName(content.Name, toolNameMap)
 		tc.Arguments = input

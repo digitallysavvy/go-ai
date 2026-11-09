@@ -47,7 +47,7 @@ func TestR85provaVertexAnthropicStructuredOutput(t *testing.T) {
 		}
 		return body, res
 	}
-	for _, id := range []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"} {
+	for _, id := range []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-fable-5-2"} {
 		body, res := generate(id)
 		oc, _ := body["output_config"].(map[string]interface{})
 		format, _ := oc["format"].(map[string]interface{})

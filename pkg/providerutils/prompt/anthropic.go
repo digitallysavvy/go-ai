@@ -1379,7 +1379,7 @@ func (c *anthropicConverter) convertToolResult(msg types.Message, part types.Too
 		"type":        "tool_result",
 		"tool_use_id": part.ToolCallID,
 	}
-	if toolsetName := c.toolsetName(part.ToolName, part.ProviderOptions); toolsetName != "" {
+	if toolsetName, ok := c.toolsetName(part.ToolName, part.ProviderOptions); ok {
 		result["toolset_name"] = toolsetName
 	}
 	result["content"] = contentValue
@@ -1636,6 +1636,71 @@ func withoutEmptyText(parts []types.ContentPart) []types.ContentPart {
 	return out
 }
 
+// assistantPartProviderOptions is TS part.providerOptions of an assistant
+// content part (a tool call reads its metadata when it has no options, as
+// convertToolCall does).
+func assistantPartProviderOptions(part types.ContentPart) map[string]interface{} {
+	switch p := part.(type) {
+	case types.TextContent:
+		return p.ProviderOptions
+	case *types.TextContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.ReasoningContent:
+		return p.ProviderOptions
+	case *types.ReasoningContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.ToolCallContent:
+		return toolCallFromContent(p).providerOptions
+	case *types.ToolCallContent:
+		if p != nil {
+			return toolCallFromContent(*p).providerOptions
+		}
+	case legacyToolCallPart:
+		return p.call.ProviderMetadata
+	case types.ToolResultContent:
+		return p.ProviderOptions
+	case *types.ToolResultContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.CustomContent:
+		return p.ProviderOptions
+	case *types.CustomContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.FileContent:
+		return p.ProviderOptions
+	case *types.FileContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.ImageContent:
+		return p.ProviderOptions
+	case *types.ImageContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.GeneratedFileContent:
+		return p.ProviderOptions
+	case *types.GeneratedFileContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	case types.ReasoningFileContent:
+		return p.ProviderOptions
+	case *types.ReasoningFileContent:
+		if p != nil {
+			return p.ProviderOptions
+		}
+	}
+	return nil
+}
+
 // legacyToolCallPart adapts a Message.ToolCalls entry to a content part.
 type legacyToolCallPart struct{ call types.ToolCall }
 
@@ -1655,15 +1720,15 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 
 		for k, part := range parts {
 			isLastContentPart := k == len(parts)-1
-			cacheControl := func(partOptions map[string]interface{}) interface{} {
-				if cc := c.validator.GetCacheControl(partOptions, "assistant message part", true); cc != nil {
-					return cc
-				}
-				if isLastContentPart {
-					return c.validator.GetCacheControl(msg.ProviderOptions, "assistant message", true)
-				}
-				return nil
+			// TS evaluates the cache control of every part before the switch,
+			// so a reasoning, custom or file part (which never carries
+			// cache_control) still uses a breakpoint, and a message's cache
+			// control is read at its last part whatever that part is.
+			partCacheControl := c.validator.GetCacheControl(assistantPartProviderOptions(part), "assistant message part", true)
+			if partCacheControl == nil && isLastContentPart {
+				partCacheControl = c.validator.GetCacheControl(msg.ProviderOptions, "assistant message", true)
 			}
+			cacheControl := func(map[string]interface{}) interface{} { return partCacheControl }
 
 			switch p := part.(type) {
 			case *types.TextContent:
@@ -1882,12 +1947,19 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		inputMap, _ := part.input.(map[string]interface{})
 		inputType, _ := inputMap["type"].(string)
 
+		// TS sends part.input as is: a JSON null input stays null.
+		providerInput := func(input interface{}) interface{} {
+			if input == nil && part.inputNull {
+				return nil
+			}
+			return inputOrEmpty(input)
+		}
 		serverToolUse := func(name string, input interface{}) {
 			block := map[string]interface{}{
 				"type":  "server_tool_use",
 				"id":    part.id,
 				"name":  name,
-				"input": inputOrEmpty(input),
+				"input": providerInput(input),
 			}
 			if caller != nil {
 				block["caller"] = caller
@@ -1908,7 +1980,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 				"type":        "mcp_tool_use",
 				"id":          part.id,
 				"name":        part.toolName,
-				"input":       orderedInput(inputOrEmpty(part.input), part.inputRaw),
+				"input":       orderedInput(providerInput(part.input), part.inputRaw),
 				"server_name": serverName,
 			}
 			setIfNotNil(block, "cache_control", cacheControl)
@@ -1937,7 +2009,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		return
 	}
 
-	if toolsetName := c.toolsetName(part.toolName, part.providerOptions); toolsetName != "" {
+	if toolsetName, ok := c.toolsetName(part.toolName, part.providerOptions); ok {
 		// toolset member call: the `action` is the member tool name. A
 		// malformed call (action missing, null, or not a string -- e.g. the
 		// raw input isn't even an object) is preserved rather than dropped,
@@ -2434,12 +2506,15 @@ func moveToolUseBlocksToEnd(content []map[string]interface{}) []map[string]inter
 	return result
 }
 
-func (c *anthropicConverter) toolsetName(toolName string, providerOptions map[string]interface{}) string {
-	if name, ok := c.opts.ToolsetNames[toolName]; ok && name != "" {
-		return name
+// toolsetName is TS getAnthropicToolsetName: ok is false when the call is
+// no toolset member (a string toolsetName in the metadata, an empty one
+// included, makes it one).
+func (c *anthropicConverter) toolsetName(toolName string, providerOptions map[string]interface{}) (string, bool) {
+	if name, ok := c.opts.ToolsetNames[toolName]; ok {
+		return name, true
 	}
-	name, _ := anthropicOptions(providerOptions)["toolsetName"].(string)
-	return name
+	name, ok := anthropicOptions(providerOptions)["toolsetName"].(string)
+	return name, ok
 }
 
 func anthropicCaller(providerOptions map[string]interface{}) map[string]interface{} {

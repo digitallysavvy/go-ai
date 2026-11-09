@@ -20,6 +20,9 @@ const (
 	// Claude Sonnet 5 — current-generation Sonnet
 	ClaudeSonnet5 = "claude-sonnet-5"
 
+	// Claude Fable 5.2 — always-adaptive-thinking model with the same capabilities as Fable 5.1
+	ClaudeFable5_2 = "claude-fable-5-2"
+
 	// Claude Fable 5.1 — always-adaptive-thinking model with system-message clearAt/effort
 	ClaudeFable5_1 = "claude-fable-5-1"
 

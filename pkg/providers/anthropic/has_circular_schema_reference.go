@@ -89,16 +89,15 @@ func collectLocalRefs(node interface{}, refs []string) []string {
 		}
 	case map[string]interface{}:
 		for key, value := range n {
+			m, isRecord := value.(map[string]interface{})
 			switch {
 			case key == "$ref":
 				if s, ok := value.(string); ok && strings.HasPrefix(s, "#") {
 					refs = append(refs, s)
 				}
-			case schemaMapKeywords[key]:
-				if m, ok := value.(map[string]interface{}); ok {
-					for _, sub := range m {
-						refs = collectLocalRefs(sub, refs)
-					}
+			case schemaMapKeywords[key] && isRecord:
+				for _, sub := range m {
+					refs = collectLocalRefs(sub, refs)
 				}
 			case key != "$defs" && key != "definitions" && !schemaDataKeywords[key]:
 				// definitions are only reached through a $ref.

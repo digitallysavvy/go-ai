@@ -273,28 +273,31 @@ func (w *elevenlabsWord) UnmarshalJSON(data []byte) error {
 // (elevenlabs-error.ts, TS 7062ab6818): errors under `detail` (an API error
 // object, FastAPI's validation issue list, or a string), or the older
 // {"error":{"message","code"}} shape.
-var elevenlabsErrorDataSchema = zodlite.Union(
-	zodlite.Object(zodlite.F("detail", zodlite.Union(
-		zodlite.Object(
-			zodlite.F("message", zodlite.String),
-			zodlite.F("code", zodlite.Nullish(zodlite.String)),
-			zodlite.F("status", zodlite.Nullish(zodlite.String)),
-			zodlite.F("type", zodlite.Nullish(zodlite.String)),
-			zodlite.F("request_id", zodlite.Nullish(zodlite.String)),
-			zodlite.F("param", zodlite.Nullish(zodlite.String)),
-		),
-		zodlite.Array(zodlite.Object(
-			zodlite.F("msg", zodlite.String),
-			zodlite.F("loc", zodlite.Nullish(zodlite.Array(zodlite.Union(zodlite.String, zodlite.Number)))),
-			zodlite.F("type", zodlite.Nullish(zodlite.String)),
-		)),
-		zodlite.String,
-	))),
-	zodlite.Object(zodlite.F("error", zodlite.Object(
+var elevenlabsErrorDataSchema = zodlite.Union(elevenlabsErrorDetailSchema, elevenlabsErrorObjectSchema)
+
+// elevenlabsErrorDetailSchema is the first union member ({detail}).
+var elevenlabsErrorDetailSchema = zodlite.Object(zodlite.F("detail", zodlite.Union(
+	zodlite.Object(
 		zodlite.F("message", zodlite.String),
-		zodlite.F("code", zodlite.Number),
-	))),
-)
+		zodlite.F("code", zodlite.Nullish(zodlite.String)),
+		zodlite.F("status", zodlite.Nullish(zodlite.String)),
+		zodlite.F("type", zodlite.Nullish(zodlite.String)),
+		zodlite.F("request_id", zodlite.Nullish(zodlite.String)),
+		zodlite.F("param", zodlite.Nullish(zodlite.String)),
+	),
+	zodlite.Array(zodlite.Object(
+		zodlite.F("msg", zodlite.String),
+		zodlite.F("loc", zodlite.Nullish(zodlite.Array(zodlite.Union(zodlite.String, zodlite.Number)))),
+		zodlite.F("type", zodlite.Nullish(zodlite.String)),
+	)),
+	zodlite.String,
+)))
+
+// elevenlabsErrorObjectSchema is the second union member ({error}).
+var elevenlabsErrorObjectSchema = zodlite.Object(zodlite.F("error", zodlite.Object(
+	zodlite.F("message", zodlite.String),
+	zodlite.F("code", zodlite.Number),
+)))
 
 // elevenlabsErrorMessage is TS createJsonErrorResponseHandler with
 // elevenlabsErrorDataSchema and elevenlabsErrorToMessage: the message of a
@@ -308,10 +311,12 @@ func elevenlabsErrorMessage(statusCode int, body []byte) (message, code string) 
 	if securejson.Unmarshal(body, &data) != nil || elevenlabsErrorDataSchema(data, true, nil) != nil {
 		return http.StatusText(statusCode), ""
 	}
-	detail, hasDetail := data["detail"]
-	if !hasDetail {
+	// zod's union yields the first member that matches: a body whose detail
+	// does not match is read through its error object.
+	if elevenlabsErrorDetailSchema(data, true, nil) != nil {
 		return providerutils.NestedErrorMessage(statusCode, body)
 	}
+	detail := data["detail"]
 	switch d := detail.(type) {
 	case string:
 		return d, ""
