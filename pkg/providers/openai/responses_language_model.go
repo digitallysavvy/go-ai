@@ -102,7 +102,11 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	// Row 75f86f4: a 200 response with an embedded error object maps to a
 	// 400 ProviderError.
 	if resp.Error != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 400, resp.Error.Code, resp.Error.Message, nil)
+		embedded := providererrors.NewProviderError(m.Provider(), 400, resp.Error.Code, resp.Error.Message, nil)
+		notRetryable := false
+		embedded.Retryable = &notRetryable
+		embedded.ResponseHeaders, embedded.ResponseBody = responsesErrorResponse(httpResp)
+		return nil, embedded
 	}
 	// Row 75f86f4: a 200 response with no `output` field means the API
 	// returned nothing to work with; raise a descriptive error instead of
@@ -117,6 +121,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		noOutput := providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
 		notRetryable := false
 		noOutput.Retryable = &notRetryable
+		noOutput.ResponseHeaders, noOutput.ResponseBody = responsesErrorResponse(httpResp)
 		return nil, noOutput
 	}
 
@@ -5056,4 +5061,15 @@ func validateResponsesPromptCacheOptions(value interface{}, providerOptionsName 
 		}
 	}
 	return nil
+}
+
+// responsesErrorResponse is the responseHeaders (lower-case keys, TS
+// extractResponseHeaders) and responseBody of an APICallError TS throws for
+// a successful HTTP response (openai-responses-language-model.ts 872-895).
+func responsesErrorResponse(resp *internalhttp.Response) (map[string]string, string) {
+	if resp == nil {
+		return nil, ""
+	}
+	_, headers, _ := (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails()
+	return headers, string(resp.Body)
 }
