@@ -120,3 +120,29 @@ func TestR90provgSpeechRequestBodyText(t *testing.T) {
 		t.Fatalf("request body = %v, want %s", got, want)
 	}
 }
+
+// TestR90provgUnaryTranscriptionNullTexts: TS google-transcription-model.ts
+// doGenerate skips a text content whose text is null (annotations
+// included), keeps an empty word text, reports an empty usage object, and
+// returns warnings: [].
+func TestR90provgUnaryTranscriptionNullTexts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"steps":[{"type":"model_output","content":[`+
+			`{"type":"text","annotations":[{"type":"word_info","text":"skipped","start_offset":"0s","end_offset":"1s"}]},`+
+			`{"type":"text","text":"hi","annotations":[{"type":"word_info","text":"","start_offset":"1s","end_offset":"2s"}]}]}],"usage":{}}`)
+	}))
+	defer server.Close()
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	m := NewTranscriptionModel(p, ModelGemini35Transcribe)
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "hi" || len(res.Segments) != 1 || res.Segments[0].Text != "" || res.Segments[0].Start != 1 {
+		t.Fatalf("text = %q, segments = %+v", res.Text, res.Segments)
+	}
+	if res.ProviderUsage == nil || res.ProviderMetadata == nil || res.Warnings == nil {
+		t.Fatalf("usage = %v, metadata = %v, warnings = %v", res.ProviderUsage, res.ProviderMetadata, res.Warnings)
+	}
+}
