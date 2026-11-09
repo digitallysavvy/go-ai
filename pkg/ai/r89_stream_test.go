@@ -160,3 +160,25 @@ func TestR89streamSteeringWithSmoothStreamMatchesTS(t *testing.T) {
 		t.Errorf("onChunk:\n got %q\nwant %q", onChunk, wantOnChunk)
 	}
 }
+
+// TS validateUIMessages (node, packages/ai/dist at 382d0b8eaf) strips state
+// and citations from a steering message's text part, without validating the
+// citations: the steering text schema is {type, text, providerMetadata?}
+// (validate-ui-messages.ts 144-164).
+func TestR89streamValidateUIMessagesStripsSteeringTextExtras(t *testing.T) {
+	in := `[{"id":"1","role":"assistant","parts":[{"type":"steering-message","id":"s1","parts":[` +
+		`{"type":"text","text":"hi","state":"done","citations":[{"source":{"type":"source","sourceType":"url","id":"a"}}],"providerMetadata":{"p":{"k":1}}},` +
+		`{"type":"file","mediaType":"image/png","url":"https://x/y.png","extra":1}]}]}]`
+	messages, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: json.RawMessage(in)})
+	if err != nil {
+		t.Fatalf("ValidateUIMessages: %v (TS accepts and strips)", err)
+	}
+	got, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"id":"1","role":"assistant","parts":[{"type":"steering-message","id":"s1","parts":[{"type":"text","text":"hi","providerMetadata":{"p":{"k":1}}},{"type":"file","mediaType":"image/png","url":"https://x/y.png"}]}]}]`
+	if string(got) != want {
+		t.Errorf("messages:\n got %s\nwant %s", got, want)
+	}
+}

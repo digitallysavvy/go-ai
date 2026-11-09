@@ -768,19 +768,49 @@ func (p *SteeringMessageUIPart) UnmarshalJSON(data []byte) error {
 		var part UIMessagePart
 		switch head.Type {
 		case "text":
-			part = &TextUIPart{}
+			text, err := decodeSteeringTextUIPart(rawPart)
+			if err != nil {
+				return fmt.Errorf("parts[%d]: %w", i, err)
+			}
+			part = text
 		case "file":
 			part = &FileUIPart{}
+			if err := json.Unmarshal(rawPart, part); err != nil {
+				return fmt.Errorf("parts[%d]: %w", i, err)
+			}
 		default:
 			return fmt.Errorf("parts[%d]: unsupported steering message part type %q", i, head.Type)
-		}
-		if err := json.Unmarshal(rawPart, part); err != nil {
-			return fmt.Errorf("parts[%d]: %w", i, err)
 		}
 		parts = append(parts, part)
 	}
 	*p = SteeringMessageUIPart{ID: raw.ID, Parts: parts}
 	return nil
+}
+
+// decodeSteeringTextUIPart decodes a text part of a steering message. TS
+// declares these parts as {type, text, providerMetadata?}
+// (validate-ui-messages.ts 144-164), so a state or citations on them are not
+// part of the schema: they are kept as decoded (TS JSON.parse) but not
+// validated, and ValidateUIMessages strips them (zod strips undeclared keys).
+// Citations that do not decode into types.Citation are dropped.
+func decodeSteeringTextUIPart(data []byte) (*TextUIPart, error) {
+	var raw struct {
+		Text             string                 `json:"text"`
+		State            UIPartState            `json:"state"`
+		Citations        json.RawMessage        `json:"citations"`
+		ProviderMetadata map[string]interface{} `json:"providerMetadata"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	part := &TextUIPart{Text: raw.Text, State: raw.State, ProviderMetadata: raw.ProviderMetadata}
+	if len(raw.Citations) > 0 {
+		var citations []types.Citation
+		if json.Unmarshal(raw.Citations, &citations) == nil {
+			part.Citations = citations
+		}
+	}
+	return part, nil
 }
 
 func (p DataUIPart) MarshalJSON() ([]byte, error) {

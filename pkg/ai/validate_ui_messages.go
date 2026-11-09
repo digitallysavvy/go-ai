@@ -356,6 +356,18 @@ func decodeValidatedUIMessages(raw interface{}) ([]UIMessage, error) {
 	}
 	for i := range messages {
 		for _, part := range messages[i].Parts {
+			if steering, ok := asSteeringMessageUIPart(part); ok {
+				// TS steering text parts are {type, text, providerMetadata?}
+				// (validate-ui-messages.ts 144-164): zod strips state and
+				// citations.
+				for _, nested := range steering.Parts {
+					if text, ok := nested.(*TextUIPart); ok {
+						text.State = ""
+						text.Citations = nil
+					}
+				}
+				continue
+			}
 			tool, ok := AsToolUIPart(part)
 			if !ok {
 				continue
