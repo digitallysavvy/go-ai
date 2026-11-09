@@ -2,6 +2,7 @@ package mistral
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -115,5 +117,57 @@ func TestR90provgEmbedFractionalTokens(t *testing.T) {
 	}
 	if res.Usage.Tokens != 2.5 {
 		t.Fatalf("tokens = %v, want 2.5", res.Usage.Tokens)
+	}
+}
+
+// TestR90provgConversationStreamErrorAndExecutionInput: TS enqueues a
+// conversation.response.error event object as the error, which core
+// normalizes (type, numeric code as status code, retryable), and a built-in
+// execution's input is JSON.stringify({arguments}) with HTML characters kept
+// literal (mistral-conversation-language-model.ts).
+func TestR90provgConversationStreamErrorAndExecutionInput(t *testing.T) {
+	sse := `data: {"type":"conversation.response.started","conversation_id":"c"}
+
+data: {"type":"tool.execution.started","id":"e1","name":"web_search","arguments":"{\"query\":\"Tom & Jerry <3>\"}"}
+
+data: {"type":"tool.execution.done","id":"e1","name":"web_search"}
+
+data: {"type":"conversation.response.error","message":"Too many requests","code":429}
+
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer server.Close()
+	m := New(Config{APIKey: "k", BaseURL: server.URL}).ConversationModel("mistral-medium-latest")
+	stream, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var input string
+	var streamErr error
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		switch c.Type {
+		case provider.ChunkTypeToolCall:
+			input = c.ToolCall.RawArguments
+		case provider.ChunkTypeError:
+			streamErr = c.Err
+		}
+	}
+	if want := `{"arguments":"{\"query\":\"Tom & Jerry <3>\"}"}`; input != want {
+		t.Fatalf("execution input = %s, want %s", input, want)
+	}
+	var spe *providererrors.StreamProviderError
+	if !errors.As(streamErr, &spe) {
+		t.Fatalf("stream error = %#v, want a StreamProviderError", streamErr)
+	}
+	if spe.Message != "Too many requests" || spe.Type != "conversation.response.error" || spe.StatusCode == nil || *spe.StatusCode != 429 || !spe.IsRetryable {
+		t.Fatalf("stream error = %+v", spe)
 	}
 }

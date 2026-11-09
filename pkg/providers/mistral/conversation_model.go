@@ -14,8 +14,10 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
@@ -272,12 +274,13 @@ type conversationExecution struct {
 // completed built-in tool execution.
 func (c *conversationConverter) convertTool(e conversationExecution) (types.ToolCallContent, types.ToolResultContent) {
 	toolName := c.names.customName(e.Name)
-	input, _ := json.Marshal(map[string]interface{}{"arguments": e.Arguments})
+	// TS JSON.stringify({arguments}): HTML characters stay literal.
+	input, _ := jsonstr.Marshal(map[string]interface{}{"arguments": e.Arguments})
 	meta := map[string]interface{}{"type": "tool.execution", "name": e.Name}
 	if e.Function != nil {
 		meta["function"] = *e.Function
 	}
-	metaJSON, _ := json.Marshal(map[string]interface{}{"mistral": meta})
+	metaJSON, _ := jsonstr.Marshal(map[string]interface{}{"mistral": meta})
 	result := map[string]interface{}{}
 	if e.Info != nil {
 		result["info"] = e.Info
@@ -556,7 +559,17 @@ func (s *conversationStream) handle(data string) {
 		s.isDone = true
 	case "conversation.response.error":
 		s.hasError = true
-		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: ev.Message})
+		// TS enqueues the event object itself as the error, which core
+		// normalizes (normalizeStreamProviderError): message, the event
+		// type, the numeric code (also an HTTP status when it is one) and
+		// the event as data.
+		var event map[string]interface{}
+		_ = json.Unmarshal([]byte(data), &event)
+		s.queue = append(s.queue, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: ev.Message,
+			Err:  providererrors.NormalizeStreamProviderError(errors.New(ev.Message), "mistral.conversation", event),
+		})
 	case "message.output.delta":
 		// TS: content is a string or a text / thinking / tool_reference chunk.
 		var contentErr error
@@ -639,7 +652,8 @@ func (s *conversationStream) handle(data string) {
 			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("Missing tool execution start for %s", ev.ID)})
 			return
 		}
-		delta, _ := json.Marshal(map[string]interface{}{"arguments": ex.Arguments})
+		// TS JSON.stringify({arguments}): HTML characters stay literal.
+		delta, _ := jsonstr.Marshal(map[string]interface{}{"arguments": ex.Arguments})
 		s.queue = append(s.queue,
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: ev.ID, Text: string(delta)},
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: ev.ID, ToolCall: &types.ToolCall{ID: ev.ID}},
