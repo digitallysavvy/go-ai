@@ -112,3 +112,35 @@ func TestR89toolsProdiaImg2VidEmptyImageStillSent(t *testing.T) {
 		t.Fatal("input part missing")
 	}
 }
+
+// TS prodia-image-model.ts getArgs/doGenerate: JSON.stringify({type, config:
+// {prompt, width, height, seed, steps, style_preset, loras, progressive}})
+// and the fixed Accept header over a call header.
+func TestR89toolsProdiaImageBodyOrderAndAccept(t *testing.T) {
+	var body, accept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body, accept = string(b), r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "multipart/form-data; boundary=b")
+		_, _ = w.Write([]byte(r33Job + "--b\r\nContent-Disposition: form-data; name=\"output\"\r\nContent-Type: image/png\r\n\r\nPNG\r\n--b--\r\n"))
+	}))
+	defer srv.Close()
+	m, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).ImageModel("inference.flux-fast.schnell.txt2img.v2")
+	seed := 3
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "a cat", Size: "512x768", Seed: &seed,
+		Headers: map[string]string{"Accept": "image/jpeg"},
+		ProviderOptions: map[string]interface{}{"prodia": map[string]interface{}{
+			"steps": 2, "stylePreset": "anime", "loras": []interface{}{"x"}, "progressive": true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"type":"inference.flux-fast.schnell.txt2img.v2","config":{"prompt":"a cat","width":512,"height":768,"seed":3,"steps":2,"style_preset":"anime","loras":["x"],"progressive":true}}`; body != want {
+		t.Fatalf("body = %s\nwant %s", body, want)
+	}
+	if accept != "multipart/form-data; image/png" {
+		t.Fatalf("Accept = %q", accept)
+	}
+}

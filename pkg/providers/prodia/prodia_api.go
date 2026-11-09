@@ -301,11 +301,13 @@ func buildProdiaProviderMetadata(job *prodiaJobResponse) map[string]interface{} 
 }
 
 // prodiaJobBodyOrder is the key order of the TS job body literals
-// ({type, config: {prompt, seed, resolution}} for video and
+// ({type, config: {prompt, seed, resolution}} for video, {type, config:
+// {prompt, width, height, seed, steps, style_preset, loras, progressive}}
+// for images and
 // {prompt, include_messages, aspect_ratio} for the language model).
 var prodiaJobBodyOrder = map[string][]string{
 	"":       {"type", "config"},
-	"config": {"prompt", "seed", "resolution", "include_messages", "aspect_ratio"},
+	"config": {"prompt", "width", "height", "seed", "steps", "style_preset", "loras", "progressive", "resolution", "include_messages", "aspect_ratio"},
 }
 
 // buildMultipartJobRequest creates a multipart/form-data request body with:
