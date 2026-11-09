@@ -84,7 +84,8 @@ var registryConfigOverrides = map[string]map[string]interface{}{
 	"google.vertex.speech":        {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	"google.vertex.interactions":  {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	// googleVertex.xai's New() requires a project unconditionally.
-	"googleVertex.xai": {"Project": "test-project"},
+	"googleVertex.xai":      {"Project": "test-project"},
+	"googleVertex.xai.chat": {"Project": "test-project"},
 	// open-responses.responses (and Open Responses generally) has no
 	// default base URL -- Config.BaseURL is mandatory since there is no
 	// single canonical Open Responses server, unlike every other provider
@@ -149,6 +150,10 @@ var registryAliasKeys = map[string]string{
 	// Payloads serialized before the evaluate -> decide rename carry the
 	// old TypeSafe provider tag; they restore as typesafe.decision.
 	"typesafe.evaluation": "pre-rename serialization key, restores as typesafe.decision",
+	// Round 90 provider IDs (TS config.provider): payloads serialized with
+	// the earlier keys still restore under the TS ids.
+	"googleVertex.xai": "pre-r90 serialization key, restores as googleVertex.xai.chat",
+	"perplexity":       "pre-r90 embedding serialization key, restores as perplexity.embedding (the language model reports perplexity)",
 	// "google" is a short alias for the default provider name
 	// "google.generative-ai" (TS: providerName defaults to
 	// 'google.generative-ai', options.name lets callers override it to
