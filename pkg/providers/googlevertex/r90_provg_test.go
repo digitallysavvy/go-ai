@@ -143,3 +143,22 @@ func TestR90provgMaaSProviderIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestR90provgEmbeddingFractionalTokens: TS usage.tokens is the sum of the
+// z.number() statistics.token_count values, kept exactly.
+func TestR90provgEmbeddingFractionalTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"predictions":[{"embeddings":{"values":[0.1],"statistics":{"token_count":1.5}}},{"embeddings":{"values":[0.2],"statistics":{"token_count":2}}}]}`)
+	}))
+	defer server.Close()
+	p, _ := New(Config{BaseURL: server.URL, AccessToken: "t"})
+	m, _ := p.EmbeddingModel("text-embedding-005")
+	res, err := m.DoEmbedMany(context.Background(), []string{"a", "b"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.Tokens != 3.5 {
+		t.Fatalf("tokens = %v, want 3.5", res.Usage.Tokens)
+	}
+}
