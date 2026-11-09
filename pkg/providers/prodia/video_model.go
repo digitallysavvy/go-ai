@@ -272,7 +272,11 @@ func resolveVideoImage(ctx context.Context, file *provider.VideoModelV3File) ([]
 	case "file":
 		// TS new Blob([...], {type: file.mediaType}): no default; an empty
 		// type is sent as application/octet-stream with filename "input".
-		return file.Data, file.MediaType, nil
+		data := file.Data
+		if data == nil {
+			data = []byte{} // TS appends the input part even for empty data
+		}
+		return data, file.MediaType, nil
 	case "url":
 		download, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.DefaultDownloadOptions())
 		if err != nil {

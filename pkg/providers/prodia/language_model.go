@@ -150,6 +150,9 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 		switch imageFile.FileData.Type {
 		case types.FileDataTypeData:
 			imageData = imageFile.FileData.Data
+			if imageData == nil {
+				imageData = []byte{} // TS `if (imageBytes)`: an empty image is still sent
+			}
 			imageMIME = imageFile.MediaType
 		case types.FileDataTypeURL:
 			// TS fetches URL image parts and sends the bytes.

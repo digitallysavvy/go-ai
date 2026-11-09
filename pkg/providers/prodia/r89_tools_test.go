@@ -81,3 +81,34 @@ func TestR89toolsProdiaImg2VidInputPart(t *testing.T) {
 		t.Fatalf("err = %v, want the download error unchanged", err)
 	}
 }
+
+// TS prodia-video-model.ts always appends the input part for an image,
+// even with empty bytes.
+func TestR89toolsProdiaImg2VidEmptyImageStillSent(t *testing.T) {
+	sawInput := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mr, err := r.MultipartReader(); err == nil {
+			for {
+				p, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				if p.FormName() == "input" {
+					sawInput = true
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "multipart/form-data; boundary=b")
+		_, _ = w.Write([]byte(r33Job + "--b\r\nContent-Disposition: form-data; name=\"output\"\r\nContent-Type: video/mp4\r\n\r\nVIDEO\r\n--b--\r\n"))
+	}))
+	defer srv.Close()
+	m, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).VideoModel("inference.wan2-2.lightning.img2vid.v0")
+	if _, err := m.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "p", Image: &provider.VideoModelV3File{Type: "file", MediaType: "image/png"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !sawInput {
+		t.Fatal("input part missing")
+	}
+}
