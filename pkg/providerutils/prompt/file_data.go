@@ -2,8 +2,8 @@ package prompt
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"mime"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -842,6 +842,8 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 
 // NormalizeFileData validates and normalizes a tagged FileData value. It also
 // converts data: URLs passed through the URL variant into inline data bytes.
+// The media type is passed on as given: TS convertToLanguageModelPrompt does
+// not validate it.
 func NormalizeFileData(data types.FileData) (types.FileData, error) {
 	switch data.Type {
 	case "":
@@ -853,8 +855,14 @@ func NormalizeFileData(data types.FileData) (types.FileData, error) {
 				Cause: fmt.Errorf("data URLs must use the %q variant, not %q", types.FileDataTypeURL, types.FileDataTypeData),
 			}
 		}
-		if err := validateMediaType(data.MediaType); err != nil {
-			return types.FileData{}, err
+		if len(data.Data) == 0 && strings.HasPrefix(data.DataString, "data:") {
+			// TS convertToLanguageModelV4FilePart: a `data:` string in the
+			// data variant is an InvalidDataContentError (file-part-data.ts
+			// 95-103).
+			return types.FileData{}, &InvalidInlineDataURLError{
+				Value: data.DataString,
+				Cause: errors.New(`Data URLs are not valid inline data. Pass them as { type: "url", url } instead.`), //nolint:staticcheck // TS text
+			}
 		}
 		return data, nil
 	case types.FileDataTypeURL:
@@ -874,22 +882,13 @@ func NormalizeFileData(data types.FileData) (types.FileData, error) {
 		if data.MediaType == "" {
 			data.MediaType = fileutil.InferMediaTypeFromURL(href, "application/octet-stream")
 		}
-		if err := validateMediaType(data.MediaType); err != nil {
-			return types.FileData{}, err
-		}
 		return data, nil
 	case types.FileDataTypeReference:
 		if len(data.Reference) == 0 {
 			return types.FileData{}, fmt.Errorf("file reference is required")
 		}
-		if err := validateMediaType(data.MediaType); err != nil {
-			return types.FileData{}, err
-		}
 		return data, nil
 	case types.FileDataTypeText:
-		if err := validateMediaType(data.MediaType); err != nil {
-			return types.FileData{}, err
-		}
 		return data, nil
 	default:
 		return types.FileData{}, fmt.Errorf("unsupported file data type %q", data.Type)
@@ -1154,23 +1153,6 @@ func keepOriginalURL(normalized types.FileData, raw string) types.FileData {
 		normalized.OriginalURL = raw
 	}
 	return normalized
-}
-
-func validateMediaType(mediaType string) error {
-	if mediaType == "" {
-		return nil
-	}
-	if strings.Count(mediaType, "/") == 0 {
-		return nil
-	}
-	parsed, _, err := mime.ParseMediaType(mediaType)
-	if err != nil {
-		return err
-	}
-	if parsed == "" || strings.HasSuffix(parsed, "/") {
-		return fmt.Errorf("invalid media type %q", mediaType)
-	}
-	return nil
 }
 
 func firstNonEmpty(values ...string) string {
