@@ -94,12 +94,17 @@ func (h *SteerHandle) resolve(o SteeringOutcome) {
 // SteerOption configures Steer.
 type SteerOption func(*steerConfig)
 
-type steerConfig struct{ id string }
+type steerConfig struct {
+	id    string
+	idSet bool
+}
 
 // WithSteerID sets the id of the message. Sending a message again with the
-// same id returns the handle of the first message, so retries are safe.
+// same id returns the handle of the first message, so retries are safe. An
+// empty id is an id like any other (TS generates one only when options.id is
+// undefined).
 func WithSteerID(id string) SteerOption {
-	return func(c *steerConfig) { c.id = id }
+	return func(c *steerConfig) { c.id, c.idSet = id, true }
 }
 
 type pendingSteer struct {
@@ -173,7 +178,7 @@ func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (
 		o(&cfg)
 	}
 	id := cfg.id
-	if id == "" {
+	if !cfg.idSet {
 		id = generateSteeringID()
 	}
 

@@ -32,8 +32,10 @@ func TestFileDataErrorTypesAndParsing(t *testing.T) {
 	if _, err := ParseDataURL("data:text/plain;base64"); err == nil {
 		t.Fatal("ParseDataURL(missing comma) should fail")
 	}
-	if _, err := ParseDataURL("data:text/plain,abc"); err == nil {
-		t.Fatal("ParseDataURL(non-base64 marker) should fail")
+	// TS splitDataUrl has no ";base64" check: the text after the comma is
+	// the base64 data (round 89).
+	if got, err := ParseDataURL("data:text/plain,aGk="); err != nil || string(got.Data) != "hi" || got.MediaType != "text/plain" {
+		t.Fatalf("ParseDataURL(no base64 marker) = %q %q %v, want hi text/plain", got.Data, got.MediaType, err)
 	}
 }
 

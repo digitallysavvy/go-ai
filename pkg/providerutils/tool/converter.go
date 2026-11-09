@@ -174,7 +174,83 @@ func sanitizeAnthropicRawSchema(raw []byte) interface{} {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return json.RawMessage(raw)
 	}
-	return jsonorder.Hinted{V: SanitizeAnthropicSchema(decoded), Hint: anthropicSanitizedHint(decoded, hint)}
+	return jsonorder.Hinted{V: SanitizeAnthropicSchema(withOrderedConstraintValues(decoded, hint)), Hint: anthropicSanitizedHint(decoded, hint)}
+}
+
+// anthropicOrderedConstraintValue is an object or array constraint value of a
+// raw schema, already serialized in the input's key order (TS
+// formatConstraintValue: JSON.stringify(value) of the JS object).
+type anthropicOrderedConstraintValue struct{ text string }
+
+// anthropicConstraintKeys are TS DESCRIPTION_CONSTRAINT_KEYS, in order.
+var anthropicConstraintKeys = []string{
+	"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+	"multipleOf", "minLength", "maxLength", "pattern", "minItems",
+	"maxItems", "uniqueItems", "minProperties", "maxProperties", "not",
+}
+
+// withOrderedConstraintValues returns a copy of a decoded raw schema in which
+// every object or array constraint value of a schema node the sanitizer
+// visits is replaced by its text in the raw input's key order (hint), so the
+// constraint description matches TS. Other values are left as they are.
+func withOrderedConstraintValues(node, hint interface{}) interface{} {
+	switch v := node.(type) {
+	case []interface{}:
+		hs, _ := hint.([]interface{})
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			var ch interface{}
+			if i < len(hs) {
+				ch = hs[i]
+			}
+			out[i] = withOrderedConstraintValues(item, ch)
+		}
+		return out
+	case map[string]interface{}:
+		h, _ := hint.(*jsonorder.Object)
+		if h == nil {
+			return v
+		}
+		child := func(key string) interface{} {
+			c, _ := h.Get(key)
+			return c
+		}
+		out := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			out[key] = value
+		}
+		for _, key := range anthropicConstraintKeys {
+			switch v[key].(type) {
+			case map[string]interface{}, []interface{}:
+				if c, ok := h.Get(key); ok {
+					out[key] = anthropicOrderedConstraintValue{text: jsonorder.Stringify(c)}
+				}
+			}
+		}
+		for _, key := range []string{"properties", "definitions", "$defs"} {
+			entries, ok := v[key].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			eh, _ := child(key).(*jsonorder.Object)
+			copied := make(map[string]interface{}, len(entries))
+			for name, entry := range entries {
+				var ch interface{}
+				if eh != nil {
+					ch, _ = eh.Get(name)
+				}
+				copied[name] = withOrderedConstraintValues(entry, ch)
+			}
+			out[key] = copied
+		}
+		for _, key := range []string{"anyOf", "oneOf", "allOf", "items"} {
+			if value, ok := v[key]; ok {
+				out[key] = withOrderedConstraintValues(value, child(key))
+			}
+		}
+		return out
+	}
+	return node
 }
 
 // anthropicSanitizedHint is the key order of SanitizeAnthropicSchema(in): the
@@ -394,13 +470,8 @@ func supportedAnthropicStringFormat(format string) bool {
 }
 
 func anthropicConstraintDescription(schema map[string]interface{}) string {
-	keys := []string{
-		"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-		"multipleOf", "minLength", "maxLength", "pattern", "minItems",
-		"maxItems", "uniqueItems", "minProperties", "maxProperties", "not",
-	}
-	parts := make([]string, 0, len(keys)+1)
-	for _, key := range keys {
+	parts := make([]string, 0, len(anthropicConstraintKeys)+1)
+	for _, key := range anthropicConstraintKeys {
 		value, ok := schema[key]
 		if !ok || value == nil {
 			continue
@@ -433,8 +504,11 @@ func formatAnthropicConstraintName(key string) string {
 }
 
 func formatAnthropicConstraintValue(value interface{}) string {
-	if s, ok := value.(string); ok {
-		return s
+	switch v := value.(type) {
+	case string:
+		return v
+	case anthropicOrderedConstraintValue:
+		return v.text
 	}
 	data, err := jsonstr.Marshal(value)
 	if err != nil {
