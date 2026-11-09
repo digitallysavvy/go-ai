@@ -1,6 +1,7 @@
 package xai
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -31,4 +32,17 @@ func TestR90provbErrorDataIsSchemaOutput(t *testing.T) {
 	check("api", newXAIProviderError("xai", 400, nil, []byte(`{"error":{"message":"m","code":2,"x":1},"y":2}`)), map[string]interface{}{"error": map[string]interface{}{"message": "m", "code": float64(2)}})
 	check("responses", newXAIProviderError("xai", 400, nil, []byte(`{"code":"c","error":"e","x":1}`)), map[string]interface{}{"code": "c", "error": "e"})
 	check("off schema", newXAIProviderError("xai", 400, nil, []byte(`{"detail":"d"}`)), nil)
+}
+
+// TestR90provbImageDownloadErrorUnchanged: a generated-image URL that fails
+// validation propagates unchanged (TS getFromApi), not wrapped as a
+// provider error (the provc class of f4673dbc).
+func TestR90provbImageDownloadErrorUnchanged(t *testing.T) {
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}), "grok-imagine-image")
+	_, _, err := m.responseImages(context.Background(), []xaiImageData{{URL: "http://169.254.169.254/x.png"}})
+	var dl *providererrors.DownloadError
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &dl) || errors.As(err, &pe) {
+		t.Fatalf("err = %T %v", err, err)
+	}
 }

@@ -338,6 +338,18 @@ func openAIImageMarkup(opts *provider.ImageGenerateOptions) (openAIImageMarkupIn
 }
 
 func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOptions, markup openAIImageMarkupInput) (*types.ImageResult, error) {
+	opts, err := prefetchOpenAIImageInputs(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	if markup.url != "" {
+		// TS awaits markupToBlob (downloadBlob) before the request.
+		res, err := fileutil.DownloadWithMetadata(ctx, markup.url, fileutil.NoTimeoutDownloadOptions())
+		if err != nil {
+			return nil, err
+		}
+		markup = openAIImageMarkupInput{set: true, data: res.Data, mediaType: res.ContentType}
+	}
 	body, contentType, err := m.buildEditMultipartBody(ctx, opts, markup)
 	if err != nil {
 		return nil, err
@@ -477,6 +489,44 @@ func writeOpenAIImageMarkup(ctx context.Context, writer *multipart.Writer, marku
 	return err
 }
 
+// prefetchOpenAIImageInputs downloads URL image and mask inputs before the
+// request is sent, as TS awaits fileToBlob / downloadBlob for each before
+// posting: a failed download is returned as is and nothing is posted. A
+// downloaded input is typed by its response content type (TS downloadBlob).
+func prefetchOpenAIImageInputs(ctx context.Context, opts *provider.ImageGenerateOptions) (*provider.ImageGenerateOptions, error) {
+	fetch := func(file provider.ImageFile) (provider.ImageFile, error) {
+		if file.Type != "url" || file.URL == "" {
+			return file, nil
+		}
+		res, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
+		if err != nil {
+			return file, err
+		}
+		mediaType := file.MediaType
+		if res.ContentType != "" {
+			mediaType = res.ContentType
+		}
+		return provider.ImageFile{Type: "file", Data: res.Data, MediaType: mediaType, ProviderOptions: file.ProviderOptions}, nil
+	}
+	out := *opts
+	out.Files = make([]provider.ImageFile, len(opts.Files))
+	for i, f := range opts.Files {
+		resolved, err := fetch(f)
+		if err != nil {
+			return nil, err
+		}
+		out.Files[i] = resolved
+	}
+	if opts.Mask != nil {
+		resolved, err := fetch(*opts.Mask)
+		if err != nil {
+			return nil, err
+		}
+		out.Mask = &resolved
+	}
+	return &out, nil
+}
+
 func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
 	// TS appends a Blob typed with the file's media type; FormData names a
 	// Blob "blob". Providers reject application/octet-stream image parts.
@@ -493,7 +543,7 @@ func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.W
 		// would be forwarded to OpenAI as image data.
 		res, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
-			return fmt.Errorf("failed to download image %s: %w", file.URL, err)
+			return err // TS downloadBlob throws its DownloadError as is
 		}
 		// TS downloadBlob types the Blob with the response content type.
 		data = res.Data

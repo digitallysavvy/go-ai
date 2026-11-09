@@ -1,8 +1,10 @@
 package fireworks
 
 import (
+	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -31,4 +33,15 @@ func TestR90provbErrorDataIsSchemaOutput(t *testing.T) {
 	check("object", parseFireworksProviderError(httpErr(`{"error":{"message":"m","object":"error","x":1}}`)), map[string]interface{}{"error": map[string]interface{}{"message": "m", "object": "error"}})
 	check("string", parseFireworksProviderError(httpErr(`{"error":"s","x":1}`)), map[string]interface{}{"error": "s"})
 	check("off schema", (&LanguageModel{}).handleError(httpErr(`{"detail":"d"}`)), nil)
+}
+
+// TestR90provbImageDownloadErrorUnchanged: a result URL that fails
+// validation propagates unchanged (TS getFromApi), without a wrap.
+func TestR90provbImageDownloadErrorUnchanged(t *testing.T) {
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}), "accounts/fireworks/models/flux-kontext-pro")
+	_, err := m.downloadImage(context.Background(), "http://169.254.169.254/x.png")
+	var dl *providererrors.DownloadError
+	if !errors.As(err, &dl) || strings.Contains(err.Error(), "failed to download") {
+		t.Fatalf("err = %T %v", err, err)
+	}
 }

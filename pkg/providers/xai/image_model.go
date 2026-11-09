@@ -298,8 +298,10 @@ func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([
 		}
 		imageBytes, err := m.downloadImage(ctx, image.URL)
 		if err != nil {
-			return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
-				fmt.Sprintf("failed to download image: %v", err), err)
+			// TS getFromApi with createStatusCodeErrorResponseHandler: an
+			// HTTP failure is an APICallError with the status text; any
+			// other failure (URL validation, abort) propagates unchanged.
+			return nil, nil, providerutils.StatusCodeDownloadError("xai.image", err)
 		}
 		images = append(images, imageBytes)
 	}
