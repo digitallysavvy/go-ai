@@ -141,8 +141,8 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	} else {
 		// txt2vid: JSON request.
 		resp, err := m.prov.client.Do(ctx, internalhttp.Request{
-			Method:  "POST",
-			Path:    "/job",
+			Method: "POST",
+			Path:   "/job",
 			// TS postToApi content JSON.stringify(body): {type, config:
 			// {prompt, seed, resolution}} in that key order.
 			Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, prodiaJobBodyOrder)),
