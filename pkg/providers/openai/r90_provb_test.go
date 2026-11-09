@@ -236,3 +236,21 @@ func TestR90provbConvertResponseExtractorAndErrors(t *testing.T) {
 		}
 	}
 }
+
+// TestR90provbDecisionErrorSchema: openaiFailedResponseHandler matches
+// openaiErrorDataSchema, whose type is a nullish string and code a nullish
+// string or number; any other body gives the status text (openai-error.ts).
+func TestR90provbDecisionErrorSchema(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"message":"m","type":5}}`:            "Forbidden",
+		`{"error":{"message":"m","code":true}}`:         "Forbidden",
+		`{"error":{"message":"m","code":4,"type":"x"}}`: "m",
+	} {
+		p, _ := newDecisionProvider(t, body, 403)
+		_, err := decide(t, p, decisionTestOptions())
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.Message != want {
+			t.Errorf("%s: err = %v, want message %q", body, err, want)
+		}
+	}
+}

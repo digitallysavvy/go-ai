@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -318,14 +319,15 @@ func (m *DecisionModel) handleError(err error) error {
 	errorCode := ""
 	var envelope struct {
 		Error *struct {
-			Message *string     `json:"message"`
-			Code    interface{} `json:"code"`
+			Code interface{} `json:"code"`
 		} `json:"error"`
 	}
-	if securejson.Unmarshal(statusErr.Body, &envelope) == nil && envelope.Error != nil && envelope.Error.Message != nil {
-		message = *envelope.Error.Message
-		if code, ok := envelope.Error.Code.(string); ok {
-			errorCode = code
+	if msg, ok := providerutils.OpenAICompatibleErrorMessage([]byte(textdecode.UTF8(statusErr.Body))); ok {
+		message = msg
+		if securejson.Unmarshal(statusErr.Body, &envelope) == nil && envelope.Error != nil {
+			if code, ok := envelope.Error.Code.(string); ok {
+				errorCode = code
+			}
 		}
 	}
 	// The status code, response headers, body and data come from the HTTP
