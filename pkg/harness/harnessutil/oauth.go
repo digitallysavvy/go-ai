@@ -118,7 +118,7 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 	for k, v := range opts.Headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := client.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(client).Do(req)
 	if err != nil {
 		return nil, err
 	}

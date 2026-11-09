@@ -210,7 +210,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		req.Header.Set(k, v)
 	}
 
-	resp, err := m.httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(m.httpClient).Do(req)
 	if err != nil {
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged

@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"strconv"
 	"sync"
 	"time"
@@ -259,7 +261,7 @@ func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMess
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := t.client().Do(req)
+	resp, err := internalhttp.WithFetchRedirects(t.client()).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +372,7 @@ func (t *WorkflowRunMultiplexer) ReconnectToStream(ctx context.Context, opts Rec
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := t.client().Do(req)
+	resp, err := internalhttp.WithFetchRedirects(t.client()).Do(req)
 	if err != nil {
 		return nil, err
 	}

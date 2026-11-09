@@ -64,7 +64,7 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	if p.config.HTTPClient != nil {
 		httpClient = p.config.HTTPClient
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(httpClient).Do(req)
 	if err != nil {
 		if isGatewayCallerCancellation(ctx, err) {
 			return nil, err

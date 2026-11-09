@@ -463,7 +463,7 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 	}
 	req.Header.Set("Content-Type", contentType)
 
-	resp, err := m.httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(m.httpClient).Do(req)
 	if err != nil {
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return azureMaiImageCallResult{}, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged

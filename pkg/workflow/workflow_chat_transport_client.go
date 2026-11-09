@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"strconv"
 	"strings"
 
@@ -195,7 +197,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
 	}
-	resp, err := t.httpClient.Do(httpReq)
+	resp, err := internalhttp.WithFetchRedirects(t.httpClient).Do(httpReq)
 	if err != nil {
 		errs <- err
 		return
@@ -311,7 +313,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		for k, v := range headers {
 			httpReq.Header.Set(k, v)
 		}
-		resp, err := t.httpClient.Do(httpReq)
+		resp, err := internalhttp.WithFetchRedirects(t.httpClient).Do(httpReq)
 		if err != nil {
 			errs <- err
 			return

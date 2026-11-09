@@ -112,7 +112,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		req.Header.Set(k, v)
 	}
 
-	resp, err := m.provider.mainClient().HTTPClient().Do(req)
+	resp, err := internalhttp.WithFetchRedirects(m.provider.mainClient().HTTPClient()).Do(req)
 	if err != nil {
 		return nil, err
 	}

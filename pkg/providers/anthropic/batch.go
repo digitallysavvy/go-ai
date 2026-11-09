@@ -289,7 +289,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 
 	client := fileutil.NewDownloadClient(resultsURL, downloadOpts)
-	httpResp, err := client.Do(httpReq)
+	httpResp, err := internalhttp.WithFetchRedirects(client).Do(httpReq)
 	if err != nil {
 		return nil, b.handleError(err)
 	}

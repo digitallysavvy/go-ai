@@ -236,7 +236,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	initReq.Header.Set("X-Goog-Upload-Header-Content-Type", "application/jsonl")
 	initReq.Header.Set("Content-Type", "application/json")
 
-	initResp, err := b.provider.client.HTTPClient().Do(initReq)
+	initResp, err := internalhttp.WithFetchRedirects(b.provider.client.HTTPClient()).Do(initReq)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +263,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	uploadReq.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 	uploadReq.Header.Set("Content-Type", "application/jsonl")
 
-	uploadResp, err := b.provider.client.HTTPClient().Do(uploadReq)
+	uploadResp, err := internalhttp.WithFetchRedirects(b.provider.client.HTTPClient()).Do(uploadReq)
 	if err != nil {
 		return nil, err
 	}
@@ -456,7 +456,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		req.Header.Set(k, v)
 	}
 
-	resp, err := b.provider.client.HTTPClient().Do(req)
+	resp, err := internalhttp.WithFetchRedirects(b.provider.client.HTTPClient()).Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -101,7 +101,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	initReq.Header.Set("X-Goog-Upload-Header-Content-Length", fmt.Sprintf("%d", len(content)))
 	initReq.Header.Set("X-Goog-Upload-Header-Content-Type", opts.MediaType)
 	initReq.Header.Set("Content-Type", "application/json")
-	resp, err := f.provider.client.HTTPClient().Do(initReq)
+	resp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(initReq)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +126,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	uploadReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(content)))
 	uploadReq.Header.Set("X-Goog-Upload-Offset", "0")
 	uploadReq.Header.Set("X-Goog-Upload-Command", "upload, finalize")
-	uploadResp, err := f.provider.client.HTTPClient().Do(uploadReq)
+	uploadResp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(uploadReq)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		for k, v := range headers {
 			pollReq.Header.Set(k, v)
 		}
-		pollResp, err := f.provider.client.HTTPClient().Do(pollReq)
+		pollResp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(pollReq)
 		if err != nil {
 			return nil, err
 		}

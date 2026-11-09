@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -149,7 +151,7 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 	if t.apiKey != "" {
 		req.Header.Set("x-api-key", t.apiKey)
 	}
-	resp, err := t.httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(t.httpClient).Do(req)
 	if err != nil {
 		return nil, err
 	}

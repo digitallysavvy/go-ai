@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/url"
 	"path"
 	"strings"
@@ -65,7 +67,7 @@ func (c *httpPolicyClient) Evaluate(ctx context.Context, policyPath string, inpu
 	for key, value := range c.headers {
 		req.Header.Set(key, value)
 	}
-	resp, err := c.client.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(c.client).Do(req)
 	if err != nil {
 		return nil, err
 	}
