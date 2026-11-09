@@ -217,3 +217,27 @@ func TestR89genDownloadCalledWithEmptyPlan(t *testing.T) {
 	}
 }
 
+// TS DefaultSteering.add defaults the id only when options.id is undefined
+// (steering.ts `id = generateSteeringId()`), so "" is a real id: a second
+// message with it returns the first outcome.
+func TestR89genSteeringEmptyIDIsAnID(t *testing.T) {
+	s := NewSteering()
+	first := s.Steer("a", WithSteerID(""))
+	second := s.Steer("b", WithSteerID(""))
+	if first != second {
+		t.Fatal("a repeated empty id must return the first handle")
+	}
+	run, err := startSteeringRun(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken := run.takeMessages()
+	run.resolveTakenMessages(0, taken)
+	if o := first.Outcome(); o.ID != "" || !o.Delivered || len(taken) != 1 {
+		t.Fatalf("outcome = %+v, taken = %d", o, len(taken))
+	}
+	if h := s.Steer("c"); h == first {
+		t.Fatal("a message without an id must get a generated id")
+	}
+}
+
