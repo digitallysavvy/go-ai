@@ -2723,6 +2723,11 @@ func TestToolLoopAgentExperimentalDownloadFunctionDownloadsBeforeNextStep(t *tes
 		}},
 		StopWhen: []ai.StopCondition{ai.IsStepCount(2)},
 		ExperimentalDownload: func(ctx context.Context, requests []ai.DownloadRequest) ([]*ai.DownloadResult, error) {
+			// TS calls the download function on every prompt conversion,
+			// with an empty list when nothing is planned.
+			if len(requests) == 0 {
+				return nil, nil
+			}
 			if len(requests) != 1 || requests[0].URL != "https://example.test/agent.txt" {
 				t.Fatalf("download requests = %#v", requests)
 			}

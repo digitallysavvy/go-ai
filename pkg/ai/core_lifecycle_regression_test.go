@@ -220,6 +220,11 @@ func TestGenerateTextDownloadsToolResultFileURLsBeforeNextStep(t *testing.T) {
 		Tools:    []types.Tool{tool},
 		StopWhen: []StopCondition{StepCountIs(2)},
 		ExperimentalDownload: func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+			// TS calls the download function on every prompt conversion,
+			// with an empty list when nothing is planned.
+			if len(requests) == 0 {
+				return nil, nil
+			}
 			if len(requests) != 1 || requests[0].URL != "https://example.test/file.txt" {
 				t.Fatalf("download requests = %#v", requests)
 			}

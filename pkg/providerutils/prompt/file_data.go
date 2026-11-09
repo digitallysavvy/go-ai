@@ -511,18 +511,21 @@ func DownloadToolResultFiles(ctx context.Context, messages []types.Message, down
 // DownloadUnsupportedFileURLs returns a copy of messages where unsupported user
 // file URLs and tool-result file URLs have been converted to inline data blocks.
 func DownloadUnsupportedFileURLs(ctx context.Context, messages []types.Message, download DownloadFunction, isURLSupported URLSupportChecker) ([]types.Message, error) {
-	if len(messages) == 0 || download == nil {
+	if download == nil {
 		return messages, nil
 	}
+	// TS downloadAssets calls the download function once per conversion,
+	// with an empty list when nothing is planned
+	// (convert-to-language-model-prompt.ts 494).
 	requests := collectDownloadRequests(messages, isURLSupported)
-	if len(requests) == 0 {
-		return messages, nil
+	if requests == nil {
+		requests = []DownloadRequest{}
 	}
 	results, err := download(ctx, requests)
 	if err != nil {
 		return nil, err
 	}
-	if results == nil {
+	if results == nil || len(requests) == 0 {
 		return messages, nil
 	}
 	if len(results) != len(requests) {

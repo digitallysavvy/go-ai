@@ -187,3 +187,33 @@ func TestR89genInvalidToolErrorsBeforeExecutedResults(t *testing.T) {
 		t.Fatalf("tool message = %v", toolMessage)
 	}
 }
+
+// TS convertToLanguageModelPrompt calls downloadAssets, and so the download
+// function, on every conversion: with an empty list when the prompt has no
+// URL to plan (convert-to-language-model-prompt.ts 52-56, 494).
+func TestR89genDownloadCalledWithEmptyPlan(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "ok", Content: []types.ContentPart{types.TextContent{Text: "ok"}}, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	var calls []int
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "p",
+		ExperimentalDownload: func(_ context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+			if requests == nil {
+				t.Error("requests is nil, want an empty list")
+			}
+			calls = append(calls, len(requests))
+			return []*DownloadResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []int{0}) {
+		t.Fatalf("download calls = %v, want [0]", calls)
+	}
+}
+
