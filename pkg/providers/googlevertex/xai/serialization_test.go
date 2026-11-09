@@ -30,7 +30,7 @@ func TestSerializeAndDeserializeLanguageModel(t *testing.T) {
 	}
 
 	serialized := modelAny.(*LanguageModel).Serialize()
-	if serialized.Provider != "googleVertex.xai" || serialized.ModelID != "grok-4" {
+	if serialized.Provider != "googleVertex.xai.chat" || serialized.ModelID != "grok-4" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["accessToken"]; ok {
@@ -51,7 +51,7 @@ func TestSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel() error = %v", err)
 	}
-	if restored.Provider() != "googleVertex.xai" || restored.ModelID() != "grok-4" {
+	if restored.Provider() != "googleVertex.xai.chat" || restored.ModelID() != "grok-4" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 

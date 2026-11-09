@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("googleVertex.xai", deserializeModel)
+	provider.RegisterModelDeserializer("googleVertex.xai.chat", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

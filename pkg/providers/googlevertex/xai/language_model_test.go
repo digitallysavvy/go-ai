@@ -45,7 +45,7 @@ func TestLanguageModel_Metadata(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "v4", model.SpecificationVersion())
-	assert.Equal(t, "googleVertex.xai", model.Provider())
+	assert.Equal(t, "googleVertex.xai.chat", model.Provider())
 	assert.Equal(t, ModelGrok41FastReasoning, model.ModelID())
 	assert.True(t, model.SupportsTools())
 	assert.True(t, model.SupportsStructuredOutput())
