@@ -63,7 +63,8 @@ type Provider struct {
 func New(cfg Config) (*Provider, error) {
 	region := firstNonEmpty(cfg.Region, os.Getenv("AWS_REGION"))
 	if cfg.BaseURL == "" && region == "" {
-		return nil, fmt.Errorf("anthropicaws: AWS region is required; set Config.Region or AWS_REGION")
+		// TS getRegion: loadSetting's LoadSettingError.
+		return nil, providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION")
 	}
 	// The region is interpolated into the default endpoint host, so only a
 	// single DNS label is accepted (TS anthropic-aws getRegion); a value such
@@ -78,7 +79,9 @@ func New(cfg Config) (*Provider, error) {
 	}
 	workspaceID := firstNonEmpty(cfg.WorkspaceID, os.Getenv("ANTHROPIC_AWS_WORKSPACE_ID"))
 	if workspaceID == "" {
-		return nil, fmt.Errorf("anthropicaws: workspaceId is required; set Config.WorkspaceID or ANTHROPIC_AWS_WORKSPACE_ID")
+		// TS getHeaders: loadSetting's LoadSettingError (Go checks it when
+		// the provider is created, as v0.5 did).
+		return nil, providererrors.NewLoadSettingError("Anthropic AWS workspace ID", "workspaceId", "ANTHROPIC_AWS_WORKSPACE_ID")
 	}
 
 	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
