@@ -2,6 +2,7 @@ package minimax
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,33 @@ func TestR89toolsMiniMaxVideoAPIErrorKeepsHeaders(t *testing.T) {
 	var perr *providererrors.ProviderError
 	if !errors.As(err, &perr) || perr.StatusCode != 429 || !perr.IsRetryable() {
 		t.Fatalf("provider error = %#v", perr)
+	}
+	found := false
+	for k, v := range perr.ResponseHeaders {
+		if strings.EqualFold(k, "retry-after-ms") && v == "10" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("headers = %v", perr.ResponseHeaders)
+	}
+}
+
+// TS getFromApi with minimaxVideoFailedResponseHandler: a failed status
+// poll is an APICallError with responseHeaders too.
+func TestR89toolsMiniMaxVideoStatusErrorKeepsHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After-Ms", "10")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"busy"}}`))
+	}))
+	defer srv.Close()
+	model := newVideoModel(providerForMinimaxServer(srv.URL), ModelH3)
+	op, _ := json.Marshal(minimaxOperation{TaskID: minimaxTestTaskID})
+	_, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) || perr.StatusCode != 503 || perr.Message != "busy" {
+		t.Fatalf("err = %#v", err)
 	}
 	found := false
 	for k, v := range perr.ResponseHeaders {

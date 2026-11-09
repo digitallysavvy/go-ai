@@ -897,7 +897,7 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers map[stri
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, nil)
+		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
 	}
 	return NewVideoGenerationError(fmt.Sprintf("failed to check status: %v", err))
 }
