@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -141,14 +142,14 @@ func prepareQuiverAICall(opts *provider.GenerateOptions) (*provider.GenerateOpti
 		if v, ok := raw["reasoningEffort"]; ok && v != nil {
 			s, ok := v.(string)
 			if !ok || !quiverLanguageReasoningEfforts[s] {
-				return nil, nil, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("Unsupported reasoning effort: %v", v), nil)
+				return nil, nil, providererrors.NewArgumentError("providerOptions", "Unsupported reasoning effort: "+quiverTemplateString(v), nil)
 			}
 			reasoningEffort = s
 		}
 		if v, ok := raw["reasoningSummary"]; ok && v != nil {
 			s, ok := v.(string)
 			if !ok || s != "auto" {
-				return nil, nil, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("Unsupported reasoning summary: %v", v), nil)
+				return nil, nil, providererrors.NewArgumentError("providerOptions", "Unsupported reasoning summary: "+quiverTemplateString(v), nil)
 			}
 			reasoningSummary = s
 		}
@@ -253,4 +254,20 @@ func decodeQuiverAIProviderMetadata(raw json.RawMessage) map[string]interface{} 
 		return nil
 	}
 	return metadata
+}
+
+// quiverTemplateString is the JS template literal `${value}` of a provider
+// option: JS String() of a JSON-decoded value (an array joins its elements,
+// an object is "[object Object]"), with Go integer and float32 values as
+// numbers.
+func quiverTemplateString(v interface{}) string {
+	switch x := v.(type) {
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case float32:
+		return providerutils.JSNumberString(float64(x))
+	}
+	return providerutils.JSString(v)
 }
