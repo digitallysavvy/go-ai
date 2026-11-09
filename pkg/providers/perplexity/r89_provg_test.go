@@ -3,11 +3,13 @@ package perplexity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -52,4 +54,33 @@ func TestR89provgPerplexityTypedEmbeddingOptions(t *testing.T) {
 			t.Fatalf("request body = %#v", body)
 		}
 	}
+}
+
+// A 2xx body that fails the TS response schema is the createJsonResponseHandler
+// "Invalid JSON response" error, returned as is. Go used to set that error as
+// its own cause, so err.Error() recursed until the stack overflowed (a fatal
+// crash of the process).
+func TestR89provgPerplexityInvalidResponseNoCauseCycle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"unexpected":true}`))
+	}))
+	defer srv.Close()
+	m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("pplx-embed-v1-0.6b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.DoEmbedMany(context.Background(), []string{"x"}, nil)
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "Invalid JSON response" {
+		t.Fatalf("error = %T", err)
+	}
+	seen := map[error]bool{}
+	for e := error(pe); e != nil; e = errors.Unwrap(e) {
+		if seen[e] {
+			t.Fatal("error cause chain has a cycle")
+		}
+		seen[e] = true
+	}
+	_ = err.Error()
 }

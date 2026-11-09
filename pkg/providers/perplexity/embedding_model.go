@@ -147,8 +147,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}, &response)
 	if err != nil {
 		// TS failedResponseHandler: createJsonErrorResponseHandler(perplexityErrorSchema).
-		if pe, ok := perplexityHTTPError(err, "perplexity").(*providererrors.ProviderError); ok {
-			pe.Cause = err
+		if pe, ok := perplexityStatusError(err, "perplexity"); ok {
 			return nil, pe
 		}
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
