@@ -74,7 +74,7 @@ func TestR89carryRedirectDropsAuthorizationAcrossOrigins(t *testing.T) {
 	if seen["other/end"] != "|custom" {
 		t.Fatalf("stream other-port hop got %q", seen["other/end"])
 	}
-	resp, err := withFetchRedirects(&stdhttp.Client{}).Get(origin.URL + "/same")
+	resp, err := WithFetchRedirects(&stdhttp.Client{}).Get(origin.URL + "/same")
 	if err != nil {
 		t.Fatal(err)
 	}

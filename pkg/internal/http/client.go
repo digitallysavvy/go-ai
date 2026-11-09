@@ -420,7 +420,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	// Perform request
-	httpResp, err := withFetchRedirects(c.client).Do(httpReq)
+	httpResp, err := WithFetchRedirects(c.client).Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
 	}
@@ -560,15 +560,16 @@ func (c *Client) streamClient() *http.Client {
 	return c.client
 }
 
-// withFetchRedirects returns a shallow copy of client whose redirect policy
+// WithFetchRedirects returns a shallow copy of client whose redirect policy
 // drops Authorization once the redirect chain crosses an origin (scheme,
 // host and port), as fetch does (HTTP-redirect fetch: "if request's current
 // URL's origin is not same origin with locationURL's origin, remove
 // Authorization"). net/http alone compares only the host, so a redirect to
 // another port or scheme of the same host kept the credential. The client's
 // own CheckRedirect still runs afterwards (net/http's 10-hop limit when it
-// has none). The caller's client is not modified.
-func withFetchRedirects(client *http.Client) *http.Client {
+// has none). The caller's client is not modified. Code that sends a
+// credentialed request with its own http.Client uses it the same way.
+func WithFetchRedirects(client *http.Client) *http.Client {
 	cp := *client
 	next := client.CheckRedirect
 	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -662,7 +663,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// so a timeout set on the shared default client would cut off
 	// long-running streams (TS fetch has no overall timeout; callers cancel
 	// via ctx); streamClient drops it.
-	httpResp, err := withFetchRedirects(c.streamClient()).Do(httpReq)
+	httpResp, err := WithFetchRedirects(c.streamClient()).Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
 	}
