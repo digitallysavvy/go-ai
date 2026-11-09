@@ -167,7 +167,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			metadata["wordTimestamps"] = music.wordTimestamps
 		}
 	case req.withTimestamps:
-		envelope, err := parseSpeechTimestampsResponse(resp.Body)
+		envelope, err := parseSpeechTimestampsResponse(resp.StatusCode, http.Header(resp.Headers), resp.Body)
 		if err != nil {
 			return nil, err
 		}

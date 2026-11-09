@@ -2,11 +2,13 @@ package elevenlabs
 
 import (
 	"encoding/json"
+	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // SpeechAlignment is a character alignment of speech audio
@@ -73,14 +75,28 @@ func (a *wireAlignment) toMetadata() SpeechAlignment {
 // parseSpeechTimestampsResponse is the /with-timestamps JSON response (TS
 // createJsonResponseHandler(elevenLabsSpeechTimestampsResponseSchema)): the
 // base64 audio, and the alignments and voice segments as provider metadata.
-func parseSpeechTimestampsResponse(body []byte) (*speechTimestampsEnvelope, error) {
+//
+// A body that is not JSON or fails the schema is the handler's APICallError
+// "Invalid JSON response" (status, headers and body of the response) whose
+// cause is the JSONParseError or the TypeValidationError.
+func parseSpeechTimestampsResponse(statusCode int, headers http.Header, body []byte) (*speechTimestampsEnvelope, error) {
 	text := textdecode.UTF8(body)
 	var raw interface{}
+	invalid := func(cause error) error {
+		return &providererrors.ProviderError{
+			Provider:        "elevenlabs.speech",
+			StatusCode:      statusCode,
+			Message:         providererrors.InvalidJSONResponseMessage,
+			Cause:           cause,
+			ResponseHeaders: providerutils.ExtractHeaders(headers),
+			ResponseBody:    text,
+		}
+	}
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
-		return nil, &providererrors.JSONParseError{Text: text, Cause: err}
+		return nil, invalid(&providererrors.JSONParseError{Text: text, Cause: err})
 	}
 	if message := zodlite.ValidationMessage(speechTimestampsResponseSchema, text); message != "" {
-		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(text), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
+		return nil, invalid(providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(text), zodlite.IssueText(message), nil, &providererrors.ValidationContext{}))
 	}
 	var wire struct {
 		AudioBase64         string         `json:"audio_base64"`
@@ -96,7 +112,7 @@ func parseSpeechTimestampsResponse(body []byte) (*speechTimestampsEnvelope, erro
 		} `json:"voice_segments"`
 	}
 	if err := json.Unmarshal([]byte(text), &wire); err != nil {
-		return nil, &providererrors.JSONParseError{Text: text, Cause: err}
+		return nil, invalid(&providererrors.JSONParseError{Text: text, Cause: err})
 	}
 	// TS convertBase64ToUint8Array (atob throws on invalid input).
 	audio, err := fileutil.ConvertBase64ToBytes(wire.AudioBase64)
