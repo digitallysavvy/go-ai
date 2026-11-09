@@ -1,10 +1,14 @@
 package harness
 
 import (
+	"context"
 	"encoding/base64"
+	"reflect"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // TS utils/normalize-harness-tool-model-output.ts: the error names the
@@ -43,4 +47,38 @@ func TestR89carryNormalizeToolModelOutputErrors(t *testing.T) {
 			t.Fatalf("got %#v", out.Content[0])
 		}
 	})
+}
+
+type r89carryWeather struct {
+	City string  `json:"city"`
+	Temp float64 `json:"temp"`
+}
+
+// TS harness-agent.ts _resolveResponseFormat (1238-1255) forwards
+// `responseFormat.schema` whatever its source. ai.ObjectOutput with a struct
+// schema (or an *schema.OrderedSchema) hands an *schema.OrderedSchema; the
+// harness turn must still get the JSON schema, or every adapter fails the
+// turn with "requires a JSON schema for structured output".
+func TestR89carryResponseFormatKeepsOrderedSchema(t *testing.T) {
+	ordered, err := schema.NewOrderedSchema([]byte(`{"type":"object","properties":{"a":{"type":"string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, s := range map[string]schema.Schema{
+		"struct":  schema.NewSimpleStructSchema(reflect.TypeOf(r89carryWeather{})),
+		"ordered": ordered,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rf, err := resolveOutputResponseFormat(context.Background(), ai.ObjectOutput[map[string]any](ai.ObjectOutputOptions{Schema: s, Name: "w"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rf == nil || rf.Type != ResponseFormatJSON || rf.Name != "w" {
+				t.Fatalf("rf = %#v", rf)
+			}
+			if rf.Schema == nil || rf.Schema["type"] != "object" || rf.Schema["properties"] == nil {
+				t.Fatalf("schema = %#v", rf.Schema)
+			}
+		})
+	}
 }

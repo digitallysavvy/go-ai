@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -380,8 +381,28 @@ func toHarnessResponseFormat(rf *provider.ResponseFormat) *ResponseFormat {
 		return &ResponseFormat{Type: ResponseFormatText}
 	}
 	out := &ResponseFormat{Type: ResponseFormatJSON, Name: rf.Name, Description: rf.Description}
-	if schema, ok := rf.Schema.(map[string]any); ok {
-		out.Schema = schema
-	}
+	out.Schema = responseFormatSchemaMap(rf.Schema)
 	return out
+}
+
+// responseFormatSchemaMap gives a response format schema as a JSON object
+// map. TS forwards `responseFormat.schema` whatever produced it; ai.Output
+// values hand a map or, for a struct schema or an *schema.OrderedSchema, an
+// *schema.OrderedSchema, which is read through its JSON form.
+func responseFormatSchemaMap(s interface{}) map[string]any {
+	switch v := s.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		return v
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	return m
 }
