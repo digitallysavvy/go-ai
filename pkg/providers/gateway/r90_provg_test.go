@@ -157,3 +157,27 @@ func TestR90provgGenerationInfoEmptyID(t *testing.T) {
 		t.Fatalf("query = %q, want id=", query)
 	}
 }
+
+// TestR90provgSpendReportFractionalAndEmptyDates: TS gateway-spend-report.ts
+// reads the counts as z.number() and always sends start_date / end_date,
+// even empty, leaving validation to the API.
+func TestR90provgSpendReportFractionalAndEmptyDates(t *testing.T) {
+	var query string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"total_cost":1,"input_tokens":10.5,"request_count":2}]}`))
+	}))
+	defer server.Close()
+	p, _ := New(Config{APIKey: "k", BaseURL: server.URL + "/v3/ai"})
+	res, err := p.GetSpendReport(context.Background(), SpendReportParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query != "start_date=&end_date=" {
+		t.Fatalf("query = %q", query)
+	}
+	if len(res.Results) != 1 || res.Results[0].InputTokens != 10 || res.Results[0].RequestCount != 2 {
+		t.Fatalf("results = %+v", res.Results)
+	}
+}
