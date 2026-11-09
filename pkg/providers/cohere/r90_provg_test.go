@@ -3,6 +3,7 @@ package cohere
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -88,5 +89,33 @@ func TestR90provgEmbedFractionalTokens(t *testing.T) {
 	}
 	if res.Usage.Tokens != 3.5 || res.Usage.InputTokens != 3 {
 		t.Fatalf("usage = %+v, want tokens 3.5", res.Usage)
+	}
+}
+
+// TestR90provgRerankObjectDocuments: TS sends object documents as
+// JSON.stringify(value): HTML characters stay literal, raw JSON keeps its key
+// order, and every slice of objects is converted (cohere-reranking-model.ts).
+func TestR90provgRerankObjectDocuments(t *testing.T) {
+	m := NewRerankingModel(New(Config{APIKey: "k"}), "rerank-v3.5")
+	type doc struct {
+		Title string `json:"title"`
+	}
+	cases := []struct {
+		docs interface{}
+		want []string
+	}{
+		{[]map[string]interface{}{{"t": "a<b&c"}}, []string{`{"t":"a<b&c"}`}},
+		{[]json.RawMessage{json.RawMessage(`{"z":1,"a":"<x>"}`)}, []string{`{"z":1,"a":"<x>"}`}},
+		{[]doc{{Title: "x"}}, []string{`{"title":"x"}`}},
+	}
+	for _, tc := range cases {
+		body, warnings := m.buildRequestBodyWithWarnings(&provider.RerankOptions{Query: "q", Documents: tc.docs})
+		got, _ := body["documents"].([]string)
+		if len(got) != len(tc.want) || got[0] != tc.want[0] {
+			t.Errorf("documents %T = %v, want %v", tc.docs, got, tc.want)
+		}
+		if len(warnings) != 1 {
+			t.Errorf("documents %T: warnings = %v, want the object documents warning", tc.docs, warnings)
+		}
 	}
 }
