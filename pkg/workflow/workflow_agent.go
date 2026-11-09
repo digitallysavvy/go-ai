@@ -880,7 +880,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			return approvedOutcome{}
 		}
 		if !workflowToolDeclaresApproval(tool) {
-			return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool %q does not require approval", call.ToolName))}
+			return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool \"%s\" does not require approval", call.ToolName))}
 		}
 
 		// Re-validate through the shared core implementation: signature (when

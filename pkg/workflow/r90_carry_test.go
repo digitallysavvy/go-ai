@@ -148,3 +148,29 @@ func TestR90carryApprovalResumeErrorTextIsToString(t *testing.T) {
 		t.Errorf("revalidation result = %+v", tr.Output)
 	}
 }
+
+// TS `Tool "${approval.toolName}" does not require approval` (no escaping).
+func TestR90carryApprovalNotRequiredQuotesLikeTS(t *testing.T) {
+	model := &wfMockModel{}
+	a, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name: "get\"Weather",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "sunny", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := workflowApprovalMessages("")
+	msgs[1].Content[0] = types.ToolCallContent{ToolCallID: "weather-1", ToolName: "get\"Weather", Arguments: map[string]interface{}{}}
+	if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: msgs}); err != nil {
+		t.Fatal(err)
+	}
+	tr := lastToolResultInPrompt(t, model, "weather-1")
+	if tr.Output == nil || tr.Output.Value != `Tool "get"Weather" does not require approval` {
+		t.Errorf("result = %+v", tr.Output)
+	}
+}
