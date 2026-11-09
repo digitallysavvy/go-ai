@@ -44,7 +44,7 @@ func parseFireworksProviderError(err error) error {
 	var message string
 	if jsonErr := json.Unmarshal(payload.Error, &message); jsonErr == nil {
 		// TS errorToMessage: the string itself, an empty one included.
-		return providererrors.NewProviderError("fireworks", statusErr.StatusCode, "", message, err)
+		return providererrors.NewProviderErrorFromResponse("fireworks", 0, "", message, err)
 	}
 
 	// {"error": {"object","type","code","message"}}
@@ -53,7 +53,7 @@ func parseFireworksProviderError(err error) error {
 	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil {
 		return nil
 	}
-	return providererrors.NewProviderError("fireworks", statusErr.StatusCode, fireworksErrorCode(obj.Code), *obj.Message, err)
+	return providererrors.NewProviderErrorFromResponse("fireworks", 0, fireworksErrorCode(obj.Code), *obj.Message, err)
 }
 
 // fireworksErrorCode stringifies a code that may be a JSON string or number.

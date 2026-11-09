@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -34,6 +35,24 @@ func TestR89provbResponsesEmbeddedErrorKeepsResponse(t *testing.T) {
 		var pe *providererrors.ProviderError
 		if !errors.As(err, &pe) || pe.ResponseHeaders["x-request-id"] != "req_1" || pe.ResponseBody != body || pe.IsRetryable() {
 			t.Errorf("%s: err = %#v, want response headers and body, not retryable", name, err)
+		}
+	}
+}
+
+// TS openaiFailedResponseHandler for the decision model: headers, body and
+// data are kept; an empty message is a message; a non-matching body gives
+// the status text.
+func TestR89provbDecisionModelAPIError(t *testing.T) {
+	m := NewDecisionModel(New(Config{APIKey: "k"}), "gpt-5")
+	for body, want := range map[string]string{
+		`{"error":{"message":"slow","code":"rate"}}`: "slow",
+		`{"error":{"message":""}}`:                   "",
+		`<html/>`:                                    "Too Many Requests",
+	} {
+		cause := &internalhttp.HTTPStatusError{StatusCode: 429, Headers: http.Header{"Retry-After": {"1"}}, Body: []byte(body)}
+		var pe *providererrors.ProviderError
+		if err := m.handleError(cause); !errors.As(err, &pe) || pe.StatusCode != 429 || pe.Message != want || pe.ResponseHeaders["Retry-After"] != "1" || pe.ResponseBody != body {
+			t.Errorf("%s: err = %#v", body, err)
 		}
 	}
 }

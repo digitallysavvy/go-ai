@@ -52,7 +52,7 @@ func parseZaiProviderError(err error) error {
 		return nil
 	}
 
-	return providererrors.NewProviderError("zai", statusErr.StatusCode, zaiErrorCode(code), message, err)
+	return providererrors.NewProviderErrorFromResponse("zai", 0, zaiErrorCode(code), message, err)
 }
 
 // zaiErrorCode normalizes an error code, which may be a JSON string or
