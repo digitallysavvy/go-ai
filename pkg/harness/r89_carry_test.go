@@ -1,9 +1,12 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"log"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -84,8 +87,8 @@ func TestR89carryResponseFormatKeepsOrderedSchema(t *testing.T) {
 }
 
 // TS normalize-harness-tool-model-output.ts checks the top-level media type
-// before detection: an empty media type fails (getTopLevelMediaType('') is
-// '').
+// before detection: an empty media type fails (getTopLevelMediaType(”) is
+// ”).
 func TestR89carryNormalizeEmptyMediaType(t *testing.T) {
 	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 	const prefix = "Harnesses support only text and inline images in tool model output. "
@@ -125,4 +128,54 @@ func TestR89carryConvertToolModelOutputImages(t *testing.T) {
 	if err == nil || err.Error() != prefix+"'file'." {
 		t.Fatalf("file url: err = %v", err)
 	}
+}
+
+// TS resolve-observability.ts resolveDebugConfig: `env.HARNESS_DEBUG_LEVEL
+// ?? 'debug'` uses a set variable as given, unvalidated.
+func TestR89carryDebugLevelFromEnv(t *testing.T) {
+	env := func(m map[string]string) func(string) (string, bool) {
+		return func(k string) (string, bool) { v, ok := m[k]; return v, ok }
+	}
+	if got := resolveDebugConfig(nil, env(map[string]string{"HARNESS_DEBUG_LEVEL": "verbose"})).Level; got != "verbose" {
+		t.Errorf("invalid level: got %q, want verbose", got)
+	}
+	if got := resolveDebugConfig(nil, env(map[string]string{"HARNESS_DEBUG_LEVEL": ""})).Level; got != "" {
+		t.Errorf("empty level: got %q, want empty", got)
+	}
+	if got := resolveDebugConfig(nil, env(nil)).Level; got != DebugLevelDebug {
+		t.Errorf("unset level: got %q", got)
+	}
+	if got := resolveDebugConfig(&DebugConfig{Level: DebugLevelWarn}, env(map[string]string{"HARNESS_DEBUG_LEVEL": "trace"})).Level; got != DebugLevelWarn {
+		t.Errorf("code level: got %q", got)
+	}
+}
+
+// TS HarnessAgent constructor warns when the deprecated `sandbox` setting
+// is used.
+func TestR89carrySandboxDeprecationWarning(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	mock := newMockHarness(mockHarnessOptions{})
+	if _, err := NewAgent(AgentSettings{Harness: mock.harness}); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("warned without Sandbox: %q", buf.String())
+	}
+	if _, err := NewAgent(AgentSettings{Harness: mock.harness, Sandbox: r89carrySandboxProvider{}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "HarnessAgent: `Sandbox` is deprecated. Supply `SandboxSession` to CreateSession() instead.") {
+		t.Fatalf("log = %q", buf.String())
+	}
+}
+
+type r89carrySandboxProvider struct{}
+
+func (r89carrySandboxProvider) SpecificationVersion() string { return "harness-sandbox-v1" }
+func (r89carrySandboxProvider) ProviderID() string           { return "r89carry" }
+func (r89carrySandboxProvider) CreateSession(context.Context, CreateSandboxSessionOptions) (NetworkSandboxSession, error) {
+	return nil, nil
 }
