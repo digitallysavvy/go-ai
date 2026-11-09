@@ -118,3 +118,33 @@ func TestR90carryToolCallConcurrencyErrorValue(t *testing.T) {
 		t.Errorf("err = %#v", err)
 	}
 }
+
+// TS WorkflowAgent approval resume: an approved call whose input fails
+// revalidation is answered with getErrorMessage(error), the error's
+// toString() ("AI_InvalidToolInputError: ..."), and a failing approved tool
+// with "Error: <message>" (workflow-agent.ts executeTool / revalidation).
+func TestR90carryApprovalResumeErrorTextIsToString(t *testing.T) {
+	model := &wfMockModel{}
+	a, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name:         "getWeather",
+			ToolApproval: true,
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "integer"}}},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "sunny", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: workflowApprovalMessages("")}); err != nil {
+		t.Fatal(err)
+	}
+	tr := lastToolResultInPrompt(t, model, "weather-1")
+	text, _ := tr.Output.Value.(string)
+	if tr.Output.Type != types.ToolResultOutputErrorText || !strings.HasPrefix(text, "AI_InvalidToolInputError: Invalid input for tool getWeather") {
+		t.Errorf("revalidation result = %+v", tr.Output)
+	}
+}

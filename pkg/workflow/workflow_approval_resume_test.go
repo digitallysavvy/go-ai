@@ -133,15 +133,15 @@ func TestWorkflowResumeStreamsFailedApprovedToolAsToolError(t *testing.T) {
 			got = c.ToolResult
 		}
 	}
-	if got == nil || got.Error != nil || got.Result != "weather service down" {
+	if got == nil || got.Error != nil || got.Result != "Error: weather service down" {
 		t.Fatalf("tool chunk = %+v, want tool result carrying the error text", got)
 	}
 	ui, ok := ToUIMessageChunk(ModelCallStreamPart{Type: provider.ChunkTypeToolResult, ToolResult: got})
-	if !ok || ui["type"] != "tool-output-available" || ui["output"] != "weather service down" {
+	if !ok || ui["type"] != "tool-output-available" || ui["output"] != "Error: weather service down" {
 		t.Fatalf("ui chunk = %v, want tool-output-available with error text", ui)
 	}
 	tr := lastToolResultInPrompt(t, model, "weather-1")
-	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputErrorText || tr.Output.Value != "weather service down" {
+	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputErrorText || tr.Output.Value != "Error: weather service down" {
 		t.Fatalf("prompt tool result = %+v", tr.Output)
 	}
 }
