@@ -394,6 +394,70 @@ type elevenLabsRealtimeEvent struct {
 	LanguageCode *string                  `json:"language_code,omitempty"`
 	Words        []elevenLabsRealtimeWord `json:"words,omitempty"`
 	Error        string                   `json:"error,omitempty"`
+	// HasError reports a present, non-null error (TS raw.error ?? fallback).
+	HasError bool `json:"-"`
+}
+
+// decodeElevenLabsRealtimeEvent reads a server message the way TS does: any
+// JSON value is accepted (safeParseJSON without a schema) and each field is
+// read loosely, so a field of an unexpected type does not drop the message.
+// ok is false only for text that is not JSON.
+func decodeElevenLabsRealtimeEvent(text string) (elevenLabsRealtimeEvent, bool) {
+	var value interface{}
+	if json.Unmarshal([]byte(text), &value) != nil {
+		return elevenLabsRealtimeEvent{}, false
+	}
+	m, _ := value.(map[string]interface{})
+	var ev elevenLabsRealtimeEvent
+	ev.MessageType, _ = m["message_type"].(string)
+	ev.SessionID, _ = m["session_id"].(string)
+	ev.Text, _ = m["text"].(string)
+	if lc, ok := m["language_code"].(string); ok {
+		ev.LanguageCode = &lc
+	}
+	if words, ok := m["words"].([]interface{}); ok {
+		for _, w := range words {
+			wm, _ := w.(map[string]interface{})
+			word := elevenLabsRealtimeWord{}
+			word.Text, _ = wm["text"].(string)
+			word.Type, _ = wm["type"].(string)
+			if v, ok := wm["start"].(float64); ok {
+				word.Start = &v
+			}
+			if v, ok := wm["end"].(float64); ok {
+				word.End = &v
+			}
+			ev.Words = append(ev.Words, word)
+		}
+	}
+	if e, present := m["error"]; present && e != nil {
+		ev.HasError = true
+		ev.Error = jsErrorMessage(e)
+	}
+	return ev, true
+}
+
+// jsErrorMessage is the message of TS new Error(value): String(value).
+func jsErrorMessage(v interface{}) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return providerutils.JSNumberString(x)
+	case bool:
+		return strconv.FormatBool(x)
+	case map[string]interface{}:
+		return "[object Object]"
+	case []interface{}:
+		parts := make([]string, len(x))
+		for i, item := range x {
+			if item != nil {
+				parts[i] = jsErrorMessage(item)
+			}
+		}
+		return strings.Join(parts, ",")
+	}
+	return fmt.Sprint(v)
 }
 
 // pumpAudio forwards audio chunks as input_audio_chunk messages (the first
@@ -595,8 +659,8 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 				continue
 			}
 
-			var raw elevenLabsRealtimeEvent
-			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+			raw, ok := decodeElevenLabsRealtimeEvent(res.Text)
+			if !ok {
 				continue
 			}
 
@@ -616,9 +680,9 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 					finish()
 					return
 				}
-				msg := raw.Error
-				if msg == "" {
-					msg = "ElevenLabs realtime transcription error"
+				msg := "ElevenLabs realtime transcription error"
+				if raw.HasError {
+					msg = raw.Error
 				}
 				fail(errors.New(msg))
 				return
