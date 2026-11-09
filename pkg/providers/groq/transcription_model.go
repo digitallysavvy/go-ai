@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"mime/multipart"
+	"reflect"
 	"regexp"
 	"time"
 
@@ -66,17 +68,7 @@ func resolveGroqTranscriptionOptions(providerOptions map[string]interface{}) gro
 	if v, ok := raw["responseFormat"].(string); ok {
 		opts.ResponseFormat = &v
 	}
-	switch v := raw["temperature"].(type) {
-	case float64:
-		opts.Temperature = &v
-	case int:
-		f := float64(v)
-		opts.Temperature = &f
-	case int64:
-		f := float64(v)
-		opts.Temperature = &f
-	case float32:
-		f := float64(v)
+	if f, ok := groqNumber(raw["temperature"]); ok {
 		opts.Temperature = &f
 	}
 	if arr, ok := raw["timestampGranularities"].([]interface{}); ok {
@@ -172,7 +164,11 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 		if audio, err = groqAudioBytes(in.bytesOpts); err != nil {
 			return nil, err
 		}
+		// TS: mediaType ?? 'audio/wav'.
 		mimeType = in.bytesOpts.MimeType
+		if mimeType == "" {
+			mimeType = "audio/wav"
+		}
 	}
 	if err := validateGroqTranscriptionOptions(in.providerOptions); err != nil {
 		return nil, err
@@ -393,17 +389,8 @@ func validateGroqTranscriptionOptions(providerOptions map[string]interface{}) er
 		}
 	}
 	if v, ok := m["temperature"]; ok && v != nil {
-		var f float64
-		switch n := v.(type) {
-		case float64:
-			f = n
-		case float32:
-			f = float64(n)
-		case int:
-			f = float64(n)
-		case int64:
-			f = float64(n)
-		default:
+		f, isNumber := groqNumber(v)
+		if !isNumber {
 			return fail("Invalid input: expected number at temperature")
 		}
 		if f < 0 || f > 1 {
@@ -424,4 +411,22 @@ func validateGroqTranscriptionOptions(providerOptions map[string]interface{}) er
 		}
 	}
 	return nil
+}
+
+// groqNumber is a z.number() value as float64: any Go integer kind or a
+// finite float (zod 4 rejects NaN and +/-Infinity).
+func groqNumber(v interface{}) (float64, bool) {
+	if v == nil {
+		return 0, false
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		f := rv.Float()
+		return f, !math.IsNaN(f) && !math.IsInf(f, 0)
+	}
+	return 0, false
 }
