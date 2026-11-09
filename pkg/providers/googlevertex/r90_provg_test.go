@@ -162,3 +162,25 @@ func TestR90provgEmbeddingFractionalTokens(t *testing.T) {
 		t.Fatalf("tokens = %v, want 3.5", res.Usage.Tokens)
 	}
 }
+
+// TestR90provgVideoNoVideosErrorText: TS throws `No videos in response.
+// Response: ${JSON.stringify(finalOperation)}` (google-vertex-video-model.ts
+// buildCompletedResult); an absent name is left out and an empty videos array
+// prints as [].
+func TestR90provgVideoNoVideosErrorText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"done":true,"response":{"videos":[]}}`)
+	}))
+	defer server.Close()
+	p, _ := New(Config{BaseURL: server.URL, AccessToken: "t"})
+	m := NewVideoModel(p, "veo-3.0-generate-001")
+	_, err := m.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: []byte(`{"operationName":"op"}`)})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	want := `No videos in response. Response: {"done":true,"response":{"videos":[]}}`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
+	}
+}

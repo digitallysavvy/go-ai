@@ -420,7 +420,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 // depending on whether providerOptions.googleVertex.gcsOutputDirectory was
 // set.
 func (m *VideoModel) buildCompletedResult(operation *vertexVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
-	if operation.Response == nil || len(operation.Response.Videos) == 0 {
+	if operation.Response == nil || operation.Response.Videos == nil || len(*operation.Response.Videos) == 0 {
 		raw, _ := json.Marshal(operation)
 		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
 	}
@@ -428,7 +428,7 @@ func (m *VideoModel) buildCompletedResult(operation *vertexVideoOperationWire, r
 	videos := []provider.VideoModelV3VideoData{}
 	videoMetadata := []map[string]interface{}{}
 
-	for _, v := range operation.Response.Videos {
+	for _, v := range *operation.Response.Videos {
 		mediaType := v.MimeType
 		if mediaType == "" {
 			mediaType = "video/mp4"
@@ -602,7 +602,10 @@ func convertVertexVideoHeaders(h http.Header) map[string]string {
 
 // vertexVideoOperationWire mirrors TS googleVertexOperationSchema.
 type vertexVideoOperationWire struct {
-	Name  string `json:"name"`
+	// omitempty and the Videos pointer keep the "No videos in response"
+	// error text equal to TS JSON.stringify of the parsed operation (an
+	// absent name is left out; an empty videos array prints as []).
+	Name  string `json:"name,omitempty"`
 	Done  bool   `json:"done"`
 	Error *struct {
 		Code    *int   `json:"code,omitempty"`
@@ -610,7 +613,7 @@ type vertexVideoOperationWire struct {
 		Status  string `json:"status,omitempty"`
 	} `json:"error,omitempty"`
 	Response *struct {
-		Videos []struct {
+		Videos *[]struct {
 			BytesBase64Encoded string `json:"bytesBase64Encoded,omitempty"`
 			GcsURI             string `json:"gcsUri,omitempty"`
 			MimeType           string `json:"mimeType,omitempty"`
