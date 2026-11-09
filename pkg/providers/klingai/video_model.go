@@ -108,8 +108,8 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	authToken, err := m.prov.GenerateAuthToken()
 	if err != nil {
-		if providererrors.IsLoadAPIKeyError(err) {
-			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError
+		if providererrors.IsLoadAPIKeyError(err) || providererrors.IsLoadSettingError(err) {
+			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError / LoadSettingError
 		}
 		return nil, NewAuthError(err.Error())
 	}
@@ -173,8 +173,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	authToken, err := m.prov.GenerateAuthToken()
 	if err != nil {
-		if providererrors.IsLoadAPIKeyError(err) {
-			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError
+		if providererrors.IsLoadAPIKeyError(err) || providererrors.IsLoadSettingError(err) {
+			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError / LoadSettingError
 		}
 		return nil, NewAuthError(err.Error())
 	}

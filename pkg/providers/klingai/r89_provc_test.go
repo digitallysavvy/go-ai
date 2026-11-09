@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -153,5 +154,37 @@ func TestR89provcErrorCarriesResponseHeaders(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("retry waited %v: retry-after-ms 10 was ignored", elapsed)
+	}
+}
+
+// cr-r89-prova-to-provg-provc (prova): TS klingai-auth.ts loadSetting throws a
+// LoadSettingError for a missing access or secret key; DoStart throws it
+// unwrapped. Go keeps the v0.5.2 *Error in the chain.
+func TestR89provcMissingSecretKeyIsLoadSettingError(t *testing.T) {
+	t.Setenv("KLINGAI_API_KEY", "")
+	t.Setenv("KLINGAI_ACCESS_KEY", "")
+	t.Setenv("KLINGAI_SECRET_KEY", "")
+	const want = "KlingAI secret key setting is missing. Pass it using the 'secretKey' parameter or the KLINGAI_SECRET_KEY environment variable."
+	var lse *providererrors.LoadSettingError
+	if _, err := New(Config{AccessKey: "ak"}); !errors.As(err, &lse) || err.Error() != want {
+		t.Fatalf("New err %T %v: want LoadSettingError", err, err)
+	}
+	t.Setenv("KLINGAI_SECRET_KEY", "sk")
+	prov, err := New(Config{AccessKey: "ak"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KLINGAI_SECRET_KEY", "")
+	model, _ := newVideoModel(prov, "kling-v2.6-t2v")
+	_, err = model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "p", N: 1}})
+	if !errors.As(err, &lse) {
+		t.Fatalf("err %T %v: want LoadSettingError", err, err)
+	}
+	if err.Error() != want {
+		t.Fatalf("text = %q", err.Error())
+	}
+	var ke *Error
+	if !errors.As(err, &ke) {
+		t.Fatal("v0.5.2 *Error no longer in the chain")
 	}
 }
