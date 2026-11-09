@@ -85,8 +85,20 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 	supportsImageInput := true
 	noMessageThreads := false
 	supportsStrictTools := false
+	// TS reads a configured anthropic-beta as user-supplied betas
+	// (getBetasFromHeaders over the config headers), which take their place
+	// in the beta set after the computed and tool betas and before the call
+	// and anthropicBeta-option betas. The model sees the static value here;
+	// the auth transport still merges a HeadersResolver value.
+	var configBetaHeaders map[string]string
+	for k, v := range p.options.Headers {
+		if strings.EqualFold(k, "anthropic-beta") {
+			configBetaHeaders = map[string]string{"anthropic-beta": v}
+		}
+	}
 	anthropicProvider := anthropicprovider.New(anthropicprovider.Config{
 		Name:                           DefaultProviderName,
+		Headers:                        configBetaHeaders,
 		BaseURL:                        baseURL,
 		OmitAPIVersionHeader:           true,
 		HTTPClient:                     httpClient,
