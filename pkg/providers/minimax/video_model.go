@@ -1,6 +1,7 @@
 package minimax
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -99,7 +100,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Method:  "POST",
 		Path:    "/v2/video_generation",
 		Headers: submitHeaders,
-		Body:    body,
+		// TS postJsonToApi JSON.stringify({...body, callback_url}): the getArgs
+		// key order, not sorted map keys.
+		Body: bytes.NewBufferString(providerutils.StringifyOrdered(body, minimaxVideoBodyOrder)),
 	})
 	if err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
@@ -797,6 +800,14 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	}
 
 	return body, warnings, minimaxResolvedInputs{ImageCount: sentImageCount, ReferenceVideoIndices: sentReferenceVideoIndices}, nil
+}
+
+// minimaxVideoBodyOrder is the key order of the TS getArgs body
+// ({model, content, resolution, duration, ratio?, aigc_watermark?} plus
+// doStart's callback_url) and of its content items.
+var minimaxVideoBodyOrder = map[string][]string{
+	"":        {"model", "content", "resolution", "duration", "ratio", "aigc_watermark", "callback_url"},
+	"content": {"type", "text", "image_url", "video_url", "audio_url", "role"},
 }
 
 // minimaxGetFirstFrame returns the frameImages first_frame entry, if any.
