@@ -76,6 +76,20 @@ func asOptionObject(v interface{}) (map[string]interface{}, bool) {
 		}
 		return out, true
 	}
+	// A typed option struct (or a pointer to one), such as a provider's
+	// exported *Options type, is read through its JSON form: its json tags
+	// are the TS option keys, so it validates like the TS options object.
+	if rv.Kind() == reflect.Pointer && !rv.IsNil() && rv.Elem().Kind() == reflect.Struct || rv.Kind() == reflect.Struct {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, false
+		}
+		var out map[string]interface{}
+		if json.Unmarshal(raw, &out) != nil || out == nil {
+			return nil, false
+		}
+		return out, true
+	}
 	return nil, false
 }
 
