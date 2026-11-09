@@ -293,3 +293,19 @@ func TestR90provgDecisionTypedModels(t *testing.T) {
 		t.Error("[]int accepted")
 	}
 }
+
+// TestR90provgRealtimeTeamFromSetting: TS getWebSocketConfig passes
+// config.teamIdOrSlug (the provider setting); a custom
+// x-vercel-ai-gateway-team header does not scope the realtime handshake.
+func TestR90provgRealtimeTeamFromSetting(t *testing.T) {
+	p, _ := New(Config{APIKey: "k", Headers: map[string]string{"x-vercel-ai-gateway-team": "hdr"}})
+	cfg := p.ExperimentalRealtime("openai/gpt-realtime").GetWebSocketConfig("t", "wss://x")
+	if len(cfg.Protocols) != 2 {
+		t.Fatalf("protocols = %v, want no team subprotocol", cfg.Protocols)
+	}
+	p, _ = New(Config{APIKey: "k", TeamIDOrSlug: "opt", Headers: map[string]string{"x-vercel-ai-gateway-team": "hdr"}})
+	cfg = p.ExperimentalRealtime("openai/gpt-realtime").GetWebSocketConfig("t", "wss://x")
+	if len(cfg.Protocols) != 3 || cfg.Protocols[2] != GatewayTeamSubprotocolPrefix+encodeSubprotocolValue("opt") {
+		t.Fatalf("protocols = %v, want the setting's team", cfg.Protocols)
+	}
+}
