@@ -271,7 +271,7 @@ func validateDeepSeekFileUpload(fileBytes []byte, mediaType string, filename str
 
 	if detected && !deepSeekSupportedFileMediaTypes[detectedMediaType] {
 		return providererrors.NewArgumentError("data", fmt.Sprintf(
-			"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Detected unsupported file content type %q.",
+			"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Detected unsupported file content type \"%s\".",
 			detectedMediaType), nil)
 	}
 
@@ -281,7 +281,7 @@ func validateDeepSeekFileUpload(fileBytes []byte, mediaType string, filename str
 
 	if !deepSeekGenericFileMediaTypes[normalizedMediaType] {
 		return providererrors.NewArgumentError("mediaType", fmt.Sprintf(
-			"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Received unsupported media type %q.",
+			"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Received unsupported media type \"%s\".",
 			mediaType), nil)
 	}
 
@@ -290,7 +290,7 @@ func validateDeepSeekFileUpload(fileBytes []byte, mediaType string, filename str
 	}
 
 	return providererrors.NewArgumentError("mediaType", fmt.Sprintf(
-		"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Provide a supported media type or a filename ending in .jpg, .jpeg, .png, .gif, or .webp. Received %q.",
+		"DeepSeek file uploads support JPEG, PNG, GIF, and WebP images. Provide a supported media type or a filename ending in .jpg, .jpeg, .png, .gif, or .webp. Received \"%s\".",
 		mediaType), nil)
 }
 

@@ -64,6 +64,9 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 	if len(opts.Files) > 0 {
 		var body io.Reader
 		var contentType string
+		if opts, err = prefetchOpenAIImageInputs(ctx, opts); err != nil {
+			return nil, err
+		}
 		body, contentType, err = m.buildCompatEditBody(ctx, opts, args)
 		if err != nil {
 			return nil, err
@@ -137,7 +140,10 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 		dlOpts.Headers = m.compatDownloadHeaders(providerHeaders, d.URL, opts.Headers)
 		raw, err := fileutil.Download(ctx, d.URL, dlOpts)
 		if err != nil {
-			return nil, providererrors.NewProviderError(m.Provider(), 0, "", fmt.Sprintf("failed to download image: %v", err), err)
+			// TS getFromApi with createStatusCodeErrorResponseHandler: an
+			// HTTP failure is an APICallError with the status text; any
+			// other failure (URL validation, abort) propagates unchanged.
+			return nil, providerutils.StatusCodeDownloadError(m.Provider(), err)
 		}
 		images = append(images, raw)
 		b64 = append(b64, base64.StdEncoding.EncodeToString(raw))

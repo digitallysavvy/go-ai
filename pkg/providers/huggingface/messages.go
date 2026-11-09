@@ -261,6 +261,6 @@ func hfResolveFullMediaType(mediaType string, data []byte, b64 string) (string, 
 		return detected, nil
 	}
 	return "", &providererrors.UnsupportedFunctionalityError{
-		Functionality: fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType),
+		Functionality: fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType),
 	}
 }

@@ -1259,7 +1259,7 @@ func gateResponsesToolAsync(async **bool, toolName string, supportsAsync bool) [
 	*async = nil
 	return []types.Warning{{
 		Type:    "unsupported",
-		Feature: fmt.Sprintf("async tool calling for %q", toolName),
+		Feature: fmt.Sprintf("async tool calling for \"%s\"", toolName),
 		Details: "Async tool calling is only supported by GPT-6 and later models.",
 	}}
 }

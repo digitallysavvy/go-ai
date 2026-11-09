@@ -133,7 +133,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 					RequestID: textReq.ID,
 					Warning: types.Warning{
 						Type:    "unsupported",
-						Feature: fmt.Sprintf("batch result conversion for tool %q", tool.Name),
+						Feature: fmt.Sprintf("batch result conversion for tool \"%s\"", tool.Name),
 						Details: "OpenAI may return output for this tool that AI SDK text batches cannot currently convert.",
 					},
 				})
@@ -283,7 +283,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 	status := batch.toStatus()
 	if status.Status == provider.BatchStatusPending {
-		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("OpenAI batch %q is not complete.", opts.BatchID), nil)
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("OpenAI batch \"%s\" is not complete.", opts.BatchID), nil)
 	}
 
 	var fileIDs []string
@@ -295,7 +295,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 	if status.Status == provider.BatchStatusCompleted && len(fileIDs) == 0 {
 		return nil, providererrors.NewInvalidResponseDataError(batch,
-			fmt.Sprintf("OpenAI batch %q completed without batch output.", opts.BatchID))
+			fmt.Sprintf("OpenAI batch \"%s\" completed without batch output.", opts.BatchID))
 	}
 
 	return newOpenAIBatchResultsStream(ctx, b, fileIDs, opts.Headers), nil
@@ -331,7 +331,7 @@ func validateOpenAITextBatchRequests(requests []provider.BatchV4Request) error {
 		if req.Type != provider.BatchRequestTypeText || req.Text == nil {
 			return &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("batch request type: %s", req.Type),
-				Message:       fmt.Sprintf("The OpenAI Batch API does not support batch requests with type %q.", req.Type),
+				Message:       fmt.Sprintf("The OpenAI Batch API does not support batch requests with type \"%s\".", req.Type),
 			}
 		}
 	}
@@ -348,7 +348,7 @@ func validateOpenAISingleModel(requests []provider.BatchV4Request) error {
 	for _, req := range requests {
 		if req.Text.ModelID != modelID {
 			return providererrors.NewArgumentError("requests", fmt.Sprintf(
-				"The OpenAI Batch API requires all requests in a batch to use the same model. Found %q and %q.",
+				"The OpenAI Batch API requires all requests in a batch to use the same model. Found \"%s\" and \"%s\".",
 				modelID, req.Text.ModelID), nil)
 		}
 	}
@@ -703,7 +703,7 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 	// non-batch behavior.
 	if unsupportedType, found := firstUnsupportedOpenAIBatchOutputItemType(resp.Output); found {
 		return nil, &provider.BatchError{
-			Message: fmt.Sprintf("OpenAI returned an unsupported %q output item in an AI SDK text batch.", unsupportedType),
+			Message: fmt.Sprintf("OpenAI returned an unsupported \"%s\" output item in an AI SDK text batch.", unsupportedType),
 			Code:    "unsupported_content",
 		}
 	}

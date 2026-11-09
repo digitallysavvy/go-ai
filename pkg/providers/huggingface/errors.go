@@ -8,6 +8,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // hfErrorPayload mirrors TS huggingfaceErrorDataSchema:
@@ -45,6 +46,7 @@ func parseHuggingFaceError(err error) error {
 
 	message := http.StatusText(statusErr.StatusCode)
 	code := ""
+	var data interface{}
 	var payload hfErrorPayload
 	if unmarshalErr := securejson.Unmarshal(statusErr.Body, &payload); unmarshalErr == nil &&
 		payload.Error != nil && payload.Error.Message != nil {
@@ -53,8 +55,14 @@ func parseHuggingFaceError(err error) error {
 		if typeOK && codeOK {
 			message = *payload.Error.Message
 			code = errorCode
+			var raw map[string]interface{}
+			_ = securejson.Unmarshal(statusErr.Body, &raw)
+			// TS APICallError.data: the huggingfaceErrorDataSchema output.
+			data = map[string]interface{}{"error": providerutils.PickSchemaKeys(raw["error"], "message", "type", "code")}
 		}
 	}
 
-	return providererrors.NewProviderErrorFromResponse("huggingface", 0, code, message, err)
+	pe := providererrors.NewProviderErrorFromResponse("huggingface", 0, code, message, err)
+	pe.Data = data
+	return pe
 }

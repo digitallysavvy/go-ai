@@ -32,9 +32,9 @@ func resolveFullMediaTypeStrict(mediaType string, data []byte, inline bool) (str
 		if detected, ok := fileutil.DetectMediaTypeSignature(data, topLevelMediaType(mediaType)); ok && detected != "" {
 			return detected, nil
 		}
-		return "", unsupportedFilePart(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType))
+		return "", unsupportedFilePart(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType))
 	}
-	return "", unsupportedFilePart(fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", mediaType))
+	return "", unsupportedFilePart(fmt.Sprintf("file of media type \"%s\" must specify subtype since it is not passed as inline bytes", mediaType))
 }
 
 // openAIStrictFilePart converts a user file part the way the TS converter for
@@ -85,7 +85,7 @@ func openAIStrictFilePart(file types.FileContent, mode FilePartMode, refs *provi
 			if ok && detected != "" {
 				return detected, nil
 			}
-			return "", unsupportedFilePart(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType))
+			return "", unsupportedFilePart(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType))
 		}
 		return resolveFullMediaTypeStrict(mediaType, file.Data, inline)
 	}

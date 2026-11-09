@@ -311,3 +311,26 @@ func (d *OpenAICompatChatDecoder) UnmarshalJSON(b []byte) error {
 	}
 	return json.Unmarshal(flat, d.Target)
 }
+
+// ValidateChatResponseBody checks a chat completions response body against
+// the TS response schema of kind, as TS convertResponse's validateTypes does
+// (c9c6402cbd): a schema mismatch is a *providererrors.ValidationError (TS
+// TypeValidationError), text that is not JSON a *JSONParseError.
+func ValidateChatResponseBody(body []byte, kind providerutils.ChatResponseKind) error {
+	err := providerutils.ValidateChatResponse(body, kind)
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(*providerutils.ChunkSchemaError); !ok {
+		err = nil // not JSON: ChunkParseFailure reports the parse failure
+	}
+	_, typed := providerutils.ChunkParseFailure(string(body), err)
+	return typed
+}
+
+// DecodeChatResponseBody decodes a chat completions response body into
+// target the way the HTTP client decodes a response (OpenAICompatChatDecoder
+// for array content, fractional counts accepted).
+func DecodeChatResponseBody(body []byte, target interface{}) error {
+	return providerutils.UnmarshalChunk(body, &OpenAICompatChatDecoder{Target: target})
+}

@@ -7,6 +7,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // fireworksErrorPayload documents Fireworks' error envelope. TS's
@@ -44,16 +45,33 @@ func parseFireworksProviderError(err error) error {
 	var message string
 	if jsonErr := json.Unmarshal(payload.Error, &message); jsonErr == nil {
 		// TS errorToMessage: the string itself, an empty one included.
-		return providererrors.NewProviderErrorFromResponse("fireworks", 0, "", message, err)
+		pe := providererrors.NewProviderErrorFromResponse("fireworks", 0, "", message, err)
+		pe.Data = map[string]interface{}{"error": message} // TS APICallError.data: the schema output
+		return pe
 	}
 
 	// {"error": {"object","type","code","message"}}
 	var obj fireworksErrorObject
 	// TS fireworksErrorSchema: message is a required string ("" is valid).
-	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil {
+	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil || !fireworksValidCode(obj.Code) {
 		return nil
 	}
-	return providererrors.NewProviderErrorFromResponse("fireworks", 0, fireworksErrorCode(obj.Code), *obj.Message, err)
+	pe := providererrors.NewProviderErrorFromResponse("fireworks", 0, fireworksErrorCode(obj.Code), *obj.Message, err)
+	var errObj map[string]interface{}
+	_ = json.Unmarshal(payload.Error, &errObj)
+	// TS APICallError.data: the schema output (undeclared keys stripped).
+	pe.Data = map[string]interface{}{"error": providerutils.PickSchemaKeys(errObj, "message", "object", "type", "param", "code")}
+	return pe
+}
+
+// fireworksValidCode is TS `code: z.union([z.string(), z.number()]).nullish()`.
+func fireworksValidCode(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return true
+	}
+	var s string
+	var n json.Number
+	return json.Unmarshal(raw, &s) == nil || json.Unmarshal(raw, &n) == nil
 }
 
 // fireworksErrorCode stringifies a code that may be a JSON string or number.

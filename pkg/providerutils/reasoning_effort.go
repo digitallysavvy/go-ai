@@ -77,7 +77,7 @@ func MapReasoningToProviderEffort(reasoning *types.ReasoningLevel, effortMap map
 			appendReasoningWarning(warnings, types.Warning{
 				Type:    "compatibility",
 				Feature: "reasoning",
-				Details: fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", requested, mapped),
+				Details: fmt.Sprintf("reasoning \"%s\" is not directly supported by this model. mapped to effort \"%s\".", requested, mapped),
 			})
 		}
 		return mapped, true
@@ -86,7 +86,7 @@ func MapReasoningToProviderEffort(reasoning *types.ReasoningLevel, effortMap map
 	appendReasoningWarning(warnings, types.Warning{
 		Type:    "unsupported",
 		Feature: "reasoning",
-		Details: fmt.Sprintf("reasoning %q is not supported by this model.", requested),
+		Details: fmt.Sprintf("reasoning \"%s\" is not supported by this model.", requested),
 	})
 	return "", false
 }

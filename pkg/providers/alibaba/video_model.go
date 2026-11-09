@@ -419,7 +419,7 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) *aliba
 				warnings = append(warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "resolution",
-					Details: fmt.Sprintf("%s models only support the %s resolution tiers. The resolution %q was ignored.", modelName, strings.Join(supportedTiers, ", "), opts.Resolution),
+					Details: fmt.Sprintf("%s models only support the %s resolution tiers. The resolution \"%s\" was ignored.", modelName, strings.Join(supportedTiers, ", "), opts.Resolution),
 				})
 			} else {
 				parameters["resolution"] = resolutionTier
@@ -794,8 +794,7 @@ func (m *VideoModel) handleError(err error) error {
 		// "Cannot connect to API") propagate unchanged.
 		return err
 	}
-	message, code := alibabaNativeErrorMessage(httpErr.StatusCode, httpErr.Body)
-	return providererrors.NewProviderErrorFromResponse("alibaba", 0, code, message, err)
+	return alibabaNativeStatusError("alibaba", httpErr.StatusCode, httpErr.Body, err)
 }
 
 func flattenHTTPHeaders(headers map[string][]string) map[string]string {

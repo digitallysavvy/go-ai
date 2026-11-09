@@ -7,6 +7,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // moonshotErrorEnvelope documents the Moonshot API error shape:
@@ -55,7 +56,6 @@ func parseMoonshotProviderError(err error) error {
 	}
 
 	var envelope moonshotErrorEnvelope
-	var raw map[string]interface{}
 	// TS moonshotAIErrorSchema: error.message is a required string; an
 	// empty one is a valid message.
 	var present struct {
@@ -66,7 +66,11 @@ func parseMoonshotProviderError(err error) error {
 	if unmarshalErr := securejson.Unmarshal(statusErr.Body, &envelope); unmarshalErr != nil || securejson.Unmarshal(statusErr.Body, &present) != nil || present.Error.Message == nil {
 		return err
 	}
+	// TS APICallError.data: the moonshotAIErrorSchema output (undeclared
+	// keys stripped).
+	var raw map[string]interface{}
 	_ = securejson.Unmarshal(statusErr.Body, &raw)
+	data := map[string]interface{}{"error": providerutils.PickSchemaKeys(raw["error"], "message", "type", "code")}
 
 	code := envelope.Error.Code
 	if code == "" {
@@ -84,7 +88,7 @@ func parseMoonshotProviderError(err error) error {
 		Cause:           err,
 		ResponseHeaders: headers,
 		ResponseBody:    string(statusErr.Body),
-		Data:            raw,
+		Data:            data,
 	}
 }
 

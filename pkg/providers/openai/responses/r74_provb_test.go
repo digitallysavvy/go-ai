@@ -116,8 +116,13 @@ func TestR74ProvbExpandParallelToolCall(t *testing.T) {
 		[]interface{}{calls[0].ID, calls[0].ToolName, calls[0].RawArguments, calls[0].ProviderMetadata},
 		[]interface{}{calls[1].ID, calls[1].ToolName, calls[1].RawArguments, calls[1].ProviderMetadata},
 	})
+	// TS 22b8158276: only the first child keeps the wrapper input.
 	meta := func(i int) string {
-		return `{"openai":{"parallelToolCall":{"itemId":"fc_parallel","toolCallId":"call_parallel","toolName":"parallel","input":` + r74provbJSONString(input) + `,"index":` + string(rune('0'+i)) + `,"count":2}}}`
+		in := ""
+		if i == 0 {
+			in = `"input":` + r74provbJSONString(input) + `,`
+		}
+		return `{"openai":{"parallelToolCall":{"itemId":"fc_parallel","toolCallId":"call_parallel","toolName":"parallel",` + in + `"index":` + string(rune('0'+i)) + `,"count":2}}}`
 	}
 	want := `[["call_parallel_0","weather","{\"location\":\"San Francisco\"}",` + meta(0) + `],["call_parallel_1","cityAttractions","{\"city\":\"Rome\"}",` + meta(1) + `]]`
 	var g, w interface{}

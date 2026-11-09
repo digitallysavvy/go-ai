@@ -330,7 +330,9 @@ func (m *LanguageModel) handleError(err error) error {
 	}
 	// The status code, response headers, body and data come from the HTTP
 	// cause (TS APICallError), so retries honor retry-after headers.
-	return providererrors.NewProviderErrorFromResponse("zai", 0, "", message, err)
+	pe := providererrors.NewProviderErrorFromResponse("zai", 0, "", message, err)
+	pe.Data = nil // TS: no data for a body that does not match the error schema
+	return pe
 }
 
 // mapZaiFinishReason remaps Z.AI-specific raw finish_reason strings that the

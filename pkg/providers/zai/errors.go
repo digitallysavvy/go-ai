@@ -7,52 +7,59 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// zaiErrorPayload documents Z.AI's error envelope, a union of a bare
-// {code, message} object and a {error: {code, message}} wrapper. Mirrors TS
-// zaiErrorSchema (zai-error.ts):
-//
-//	z.union([{code, message}, {error: {code, message}}])
-type zaiErrorPayload struct {
-	Code    interface{} `json:"code,omitempty"`
-	Message *string     `json:"message,omitempty"`
-	Error   *struct {
-		Code    interface{} `json:"code,omitempty"`
-		Message *string     `json:"message"`
-	} `json:"error,omitempty"`
+// zaiErrorDetails is TS zaiErrorDetailsSchema: {code?: number | string |
+// null, message: string}. It reports false when v does not match.
+func zaiErrorDetails(v interface{}) (code interface{}, message string, ok bool) {
+	obj, isObj := v.(map[string]interface{})
+	if !isObj {
+		return nil, "", false
+	}
+	msg, isString := obj["message"].(string)
+	if !isString {
+		return nil, "", false
+	}
+	switch c := obj["code"].(type) {
+	case nil, string, float64:
+		return c, msg, true
+	default:
+		return nil, "", false
+	}
 }
 
 // parseZaiProviderError extracts a Z.AI error envelope from an HTTP error
 // response and returns a ProviderError carrying the provider's error code.
-// Returns nil (letting the caller fall back to a generic error) when the
-// body doesn't match the expected shape.
+// The body must match TS zaiErrorSchema (zai-error.ts), a union tried in
+// order: {code, message}, then {error: {code, message}}. Returns nil
+// (letting the caller fall back to the status text) when it does not.
 func parseZaiProviderError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if !errors.As(err, &statusErr) {
 		return nil
 	}
 
-	var payload zaiErrorPayload
+	var payload interface{}
 	if unmarshalErr := securejson.Unmarshal(statusErr.Body, &payload); unmarshalErr != nil {
 		return nil
 	}
 
-	var message string
-	var code interface{}
-	switch {
-	// TS zaiErrorSchema: message is a required string; "" is a message.
-	case payload.Message != nil:
-		message = *payload.Message
-		code = payload.Code
-	case payload.Error != nil && payload.Error.Message != nil:
-		message = *payload.Error.Message
-		code = payload.Error.Code
-	default:
-		return nil
+	// TS APICallError.data: the matching member's output (undeclared keys
+	// stripped).
+	code, message, ok := zaiErrorDetails(payload)
+	data := map[string]interface{}(providerutils.PickSchemaKeys(payload, "code", "message"))
+	if !ok {
+		obj, _ := payload.(map[string]interface{})
+		if code, message, ok = zaiErrorDetails(obj["error"]); !ok {
+			return nil
+		}
+		data = map[string]interface{}{"error": providerutils.PickSchemaKeys(obj["error"], "code", "message")}
 	}
 
-	return providererrors.NewProviderErrorFromResponse("zai", 0, zaiErrorCode(code), message, err)
+	pe := providererrors.NewProviderErrorFromResponse("zai", 0, zaiErrorCode(code), message, err)
+	pe.Data = data
+	return pe
 }
 
 // zaiErrorCode normalizes an error code, which may be a JSON string or

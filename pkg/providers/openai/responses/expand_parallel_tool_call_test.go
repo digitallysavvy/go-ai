@@ -55,7 +55,13 @@ func TestGetParallelToolCallMetadataRequiresEveryField(t *testing.T) {
 	if _, ok := GetParallelToolCallMetadata(map[string]interface{}{"openai": map[string]interface{}{"parallelToolCall": e}}, "openai"); !ok {
 		t.Fatal("empty itemId must be accepted")
 	}
-	for _, drop := range []string{"itemId", "input", "index", "count"} {
+	// TS 22b8158276: input is optional (only the first child keeps it).
+	noInput := full()
+	delete(noInput, "input")
+	if _, ok := GetParallelToolCallMetadata(map[string]interface{}{"openai": map[string]interface{}{"parallelToolCall": noInput}}, "openai"); !ok {
+		t.Fatal("metadata without input must be accepted")
+	}
+	for _, drop := range []string{"itemId", "index", "count"} {
 		m := full()
 		delete(m, drop)
 		if _, ok := GetParallelToolCallMetadata(map[string]interface{}{"openai": map[string]interface{}{"parallelToolCall": m}}, "openai"); ok {

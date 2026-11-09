@@ -167,7 +167,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		warnings = append(warnings, types.Warning{
 			Type: "other",
 			Message: fmt.Sprintf(
-				"Unrecognized inputAudioFormat.type %q; falling back to raw PCM encoding. "+
+				"Unrecognized inputAudioFormat.type \"%s\"; falling back to raw PCM encoding. "+
 					"Use %s, or set providerOptions.xai.audioFormat explicitly.",
 				opts.InputAudioFormat.Type, xaiInputAudioFormatTypesList(),
 			),

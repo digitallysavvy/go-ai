@@ -886,8 +886,8 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 	// replays as the ORIGINAL wrapper's single function_call (only once, and
 	// only when the server doesn't already remember it via conversation
 	// state), not as its own individual function_call.
-	if metadata, ok := GetParallelToolCallMetadata(tc.ProviderMetadata, openAIProviderOptionsName(opts)); ok {
-		if group, exists := opts.parallelToolResultGroups[metadata.ToolCallID]; exists && sameParallelToolCall(group.metadata, metadata) {
+	if metadata, hasInput, ok := getParallelToolCallMetadata(tc.ProviderMetadata, openAIProviderOptionsName(opts)); ok {
+		if group, exists := opts.parallelToolResultGroups[metadata.ToolCallID]; exists && sameParallelToolCall(group.metadata, true, metadata, hasInput) {
 			if opts.emittedParallelToolCalls[group.metadata.ToolCallID] {
 				return nil, true, nil
 			}
@@ -1782,12 +1782,12 @@ func appendAdditionalTools(items *[]interface{}, part types.ToolResultContent, o
 // result seen for that group) and returns handled=true so the caller skips
 // its normal per-part handling for this part.
 func appendParallelToolResult(items *[]interface{}, part types.ToolResultContent, opts ConvertOptions) (handled bool, err error) {
-	metadata, ok := GetParallelToolCallMetadata(toolResultContentProviderMetadata(part), openAIProviderOptionsName(opts))
+	metadata, hasInput, ok := getParallelToolCallMetadata(toolResultContentProviderMetadata(part), openAIProviderOptionsName(opts))
 	if !ok {
 		return false, nil
 	}
 	group, exists := opts.parallelToolResultGroups[metadata.ToolCallID]
-	if !exists || !sameParallelToolCall(group.metadata, metadata) {
+	if !exists || !sameParallelToolCall(group.metadata, true, metadata, hasInput) {
 		return false, nil
 	}
 	if !opts.emittedParallelToolResults[group.metadata.ToolCallID] {
@@ -1860,12 +1860,14 @@ func rejectDeniedProgrammaticToolResult(part types.ToolResultContent, opts Conve
 }
 
 // sameParallelToolCall reports whether two ParallelToolCallMetadata values
-// describe the same "parallel" wrapper call (row 6be0f51).
-func sameParallelToolCall(a, b ParallelToolCallMetadata) bool {
+// describe the same "parallel" wrapper call (row 6be0f51). The inputs are
+// compared only when both carry one (TS 22b8158276: only the first child
+// keeps the wrapper input).
+func sameParallelToolCall(a ParallelToolCallMetadata, aHasInput bool, b ParallelToolCallMetadata, bHasInput bool) bool {
 	return a.ItemID == b.ItemID &&
 		a.ToolCallID == b.ToolCallID &&
 		a.ToolName == b.ToolName &&
-		a.Input == b.Input &&
+		(!aHasInput || !bHasInput || a.Input == b.Input) &&
 		a.Count == b.Count
 }
 
@@ -1900,13 +1902,14 @@ func toolResultContentProviderMetadata(part types.ToolResultContent) map[string]
 func collectCompleteParallelToolResultGroups(prompt types.Prompt, providerName string) map[string]parallelToolResultGroup {
 	type pendingGroup struct {
 		metadata ParallelToolCallMetadata
+		hasInput bool
 		results  map[int]types.ToolResultContent
 		invalid  bool
 	}
 	pending := map[string]*pendingGroup{}
 
 	addResult := func(part types.ToolResultContent) {
-		metadata, ok := GetParallelToolCallMetadata(toolResultContentProviderMetadata(part), providerName)
+		metadata, hasInput, ok := getParallelToolCallMetadata(toolResultContentProviderMetadata(part), providerName)
 		if !ok {
 			return
 		}
@@ -1914,13 +1917,20 @@ func collectCompleteParallelToolResultGroups(prompt types.Prompt, providerName s
 		if !exists {
 			pending[metadata.ToolCallID] = &pendingGroup{
 				metadata: metadata,
+				hasInput: hasInput,
 				results:  map[int]types.ToolResultContent{metadata.Index: part},
 			}
 			return
 		}
-		if _, has := g.results[metadata.Index]; has || !sameParallelToolCall(g.metadata, metadata) {
+		if _, has := g.results[metadata.Index]; has || !sameParallelToolCall(g.metadata, g.hasInput, metadata, hasInput) {
 			g.invalid = true
 			return
+		}
+		// TS 22b8158276: the group takes the metadata of the first result
+		// that carries the wrapper input.
+		if !g.hasInput && hasInput {
+			g.metadata = metadata
+			g.hasInput = true
 		}
 		g.results[metadata.Index] = part
 	}
@@ -1943,7 +1953,7 @@ func collectCompleteParallelToolResultGroups(prompt types.Prompt, providerName s
 
 	complete := map[string]parallelToolResultGroup{}
 	for toolCallID, g := range pending {
-		if g.invalid || len(g.results) != g.metadata.Count {
+		if g.invalid || len(g.results) != g.metadata.Count || !g.hasInput {
 			continue
 		}
 		ordered := make([]types.ToolResultContent, g.metadata.Count)

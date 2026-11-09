@@ -14,6 +14,8 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1119,7 +1121,42 @@ func (m *LanguageModel) handleError(err error) error {
 			}
 		}
 	}
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return openResponsesStatusError(m.provider.config.Name, statusErr, err)
+	}
 	return providererrors.NewProviderError(m.provider.config.Name, 0, "", err.Error(), err)
+}
+
+// openResponsesStatusError is TS defaultFailedResponseHandler
+// (createJsonErrorResponseHandler over openResponsesErrorSchema): a body
+// {error: {message: string, type?, param?, code?: string | null}} gives
+// error.message and the schema output as data; any other body gives the
+// status text and no data.
+func openResponsesStatusError(name string, statusErr *internalhttp.HTTPStatusError, err error) error {
+	message := http.StatusText(statusErr.StatusCode)
+	var data interface{}
+	var raw map[string]interface{}
+	if securejson.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &raw) == nil {
+		if errObj, ok := raw["error"].(map[string]interface{}); ok {
+			msg, isString := errObj["message"].(string)
+			valid := isString
+			for _, k := range []string{"type", "param", "code"} {
+				switch errObj[k].(type) {
+				case nil, string:
+				default:
+					valid = false
+				}
+			}
+			if valid {
+				message = msg
+				data = map[string]interface{}{"error": providerutils.PickSchemaKeys(errObj, "message", "type", "param", "code")}
+			}
+		}
+	}
+	pe := providererrors.NewProviderErrorFromResponse(name, 0, "", message, err)
+	pe.Data = data
+	return pe
 }
 
 // responseErrorMetadata classifies a `response.error` embedded in a

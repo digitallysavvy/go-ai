@@ -343,7 +343,10 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string, callHea
 
 	downloaded, err := fileutil.DownloadWithMetadata(ctx, imageURL, dlOpts)
 	if err != nil {
-		return nil, fmt.Errorf("Fireworks failed to download image: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+		// TS getFromApi with createStatusCodeErrorResponseHandler: an HTTP
+		// failure is an APICallError with the status text; any other
+		// failure (URL validation, abort) propagates unchanged.
+		return nil, providerutils.StatusCodeDownloadError("fireworks", err)
 	}
 	data := downloaded.Data
 
