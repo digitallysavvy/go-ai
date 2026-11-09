@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -137,4 +139,36 @@ func TestR89provcGenerateVideoStartStatusOnlyModel(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+}
+
+type r89provcDeadlineRecorder struct {
+	mu          sync.Mutex
+	hadDeadline bool
+}
+
+func (r *r89provcDeadlineRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	_, ok := req.Context().Deadline()
+	r.mu.Lock()
+	r.hadDeadline = ok
+	r.mu.Unlock()
+	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"video/mp4"}}, Body: io.NopCloser(strings.NewReader("video")), Request: req}, nil
+}
+
+// TS createDownload() (generateVideo's default download) sets no timeout; Go
+// cut every generated-video download off after 60 s (the fileutil client
+// timeout), failing large videos on slow links.
+func TestR89provcVideoDownloadHasNoTimeout(t *testing.T) {
+	rec := &r89provcDeadlineRecorder{}
+	restoreTransport, restoreValidator := downloadTransport, downloadURLValidator
+	downloadTransport = func() http.RoundTripper { return rec }
+	downloadURLValidator = func(string) error { return nil }
+	t.Cleanup(func() { downloadTransport, downloadURLValidator = restoreTransport, restoreValidator })
+
+	data, mediaType, err := downloadVideoURL(context.Background(), "https://cdn.example/v.mp4", nil, nil)
+	if err != nil || string(data) != "video" || mediaType != "video/mp4" {
+		t.Fatalf("download = %q, %q, %v", data, mediaType, err)
+	}
+	if rec.hadDeadline {
+		t.Fatal("video download carried a client timeout deadline; TS sets none")
+	}
 }

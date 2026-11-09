@@ -483,7 +483,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, err
 		baseURL = defaultBaseURL
 	}
 	opts := fileutil.TrustedOriginDownloadOptions(baseURL, m.provider.client.HTTPClient().Transport)
-	opts.Timeout = 30 * time.Second
+	opts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
 	return fileutil.Download(ctx, url, opts)
 }
 

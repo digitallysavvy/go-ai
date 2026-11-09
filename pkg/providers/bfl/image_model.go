@@ -751,7 +751,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 	baseURL := m.provider.baseURL()
 	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 	opts := fileutil.DefaultDownloadOptions()
-	opts.Timeout = 30 * time.Second
+	opts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
 	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
 	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
 	if err := opts.URLValidator(resolvedURL); err != nil {
@@ -894,7 +894,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 	baseURL := m.provider.baseURL()
 	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 	opts := fileutil.DefaultDownloadOptions()
-	opts.Timeout = 30 * time.Second
+	opts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
 	// The developer-configured origin (which may be self-hosted, e.g.
 	// http://localhost) and any *.bfl.ai host are trusted and use the plain
 	// transport with no SSRF check; every other hop -- including a redirect

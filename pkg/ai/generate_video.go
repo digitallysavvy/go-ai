@@ -963,6 +963,9 @@ func downloadVideoURL(ctx context.Context, url string, download URLDownloadFunct
 	opts := fileutil.DefaultDownloadOptions()
 	opts.URLValidator = downloadURLValidator
 	opts.Transport = downloadTransport()
+	// TS createDownload() sets no timeout: a large video on a slow link must
+	// not be cut off after 60 s; ctx still cancels it.
+	opts.Timeout = fileutil.NoTimeout
 	result, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 	if err != nil {
 		return nil, "", err
