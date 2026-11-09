@@ -25,6 +25,11 @@ type Error struct {
 	httpStatus  int
 	httpBody    []byte
 	httpHeaders map[string]string
+
+	// textOnly makes Error() the bare Message: the text of the AISDKError
+	// TS throws (KLINGAI_VIDEO_GENERATION_ERROR,
+	// KLINGAI_VIDEO_MISSING_OPTIONS), with no Go prefix.
+	textOnly bool
 }
 
 // HTTPStatusDetails implements providererrors.HTTPStatusDetails.
@@ -57,6 +62,9 @@ func (e *Error) Unwrap() error {
 
 // Error implements the error interface
 func (e *Error) Error() string {
+	if e.textOnly {
+		return e.Message
+	}
 	if e.ErrorCode != "" {
 		if e.Details != "" {
 			return fmt.Sprintf("klingai error (%s): %s - %s", e.ErrorCode, e.Message, e.Details)
@@ -142,7 +150,7 @@ func NewMissingVideoOptionsError(field string) *Error {
 // newVideoGenerationErrorText is a KLINGAI_VIDEO_GENERATION_ERROR whose whole
 // text is the TS AISDKError message (no "Video generation failed" prefix).
 func newVideoGenerationErrorText(message string) *Error {
-	return &Error{Code: 500, ErrorCode: "KLINGAI_VIDEO_GENERATION_ERROR", Message: message}
+	return &Error{Code: 500, ErrorCode: "KLINGAI_VIDEO_GENERATION_ERROR", Message: message, textOnly: true}
 }
 
 // missingCredentialsError is the error DoStart and DoStatus return when no
