@@ -42,6 +42,9 @@ type togetherRerankingOptions struct {
 	// RankFields lists keys in the JSON object document to rank by.
 	// Defaults to using all supplied keys for ranking.
 	RankFields []string `json:"rankFields,omitempty"`
+	// rankFieldsSet: rankFields was given as an array (an empty one is sent
+	// as rank_fields: [] like TS).
+	rankFieldsSet bool
 }
 
 func extractTogetherRerankingOptions(providerOptions map[string]interface{}) togetherRerankingOptions {
@@ -57,6 +60,8 @@ func extractTogetherRerankingOptions(providerOptions map[string]interface{}) tog
 	var opts togetherRerankingOptions
 	if raw, ok := po["rankFields"]; ok {
 		if slice, ok := raw.([]interface{}); ok {
+			opts.rankFieldsSet = true
+			opts.RankFields = []string{}
 			for _, v := range slice {
 				if s, ok := v.(string); ok {
 					opts.RankFields = append(opts.RankFields, s)
@@ -64,6 +69,7 @@ func extractTogetherRerankingOptions(providerOptions map[string]interface{}) tog
 			}
 		} else if strs, ok := raw.([]string); ok {
 			opts.RankFields = strs
+			opts.rankFieldsSet = strs != nil
 		}
 	}
 	return opts
@@ -89,7 +95,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if opts.TopN != nil {
 		reqBody["top_n"] = *opts.TopN
 	}
-	if len(rerankOpts.RankFields) > 0 {
+	if rerankOpts.rankFieldsSet || len(rerankOpts.RankFields) > 0 {
 		reqBody["rank_fields"] = rerankOpts.RankFields
 	}
 
