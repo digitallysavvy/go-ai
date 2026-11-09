@@ -6,6 +6,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -43,9 +44,13 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, internalhttp.RejectFetch(err)
 	}
-	clone.Header.Set("Authorization", "Bearer "+token)
+	// TS config headers: {Authorization: Bearer <token>, ...options.headers},
+	// combined below the call headers (combineHeaders(configHeaders,
+	// headers, betas)), so a header the request already carries wins.
+	config := http.Header{}
+	config.Set("Authorization", "Bearer "+token)
 	for k, v := range t.headers {
-		clone.Header.Set(k, v)
+		config.Set(k, v)
 	}
 	if t.headersFunc != nil {
 		headers, err := t.headersFunc(req.Context())
@@ -53,10 +58,49 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 			return nil, internalhttp.RejectFetch(err)
 		}
 		for k, v := range headers {
-			clone.Header.Set(k, v)
+			config.Set(k, v)
+		}
+	}
+	for k, vs := range config {
+		if len(vs) == 0 {
+			continue
+		}
+		if k == "Anthropic-Beta" {
+			clone.Header.Set(k, mergeConfigBetas(clone.Header.Get(k), vs[0]))
+			continue
+		}
+		// A configured labels header beats the one generated from
+		// providerOptions.vertex.labels (TS transformRequestHeaders sees the
+		// config headers); the request cannot tell a call header from the
+		// generated one, so the configured value is used.
+		if _, present := clone.Header[k]; !present || strings.EqualFold(k, LabelsHeader) {
+			clone.Header.Set(k, vs[0])
 		}
 	}
 	return t.base.RoundTrip(clone)
+}
+
+// mergeConfigBetas adds the betas of a configured anthropic-beta header to
+// the request's: TS reads them as user-supplied betas (getBetasFromHeaders:
+// lower-cased, trimmed, empty entries dropped) and sends the union.
+func mergeConfigBetas(requestValue, configValue string) string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(b string) {
+		if b != "" && !seen[b] {
+			seen[b] = true
+			out = append(out, b)
+		}
+	}
+	if requestValue != "" {
+		for _, b := range strings.Split(requestValue, ",") {
+			add(b)
+		}
+	}
+	for _, b := range strings.Split(providerutils.JSToLower(configValue), ",") {
+		add(providerutils.JSTrim(b))
+	}
+	return strings.Join(out, ",")
 }
 
 func (p *GoogleVertexAnthropicProvider) lazyAuthToken() func(ctx context.Context) (string, error) {
