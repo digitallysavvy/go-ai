@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
+	"math"
 	"mime/multipart"
 	"strconv"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -144,19 +146,19 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if response.Usage != nil {
 		rawUsage := map[string]interface{}{}
 		if response.Usage.PromptTokens != nil {
-			rawUsage["prompt_tokens"] = *response.Usage.PromptTokens
+			rawUsage["prompt_tokens"] = mistralUsageCount(*response.Usage.PromptTokens)
 		}
 		if response.Usage.CompletionTokens != nil {
-			rawUsage["completion_tokens"] = *response.Usage.CompletionTokens
+			rawUsage["completion_tokens"] = mistralUsageCount(*response.Usage.CompletionTokens)
 		}
 		if response.Usage.TotalTokens != nil {
-			rawUsage["total_tokens"] = *response.Usage.TotalTokens
+			rawUsage["total_tokens"] = mistralUsageCount(*response.Usage.TotalTokens)
 		}
 		if response.Usage.PromptAudioSeconds != nil {
 			rawUsage["prompt_audio_seconds"] = *response.Usage.PromptAudioSeconds
 		}
 		if response.Usage.RequestCount != nil {
-			rawUsage["request_count"] = *response.Usage.RequestCount
+			rawUsage["request_count"] = mistralUsageCount(*response.Usage.RequestCount)
 		}
 		result.ProviderUsage = rawUsage
 	}
@@ -174,19 +176,19 @@ func mistralTranscriptionProviderMetadata(response mistralTranscriptionResponse)
 	if response.Usage != nil {
 		usage := map[string]interface{}{}
 		if response.Usage.PromptTokens != nil {
-			usage["promptTokens"] = *response.Usage.PromptTokens
+			usage["promptTokens"] = mistralUsageCount(*response.Usage.PromptTokens)
 		}
 		if response.Usage.CompletionTokens != nil {
-			usage["completionTokens"] = *response.Usage.CompletionTokens
+			usage["completionTokens"] = mistralUsageCount(*response.Usage.CompletionTokens)
 		}
 		if response.Usage.TotalTokens != nil {
-			usage["totalTokens"] = *response.Usage.TotalTokens
+			usage["totalTokens"] = mistralUsageCount(*response.Usage.TotalTokens)
 		}
 		if response.Usage.PromptAudioSeconds != nil {
 			usage["promptAudioSeconds"] = *response.Usage.PromptAudioSeconds
 		}
 		if response.Usage.RequestCount != nil {
-			usage["requestCount"] = *response.Usage.RequestCount
+			usage["requestCount"] = mistralUsageCount(*response.Usage.RequestCount)
 		}
 		// TS assigns usage even when no field is present, so an empty usage
 		// object still produces providerMetadata.mistral.usage.
@@ -483,10 +485,24 @@ type mistralTranscriptionResponse struct {
 		SpeakerID string   `json:"speaker_id,omitempty"`
 	} `json:"segments,omitempty"`
 	Usage *struct {
-		PromptTokens       *int     `json:"prompt_tokens,omitempty"`
-		CompletionTokens   *int     `json:"completion_tokens,omitempty"`
-		TotalTokens        *int     `json:"total_tokens,omitempty"`
+		// TS z.number(): fractional counts are accepted.
+		PromptTokens       *float64 `json:"prompt_tokens,omitempty"`
+		CompletionTokens   *float64 `json:"completion_tokens,omitempty"`
+		TotalTokens        *float64 `json:"total_tokens,omitempty"`
 		PromptAudioSeconds *float64 `json:"prompt_audio_seconds,omitempty"`
-		RequestCount       *int     `json:"request_count,omitempty"`
+		RequestCount       *float64 `json:"request_count,omitempty"`
 	} `json:"usage,omitempty"`
+}
+
+// mistralUsageCount is a usage count for the usage maps: an int for a whole
+// number (the v0.5.2 value type), the number itself for a fraction (TS
+// z.number() keeps it).
+func mistralUsageCount(v float64) interface{} {
+	if v == math.Trunc(v) && math.Abs(v) < 1<<62 {
+		// The round trip rejects a value a 32-bit int cannot hold.
+		if i := int(v); float64(i) == v {
+			return i
+		}
+	}
+	return v
 }
