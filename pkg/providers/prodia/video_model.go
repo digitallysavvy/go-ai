@@ -129,7 +129,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		// img2vid: multipart/form-data request.
 		imageData, imageMIME, err := resolveVideoImage(ctx, opts.Image)
 		if err != nil {
-			return nil, fmt.Errorf("prodia: failed to resolve input image: %w", err)
+			return nil, err // TS: downloadBlob's DownloadError propagates unchanged
 		}
 
 		buf, contentType, err := buildMultipartJobRequest(body, imageData, imageMIME)
@@ -270,15 +270,13 @@ func prodiaErrorMessage(statusCode int, body []byte) string {
 func resolveVideoImage(ctx context.Context, file *provider.VideoModelV3File) ([]byte, string, error) {
 	switch file.Type {
 	case "file":
-		mimeType := file.MediaType
-		if mimeType == "" {
-			mimeType = "image/png"
-		}
-		return file.Data, mimeType, nil
+		// TS new Blob([...], {type: file.mediaType}): no default; an empty
+		// type is sent as application/octet-stream with filename "input".
+		return file.Data, file.MediaType, nil
 	case "url":
 		download, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.DefaultDownloadOptions())
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to fetch image URL: %w", err)
+			return nil, "", err
 		}
 		mimeType := download.ContentType
 		if mimeType == "" {
