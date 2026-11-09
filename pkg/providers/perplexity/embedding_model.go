@@ -1,8 +1,8 @@
 package perplexity
 
 import (
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
