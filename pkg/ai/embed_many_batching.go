@@ -140,6 +140,7 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 		if parallelism < 0 {
 			return nil, false, &providererrors.InvalidArgumentError{
 				Field:   "chunkSize",
+				Value:   parallelism,
 				Message: "chunkSize must be greater than 0",
 			}
 		}

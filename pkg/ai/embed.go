@@ -861,6 +861,7 @@ func validateEmbeddingDimensions(dimensions *int) error {
 	if dimensions != nil && *dimensions <= 0 {
 		return &providererrors.InvalidArgumentError{
 			Field:   "dimensions",
+			Value:   *dimensions,
 			Message: "dimensions must be a positive integer",
 		}
 	}

@@ -424,7 +424,7 @@ func (r *Registry) Files(providerID string) (provider.FilesAPI, error) {
 			ModelID:            providerID,
 			ModelType:          "languageModel",
 			AvailableProviders: r.listProvidersLocked(),
-			Reason:             fmt.Sprintf("The provider %q does not support file uploads. Make sure it exposes a Files() method.", providerID),
+			Reason:             fmt.Sprintf("The provider \"%s\" does not support file uploads. Make sure it exposes a Files() method.", providerID),
 		}
 	}
 	return api, nil
@@ -445,7 +445,7 @@ func (r *Registry) Skills(providerID string) (provider.SkillsAPI, error) {
 			ModelID:            providerID,
 			ModelType:          "languageModel",
 			AvailableProviders: r.listProvidersLocked(),
-			Reason:             fmt.Sprintf("The provider %q does not support skills. Make sure it exposes a Skills() method.", providerID),
+			Reason:             fmt.Sprintf("The provider \"%s\" does not support skills. Make sure it exposes a Skills() method.", providerID),
 		}
 	}
 	return api, nil

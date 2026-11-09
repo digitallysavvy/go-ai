@@ -649,10 +649,11 @@ func (f *orphanFilter) warn(orphanKind, orphanRef string) {
 		return
 	}
 	f.warnedOnce = true
-	log.Printf("[WorkflowChatTransport] Dropping orphan UI chunk (%s for id %q) on resume — "+
+	log.Printf("[WorkflowChatTransport] Dropping orphan UI chunk (%s for id \"%s\") on resume — "+
 		"the resume position landed mid-part. The dropped chunk(s) reference a part whose "+
 		"start chunk wasn't in the resumed window. To preserve the full message, configure "+
-		"your stream endpoint to rewind to a step boundary before returning the readable.",
+		"your stream endpoint to rewind to a step boundary before returning the readable. "+
+		"See: https://workflow.dev/docs/ai/resumable-streams#mid-part-resumes",
 		orphanKind, orphanRef)
 }
 

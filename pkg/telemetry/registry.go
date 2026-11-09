@@ -1053,14 +1053,32 @@ func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
 	return trace.SpanFromContext(context.Background())
 }
 
-// finiteFloat64Attr returns an attribute.KeyValue for a float64 value, or
-// false when the value is NaN or ±Inf. OTLP does not support non-finite
-// floats; mirrors TS sanitizeAttributeValue (otel/src/sanitize-attribute-value.ts).
+// finiteFloat64Attr returns the attribute for a JS number value (see
+// jsNumberAttr), or false when the value is NaN or ±Inf. OTLP does not
+// support non-finite floats; mirrors TS sanitizeAttributeValue
+// (otel/src/sanitize-attribute-value.ts).
 func finiteFloat64Attr(key string, v float64) (attribute.KeyValue, bool) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return attribute.KeyValue{}, false
 	}
-	return attribute.Float64(key, v), true
+	return jsNumberAttr(key, v), true
+}
+
+// jsNumberAttr is a JS number attribute as OpenTelemetry JS exports it
+// (@opentelemetry/otlp-transformer toAnyValue: `Number.isInteger(value) ?
+// intValue : doubleValue`): an integral value (1, 0, 2048) is an int64
+// attribute, any other a float64 one. A non-finite value stays float64.
+func jsNumberAttr(key string, v float64) attribute.KeyValue {
+	if isJSInteger(v) {
+		return attribute.Int64(key, int64(v))
+	}
+	return attribute.Float64(key, v)
+}
+
+// isJSInteger is JS Number.isInteger for a value an int64 can hold.
+func isJSInteger(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v == math.Trunc(v) &&
+		v >= -9.223372036854775808e18 && v < 9.223372036854775808e18
 }
 
 // finiteFloat64Slice returns values unchanged, or false if any element is
@@ -1220,6 +1238,23 @@ func enrichArrayAttribute(key string, items reflect.Value) (attribute.KeyValue, 
 		return attribute.Int64Slice(key, ints), true
 	}
 	if finite, ok := finiteFloat64Slice(nums); ok {
+		// OpenTelemetry JS exports each element by its own type; a Go
+		// attribute slice has one type, so a list of integral values is an
+		// int64 list.
+		allIntegral := true
+		for _, f := range finite {
+			if !isJSInteger(f) {
+				allIntegral = false
+				break
+			}
+		}
+		if allIntegral {
+			ints := make([]int64, len(finite))
+			for i, f := range finite {
+				ints[i] = int64(f)
+			}
+			return attribute.Int64Slice(key, ints), true
+		}
 		return attribute.Float64Slice(key, finite), true
 	}
 	return attribute.KeyValue{}, false
@@ -2592,7 +2627,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 			stepSpan.SetAttributes(setFiniteFloat64(nil, "ai.response.avgOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond)...)
 			stepSpan.AddEvent("ai.stream.finish", trace.WithAttributes(
 				attribute.Int64("ai.response.msToFinish", e.Performance.ResponseTimeMs),
-				attribute.Float64("ai.response.avgOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond),
+				jsNumberAttr("ai.response.avgOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond),
 			))
 		}
 	}

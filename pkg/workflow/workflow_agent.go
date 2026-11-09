@@ -684,7 +684,7 @@ func resolveToolCallConcurrency(values ...*int) (int, error) {
 			continue
 		}
 		if *v < 1 {
-			return 0, &providererrors.InvalidArgumentError{Field: "toolCallConcurrency", Message: "toolCallConcurrency must be >= 1"}
+			return 0, &providererrors.InvalidArgumentError{Field: "toolCallConcurrency", Value: *v, Message: "toolCallConcurrency must be >= 1"}
 		}
 		return *v, nil
 	}
@@ -880,7 +880,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			return approvedOutcome{}
 		}
 		if !workflowToolDeclaresApproval(tool) {
-			return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool %q does not require approval", call.ToolName))}
+			return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool \"%s\" does not require approval", call.ToolName))}
 		}
 
 		// Re-validate through the shared core implementation: signature (when
@@ -895,11 +895,13 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			RuntimeContext:        opts.runtimeContext,
 			ToolApprovalSecret:    opts.toolApprovalSecret,
 		})
+		// TS getErrorMessage: an error renders as its toString(),
+		// "<name>: <message>".
 		switch {
 		case err != nil:
-			revalidationReason = err.Error()
+			revalidationReason = providerutils.ToolErrorText(err)
 		case len(validated.InvalidToolApprovals) > 0:
-			revalidationReason = validated.InvalidToolApprovals[0].Error.Error()
+			revalidationReason = providerutils.ToolErrorText(validated.InvalidToolApprovals[0].Error)
 		case len(validated.DeniedToolApprovals) > 0:
 			revalidationReason = validated.DeniedToolApprovals[0].ApprovalResponse.Reason
 			if revalidationReason == "" {
@@ -916,18 +918,20 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			return approvedOutcome{err: ctxErr.err}
 		}
 		if execErr != nil {
-			// TS writeApprovalToolResults writes a plain tool-result whose output
-			// is the error text (rawOutput), not a tool-error, so the UI stream
-			// carries tool-output-available.
+			// TS executeTool: the error text is getErrorMessage(error), the
+			// error's toString() ("Error: <message>"). writeApprovalToolResults
+			// writes a plain tool-result whose output is that text (rawOutput),
+			// not a tool-error, so the UI stream carries tool-output-available.
+			errorText := providerutils.ToolErrorText(execErr)
 			return approvedOutcome{
-				result: errorTextResult(call, execErr.Error()),
+				result: errorTextResult(call, errorText),
 				chunk: &provider.StreamChunk{
 					Type: provider.ChunkTypeToolResult,
 					ToolResult: &types.ToolResult{
 						ToolCallID: call.ID,
 						ToolName:   call.ToolName,
 						Input:      call.Arguments,
-						Result:     execErr.Error(),
+						Result:     errorText,
 						Dynamic:    call.Dynamic,
 					},
 				},
@@ -1879,7 +1883,7 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		mutated, err := hook(ctx, opts)
 		if err == nil && mutated.MaxRetries != nil && *mutated.MaxRetries < 0 {
 			// TS prepareRetries rejects the step's maxRetries.
-			err = &providererrors.InvalidArgumentError{Field: "maxRetries", Message: "maxRetries must be >= 0"}
+			err = &providererrors.InvalidArgumentError{Field: "maxRetries", Value: *mutated.MaxRetries, Message: "maxRetries must be >= 0"}
 		}
 		if err != nil {
 			base := o.Model
