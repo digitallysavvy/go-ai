@@ -204,40 +204,71 @@ func (m *ImageModel) buildCompatEditBody(ctx context.Context, opts *provider.Ima
 	writer := multipart.NewWriter(pw)
 	go func() {
 		err := func() error {
-			if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
-				return err
+			// TS {model, prompt, image, mask, n, size, ...args}: a provider
+			// option with one of these keys replaces the value in place (and
+			// a null one removes it); the other options follow in sorted
+			// order (a Go map has no insertion order).
+			override := func(key string) (bool, error) {
+				v, ok := args[key]
+				if !ok {
+					return false, nil
+				}
+				return true, writeFormValue(writer, key, v)
 			}
-			if opts.Prompt != "" {
+			if done, err := override("model"); err != nil {
+				return err
+			} else if !done {
+				if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
+					return err
+				}
+			}
+			if done, err := override("prompt"); err != nil {
+				return err
+			} else if !done && opts.Prompt != "" {
 				if err := providerutils.WriteFormDataField(writer, "prompt", opts.Prompt); err != nil {
 					return err
 				}
 			}
-			field := "image"
-			if len(opts.Files) > 1 {
-				field = "image[]"
-			}
-			for _, f := range opts.Files {
-				if err := m.writeImageFilePart(ctx, writer, field, "", f); err != nil {
-					return err
+			if done, err := override("image"); err != nil {
+				return err
+			} else if !done {
+				field := "image"
+				if len(opts.Files) > 1 {
+					field = "image[]"
+				}
+				for _, f := range opts.Files {
+					if err := m.writeImageFilePart(ctx, writer, field, "", f); err != nil {
+						return err
+					}
 				}
 			}
-			if opts.Mask != nil {
+			if done, err := override("mask"); err != nil {
+				return err
+			} else if !done && opts.Mask != nil {
 				if err := m.writeImageFilePart(ctx, writer, "mask", "", *opts.Mask); err != nil {
 					return err
 				}
 			}
-			if opts.N != nil {
+			if done, err := override("n"); err != nil {
+				return err
+			} else if !done && opts.N != nil {
 				if err := providerutils.WriteFormDataField(writer, "n", fmt.Sprint(*opts.N)); err != nil {
 					return err
 				}
 			}
-			if opts.Size != "" {
+			if done, err := override("size"); err != nil {
+				return err
+			} else if !done && opts.Size != "" {
 				if err := providerutils.WriteFormDataField(writer, "size", opts.Size); err != nil {
 					return err
 				}
 			}
 			keys := make([]string, 0, len(args))
 			for k := range args {
+				switch k {
+				case "model", "prompt", "image", "mask", "n", "size":
+					continue
+				}
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
