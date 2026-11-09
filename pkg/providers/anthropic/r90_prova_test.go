@@ -2,10 +2,12 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -145,5 +147,20 @@ func TestR90provaServerToolUseNullInput(t *testing.T) {
 	}
 	if strings.Join(streamed, "|") != "{}" {
 		t.Errorf("streamed inputs = %q, want [{}]", streamed)
+	}
+}
+
+// TS parseProviderOptions: the InvalidArgumentError message is exactly
+// "invalid anthropic provider options"; the details are its cause (TS
+// recorded at 9f7a842ae1 with effort: "bogus").
+func TestR90provaInvalidOptionsMessage(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), "claude-sonnet-4-6", nil)
+	_, err := m.prepareRequest(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"effort": "bogus"}},
+	}, false)
+	var iae *providererrors.InvalidArgumentError
+	if !errors.As(err, &iae) || iae.Field != "providerOptions" || err.Error() != "invalid anthropic provider options" || iae.Cause == nil {
+		t.Fatalf("err = %#v", err)
 	}
 }
