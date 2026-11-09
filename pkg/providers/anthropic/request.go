@@ -199,7 +199,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 			supported = []string{"standard", "priority"}
 		}
 		if supported != nil && o.ServiceTier != supported[0] && o.ServiceTier != supported[1] {
-			warnUnsupported(&warnings, "serviceTier", fmt.Sprintf("serviceTier %q is not supported by %s. Use %q or %q.", o.ServiceTier, m.providerOptionsName(), supported[0], supported[1]))
+			warnUnsupported(&warnings, "serviceTier", fmt.Sprintf("serviceTier \"%s\" is not supported by %s. Use \"%s\" or \"%s\".", o.ServiceTier, m.providerOptionsName(), supported[0], supported[1]))
 			o.ServiceTier = ""
 		}
 	}
@@ -210,7 +210,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		warnings = append(warnings, types.Warning{
 			Type:    "compatibility",
 			Feature: "maxOutputTokens",
-			Details: fmt.Sprintf("The model %q is unknown. The max output tokens have been limited to %d. Set maxOutputTokens explicitly to override this limit.", m.modelID, caps.MaxOutputTokens),
+			Details: fmt.Sprintf("The model \"%s\" is unknown. The max output tokens have been limited to %d. Set maxOutputTokens explicitly to override this limit.", m.modelID, caps.MaxOutputTokens),
 		})
 	}
 
@@ -360,8 +360,12 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 			typ:          o.Thinking.Type,
 			budgetTokens: o.Thinking.BudgetTokens,
 			display:      o.Thinking.Display,
-			blockBinding: o.Thinking.BlockBinding,
 			set:          true,
+		}
+		// TS 'blockBinding' in thinking: only adaptive and the typeless form
+		// keep it after the zod parse.
+		if thinkingTakesBlockBinding(o.Thinking.Type) {
+			th.blockBinding = o.Thinking.BlockBinding
 		}
 	}
 	effort := string(o.Effort)

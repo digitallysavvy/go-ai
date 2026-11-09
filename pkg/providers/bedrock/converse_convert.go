@@ -351,7 +351,7 @@ func resolveBedrockDataMediaType(mediaType string, payload bedrockFilePayload) (
 			return detected, nil
 		}
 	}
-	return "", bedrockUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType), "")
+	return "", bedrockUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType), "")
 }
 
 // requireFullURLMediaType is TS resolveFullMediaType for a url part: a bare or
@@ -360,7 +360,7 @@ func requireFullURLMediaType(mediaType string) error {
 	if isFullMediaType(mediaType) {
 		return nil
 	}
-	return bedrockUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", mediaType), "")
+	return bedrockUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it is not passed as inline bytes", mediaType), "")
 }
 
 // mediaSourceBlock builds an image/video `source` block: either inline bytes
@@ -571,6 +571,8 @@ func bedrockTextGuardContentOptions(providerOptions map[string]interface{}) (gua
 		if !isArray {
 			return false, nil, invalidProviderOptions(providerName, fmt.Errorf("guardContentQualifiers: expected array, received %T", v))
 		}
+		// A present list, even empty, is sent (TS qualifiers: guardContentQualifiers).
+		qualifiers = []string{}
 		for _, q := range qs {
 			s, _ := q.(string)
 			if s != "grounding_source" && s != "query" && s != "guard_content" {
@@ -726,7 +728,7 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 							}
 							if guard {
 								textBlock := map[string]interface{}{"text": p.Text}
-								if len(qualifiers) > 0 {
+								if qualifiers != nil {
 									textBlock["qualifiers"] = qualifiers
 								}
 								content = append(content, map[string]interface{}{"guardContent": map[string]interface{}{"text": textBlock}})

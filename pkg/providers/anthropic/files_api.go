@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"mime/multipart"
 	"net/textproto"
 	"strings"
@@ -91,7 +92,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		ProviderReference: map[string]string{"anthropic": out.ID},
 		MediaType:         mediaType,
 		Filename:          filename,
-		ByteSize:          out.SizeBytes,
+		ByteSize:          out.byteSize(),
 		CreatedAt:         anthropicFileTime(out.CreatedAt),
 		ExpiresAt:         anthropicFileTime(out.ExpiresAt),
 		ProviderMetadata:  map[string]interface{}{"anthropic": out.metadata()},
@@ -102,13 +103,24 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 // anthropicFileResponse is anthropicUploadFileResponseSchema: id is
 // required, every other field nullish.
 type anthropicFileResponse struct {
-	ID           string  `json:"id"`
-	Filename     *string `json:"filename"`
-	MimeType     *string `json:"mime_type"`
-	SizeBytes    *int64  `json:"size_bytes"`
-	CreatedAt    *string `json:"created_at"`
-	Downloadable *bool   `json:"downloadable"`
-	ExpiresAt    *string `json:"expires_at"`
+	ID           string   `json:"id"`
+	Filename     *string  `json:"filename"`
+	MimeType     *string  `json:"mime_type"`
+	SizeBytes    *float64 `json:"size_bytes"`
+	CreatedAt    *string  `json:"created_at"`
+	Downloadable *bool    `json:"downloadable"`
+	ExpiresAt    *string  `json:"expires_at"`
+}
+
+// byteSize is the ByteSize result field: size_bytes truncated to an integer
+// (a fractional size, which TS z.number() accepts, cannot be represented in
+// the int64 field; providerMetadata keeps the exact number).
+func (r anthropicFileResponse) byteSize() *int64 {
+	if r.SizeBytes == nil || math.IsNaN(*r.SizeBytes) || math.Abs(*r.SizeBytes) >= math.MaxInt64 {
+		return nil
+	}
+	n := int64(*r.SizeBytes)
+	return &n
 }
 
 // metadata is TS toFileMetadata: each field only when the API sent it.
@@ -121,7 +133,13 @@ func (r anthropicFileResponse) metadata() map[string]interface{} {
 		meta["mimeType"] = *r.MimeType
 	}
 	if r.SizeBytes != nil {
-		meta["sizeBytes"] = *r.SizeBytes
+		// An integral size keeps the int64 type of v0.5; TS z.number() also
+		// takes a fraction, which is kept as is.
+		if n := r.byteSize(); n != nil && float64(*n) == *r.SizeBytes {
+			meta["sizeBytes"] = *n
+		} else {
+			meta["sizeBytes"] = *r.SizeBytes
+		}
 	}
 	if r.CreatedAt != nil {
 		meta["createdAt"] = *r.CreatedAt
@@ -191,7 +209,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 	}
 	result := &provider.FileMetadataResult{
 		ProviderReference: types.ProviderReference{"anthropic": out.ID},
-		ByteSize:          out.SizeBytes,
+		ByteSize:          out.byteSize(),
 		CreatedAt:         anthropicFileTime(out.CreatedAt),
 		ExpiresAt:         anthropicFileTime(out.ExpiresAt),
 		ProviderMetadata:  map[string]interface{}{"anthropic": out.metadata()},

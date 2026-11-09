@@ -117,7 +117,7 @@ func (p *BedrockMantleProvider) baseURLForModel(modelID string) (string, error) 
 	// is still honored.
 	region := firstNonEmpty(p.settings.Region, os.Getenv("AWS_REGION"))
 	if region == "" {
-		return "", fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable")
+		return "", providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION")
 	}
 	if !providerutils.IsValidHostnamePart(region) {
 		return "", providererrors.NewArgumentError("region", "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)

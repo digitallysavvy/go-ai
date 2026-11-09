@@ -96,7 +96,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 				Functionality: "per-request providerOptions.anthropic.anthropicBeta",
 				Message: fmt.Sprintf(
 					"Anthropic Message Batches do not support per-request betas "+
-						"(request %q). Set providerOptions.anthropic.anthropicBeta "+
+						"(request \"%s\"). Set providerOptions.anthropic.anthropicBeta "+
 						"on startBatch instead.", textReq.ID),
 			}
 		}
@@ -117,7 +117,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 				Functionality: "batch responseFormat JSON-tool fallback",
 				Message: fmt.Sprintf(
 					"Anthropic Message Batches cannot decode the JSON-tool structured-output fallback "+
-						"(request %q) because batch results are retrieved independently of the start call. "+
+						"(request \"%s\") because batch results are retrieved independently of the start call. "+
 						"Use a model that supports native output_format structured outputs.", textReq.ID),
 			}
 		}
@@ -126,8 +126,8 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 				Functionality: "aliased provider tool names in batches",
 				Message: fmt.Sprintf(
 					"Anthropic Message Batches cannot restore the custom provider-tool name "+
-						"%q when results are retrieved independently of the start call "+
-						"(request %q). Use the provider's canonical tool name.", aliased, textReq.ID),
+						"\"%s\" when results are retrieved independently of the start call "+
+						"(request \"%s\"). Use the provider's canonical tool name.", aliased, textReq.ID),
 			}
 		}
 
@@ -239,14 +239,14 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 
 	if batch.toStatus().Status == provider.BatchStatusPending {
-		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch %q is not complete.", opts.BatchID), nil)
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch \"%s\" is not complete.", opts.BatchID), nil)
 	}
 	if batch.ArchivedAt != nil {
-		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch %q results are no longer available.", opts.BatchID), nil)
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch \"%s\" results are no longer available.", opts.BatchID), nil)
 	}
 	if batch.ResultsURL == nil || *batch.ResultsURL == "" {
 		return nil, providererrors.NewInvalidResponseDataError(batch,
-			fmt.Sprintf("Anthropic batch %q completed without batch output.", opts.BatchID))
+			fmt.Sprintf("Anthropic batch \"%s\" completed without batch output.", opts.BatchID))
 	}
 
 	resultsURL := *batch.ResultsURL
@@ -463,7 +463,7 @@ func validateAnthropicTextBatchRequests(requests []provider.BatchV4Request) erro
 		if req.Type != provider.BatchRequestTypeText || req.Text == nil {
 			return &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("batch request type: %s", req.Type),
-				Message:       fmt.Sprintf("The Anthropic Message Batches API does not support batch requests with type %q.", req.Type),
+				Message:       fmt.Sprintf("The Anthropic Message Batches API does not support batch requests with type \"%s\".", req.Type),
 			}
 		}
 	}
@@ -476,10 +476,10 @@ func validateAnthropicBatchRequestIDs(requests []provider.BatchV4Request) error 
 	for _, req := range requests {
 		id := req.Text.ID
 		if !anthropicBatchRequestIDPattern.MatchString(id) {
-			return providererrors.NewArgumentError("requests", fmt.Sprintf("Anthropic batch request ID %q must match ^[A-Za-z0-9_-]{1,64}$.", id), nil)
+			return providererrors.NewArgumentError("requests", fmt.Sprintf("Anthropic batch request ID \"%s\" must match ^[A-Za-z0-9_-]{1,64}$.", id), nil)
 		}
 		if seen[id] {
-			return providererrors.NewArgumentError("requests", fmt.Sprintf("Anthropic batch request IDs must be unique; duplicate ID %q.", id), nil)
+			return providererrors.NewArgumentError("requests", fmt.Sprintf("Anthropic batch request IDs must be unique; duplicate ID \"%s\".", id), nil)
 		}
 		seen[id] = true
 	}
@@ -492,7 +492,7 @@ func validateAnthropicBatchBody(body map[string]interface{}, requestID string) e
 	if body["speed"] != nil {
 		return &providererrors.UnsupportedFunctionalityError{
 			Functionality: "providerOptions.anthropic.speed",
-			Message:       fmt.Sprintf("Anthropic Message Batches do not support speed (request %q).", requestID),
+			Message:       fmt.Sprintf("Anthropic Message Batches do not support speed (request \"%s\").", requestID),
 		}
 	}
 	if fallbacks, ok := body["fallbacks"].([]FallbackConfig); ok {
@@ -500,7 +500,7 @@ func validateAnthropicBatchBody(body map[string]interface{}, requestID string) e
 			if fb.Speed != "" {
 				return &providererrors.UnsupportedFunctionalityError{
 					Functionality: "providerOptions.anthropic.fallbacks[].speed",
-					Message:       fmt.Sprintf("Anthropic Message Batches do not support fallback speed (request %q).", requestID),
+					Message:       fmt.Sprintf("Anthropic Message Batches do not support fallback speed (request \"%s\").", requestID),
 				}
 			}
 		}

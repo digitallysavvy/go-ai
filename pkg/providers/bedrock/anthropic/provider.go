@@ -302,7 +302,7 @@ func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response
 	// problem. It matters with an explicit BaseURL, which needs no region.
 	region := t.provider.awsRegion()
 	if region == "" {
-		return nil, internalhttp.RejectFetch(fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable.")) //nolint:staticcheck // message text matches TS
+		return nil, internalhttp.RejectFetch(providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION"))
 	}
 
 	creds, err := t.provider.resolveCredentials(req.Context())

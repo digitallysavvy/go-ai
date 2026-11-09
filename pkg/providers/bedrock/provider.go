@@ -365,7 +365,7 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 
 // errRegionMissing is TS loadSetting's error for the AWS region.
 func errRegionMissing() error {
-	return fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable.") //nolint:staticcheck // message text matches TS
+	return providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION")
 }
 
 // missingSigV4CredentialsError mirrors the TS createAmazonBedrock error when
