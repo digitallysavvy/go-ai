@@ -159,6 +159,7 @@ const (
 	GatewayLanguageModelMetaLlama3370b                   GatewayLanguageModelID = "meta/llama-3.3-70b"
 	GatewayLanguageModelMetaLlama4Maverick               GatewayLanguageModelID = "meta/llama-4-maverick"
 	GatewayLanguageModelMetaLlama4Scout                  GatewayLanguageModelID = "meta/llama-4-scout"
+	GatewayLanguageModelMetaMuseEmber                    GatewayLanguageModelID = "meta/muse-ember"
 	GatewayLanguageModelMetaMuseGlimmer30b               GatewayLanguageModelID = "meta/muse-glimmer-30b"
 	GatewayLanguageModelMetaMuseSpark11                  GatewayLanguageModelID = "meta/muse-spark-1.1"
 	GatewayLanguageModelMetaMuseSpark12                  GatewayLanguageModelID = "meta/muse-spark-1.2"
@@ -692,6 +693,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelMetaLlama3370b,
 	GatewayLanguageModelMetaLlama4Maverick,
 	GatewayLanguageModelMetaLlama4Scout,
+	GatewayLanguageModelMetaMuseEmber,
 	GatewayLanguageModelMetaMuseGlimmer30b,
 	GatewayLanguageModelMetaMuseSpark11,
 	GatewayLanguageModelMetaMuseSpark12,
