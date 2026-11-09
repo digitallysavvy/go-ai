@@ -60,7 +60,9 @@ const (
 	GatewayLanguageModelAnthropicClaudeFable5            GatewayLanguageModelID = "anthropic/claude-fable-5"
 	GatewayLanguageModelAnthropicClaudeFable5Batch       GatewayLanguageModelID = "anthropic/claude-fable-5-batch"
 	GatewayLanguageModelAnthropicClaudeFable51           GatewayLanguageModelID = "anthropic/claude-fable-5.1"
+	GatewayLanguageModelAnthropicClaudeFable52           GatewayLanguageModelID = "anthropic/claude-fable-5.2"
 	GatewayLanguageModelAnthropicClaudeFable51Batch      GatewayLanguageModelID = "anthropic/claude-fable-5.1-batch"
+	GatewayLanguageModelAnthropicClaudeFable52Batch      GatewayLanguageModelID = "anthropic/claude-fable-5.2-batch"
 	GatewayLanguageModelAnthropicClaudeHaiku45           GatewayLanguageModelID = "anthropic/claude-haiku-4.5"
 	GatewayLanguageModelAnthropicClaudeHaiku45Batch      GatewayLanguageModelID = "anthropic/claude-haiku-4.5-batch"
 	GatewayLanguageModelAnthropicClaudeHaiku55           GatewayLanguageModelID = "anthropic/claude-haiku-5.5"
@@ -591,7 +593,9 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAnthropicClaudeFable5,
 	GatewayLanguageModelAnthropicClaudeFable5Batch,
 	GatewayLanguageModelAnthropicClaudeFable51,
+	GatewayLanguageModelAnthropicClaudeFable52,
 	GatewayLanguageModelAnthropicClaudeFable51Batch,
+	GatewayLanguageModelAnthropicClaudeFable52Batch,
 	GatewayLanguageModelAnthropicClaudeHaiku45,
 	GatewayLanguageModelAnthropicClaudeHaiku45Batch,
 	GatewayLanguageModelAnthropicClaudeHaiku55,
