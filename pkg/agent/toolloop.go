@@ -2537,12 +2537,14 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			return results, nil
 		case types.ToolApprovalStatusUserApproval:
 			results = append(results, types.ToolResult{
-				ToolCallID:          call.ID,
-				ToolName:            call.ToolName,
-				Title:               call.Title,
-				Input:               call.Arguments,
-				Result:              map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
-				ApprovalStatus:      types.ToolApprovalStatusUserApproval,
+				ToolCallID:     call.ID,
+				ToolName:       call.ToolName,
+				Title:          call.Title,
+				Input:          call.Arguments,
+				Result:         map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
+				ApprovalStatus: types.ToolApprovalStatusUserApproval,
+				// TS: a user-approval reason is shown on the approval request.
+				ApprovalReason:      approval.Reason,
 				ProviderExecuted:    providerExecuted,
 				ProviderExecutedSet: call.ProviderExecutedSet,
 				ProviderMetadata:    providerMetadata,
