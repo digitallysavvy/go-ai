@@ -71,11 +71,14 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, err
 	}
 	timestamp := time.Now()
+	// TS sends and reports JSON.stringify(requestBody): the body literal's
+	// key order, HTML characters literal.
+	requestText := providerutils.StringifyOrdered(body, xaiSpeechBodyOrder)
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/tts",
-		Body:    body,
+		Body:    []byte(requestText),
 		Headers: opts.Headers,
 	})
 	if err != nil {
@@ -90,10 +93,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, http.Header(resp.Headers), resp.Body)
 	}
 
-	requestBytes, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal xAI speech request metadata: %w", err)
-	}
+	requestBytes := []byte(requestText)
 
 	// With `with_timestamps` the API returns a JSON envelope carrying
 	// base64-encoded audio plus character-level timings instead of raw audio
@@ -270,4 +270,11 @@ func extractXAISpeechProviderOptions(providerOptions map[string]interface{}) (XA
 		return opts, invalidXAIProviderOptions(fmt.Errorf("optimizeStreamingLatency must be 0, 1, or 2"))
 	}
 	return opts, nil
+}
+
+// xaiSpeechBodyOrder is the key order of TS getArgs' requestBody and
+// output_format literals (xai-speech-model.ts).
+var xaiSpeechBodyOrder = map[string][]string{
+	"":              {"text", "voice_id", "language", "output_format", "speed", "optimize_streaming_latency", "text_normalization", "with_timestamps", "replace"},
+	"output_format": {"codec", "sample_rate", "bit_rate"},
 }

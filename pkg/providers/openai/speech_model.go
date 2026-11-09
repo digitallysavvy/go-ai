@@ -51,12 +51,15 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, err
 	}
 	currentDate := time.Now()
+	// TS sends and reports JSON.stringify(requestBody): the body literal's
+	// key order, HTML characters literal.
+	requestText := providerutils.StringifyOrdered(reqBody, openAISpeechBodyOrder)
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/audio/speech",
 		Query:   m.provider.config.AudioQuery,
-		Body:    reqBody,
+		Body:    []byte(requestText),
 		Headers: opts.Headers,
 	})
 	if err != nil {
@@ -72,16 +75,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
-	requestBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal OpenAI speech request metadata: %w", err)
-	}
-
 	return &types.SpeechResult{
 		Audio:    resp.Body,
 		Warnings: warnings,
 		Request: &types.StepRequest{
-			Body: string(requestBytes),
+			Body: requestText,
 		},
 		Response: &types.ResponseMetadata{
 			Timestamp: currentDate,
@@ -210,3 +208,7 @@ func speechSpeedOption(v interface{}) (float64, bool) {
 		return 0, false
 	}
 }
+
+// openAISpeechBodyOrder is the key order of TS getArgs' requestBody literal
+// (openai-speech-model.ts).
+var openAISpeechBodyOrder = map[string][]string{"": {"model", "input", "voice", "response_format", "speed", "instructions"}}
