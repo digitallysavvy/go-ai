@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -77,5 +79,71 @@ func TestR90provaFable52ForcedToolStructuredOutput(t *testing.T) {
 	format, _ := oc["format"].(map[string]interface{})
 	if format["type"] != "json_schema" || format["schema"] == nil || body["tools"] != nil || body["tool_choice"] != nil {
 		t.Errorf("body = %v", body)
+	}
+}
+
+// TS doGenerate tool_use: input is JSON.stringify(part.input) (z.unknown()):
+// a null input is "null", a non-object its JSON text (TS recorded at
+// 9f7a842ae1).
+func TestR90provaToolUseNonObjectInput(t *testing.T) {
+	s := r88provaNewServer(t, `{"type":"message","id":"m","model":"x","content":[{"type":"tool_use","id":"c1","name":"t","input":null},{"type":"tool_use","id":"c3","name":"t","input":[1]}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`, nil)
+	res, err := r88provaModel(t, s, "claude-sonnet-4-6").DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools:  []types.Tool{{Type: types.ToolTypeFunction, Name: "t", Parameters: map[string]interface{}{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tc := range res.ToolCalls {
+		got = append(got, tc.RawArguments)
+	}
+	if strings.Join(got, "|") != "null|[1]" {
+		t.Errorf("inputs = %q", got)
+	}
+}
+
+// Same rule for server_tool_use and mcp_tool_use (TS recorded at
+// 9f7a842ae1): web_search null -> "null", the code execution sub-tools
+// spread null -> {"type":...}, mcp null -> "null"; a streamed
+// message_start tool_use uses part.input ?? {} -> "{}".
+func TestR90provaServerToolUseNullInput(t *testing.T) {
+	s := r88provaNewServer(t, `{"type":"message","id":"m","model":"x","content":[{"type":"server_tool_use","id":"s1","name":"web_search","input":null},{"type":"server_tool_use","id":"s2","name":"bash_code_execution","input":null},{"type":"mcp_tool_use","id":"m1","name":"mm","input":null,"server_name":"srv"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+		[]string{
+			`{"type":"message_start","message":{"id":"m","model":"x","usage":{"input_tokens":1},"content":[{"type":"tool_use","id":"p1","name":"t","input":null}]}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}`,
+			`{"type":"message_stop"}`,
+		})
+	m := r88provaModel(t, s, "claude-sonnet-4-6")
+	res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools:  []types.Tool{{Type: types.ToolTypeProviderDefined, Name: "web_search", ProviderID: "anthropic.web_search_20250305", ProviderArgs: map[string]interface{}{}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tc := range res.ToolCalls {
+		got = append(got, tc.ID+"="+tc.RawArguments)
+	}
+	if want := `s1=null|s2={"type":"bash_code_execution"}|m1=null`; strings.Join(got, "|") != want {
+		t.Errorf("inputs = %s, want %s", strings.Join(got, "|"), want)
+	}
+	stream, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := r88provaDrain(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamed []string
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeToolCall {
+			streamed = append(streamed, p.ToolCall.RawArguments)
+		}
+	}
+	if strings.Join(streamed, "|") != "{}" {
+		t.Errorf("streamed inputs = %q, want [{}]", streamed)
 	}
 }

@@ -2535,7 +2535,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					if args == nil {
 						args = map[string]interface{}{}
 					}
-					inputJSON := inputText(part.RawInput, args)
+					// TS JSON.stringify(part.input ?? {}).
+					inputJSON := inputText(nonNullRaw(part.RawInput), args)
 					// Go maps provider tool names back to SDK names here as
 					// for streamed tool_use blocks (Known difference since
 					// r34; TS passes part.name through raw).
