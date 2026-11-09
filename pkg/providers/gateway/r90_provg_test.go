@@ -200,3 +200,25 @@ func TestR90provgClientSecretSchema(t *testing.T) {
 		t.Fatalf("secret = %+v", secret)
 	}
 }
+
+// TestR90provgMetadataEmptyModelType: TS gatewayAvailableModelsResponseSchema
+// keeps a model only when modelType is null/absent or a known type, so an
+// empty modelType is filtered out.
+func TestR90provgMetadataEmptyModelType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[` +
+			`{"id":"a/x","name":"X","specification":{"specificationVersion":"v4","provider":"a","modelId":"x"},"modelType":""},` +
+			`{"id":"a/y","name":"Y","specification":{"specificationVersion":"v4","provider":"a","modelId":"y"},"modelType":null},` +
+			`{"id":"a/z","name":"Z","specification":{"specificationVersion":"v4","provider":"a","modelId":"z"},"modelType":"image"}]}`))
+	}))
+	defer server.Close()
+	p, _ := New(Config{APIKey: "k", BaseURL: server.URL})
+	meta, err := p.GetAvailableModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meta.Models) != 2 || meta.Models[0].ID != "a/y" || meta.Models[1].ModelType != "image" {
+		t.Fatalf("models = %+v", meta.Models)
+	}
+}

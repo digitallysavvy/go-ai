@@ -428,7 +428,9 @@ type modelMetadataWire struct {
 	Description   *string                `json:"description"`
 	Pricing       *modelPricingWire      `json:"pricing"`
 	Specification modelSpecificationWire `json:"specification"`
-	ModelType     string                 `json:"modelType"`
+	// ModelType is a pointer: TS keeps only a null/absent or known
+	// modelType, so an empty string is filtered out like any unknown type.
+	ModelType *string `json:"modelType"`
 }
 
 type modelPricingWire struct {
@@ -707,11 +709,13 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 	}
 	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
 	for _, model := range wire.Models {
-		if model.ModelType != "" {
-			if _, ok := knownGatewayModelTypes[model.ModelType]; !ok {
+		modelType := ""
+		if model.ModelType != nil {
+			if _, ok := knownGatewayModelTypes[*model.ModelType]; !ok {
 				// TS parity: unknown modelType entries are filtered out instead of failing parsing.
 				continue
 			}
+			modelType = *model.ModelType
 		}
 		var pricing *ModelPricing
 		if model.Pricing != nil {
@@ -732,7 +736,7 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 				Provider:             model.Specification.Provider,
 				ModelID:              model.Specification.ModelID,
 			},
-			ModelType: model.ModelType,
+			ModelType: modelType,
 		})
 	}
 
