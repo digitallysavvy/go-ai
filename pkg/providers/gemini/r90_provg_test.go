@@ -104,3 +104,17 @@ func TestR90provgOptionNumbers(t *testing.T) {
 		}
 	}
 }
+
+// TestR90provgSanitizeNullDefs: TS sanitizeResponseJsonSchema keeps $defs in
+// its rest object, so a null $defs is sent as null (only a non-null one is
+// sanitized).
+func TestR90provgSanitizeNullDefs(t *testing.T) {
+	out := sanitizeResponseJSONSchema(json.RawMessage(`{"type":"object","$defs":null,"properties":{"a":{"const":1}}}`))
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"type":"object","$defs":null,"properties":{"a":{"enum":[1]}}}`; string(b) != want {
+		t.Fatalf("got %s, want %s", b, want)
+	}
+}
