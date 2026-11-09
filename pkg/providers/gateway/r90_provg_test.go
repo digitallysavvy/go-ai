@@ -109,3 +109,13 @@ func TestR90provgRerankDocumentsUnion(t *testing.T) {
 		}
 	}
 }
+
+// TestR90provgErrorMessageStringify: TS getErrorMessage(data) is
+// JSON.stringify of the parsed error body (insertion order, HTML left
+// literal).
+func TestR90provgErrorMessageStringify(t *testing.T) {
+	got := gatewayErrorMessage([]byte(`{"z":1,"a":"<x>"}`), 400)
+	if want := `{"z":1,"a":"<x>"}`; got != want {
+		t.Fatalf("message = %s, want %s", got, want)
+	}
+}

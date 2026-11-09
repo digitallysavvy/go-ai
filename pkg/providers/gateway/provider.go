@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
@@ -873,6 +874,11 @@ func gatewayErrorMessage(body []byte, statusCode int) string {
 	}
 	if str, ok := value.(string); ok {
 		return str
+	}
+	// TS JSON.stringify of the parsed body: JS key order, HTML characters
+	// left unescaped.
+	if ordered, ok := jsonorder.Parse(body); ok {
+		return jsonorder.Stringify(ordered)
 	}
 	serialized, err := json.Marshal(value)
 	if err != nil {
