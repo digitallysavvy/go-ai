@@ -214,6 +214,16 @@ func contextToken(ctx context.Context) string {
 	return v
 }
 
+// TokenFromContext returns the token ContextWithToken set on ctx ("" when
+// none): TS getVercelOidcToken reads the request context's
+// x-vercel-oidc-token header before VERCEL_OIDC_TOKEN.
+func TokenFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	return contextToken(ctx)
+}
+
 func (r *Resolver) current(ctx context.Context) string {
 	if v := contextToken(ctx); v != "" {
 		return v

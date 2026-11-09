@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/verceloidc"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -176,7 +177,8 @@ type Config struct {
 	//
 	// If neither APIKey nor AI_GATEWAY_API_KEY is a non-empty value, the
 	// provider authenticates with the Vercel OIDC token instead, resolved for
-	// each request (OIDCTokenFunc, else VERCEL_OIDC_TOKEN). On Vercel
+	// each request (OIDCTokenFunc, else the ContextWithVercelOIDCToken token,
+	// else VERCEL_OIDC_TOKEN). On Vercel
 	// deployments this needs no configuration; locally, run `vercel env pull`
 	// or `vercel dev`. A non-empty configured key is always used instead of
 	// OIDC, even if it is invalid. With no OIDC token either, requests fail
@@ -196,8 +198,9 @@ type Config struct {
 
 	// OIDCTokenFunc resolves the Vercel OIDC token used when no API key is
 	// configured (TS getGatewayAuthToken's getVercelOidcToken()). Use
-	// VercelOIDCTokenFunc for the TS lookup with token refresh. When nil,
-	// VERCEL_OIDC_TOKEN is read as is. An error (or an empty token) fails the
+	// VercelOIDCTokenFunc for the TS lookup with token refresh. When nil, the
+	// request context token (ContextWithVercelOIDCToken), else
+	// VERCEL_OIDC_TOKEN, is read as is. An error (or an empty token) fails the
 	// request with a GatewayAuthenticationError whose cause is that error.
 	OIDCTokenFunc func(ctx context.Context) (string, error) `json:"-"`
 
@@ -568,6 +571,12 @@ func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, aut
 		return token, "oidc", nil
 	}
 
+	// TS getVercelOidcToken reads the request context token
+	// (ContextWithVercelOIDCToken) before VERCEL_OIDC_TOKEN. Without
+	// OIDCTokenFunc neither is refreshed (owner decision b).
+	if oidcToken := verceloidc.TokenFromContext(ctx); oidcToken != "" {
+		return oidcToken, "oidc", nil
+	}
 	if oidcToken := strings.TrimSpace(os.Getenv("VERCEL_OIDC_TOKEN")); oidcToken != "" {
 		return oidcToken, "oidc", nil
 	}

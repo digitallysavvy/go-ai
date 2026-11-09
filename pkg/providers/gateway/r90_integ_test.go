@@ -37,3 +37,20 @@ func TestR90integVideoSSEErrorResponseBody(t *testing.T) {
 		t.Fatalf("ResponseBody = %s, want %s", pe.ResponseBody, want)
 	}
 }
+
+// provg r90 FYI: TS getGatewayAuthToken calls getVercelOidcToken, which reads
+// the request context's x-vercel-oidc-token before VERCEL_OIDC_TOKEN. Without
+// OIDCTokenFunc Go read only the environment variable; the context token is
+// now read first (no refresh: owner decision b).
+func TestR90integDefaultOIDCReadsContextToken(t *testing.T) {
+	t.Setenv("AI_GATEWAY_API_KEY", "")
+	t.Setenv("VERCEL_OIDC_TOKEN", "env-token")
+	token, method, err := resolveGatewayAuthToken(ContextWithVercelOIDCToken(context.Background(), "ctx-token"), Config{})
+	if err != nil || token != "ctx-token" || method != "oidc" {
+		t.Fatalf("token = %q, method %q, err %v; want ctx-token, oidc", token, method, err)
+	}
+	token, _, err = resolveGatewayAuthToken(context.Background(), Config{})
+	if err != nil || token != "env-token" {
+		t.Fatalf("without a context token: token = %q, err %v; want env-token", token, err)
+	}
+}
