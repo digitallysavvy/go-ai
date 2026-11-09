@@ -223,10 +223,10 @@ func TestR90carryRedactsOrderedToolDefinitions(t *testing.T) {
 // attributes; other values stay float64.
 func TestR90carryIntegralNumberAttributesAreInts(t *testing.T) {
 	if kv, ok := finiteFloat64Attr("gen_ai.request.temperature", 1); !ok || kv.Value.Type() != attribute.INT64 || kv.Value.AsInt64() != 1 {
-		t.Errorf("temperature 1 = %v", kv.Value.Emit())
+		t.Errorf("temperature 1 = %v", kv.Value.String())
 	}
 	if kv, ok := finiteFloat64Attr("gen_ai.request.temperature", 0.7); !ok || kv.Value.Type() != attribute.FLOAT64 {
-		t.Errorf("temperature 0.7 = %v", kv.Value.Emit())
+		t.Errorf("temperature 0.7 = %v", kv.Value.String())
 	}
 	if _, ok := finiteFloat64Attr("x", math.NaN()); ok {
 		t.Error("NaN kept")
@@ -237,10 +237,10 @@ func TestR90carryIntegralNumberAttributesAreInts(t *testing.T) {
 		got[string(kv.Key)] = kv.Value
 	}
 	if v := got["gen_ai.usage.characters"]; v.Type() != attribute.INT64 || v.AsInt64() != 11 {
-		t.Errorf("characters = %v", v.Emit())
+		t.Errorf("characters = %v", v.String())
 	}
 	if v := got["gen_ai.usage.seconds"]; v.Type() != attribute.FLOAT64 || v.AsFloat64() != 1.5 {
-		t.Errorf("seconds = %v", v.Emit())
+		t.Errorf("seconds = %v", v.String())
 	}
 }
 
