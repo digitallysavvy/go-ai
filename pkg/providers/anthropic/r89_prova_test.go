@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 )
 
 // TestR89provaThinkingStripsUndeclaredKeys: the anthropicLanguageModelOptions
@@ -127,5 +128,28 @@ func TestR89provaFileSizeBytesNumber(t *testing.T) {
 		if meta["sizeBytes"] != tc.wantMeta || res.ByteSize == nil || *res.ByteSize != tc.wantSize {
 			t.Fatalf("%s: sizeBytes = %#v, ByteSize = %v", tc.size, meta["sizeBytes"], res.ByteSize)
 		}
+	}
+}
+
+// TestR89provaForcedFallbackEmptyTools: when forced tool use falls back to
+// auto and no declared tool keeps the forced name (a toolset has no name),
+// TS sends `tools: []` (declaredTools?.filter, anthropic-prepare-tools.ts);
+// Go omitted tools. Recorded with TS createAnthropic at 382d0b8eaf.
+func TestR89provaForcedFallbackEmptyTools(t *testing.T) {
+	toolset := tools.ComputerToolset20260801(tools.ComputerToolset20260801Config{})
+	toolset.Name = "computer"
+	model := NewLanguageModel(New(Config{APIKey: "k"}), "claude-sonnet-4-5", nil)
+	req, err := model.prepareRequest(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "Hello"},
+		Tools:           []types.Tool{toolset},
+		ToolChoice:      types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "computer"},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled", "budgetTokens": 2000}}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(map[string]interface{}{"tools": req.body["tools"], "tc": req.body["tool_choice"]})
+	if string(got) != `{"tc":{"type":"auto"},"tools":[]}` {
+		t.Fatalf("body = %s", got)
 	}
 }

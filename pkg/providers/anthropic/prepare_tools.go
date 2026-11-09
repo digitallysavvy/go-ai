@@ -306,7 +306,12 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 					"Only the '%s' tool is sent with 'auto' tool choice. "+
 					"Instruct the model to use the tool in the prompt and verify that a tool call was made.", o.toolChoice.ToolName),
 			})
+			// TS declaredTools?.filter(...): an empty result is still sent
+			// as an empty list; no declared tools stays undefined.
 			var filtered []map[string]interface{}
+			if out.tools != nil {
+				filtered = []map[string]interface{}{}
+			}
 			for _, w := range out.tools {
 				if w["name"] == choiceName {
 					filtered = append(filtered, w)
