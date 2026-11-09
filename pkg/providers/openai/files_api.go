@@ -181,7 +181,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -229,7 +229,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -270,7 +270,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 	if err != nil {
 		var statusErr *internalhttp.HTTPStatusError
 		if errors.As(err, &statusErr) {
-			return nil, internalhttp.StatusProviderError("openai", statusErr.StatusCode, statusErr.Headers, statusErr.Body)
+			return nil, openAICompatStatusError("openai", statusErr.StatusCode, statusErr.Headers, statusErr.Body)
 		}
 		return nil, err
 	}
@@ -304,7 +304,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -413,4 +413,12 @@ func filesString(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// openAICompatStatusError is the error of a non-2xx response under TS
+// openaiFailedResponseHandler (createJsonErrorResponseHandler with
+// openaiErrorDataSchema).
+func openAICompatStatusError(provider string, statusCode int, headers map[string][]string, body []byte) error {
+	pe, _ := providerutils.OpenAICompatibleAPIError(provider, &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+	return pe
 }

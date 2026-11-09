@@ -417,6 +417,9 @@ func (m *CompletionModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
+	if pe, ok := providerutils.OpenAICompatibleAPIError(m.Provider(), err); ok {
+		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 

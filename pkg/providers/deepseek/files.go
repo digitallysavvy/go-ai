@@ -127,7 +127,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, internalhttp.StatusProviderError("deepseek", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("deepseek", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -345,4 +345,12 @@ func deepSeekOptionNumber(v interface{}) (float64, bool) {
 		return float64(rv.Uint()), true
 	}
 	return 0, false
+}
+
+// openAICompatStatusError is the error of a non-2xx response under TS
+// openaiFailedResponseHandler (createJsonErrorResponseHandler with
+// openaiErrorDataSchema).
+func openAICompatStatusError(provider string, statusCode int, headers map[string][]string, body []byte) error {
+	pe, _ := providerutils.OpenAICompatibleAPIError(provider, &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+	return pe
 }

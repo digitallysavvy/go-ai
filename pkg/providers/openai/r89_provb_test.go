@@ -56,3 +56,31 @@ func TestR89provbDecisionModelAPIError(t *testing.T) {
 		}
 	}
 }
+
+// TS openaiFailedResponseHandler: an empty error.message is the message, and
+// a body outside openaiErrorDataSchema gives the status text.
+func TestR89provbChatErrorMessageFollowsSchema(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"message":""}}`:            "",
+		`{"message":"not the schema"}`:        "Bad Request",
+		`{"error":"string error"}`:            "Bad Request",
+		`{"error":{"message":"m","code":42}}`: "m",
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(body))
+		}))
+		p := New(Config{APIKey: "k", BaseURL: srv.URL})
+		responses, _ := p.LanguageModel("gpt-4o")
+		chat, _ := p.ChatModel("gpt-4o")
+		for name, lm := range map[string]provider.LanguageModel{"responses": responses, "chat": chat} {
+			_, err := lm.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+			var pe *providererrors.ProviderError
+			if !errors.As(err, &pe) || pe.Message != want || pe.StatusCode != 400 || pe.ResponseHeaders["retry-after"] != "1" || pe.ResponseBody != body {
+				t.Errorf("%s %s: err = %#v, want message %q", name, body, err, want)
+			}
+		}
+		srv.Close()
+	}
+}

@@ -111,6 +111,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
+		if pe, ok := providerutils.OpenAICompatibleAPIError("together", err); ok {
+			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
+		}
 		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
 	}
 	embeddings := make([][]float64, len(response.Data))
