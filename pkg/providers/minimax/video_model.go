@@ -265,7 +265,7 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 			msg += ": " + task.Error.Message
 		}
 		if task.Error != nil && task.Error.Code != nil {
-			msg += fmt.Sprintf(" (%v)", task.Error.Code)
+			msg += " (" + providerutils.JSString(task.Error.Code) + ")" // TS `${task.error.code}`
 		}
 		msg += fmt.Sprintf(". Task ID: %s", op.TaskID)
 		return &provider.VideoModelV3OperationStatusResult{
@@ -758,7 +758,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
-				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %v was rounded to %v.", m.modelID, raw, rounded),
+				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %s was rounded to %s.", m.modelID, providerutils.JSNumberString(raw), providerutils.JSNumberString(rounded)),
 			})
 		}
 		var d int
@@ -767,14 +767,14 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
-				Details: fmt.Sprintf("%s supports at most %d seconds. The requested duration of %v was clamped to %d.", m.modelID, minimaxMaxDuration, raw, minimaxMaxDuration),
+				Details: fmt.Sprintf("%s supports at most %d seconds. The requested duration of %s was clamped to %d.", m.modelID, minimaxMaxDuration, providerutils.JSNumberString(raw), minimaxMaxDuration),
 			})
 			d = minimaxMaxDuration
 		case rounded < float64(minDurationSeconds):
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
-				Details: fmt.Sprintf("%s requires at least %d seconds. The requested duration of %v was clamped to %d.", m.modelID, minDurationSeconds, raw, minDurationSeconds),
+				Details: fmt.Sprintf("%s requires at least %d seconds. The requested duration of %s was clamped to %d.", m.modelID, minDurationSeconds, providerutils.JSNumberString(raw), minDurationSeconds),
 			})
 			d = minDurationSeconds
 		default:

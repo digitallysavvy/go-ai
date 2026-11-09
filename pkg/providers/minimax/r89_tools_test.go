@@ -71,3 +71,35 @@ func TestR89toolsMiniMaxVideoStatusErrorKeepsHeaders(t *testing.T) {
 		t.Fatalf("headers = %v", perr.ResponseHeaders)
 	}
 }
+
+// TS minimax-video-model.ts template literals use JS number formatting:
+// `${task.error.code}` and `${options.duration}` (Go %v printed 1e+06).
+func TestR89toolsMiniMaxVideoNumberText(t *testing.T) {
+	server, _, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{
+		`{"task":{"id":"task-123","status":"failed","error":{"message":"boom","code":1000000}}}`,
+	})
+	defer server.Close()
+	model := newVideoModel(providerForMinimaxServer(server.URL), ModelH3)
+	_, err := model.DoGenerate(context.Background(), minimaxDefaultCallOptions(nil))
+	if err == nil || !strings.Contains(err.Error(), "boom (1000000). Task ID:") {
+		t.Fatalf("err = %v", err)
+	}
+
+	server2, _, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{minimaxSucceededResponse()})
+	defer server2.Close()
+	model2 := newVideoModel(providerForMinimaxServer(server2.URL), ModelH3)
+	opts := minimaxDefaultCallOptions(nil)
+	d := 1e6 + 0.5
+	opts.Duration = &d
+	result, err := model2.DoGenerate(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"MiniMax-H3 requires a whole number of seconds. The requested duration of 1000000.5 was rounded to 1000001.",
+		"MiniMax-H3 supports at most 15 seconds. The requested duration of 1000000.5 was clamped to 15.",
+	}
+	if len(result.Warnings) < 2 || result.Warnings[0].Details != want[0] || result.Warnings[1].Details != want[1] {
+		t.Fatalf("warnings = %+v", result.Warnings)
+	}
+}
