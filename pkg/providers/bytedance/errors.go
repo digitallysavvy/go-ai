@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Error represents a ByteDance API error
@@ -19,21 +21,45 @@ type Error struct {
 	// built from so retry classification follows the TS APICallError rule
 	// (only 408, 409, 429 and 5xx are retryable). Zero when the error is not
 	// an HTTP response.
-	httpStatus int
-	httpBody   []byte
+	httpStatus  int
+	httpBody    []byte
+	httpHeaders map[string]string
 }
 
 // HTTPStatusDetails implements providererrors.HTTPStatusDetails.
 func (e *Error) HTTPStatusDetails() (int, map[string]string, []byte) {
-	return e.httpStatus, nil, e.httpBody
+	return e.httpStatus, e.httpHeaders, e.httpBody
+}
+
+// Unwrap exposes an HTTP response error as the *providererrors.ProviderError
+// TS reports (APICallError with statusCode, responseHeaders, responseBody,
+// data), so the retry delay honors retry-after-ms / retry-after like TS
+// (pkg/internal/retry reads ProviderError.ResponseHeaders) and callers can
+// match it with errors.As. nil for errors that are not an HTTP response.
+func (e *Error) Unwrap() error {
+	if e == nil || e.httpStatus == 0 {
+		return nil
+	}
+	pe := &providererrors.ProviderError{
+		Provider:        "bytedance",
+		StatusCode:      e.httpStatus,
+		Message:         e.Message,
+		ResponseHeaders: e.httpHeaders,
+		ResponseBody:    string(e.httpBody),
+	}
+	var data interface{}
+	if len(e.httpBody) > 0 && securejson.Unmarshal(e.httpBody, &data) == nil {
+		pe.Data = data
+	}
+	return pe
 }
 
 // newHTTPError builds the error for a non-2xx response, following TS
 // byteDanceFailedResponseHandler: the message is
 // `error.message ?? message ?? 'Unknown error'` of a body that matches the
 // error schema, and the HTTP status text for any other body.
-func newHTTPError(statusCode int, body []byte) *Error {
-	return &Error{Code: statusCode, Message: byteDanceErrorMessage(statusCode, body), httpStatus: statusCode, httpBody: body}
+func newHTTPError(statusCode int, headers http.Header, body []byte) *Error {
+	return &Error{Code: statusCode, Message: byteDanceErrorMessage(statusCode, body), httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers)}
 }
 
 func byteDanceErrorMessage(statusCode int, body []byte) string {

@@ -29,7 +29,9 @@ const (
 
 // DownloadOptions contains options for downloading files
 type DownloadOptions struct {
-	// Timeout for the download operation
+	// Timeout for the download operation. Zero means the 60 s default;
+	// NoTimeout (any negative value) sets none, as TS download does (the
+	// request then ends only with its context).
 	Timeout time.Duration
 
 	// Headers to include in the request
@@ -270,14 +272,23 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 
 const maxDownloadRedirects = 10
 
+// NoTimeout as DownloadOptions.Timeout disables the client timeout: TS
+// download / getFromApi set none, so a large file on a slow link is not cut
+// off; the caller's context still cancels the request.
+const NoTimeout time.Duration = -1
+
 // NewDownloadClient builds a per-download HTTP client using opts.Transport. Every redirect hop is
 // validated with opts.URLValidator before it is requested, and all caller
 // headers except User-Agent are dropped when a redirect crosses origin (TS
 // fetchWithValidatedRedirects): providers authenticate with custom headers
 // too, and nothing else stops them from riding to a foreign host.
 func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
+	timeout := opts.Timeout
+	if timeout < 0 {
+		timeout = 0 // NoTimeout
+	}
 	client := &http.Client{
-		Timeout:   opts.Timeout,
+		Timeout:   timeout,
 		Transport: opts.Transport,
 	}
 	validator := opts.URLValidator

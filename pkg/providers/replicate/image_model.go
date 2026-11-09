@@ -536,7 +536,7 @@ func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateIm
 // are sent.
 func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, string, error) {
 	opts := fileutil.TrustedOriginDownloadOptions(m.provider.baseURL(), m.provider.client.HTTPClient().Transport)
-	opts.Timeout = 30 * time.Second
+	opts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
 	res, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 	if err != nil {
 		return nil, "", err

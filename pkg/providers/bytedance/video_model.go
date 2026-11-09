@@ -241,7 +241,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	if submitResp.StatusCode >= 400 {
-		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode)
+		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, submitResp.Headers)
 	}
 
 	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceTask)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
@@ -449,6 +449,26 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}, nil
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// ByteDanceVideoModel has no doGenerate), so ai.GenerateVideo drives it
+// through the core start/status flow. It returns the deprecated
+// pollIntervalMs / pollTimeoutMs provider options (0 when unset: the core
+// 5000 / 600000 defaults): TS warns that they are ignored, Go keeps honoring
+// them (v0.5.2 contract) and still reports the deprecation warning.
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, err := extractProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
+}
+
 // buildRequestBody builds the API request body from call options
 func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, error) {
 	body, _, err := m.buildRequestBodyWithWarnings(opts, provOpts)
@@ -579,8 +599,8 @@ func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3Cal
 }
 
 // parseAPIError parses a ByteDance API error response
-func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
-	return newHTTPError(statusCode, body)
+func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers stdhttp.Header) error {
+	return newHTTPError(statusCode, headers, body)
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
@@ -589,7 +609,7 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return m.parseAPIError(dlErr.Body, dlErr.StatusCode)
+		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, stdhttp.Header(dlErr.Headers))
 	}
 	// TS getFromApi lets any other failure (an abort, "Cannot connect to
 	// API", a URL rejected by validateUrl) propagate unchanged.

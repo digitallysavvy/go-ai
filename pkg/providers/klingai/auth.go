@@ -77,14 +77,14 @@ func generateJWTToken(accessKey, secretKey string) (string, error) {
 		accessKey = os.Getenv("KLINGAI_ACCESS_KEY")
 	}
 	if accessKey == "" {
-		// TS loadSetting's LoadSettingError text.
-		return "", fmt.Errorf("KlingAI access key setting is missing. Pass it using the 'accessKey' parameter or the KLINGAI_ACCESS_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
+		// TS loadSetting throws LoadSettingError.
+		return "", providererrors.NewLoadSettingError("KlingAI access key", "accessKey", "KLINGAI_ACCESS_KEY")
 	}
 	if secretKey == "" {
 		secretKey = os.Getenv("KLINGAI_SECRET_KEY")
 	}
 	if secretKey == "" {
-		return "", fmt.Errorf("KlingAI secret key setting is missing. Pass it using the 'secretKey' parameter or the KLINGAI_SECRET_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
+		return "", providererrors.NewLoadSettingError("KlingAI secret key", "secretKey", "KLINGAI_SECRET_KEY")
 	}
 
 	now := time.Now().Unix()

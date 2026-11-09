@@ -344,6 +344,22 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}, nil
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// ReplicateVideoModel has no doGenerate), so ai.GenerateVideo drives it through
+// the core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	opts, _ := providerOptions["replicate"].(map[string]interface{})
+	if v, ok := providerutils.CoerceInt(opts["pollIntervalMs"]); ok && v > 0 {
+		intervalMs = v
+	}
+	if v, ok := providerutils.CoerceInt(opts["pollTimeoutMs"]); ok && v > 0 {
+		timeoutMs = v
+	}
+	return intervalMs, timeoutMs
+}
+
 // getPollOptions extracts polling options from provider options
 func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling.PollOptions {
 	// TS has no synchronous doGenerate for this model: core's generateVideo

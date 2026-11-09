@@ -157,6 +157,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	// TS: currentDate is taken before the request is sent.
+	currentDate := time.Now()
 	query := m.buildQueryParams(opts)
 
 	req := internalhttp.Request{
@@ -177,7 +179,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, handleError("deepgram", err)
 	}
 
-	result := m.convertResponse(response, httpResp)
+	result := m.convertResponse(response, httpResp, currentDate)
 	// TS 5b89b2560c: batch transcription ignores the streaming options.
 	if streaming, present := rawTranscriptionOptions(opts.ProviderOptions)["streaming"]; present && streaming != nil {
 		result.Warnings = append(result.Warnings, types.Warning{
@@ -189,9 +191,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	return result, nil
 }
 
-func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionResponse, httpResp *internalhttp.Response) *types.TranscriptionResult {
-	currentDate := time.Now()
-
+func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionResponse, httpResp *internalhttp.Response, currentDate time.Time) *types.TranscriptionResult {
 	var (
 		text     string
 		segments []types.TranscriptionTimestamp

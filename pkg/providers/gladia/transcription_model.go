@@ -740,6 +740,12 @@ func handleError(err error) error {
 		if len(downloadErr.Body) > 0 {
 			providerErr.ResponseBody = string(downloadErr.Body)
 		}
+		if code != "" {
+			// TS APICallError.data is the schema-parsed body (zod strips
+			// every other key).
+			codeNumber, _ := strconv.ParseFloat(code, 64)
+			providerErr.Data = map[string]interface{}{"error": map[string]interface{}{"message": message, "code": codeNumber}}
+		}
 		return providerErr
 	}
 

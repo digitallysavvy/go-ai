@@ -288,6 +288,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	// TS: currentDate is taken before the upload.
+	currentDate := time.Now()
 
 	// Step 1: Upload audio.
 	var uploadResult struct {
@@ -331,7 +333,6 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	// Step 3: Poll for completion.
-	currentDate := time.Now()
 	rawTranscript, httpResp, err := m.waitForCompletion(ctx, submitResult.ID, opts.Headers)
 	if err != nil {
 		return nil, err

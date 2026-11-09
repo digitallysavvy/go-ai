@@ -108,8 +108,8 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	authToken, err := m.prov.GenerateAuthToken()
 	if err != nil {
-		if providererrors.IsLoadAPIKeyError(err) {
-			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError
+		if providererrors.IsLoadAPIKeyError(err) || providererrors.IsLoadSettingError(err) {
+			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError / LoadSettingError
 		}
 		return nil, NewAuthError(err.Error())
 	}
@@ -128,7 +128,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
-		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Body)
+		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Headers, submitResp.Body)
 	}
 
 	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAICreate)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
@@ -173,8 +173,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	authToken, err := m.prov.GenerateAuthToken()
 	if err != nil {
-		if providererrors.IsLoadAPIKeyError(err) {
-			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError
+		if providererrors.IsLoadAPIKeyError(err) || providererrors.IsLoadSettingError(err) {
+			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError / LoadSettingError
 		}
 		return nil, NewAuthError(err.Error())
 	}
@@ -347,7 +347,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return parseKlingAIErrorBody(dlErr.StatusCode, dlErr.Body)
+		return parseKlingAIErrorBody(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 	}
 	// TS getFromApi lets any other failure (an abort, "Cannot connect to
 	// API", a URL rejected by validateUrl) propagate unchanged.
@@ -358,19 +358,19 @@ func (m *VideoModel) handlePollError(err error) error {
 // {code, message} error envelope (TS klingaiFailedResponseHandler /
 // klingaiErrorDataSchema), falling back to a generic error carrying the raw
 // body when the envelope cannot be parsed or carries no message.
-func parseKlingAIErrorBody(statusCode int, body []byte) error {
+func parseKlingAIErrorBody(statusCode int, headers http.Header, body []byte) error {
 	var envelope struct {
 		Code    *float64 `json:"code"`
 		Message *string  `json:"message"`
 	}
 	if jsonErr := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil {
 		e := NewError(int(*envelope.Code), *envelope.Message, "")
-		e.httpStatus, e.httpBody = statusCode, body
+		e.httpStatus, e.httpBody, e.httpHeaders = statusCode, body, providerutils.ExtractHeaders(headers)
 		return e
 	}
 	// TS createJsonErrorResponseHandler: a body that does not match the
 	// error schema gives the HTTP status text as the message.
-	return &Error{Code: statusCode, Message: http.StatusText(statusCode), httpStatus: statusCode, httpBody: body}
+	return &Error{Code: statusCode, Message: http.StatusText(statusCode), httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers)}
 }
 
 // detectMode detects the video generation mode from the model ID suffix
@@ -992,6 +992,25 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 	}
 
 	return warnings
+}
+
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// KlingAIVideoModel has no doGenerate), so ai.GenerateVideo drives it through
+// the core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, err := extractProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
 }
 
 // getPollOptions extracts polling options from provider options

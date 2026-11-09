@@ -2,6 +2,9 @@ package klingai
 
 import (
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // ErrCodeKlingVideoMissingOptions is the error code returned when required motion-control
@@ -19,13 +22,37 @@ type Error struct {
 	// built from, so retry classification follows the TS APICallError rule
 	// (only 408, 409, 429 and 5xx are retryable) instead of retrying every
 	// error. Zero for errors that are not an HTTP response.
-	httpStatus int
-	httpBody   []byte
+	httpStatus  int
+	httpBody    []byte
+	httpHeaders map[string]string
 }
 
 // HTTPStatusDetails implements providererrors.HTTPStatusDetails.
 func (e *Error) HTTPStatusDetails() (int, map[string]string, []byte) {
-	return e.httpStatus, nil, e.httpBody
+	return e.httpStatus, e.httpHeaders, e.httpBody
+}
+
+// Unwrap exposes an HTTP response error as the *providererrors.ProviderError
+// TS reports (APICallError with statusCode, responseHeaders, responseBody,
+// data), so the retry delay honors retry-after-ms / retry-after like TS
+// (pkg/internal/retry reads ProviderError.ResponseHeaders) and callers can
+// match it with errors.As. nil for errors that are not an HTTP response.
+func (e *Error) Unwrap() error {
+	if e == nil || e.httpStatus == 0 {
+		return nil
+	}
+	pe := &providererrors.ProviderError{
+		Provider:        "klingai",
+		StatusCode:      e.httpStatus,
+		Message:         e.Message,
+		ResponseHeaders: e.httpHeaders,
+		ResponseBody:    string(e.httpBody),
+	}
+	var data interface{}
+	if len(e.httpBody) > 0 && securejson.Unmarshal(e.httpBody, &data) == nil {
+		pe.Data = data
+	}
+	return pe
 }
 
 // Error implements the error interface
