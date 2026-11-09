@@ -743,7 +743,11 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 
 		case types.ToolResultContent, *types.ToolResultContent:
 			tr, _ := asToolResult(raw.(types.ContentPart))
-			if part := c.assistantToolResult(tr); part != nil {
+			part, err := c.assistantToolResult(tr)
+			if err != nil {
+				return nil, err
+			}
+			if part != nil {
 				parts = append(parts, part)
 			}
 
@@ -764,15 +768,23 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 
 func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) (map[string]interface{}, error) {
 	if tc.providerExecuted && tc.toolName == "code_execution" {
-		input, _ := tc.input.(map[string]interface{})
-		if s, ok := tc.input.(string); ok {
-			_ = json.Unmarshal([]byte(s), &input)
+		// TS codeExecutionInputSchema.parse(typeof input === 'string' ?
+		// secureJsonParse(input) : input): language and code are required
+		// strings; other keys are stripped.
+		input := tc.input
+		if s, ok := input.(string); ok {
+			v, ok := SecureJSONParse(s)
+			if !ok {
+				return nil, &providererrors.JSONParseError{Text: s, Cause: fmt.Errorf("invalid JSON in code execution input")}
+			}
+			input = v
+		}
+		value, err := googleParseCodeExecution(googleCodeExecutionInputSchema, input)
+		if err != nil {
+			return nil, err
 		}
 		return map[string]interface{}{
-			"executableCode": map[string]interface{}{
-				"language": stringOpt(input, "language"),
-				"code":     stringOpt(input, "code"),
-			},
+			"executableCode": map[string]interface{}{"language": value["language"], "code": value["code"]},
 		}, nil
 	}
 
@@ -836,25 +848,45 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 	return part, nil
 }
 
-func (c *googleConverter) assistantToolResult(p types.ToolResultContent) map[string]interface{} {
+// TS tool/code-execution.ts codeExecutionInputSchema / codeExecutionOutputSchema.
+var (
+	googleCodeExecutionInputSchema  = zodlite.Object(zodlite.F("language", zodlite.String), zodlite.F("code", zodlite.String))
+	googleCodeExecutionOutputSchema = zodlite.Object(zodlite.F("outcome", zodlite.String), zodlite.F("output", zodlite.String))
+)
+
+// googleParseCodeExecution is schema.parse(value): an invalid value is the
+// validation error (TS throws the ZodError).
+func googleParseCodeExecution(schema zodlite.Node, value interface{}) (map[string]interface{}, error) {
+	data := jsonStringify(value)
+	if message := zodlite.ValidationMessage(schema, data); message != "" {
+		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
+func (c *googleConverter) assistantToolResult(p types.ToolResultContent) (map[string]interface{}, error) {
 	out := resolveGoogleToolOutput(p)
 	if p.ToolName == "code_execution" && out.kind == "json" {
-		value, _ := out.value.(map[string]interface{})
-		return map[string]interface{}{
-			"codeExecutionResult": map[string]interface{}{
-				"outcome": stringOpt(value, "outcome"),
-				"output":  stringOpt(value, "output"),
-			},
+		value, err := googleParseCodeExecution(googleCodeExecutionOutputSchema, out.value)
+		if err != nil {
+			return nil, err
 		}
+		return map[string]interface{}{
+			"codeExecutionResult": map[string]interface{}{"outcome": value["outcome"], "output": value["output"]},
+		}, nil
 	}
 	opts := c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata)
 	serverToolCallID := stringOpt(opts, "serverToolCallId")
 	serverToolType := stringOpt(opts, "serverToolType")
 	if serverToolCallID != "" && serverToolType != "" {
 		sig, hasSig := optStringPresent(opts, "thoughtSignature")
-		return googleServerToolResponse(p, serverToolType, serverToolCallID, sig, hasSig)
+		return googleServerToolResponse(p, serverToolType, serverToolCallID, sig, hasSig), nil
 	}
-	return nil
+	return nil, nil
 }
 
 func googleServerToolResponse(p types.ToolResultContent, toolType, id, thoughtSignature string, hasThoughtSignature bool) map[string]interface{} {
