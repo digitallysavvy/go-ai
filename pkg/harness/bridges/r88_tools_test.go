@@ -5,8 +5,9 @@ import (
 	"testing"
 )
 
-// The 0f3a85f92d resync (ai@7.0.165): every vendored bridge is rebuilt from
-// that checkout. The checks pin the bridge-only fixes of the round 88 TS
+// The 9f7a842ae1 resync (ai@7.0.167; first pinned at 0f3a85f92d /
+// ai@7.0.165 in round 88): every vendored bridge is rebuilt from that
+// checkout. The checks pin the bridge-only fixes of the round 88 TS
 // delta: deepagents requires --home-dir and checks file locations
 // (bb8aa09ec8, e4a6112776), opencode asks for reads outside the workdir
 // (3af9d06557), claude-code loads only user settings (e4a6112776), and
@@ -16,12 +17,12 @@ func TestR88toolsBridgesAt0f3a85f92d(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.TSCommit != "0f3a85f92d" || m.TSTag != "ai@7.0.165" {
+	if m.TSCommit != "9f7a842ae1" || m.TSTag != "ai@7.0.167" {
 		t.Fatalf("manifest pinned to %q / %q", m.TSTag, m.TSCommit)
 	}
 	want := map[Adapter]string{
-		ACP: "1.0.116", ClaudeCode: "1.0.180", Codex: "1.0.178", DeepAgents: "1.0.176",
-		GitHubCopilot: "1.0.73", GrokBuild: "1.0.115", OpenCode: "1.0.179",
+		ACP: "1.0.118", ClaudeCode: "1.0.182", Codex: "1.0.180", DeepAgents: "1.0.178",
+		GitHubCopilot: "1.0.75", GrokBuild: "1.0.117", OpenCode: "1.0.181",
 	}
 	for adapter, version := range want {
 		if got := m.Adapters[string(adapter)].SourceVersion; got != version {

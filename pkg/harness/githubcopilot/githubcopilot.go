@@ -31,7 +31,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-github-copilot"
-	ClientAppVersion = "1.0.73" // TS VERSION: the bridge manifest's source version
+	ClientAppVersion = "1.0.75" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "github-copilot"
 
 	githubOAuthTokenBodyLength         = 36
