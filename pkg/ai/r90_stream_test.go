@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -176,5 +177,56 @@ func TestR90streamExternalOutputErrAfterFailure(t *testing.T) {
 				t.Fatalf("Output = %v", r.Output())
 			}
 		})
+	}
+}
+
+// to-ui-message-stream.ts 122-133: messageMetadata is called for a part
+// before toUIMessageChunk, which calls onError for an error part. TS order
+// (node, packages/ai/dist at 9f7a842ae1): meta:start, meta:start-step,
+// meta:text-start, meta:text-delta, meta:error, onError:E1, meta:text-end,
+// meta:finish-step, meta:finish.
+func TestR90streamUIMessageMetadataBeforeOnError(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "a"},
+			{Type: provider.ChunkTypeError, Err: errors.New("E1"), Text: "E1"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage},
+		}),
+		Prompt:  "x",
+		OnError: func(context.Context, error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var log []string
+	add := func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		log = append(log, s)
+	}
+	chunks, errs := r.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			add("meta:" + part["type"].(string))
+			return nil
+		},
+		OnError: func(err error) string {
+			add("onError:" + err.Error())
+			return "masked"
+		},
+	})
+	for range chunks {
+	}
+	for range errs {
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	got := strings.Join(log, ",")
+	want := "meta:start,meta:start-step,meta:text-start,meta:text-delta,meta:error,onError:E1,meta:text-end,meta:finish-step,meta:finish"
+	if got != want {
+		t.Fatalf("callback order\n got %s\nwant %s", got, want)
 	}
 }
