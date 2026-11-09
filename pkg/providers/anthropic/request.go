@@ -360,8 +360,12 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 			typ:          o.Thinking.Type,
 			budgetTokens: o.Thinking.BudgetTokens,
 			display:      o.Thinking.Display,
-			blockBinding: o.Thinking.BlockBinding,
 			set:          true,
+		}
+		// TS 'blockBinding' in thinking: only adaptive and the typeless form
+		// keep it after the zod parse.
+		if thinkingTakesBlockBinding(o.Thinking.Type) {
+			th.blockBinding = o.Thinking.BlockBinding
 		}
 	}
 	effort := string(o.Effort)

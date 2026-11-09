@@ -221,13 +221,20 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 		if o.Thinking.Type == "" && o.Thinking.BlockBinding == nil {
 			return fmt.Errorf("thinking: invalid input")
 		}
-		switch o.Thinking.Display {
-		case "", ThinkingDisplayOmitted, ThinkingDisplaySummarized, ThinkingDisplayUpdates:
-		default:
-			return fmt.Errorf("thinking.display: invalid value %q", o.Thinking.Display)
+		// zod strips the keys a thinking type does not declare: display
+		// belongs to adaptive, blockBinding to adaptive and the typeless
+		// binding-only form; other types drop them unchecked.
+		if o.Thinking.Type == ThinkingTypeAdaptive {
+			switch o.Thinking.Display {
+			case "", ThinkingDisplayOmitted, ThinkingDisplaySummarized, ThinkingDisplayUpdates:
+			default:
+				return fmt.Errorf("thinking.display: invalid value %q", o.Thinking.Display)
+			}
 		}
-		if bb := o.Thinking.BlockBinding; bb != nil && bb.PrefixMismatchBehavior != "error" && bb.PrefixMismatchBehavior != "drop_block" {
-			return fmt.Errorf("thinking.blockBinding.prefixMismatchBehavior: invalid value %q", bb.PrefixMismatchBehavior)
+		if thinkingTakesBlockBinding(o.Thinking.Type) {
+			if bb := o.Thinking.BlockBinding; bb != nil && bb.PrefixMismatchBehavior != "error" && bb.PrefixMismatchBehavior != "drop_block" {
+				return fmt.Errorf("thinking.blockBinding.prefixMismatchBehavior: invalid value %q", bb.PrefixMismatchBehavior)
+			}
 		}
 	}
 	if cc := o.CacheControl; cc != nil {
@@ -327,6 +334,13 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 		}
 	}
 	return nil
+}
+
+// thinkingTakesBlockBinding reports a thinking type whose zod shape declares
+// blockBinding (TS anthropicLanguageModelOptions: adaptive, and the typeless
+// binding-only form); enabled, disabled and between_tools strip it.
+func thinkingTakesBlockBinding(t ThinkingType) bool {
+	return t == ThinkingTypeAdaptive || t == ""
 }
 
 // applyModelOptionsOverlay copies every field the caller actually provided in
