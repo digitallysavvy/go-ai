@@ -56,7 +56,7 @@ func TestR90provgCitationSourceIDsUseGenerateID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	id = ""
 	for {
 		chunk, err := stream.Next()

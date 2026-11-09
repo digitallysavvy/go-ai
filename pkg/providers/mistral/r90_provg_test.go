@@ -49,7 +49,7 @@ data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	var reasoningIDs, reasoning []string
 	toolID := ""
 	for {
@@ -146,7 +146,7 @@ data: {"type":"conversation.response.error","message":"Too many requests","code"
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	var input string
 	var streamErr error
 	for {
@@ -190,7 +190,7 @@ func TestR90provgConversationMissingExecutionStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 	for {
 		c, err := stream.Next()
 		if err != nil {
