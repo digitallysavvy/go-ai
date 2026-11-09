@@ -86,3 +86,20 @@ func extractTranscriptionModelOptions(providerOptions map[string]interface{}) *T
 	}
 	return &opts
 }
+
+// transcriptionLanguageOption reports providerOptions.cartesia.language and
+// whether it is present and a string. TS checks `language != null`, so an
+// empty string counts (the batch form sends it, streaming rejects it as not
+// English); the typed options struct cannot tell "" from unset, so a
+// map-shaped option is consulted directly.
+func transcriptionLanguageOption(providerOptions map[string]interface{}, parsed *TranscriptionModelOptions) (string, bool) {
+	if parsed != nil && parsed.Language != "" {
+		return parsed.Language, true
+	}
+	m, ok := providerOptions["cartesia"].(map[string]interface{})
+	if !ok {
+		return "", false
+	}
+	lang, ok := m["language"].(string)
+	return lang, ok
+}

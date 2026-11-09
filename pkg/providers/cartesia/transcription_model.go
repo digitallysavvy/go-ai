@@ -157,8 +157,9 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	if cartesiaOpts != nil {
-		if cartesiaOpts.Language != "" {
-			if err := writer.WriteField("language", cartesiaOpts.Language); err != nil {
+		// TS `language != null`: an empty string is sent too.
+		if language, ok := transcriptionLanguageOption(opts.ProviderOptions, cartesiaOpts); ok {
+			if err := writer.WriteField("language", language); err != nil {
 				return nil, "", nil, err
 			}
 		}
