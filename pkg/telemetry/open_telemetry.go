@@ -279,14 +279,11 @@ type genAIRequestSettings struct {
 // instruction message (TS formatSystemInstructions of a message array), else
 // the system string.
 func systemInstructionsAttr(system string, instructionMessages []types.Message) (attribute.KeyValue, bool) {
-	var parts []semConvPart
+	var parts []SemConvSystemInstruction
 	if len(instructionMessages) > 0 {
-		parts = make([]semConvPart, 0, len(instructionMessages))
-		for _, m := range instructionMessages {
-			parts = append(parts, semConvPart{"type": "text", "content": systemMessageText(m)})
-		}
+		parts = FormatSystemMessages(instructionMessages)
 	} else if system != "" {
-		parts = formatSystemInstructions(system)
+		parts = FormatSystemInstructions(system)
 	} else {
 		return attribute.KeyValue{}, false
 	}
