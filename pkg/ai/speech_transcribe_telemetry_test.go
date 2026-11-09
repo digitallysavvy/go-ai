@@ -88,7 +88,7 @@ func TestGenerateSpeech_Telemetry_OpenTelemetry(t *testing.T) {
 	// Ported from TS generate-speech.test.ts usage propagation (TS
 	// 8c659885c5 / #21427): provider-reported usage flattens into
 	// gen_ai.usage.* attributes and the raw ai.response.usage JSON.
-	if got, ok := gotAttrs["gen_ai.usage.characters"]; !ok || got != 11.0 {
+	if got, ok := gotAttrs["gen_ai.usage.characters"]; !ok || got != int64(11) {
 		t.Errorf("gen_ai.usage.characters = %v (ok=%v), want 11", got, ok)
 	}
 	if got, ok := gotAttrs["ai.response.usage"]; !ok || got != `{"characters":11}` {
