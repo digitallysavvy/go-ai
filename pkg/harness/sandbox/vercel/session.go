@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -156,7 +157,23 @@ func (s *Session) ReadFile(ctx context.Context, path string) (io.ReadCloser, err
 
 // ReadBinaryFile reads path fully, returning nil when it does not exist.
 func (s *Session) ReadBinaryFile(ctx context.Context, path string) ([]byte, error) {
-	return s.sandbox.ReadFileToBuffer(ctx, path, "")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	data, err := s.sandbox.ReadFileToBuffer(ctx, path, "")
+	if err != nil && ctx.Err() == nil && isFileNotFoundError(err) {
+		return nil, nil
+	}
+	return data, err
+}
+
+// fileNotFoundMessage is TS isFileNotFoundError's message test.
+var fileNotFoundMessage = regexp.MustCompile(`(?i)no such file|not found|does not exist|ENOENT`)
+
+// isFileNotFoundError is TS VercelSandboxSession isFileNotFoundError: an
+// error whose message says the file is missing reads as a missing file.
+func isFileNotFoundError(err error) bool {
+	return fileNotFoundMessage.MatchString(err.Error())
 }
 
 // ReadTextFile reads a UTF-8 file with optional 1-based line slicing.
