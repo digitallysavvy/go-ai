@@ -71,3 +71,45 @@ func TestR89genAgentPromptErrorKeepsCause(t *testing.T) {
 	}
 }
 
+// TS answers invalid tool calls before executing the valid ones
+// (generate-text.ts 1486-1528; WorkflowAgent generate mode,
+// workflow-agent.ts 2673-2684), so the legacy loop's step content lists the
+// invalid call's tool error first.
+func TestR89genGenerateAgentInvalidToolErrorsFirst(t *testing.T) {
+	calls := 0
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls > 1 {
+				return &types.GenerateResult{Text: "done", Content: []types.ContentPart{types.TextContent{Text: "done"}}, FinishReason: types.FinishReasonStop}, nil
+			}
+			return &types.GenerateResult{ToolCalls: []types.ToolCall{
+				{ID: "c1", ToolName: "a", RawArguments: `{}`},
+				{ID: "c2", ToolName: "nope", RawArguments: `{}`},
+				{ID: "c3", ToolName: "a", RawArguments: `{}`},
+			}, FinishReason: types.FinishReasonToolCalls}, nil
+		},
+	}
+	a := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{Name: "a", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "r", nil
+		}}},
+	})
+	result, err := a.Execute(context.Background(), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, part := range result.Steps[0].Content {
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			got = append(got, "result:"+p.ToolCallID)
+		case types.ToolErrorContent:
+			got = append(got, "error:"+p.ToolCallID)
+		}
+	}
+	if want := []string{"error:c2", "result:c1", "result:c3"}; len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("tool parts = %v, want %v", got, want)
+	}
+}

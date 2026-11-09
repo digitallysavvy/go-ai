@@ -1105,7 +1105,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			stepResult.ToolResults = publicResults
 			stepResult.StaticToolResults = filterAgentStaticToolResults(publicResults)
 			stepResult.DynamicToolResults = filterAgentDynamicToolResults(publicResults)
-			stepResult.Content = append(stepResult.Content, withAgentInputSchemaInputs(agentToolResultsToContentParts(mergeAgentApprovalOnly(toolResults, stepResult.ToolCalls, approvalOnly), callConfig.ExperimentalToolApprovalSecret), stepTel.schemaInputs())...)
+			stepResult.Content = append(stepResult.Content, withAgentInputSchemaInputs(agentToolResultsToContentParts(agentInvalidToolErrorsFirst(mergeAgentApprovalOnly(toolResults, stepResult.ToolCalls, approvalOnly), stepResult.ToolCalls), callConfig.ExperimentalToolApprovalSecret), stepTel.schemaInputs())...)
 			responseContent = stepResult.Content
 			result.ToolResults = append(result.ToolResults, publicResults...)
 			if len(toolResults) == 0 {
@@ -3248,6 +3248,36 @@ func withAgentInputSchemaInputs(parts []types.ContentPart, schemaInputs map[stri
 		}
 	}
 	return parts
+}
+
+// agentInvalidToolErrorsFirst moves the tool errors of invalid client calls
+// ahead of the other results, each group in call order: TS generateText
+// (ToolLoopAgent.generate) answers invalid calls before it executes the
+// valid ones (generate-text.ts 1486-1528), and TS WorkflowAgent's generate
+// mode pushes their tool-error parts before the executed results
+// (workflow-agent.ts 2673-2684, addToolResultsToStep).
+func agentInvalidToolErrorsFirst(results []types.ToolResult, calls []types.ToolCall) []types.ToolResult {
+	invalidCalls := map[string]bool{}
+	for _, call := range calls {
+		if call.Invalid && !call.ProviderExecuted {
+			invalidCalls[call.ID] = true
+		}
+	}
+	if len(invalidCalls) == 0 {
+		return results
+	}
+	var invalid, rest []types.ToolResult
+	for _, r := range results {
+		if invalidCalls[r.ToolCallID] && r.Error != nil {
+			invalid = append(invalid, r)
+		} else {
+			rest = append(rest, r)
+		}
+	}
+	if len(invalid) == 0 || len(rest) == 0 {
+		return results
+	}
+	return append(invalid, rest...)
 }
 
 // agentToolResultsToContentParts converts tool results to content parts. When
