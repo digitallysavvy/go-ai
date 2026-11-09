@@ -649,7 +649,10 @@ func (s *conversationStream) handle(data string) {
 		ex, ok := s.executions[ev.ID]
 		if !ok {
 			s.hasError = true
-			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("Missing tool execution start for %s", ev.ID)})
+			// TS enqueues new Error(...): an Error instance, which core passes
+			// on unchanged (not normalized into a StreamProviderError).
+			missing := fmt.Errorf("Missing tool execution start for %s", ev.ID) //nolint:staticcheck // ST1005: TS error text
+			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: missing.Error(), Err: missing})
 			return
 		}
 		// TS JSON.stringify({arguments}): HTML characters stay literal.

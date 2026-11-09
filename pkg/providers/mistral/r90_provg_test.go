@@ -171,3 +171,36 @@ data: {"type":"conversation.response.error","message":"Too many requests","code"
 		t.Fatalf("stream error = %+v", spe)
 	}
 }
+
+// TestR90provgConversationMissingExecutionStart: TS enqueues new
+// Error(`Missing tool execution start for ${id}`), an Error instance core
+// passes on unchanged (not a StreamProviderError).
+func TestR90provgConversationMissingExecutionStart(t *testing.T) {
+	sse := `data: {"type":"tool.execution.done","id":"e9","name":"web_search"}
+
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer server.Close()
+	m := New(Config{APIKey: "k", BaseURL: server.URL}).ConversationModel("mistral-medium-latest")
+	stream, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			t.Fatal("no error part")
+		}
+		if c.Type == provider.ChunkTypeError {
+			var spe *providererrors.StreamProviderError
+			if c.Err == nil || errors.As(c.Err, &spe) || c.Err.Error() != "Missing tool execution start for e9" {
+				t.Fatalf("error part Err = %#v", c.Err)
+			}
+			return
+		}
+	}
+}
