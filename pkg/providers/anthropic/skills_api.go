@@ -21,10 +21,12 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	if opts.DisplayTitle != "" {
-		_ = writer.WriteField("display_title", opts.DisplayTitle)
+		_ = providerutils.WriteFormDataField(writer, "display_title", opts.DisplayTitle)
 	}
 	for _, file := range opts.Files {
-		part, err := writer.CreateFormFile("files[]", chooseFilename(file.Path))
+		// TS appends new Blob([content]) (no type) named file.path; a File
+		// named "" has no filename parameter.
+		part, err := providerutils.CreateFormDataFile(writer, "files[]", file.Path, "")
 		if err != nil {
 			return nil, err
 		}

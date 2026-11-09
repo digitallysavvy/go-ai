@@ -398,7 +398,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	if err := writer.WriteField("model", m.modelID); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
 		return nil, "", err
 	}
 
@@ -426,34 +426,34 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		language = opts.Language
 	}
 	if language != "" {
-		if err := writer.WriteField("language", language); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "language", language); err != nil {
 			return nil, "", err
 		}
 	}
 
 	if mistralOpts != nil {
 		if mistralOpts.ReturnLanguage != nil {
-			if err := writer.WriteField("return_language", strconv.FormatBool(*mistralOpts.ReturnLanguage)); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "return_language", strconv.FormatBool(*mistralOpts.ReturnLanguage)); err != nil {
 				return nil, "", err
 			}
 		}
 		if mistralOpts.Temperature != nil {
-			if err := writer.WriteField("temperature", providerutils.JSNumberString(*mistralOpts.Temperature)); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "temperature", providerutils.JSNumberString(*mistralOpts.Temperature)); err != nil {
 				return nil, "", err
 			}
 		}
 		for _, g := range mistralOpts.TimestampGranularities {
-			if err := writer.WriteField("timestamp_granularities", g); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "timestamp_granularities", g); err != nil {
 				return nil, "", err
 			}
 		}
 		if mistralOpts.Diarize != nil {
-			if err := writer.WriteField("diarize", strconv.FormatBool(*mistralOpts.Diarize)); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "diarize", strconv.FormatBool(*mistralOpts.Diarize)); err != nil {
 				return nil, "", err
 			}
 		}
 		for _, cb := range mistralOpts.ContextBias {
-			if err := writer.WriteField("context_bias", cb); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "context_bias", cb); err != nil {
 				return nil, "", err
 			}
 		}

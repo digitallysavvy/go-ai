@@ -144,7 +144,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	if err := writer.WriteField("model", m.modelID); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
 		return nil, "", nil, err
 	}
 
@@ -159,12 +159,12 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if cartesiaOpts != nil {
 		// TS `language != null`: an empty string is sent too.
 		if language, ok := transcriptionLanguageOption(opts.ProviderOptions, cartesiaOpts); ok {
-			if err := writer.WriteField("language", language); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "language", language); err != nil {
 				return nil, "", nil, err
 			}
 		}
 		for _, granularity := range cartesiaOpts.TimestampGranularities {
-			if err := writer.WriteField("timestamp_granularities[]", granularity); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "timestamp_granularities[]", granularity); err != nil {
 				return nil, "", nil, err
 			}
 		}

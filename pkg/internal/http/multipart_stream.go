@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // MultipartStreamPart is one part of a streaming multipart/form-data upload
@@ -36,6 +38,12 @@ type MultipartStreamPart struct {
 	// multipart body without buffering the whole file in memory. Only used
 	// when IsFile is true.
 	Content io.Reader
+
+	// FormData writes the file part's header as TS FormData does (a Blob
+	// appended to a FormData and sent with postFormDataToApi), not as TS
+	// postMultipartStreamToApi does: see providerutils.FormDataFilePartHeader.
+	// Callers set it for an inline file TS sends as FormData.
+	FormData bool
 }
 
 // NewMultipartStreamBody builds a streaming multipart/form-data request body
@@ -121,6 +129,23 @@ func writeMultipartParts(w io.Writer, boundary string, parts []MultipartStreamPa
 		disposition := "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + multipartHeaderValue(part.Name) + "\""
 		if !part.IsFile {
 			if _, err := io.WriteString(w, disposition+"\r\n\r\n"+part.Value+"\r\n"); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if part.FormData {
+			h := providerutils.FormDataFilePartHeader(part.Name, part.Filename, part.MediaType)
+			header := "--" + boundary + "\r\nContent-Disposition: " + h.Get("Content-Disposition") + "\r\nContent-Type: " + h.Get("Content-Type") + "\r\n\r\n"
+			if _, err := io.WriteString(w, header); err != nil {
+				return err
+			}
+			if part.Content != nil {
+				if _, err := io.Copy(w, part.Content); err != nil {
+					return err
+				}
+			}
+			if _, err := io.WriteString(w, "\r\n"); err != nil {
 				return err
 			}
 			continue

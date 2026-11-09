@@ -128,6 +128,8 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 	parts = append(parts, internalhttp.MultipartStreamPart{
 		IsFile: true, Name: "file", Filename: chooseFilename(opts.Filename), MediaType: mediaType, Content: content,
+		// TS sends inline bytes as a FormData Blob (postFormDataToApi).
+		FormData: opts.Data.Type != types.FileDataTypeStream,
 	})
 
 	body, contentType, err := internalhttp.NewMultipartStreamBody(parts)

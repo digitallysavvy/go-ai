@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/textproto"
 	"regexp"
 	"strings"
 	"time"
@@ -259,19 +258,12 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	writer := multipart.NewWriter(&buf)
 
 	// TS appends model before file.
-	if err := writer.WriteField("model", m.modelID); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
 		return nil, "", err
 	}
 
 	// Add file
-	fileHeader := textproto.MIMEHeader{}
-	fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, getExtensionFromMimeType(opts.MimeType)))
-	if opts.MimeType != "" {
-		fileHeader.Set("Content-Type", opts.MimeType)
-	} else {
-		fileHeader.Set("Content-Type", "application/octet-stream")
-	}
-	part, err := writer.CreatePart(fileHeader)
+	part, err := providerutils.CreateFormDataFile(writer, "file", "audio."+getExtensionFromMimeType(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create form file: %w", err)
 	}
@@ -303,10 +295,10 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		language, hasLanguage = opts.Language, true
 	}
 
-	writeField := func(key, value string) error { return writer.WriteField(key, value) }
+	writeField := func(key, value string) error { return providerutils.WriteFormDataField(writer, key, value) }
 	writeList := func(key string, values []string) error {
 		for _, v := range values {
-			if err := writer.WriteField(key+"[]", v); err != nil {
+			if err := providerutils.WriteFormDataField(writer, key+"[]", v); err != nil {
 				return err
 			}
 		}
@@ -364,7 +356,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 			value = string(chunkingStrategyWireFormat(cs))
 		}
 		if value != "" {
-			if err := writer.WriteField("chunking_strategy", value); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "chunking_strategy", value); err != nil {
 				return nil, "", err
 			}
 		}

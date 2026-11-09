@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -134,15 +133,8 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	// media type (`new File([blob], 'audio', { type: mediaType })`), so build
 	// the part headers explicitly to preserve that.
 	filename := "audio." + fishAudioExtension(opts.MimeType)
-	header := textproto.MIMEHeader{}
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="audio"; filename=%q`, filename))
 	// A File with an empty type is sent as application/octet-stream.
-	if opts.MimeType != "" {
-		header.Set("Content-Type", opts.MimeType)
-	} else {
-		header.Set("Content-Type", "application/octet-stream")
-	}
-	part, err := writer.CreatePart(header)
+	part, err := providerutils.CreateFormDataFile(writer, "audio", filename, opts.MimeType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -151,7 +143,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	if fishOpts != nil && fishOpts.Language != "" {
-		if err := writer.WriteField("language", fishOpts.Language); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "language", fishOpts.Language); err != nil {
 			return nil, "", err
 		}
 	}
@@ -163,7 +155,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if fishOpts != nil && fishOpts.IgnoreTimestamps != nil {
 		ignoreTimestamps = *fishOpts.IgnoreTimestamps
 	}
-	if err := writer.WriteField("ignore_timestamps", fmt.Sprintf("%t", ignoreTimestamps)); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "ignore_timestamps", fmt.Sprintf("%t", ignoreTimestamps)); err != nil {
 		return nil, "", err
 	}
 

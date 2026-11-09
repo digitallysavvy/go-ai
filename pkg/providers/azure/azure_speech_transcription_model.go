@@ -358,7 +358,7 @@ func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definiti
 	if err != nil {
 		return nil, "", err
 	}
-	if err := writer.WriteField("definition", string(definitionJSON)); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "definition", string(definitionJSON)); err != nil {
 		return nil, "", err
 	}
 

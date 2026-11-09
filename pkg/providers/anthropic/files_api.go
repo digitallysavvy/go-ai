@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"mime/multipart"
-	"net/textproto"
 	"strings"
 	"time"
 
@@ -32,16 +30,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	// The part carries the media type like TS's typed Blob; CreateFormFile
-	// would label every upload application/octet-stream.
-	partHeader := textproto.MIMEHeader{}
-	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, escapeMultipartQuotes(chooseFilename(opts.Filename))))
-	if opts.MediaType != "" {
-		partHeader.Set("Content-Type", opts.MediaType)
-	} else {
-		partHeader.Set("Content-Type", "application/octet-stream")
-	}
-	part, err := writer.CreatePart(partHeader)
+	// The part is TS's typed Blob appended to a FormData (filename "blob"
+	// when none is given).
+	part, err := providerutils.CreateFormDataFile(writer, "file", chooseFilename(opts.Filename), opts.MediaType)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +275,3 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		Warnings:          []types.Warning{},
 	}, nil
 }
-
-var multipartQuoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
-
-func escapeMultipartQuotes(s string) string { return multipartQuoteEscaper.Replace(s) }

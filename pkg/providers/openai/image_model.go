@@ -393,13 +393,13 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 				if value == "" {
 					return nil
 				}
-				return writer.WriteField(key, value)
+				return providerutils.WriteFormDataField(writer, key, value)
 			}
 			// TS 5f9bb8eea4 / 6549344e0a convertToFormData order: model,
 			// prompt, image, mask, markup, n, size, quality, background,
 			// output_format, output_compression, complexity, input_fidelity,
 			// moderation, user, safety_identifier.
-			if err := writer.WriteField("model", m.modelID); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
 				return err
 			}
 			if err := field("prompt", opts.Prompt); err != nil {
@@ -425,7 +425,7 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 				}
 			}
 			if opts.N != nil {
-				if err := writer.WriteField("n", fmt.Sprintf("%d", *opts.N)); err != nil {
+				if err := providerutils.WriteFormDataField(writer, "n", fmt.Sprintf("%d", *opts.N)); err != nil {
 					return err
 				}
 			}
@@ -442,7 +442,7 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 				}
 			}
 			if openaiOpts.OutputCompression != nil {
-				if err := writer.WriteField("output_compression", fmt.Sprintf("%d", *openaiOpts.OutputCompression)); err != nil {
+				if err := providerutils.WriteFormDataField(writer, "output_compression", fmt.Sprintf("%d", *openaiOpts.OutputCompression)); err != nil {
 					return err
 				}
 			}

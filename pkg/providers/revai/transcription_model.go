@@ -253,7 +253,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if err != nil {
 		return nil, "", err
 	}
-	if err := writer.WriteField("config", string(configBytes)); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "config", string(configBytes)); err != nil {
 		return nil, "", err
 	}
 

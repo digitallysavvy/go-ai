@@ -6,15 +6,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -205,23 +205,23 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 	for _, field := range fields {
 		if field.ok {
-			if err := writer.WriteField(field.key, field.value); err != nil {
+			if err := providerutils.WriteFormDataField(writer, field.key, field.value); err != nil {
 				return nil, "", err
 			}
 		}
 	}
 	for _, keyterm := range xaiKeyterms(xaiOpts.Keyterm) {
-		if err := writer.WriteField("keyterm", keyterm); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "keyterm", keyterm); err != nil {
 			return nil, "", err
 		}
 	}
 	if xaiOpts.AudioFormat != nil {
-		if err := writer.WriteField("audio_format", *xaiOpts.AudioFormat); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "audio_format", *xaiOpts.AudioFormat); err != nil {
 			return nil, "", err
 		}
 	}
 	if xaiOpts.Format != nil {
-		if err := writer.WriteField("format", boolPtrValue(xaiOpts.Format)); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "format", boolPtrValue(xaiOpts.Format)); err != nil {
 			return nil, "", err
 		}
 	}
@@ -239,10 +239,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		mediaType = "application/octet-stream"
 	}
 	filename := "audio." + xaiAudioExtension(mediaType)
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, filename))
-	header.Set("Content-Type", mediaType)
-	part, err := writer.CreatePart(header)
+	part, err := providerutils.CreateFormDataFile(writer, "file", filename, mediaType)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create audio file part: %w", err)
 	}

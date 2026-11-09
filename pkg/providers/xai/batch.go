@@ -10,7 +10,6 @@ import (
 	"io"
 	"mime/multipart"
 	stdhttp "net/http"
-	"net/textproto"
 	"strconv"
 	"time"
 
@@ -159,17 +158,14 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	// xAI rejects uploads where expires_after arrives after the file part,
 	// so all fields precede the file.
 	if batchOptions.InputFileExpiresAfter != nil {
-		if err := writer.WriteField("expires_after", strconv.Itoa(*batchOptions.InputFileExpiresAfter)); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "expires_after", strconv.Itoa(*batchOptions.InputFileExpiresAfter)); err != nil {
 			return nil, err
 		}
 	}
 	// CreateFormFile hardcodes Content-Type: application/octet-stream; TS
 	// uploads the JSONL body as `new Blob(fileParts, {type:
 	// 'application/jsonl'})`, so the part header is built manually to match.
-	fileHeader := textproto.MIMEHeader{}
-	fileHeader.Set("Content-Disposition", `form-data; name="file"; filename="batch.jsonl"`)
-	fileHeader.Set("Content-Type", "application/jsonl")
-	part, err := writer.CreatePart(fileHeader)
+	part, err := providerutils.CreateFormDataFile(writer, "file", "batch.jsonl", "application/jsonl")
 	if err != nil {
 		return nil, err
 	}

@@ -7,10 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"mime"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"sort"
 	"strings"
 
@@ -789,10 +787,7 @@ func buildImageMultipart(body interface{}, images []typesafeImagePart) (*bytes.B
 	buf.Grow(size)
 	w := multipart.NewWriter(&buf)
 	write := func(name, filename, contentType string, data []byte) error {
-		header := textproto.MIMEHeader{}
-		header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": name, "filename": filename}))
-		header.Set("Content-Type", contentType)
-		part, err := w.CreatePart(header)
+		part, err := providerutils.CreateFormDataFile(w, name, filename, contentType)
 		if err != nil {
 			return err
 		}

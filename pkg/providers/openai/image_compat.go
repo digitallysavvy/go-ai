@@ -204,11 +204,11 @@ func (m *ImageModel) buildCompatEditBody(ctx context.Context, opts *provider.Ima
 	writer := multipart.NewWriter(pw)
 	go func() {
 		err := func() error {
-			if err := writer.WriteField("model", m.modelID); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
 				return err
 			}
 			if opts.Prompt != "" {
-				if err := writer.WriteField("prompt", opts.Prompt); err != nil {
+				if err := providerutils.WriteFormDataField(writer, "prompt", opts.Prompt); err != nil {
 					return err
 				}
 			}
@@ -227,12 +227,12 @@ func (m *ImageModel) buildCompatEditBody(ctx context.Context, opts *provider.Ima
 				}
 			}
 			if opts.N != nil {
-				if err := writer.WriteField("n", fmt.Sprint(*opts.N)); err != nil {
+				if err := providerutils.WriteFormDataField(writer, "n", fmt.Sprint(*opts.N)); err != nil {
 					return err
 				}
 			}
 			if opts.Size != "" {
-				if err := writer.WriteField("size", opts.Size); err != nil {
+				if err := providerutils.WriteFormDataField(writer, "size", opts.Size); err != nil {
 					return err
 				}
 			}
@@ -274,13 +274,13 @@ func writeFormValue(w *multipart.Writer, key string, v interface{}) error {
 		}
 		return nil
 	case string:
-		return w.WriteField(key, x)
+		return providerutils.WriteFormDataField(w, key, x)
 	case float64:
 		if x == float64(int64(x)) {
-			return w.WriteField(key, fmt.Sprint(int64(x)))
+			return providerutils.WriteFormDataField(w, key, fmt.Sprint(int64(x)))
 		}
-		return w.WriteField(key, fmt.Sprint(x))
+		return providerutils.WriteFormDataField(w, key, fmt.Sprint(x))
 	default:
-		return w.WriteField(key, fmt.Sprint(x))
+		return providerutils.WriteFormDataField(w, key, fmt.Sprint(x))
 	}
 }

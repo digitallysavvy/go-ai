@@ -286,12 +286,12 @@ func (m *TranscriptionModel) buildMultipartBody(audio []byte, audioURL string, i
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	if err := writer.WriteField("model", m.modelID); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
 		return nil, "", err
 	}
 
 	if isURL {
-		if err := writer.WriteField("url", audioURL); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "url", audioURL); err != nil {
 			return nil, "", err
 		}
 	} else {
@@ -306,28 +306,28 @@ func (m *TranscriptionModel) buildMultipartBody(audio []byte, audioURL string, i
 
 	// TS appends every defined option, including an empty string.
 	if opts.Language != nil {
-		if err := writer.WriteField("language", *opts.Language); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "language", *opts.Language); err != nil {
 			return nil, "", err
 		}
 	}
 	// TS appends every defined option, including an empty string.
 	if opts.Prompt != nil {
-		if err := writer.WriteField("prompt", *opts.Prompt); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "prompt", *opts.Prompt); err != nil {
 			return nil, "", err
 		}
 	}
 	if opts.ResponseFormat != nil {
-		if err := writer.WriteField("response_format", *opts.ResponseFormat); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "response_format", *opts.ResponseFormat); err != nil {
 			return nil, "", err
 		}
 	}
 	if opts.Temperature != nil {
-		if err := writer.WriteField("temperature", providerutils.JSNumberString(*opts.Temperature)); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "temperature", providerutils.JSNumberString(*opts.Temperature)); err != nil {
 			return nil, "", err
 		}
 	}
 	for _, granularity := range opts.TimestampGranularities {
-		if err := writer.WriteField("timestamp_granularities[]", granularity); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "timestamp_granularities[]", granularity); err != nil {
 			return nil, "", err
 		}
 	}

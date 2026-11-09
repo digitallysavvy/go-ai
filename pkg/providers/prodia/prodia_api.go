@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"regexp"
 	"strings"
 
@@ -321,10 +320,7 @@ func buildMultipartJobRequest(jobBody interface{}, inputData []byte, inputMIME s
 	mw := multipart.NewWriter(&buf)
 
 	// Job part (application/json)
-	jh := make(textproto.MIMEHeader)
-	jh.Set("Content-Disposition", `form-data; name="job"; filename="job.json"`)
-	jh.Set("Content-Type", "application/json")
-	jobPart, err := mw.CreatePart(jh)
+	jobPart, err := providerutils.CreateFormDataFile(mw, "job", "job.json", "application/json")
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create job part: %w", err)
 	}
@@ -342,10 +338,7 @@ func buildMultipartJobRequest(jobBody interface{}, inputData []byte, inputMIME s
 			inputMIME = "application/octet-stream"
 		}
 		ext := mediaTypeToExt(inputMIME)
-		ih := make(textproto.MIMEHeader)
-		ih.Set("Content-Disposition", `form-data; name="input"; filename="input`+ext+`"`)
-		ih.Set("Content-Type", inputMIME)
-		inputPart, err := mw.CreatePart(ih)
+		inputPart, err := providerutils.CreateFormDataFile(mw, "input", "input"+ext, inputMIME)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to create input part: %w", err)
 		}

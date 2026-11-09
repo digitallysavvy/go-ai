@@ -327,10 +327,10 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 				var err error
 				switch key {
 				case "model":
-					err = writer.WriteField("model", m.modelID)
+					err = providerutils.WriteFormDataField(writer, "model", m.modelID)
 				case "prompt":
 					if opts.Prompt != "" {
-						err = writer.WriteField("prompt", opts.Prompt)
+						err = providerutils.WriteFormDataField(writer, "prompt", opts.Prompt)
 					}
 				case "image":
 					for _, file := range opts.Files {
@@ -344,11 +344,11 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 					}
 				case "n":
 					if opts.N != nil {
-						err = writer.WriteField("n", strconv.Itoa(*opts.N))
+						err = providerutils.WriteFormDataField(writer, "n", strconv.Itoa(*opts.N))
 					}
 				case "size":
 					if opts.Size != "" {
-						err = writer.WriteField("size", opts.Size)
+						err = providerutils.WriteFormDataField(writer, "size", opts.Size)
 					}
 				}
 				if err != nil {
@@ -388,20 +388,20 @@ func writeDeepInfraFormValue(writer *multipart.Writer, key string, value interfa
 		return nil
 	case []interface{}:
 		for _, item := range v {
-			if err := writer.WriteField(key, deepInfraFormString(item)); err != nil {
+			if err := providerutils.WriteFormDataField(writer, key, deepInfraFormString(item)); err != nil {
 				return err
 			}
 		}
 		return nil
 	case []string:
 		for _, item := range v {
-			if err := writer.WriteField(key, item); err != nil {
+			if err := providerutils.WriteFormDataField(writer, key, item); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	return writer.WriteField(key, deepInfraFormString(value))
+	return providerutils.WriteFormDataField(writer, key, deepInfraFormString(value))
 }
 
 func deepInfraFormString(value interface{}) string {

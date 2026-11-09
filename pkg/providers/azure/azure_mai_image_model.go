@@ -10,7 +10,6 @@ import (
 	"math"
 	"mime/multipart"
 	stdhttp "net/http"
-	"net/textproto"
 	"strconv"
 	"strings"
 	"sync"
@@ -422,19 +421,12 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 		var buf bytes.Buffer
 		w := multipart.NewWriter(&buf)
 		for _, f := range fields {
-			if err := w.WriteField(f.key, f.value); err != nil {
+			if err := providerutils.WriteFormDataField(w, f.key, f.value); err != nil {
 				return azureMaiImageCallResult{}, err
 			}
 		}
 		for _, img := range images {
-			h := make(textproto.MIMEHeader)
-			h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename=%q`, img.name))
-			mt := img.mediaType
-			if mt == "" {
-				mt = "application/octet-stream"
-			}
-			h.Set("Content-Type", mt)
-			part, err := w.CreatePart(h)
+			part, err := providerutils.CreateFormDataFile(w, "image", img.name, img.mediaType)
 			if err != nil {
 				return azureMaiImageCallResult{}, err
 			}

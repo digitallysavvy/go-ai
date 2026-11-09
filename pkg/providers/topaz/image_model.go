@@ -231,14 +231,14 @@ func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpt
 	buf := &bytes.Buffer{}
 	writer := multipart.NewWriter(buf)
 
-	if err := writer.WriteField("model", resolveTopazImageAPIModelID(m.modelID)); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "model", resolveTopazImageAPIModelID(m.modelID)); err != nil {
 		return nil, "", err
 	}
 
 	if file.Type == "url" && file.URL != "" {
 		// Topaz fetches the source itself when given a URL, so the bytes
 		// never need to pass through the SDK.
-		if err := writer.WriteField("source_url", file.URL); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "source_url", file.URL); err != nil {
 			return nil, "", err
 		}
 	} else {
@@ -318,28 +318,28 @@ func writeStringField(w *multipart.Writer, key string, value *string) error {
 	if value == nil {
 		return nil
 	}
-	return w.WriteField(key, *value)
+	return providerutils.WriteFormDataField(w, key, *value)
 }
 
 func writeBoolField(w *multipart.Writer, key string, value *bool) error {
 	if value == nil {
 		return nil
 	}
-	return w.WriteField(key, strconv.FormatBool(*value))
+	return providerutils.WriteFormDataField(w, key, strconv.FormatBool(*value))
 }
 
 func writeIntField(w *multipart.Writer, key string, value *int) error {
 	if value == nil {
 		return nil
 	}
-	return w.WriteField(key, strconv.Itoa(*value))
+	return providerutils.WriteFormDataField(w, key, strconv.Itoa(*value))
 }
 
 func writeFloatField(w *multipart.Writer, key string, value *float64) error {
 	if value == nil {
 		return nil
 	}
-	return w.WriteField(key, providerutils.JSNumberString(*value))
+	return providerutils.WriteFormDataField(w, key, providerutils.JSNumberString(*value))
 }
 
 // parseSize is TS `size.split('x').map(Number)` sent with String(): the

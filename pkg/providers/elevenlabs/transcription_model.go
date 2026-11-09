@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"strings"
 	"time"
 
@@ -145,13 +144,13 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	if err := writer.WriteField("model_id", m.modelID); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "model_id", m.modelID); err != nil {
 		return nil, "", nil, err
 	}
 
 	// ElevenLabs accepts exactly one of file or source_url (TS 8b2fa5ba00).
 	if present && elOpts.SourceURL != nil {
-		if err := writer.WriteField("source_url", *elOpts.SourceURL); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "source_url", *elOpts.SourceURL); err != nil {
 			return nil, "", nil, err
 		}
 		if len(opts.Audio) > 0 {
@@ -161,14 +160,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 			})
 		}
 	} else {
-		fileHeader := textproto.MIMEHeader{}
-		fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, elevenLabsAudioExtension(opts.MimeType)))
-		contentType := opts.MimeType
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-		fileHeader.Set("Content-Type", contentType)
-		part, err := writer.CreatePart(fileHeader)
+		part, err := providerutils.CreateFormDataFile(writer, "file", "audio."+elevenLabsAudioExtension(opts.MimeType), opts.MimeType)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -181,33 +173,33 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if present && elOpts.Diarize != nil {
 		diarize = fmt.Sprintf("%t", *elOpts.Diarize)
 	}
-	if err := writer.WriteField("diarize", diarize); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "diarize", diarize); err != nil {
 		return nil, "", nil, err
 	}
 
 	if present {
 		if elOpts.LanguageCode != nil {
-			if err := writer.WriteField("language_code", *elOpts.LanguageCode); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "language_code", *elOpts.LanguageCode); err != nil {
 				return nil, "", nil, err
 			}
 		}
 		if elOpts.TagAudioEvents != nil {
-			if err := writer.WriteField("tag_audio_events", fmt.Sprintf("%t", *elOpts.TagAudioEvents)); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "tag_audio_events", fmt.Sprintf("%t", *elOpts.TagAudioEvents)); err != nil {
 				return nil, "", nil, err
 			}
 		}
 		if elOpts.NumSpeakers != nil {
-			if err := writer.WriteField("num_speakers", fmt.Sprintf("%d", *elOpts.NumSpeakers)); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "num_speakers", fmt.Sprintf("%d", *elOpts.NumSpeakers)); err != nil {
 				return nil, "", nil, err
 			}
 		}
 		if elOpts.TimestampsGranularity != "" {
-			if err := writer.WriteField("timestamps_granularity", elOpts.TimestampsGranularity); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "timestamps_granularity", elOpts.TimestampsGranularity); err != nil {
 				return nil, "", nil, err
 			}
 		}
 		if elOpts.FileFormat != "" {
-			if err := writer.WriteField("file_format", elOpts.FileFormat); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "file_format", elOpts.FileFormat); err != nil {
 				return nil, "", nil, err
 			}
 		}

@@ -1,9 +1,7 @@
 package providerutils
 
 import (
-	"fmt"
 	"mime/multipart"
-	"net/textproto"
 	"strings"
 )
 
@@ -34,16 +32,12 @@ func MediaTypeToExtension(mediaType string) string {
 
 // CreateTypedFormFile is multipart.Writer.CreateFormFile with an explicit
 // part Content-Type (TS uploads a File whose type is the media type; the
-// stdlib helper always sends application/octet-stream). An empty mediaType
-// falls back to application/octet-stream.
+// stdlib helper always sends application/octet-stream). The part header
+// follows TS FormData (see FormDataFilePartHeader): the media type is
+// lowercased like a Blob type, an empty one is application/octet-stream,
+// and the name and filename escape `"`, CR and LF as %22, %0D and %0A.
 func CreateTypedFormFile(w *multipart.Writer, field, filename, mediaType string) (interface {
 	Write([]byte) (int, error)
 }, error) {
-	header := textproto.MIMEHeader{}
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, filename))
-	if mediaType == "" {
-		mediaType = "application/octet-stream"
-	}
-	header.Set("Content-Type", mediaType)
-	return w.CreatePart(header)
+	return CreateFormDataFile(w, field, filename, mediaType)
 }

@@ -184,7 +184,8 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, expire
 		{Name: "purpose", Value: "batch"},
 		{Name: "expires_after[anchor]", Value: "created_at"},
 		{Name: "expires_after[seconds]", Value: strconv.Itoa(expiresAfterSeconds)},
-		{IsFile: true, Name: "file", Filename: "batch.jsonl", MediaType: "application/jsonl", Content: bytes.NewReader(content)},
+		// TS appends the JSONL Blob to a FormData (openai-batch.ts).
+		{IsFile: true, Name: "file", Filename: "batch.jsonl", MediaType: "application/jsonl", Content: bytes.NewReader(content), FormData: true},
 	}
 	body, contentType, err := internalhttp.NewMultipartStreamBody(parts)
 	if err != nil {

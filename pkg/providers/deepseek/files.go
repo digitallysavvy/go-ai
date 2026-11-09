@@ -100,14 +100,14 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if _, err := part.Write(fileBytes); err != nil {
 		return nil, err
 	}
-	if err := writer.WriteField("purpose", "user_data"); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "purpose", "user_data"); err != nil {
 		return nil, err
 	}
 	if expiresAfter != nil {
-		if err := writer.WriteField("expires_after[anchor]", "created_at"); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "expires_after[anchor]", "created_at"); err != nil {
 			return nil, err
 		}
-		if err := writer.WriteField("expires_after[seconds]", fmt.Sprintf("%d", *expiresAfter)); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "expires_after[seconds]", fmt.Sprintf("%d", *expiresAfter)); err != nil {
 			return nil, err
 		}
 	}
