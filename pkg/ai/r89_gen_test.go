@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -114,4 +115,75 @@ func TestR89genObjectStepEndMsToFirstChunk(t *testing.T) {
 			t.Fatalf("called = %v, MsToFirstChunk = %v, want nil", called, got.MsToFirstChunk)
 		}
 	})
+}
+
+// TS generateText pushes the tool errors of invalid tool calls into
+// clientToolOutputs before the executed results ("insert error tool outputs
+// for invalid tool calls", generate-text.ts 1486-1528), so a step's content
+// lists them first. Expected order recorded by running TS generateText
+// (ai dist at 382d0b8eaf) on the same model output: tool-call c1, c2, c3,
+// tool-error c2, tool-result c1, tool-result c3; the tool message stays in
+// call order.
+func TestR89genInvalidToolErrorsBeforeExecutedResults(t *testing.T) {
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls > 1 {
+				return &types.GenerateResult{Text: "done", Content: []types.ContentPart{types.TextContent{Text: "done"}}, FinishReason: types.FinishReasonStop}, nil
+			}
+			toolCalls := []types.ToolCall{
+				{ID: "c1", ToolName: "a", RawArguments: `{"x":1}`},
+				{ID: "c2", ToolName: "nope", RawArguments: `{}`},
+				{ID: "c3", ToolName: "a", RawArguments: `{"x":3}`},
+			}
+			return &types.GenerateResult{ToolCalls: toolCalls, FinishReason: types.FinishReasonToolCalls}, nil
+		},
+	}
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		Prompt:   "p",
+		StopWhen: []StopCondition{func(StopConditionState) string { return "" }},
+		Tools: []types.Tool{{
+			Name:       "a",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"x": map[string]interface{}{"type": "number"}}},
+			Execute: func(_ context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+				return input["x"], nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, part := range result.Steps[0].Content {
+		switch p := part.(type) {
+		case types.ToolCallContent:
+			got = append(got, "tool-call:"+p.ToolCallID)
+		case types.ToolResultContent:
+			got = append(got, "tool-result:"+p.ToolCallID)
+		case types.ToolErrorContent:
+			got = append(got, "tool-error:"+p.ToolCallID)
+		default:
+			got = append(got, "other")
+		}
+	}
+	want := []string{"tool-call:c1", "tool-call:c2", "tool-call:c3", "tool-error:c2", "tool-result:c1", "tool-result:c3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("content = %v, want %v", got, want)
+	}
+	var toolMessage []string
+	for _, m := range result.Steps[0].ResponseMessages {
+		if m.Role != types.RoleTool {
+			continue
+		}
+		for _, part := range m.Content {
+			if p, ok := part.(types.ToolResultContent); ok {
+				toolMessage = append(toolMessage, p.ToolCallID)
+			}
+		}
+	}
+	if !reflect.DeepEqual(toolMessage, []string{"c1", "c2", "c3"}) {
+		t.Fatalf("tool message = %v", toolMessage)
+	}
 }

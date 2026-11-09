@@ -1827,7 +1827,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// reason that blocks execution) still records its approval
 			// request and response, as TS does.
 			attachToolApprovalSignatures(toolResults, opts.ExperimentalToolApprovalSecret)
-			contentResults := withApprovedUnexecutedCalls(toolResults, toolsToExecute, stepExecutionTools, preApprovals)
+			contentResults := invalidToolErrorsFirst(withApprovedUnexecutedCalls(toolResults, toolsToExecute, stepExecutionTools, preApprovals), toolsToExecute)
 			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, publicResults...)
@@ -2606,6 +2606,35 @@ func invalidClientToolCalls(calls []types.ToolCall) []types.ToolCall {
 		}
 	}
 	return out
+}
+
+// invalidToolErrorsFirst moves the tool errors of invalid client calls ahead
+// of the other results, each group keeping call order: TS generateText puts
+// them into clientToolOutputs before it executes the valid calls ("insert
+// error tool outputs for invalid tool calls", generate-text.ts 1486-1528),
+// so a step's content lists them first.
+func invalidToolErrorsFirst(results []types.ToolResult, calls []types.ToolCall) []types.ToolResult {
+	invalidCalls := map[string]bool{}
+	for _, call := range calls {
+		if call.Invalid && !call.ProviderExecuted {
+			invalidCalls[call.ID] = true
+		}
+	}
+	if len(invalidCalls) == 0 {
+		return results
+	}
+	var invalid, rest []types.ToolResult
+	for _, r := range results {
+		if invalidCalls[r.ToolCallID] && r.Error != nil {
+			invalid = append(invalid, r)
+		} else {
+			rest = append(rest, r)
+		}
+	}
+	if len(invalid) == 0 || len(rest) == 0 {
+		return results
+	}
+	return append(invalid, rest...)
 }
 
 // isClientToolCall reports whether a tool call is one the SDK must answer
