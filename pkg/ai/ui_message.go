@@ -545,31 +545,43 @@ func (p *TextUIPart) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	for i, c := range raw.Citations {
-		if err := validateUICitation(c); err != nil {
-			return fmt.Errorf("invalid citation at index %d: %w", i, err)
+	if len(raw.Citations) > 0 {
+		// The source's string fields are checked for presence on the raw
+		// JSON: a decoded "" and a missing key look the same.
+		var sources struct {
+			Citations []struct {
+				Source map[string]interface{} `json:"source"`
+			} `json:"citations"`
+		}
+		if err := json.Unmarshal(data, &sources); err != nil {
+			return err
+		}
+		for i, c := range raw.Citations {
+			if err := validateUICitation(c, sources.Citations[i].Source); err != nil {
+				return fmt.Errorf("invalid citation at index %d: %w", i, err)
+			}
 		}
 	}
 	*p = TextUIPart{Text: raw.Text, State: raw.State, Citations: raw.Citations, ProviderMetadata: raw.ProviderMetadata}
 	return nil
 }
 
-// validateUICitation mirrors the TS citationSchema: a url source requires id
-// and url, a document source requires id, mediaType and title, and offsets
-// must be non-negative.
-func validateUICitation(c types.Citation) error {
-	s := c.Source
-	switch s.SourceType {
+// validateUICitation mirrors the TS citationSchema: a url source has id and
+// url, a document source has id, mediaType and title, and offsets are
+// non-negative. Those source fields are z.string(), so an empty string is
+// valid (types/citation.ts); source is the citation's raw JSON source.
+func validateUICitation(c types.Citation, source map[string]interface{}) error {
+	switch c.Source.SourceType {
 	case "url":
-		if s.ID == "" || s.URL == "" {
+		if requireString(source, "id") != "" || requireString(source, "url") != "" {
 			return fmt.Errorf("url source requires id and url")
 		}
 	case "document":
-		if s.ID == "" || s.MediaType == "" || s.Title == "" {
+		if requireString(source, "id") != "" || requireString(source, "mediaType") != "" || requireString(source, "title") != "" {
 			return fmt.Errorf("document source requires id, mediaType and title")
 		}
 	default:
-		return fmt.Errorf("unsupported source type %q", s.SourceType)
+		return fmt.Errorf("unsupported source type %q", c.Source.SourceType)
 	}
 	if (c.StartIndex != nil && *c.StartIndex < 0) || (c.EndIndex != nil && *c.EndIndex < 0) {
 		return fmt.Errorf("startIndex and endIndex must be non-negative")
