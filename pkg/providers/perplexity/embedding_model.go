@@ -54,9 +54,10 @@ func (m *EmbeddingModel) SpecificationVersion() string {
 	return "v4"
 }
 
-// Provider returns the provider name.
+// Provider returns the provider ID, TS config.provider of
+// createEmbeddingModel ("perplexity.embedding").
 func (m *EmbeddingModel) Provider() string {
-	return "perplexity"
+	return "perplexity.embedding"
 }
 
 // ModelID returns the model ID.
@@ -147,13 +148,13 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}, &response)
 	if err != nil {
 		// TS failedResponseHandler: createJsonErrorResponseHandler(perplexityErrorSchema).
-		if pe, ok := perplexityStatusError(err, "perplexity"); ok {
+		if pe, ok := perplexityStatusError(err, m.Provider()); ok {
 			return nil, pe
 		}
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError("perplexity", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
 	embeddings := make([][]float64, len(response.Data))
