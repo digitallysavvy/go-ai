@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -400,11 +401,11 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 		// type such as a heartbeat, a missing field) is an APICallError
 		// "Failed to parse video SSE event".
 		if bad := providerutils.MediaSchemaParser(providerutils.SchemaGatewayVideoEvent)(http.StatusOK, nil, []byte(data)); bad != nil {
-			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, bad)
+			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, "", bad)
 		}
 		var event SSEVideoEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, err)
+			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, "", err)
 		}
 
 		if event.Type == "error" {
@@ -417,13 +418,15 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 			errBody, _ := json.Marshal(map[string]interface{}{
 				"error": map[string]interface{}{"message": event.Message, "type": event.ErrorType, "param": event.Param},
 			})
-			return nil, m.sseAPICallError(ctx, statusCode, event.Message, errBody, nil, event.ErrorType)
+			// TS responseBody: JSON.stringify(event), the parsed error event
+			// in its schema's key order.
+			return nil, m.sseAPICallError(ctx, statusCode, event.Message, errBody, gatewayVideoErrorEventText([]byte(data), event), nil, event.ErrorType)
 		}
 		return m.buildResponseFromSSEEvent(&event)
 	}
 
 	// Stream ended without a result or error event
-	return nil, m.sseAPICallError(ctx, http.StatusOK, "SSE stream ended without a data event", nil, nil)
+	return nil, m.sseAPICallError(ctx, http.StatusOK, "SSE stream ended without a data event", nil, "", nil)
 }
 
 // sseAPICallError converts a failure of the video SSE stream the way TS
@@ -432,7 +435,11 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 // error response, so an error event becomes the typed gateway error for its
 // errorType and anything malformed becomes a GatewayResponseError with the
 // HTTP status of the stream.
-func (m *VideoModel) sseAPICallError(ctx context.Context, statusCode int, message string, body []byte, cause error, errorType ...string) error {
+//
+// body is the error's data ({error: {message, type, param}}); responseBody,
+// when not empty, is the APICallError responseBody (TS JSON.stringify of
+// the error event), else body.
+func (m *VideoModel) sseAPICallError(ctx context.Context, statusCode int, message string, body []byte, responseBody string, cause error, errorType ...string) error {
 	authMethod := m.provider.requestAuthMethod(ctx)
 	apiErr := &providererrors.ProviderError{Provider: "gateway", StatusCode: statusCode, Message: message}
 	if len(errorType) > 0 {
@@ -441,6 +448,9 @@ func (m *VideoModel) sseAPICallError(ctx context.Context, statusCode int, messag
 	if len(body) > 0 {
 		apiErr.ResponseBody = string(body)
 		apiErr.Data = gatewayErrorData(body)
+	}
+	if responseBody != "" {
+		apiErr.ResponseBody = responseBody
 	}
 	if cause != nil {
 		apiErr.Cause = cause
@@ -581,4 +591,25 @@ func (m *VideoModel) handleErrorWithContext(ctx context.Context, err error) erro
 	}
 
 	return m.provider.gatewayUnknownError(err)
+}
+
+// gatewayVideoErrorEventText is TS JSON.stringify(event) for a parsed video
+// SSE error event: the keys of gatewayVideoEventSchema's error variant in
+// schema order (type, message, errorType, statusCode, param), param as
+// received (left out when absent).
+func gatewayVideoErrorEventText(data []byte, event SSEVideoEvent) string {
+	out := jsonorder.New()
+	out.Set("type", "error")
+	out.Set("message", event.Message)
+	out.Set("errorType", event.ErrorType)
+	parsed, _ := jsonorder.Parse(data)
+	if obj, ok := parsed.(*jsonorder.Object); ok {
+		if v, ok := obj.Get("statusCode"); ok {
+			out.Set("statusCode", v)
+		}
+		if v, ok := obj.Get("param"); ok {
+			out.Set("param", v)
+		}
+	}
+	return jsonorder.Stringify(out)
 }
