@@ -196,3 +196,37 @@ func TestR90provaTemperatureWarningNumberFormat(t *testing.T) {
 		}
 	}
 }
+
+// TS doGenerate pushes one text part per text block (recorded at 9f7a842ae1):
+// two text blocks are two parts, and a single empty text block is a part
+// with "" (result.Text alone cannot carry either).
+func TestR90provaTextBlocksAreSeparateParts(t *testing.T) {
+	for body, want := range map[string][]string{
+		`{"type":"message","id":"m","model":"x","content":[{"type":"text","text":"Hello"},{"type":"text","text":" x "}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`: {"Hello", " x "},
+		`{"type":"message","id":"m","model":"x","content":[{"type":"text","text":""}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`:                                   {""},
+	} {
+		s := r88provaNewServer(t, body, nil)
+		res, err := r88provaModel(t, s, "claude-sonnet-4-6").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, p := range res.Content {
+			if tc, ok := p.(types.TextContent); ok {
+				got = append(got, tc.Text)
+			}
+		}
+		if len(got) != len(want) || len(res.Content) != len(want) {
+			t.Errorf("content = %#v, want text parts %q", res.Content, want)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("content = %q, want %q", got, want)
+			}
+		}
+		if res.Text != strings.Join(want, "") {
+			t.Errorf("text = %q", res.Text)
+		}
+	}
+}
