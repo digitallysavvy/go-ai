@@ -511,7 +511,9 @@ func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateIm
 			if errors.As(err, &dlErr) && dlErr.StatusCode >= 400 {
 				return nil, replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 			}
-			return nil, fmt.Errorf("failed to download image: %w", err)
+			// TS getFromApi lets any other failure (a URL rejected by
+			// validateUrl, an abort) propagate unchanged.
+			return nil, err
 		}
 		images = append(images, data)
 		if mimeType == "" {
