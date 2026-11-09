@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // MCPEventCallbackKey is the query parameter that routes a webhook delivery
@@ -52,17 +53,22 @@ func (e *MCPEvents) getSubscription(ctx context.Context, ref MCPEventSubscriptio
 }
 
 func (e *MCPEvents) subscribe(ctx context.Context, sub MCPEventSubscription) (*SubscribeEventResult, error) {
-	params := map[string]interface{}{
-		"name":      sub.Name,
-		"arguments": sub.Arguments,
-		"delivery":  sub.Delivery,
-		"cursor":    sub.Cursor,
+	// TS params {name, arguments, delivery, cursor, ttlMs?, maxAgeMs?} in
+	// that key order.
+	params := providerutils.OrderedMap{
+		Keys: []string{"name", "arguments", "delivery", "cursor", "ttlMs", "maxAgeMs"},
+		Vals: map[string]interface{}{
+			"name":      sub.Name,
+			"arguments": sub.Arguments,
+			"delivery":  sub.Delivery,
+			"cursor":    sub.Cursor,
+		},
 	}
 	if sub.TTLMs.Set {
-		params["ttlMs"] = sub.TTLMs
+		params.Vals["ttlMs"] = sub.TTLMs
 	}
 	if sub.MaxAgeMs != nil {
-		params["maxAgeMs"] = *sub.MaxAgeMs
+		params.Vals["maxAgeMs"] = *sub.MaxAgeMs
 	}
 	var result SubscribeEventResult
 	if err := e.call(ctx, "events/subscribe", params, &result); err != nil {
@@ -257,10 +263,13 @@ func (e *MCPEvents) Unsubscribe(ctx context.Context, ref MCPEventSubscriptionRef
 	if err != nil {
 		return err
 	}
-	params := map[string]interface{}{
-		"name":      sub.Name,
-		"arguments": sub.Arguments,
-		"delivery":  MCPEventDeliveryInfo{Mode: MCPEventDeliveryWebhook, URL: sub.Delivery.URL},
+	params := providerutils.OrderedMap{
+		Keys: []string{"name", "arguments", "delivery"},
+		Vals: map[string]interface{}{
+			"name":      sub.Name,
+			"arguments": sub.Arguments,
+			"delivery":  MCPEventDeliveryInfo{Mode: MCPEventDeliveryWebhook, URL: sub.Delivery.URL},
+		},
 	}
 	if err := e.call(ctx, "events/unsubscribe", params, nil); err != nil {
 		return err

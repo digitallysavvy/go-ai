@@ -65,3 +65,41 @@ func TestR90toolsMCPEventCallbackURLIsWHATWGHref(t *testing.T) {
 		t.Errorf("invalid url error = %v", err)
 	}
 }
+
+// TS createMCPEvents (mcp-events.ts 61-75, 205-212) sends params
+// {name, arguments, delivery, cursor, ttlMs?, maxAgeMs?} and
+// {name, arguments, delivery} in that key order; Go sorted map keys.
+func TestR90toolsMCPEventParamsKeyOrder(t *testing.T) {
+	store := newMemEventStore()
+	tr := newEventsTransport()
+	client := connectEventsClient(t, tr, &MCPEventsConfig{Store: store})
+	ev := client.ExperimentalEvents()
+	maxAge := int64(5)
+	o := subOpts
+	o.MaxAgeMs = &maxAge
+	if _, err := ev.Subscribe(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	raw := func(method string) string {
+		tr.mu.Lock()
+		defer tr.mu.Unlock()
+		for i := len(tr.requests) - 1; i >= 0; i-- {
+			if tr.requests[i].Method == method {
+				return string(tr.requests[i].Params)
+			}
+		}
+		return ""
+	}
+	sub := raw("events/subscribe")
+	for i, key := range []string{`"name"`, `"arguments"`, `"delivery"`, `"cursor"`, `"maxAgeMs"`} {
+		if j := strings.Index(sub, key); j < 0 || (i > 0 && j < strings.Index(sub, []string{`"name"`, `"arguments"`, `"delivery"`, `"cursor"`}[i-1])) {
+			t.Fatalf("subscribe params out of order: %s", sub)
+		}
+	}
+	if err := ev.Unsubscribe(context.Background(), MCPEventSubscriptionRef{ID: "sub_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if unsub := raw("events/unsubscribe"); !strings.HasPrefix(unsub, `{"name":`) || strings.Index(unsub, `"arguments"`) > strings.Index(unsub, `"delivery"`) {
+		t.Fatalf("unsubscribe params out of order: %s", unsub)
+	}
+}
