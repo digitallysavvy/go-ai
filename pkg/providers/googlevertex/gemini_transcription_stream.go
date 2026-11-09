@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -454,17 +455,23 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				continue
 			}
 
-			var message geminiLiveServerMessage
-			if jsonErr := json.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
+			// TS safeParseJSON: any message that parses (prototype keys
+			// rejected) is reported raw, even when a field does not fit the
+			// expected shape; the known fields are read after that.
+			var rawValue interface{}
+			if jsonErr := securejson.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
+			}
+
+			var message geminiLiveServerMessage
+			if jsonErr := json.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
+				continue
 			}
 
 			if len(message.SetupComplete) > 0 && string(message.SetupComplete) != "null" {

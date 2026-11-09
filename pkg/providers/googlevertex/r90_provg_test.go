@@ -184,3 +184,35 @@ func TestR90provgVideoNoVideosErrorText(t *testing.T) {
 		t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
 	}
 }
+
+// TestR90provgLiveRawChunkForMismatchedMessage: TS onMessageText reports
+// every safeParseJSON-parsed message raw before reading fields, so a message
+// whose fields do not fit the expected shape still yields a raw part, while a
+// message with a forbidden prototype key does not parse at all.
+func TestR90provgLiveRawChunkForMismatchedMessage(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	model := newLiveTestModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		IncludeRawChunks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	if part, err := result.Stream.Next(); err != nil || part.Type != provider.TranscriptionStreamPartTypeStreamStart {
+		t.Fatalf("first part = %+v, %v", part, err)
+	}
+	server.toSend <- map[string]interface{}{"__proto__": map[string]interface{}{}}
+	server.toSend <- map[string]interface{}{"serverContent": "x"}
+	part, err := result.Stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := part.RawValue.(map[string]interface{})
+	if part.Type != provider.TranscriptionStreamPartTypeRaw || raw["serverContent"] != "x" {
+		t.Fatalf("part = %+v, want the raw serverContent message", part)
+	}
+}
