@@ -72,6 +72,24 @@ type TakoSearchConfig struct {
 	OutputSettings *TakoSearchOutputSettings
 	// IncludeRelated is the maximum related search suggestions to include (1-20).
 	IncludeRelated *int
+	// VariableCost serves per-unit-priced data, such as web traffic and SEO.
+	// Each such card adds a charge, capped by MaxVariableCostUSD. On by
+	// default (nil); set false to opt out, and those cards come back as
+	// placeholders.
+	VariableCost *bool
+	// MaxVariableCostUSD is the most one call can be charged in variable
+	// cost, in USD. Nil leaves the Tako default (0.25). Cards that don't fit
+	// come back as placeholders with reason "over_cap". Can't be combined
+	// with VariableCost false.
+	MaxVariableCostUSD *float64
+	// NoMaxVariableCost sends maxVariableCostUsd as null, which removes the
+	// cap (TS `maxVariableCostUsd: null`). MaxVariableCostUSD wins when both
+	// are set.
+	NoMaxVariableCost bool
+	// ExtraBody holds extra Tako request fields in snake_case, deep-merged
+	// into the body last. It can't set fields this tool models; Tako rejects
+	// unknown keys (api_error).
+	ExtraBody map[string]interface{}
 }
 
 // TakoSearchTool is the gateway.tako_search provider-defined tool.
@@ -253,9 +271,12 @@ func takoWebSourceSchema() map[string]interface{} {
 }
 
 // takoSearchOutputSchema mirrors takoSearchOutputSchema in tako-search.ts.
-// TS parity (5533946): the internal-only relevance_score and
-// citation_number fields were dropped from the public output schema; they
-// must never appear here even as passthrough hints.
+// TS parity (5533946, 0e869b40fa): citation_number is not in the public
+// output schema; relevance_score is again (TS 0e869b40fa), with the
+// variable-cost fields (premium_rows, redacted_cells, total_matching,
+// export_pricing premium_row_cpm_usd / variable_cost_max_usd, placeholder,
+// usage data_points / variable_cost). free_rows is no longer declared; it is
+// still accepted as an additive field of the passthrough export_pricing.
 // takoSearchOutputSchemaJSON is the TS output schema (packages/gateway/src/tool/tako-search.ts) as zod's
 // toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
 // tool outputs against it, so nullable fields are anyOf [T, null] and the
@@ -483,6 +504,16 @@ var takoSearchOutputSchemaJSON = `{
 											"Low",
 											"Medium"
 										]
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"relevance_score": {
+								"anyOf": [
+									{
+										"type": "number"
 									},
 									{
 										"type": "null"
@@ -734,6 +765,51 @@ var takoSearchOutputSchemaJSON = `{
 											"truncated": {
 												"type": "boolean"
 											},
+											"premium_rows": {
+												"anyOf": [
+													{
+														"type": "object",
+														"propertyNames": {
+															"type": "string"
+														},
+														"additionalProperties": {
+															"type": "number"
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"redacted_cells": {
+												"anyOf": [
+													{
+														"type": "object",
+														"propertyNames": {
+															"type": "string"
+														},
+														"additionalProperties": {
+															"type": "array",
+															"items": {
+																"type": "number"
+															}
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"total_matching": {
+												"anyOf": [
+													{
+														"type": "number"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
 											"export_pricing": {
 												"anyOf": [
 													{
@@ -742,22 +818,45 @@ var takoSearchOutputSchemaJSON = `{
 															"baseline_usd": {
 																"type": "number"
 															},
-															"free_rows": {
-																"type": "number"
-															},
 															"max_rows_ceiling": {
 																"type": "number"
 															},
 															"row_cpm_usd": {
 																"type": "number"
+															},
+															"premium_row_cpm_usd": {
+																"anyOf": [
+																	{
+																		"type": "object",
+																		"propertyNames": {
+																			"type": "string"
+																		},
+																		"additionalProperties": {
+																			"type": "number"
+																		}
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															},
+															"variable_cost_max_usd": {
+																"anyOf": [
+																	{
+																		"type": "number"
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
 															}
 														},
 														"required": [
 															"baseline_usd",
-															"free_rows",
 															"max_rows_ceiling",
 															"row_cpm_usd"
-														]
+														],
+														"additionalProperties": {}
 													},
 													{
 														"type": "null"
@@ -951,6 +1050,39 @@ var takoSearchOutputSchemaJSON = `{
 												]
 											}
 										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"placeholder": {
+								"anyOf": [
+									{
+										"type": "object",
+										"properties": {
+											"withheld_source": {
+												"type": "string"
+											},
+											"reason": {
+												"anyOf": [
+													{
+														"type": "string",
+														"enum": [
+															"not_served",
+															"over_cap"
+														]
+													},
+													{
+														"type": "null"
+													}
+												]
+											}
+										},
+										"required": [
+											"withheld_source"
+										],
+										"additionalProperties": {}
 									},
 									{
 										"type": "null"
@@ -1247,6 +1379,51 @@ var takoSearchOutputSchemaJSON = `{
 											"truncated": {
 												"type": "boolean"
 											},
+											"premium_rows": {
+												"anyOf": [
+													{
+														"type": "object",
+														"propertyNames": {
+															"type": "string"
+														},
+														"additionalProperties": {
+															"type": "number"
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"redacted_cells": {
+												"anyOf": [
+													{
+														"type": "object",
+														"propertyNames": {
+															"type": "string"
+														},
+														"additionalProperties": {
+															"type": "array",
+															"items": {
+																"type": "number"
+															}
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"total_matching": {
+												"anyOf": [
+													{
+														"type": "number"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
 											"export_pricing": {
 												"anyOf": [
 													{
@@ -1255,22 +1432,45 @@ var takoSearchOutputSchemaJSON = `{
 															"baseline_usd": {
 																"type": "number"
 															},
-															"free_rows": {
-																"type": "number"
-															},
 															"max_rows_ceiling": {
 																"type": "number"
 															},
 															"row_cpm_usd": {
 																"type": "number"
+															},
+															"premium_row_cpm_usd": {
+																"anyOf": [
+																	{
+																		"type": "object",
+																		"propertyNames": {
+																			"type": "string"
+																		},
+																		"additionalProperties": {
+																			"type": "number"
+																		}
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															},
+															"variable_cost_max_usd": {
+																"anyOf": [
+																	{
+																		"type": "number"
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
 															}
 														},
 														"required": [
 															"baseline_usd",
-															"free_rows",
 															"max_rows_ceiling",
 															"row_cpm_usd"
-														]
+														],
+														"additionalProperties": {}
 													},
 													{
 														"type": "null"
@@ -1384,7 +1584,8 @@ var takoSearchOutputSchemaJSON = `{
 											},
 											"required": [
 												"cost_usd"
-											]
+											],
+											"additionalProperties": {}
 										},
 										{
 											"type": "null"
@@ -1401,12 +1602,42 @@ var takoSearchOutputSchemaJSON = `{
 												},
 												"datasets": {
 													"type": "number"
+												},
+												"data_points": {
+													"anyOf": [
+														{
+															"type": "number"
+														},
+														{
+															"type": "null"
+														}
+													]
 												}
 											},
 											"required": [
 												"cost_usd",
 												"datasets"
-											]
+											],
+											"additionalProperties": {}
+										},
+										{
+											"type": "null"
+										}
+									]
+								},
+								"variable_cost": {
+									"anyOf": [
+										{
+											"type": "object",
+											"properties": {
+												"cost_usd": {
+													"type": "number"
+												}
+											},
+											"required": [
+												"cost_usd"
+											],
+											"additionalProperties": {}
 										},
 										{
 											"type": "null"
@@ -1416,7 +1647,8 @@ var takoSearchOutputSchemaJSON = `{
 							},
 							"required": [
 								"total_cost_usd"
-							]
+							],
+							"additionalProperties": {}
 						},
 						{
 							"type": "null"
@@ -1494,6 +1726,19 @@ func takoSearchArgs(config TakoSearchConfig) map[string]interface{} {
 	}
 	if config.IncludeRelated != nil {
 		args["includeRelated"] = *config.IncludeRelated
+	}
+	// TS 0e869b40fa: developer-only configuration, passed through as
+	// camelCase args (never in the input schema).
+	if config.VariableCost != nil {
+		args["variableCost"] = *config.VariableCost
+	}
+	if config.MaxVariableCostUSD != nil {
+		args["maxVariableCostUsd"] = *config.MaxVariableCostUSD
+	} else if config.NoMaxVariableCost {
+		args["maxVariableCostUsd"] = nil
+	}
+	if config.ExtraBody != nil {
+		args["extraBody"] = config.ExtraBody
 	}
 	return args
 }

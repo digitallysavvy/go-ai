@@ -68,18 +68,17 @@ func TestTakoSearchInputSchemaDescribesDataSurchargeControls(t *testing.T) {
 	}
 }
 
-// TestTakoSearchOutputSchemaOmitsInternalFields mirrors the TS test "does not
-// declare internal response fields in the output schema" (5533946): the
-// internal-only relevance_score and citation_number fields must never appear
-// in the public output schema.
+// TestTakoSearchOutputSchemaOmitsInternalFields mirrors the TS test "declares
+// relevance_score but not citation_number in the output schema" (5533946,
+// 0e869b40fa).
 func TestTakoSearchOutputSchemaOmitsInternalFields(t *testing.T) {
 	tool := NewTakoSearch(TakoSearchConfig{}).ToTool()
 	serialized, err := json.Marshal(tool.OutputSchema)
 	if err != nil {
 		t.Fatalf("marshal output schema: %v", err)
 	}
-	if strings.Contains(string(serialized), "relevance_score") {
-		t.Fatalf("output schema must not contain relevance_score: %s", serialized)
+	if !strings.Contains(string(serialized), "relevance_score") {
+		t.Fatalf("output schema must contain relevance_score: %s", serialized)
 	}
 	if strings.Contains(string(serialized), "citation_number") {
 		t.Fatalf("output schema must not contain citation_number: %s", serialized)
