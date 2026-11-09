@@ -259,7 +259,9 @@ func (p *MaaSProvider) init() error {
 		NoAPIKey:         true,
 		BaseURL:          baseURL,
 		HTTPClient:       httpClient,
-		ChatProviderName: "vertex.maas",
+		// TS createOpenAICompatible({name: 'vertex.maas'}) chat models report
+		// `${name}.chat`.
+		ChatProviderName: "vertex.maas.chat",
 		AllowVideo:       true,
 		OpenAICompatible: true,
 		// createOpenAICompatible without errorStructure: the default one.

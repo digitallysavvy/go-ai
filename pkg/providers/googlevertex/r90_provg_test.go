@@ -125,3 +125,21 @@ func TestR90provgMaaSAPIOriginImageGetsCredentials(t *testing.T) {
 		t.Fatalf("download Authorization = %q, want the MaaS token", h.Get("Authorization"))
 	}
 }
+
+// TestR90provgMaaSProviderIDs: TS createGoogleVertexMaas builds on
+// createOpenAICompatible({name: 'vertex.maas'}), whose models report
+// `${name}.${modelType}` (openai-compatible-provider.ts).
+func TestR90provgMaaSProviderIDs(t *testing.T) {
+	p := NewMaaS(MaaSConfig{BaseURL: "https://example.com/v1", AuthToken: func(context.Context) (string, error) { return "t", nil }})
+	lm, _ := p.LanguageModel("m")
+	cm, _ := p.CompletionModel("m")
+	em, _ := p.EmbeddingModel("m")
+	im, _ := p.ImageModel("m")
+	got := []string{lm.Provider(), cm.Provider(), em.Provider(), im.Provider()}
+	want := []string{"vertex.maas.chat", "vertex.maas.completion", "vertex.maas.embedding", "vertex.maas.image"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("provider %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
