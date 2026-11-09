@@ -107,3 +107,19 @@ func r89provgCheckProviderError(t *testing.T, err error, body, message, code str
 		t.Fatal("429 must be retryable")
 	}
 }
+
+// TS convert-groq-usage.ts: input details are total, noCache and cacheRead
+// only; prompt_tokens_details.text_tokens / image_tokens are not read.
+func TestR89provgGroqUsageIgnoresTextImageDetails(t *testing.T) {
+	var u groqUsage
+	if err := u.UnmarshalJSON([]byte(`{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":4,"text_tokens":6,"image_tokens":3}}`)); err != nil {
+		t.Fatal(err)
+	}
+	got := convertGroqUsage(u)
+	if got.InputDetails == nil || got.InputDetails.TextTokens != nil || got.InputDetails.ImageTokens != nil {
+		t.Fatalf("input details = %+v", got.InputDetails)
+	}
+	if *got.InputDetails.CacheReadTokens != 4 || *got.InputDetails.NoCacheTokens != 6 {
+		t.Fatalf("input details = %+v", got.InputDetails)
+	}
+}

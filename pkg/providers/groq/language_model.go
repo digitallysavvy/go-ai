@@ -406,21 +406,12 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 	// wire omits them (a reported 0 stays 0), noCache subtracts only a
 	// reported cache count, and text is the full completion count unless
 	// reasoning tokens were reported.
+	// TS groq usage schema reads only prompt_tokens_details.cached_tokens
+	// (text / image token details are stripped).
 	var cacheRead *int64
-	var textTokens, imageTokens *int64
-	if usage.PromptTokensDetails != nil {
-		if usage.PromptTokensDetails.CachedTokens != nil {
-			v := int64(*usage.PromptTokensDetails.CachedTokens)
-			cacheRead = &v
-		}
-		if usage.PromptTokensDetails.TextTokens != nil {
-			textVal := int64(*usage.PromptTokensDetails.TextTokens)
-			textTokens = &textVal
-		}
-		if usage.PromptTokensDetails.ImageTokens != nil {
-			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
-			imageTokens = &imageVal
-		}
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+		v := int64(*usage.PromptTokensDetails.CachedTokens)
+		cacheRead = &v
 	}
 	noCacheTokens := promptTokens
 	if cacheRead != nil {
@@ -430,8 +421,6 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 		NoCacheTokens:    &noCacheTokens,
 		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: nil,
-		TextTokens:       textTokens,
-		ImageTokens:      imageTokens,
 	}
 
 	var reasoning *int64
