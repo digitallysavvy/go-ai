@@ -56,6 +56,41 @@ func transformRequestHeaders(headers map[string]string, providerOptions map[stri
 	return out, nil
 }
 
+// generatedLabelsHeader marks a labels header generated from
+// providerOptions.vertex.labels, so the auth transport can let a labels
+// header from HeadersResolver (a provider header in TS) replace it while a
+// call header keeps winning. The transport removes it before sending.
+const generatedLabelsHeader = "X-Go-Ai-Generated-Vertex-Labels"
+
+// transformRequestHeadersWith is transformRequestHeaders with the provider's
+// static headers: TS transformRequestHeaders sees the provider headers
+// combined with the call headers, so a configured labels header also keeps
+// the generated one out (the labels are still validated first).
+func transformRequestHeadersWith(static map[string]string) func(map[string]string, map[string]interface{}) (map[string]string, error) {
+	return func(headers map[string]string, providerOptions map[string]interface{}) (map[string]string, error) {
+		out, err := transformRequestHeaders(headers, providerOptions)
+		if err != nil {
+			return nil, err
+		}
+		_, generated := out[LabelsHeader]
+		for name := range headers {
+			if strings.EqualFold(name, LabelsHeader) {
+				generated = false
+			}
+		}
+		if !generated {
+			return out, nil
+		}
+		for name := range static {
+			if strings.EqualFold(name, LabelsHeader) {
+				return headers, nil
+			}
+		}
+		out[generatedLabelsHeader] = "1"
+		return out, nil
+	}
+}
+
 func parseLabels(raw interface{}) (map[string]string, error) {
 	switch v := raw.(type) {
 	case map[string]string:

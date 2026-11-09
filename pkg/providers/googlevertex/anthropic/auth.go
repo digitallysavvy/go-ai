@@ -36,10 +36,12 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
-	if !providerutils.IsSameOrigin(req.URL.String(), t.baseURL) {
-		return t.base.RoundTrip(req)
-	}
 	clone := req.Clone(req.Context())
+	_, generatedLabels := clone.Header[http.CanonicalHeaderKey(generatedLabelsHeader)]
+	clone.Header.Del(generatedLabelsHeader)
+	if !providerutils.IsSameOrigin(req.URL.String(), t.baseURL) {
+		return t.base.RoundTrip(clone)
+	}
 	token, err := t.tokenFunc(req.Context())
 	if err != nil {
 		return nil, internalhttp.RejectFetch(err)
@@ -71,9 +73,8 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 		}
 		// A configured labels header beats the one generated from
 		// providerOptions.vertex.labels (TS transformRequestHeaders sees the
-		// config headers); the request cannot tell a call header from the
-		// generated one, so the configured value is used.
-		if _, present := clone.Header[k]; !present || strings.EqualFold(k, LabelsHeader) {
+		// provider headers), but not a call header.
+		if _, present := clone.Header[k]; !present || (generatedLabels && strings.EqualFold(k, LabelsHeader)) {
 			clone.Header.Set(k, vs[0])
 		}
 	}
