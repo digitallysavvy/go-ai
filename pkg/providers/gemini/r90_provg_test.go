@@ -1,9 +1,12 @@
 package gemini
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func r90provgStr(s string) *string   { return &s }
@@ -116,5 +119,42 @@ func TestR90provgSanitizeNullDefs(t *testing.T) {
 	}
 	if want := `{"type":"object","$defs":null,"properties":{"a":{"enum":[1]}}}`; string(b) != want {
 		t.Fatalf("got %s, want %s", b, want)
+	}
+}
+
+// TestR90provgToolResultFullMediaType: TS isFullMediaType
+// (provider-utils detect-media-type.ts) only needs a non-empty subtype other
+// than "*" after the first slash, so "application/vnd.x/y" and "/png" are full
+// media types and keep their value over the downloaded blob type.
+func TestR90provgToolResultFullMediaType(t *testing.T) {
+	run := func(mediaType string) string {
+		m := &LanguageModel{cfg: Config{
+			ToolResultDownload: func(context.Context, string, int64) ([]byte, string, error) {
+				return []byte("not an image"), "text/plain", nil
+			},
+		}}
+		out, err := m.downloadToolResultFiles(context.Background(), []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "c", ToolName: "t",
+				Output: &types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+					types.FileContentBlock{URL: "https://example.com/f", MediaType: mediaType},
+				}},
+			}},
+		}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out[0].Content[0].(types.ToolResultContent).Output.Content[0].(types.FileContentBlock).MediaType
+	}
+	for mediaType, want := range map[string]string{
+		"application/vnd.x/y": "application/vnd.x/y",
+		"/png":                "/png",
+		"image/*":             "text/plain",
+		"image":               "text/plain",
+	} {
+		if got := run(mediaType); got != want {
+			t.Errorf("mediaType %q -> %q, want %q", mediaType, got, want)
+		}
 	}
 }

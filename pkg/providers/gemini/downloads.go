@@ -145,7 +145,7 @@ func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContent
 		mediaType := detectImageMediaType(data)
 		if mediaType == "" {
 			mediaType = fb.MediaType
-			if blob := blobMediaType(contentType); blob != "" && !isFullMediaType(fb.MediaType) {
+			if blob := blobMediaType(contentType); blob != "" && !fileutil.IsFullMediaType(fb.MediaType) {
 				mediaType = blob
 			}
 		}
@@ -163,11 +163,6 @@ func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContent
 		return blocks, false, nil
 	}
 	return out, true, nil
-}
-
-func isFullMediaType(mediaType string) bool {
-	parts := strings.Split(mediaType, "/")
-	return len(parts) == 2 && parts[0] != "" && parts[1] != "" && parts[1] != "*"
 }
 
 // detectImageMediaType mirrors TS detectMediaType({topLevelType:'image'}):
