@@ -122,31 +122,20 @@ func normalizeMFJSDefinition(definition interface{}, isRoot bool) (interface{}, 
 	}
 
 	// Existing prefixItems stay first (they are positional); a tuple `items`
-	// array is appended after them and converted to prefixItems.
+	// array is appended after them and converted to prefixItems. Children
+	// are normalized once, in the traversal below (TS c480f3f726).
 	items, _ := result.Get("items")
 	if tuple, ok := items.([]interface{}); ok {
 		var prefix []interface{}
 		if existing, ok := mfjsGet(result, "prefixItems").([]interface{}); ok {
 			prefix = append(prefix, existing...)
 		}
-		for _, item := range tuple {
-			normalized, err := normalizeMFJSDefinition(item, false)
-			if err != nil {
-				return nil, err
-			}
-			prefix = append(prefix, normalized)
-		}
+		prefix = append(prefix, tuple...)
 		if prefix == nil {
 			prefix = []interface{}{}
 		}
 		result.Set("prefixItems", prefix)
 		result.Delete("items")
-	} else if itemsObj, ok := items.(*jsonorder.Object); ok {
-		normalized, err := normalizeMFJSDefinition(itemsObj, false)
-		if err != nil {
-			return nil, err
-		}
-		result.Set("items", normalized)
 	}
 
 	// MFJS requires type to live inside anyOf items, except at the root, which
