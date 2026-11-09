@@ -254,3 +254,27 @@ func TestR90provbDecisionErrorSchema(t *testing.T) {
 		}
 	}
 }
+
+// TestR90provbDiarizedEmptySpeaker: TS keeps a diarized segment whose
+// speaker is "" (`'speaker' in segment` after the transcript.text.segment
+// union member) and never treats a whisper segment as diarized
+// (openai-transcription-model.ts, openai-transcription-api.ts).
+func TestR90provbDiarizedEmptySpeaker(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hi","segments":[{"type":"transcript.text.segment","id":"s1","text":"hi","start":0,"end":1,"speaker":""}]}`))
+	}))
+	defer srv.Close()
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "gpt-4o-transcribe-diarize")
+	result, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := r90provbJSONValue(t, result.ProviderMetadata)
+	want := map[string]interface{}{"openai": map[string]interface{}{"segments": []interface{}{
+		map[string]interface{}{"text": "hi", "startSecond": float64(0), "endSecond": float64(1), "speaker": ""},
+	}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("metadata = %v", got)
+	}
+}

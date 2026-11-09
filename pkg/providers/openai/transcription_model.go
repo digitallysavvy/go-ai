@@ -160,14 +160,16 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// (abb9ebf), matching TS's diarizedSegments.
 	var diarizedSegments []map[string]interface{}
 	for _, seg := range response.Segments {
-		if seg.Speaker == "" {
+		// TS `'speaker' in segment` after the schema union: only a
+		// transcript.text.segment keeps its speaker ("" included).
+		if seg.Speaker == nil || seg.Type != "transcript.text.segment" {
 			continue
 		}
 		diarizedSegments = append(diarizedSegments, map[string]interface{}{
 			"text":        seg.Text,
 			"startSecond": seg.Start,
 			"endSecond":   seg.End,
-			"speaker":     seg.Speaker,
+			"speaker":     *seg.Speaker,
 		})
 	}
 	if len(diarizedSegments) > 0 || response.Languages != nil {
@@ -575,7 +577,10 @@ type openaiTranscriptionResponse struct {
 		Text    string  `json:"text"`
 		Start   float64 `json:"start"`
 		End     float64 `json:"end"`
-		Speaker string  `json:"speaker,omitempty"`
+		// Type and Speaker identify a diarized segment (TS union member
+		// {type: 'transcript.text.segment', ..., speaker: string}).
+		Type    string  `json:"type,omitempty"`
+		Speaker *string `json:"speaker,omitempty"`
 	} `json:"segments"`
 	Words []struct {
 		Word  string  `json:"word"`
