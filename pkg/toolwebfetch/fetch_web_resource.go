@@ -1,9 +1,12 @@
 package toolwebfetch
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -47,12 +50,37 @@ type fetchResult struct {
 // requested, and repeating model-provided input in results lets the model
 // place arbitrary text into the conversation.
 
-// errnoName names a system error such as ENOTFOUND, which explains a network
-// failure without repeating the URL.
+// errnoName names the error code Node's fetch would report for a network
+// failure (TS formatErrorCode: the first cause with an uppercase code such as
+// ENOTFOUND), which explains it without repeating the URL. Go errors carry no
+// such codes, so the common ones are mapped: DNS (ENOTFOUND / EAI_AGAIN),
+// socket errnos, undici's connect timeout and closed socket, and the
+// OpenSSL certificate codes.
 func errnoName(err error) string {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
+		if dnsErr.IsTemporary || dnsErr.IsTimeout {
+			return "EAI_AGAIN"
+		}
 		return "ENOTFOUND"
+	}
+	var hostErr x509.HostnameError
+	if errors.As(err, &hostErr) {
+		return "ERR_TLS_CERT_ALTNAME_INVALID"
+	}
+	var invalidErr x509.CertificateInvalidError
+	if errors.As(err, &invalidErr) {
+		if invalidErr.Reason == x509.Expired {
+			return "CERT_HAS_EXPIRED"
+		}
+		return ""
+	}
+	var authorityErr x509.UnknownAuthorityError
+	if errors.As(err, &authorityErr) {
+		if c := authorityErr.Cert; c != nil && bytes.Equal(c.RawIssuer, c.RawSubject) {
+			return "DEPTH_ZERO_SELF_SIGNED_CERT"
+		}
+		return "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"
 	}
 	for _, e := range []struct {
 		errno syscall.Errno
@@ -60,6 +88,8 @@ func errnoName(err error) string {
 	}{
 		{syscall.ECONNREFUSED, "ECONNREFUSED"},
 		{syscall.ECONNRESET, "ECONNRESET"},
+		{syscall.ECONNABORTED, "ECONNABORTED"},
+		{syscall.EPIPE, "EPIPE"},
 		{syscall.ETIMEDOUT, "ETIMEDOUT"},
 		{syscall.EHOSTUNREACH, "EHOSTUNREACH"},
 		{syscall.ENETUNREACH, "ENETUNREACH"},
@@ -67,6 +97,15 @@ func errnoName(err error) string {
 		if errors.Is(err, e.errno) {
 			return e.name
 		}
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" && opErr.Timeout() {
+		return "UND_ERR_CONNECT_TIMEOUT"
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		// undici: a body cut short is TypeError('terminated') caused by a
+		// SocketError with code UND_ERR_SOCKET.
+		return "UND_ERR_SOCKET"
 	}
 	return ""
 }
