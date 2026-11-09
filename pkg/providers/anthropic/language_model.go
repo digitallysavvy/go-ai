@@ -162,6 +162,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		usedCustomProviderKey:    req.usedCustomProviderKey,
 		citationDocuments:        extractCitationDocuments(opts.Prompt.Messages),
 	})
+	// TS doGenerate returns response.body = rawValue: the parsed JSON with
+	// every key the API sent, not the schema-typed value.
+	result.RawResponse = providerutils.RawJSONBody(resp.Body)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	if result.ResponseMetadata == nil {
 		result.ResponseMetadata = &types.ResponseMetadata{ModelID: m.ModelID()}
