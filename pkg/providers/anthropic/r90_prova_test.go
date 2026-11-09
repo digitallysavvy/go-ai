@@ -164,3 +164,12 @@ func TestR90provaInvalidOptionsMessage(t *testing.T) {
 		t.Fatalf("err = %#v", err)
 	}
 }
+
+// TS has-circular-schema-reference.ts collectLocalRefs: a map keyword
+// (properties, patternProperties, dependentSchemas) whose value is not a
+// record is walked like any other value.
+func TestR90provaCircularRefUnderNonRecordMapKeyword(t *testing.T) {
+	if !hasCircularSchemaReference(map[string]interface{}{"properties": []interface{}{map[string]interface{}{"$ref": "#"}}}) {
+		t.Error("properties array with a $ref to the root: want circular")
+	}
+}
