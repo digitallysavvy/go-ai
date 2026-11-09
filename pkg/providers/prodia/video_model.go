@@ -143,9 +143,11 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		resp, err := m.prov.client.Do(ctx, internalhttp.Request{
 			Method:  "POST",
 			Path:    "/job",
-			Body:    body,
+			// TS postToApi content JSON.stringify(body): {type, config:
+			// {prompt, seed, resolution}} in that key order.
+			Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, prodiaJobBodyOrder)),
 			Query:   map[string]string{"price": "true"},
-			Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; video/mp4"}, opts.Headers),
+			Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Accept": "multipart/form-data; video/mp4", "Content-Type": "application/json"}),
 		})
 		if err != nil {
 			reqErr = internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged
