@@ -9,6 +9,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -296,41 +298,61 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 
 	go func() {
 		err := func() error {
-			if err := writer.WriteField("model", m.modelID); err != nil {
-				return err
-			}
-			if opts.Prompt != "" {
-				if err := writer.WriteField("prompt", opts.Prompt); err != nil {
+			// TS convertToFormData({model, prompt, image, mask, n, size,
+			// ...deepInfraOptions}, {useArrayBrackets: false}): fields in
+			// that order, an option with one of those names replaces it in
+			// place, null/undefined values are skipped, and an array is
+			// appended as repeated fields. Other option keys follow, sorted
+			// (a Go map keeps no insertion order).
+			options := deepInfraImageOptions(opts.ProviderOptions)
+			fixed := []string{"model", "prompt", "image", "mask", "n", "size"}
+			for _, key := range fixed {
+				if value, overridden := options[key]; overridden {
+					if err := writeDeepInfraFormValue(writer, key, value); err != nil {
+						return err
+					}
+					continue
+				}
+				var err error
+				switch key {
+				case "model":
+					err = writer.WriteField("model", m.modelID)
+				case "prompt":
+					if opts.Prompt != "" {
+						err = writer.WriteField("prompt", opts.Prompt)
+					}
+				case "image":
+					for _, file := range opts.Files {
+						if err = writeImageFilePart(ctx, writer, "image", "", file); err != nil {
+							break
+						}
+					}
+				case "mask":
+					if opts.Mask != nil {
+						err = writeImageFilePart(ctx, writer, "mask", "", *opts.Mask)
+					}
+				case "n":
+					if opts.N != nil {
+						err = writer.WriteField("n", strconv.Itoa(*opts.N))
+					}
+				case "size":
+					if opts.Size != "" {
+						err = writer.WriteField("size", opts.Size)
+					}
+				}
+				if err != nil {
 					return err
 				}
 			}
-			if opts.N != nil {
-				if err := writer.WriteField("n", strconv.Itoa(*opts.N)); err != nil {
-					return err
+			rest := make([]string, 0, len(options))
+			for key := range options {
+				if !slices.Contains(fixed, key) {
+					rest = append(rest, key)
 				}
 			}
-			if opts.Size != "" {
-				if err := writer.WriteField("size", opts.Size); err != nil {
-					return err
-				}
-			}
-			for key, value := range deepInfraImageOptions(opts.ProviderOptions) {
-				if value == nil {
-					continue // convertToFormData skips null/undefined values
-				}
-				if err := writer.WriteField(key, fmt.Sprintf("%v", value)); err != nil {
-					return err
-				}
-			}
-
-			// TS convertToFormData(..., { useArrayBrackets: false }): repeated "image".
-			for _, file := range opts.Files {
-				if err := writeImageFilePart(ctx, writer, "image", "", file); err != nil {
-					return err
-				}
-			}
-			if opts.Mask != nil {
-				if err := writeImageFilePart(ctx, writer, "mask", "", *opts.Mask); err != nil {
+			sort.Strings(rest)
+			for _, key := range rest {
+				if err := writeDeepInfraFormValue(writer, key, options[key]); err != nil {
 					return err
 				}
 			}
@@ -344,6 +366,43 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 	}()
 
 	return pr, writer.FormDataContentType(), nil
+}
+
+// writeDeepInfraFormValue appends a provider option like TS
+// convertToFormData: null is skipped, an array is appended element by
+// element under the same name, and other values use JS String(value).
+func writeDeepInfraFormValue(writer *multipart.Writer, key string, value interface{}) error {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		for _, item := range v {
+			if err := writer.WriteField(key, deepInfraFormString(item)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []string:
+		for _, item := range v {
+			if err := writer.WriteField(key, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return writer.WriteField(key, deepInfraFormString(value))
+}
+
+func deepInfraFormString(value interface{}) string {
+	switch v := value.(type) {
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case float32:
+		return providerutils.JSNumberString(float64(v))
+	}
+	return providerutils.JSString(value)
 }
 
 func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {

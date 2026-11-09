@@ -3,8 +3,10 @@ package deepinfra
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -61,5 +63,70 @@ func TestR89toolsDeepInfraImageErrorMessages(t *testing.T) {
 				t.Fatalf("message = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TS deepinfra-image-model.ts convertToFormData({model, prompt, image, mask,
+// n, size, ...deepInfraOptions}, {useArrayBrackets: false}): fixed field
+// order, an option named like a fixed field replaces it in place, null
+// options are skipped, arrays repeat the field, numbers use JS String().
+func TestR89toolsDeepInfraEditFormOrder(t *testing.T) {
+	type field struct{ name, value string }
+	var got []field
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mr, err := r.MultipartReader()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for {
+			part, err := mr.NextPart()
+			if err != nil {
+				break
+			}
+			b, _ := io.ReadAll(part)
+			v := string(b)
+			if part.FileName() != "" {
+				v = "<file>"
+			}
+			got = append(got, field{part.FormName(), v})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"AQID"}]}`))
+	}))
+	defer server.Close()
+	model, err := New(Config{APIKey: "k", BaseURL: server.URL + "/inference"}).ImageModel("stabilityai/sd3.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 1
+	mask := provider.ImageFile{Type: "file", Data: []byte{9}, MediaType: "image/png"}
+	_, err = model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "a cat",
+		N:      &n,
+		Size:   "512x512",
+		Files: []provider.ImageFile{
+			{Type: "file", Data: []byte{1}, MediaType: "image/png"},
+			{Type: "file", Data: []byte{2}, MediaType: "image/png"},
+		},
+		Mask: &mask,
+		ProviderOptions: map[string]interface{}{"deepinfra": map[string]interface{}{
+			"size":                "1024x1024",
+			"guidance_scale":      7.5,
+			"num_inference_steps": 30,
+			"negative_prompt":     nil,
+			"tags":                []interface{}{"a", "b"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []field{
+		{"model", "stabilityai/sd3.5"}, {"prompt", "a cat"}, {"image", "<file>"}, {"image", "<file>"},
+		{"mask", "<file>"}, {"n", "1"}, {"size", "1024x1024"},
+		{"guidance_scale", "7.5"}, {"num_inference_steps", "30"}, {"tags", "a"}, {"tags", "b"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("form fields = %v\nwant %v", got, want)
 	}
 }
