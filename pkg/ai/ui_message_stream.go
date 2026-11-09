@@ -879,21 +879,29 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				"part": metadataPart,
 			}
 		}
-		processMessageMetadata := func(part provider.StreamChunk) {
+		// messageMetadataChunk calls MessageMetadata for part and returns the
+		// message-metadata chunk to write for it, if any.
+		messageMetadataChunk := func(part provider.StreamChunk) UIMessageChunk {
 			// The start part's metadata was taken once, for the start chunk
 			// sent before the source is read: TS calls messageMetadata once per
 			// part, so the source's own start part does not call it again.
 			if options.MessageMetadata == nil || part.Type == provider.ChunkTypeStart {
-				return
+				return nil
 			}
 			input := messageMetadataInput(part, "")
 			partType, _ := input["type"].(string)
 			metadata := options.MessageMetadata(input)
 			if metadata != nil && partType != "start" && partType != "finish" {
-				processChunk(UIMessageChunk{
+				return UIMessageChunk{
 					"type":            "message-metadata",
 					"messageMetadata": metadata,
-				})
+				}
+			}
+			return nil
+		}
+		processMessageMetadata := func(part provider.StreamChunk) {
+			if metadataChunk := messageMetadataChunk(part); metadataChunk != nil {
+				processChunk(metadataChunk)
 			}
 		}
 
@@ -1354,11 +1362,16 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				skipStepBoundaryDup = true
 			}
 			if !skipStepBoundaryDup {
+				// TS calls messageMetadata for the part before toUIMessageChunk
+				// (which calls onError for error and tool-error parts).
+				metadataChunk := messageMetadataChunk(*chunk)
 				converted := toUIMessageChunks(chunkForConversion, options)
 				if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
 					// Apply step metadata before the finish-step boundary, so
 					// the OnStepEnd snapshot includes it (TS #22268).
-					processMessageMetadata(*chunk)
+					if metadataChunk != nil {
+						processChunk(metadataChunk)
+					}
 					for _, uiChunk := range converted {
 						processChunk(uiChunk)
 					}
@@ -1366,7 +1379,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					for _, uiChunk := range converted {
 						processChunk(uiChunk)
 					}
-					processMessageMetadata(*chunk)
+					if metadataChunk != nil {
+						processChunk(metadataChunk)
+					}
 				}
 			}
 		}
@@ -3824,10 +3839,13 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 		}
 		if chunk.ToolResult.Error != nil {
-			errorText := opts.OnError(chunk.ToolResult.Error)
-			if chunk.ToolResult.ProviderExecuted {
-				// TS: typeof error === 'string' ? error : JSON.stringify(error).
-				// A structured provider error travels in Result.
+			var errorText string
+			if !chunk.ToolResult.ProviderExecuted {
+				errorText = opts.OnError(chunk.ToolResult.Error)
+			} else {
+				// TS: typeof error === 'string' ? error : JSON.stringify(error),
+				// without calling onError. A structured provider error travels
+				// in Result.
 				errorText = chunk.ToolResult.Error.Error()
 				switch v := chunk.ToolResult.Result.(type) {
 				case nil:
