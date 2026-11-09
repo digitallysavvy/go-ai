@@ -142,8 +142,7 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 	if err := json.Unmarshal(data, &probe); err != nil || probe == nil {
 		return fmt.Errorf("ACP lifecycle state data must be an object.") //nolint:staticcheck // mirrors the TS zod object requirement
 	}
-	var identity string
-	if raw, ok := probe["agentIdentity"]; !ok || json.Unmarshal(raw, &identity) != nil {
+	if raw, ok := probe["agentIdentity"]; !ok || !isRawString(raw) {
 		return fmt.Errorf("ACP lifecycle state data: agentIdentity must be a string.") //nolint:staticcheck // mirrors the TS zod string requirement
 	}
 	// zod `.optional()` rejects an explicit null.
@@ -254,8 +253,7 @@ func validateStartConfigShape(raw json.RawMessage, key string, withPrompt bool) 
 	if v, ok := cfg["version"]; !ok || string(bytes.TrimSpace(v)) != "1" {
 		return fmt.Errorf("ACP lifecycle state data: %s.version must be 1.", key) //nolint:staticcheck // mirrors the TS zod literal
 	}
-	var fingerprint string
-	if v, ok := cfg["configurationFingerprint"]; !ok || json.Unmarshal(v, &fingerprint) != nil {
+	if v, ok := cfg["configurationFingerprint"]; !ok || !isRawString(v) {
 		return fmt.Errorf("ACP lifecycle state data: %s.configurationFingerprint must be a string.", key) //nolint:staticcheck // mirrors the TS zod string
 	}
 	var mode string
