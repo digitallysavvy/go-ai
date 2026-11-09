@@ -146,3 +146,20 @@ func TestR90provbFireworksPrepareRequest(t *testing.T) {
 		t.Fatalf("body %v warnings %#v", body, warnings)
 	}
 }
+
+// TestR90provbFireworksErrorCodeType: an error object whose code is neither
+// a string nor a number fails TS fireworksErrorSchema, so the message is the
+// status text (fireworks-provider.ts fireworksErrorSchema).
+func TestR90provbFireworksErrorCodeType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad things","code":true}}`))
+	}))
+	defer srv.Close()
+	lm, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+	_, err := lm.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: r90provbPrompt()})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "Bad Request" {
+		t.Fatalf("err = %v", err)
+	}
+}

@@ -50,10 +50,20 @@ func parseFireworksProviderError(err error) error {
 	// {"error": {"object","type","code","message"}}
 	var obj fireworksErrorObject
 	// TS fireworksErrorSchema: message is a required string ("" is valid).
-	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil {
+	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil || !fireworksValidCode(obj.Code) {
 		return nil
 	}
 	return providererrors.NewProviderErrorFromResponse("fireworks", 0, fireworksErrorCode(obj.Code), *obj.Message, err)
+}
+
+// fireworksValidCode is TS `code: z.union([z.string(), z.number()]).nullish()`.
+func fireworksValidCode(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return true
+	}
+	var s string
+	var n json.Number
+	return json.Unmarshal(raw, &s) == nil || json.Unmarshal(raw, &n) == nil
 }
 
 // fireworksErrorCode stringifies a code that may be a JSON string or number.
