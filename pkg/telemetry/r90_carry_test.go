@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -191,5 +192,25 @@ func TestR90carryDiagnosticEventRedacted(t *testing.T) {
 	}
 	if !strings.Contains(r90carryJSON(t, steps), secret) {
 		t.Error("caller steps mutated")
+	}
+}
+
+// Prepared tool definitions keep their type and key order when redacted.
+func TestR90carryRedactsOrderedToolDefinitions(t *testing.T) {
+	def := jsonorder.New()
+	def.Set("type", "provider")
+	def.Set("name", "docs")
+	def.Set("id", "openai.mcp")
+	def.Set("args", map[string]interface{}{"authorization": "ordered-secret"})
+	out := FilterEvent(LanguageModelCallStartEvent{Tools: []*jsonorder.Object{def}}, nil)
+	defs, ok := out.Tools.([]*jsonorder.Object)
+	if !ok || len(defs) != 1 {
+		t.Fatalf("tools = %T", out.Tools)
+	}
+	if got := r90carryJSON(t, defs[0]); got != `{"type":"provider","name":"docs","id":"openai.mcp","args":{"authorization":"[redacted]"}}` {
+		t.Errorf("def = %s", got)
+	}
+	if r90carryJSON(t, def) != `{"type":"provider","name":"docs","id":"openai.mcp","args":{"authorization":"ordered-secret"}}` {
+		t.Error("original mutated")
 	}
 }

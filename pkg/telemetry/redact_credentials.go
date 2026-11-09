@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -293,6 +294,22 @@ func redactToolsValue(f reflect.Value) (reflect.Value, bool) {
 			return f, false
 		}
 		return reflect.ValueOf(out).Convert(f.Type()), true
+	case []*jsonorder.Object:
+		// Prepared tool definitions (toolDefinitionsList takes them as
+		// given): keep the type and each definition's key order.
+		var out []*jsonorder.Object
+		for i, def := range tools {
+			if r, ok := redactOrderedToolDefinition(def); ok {
+				if out == nil {
+					out = append([]*jsonorder.Object(nil), tools...)
+				}
+				out[i] = r
+			}
+		}
+		if out == nil {
+			return f, false
+		}
+		return reflect.ValueOf(out).Convert(f.Type()), true
 	}
 	if list, ok := asToolList(f.Interface()); ok {
 		out, changed := redactToolDefinitions(list, false)
@@ -301,6 +318,32 @@ func redactToolsValue(f reflect.Value) (reflect.Value, bool) {
 		}
 	}
 	return f, false
+}
+
+// redactOrderedToolDefinition redacts the args of a prepared provider tool
+// definition ({type, name, id, args}) by its id, keeping the key order.
+func redactOrderedToolDefinition(def *jsonorder.Object) (*jsonorder.Object, bool) {
+	if def == nil {
+		return def, false
+	}
+	idValue, _ := def.Get("id")
+	id, _ := idValue.(string)
+	argsValue, _ := def.Get("args")
+	args, ok := asToolRecord(argsValue)
+	if id == "" || !ok {
+		return def, false
+	}
+	redacted, changed := redactProviderToolArgsChanged(id, args)
+	if !changed {
+		return def, false
+	}
+	out := jsonorder.New()
+	for _, k := range def.Keys() {
+		v, _ := def.Get(k)
+		out.Set(k, v)
+	}
+	out.Set("args", redacted)
+	return out, true
 }
 
 // redactTool redacts a provider tool's ProviderArgs by its provider ID, and
