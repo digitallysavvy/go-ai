@@ -5,7 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
 
 // TS vercel-sandbox-session.ts isFileNotFoundError: an error whose message
@@ -33,5 +37,27 @@ func TestR89toolsVercelReadFileNotFoundErrors(t *testing.T) {
 	s := NewSession(&Sandbox{client: NewAPIClient(srv.URL, Credentials{Token: "tok"}), sessionID: "sess"})
 	if data, err := s.ReadBinaryFile(context.Background(), "/x"); err == nil || data != nil {
 		t.Fatalf("500 read = %v, %v; want the error", data, err)
+	}
+}
+
+// TS vercel-legacy-sandbox-provider.ts: createVercelSandbox and the
+// provider constructor each console.warn a deprecation, and createSession /
+// resumeSession start with abortSignal?.throwIfAborted().
+func TestR89toolsVercelLegacyProviderWarningsAndAbort(t *testing.T) {
+	var warnings []string
+	prev := harnessutil.Warn
+	harnessutil.Warn = func(m string) { warnings = append(warnings, m) }
+	defer func() { harnessutil.Warn = prev }()
+	p := NewLegacyProvider(LegacySettings{Sandbox: &Sandbox{name: "sb"}})
+	if len(warnings) != 2 || !strings.HasPrefix(warnings[0], "createVercelSandbox is deprecated.") || !strings.HasPrefix(warnings[1], "VercelSandboxProvider is deprecated.") {
+		t.Fatalf("warnings = %q", warnings)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.CreateSession(ctx, harness.CreateSandboxSessionOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateSession err = %v", err)
+	}
+	if _, err := p.ResumeSession(ctx, "s"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResumeSession err = %v", err)
 	}
 }

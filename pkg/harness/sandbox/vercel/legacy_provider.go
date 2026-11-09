@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
 
 // LegacySettings configures LegacyProvider. Two mutually-exclusive shapes,
@@ -91,7 +92,12 @@ var (
 
 // NewLegacyProvider constructs a deprecated sandbox provider backed by
 // settings. Mirrors TS `createVercelSandbox`/`VercelSandboxProvider`.
+//
+// Like TS (createVercelSandbox, then the VercelSandboxProvider constructor),
+// it reports both deprecation warnings through harnessutil.Warn.
 func NewLegacyProvider(settings LegacySettings) *LegacyProvider {
+	harnessutil.Warn("createVercelSandbox is deprecated. Use createVercelNetworkSandboxSession and HarnessAgent.createSession({ sandboxSession }) instead.")
+	harnessutil.Warn("VercelSandboxProvider is deprecated. Use createVercelNetworkSandboxSession instead.")
 	return &LegacyProvider{settings: settings}
 }
 
@@ -105,6 +111,9 @@ func (p *LegacyProvider) ProviderID() string { return vercelProviderID }
 // snapshot) a network sandbox session. Mirrors TS
 // `VercelSandboxProvider.createSession`.
 func (p *LegacyProvider) CreateSession(ctx context.Context, opts harness.CreateSandboxSessionOptions) (harness.NetworkSandboxSession, error) {
+	if err := ctx.Err(); err != nil { // TS abortSignal?.throwIfAborted()
+		return nil, err
+	}
 	if p.settings.Sandbox != nil {
 		return NewNetworkSession(p.settings.Sandbox, false), nil
 	}
@@ -155,6 +164,9 @@ func (p *LegacyProvider) CreateSession(ctx context.Context, opts harness.CreateS
 // ResumeSession reattaches to the named session sandbox. Mirrors TS
 // `VercelSandboxProvider.resumeSession`.
 func (p *LegacyProvider) ResumeSession(ctx context.Context, sessionID string) (harness.NetworkSandboxSession, error) {
+	if err := ctx.Err(); err != nil { // TS abortSignal?.throwIfAborted()
+		return nil, err
+	}
 	if p.settings.Sandbox != nil {
 		return NewNetworkSession(p.settings.Sandbox, false), nil
 	}
