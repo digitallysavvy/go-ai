@@ -719,6 +719,51 @@ The Go AI SDK follows [OpenTelemetry Semantic Conventions for GenAI operations](
 - `gen_ai.usage.input_tokens`: Input token count
 - `gen_ai.usage.output_tokens`: Output token count
 
+### Formatting GenAI messages
+
+The helpers the OpenTelemetry integration uses to build the `gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.system_instructions` attributes are exported, so a custom integration can produce the same OTel GenAI semantic-convention shapes (TS `@ai-sdk/otel` exports the same helpers):
+
+- `telemetry.FormatInputMessages(prompt []types.Message) []telemetry.SemConvInputMessage`: a language model prompt, in order.
+- `telemetry.FormatModelMessages(telemetry.FormatModelMessagesOptions{Prompt, Messages})`: a string prompt (as a user message) followed by caller-facing messages. TS's array form of `prompt` maps to `Messages`.
+- `telemetry.FormatOutputMessages(telemetry.FormatOutputMessagesOptions{Text, Reasoning, ToolCalls, ToolResults, Files, FinishReason})`: one assistant message with reasoning, text, tool calls, tool results and files, in that order, and the SemConv finish reason.
+- `telemetry.FormatObjectOutputMessages(objectText, finishReason string)`: a generated object as one text part.
+- `telemetry.FormatSystemInstructions(system string)` and `telemetry.FormatSystemMessages(messages []types.Message)`: system instructions.
+
+Each result marshals with `encoding/json` to the TS key order.
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+)
+
+func main() {
+	input := telemetry.FormatInputMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}},
+	})
+	model := telemetry.FormatModelMessages(telemetry.FormatModelMessagesOptions{Prompt: "Hello"})
+	output := telemetry.FormatOutputMessages(telemetry.FormatOutputMessagesOptions{
+		Text:         "Hi",
+		FinishReason: "stop",
+	})
+	object := telemetry.FormatObjectOutputMessages(`{"ok":true}`, "stop")
+	system := telemetry.FormatSystemInstructions("Be helpful.")
+
+	for _, v := range []any{input, model, output, object, system} {
+		b, err := json.Marshal(v)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(string(b))
+	}
+}
+```
+
 ## See Also
 
 - [Error Handling](./50-error-handling.mdx)

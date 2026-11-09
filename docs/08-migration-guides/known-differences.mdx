@@ -300,6 +300,11 @@ calls, where TS `secureJsonParse` throws. In Go, `ToolCallContent.Input` is
 always the wire text, also for inputs that TS holds as objects and passes
 through without parsing, so throwing would reject inputs that TS accepts.
 
+This also covers JSON in model output that core parses: tool-call inputs,
+GenerateObject / StreamObject text, partial JSON and DecisionLanguageModel
+answers. TS parses these with `safeParseJSON` and treats such a key as
+invalid JSON (review round 89).
+
 Reason: S3: Go decoders build no prototypes.
 
 ## StreamText reads the provider stream without a reader
@@ -648,6 +653,57 @@ Grok Build's `PrepareSandbox` rewrites `config.toml` with go-toml, not `@iarna/t
 Recorded at TS `0f3a85f92d` (ai@7.0.165) and skipped because the replay cannot carry the test's setup, with the behavior covered by Go tests: the three Replicate cancel tests (the cancel is fire-and-forget on a goroutine and lands after the replayed call returns; TS waits with `vi.waitFor`; `TestR88provcReplicateCancelPrediction`); Gladia "stops before the first poll when the signal is already aborted" (the TS fetch ignores the aborted signal, so the upload succeeds; a Go call with a cancelled context fails at the upload); the two DeepInfra usage-calculation tests (the model is built with a custom `url()` and mock `fetch`); the Google stream-order case with an injected `generateId` (replayed with the id normalized by `TestR87provaStreamOrderMatchesTS`); the two Anthropic legacy `vertex` key cases (helper-built provider; `TestR88provaLegacyVertexKey`) and "should pass sanitized zod output schema as output_config.format" (the capture has no zod schema; the sanitizer is replayed by `sanitize_schema.json.gz`). The Topaz, fal and Prodia suites keep their earlier recordings: their tests download from public hosts, which the recorder could not reach (review round 88).
 
 Reason: S3 (the recordings cannot carry the JS test setup).
+
+## Decision language model: model version check
+`ai.NewDecisionLanguageModel` does not check the wrapped model's specification version. TS `DecisionLanguageModel` requires a v4 language model ("Decision requires a LanguageModelV4 implementation."), and Go language models report v3. A nil model fails with Go's own "Decision requires a LanguageModel implementation." (S6: requiring v4 would make every working call fail; review round 89).
+
+## OpenAI-compatible tool schemas without a type
+`toolutil.ToJSONSchema`, used by the OpenAI-compatible family, adds `"type": "object"` to a tool's JSON schema that has no `type`; TS sends the schema as given (S6: v0.5.2 sent the type, and endpoints that require it would reject the call; review round 89).
+
+## Harness diagnostic error name
+A bridge diagnostic whose error has an empty `name` prints as `Error` on the HARNESS_DEBUG stderr line; TS (`name ?? 'Error'`) prints the empty name (S1: `harness.DiagnosticError` (v0.5.2) has no presence flag for `Name`, and adding a field would break its unkeyed literals; review round 89).
+
+## Harness bridge send failures
+A failed write on an open bridge socket queues the frame for the reconnected socket instead of returning an error. TS `channel.send` throws when the socket's `send` throws synchronously (S3: Node `ws` reports network write failures asynchronously; Go writes synchronously; review round 89).
+
+## EmbedMany batch option transform errors
+A failed per-batch provider-options transform fails the `EmbedMany` call before any request of the parallel group is sent. TS has already started the earlier batches' requests, whose results it then drops (S7: TS sends requests it discards; review round 89).
+
+## Claude Code start frame empty fields
+An empty `env`, a `false` `agentProgressSummaries` / `forwardSubagentText` and empty `mcpServers` / `toolHints` are omitted from the Claude Code start frame; TS always sends `env` and the two flags. The bridge treats each absent field like the empty or false value (S1: `claudecode.StartFrame` (v0.5.2) uses `omitempty` value fields; review round 89).
+
+## HarnessAgent PrepareCall and the reserved askUserQuestions tool
+TS asserts the reserved `askUserQuestions` name again on the tools `prepareCall` returns. Go's `PrepareCall` receives and may return the merged tool set (the v0.5.2 contract), so a returned `askUserQuestions` cannot be told apart from the builtin and is not rejected (S6; review round 89).
+
+## HarnessAgent empty prompt
+TS treats `prompt: ''` as a prompt; Go's `Prompt: ""` means no prompt (S1: a presence flag on the v0.5.2 string field; review round 89).
+
+## Prodia image URL fallback
+Prodia image results keep the v0.5.2 legacy `imageUrl` fallback when the multipart response has no output image; TS throws "Prodia multipart response missing output image" (S6: v0.5.2 behavior; review round 89).
+
+## Anthropic client-side provider tool names
+Anthropic client-side provider tool calls (bash, memory, text editor, computer) keep the caller's tool name when the tool was declared under another name. TS reports the Anthropic wire name, which the core then cannot find among the caller's tools (S7: the TS call cannot run; review round 89).
+
+## Bedrock Converse request details
+Go skips a user block that converts to no content (TS sends `{role: user, content: []}`), sends a truthy non-object `cachePoint` as `{type: "default"}` (TS sends the raw value), and sends `anthropicBeta` only as `anthropic_beta` (TS also spreads it into the top-level command). Bedrock rejects each TS form (S7: copying TS would send a request the API rejects; review round 89).
+
+## Bedrock and Anthropic null option values
+Bedrock option validators, and the Bedrock Converse / Anthropic file part option validators, accept an explicit `null` for an optional key, which TS zod `.optional()` rejects (S6: v0.5.2 accepted null values; review round 89).
+
+## Anthropic empty string option fields
+Anthropic `metadata.userId: ""`, `mcpServers[].authorizationToken: ""`, `container.id: ""`, skills `displayTitle: ""` and the batch list `cursor: ""` are omitted; TS sends the empty string (`!= null`) (S1: plain string fields; a presence flag per field is API sprawl; review round 89).
+
+## Anthropic Files byte size
+A fractional Files API `size_bytes` is truncated in `ByteSize`; the provider metadata keeps the exact number (S1: `ByteSize` is an `int64` field; review round 89).
+
+## Video response header keys
+xAI and Alibaba video results report response headers with Go canonical keys (the v0.5.2 shape), where TS uses lower case. Repeated values are joined with ", " as in TS (S6; review round 89).
+
+## OpenAI speech default voice
+With no voice, Go sends `voice: "alloy"` (v0.5.2 behavior). TS sends no voice, and the API rejects the request (S6; review round 89).
+
+## Empty binary response
+TS `createBinaryResponseHandler` fails only for a null body (204 / 205 / 304); an empty 200 gives empty bytes. Go's Fireworks sync image path rejects any empty body ("Response body is empty"), as before (S3: Go cannot tell a null body from an empty one; review round 89).
 
 ## Features that are TypeScript-only (not ported)
 
