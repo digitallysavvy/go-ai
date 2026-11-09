@@ -47,6 +47,11 @@ type Config struct {
 	Headers            map[string]string  `json:"headers,omitempty"`
 	HTTPClient         *http.Client       `json:"-"`
 	CredentialProvider CredentialProvider `json:"-"`
+	// APIKeyFunc resolves the x-api-key credential before each request (TS
+	// apiKey given as a function). It must return a non-empty key
+	// ("Anthropic AWS API key must be a non-empty string." otherwise), wins
+	// over the environment and SigV4, and cannot be combined with APIKey.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 	// GenerateID creates the ids of generated sources (TS generateId
 	// provider setting). Defaults to a random id.
 	GenerateID func() string `json:"-"`
@@ -103,6 +108,7 @@ func New(cfg Config) (*Provider, error) {
 		base:               baseRoundTripper(cfg.HTTPClient),
 		region:             region,
 		apiKey:             cfg.APIKey,
+		apiKeyFunc:         cfg.APIKeyFunc,
 		accessKeyID:        cfg.AccessKeyID,
 		secretAccessKey:    cfg.SecretAccessKey,
 		sessionToken:       cfg.SessionToken,
@@ -180,6 +186,7 @@ type sigV4Transport struct {
 	base               http.RoundTripper
 	region             string
 	apiKey             string
+	apiKeyFunc         providerutils.APIKeyFunc
 	accessKeyID        string
 	secretAccessKey    string
 	sessionToken       string
@@ -222,6 +229,19 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 	if !providerutils.IsSameOrigin(req.URL.String(), t.baseURL) {
+		return t.base.RoundTrip(req)
+	}
+	if t.apiKeyFunc != nil {
+		// TS createApiKeyFetchFunction: a resolvable key is resolved per
+		// request, must be a non-empty string and is sent as resolved.
+		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
+			APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Anthropic AWS", RequireNonEmpty: true,
+		})
+		if err != nil {
+			return nil, internalhttp.RejectFetch(err)
+		}
+		req = req.Clone(req.Context())
+		req.Header.Set("x-api-key", key)
 		return t.base.RoundTrip(req)
 	}
 	if key := providerutils.APIKeyOrEnv(t.apiKey, "ANTHROPIC_AWS_API_KEY"); key != "" {
