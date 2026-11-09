@@ -216,3 +216,23 @@ func TestR90provgDocumentLimitNumberKinds(t *testing.T) {
 		}
 	}
 }
+
+// TestR90provgSpeechRequestBodyText: TS request.body is
+// JSON.stringify(requestBodyValues), which keeps HTML characters literal and
+// the literal's key order (mistral-speech-model.ts).
+func TestR90provgSpeechRequestBodyText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"audio_data":"AAEC"}`)
+	}))
+	defer server.Close()
+	m, _ := New(Config{APIKey: "k", BaseURL: server.URL}).SpeechModel("voxtral-mini-tts-latest")
+	res, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "a < b & c", Voice: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"model":"voxtral-mini-tts-latest","input":"a < b & c","voice_id":"v1","response_format":"mp3","stream":false}`
+	if res.Request == nil || res.Request.Body != want {
+		t.Fatalf("request body = %v, want %s", res.Request, want)
+	}
+}
