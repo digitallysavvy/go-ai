@@ -406,21 +406,12 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 	// wire omits them (a reported 0 stays 0), noCache subtracts only a
 	// reported cache count, and text is the full completion count unless
 	// reasoning tokens were reported.
+	// TS groq usage schema reads only prompt_tokens_details.cached_tokens
+	// (text / image token details are stripped).
 	var cacheRead *int64
-	var textTokens, imageTokens *int64
-	if usage.PromptTokensDetails != nil {
-		if usage.PromptTokensDetails.CachedTokens != nil {
-			v := int64(*usage.PromptTokensDetails.CachedTokens)
-			cacheRead = &v
-		}
-		if usage.PromptTokensDetails.TextTokens != nil {
-			textVal := int64(*usage.PromptTokensDetails.TextTokens)
-			textTokens = &textVal
-		}
-		if usage.PromptTokensDetails.ImageTokens != nil {
-			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
-			imageTokens = &imageVal
-		}
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+		v := int64(*usage.PromptTokensDetails.CachedTokens)
+		cacheRead = &v
 	}
 	noCacheTokens := promptTokens
 	if cacheRead != nil {
@@ -430,8 +421,6 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 		NoCacheTokens:    &noCacheTokens,
 		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: nil,
-		TextTokens:       textTokens,
-		ImageTokens:      imageTokens,
 	}
 
 	var reasoning *int64
@@ -482,22 +471,12 @@ func (m *LanguageModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}
-	if parsed := parseGroqProviderError(err); parsed != nil {
-		return parsed
-	}
-	statusCode := 0
-	message := err.Error()
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		statusCode = statusErr.StatusCode
-		// TS createJsonErrorResponseHandler: an empty body, or one that does
-		// not parse (secureJsonParse) or match the error schema, gives the
-		// response status text.
-		if text := http.StatusText(statusCode); text != "" {
-			message = text
-		}
+		perr, _ := groqHTTPError(statusErr, err)
+		return perr
 	}
-	return providererrors.NewProviderError("groq", statusCode, "", message, err)
+	return providererrors.NewProviderError("groq", 0, "", err.Error(), err)
 }
 
 type groqResponse struct {

@@ -290,6 +290,9 @@ func vertexEmbeddingOptions(opts *provider.EmbedModelOptions) VertexEmbeddingPro
 	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
 		if v, ok := opts.ProviderOptions[key]; ok {
+			if typed, isTyped := typedVertexEmbeddingOptions(v); isTyped {
+				return typed
+			}
 			if m, ok := v.(map[string]interface{}); ok {
 				result := VertexEmbeddingProviderOptions{}
 				if t, ok := m["taskType"].(string); ok {
@@ -359,8 +362,16 @@ func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
 			// null entry, so the next key is tried.
 			continue
 		}
+		// TS parseProviderOptions: InvalidArgumentError "invalid <key>
+		// provider options" with the schema failure as the cause.
 		bad := func(field, want string) error {
-			return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options: %s must be %s", key, field, want), nil)
+			return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", key), fmt.Errorf("%s must be %s", field, want))
+		}
+		if typed, isTyped := typedVertexEmbeddingOptions(v); isTyped {
+			if typed.TaskType != "" && !validVertexTaskType(typed.TaskType) {
+				return bad("taskType", "one of SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION, CODE_RETRIEVAL_QUERY")
+			}
+			return nil
 		}
 		m, ok := v.(map[string]interface{})
 		if !ok {
@@ -388,6 +399,22 @@ func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
 		return nil
 	}
 	return nil
+}
+
+// typedVertexEmbeddingOptions reads the exported VertexEmbeddingProviderOptions
+// (value or pointer) given as a provider options entry, the Go form of the
+// TS options object.
+func typedVertexEmbeddingOptions(v interface{}) (VertexEmbeddingProviderOptions, bool) {
+	switch t := v.(type) {
+	case VertexEmbeddingProviderOptions:
+		return t, true
+	case *VertexEmbeddingProviderOptions:
+		if t == nil {
+			return VertexEmbeddingProviderOptions{}, true
+		}
+		return *t, true
+	}
+	return VertexEmbeddingProviderOptions{}, false
 }
 
 func validVertexTaskType(task string) bool {

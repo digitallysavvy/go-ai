@@ -31,10 +31,14 @@ func preparePerplexityTools(tools []types.Tool, toolChoice types.ToolChoice) ([]
 		}
 
 		def := map[string]interface{}{
-			"type":        "function",
-			"name":        tool.Name,
-			"description": tool.Description,
-			"parameters":  tool.Parameters,
+			"type":       "function",
+			"name":       tool.Name,
+			"parameters": tool.Parameters,
+		}
+		// TS description: tool.description (undefined is not sent); an empty
+		// Go description means unset.
+		if tool.Description != "" {
+			def["description"] = tool.Description
 		}
 		if tool.Strict != nil {
 			def["strict"] = *tool.Strict

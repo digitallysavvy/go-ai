@@ -50,3 +50,20 @@ func perplexityHTTPError(err error, providerName string) error {
 	}
 	return pe
 }
+
+// perplexityStatusError returns the ProviderError of a failed HTTP response
+// (perplexityHTTPError) with err as its cause, and false for any other error
+// (a transport failure or an already built error such as the "Invalid JSON
+// response" schema failure, which must not become its own cause).
+func perplexityStatusError(err error, providerName string) (*providererrors.ProviderError, bool) {
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return nil, false
+	}
+	pe, ok := perplexityHTTPError(err, providerName).(*providererrors.ProviderError)
+	if !ok {
+		return nil, false
+	}
+	pe.Cause = err
+	return pe, true
+}

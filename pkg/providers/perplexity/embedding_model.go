@@ -2,6 +2,7 @@ package perplexity
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -110,6 +111,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	// TS parseProviderOptions throws InvalidArgumentError for a bad
 	// dimensions (non-integer, <= 0) or an unknown encodingFormat.
+	opts = normalizeTypedEmbeddingOptions(opts)
 	if opts != nil {
 		if _, err := providerutils.ParseProviderOptions("perplexity", opts.ProviderOptions, embeddingOptionsSchema); err != nil {
 			return nil, err
@@ -145,8 +147,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}, &response)
 	if err != nil {
 		// TS failedResponseHandler: createJsonErrorResponseHandler(perplexityErrorSchema).
-		if pe, ok := perplexityHTTPError(err, "perplexity").(*providererrors.ProviderError); ok {
-			pe.Cause = err
+		if pe, ok := perplexityStatusError(err, "perplexity"); ok {
 			return nil, pe
 		}
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
@@ -209,6 +210,44 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 var embeddingOptionsSchema = providerutils.OptionSchema{
 	"dimensions":     providerutils.OptPositive(true),
 	"encodingFormat": providerutils.OptEnum("base64_int8", "base64_binary"),
+}
+
+// normalizeTypedEmbeddingOptions turns an exported
+// PerplexityEmbeddingModelOptions (value or pointer) given as the
+// "perplexity" entry into its JSON object form (the TS options object), so
+// it is validated and applied like a map. The caller's map is not modified.
+func normalizeTypedEmbeddingOptions(opts *provider.EmbedModelOptions) *provider.EmbedModelOptions {
+	if opts == nil || opts.ProviderOptions == nil {
+		return opts
+	}
+	var typed *PerplexityEmbeddingModelOptions
+	switch v := opts.ProviderOptions["perplexity"].(type) {
+	case PerplexityEmbeddingModelOptions:
+		typed = &v
+	case *PerplexityEmbeddingModelOptions:
+		if v == nil {
+			typed = &PerplexityEmbeddingModelOptions{}
+		} else {
+			typed = v
+		}
+	default:
+		return opts
+	}
+	encoded, err := json.Marshal(typed)
+	if err != nil {
+		return opts
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(encoded, &obj) != nil {
+		return opts
+	}
+	copied := *opts
+	copied.ProviderOptions = make(map[string]interface{}, len(opts.ProviderOptions))
+	for k, v := range opts.ProviderOptions {
+		copied.ProviderOptions[k] = v
+	}
+	copied.ProviderOptions["perplexity"] = obj
+	return &copied
 }
 
 func extractEmbeddingOptions(opts *provider.EmbedModelOptions) PerplexityEmbeddingModelOptions {

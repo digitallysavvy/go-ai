@@ -197,12 +197,11 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 		return nil, providererrors.NewProviderError("groq", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
-		// TS groqFailedResponseHandler: use error.message from the JSON envelope.
+		// TS groqFailedResponseHandler: error.message from the JSON envelope,
+		// otherwise the status text; headers and body in both cases.
 		statusErr := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
-		if perr := parseGroqProviderError(statusErr); perr != nil {
-			return nil, perr
-		}
-		return nil, providererrors.NewProviderError("groq", resp.StatusCode, "", string(resp.Body), nil)
+		perr, _ := groqHTTPError(statusErr, statusErr)
+		return nil, perr
 	}
 
 	responseHeaders := providerutils.ExtractHeaders(resp.Headers)
