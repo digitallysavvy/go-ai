@@ -226,9 +226,11 @@ func xaiErrorMessage(body []byte) (message string, matched bool) {
 		Error *struct {
 			Message *string `json:"message"`
 			Type    *string `json:"type"`
+			// code: z.union([z.string(), z.number()]).nullish()
+			Code interface{} `json:"code"`
 		} `json:"error"`
 	}
-	if err := securejson.Unmarshal(body, &apiErr); err == nil && apiErr.Error != nil && apiErr.Error.Message != nil {
+	if err := securejson.Unmarshal(body, &apiErr); err == nil && apiErr.Error != nil && apiErr.Error.Message != nil && xaiStringOrNumber(apiErr.Error.Code) {
 		return *apiErr.Error.Message, true
 	}
 
@@ -251,6 +253,17 @@ func xaiErrorMessage(body []byte) (message string, matched bool) {
 	}
 
 	return "", false
+}
+
+// xaiStringOrNumber reports whether a decoded value is absent, null, a
+// string or a number.
+func xaiStringOrNumber(v interface{}) bool {
+	switch v.(type) {
+	case nil, string, float64:
+		return true
+	default:
+		return false
+	}
 }
 
 // xaiWireValuePresent reports whether the decoded JSON value holds a non-null
