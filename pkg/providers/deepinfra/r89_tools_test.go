@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -128,5 +129,45 @@ func TestR89toolsDeepInfraEditFormOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("form fields = %v\nwant %v", got, want)
+	}
+}
+
+// provb CR (cr-r89-provb-to-tools 1): TS createJsonErrorResponseHandler
+// builds an APICallError with responseHeaders, responseBody and data, so a
+// retry-after(-ms) header reaches the retry loop.
+func TestR89toolsDeepInfraImageErrorKeepsResponse(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		body    string
+		want    string
+		hasData bool
+	}{
+		{http.StatusTooManyRequests, `{"detail":{"error":"busy"}}`, "busy", true},
+		{http.StatusBadGateway, `<html>bad</html>`, "Bad Gateway", false},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After-Ms", "10")
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		model, _ := New(Config{APIKey: "k", BaseURL: server.URL + "/inference"}).ImageModel("stabilityai/sd3.5")
+		_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "a cat"})
+		server.Close()
+		var perr *providererrors.ProviderError
+		if !errors.As(err, &perr) {
+			t.Fatalf("error = %T %v", err, err)
+		}
+		if perr.Message != tc.want || perr.StatusCode != tc.status || perr.ResponseBody != tc.body || (perr.Data != nil) != tc.hasData {
+			t.Fatalf("error = %#v", perr)
+		}
+		found := false
+		for k, v := range perr.ResponseHeaders {
+			if strings.EqualFold(k, "retry-after-ms") && v == "10" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("headers = %v", perr.ResponseHeaders)
+		}
 	}
 }

@@ -201,13 +201,13 @@ type deepInfraGenerateError struct {
 // detail.error, even "".
 func (m *ImageModel) parseGenerateError(resp *internalhttp.Response) error {
 	var errResp deepInfraGenerateError
-	message := http.StatusText(resp.StatusCode)
+	message, matched := http.StatusText(resp.StatusCode), false
 	if strings.TrimSpace(string(resp.Body)) != "" {
 		if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail != nil && errResp.Detail.Error != nil {
-			message = *errResp.Detail.Error
+			message, matched = *errResp.Detail.Error, true
 		}
 	}
-	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
+	return deepInfraAPIError(resp, message, matched)
 }
 
 // doEdit performs image editing via DeepInfra's OpenAI-compatible
@@ -274,7 +274,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 // gives the status text; a matching body without error gives "Unknown
 // error".
 func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
-	message := http.StatusText(resp.StatusCode)
+	message, matched := http.StatusText(resp.StatusCode), false
 	if strings.TrimSpace(string(resp.Body)) != "" {
 		var fields map[string]json.RawMessage
 		if err := securejson.Unmarshal(resp.Body, &fields); err == nil && fields != nil {
@@ -283,13 +283,26 @@ func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
 			var text *string
 			switch {
 			case !present:
-				message = "Unknown error"
+				message, matched = "Unknown error", true
 			case json.Unmarshal(raw, &errObj) == nil && errObj != nil && json.Unmarshal(errObj["message"], &text) == nil && text != nil:
-				message = *text
+				message, matched = *text, true
 			}
 		}
 	}
-	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
+	return deepInfraAPIError(resp, message, matched)
+}
+
+// deepInfraAPIError is the APICallError of createJsonErrorResponseHandler:
+// status, response headers (so retry-after(-ms) reaches the retry loop) and
+// body, with the parsed body as data only when it matched the error schema.
+func deepInfraAPIError(resp *internalhttp.Response, message string, matched bool) error {
+	cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+	perr := providererrors.NewProviderErrorFromResponse("deepinfra", 0, "", message, cause)
+	perr.Message = message
+	if !matched {
+		perr.Data = nil
+	}
+	return perr
 }
 
 func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.ImageGenerateOptions) (io.Reader, string, error) {
