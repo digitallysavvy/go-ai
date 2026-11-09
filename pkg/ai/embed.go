@@ -718,7 +718,9 @@ func CosineSimilarity(a, b []float64) (float64, error) {
 	if len(a) != len(b) {
 		return 0, &providererrors.InvalidArgumentError{
 			Field:   "vector1,vector2",
-			Message: fmt.Sprintf("Vectors must have the same length (vector1Length=%d, vector2Length=%d)", len(a), len(b)),
+			// TS cosineSimilarity: the lengths are the error's value, not
+			// part of its message.
+			Message: "Vectors must have the same length",
 		}
 	}
 
