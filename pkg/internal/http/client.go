@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -535,6 +536,9 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 // response.text().
 func decodeJSONBody(body []byte, result interface{}) error {
 	body = responseText(body)
+	// zod matches object keys exactly; drop the ones encoding/json would
+	// fill a field with only case-insensitively.
+	body = jsonexact.Filter(body, result)
 	err := json.Unmarshal(body, result)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {

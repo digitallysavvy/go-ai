@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"math"
@@ -2748,7 +2749,10 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		)
 	}
 	if !e.ResponseTimestamp.IsZero() {
-		stepSpan.SetAttributes(attribute.String("ai.response.timestamp", e.ResponseTimestamp.UTC().Format("2006-01-02T15:04:05.000Z")))
+		// TS response.timestamp.toISOString(), expanded years included.
+		if iso, ok := jsdate.ISOString(e.ResponseTimestamp); ok {
+			stepSpan.SetAttributes(attribute.String("ai.response.timestamp", iso))
+		}
 	}
 	if e.ProviderMetadata != nil {
 		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
