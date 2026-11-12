@@ -14,8 +14,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
-	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 	anthropictools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
