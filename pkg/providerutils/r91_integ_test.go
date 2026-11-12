@@ -22,7 +22,7 @@ func TestR91integStatusCodeDownloadErrorReasonPhrase(t *testing.T) {
 	}
 }
 
-// core2-11 (TS is-url-supported.ts:36, key.replace(/\*/, '')): only the
+// core2-11 (TS is-url-supported.ts:36, key.replace with an empty string): only the
 // first '*' of a media type key is removed.
 func TestR91integMatchesSupportedURLReplacesFirstStar(t *testing.T) {
 	supported := map[string][]*regexp.Regexp{"image/**": {regexp.MustCompile(`.*`)}}
