@@ -195,10 +195,15 @@ func extractAlibabaEmbeddingOptions(opts *provider.EmbedModelOptions) (AlibabaEm
 			return AlibabaEmbeddingModelOptions{}, nil
 		}
 		return wrapAlibabaEmbeddingOptionsValidation(validateAlibabaEmbeddingOptions(*v))
-	case map[string]interface{}:
-		return wrapAlibabaEmbeddingOptionsValidation(parseAlibabaEmbeddingOptionMap(v))
 	default:
-		return AlibabaEmbeddingModelOptions{}, invalidAlibabaEmbeddingOptionsError(fmt.Errorf("expected object"))
+		// Any other value is read through its JSON form (TS options are JSON
+		// objects): map[string]string, int32 numbers and the like work like
+		// the map[string]interface{} form.
+		m, ok := providerutils.NormalizeProviderOptionsObject(v)
+		if !ok {
+			return AlibabaEmbeddingModelOptions{}, invalidAlibabaEmbeddingOptionsError(fmt.Errorf("expected object"))
+		}
+		return wrapAlibabaEmbeddingOptionsValidation(parseAlibabaEmbeddingOptionMap(m))
 	}
 }
 

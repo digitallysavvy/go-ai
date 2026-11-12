@@ -1,6 +1,9 @@
 package alibaba
 
-import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+import (
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // maxCacheBreakpoints is the maximum number of cache markers Alibaba allows per request.
 const maxCacheBreakpoints = 4
@@ -41,7 +44,7 @@ func NewPartCacheControlValidator() *CacheControlValidator {
 // provider options and passes the value through. A falsy value (null, false,
 // 0, "") means no marker. Every marker beyond the fourth adds a warning.
 func (v *CacheControlValidator) GetCacheControlFromOptions(providerOptions map[string]interface{}) interface{} {
-	alibaba, _ := providerOptions["alibaba"].(map[string]interface{})
+	alibaba, _ := providerutils.NormalizeProviderOptionsObject(providerOptions["alibaba"])
 	value, ok := alibaba["cacheControl"]
 	if !ok || value == nil {
 		value = alibaba["cache_control"]

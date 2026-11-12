@@ -17,7 +17,9 @@ import (
 // "togetherai"). Without this, a caller following TS docs/examples and
 // writing providerOptions.moonshotai.* is silently ignored.
 func mergeMoonshotAIProviderOptions(resolved, providerOptions map[string]interface{}) {
-	moonshotAI, ok := providerOptions["moonshotai"].(map[string]interface{})
+	// Read through the JSON form so a Go-typed literal (map[string]string,
+	// nested typed maps / slices, int64) is read like the TS JSON object.
+	moonshotAI, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["moonshotai"])
 	if !ok {
 		return
 	}

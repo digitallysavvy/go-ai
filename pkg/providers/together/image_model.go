@@ -155,7 +155,10 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 		reqBody["image_url"] = togetherImageFileToDataURI(opts.Files[0])
 	}
 
-	if togetherOpts, ok := opts.ProviderOptions["togetherai"].(map[string]interface{}); ok {
+	// Read through the JSON form (TS options are JSON objects), so a typed
+	// literal such as map[string]int is sent like the map[string]interface{}
+	// form.
+	if togetherOpts, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["togetherai"]); ok {
 		for key, value := range togetherOpts {
 			if isNonDiffusion && nonDiffusionExcludedOptions[key] {
 				continue

@@ -449,7 +449,7 @@ func (m *ImageModel) buildAsyncRequestBody(opts *provider.ImageGenerateOptions) 
 	// Merge provider-specific options (passthrough); applied last like TS
 	// `...fireworksOptions`.
 	if opts.ProviderOptions != nil {
-		if fwOpts, ok := opts.ProviderOptions["fireworks"].(map[string]interface{}); ok {
+		if fwOpts, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["fireworks"]); ok {
 			for k, v := range fwOpts {
 				body[k] = v
 			}

@@ -723,7 +723,7 @@ func TestBuildRequestBody_SyncProviderOptionsPassthrough(t *testing.T) {
 	if body["cfg_scale"] != 7.5 {
 		t.Errorf("expected cfg_scale passthrough, got %v", body["cfg_scale"])
 	}
-	if body["steps"] != 30 {
+	if body["steps"] != float64(30) { // options are read through their JSON form (r91 PB-01)
 		t.Errorf("expected steps passthrough, got %v", body["steps"])
 	}
 	if body["output_format"] != "png" {

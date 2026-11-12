@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
-	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -754,23 +753,11 @@ func openResponsesProviderData(providerOptions map[string]interface{}, providerM
 	return nil
 }
 
+// asStringMap reads a part's provider data through its JSON form (TS options
+// are JSON objects), so a Go-typed literal (map[string]string, nested typed
+// slices such as []map[string]string, int64) is read like the map form.
 func asStringMap(value interface{}) (map[string]interface{}, bool) {
-	switch typed := value.(type) {
-	case map[string]interface{}:
-		return typed, true
-	case nil:
-		return nil, false
-	default:
-		rv := reflect.ValueOf(value)
-		if rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
-			return nil, false
-		}
-		out := make(map[string]interface{}, rv.Len())
-		for _, k := range rv.MapKeys() {
-			out[k.String()] = rv.MapIndex(k).Interface()
-		}
-		return out, true
-	}
+	return providerutils.NormalizeProviderOptionsObject(value)
 }
 
 // openResponsesImageDetail resolves the `detail` field for input images,

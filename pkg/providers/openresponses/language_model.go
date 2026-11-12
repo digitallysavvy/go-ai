@@ -443,7 +443,10 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 		// kept regardless so buildRequestBody can report it (TS
 		// parseProviderOptions throws).
 		_ = json.Unmarshal(data, &opts)
-		if values, ok := raw.(map[string]interface{}); ok {
+		// Raw is read through the JSON form (TS options are JSON objects), so
+		// a Go-typed literal (map[string]string, map[string][]string,
+		// []map[string]string, int32) is read like the map form.
+		if values, ok := providerutils.NormalizeProviderOptionsObject(raw); ok {
 			opts.Raw = values
 			if summary, ok := values["reasoningSummary"]; ok {
 				opts.ReasoningSummarySet = true

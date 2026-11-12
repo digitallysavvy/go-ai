@@ -490,7 +490,7 @@ func togetherStrictJSONSchema(_, compatibleOptions map[string]interface{}) bool 
 // following TS docs/examples and writing providerOptions.togetherai.* would
 // otherwise be silently ignored.
 func mergeTogetherAIProviderOptions(compatibleOptions, providerOptions map[string]interface{}) {
-	togetherAI, ok := providerOptions["togetherai"].(map[string]interface{})
+	togetherAI, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["togetherai"])
 	if !ok {
 		return
 	}
