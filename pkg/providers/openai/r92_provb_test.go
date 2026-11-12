@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -377,5 +378,41 @@ func TestR92provbRealtimeWebSocketURLScheme(t *testing.T) {
 	}
 	if got, want := realtimeTranscriptionWebSocketURL("HTTPS://api.openai.com/v1"), "wss://api.openai.com/v1/realtime?intent=transcription"; got != want {
 		t.Fatalf("upper-case scheme: got %s want %s", got, want)
+	}
+}
+
+// TS safeParseJSON accepts any JSON value: a non-object message is still a
+// raw part when raw chunks are requested.
+func TestR92provbRealtimeTranscriptionRawNonObject(t *testing.T) {
+	server := newRealtimeTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestTranscriptionModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		IncludeRawChunks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForReceived(t, "session.update", time.Second)
+	server.toSend <- 5.0
+	server.toSend <- map[string]interface{}{"type": "conversation.item.input_audio_transcription.completed", "item_id": "i", "transcript": "x"}
+	var raws []interface{}
+	for {
+		part, err := result.Stream.Next()
+		if err != nil {
+			break
+		}
+		if part.Type == provider.TranscriptionStreamPartTypeRaw {
+			raws = append(raws, part.RawValue)
+		}
+		if part.Type == provider.TranscriptionStreamPartTypeFinish {
+			break
+		}
+	}
+	if len(raws) != 2 || raws[0] != 5.0 {
+		t.Fatalf("raw parts = %v, want [5 {...}]", raws)
 	}
 }

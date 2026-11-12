@@ -435,15 +435,18 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 				return
 			}
 
-			var raw map[string]interface{}
-			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+			// TS safeParseJSON: any JSON value (not only an object) is a
+			// message; the raw part carries it as parsed.
+			var rawValue interface{}
+			if jsonErr := json.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 			if cfg.IncludeRawChunks {
-				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: raw}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
+			raw, _ := rawValue.(map[string]interface{})
 
 			eventType, _ := raw["type"].(string)
 			switch eventType {
