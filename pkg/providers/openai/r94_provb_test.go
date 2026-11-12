@@ -124,3 +124,21 @@ func TestR94provbUnfollowed3xxIsError(t *testing.T) {
 	_, err = p.Skills().UploadSkill(context.Background(), types.UploadSkillOptions{Files: []types.UploadSkillFile{{Path: "SKILL.md", Data: types.FileData{Type: types.FileDataTypeData, Data: []byte("x")}}}})
 	check("skills", err)
 }
+
+type r94provbClosingReader struct{ closed bool }
+
+func (r *r94provbClosingReader) Read([]byte) (int, error) { return 0, io.EOF }
+func (r *r94provbClosingReader) Close() error           { r.closed = true; return nil }
+
+// TestR94provbSkillStreamFileUnsupported (cr-r94-prova-to-provb sweep): TS
+// uploadSkill converts each file with convertInlineFileDataToUint8Array,
+// which cancels a stream and throws UnsupportedFunctionalityError.
+func TestR94provbSkillStreamFileUnsupported(t *testing.T) {
+	stream := &r94provbClosingReader{}
+	_, err := New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}).Skills().UploadSkill(context.Background(), types.UploadSkillOptions{
+		Files: []types.UploadSkillFile{{Path: "SKILL.md", Data: types.FileData{Type: types.FileDataTypeStream, Stream: stream}}}})
+	var ufe *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &ufe) || ufe.Functionality != "streaming file upload" || !stream.closed {
+		t.Fatalf("err = %T %v, closed %v", err, err, stream.closed)
+	}
+}

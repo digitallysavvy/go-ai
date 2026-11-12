@@ -398,6 +398,13 @@ func inlineFileBytes(data types.FileData) ([]byte, error) {
 		return data.Data, nil
 	case types.FileDataTypeText:
 		return []byte(data.Text), nil
+	case types.FileDataTypeStream:
+		// TS convertInlineFileDataToUint8Array (skill files): the stream is
+		// cancelled and streaming upload is unsupported.
+		if closer, ok := data.Stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming file upload"}
 	default:
 		return nil, fmt.Errorf("unsupported file data type %q", data.Type)
 	}
