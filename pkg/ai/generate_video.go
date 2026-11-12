@@ -659,6 +659,12 @@ func convertPromptImage(img *VideoPromptImage) (*provider.VideoModelV3File, erro
 		}, nil
 	}
 
+	// TS normalizeImageData: a DataContent string that starts with http://
+	// or https:// is a URL file, not base64.
+	if isVideoHTTPDataString(img.DataString) {
+		return &provider.VideoModelV3File{Type: "url", URL: img.DataString, MediaType: img.MediaType}, nil
+	}
+
 	if img.DataString != "" {
 		data, mediaType, err := decodeVideoPromptImageDataString(img.DataString)
 		if err != nil {
@@ -685,6 +691,12 @@ func convertPromptImage(img *VideoPromptImage) (*provider.VideoModelV3File, erro
 	}
 
 	return nil, nil
+}
+
+// isVideoHTTPDataString is the TS normalizeImageData URL check on a
+// DataContent string (case-sensitive prefixes).
+func isVideoHTTPDataString(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
 // splitVideoDataURL mirrors TS splitDataUrl: the header is everything before
@@ -833,6 +845,10 @@ func convertReferenceImage(img *VideoPromptImage) (*provider.VideoModelV3File, e
 
 	if img.URL != "" {
 		return &provider.VideoModelV3File{Type: "url", URL: img.URL, MediaType: img.MediaType}, nil
+	}
+
+	if isVideoHTTPDataString(img.DataString) {
+		return &provider.VideoModelV3File{Type: "url", URL: img.DataString, MediaType: img.MediaType}, nil
 	}
 
 	if img.DataString != "" {
