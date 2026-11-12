@@ -1445,15 +1445,6 @@ func extractGoogleMetadata(raw json.RawMessage) map[string]interface{} {
 	return nil
 }
 
-func googleInteractionID(raw json.RawMessage) string {
-	if google := extractGoogleMetadata(raw); google != nil {
-		if s, ok := google["interactionId"].(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
 func encodeData(data []byte, dataString string) string {
 	if dataString != "" {
 		return dataString

@@ -419,3 +419,22 @@ func TestR94provgOutputTokensByEmptyModality(t *testing.T) {
 		t.Fatalf("by modality = %#v", got)
 	}
 }
+
+// With a present empty previousInteractionId, TS compacts only assistant
+// turns whose part providerOptions.google.interactionId === "": a turn with
+// no interactionId is kept.
+func TestR94provgInteractionsEmptyPreviousIDCompaction(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "kept"}}, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "dropped", ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"interactionId": ""}}}}},
+	}
+	body, _, err := r94provgInteractionsBody(t, map[string]interface{}{"previousInteractionId": ""}, msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(body["input"])
+	if !strings.Contains(string(b), "kept") || strings.Contains(string(b), "dropped") {
+		t.Fatalf("input = %s", b)
+	}
+}

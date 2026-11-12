@@ -658,7 +658,7 @@ func compactMessagesForInteraction(messages []types.Message, interactionID strin
 				}
 			}
 			for _, call := range msg.ToolCalls {
-				if googleInteractionFromMap(call.ProviderMetadata) == interactionID {
+				if callGoogle, _ := call.ProviderMetadata["google"].(map[string]interface{}); interactionIDMatches(callGoogle, interactionID) {
 					matches = true
 				}
 			}
@@ -764,15 +764,6 @@ func mergeAdjacentInteractionText(content []map[string]interface{}) []map[string
 		out = append(out, block)
 	}
 	return out
-}
-
-func googleInteractionFromMap(meta map[string]interface{}) string {
-	if google, ok := meta["google"].(map[string]interface{}); ok {
-		if s, ok := google["interactionId"].(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 func isBuiltinInteractionsToolCall(t string) bool {
@@ -1006,23 +997,24 @@ func inputSignature(opts map[string]interface{}, field string, googleMeta map[st
 	return nil
 }
 
-// googleOptString reads providerOptions.google.<key> as a string (the TS
-// converter reads signatures, interaction ids and processing ids from the
-// prompt part's providerOptions).
-func googleOptString(opts map[string]interface{}, key string) string {
-	// Typed-option ruling: part options are read in their JSON form.
-	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
-		if v, ok := google[key].(string); ok {
-			return v
-		}
-	}
-	return ""
-}
-
 // partMatchesInteraction: TS compares providerOptions.google.interactionId; Go
 // parts that came back from this provider carry it in providerMetadata.
+// Only a present string id is compared (TS `===`: an absent id is undefined,
+// never equal to a given "").
 func partMatchesInteraction(opts map[string]interface{}, meta json.RawMessage, interactionID string) bool {
-	return googleOptString(opts, "interactionId") == interactionID || googleInteractionID(meta) == interactionID
+	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
+		if v, ok := google["interactionId"].(string); ok && v == interactionID {
+			return true
+		}
+	}
+	return interactionIDMatches(extractGoogleMetadata(meta), interactionID)
+}
+
+// interactionIDMatches reports whether google metadata carries interactionId
+// as a string equal to interactionID.
+func interactionIDMatches(google map[string]interface{}, interactionID string) bool {
+	v, ok := google["interactionId"].(string)
+	return ok && v == interactionID
 }
 
 // orderedArguments returns args so that it marshals with the key order of raw,
