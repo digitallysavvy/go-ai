@@ -2,6 +2,7 @@ package fireworks
 
 import (
 	"context"
+	"errors"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -197,10 +198,7 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 
 	var submitResp AsyncSubmitResponse
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID, Body: body, Headers: opts.Headers, ValidateResponse: providerutils.NodeResponseValidator("fireworks", asyncSubmitNode)}, &submitResp); err != nil {
-		if providerutils.IsInvalidJSONResponse(err) {
-			return "", err
-		}
-		return "", fmt.Errorf("Fireworks async submit failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+		return "", fireworksAsyncCallError(err)
 	}
 
 	if submitResp.RequestID == "" {
@@ -217,10 +215,7 @@ func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string, cal
 
 	var pollResp AsyncPollResponse
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID + "/get_result", Body: pollBody, Headers: callHeaders, ValidateResponse: providerutils.NodeResponseValidator("fireworks", asyncPollNode)}, &pollResp); err != nil {
-		if providerutils.IsInvalidJSONResponse(err) {
-			return "", false, err
-		}
-		return "", false, fmt.Errorf("Fireworks async status check failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+		return "", false, fireworksAsyncCallError(err)
 	}
 
 	switch pollResp.Status {
@@ -235,6 +230,21 @@ func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string, cal
 		// Pending, Running, or any unknown status → continue polling
 		return "", false, nil
 	}
+}
+
+// fireworksAsyncCallError maps a failed async submit / poll call like TS
+// postJsonToApi with createStatusCodeErrorResponseHandler
+// (fireworks-image-model.ts:240): an HTTP error status is a ProviderError
+// whose message is the status text (the body is kept as the response
+// body), and an invalid JSON body or a transport failure (already mapped by
+// the client like TS handleFetchError) is returned unchanged. Go wrapped
+// both in a plain "Fireworks async ... failed" error.
+func fireworksAsyncCallError(err error) error {
+	var status *internalhttp.HTTPStatusError
+	if errors.As(err, &status) {
+		return providererrors.NewSchemaProviderError("fireworks", err, nil)
+	}
+	return err
 }
 
 // asyncPollIntervalMs returns the configured poll interval or the default (500ms).

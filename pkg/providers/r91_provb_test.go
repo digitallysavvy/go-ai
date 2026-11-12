@@ -3,6 +3,7 @@ package providers_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
 	"github.com/digitallysavvy/go-ai/pkg/providers/azure"
@@ -474,6 +476,34 @@ func TestR91provbPromptForms(t *testing.T) {
 				r91provbGenerate(m, err, &provider.GenerateOptions{Prompt: types.Prompt{System: "s"}})
 			}) == nil {
 				t.Fatal("System-only prompt sent no request")
+			}
+		})
+	}
+}
+
+// PB-06 (provb2b-04): Fireworks async (flux-kontext) submit and poll HTTP
+// failures are ProviderErrors with the status text (TS postJsonToApi with
+// createStatusCodeErrorResponseHandler, fireworks-image-model.ts:240), not
+// plain wrapped errors.
+func TestR91provbFireworksAsyncStatusErrors(t *testing.T) {
+	for _, failPoll := range []bool{false, true} {
+		failPoll := failPoll
+		t.Run(map[bool]string{false: "submit", true: "poll"}[failPoll], func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/get_result") || !failPoll {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(`{"error":"busy"}`))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"request_id":"req-1"}`))
+			}))
+			defer srv.Close()
+			m, _ := fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL, ImagePollIntervalMs: 1}).ImageModel("accounts/fireworks/models/flux-kontext-pro")
+			_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+			var pe *providererrors.ProviderError
+			if !errors.As(err, &pe) || pe.StatusCode != http.StatusServiceUnavailable || pe.Message != "Service Unavailable" {
+				t.Fatalf("err = %#v, want a 503 ProviderError with the status text", err)
 			}
 		})
 	}
