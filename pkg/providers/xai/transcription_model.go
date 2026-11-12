@@ -265,6 +265,24 @@ func extractXAITranscriptionProviderOptions(providerOptions map[string]interface
 	if err := json.Unmarshal(b, &opts); err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}
+	// TS vadThreshold, streaming and the streaming members are .optional()
+	// (not nullish): a present null is invalid.
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(b, &probe) == nil {
+		for _, key := range []string{"vadThreshold", "streaming"} {
+			if string(probe[key]) == "null" {
+				return opts, invalidXAIProviderOptions(fmt.Errorf("%s must not be null", key))
+			}
+		}
+		var streaming map[string]json.RawMessage
+		if json.Unmarshal(probe["streaming"], &streaming) == nil {
+			for _, key := range []string{"interimResults", "endpointing", "smartTurn", "smartTurnTimeout"} {
+				if string(streaming[key]) == "null" {
+					return opts, invalidXAIProviderOptions(fmt.Errorf("streaming.%s must not be null", key))
+				}
+			}
+		}
+	}
 	if opts.AudioFormat != nil && !xaiStringIn(*opts.AudioFormat, "pcm", "mulaw", "alaw", "opus") {
 		return opts, invalidXAIProviderOptions(fmt.Errorf("audioFormat must be \"pcm\", \"mulaw\", \"alaw\", or \"opus\""))
 	}

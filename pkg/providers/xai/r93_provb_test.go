@@ -176,3 +176,19 @@ func TestR93provbMediaTypeExtension(t *testing.T) {
 		}
 	}
 }
+
+// TS vadThreshold / streaming members are .optional(): null is invalid.
+func TestR93provbTranscriptionOptionalNull(t *testing.T) {
+	for _, opts := range []map[string]interface{}{
+		{"vadThreshold": nil},
+		{"streaming": nil},
+		{"streaming": map[string]interface{}{"smartTurn": nil}},
+	} {
+		if _, err := extractXAITranscriptionProviderOptions(map[string]interface{}{"xai": opts}); err == nil {
+			t.Errorf("%v accepted", opts)
+		}
+	}
+	if _, err := extractXAITranscriptionProviderOptions(map[string]interface{}{"xai": map[string]interface{}{"language": nil, "streaming": map[string]interface{}{"smartTurn": 0.5}}}); err != nil {
+		t.Errorf("nullish language rejected: %v", err)
+	}
+}
