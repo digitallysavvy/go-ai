@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -204,7 +205,9 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, submission revai
 			}
 			return nil, handleError(err)
 		}
-		// TS createJsonResponseHandler(revaiTranscriptionJobResponseSchema).
+		// TS createJsonResponseHandler(revaiTranscriptionJobResponseSchema),
+		// over response.text() (TextDecoder).
+		download.Data = []byte(textdecode.UTF8(download.Data))
 		if err := providerutils.MediaResponseValidator("revai.transcription", providerutils.SchemaRevAIJob)(http.StatusOK, http.Header(download.Headers), download.Data); err != nil {
 			return nil, err
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -23,6 +24,7 @@ import (
 //   - a terminal task status (Error, Failed, moderation, Task not found) is
 //     never retryable even on HTTP 503; otherwise 408, 409, 429 and 5xx are.
 func bflStatusError(statusCode int, headers http.Header, body []byte) error {
+	body = []byte(textdecode.UTF8(body)) // TS reads the failed body as text (TextDecoder)
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
 
 	var raw struct {

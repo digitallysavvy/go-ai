@@ -33,3 +33,22 @@ func TestR94provcNon2xxFails(t *testing.T) {
 		}
 	}
 }
+
+// TS createJsonResponseHandler reads response.text() (TextDecoder drops a
+// UTF-8 BOM): BOM-prefixed submit and status bodies validate, so the
+// failed generation is reported instead of "Invalid JSON response".
+func TestR94provcResponseBodyIsText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte("\xEF\xBB\xBF" + `{"id":"g1","state":"queued"}`))
+			return
+		}
+		_, _ = w.Write([]byte("\xEF\xBB\xBF" + `{"id":"g1","state":"failed"}`))
+	}))
+	defer srv.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "photon-1")
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+	if err == nil || err.Error() != "Image generation failed." {
+		t.Fatalf("err = %v, want Image generation failed.", err)
+	}
+}

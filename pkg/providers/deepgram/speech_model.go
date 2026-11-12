@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"strconv"
@@ -105,7 +106,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, handleError("deepgram", &internalhttp.HTTPStatusError{
 			StatusCode: resp.StatusCode,
 			Headers:    resp.Headers,
-			Body:       resp.Body,
+			Body:       []byte(textdecode.UTF8(resp.Body)), // TS reads the failed body as text (TextDecoder)
 		})
 	}
 

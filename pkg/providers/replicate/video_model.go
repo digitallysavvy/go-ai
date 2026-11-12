@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"sort"
@@ -282,7 +283,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		return nil, m.handlePollError(ctx, err)
 	}
-	// TS createJsonResponseHandler(replicatePredictionSchema).
+	// TS createJsonResponseHandler(replicatePredictionSchema), over
+	// response.text() (TextDecoder).
+	result.Data = []byte(textdecode.UTF8(result.Data))
 	if err := validateVideoPrediction(http.StatusOK, headersOf(result.Headers), result.Data); err != nil {
 		return nil, err
 	}
@@ -471,7 +474,8 @@ func (m *VideoModel) handleError(err error) error {
 func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
+		// TS reads the failed body as text (TextDecoder).
+		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
 	}
 	// TS getFromApi handleFetchError: a network failure is the retryable
 	// "Cannot connect to API" error and an abort stays as is; a URL or

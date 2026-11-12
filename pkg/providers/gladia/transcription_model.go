@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"mime/multipart"
 	"net/http"
@@ -574,7 +575,9 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 			}
 			return nil, nil, handleError(err)
 		}
-		// TS createJsonResponseHandler(gladiaTranscriptionResultResponseSchema).
+		// TS createJsonResponseHandler(gladiaTranscriptionResultResponseSchema),
+		// over response.text() (TextDecoder).
+		result.Data = []byte(textdecode.UTF8(result.Data))
 		if err := providerutils.MediaResponseValidator("gladia.transcription", providerutils.SchemaGladiaResult)(http.StatusOK, http.Header(result.Headers), result.Data); err != nil {
 			return nil, nil, err
 		}
@@ -818,11 +821,13 @@ func handleError(err error) error {
 		// A handler message is final, an empty one included (TS APICallError
 		// keeps ""). A download failure with no status never reached an HTTP
 		// response and propagates unchanged below.
-		message, code := parseGladiaErrorBody(downloadErr.StatusCode, downloadErr.Body)
+		// TS reads the failed body as text (TextDecoder).
+		body := []byte(textdecode.UTF8(downloadErr.Body))
+		message, code := parseGladiaErrorBody(downloadErr.StatusCode, body)
 		providerErr := providererrors.NewProviderError("gladia", downloadErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
-		if len(downloadErr.Body) > 0 {
-			providerErr.ResponseBody = string(downloadErr.Body)
+		if len(body) > 0 {
+			providerErr.ResponseBody = string(body)
 		}
 		if code != "" {
 			// TS APICallError.data is the schema-parsed body (zod strips

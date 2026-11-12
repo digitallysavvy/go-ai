@@ -3,11 +3,13 @@ package replicate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TS providerMetadata.replicate.metrics is the zod-parsed metrics: an
@@ -35,5 +37,32 @@ func TestR94provcVideoMetricsAsParsed(t *testing.T) {
 		if string(got) != tc.want {
 			t.Errorf("metrics %q: metadata = %s, want %s", tc.metrics, got, tc.want)
 		}
+	}
+}
+
+// TS getFromApi handlers read the body as text (TextDecoder drops a UTF-8
+// BOM): a BOM-prefixed prediction parses, and a BOM-prefixed failed poll
+// gives the Replicate error message.
+func TestR94provcPollBodyIsText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/fail" {
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("\xEF\xBB\xBF" + `{"detail":"bad thing"}`))
+			return
+		}
+		_, _ = w.Write([]byte("\xEF\xBB\xBF" + `{"id":"p1","status":"processing","urls":{"get":"x"}}`))
+	}))
+	defer srv.Close()
+	vm := NewVideoModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "owner/model")
+	op, _ := json.Marshal(map[string]string{"getUrl": srv.URL + "/ok"})
+	res, err := vm.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil || res.Status != provider.VideoOperationStatusPending {
+		t.Fatalf("status: %v %+v", err, res)
+	}
+	op, _ = json.Marshal(map[string]string{"getUrl": srv.URL + "/fail"})
+	_, err = vm.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) || perr.Message != "bad thing" {
+		t.Fatalf("failed poll: err = %v, want the Replicate message", err)
 	}
 }

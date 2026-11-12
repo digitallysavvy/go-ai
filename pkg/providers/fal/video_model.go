@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"sort"
@@ -262,6 +263,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	var statusResp falVideoStatusResponse
 	result, err := fileutil.PollJSON(ctx, op.ResponseURL, downloadOpts, nil)
 	if err == nil {
+		// TS createJsonResponseHandler reads response.text() (TextDecoder).
+		result.Data = []byte(textdecode.UTF8(result.Data))
 		// TS createJsonResponseHandler(falVideoResponseSchema).
 		// The schema failure is an APICallError ('Invalid JSON response'),
 		// which TS doStatus reports as an error status with the response
@@ -288,13 +291,15 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		var dlErr *providererrors.DownloadError
 		if errors.As(err, &dlErr) && dlErr.Body != nil {
+			// response.clone().json() decodes the body as text (TextDecoder).
+			errBody := []byte(textdecode.UTF8(dlErr.Body))
 			// TS reads the failed body with `await response.clone().json()`
 			// and then `body.detail`: a body that is not JSON (or is the
 			// JSON null) makes that throw, and getFromApi wraps it in the
 			// APICallError 'Failed to process error response'
 			// (get-from-api.ts:104-122), which doStatus reports as an error
 			// status with the response headers.
-			if trimmed := strings.TrimSpace(string(dlErr.Body)); !json.Valid(dlErr.Body) || trimmed == "null" {
+			if trimmed := strings.TrimSpace(string(errBody)); !json.Valid(errBody) || trimmed == "null" {
 				return &provider.VideoModelV3OperationStatusResult{
 					Status: provider.VideoOperationStatusError,
 					Error:  "Failed to process error response",
@@ -308,7 +313,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			var detail struct {
 				Detail string `json:"detail"`
 			}
-			if jsonErr := json.Unmarshal(dlErr.Body, &detail); jsonErr == nil && detail.Detail == falStillInProgressDetail {
+			if jsonErr := json.Unmarshal(errBody, &detail); jsonErr == nil && detail.Detail == falStillInProgressDetail {
 				return &provider.VideoModelV3OperationStatusResult{
 					Status: provider.VideoOperationStatusPending,
 					Response: provider.VideoModelV3ResponseInfo{
@@ -320,7 +325,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			}
 			return &provider.VideoModelV3OperationStatusResult{
 				Status: provider.VideoOperationStatusError,
-				Error:  parseFalErrorMessage(dlErr.Body, falStatusFallback(dlErr)),
+				Error:  parseFalErrorMessage(errBody, falStatusFallback(dlErr)),
 				Response: provider.VideoModelV3ResponseInfo{
 					Timestamp: currentDate,
 					ModelID:   m.modelID,

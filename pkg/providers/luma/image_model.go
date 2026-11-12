@@ -147,7 +147,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	// TS createJsonResponseHandler(lumaGenerationResponseSchema).
-	if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	if err := validateLumaGeneration(resp.StatusCode, resp.Headers, []byte(textdecode.UTF8(resp.Body))); err != nil {
 		return nil, err
 	}
 	var genResp lumaGenerationResponse
@@ -238,7 +239,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			return "", m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 		}
 
-		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, []byte(textdecode.UTF8(resp.Body))); err != nil {
 			return "", err
 		}
 		var status lumaGenerationResponse

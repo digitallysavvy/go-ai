@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"strings"
 	"time"
@@ -134,6 +135,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 			// thrown as is, without the client's FetchRejection marker.
 			return nil, internalhttp.UnwrapFetchRejection(err)
 		}
+		resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS reads the body as text (TextDecoder)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, tokenHubFailedResponse(resp.StatusCode, resp.Headers, resp.Body)
 		}
@@ -200,6 +202,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if err != nil {
 			return nil, internalhttp.UnwrapFetchRejection(err)
 		}
+		resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS reads the body as text (TextDecoder)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, tokenHubFailedResponse(resp.StatusCode, resp.Headers, resp.Body)
 		}

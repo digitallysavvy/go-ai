@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	stdhttp "net/http"
 	"sort"
@@ -247,11 +248,13 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, submitResp.Headers)
 	}
 
-	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceTask)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	submitBody := []byte(textdecode.UTF8(submitResp.Body))
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceTask)(submitResp.StatusCode, submitResp.Headers, submitBody); err != nil {
 		return nil, err
 	}
 	var createResp taskCreateResponse
-	if err := json.Unmarshal(submitResp.Body, &createResp); err != nil {
+	if err := json.Unmarshal(submitBody, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse creation response: %v", err))
 	}
 	if createResp.ID == "" {
@@ -302,7 +305,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		return nil, m.handlePollError(ctx, err)
 	}
-	// TS createJsonResponseHandler(byteDanceStatusResponseSchema).
+	// TS createJsonResponseHandler(byteDanceStatusResponseSchema), over
+	// response.text() (TextDecoder).
+	result.Data = []byte(textdecode.UTF8(result.Data))
 	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceStatus)(200, stdhttp.Header(result.Headers), result.Data); err != nil {
 		return nil, err
 	}

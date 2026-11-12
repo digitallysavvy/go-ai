@@ -501,11 +501,13 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	// TS createJsonResponseHandler(bflVideoSubmitSchema).
-	if err := validateBFLSubmitBody(resp.Body); err != nil {
-		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, resp.Body, err)
+	// over response.text() (TextDecoder).
+	submitBody := []byte(textdecode.UTF8(resp.Body))
+	if err := validateBFLSubmitBody(submitBody); err != nil {
+		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, submitBody, err)
 	}
 	var submit bflVideoSubmitResponse
-	if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &submit); err != nil {
+	if err := json.Unmarshal(submitBody, &submit); err != nil {
 		return nil, fmt.Errorf("failed to decode submit response: %w", err)
 	}
 

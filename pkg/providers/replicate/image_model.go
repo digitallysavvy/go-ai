@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -487,7 +488,9 @@ func (m *ImageModel) pollImagePredictionOnce(ctx context.Context, current replic
 	if err != nil {
 		return replicateImagePrediction{}, m.handlePollError(ctx, err)
 	}
-	// TS createJsonResponseHandler(replicateImageResponseSchema).
+	// TS createJsonResponseHandler(replicateImageResponseSchema), over
+	// response.text() (TextDecoder).
+	polled.Data = []byte(textdecode.UTF8(polled.Data))
 	if err := validateImagePrediction(http.StatusOK, headersOf(polled.Headers), polled.Data); err != nil {
 		return replicateImagePrediction{}, err
 	}
@@ -533,7 +536,8 @@ func (m *ImageModel) cancelPrediction(ctx context.Context, predictionID string) 
 func (m *ImageModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
+		// TS reads the failed body as text (TextDecoder).
+		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
 	}
 	// TS getFromApi handleFetchError: a network failure is the retryable
 	// "Cannot connect to API" error and an abort stays as is; a URL or
@@ -583,7 +587,7 @@ func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateIm
 			// failure is an API error whose message is `detail ?? error`.
 			var dlErr *providererrors.DownloadError
 			if errors.As(err, &dlErr) && dlErr.StatusCode >= 100 && (dlErr.StatusCode < 200 || dlErr.StatusCode >= 300) {
-				return nil, replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
+				return nil, replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
 			}
 			// TS getFromApi lets any other failure (a URL rejected by
 			// validateUrl, an abort) propagate unchanged.

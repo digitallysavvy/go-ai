@@ -2,6 +2,7 @@ package revai
 
 import (
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -43,11 +44,13 @@ func handleError(err error) error {
 		// A handler message is final, an empty one included (TS APICallError
 		// keeps ""). A download failure with no status never reached an HTTP
 		// response and propagates unchanged below.
-		message, code := errorMessageAndCode(downloadErr.StatusCode, downloadErr.Body)
+		// TS reads the failed body as text (TextDecoder).
+		body := []byte(textdecode.UTF8(downloadErr.Body))
+		message, code := errorMessageAndCode(downloadErr.StatusCode, body)
 		providerErr := providererrors.NewProviderError("revai", downloadErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
-		providerErr.ResponseBody = string(downloadErr.Body)
-		providerErr.Data = revaiErrorData(downloadErr.Body)
+		providerErr.ResponseBody = string(body)
+		providerErr.Data = revaiErrorData(body)
 		return providerErr
 	}
 

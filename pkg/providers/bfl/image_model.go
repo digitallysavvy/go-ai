@@ -141,11 +141,13 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	// TS createJsonResponseHandler(bflSubmitSchema).
-	if err := validateBFLImageSubmitBody(resp.Body); err != nil {
-		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, resp.Body, err)
+	// over response.text() (TextDecoder).
+	submitBody := []byte(textdecode.UTF8(resp.Body))
+	if err := validateBFLImageSubmitBody(submitBody); err != nil {
+		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, submitBody, err)
 	}
 	var createResp bflCreateResponse
-	if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &createResp); err != nil {
+	if err := json.Unmarshal(submitBody, &createResp); err != nil {
 		return nil, fmt.Errorf("failed to decode create response: %w", err)
 	}
 
@@ -760,7 +762,8 @@ func isBFLTaskNotFoundError(err error) bool {
 		return false
 	}
 	var raw map[string]json.RawMessage
-	if securejson.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &raw) != nil || raw == nil {
+	// statusErr is bflStatusError's cause, whose body is already text.
+	if securejson.Unmarshal(statusErr.Body, &raw) != nil || raw == nil {
 		return false
 	}
 	if m, ok := raw["message"]; ok {
