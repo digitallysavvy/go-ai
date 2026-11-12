@@ -82,3 +82,17 @@ func TestR91toolsVercelStdinBytesWrittenSchema(t *testing.T) {
 		}
 	}
 }
+
+// Step-5 extra (3.9.0 Sandbox.create / getOrCreate): runtime and image
+// together are rejected before any request.
+func TestR91toolsVercelRuntimeAndImageRejected(t *testing.T) {
+	params := CreateParams{Runtime: "node24", Image: "img"}
+	for _, err := range []error{
+		func() error { _, err := CreateSandbox(t.Context(), nil, params); return err }(),
+		func() error { _, err := GetOrCreateSandbox(t.Context(), nil, params, nil); return err }(),
+	} {
+		if err == nil || err.Error() != "`runtime` and `image` cannot be used together." {
+			t.Fatalf("err = %v", err)
+		}
+	}
+}
