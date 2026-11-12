@@ -372,8 +372,10 @@ func (f gatewayBatchStatusFields) toStatus() provider.BatchV4Status {
 	return status
 }
 
+// copyGatewayProviderMetadata is TS `providerMetadata != null`: an empty
+// object is reported, an absent or null one is not.
 func copyGatewayProviderMetadata(in map[string]map[string]interface{}) map[string]interface{} {
-	if len(in) == 0 {
+	if in == nil {
 		return nil
 	}
 	out := make(map[string]interface{}, len(in))
