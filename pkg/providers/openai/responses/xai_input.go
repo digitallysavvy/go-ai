@@ -177,10 +177,7 @@ func convertXAIFilePart(p types.FileContent) (interface{}, error) {
 		if isImage {
 			imageURL := fileURL
 			if fileDataType == types.FileDataTypeData {
-				data := openAIFileDataBase64(p)
-				if data == "" {
-					return nil, nil
-				}
+				data := openAIFileDataBase64(p) // an empty file is sent empty, like TS
 				resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, data)
 				if resolveErr != nil {
 					return nil, resolveErr

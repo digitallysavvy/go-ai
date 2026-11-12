@@ -3,15 +3,14 @@ package xai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -235,10 +234,10 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		}
 		audio = decoded
 	}
+	// TS File type is the media type (an empty one is sent as
+	// application/octet-stream by FormData) and the name is
+	// audio.<mediaTypeToExtension(mediaType)>.
 	mediaType := opts.MimeType
-	if mediaType == "" {
-		mediaType = "application/octet-stream"
-	}
 	filename := "audio." + xaiAudioExtension(mediaType)
 	part, err := providerutils.CreateFormDataFile(writer, "file", filename, mediaType)
 	if err != nil {
@@ -265,6 +264,24 @@ func extractXAITranscriptionProviderOptions(providerOptions map[string]interface
 	}
 	if err := json.Unmarshal(b, &opts); err != nil {
 		return opts, invalidXAIProviderOptions(err)
+	}
+	// TS vadThreshold, streaming and the streaming members are .optional()
+	// (not nullish): a present null is invalid.
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(b, &probe) == nil {
+		for _, key := range []string{"vadThreshold", "streaming"} {
+			if string(probe[key]) == "null" {
+				return opts, invalidXAIProviderOptions(fmt.Errorf("%s must not be null", key))
+			}
+		}
+		var streaming map[string]json.RawMessage
+		if json.Unmarshal(probe["streaming"], &streaming) == nil {
+			for _, key := range []string{"interimResults", "endpointing", "smartTurn", "smartTurnTimeout"} {
+				if string(streaming[key]) == "null" {
+					return opts, invalidXAIProviderOptions(fmt.Errorf("streaming.%s must not be null", key))
+				}
+			}
+		}
 	}
 	if opts.AudioFormat != nil && !xaiStringIn(*opts.AudioFormat, "pcm", "mulaw", "alaw", "opus") {
 		return opts, invalidXAIProviderOptions(fmt.Errorf("audioFormat must be \"pcm\", \"mulaw\", \"alaw\", or \"opus\""))
@@ -318,37 +335,12 @@ func xaiKeyterms(raw interface{}) []string {
 }
 
 func xaiAudioExtension(mediaType string) string {
-	switch strings.ToLower(mediaType) {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/opus":
-		return "ogg"
-	case "audio/mp4", "audio/m4a", "audio/x-m4a":
-		return "m4a"
-	case "audio/pcm":
-		return "pcm"
-	case "audio/mulaw":
-		return "mulaw"
-	case "audio/alaw":
-		return "alaw"
-	default:
-		if slash := strings.LastIndex(mediaType, "/"); slash >= 0 && slash < len(mediaType)-1 {
-			return mediaType[slash+1:]
-		}
-		return ""
-	}
+	return providerutils.MediaTypeToExtension(mediaType) // TS mediaTypeToExtension
 }
 
 func decodeXAITranscriptionAudioBase64(content string) ([]byte, error) {
-	normalized := strings.NewReplacer("-", "+", "_", "/").Replace(content)
-	if decoded, err := base64.StdEncoding.DecodeString(normalized); err == nil {
-		return decoded, nil
-	}
-	return base64.RawStdEncoding.DecodeString(normalized)
+	// TS convertBase64ToUint8Array: base64url mapped, atob's forgiving rules.
+	return fileutil.ConvertBase64ToBytes(content)
 }
 
 func stringPtrValue(v *string) string {

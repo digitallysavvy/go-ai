@@ -2,12 +2,12 @@ package xai
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -116,7 +116,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		}
 		envelope = &parsed
 		if envelope.Audio != nil && *envelope.Audio != "" {
-			decoded, decErr := base64.StdEncoding.DecodeString(*envelope.Audio)
+			decoded, decErr := fileutil.ConvertBase64ToBytes(*envelope.Audio)
 			if decErr != nil {
 				return nil, providererrors.NewProviderError(m.Provider(), 0, "",
 					fmt.Sprintf("failed to decode base64 audio: %v", decErr), decErr)

@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/url"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
@@ -110,17 +110,18 @@ func (m *OpenAIRealtimeModelLive) serverWebSocketConfig(requestHeaders func() (m
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	u, err := url.Parse(base)
+	// TS new URL(`${baseURL}/live/sessions`) with url.protocol set to ws:
+	// for http: and wss: otherwise (the base URL lost one trailing "/" in
+	// New).
+	u, err := urlnorm.Parse(base + "/live/sessions")
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}
-	if u.Scheme == "https" {
-		u.Scheme = "wss"
-	} else {
+	if u.Scheme == "http" {
 		u.Scheme = "ws"
+	} else {
+		u.Scheme = "wss"
 	}
-	// TS `${baseURL}/live/sessions`: the base URL lost one trailing "/" in New.
-	u.Path += "/live/sessions"
 
 	// TS getServerWebSocketConfig reads config.headers(): a missing API key
 	// is a LoadAPIKeyError, not a handshake without credentials.

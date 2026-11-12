@@ -382,8 +382,12 @@ func openaiBatchInputFileExpiresAfter(providerName string, providerOptions map[s
 			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("expected an object"))
 		}
 		v, present := opts["inputFileExpiresAfter"]
-		if !present || v == nil {
+		if !present {
 			return openaiBatchInputFileDefaultExpiresAfterSeconds, nil
+		}
+		if v == nil {
+			// TS z.number().optional(): a present null is invalid.
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("inputFileExpiresAfter must be a number"))
 		}
 		var n float64
 		switch x := v.(type) {
@@ -510,11 +514,33 @@ type openAIBatchResponseBody struct {
 	// CreatedAt shadows the embedded int64: TS z.number() accepts a
 	// fractional created_at (the timestamp is read from the body).
 	CreatedAt *float64 `json:"created_at"`
-	Error     *struct {
-		Message string      `json:"message"`
-		Type    string      `json:"type,omitempty"`
-		Code    interface{} `json:"code,omitempty"`
-	} `json:"error,omitempty"`
+	// Error is checked against TS openaiResponsesResponseSchema's error
+	// member below (message, type and code strings, param a nullish string).
+	Error json.RawMessage `json:"error,omitempty"`
+}
+
+// openaiBatchResponseError is the schema-checked `error` of a batch result
+// body: nil when absent or null; ok false when it fails the zod object.
+func openaiBatchResponseError(raw json.RawMessage) (batchErr *provider.BatchError, ok bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, true
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return nil, false
+	}
+	message, mOK := obj["message"].(string)
+	typ, tOK := obj["type"].(string)
+	code, cOK := obj["code"].(string)
+	if param, present := obj["param"]; present && param != nil {
+		if _, isString := param.(string); !isString {
+			return nil, false
+		}
+	}
+	if !mOK || !tOK || !cOK {
+		return nil, false
+	}
+	return &provider.BatchError{Message: message, Type: typ, Code: code}, true
 }
 
 // openAIBatchResultsStream implements provider.BatchV4ItemResultStream over
@@ -684,12 +710,12 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 		return nil, &provider.BatchError{Message: "OpenAI returned an invalid Responses batch result.", Code: "invalid_response"}
 	}
 	resp.ResponsesAPIResponse.CreatedAt = responsesWholeSeconds(resp.CreatedAt)
-	if resp.Error != nil {
-		code := ""
-		if resp.Error.Code != nil {
-			code = fmt.Sprintf("%v", resp.Error.Code)
-		}
-		return nil, &provider.BatchError{Message: resp.Error.Message, Type: resp.Error.Type, Code: code}
+	responseErr, errOK := openaiBatchResponseError(resp.Error)
+	if !errOK {
+		return nil, &provider.BatchError{Message: "OpenAI returned an invalid Responses batch result.", Code: "invalid_response"}
+	}
+	if responseErr != nil {
+		return nil, responseErr
 	}
 	if resp.Output == nil {
 		message := "OpenAI Responses returned no output."

@@ -180,7 +180,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
@@ -228,7 +228,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
@@ -274,7 +274,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 		if errors.As(err, &statusErr) {
 			return nil, openAICompatStatusError("openai", statusErr.StatusCode, statusErr.Headers, statusErr.Body)
 		}
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 
 	mediaType := ""
@@ -303,7 +303,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)

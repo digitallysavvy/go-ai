@@ -261,7 +261,9 @@ type xaiStreamingTranscriptionEvent struct {
 	Start        *float64 `json:"start,omitempty"`
 	Duration     *float64 `json:"duration,omitempty"`
 	ChannelIndex *int     `json:"channel_index,omitempty"`
-	Message      *string  `json:"message,omitempty"`
+	// Message is untyped: TS new Error(raw.message ?? ...) takes String()
+	// of any non-null value.
+	Message interface{} `json:"message,omitempty"`
 }
 
 // pumpAudio forwards raw audio chunks as binary WebSocket frames (xAI reads
@@ -509,7 +511,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 				// is kept.
 				msg := "xAI STT error"
 				if raw.Message != nil {
-					msg = *raw.Message
+					msg = providerutils.JSString(raw.Message)
 				}
 				fail(errors.New(msg))
 				return

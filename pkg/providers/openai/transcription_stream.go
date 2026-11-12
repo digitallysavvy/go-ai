@@ -477,8 +477,9 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 				// message is kept.
 				message := "OpenAI realtime error"
 				if errObj, ok := raw["error"].(map[string]interface{}); ok {
-					if m, ok := errObj["message"].(string); ok {
-						message = m
+					// new Error(x) takes String() of any non-null message.
+					if m := errObj["message"]; m != nil {
+						message = providerutils.JSString(m)
 					}
 				}
 				streamErr := errors.New(message)

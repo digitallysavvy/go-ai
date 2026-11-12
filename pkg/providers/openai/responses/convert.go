@@ -521,10 +521,9 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 					}
 					continue
 				}
+				// TS converts the bytes as given: an empty file is an empty
+				// base64 payload, not a dropped part.
 				data := openAIFileDataBase64(p)
-				if data == "" {
-					continue
-				}
 				resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, data)
 				if resolveErr != nil {
 					return UserMessage{}, resolveErr
@@ -650,6 +649,11 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 			}
 		case types.ReasoningContent:
 			hasPrecedingReasoning = true
+			// TS parseProviderOptions(openaiResponsesReasoningProviderOptionsSchema):
+			// a non-string itemId / reasoningEncryptedContent fails the call.
+			if _, err := providerutils.ParseProviderOptions(openAIProviderOptionsName(opts), p.ProviderOptions, openAIReasoningPartOptionsSchema); err != nil {
+				return nil, nil, err
+			}
 			item, w := convertReasoningItem(p, opts, reasoningItems)
 			if item != nil {
 				items = append(items, item)
@@ -1159,6 +1163,13 @@ func convertAssistantTextItem(part types.TextContent, opts ConvertOptions, hasPr
 	return item
 }
 
+// openAIReasoningPartOptionsSchema is TS
+// openaiResponsesReasoningProviderOptionsSchema.
+var openAIReasoningPartOptionsSchema = providerutils.OptionSchema{
+	"itemId":                    providerutils.OptNullable(providerutils.OptString),
+	"reasoningEncryptedContent": providerutils.OptNullable(providerutils.OptString),
+}
+
 func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reasoningItems map[string]map[string]interface{}) (interface{}, []types.Warning) {
 	itemID := openAIReasoningItemID(part, openAIProviderOptionsName(opts))
 	encryptedContent := openAIReasoningEncryptedContent(part, openAIProviderOptionsName(opts))
@@ -1623,7 +1634,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case types.ToolApprovalResponseContent:
-			if p.ApprovalID == "" || processedApprovals[p.ApprovalID] {
+			if processedApprovals[p.ApprovalID] { // TS: "" is an id too
 				continue
 			}
 			processedApprovals[p.ApprovalID] = true
@@ -1639,7 +1650,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				Approve:           p.Approved,
 			})
 		case *types.ToolApprovalResponseContent:
-			if p == nil || p.ApprovalID == "" || processedApprovals[p.ApprovalID] {
+			if p == nil || processedApprovals[p.ApprovalID] {
 				continue
 			}
 			processedApprovals[p.ApprovalID] = true
@@ -1793,6 +1804,15 @@ func appendAdditionalTools(items *[]interface{}, part types.ToolResultContent, o
 			return invalid(fmt.Sprintf("entry %d: name must be a non-empty string", i))
 		case def.Parameters == nil:
 			return invalid(fmt.Sprintf("entry %d: parameters must be an object", i))
+		}
+		// description and strict are .optional(): a present null is invalid.
+		var present map[string]json.RawMessage
+		if json.Unmarshal(entry, &present) == nil {
+			for _, key := range []string{"description", "strict"} {
+				if string(present[key]) == "null" {
+					return invalid(fmt.Sprintf("entry %d: %s must not be null", i, key))
+				}
+			}
 		}
 		tools = append(tools, AdditionalToolDef{
 			Type:        "function",
@@ -2554,10 +2574,7 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 							})
 						}
 					case types.FileDataTypeData:
-						data := fileContentBlockDataBase64(b)
-						if data == "" {
-							continue
-						}
+						data := fileContentBlockDataBase64(b) // "" for an empty file, sent like TS
 						resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, data)
 						if resolveErr != nil {
 							// This path cannot return an error; keep the declared type.
@@ -2605,7 +2622,13 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 	if s, ok := tr.Result.(string); ok {
 		return s
 	}
-	return fmt.Sprintf("%v", tr.Result)
+	// A legacy Result value is the TS json output: JSON.stringify(value),
+	// not Go's %v syntax.
+	b, err := jsonstr.Marshal(tr.Result)
+	if err != nil {
+		return fmt.Sprintf("%v", tr.Result)
+	}
+	return string(b)
 }
 
 // toolResultBlockDataType returns the block's explicit file data type, or the

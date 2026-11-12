@@ -269,7 +269,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 			result.Content = append(result.Content, part)
 		case "message":
 			for _, c := range item.Content {
-				logprobs = append(logprobs, c.Logprobs...)
+				logprobs = append(logprobs, deepseekResponsesLogprobs(c.Logprobs)...)
 				if c.Text != nil && *c.Text != "" {
 					result.Content = append(result.Content, types.TextContent{Text: *c.Text})
 					result.Text += *c.Text
@@ -562,6 +562,45 @@ type deepseekResponsesResponse struct {
 	Usage  json.RawMessage   `json:"usage"`
 }
 
+// deepseekResponsesLogprobs is TS createLogprobSchema's output for each
+// entry: token, logprob, bytes? and top_logprobs? ({token, logprob, bytes?}),
+// a present null kept and other wire keys dropped like the zod object.
+func deepseekResponsesLogprobs(items []json.RawMessage) []json.RawMessage {
+	type top struct {
+		Token   json.RawMessage `json:"token"`
+		Logprob json.RawMessage `json:"logprob"`
+		Bytes   json.RawMessage `json:"bytes,omitempty"`
+	}
+	type entry struct {
+		Token       json.RawMessage `json:"token"`
+		Logprob     json.RawMessage `json:"logprob"`
+		Bytes       json.RawMessage `json:"bytes,omitempty"`
+		TopLogprobs *[]top          `json:"top_logprobs,omitempty"`
+	}
+	out := make([]json.RawMessage, len(items))
+	for i, raw := range items {
+		out[i] = raw
+		var e entry
+		var probe map[string]json.RawMessage
+		if json.Unmarshal(raw, &probe) != nil || json.Unmarshal(raw, &e) != nil || len(e.Token) == 0 || len(e.Logprob) == 0 {
+			continue // the response schema check rejects this shape first
+		}
+		if tl, ok := probe["top_logprobs"]; ok && string(tl) == "null" {
+			if b, err := json.Marshal(struct {
+				entry
+				TopLogprobs json.RawMessage `json:"top_logprobs"`
+			}{entry: e, TopLogprobs: tl}); err == nil {
+				out[i] = b
+			}
+			continue
+		}
+		if b, err := json.Marshal(e); err == nil {
+			out[i] = b
+		}
+	}
+	return out
+}
+
 type deepseekResponsesContentPart struct {
 	Type     string            `json:"type"`
 	Text     *string           `json:"text"`
@@ -747,7 +786,7 @@ func (s *deepseekResponsesStream) transform(data string) {
 		}
 
 	case "response.output_text.delta":
-		s.logprobs = append(s.logprobs, ev.Logprobs...)
+		s.logprobs = append(s.logprobs, deepseekResponsesLogprobs(ev.Logprobs)...)
 		s.openTextPart(ev.ItemID)
 		s.push(&provider.StreamChunk{Type: provider.ChunkTypeText, ID: ev.ItemID, Text: ev.Delta})
 

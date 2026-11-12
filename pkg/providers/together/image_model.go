@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -256,19 +257,19 @@ func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
 			}
 			result.MimeType = "image/png"
 		}
-		if item.B64JSON != "" {
-			image, err := base64.StdEncoding.DecodeString(item.B64JSON)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decode base64 image: %w", err)
-			}
-			result.Images = append(result.Images, image)
-			result.Base64Images = append(result.Base64Images, item.B64JSON)
-			if result.Image == nil {
-				result.Image = image
-				result.Base64Image = item.B64JSON
-			}
-			result.MimeType = "image/png"
+		// TS images: response.data.map(item => item.b64_json); the schema
+		// requires the string, so a present "" is an (empty) image too.
+		image, err := fileutil.ConvertBase64ToBytes(item.B64JSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 image: %w", err)
 		}
+		result.Images = append(result.Images, image)
+		result.Base64Images = append(result.Base64Images, item.B64JSON)
+		if len(result.Images) == 1 {
+			result.Image = image
+			result.Base64Image = item.B64JSON
+		}
+		result.MimeType = "image/png"
 	}
 
 	if result.Usage.ImageCount == 0 {

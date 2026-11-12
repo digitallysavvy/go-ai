@@ -51,12 +51,14 @@ var azureOutputFormatShorthands = map[string]string{
 var azureNativeOutputFormatPattern = regexp.MustCompile(`^(?:amr|audio|g722|ogg|raw|riff|webm)-[a-z0-9-]+$`)
 
 // azureVoiceLocalePattern extracts a voice name's locale prefix, mirroring
-// TS's /^([a-z]{2,3}-[a-z]{2,4})-/i (used to derive the SSML xml:lang).
-var azureVoiceLocalePattern = regexp.MustCompile(`(?i)^([a-z]{2,3}-[a-z]{2,4})-`)
+// TS's /^([a-z]{2,3}-[a-z]{2,4})-/i (used to derive the SSML xml:lang). The
+// class is spelled out: JS /i without /u matches only ASCII letters here, RE2
+// (?i) also the Kelvin sign and the long s.
+var azureVoiceLocalePattern = regexp.MustCompile(`^([a-zA-Z]{2,3}-[a-zA-Z]{2,4})-`)
 
 // azureVoiceLanguagePattern extracts a voice name's ISO 639-1 language code,
 // mirroring TS's /^([a-z]{2,3})-[a-z]{2,4}-/i.
-var azureVoiceLanguagePattern = regexp.MustCompile(`(?i)^([a-z]{2,3})-[a-z]{2,4}-`)
+var azureVoiceLanguagePattern = regexp.MustCompile(`^([a-zA-Z]{2,3})-[a-zA-Z]{2,4}-`)
 
 // AzureSpeechSpeechModel is the Azure Speech SSML text-to-speech backend for
 // MAI-Voice-2, MAI-Voice-2-Flash, MAI-Voice-2.1, and MAI-Voice-2.1-Flash,
@@ -197,7 +199,8 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Header),
-			Body:      respBody,
+			// TS createBinaryResponseHandler returns no rawValue, so
+			// response.body is undefined.
 		},
 	}, nil
 }

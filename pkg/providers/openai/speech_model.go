@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"reflect"
 	"time"
@@ -133,7 +134,7 @@ func validateSpeechProviderOptions(providerOptions map[string]interface{}) error
 	}
 	if v, ok := m["speed"]; ok && v != nil {
 		f, isNum := speechSpeedOption(v)
-		if !isNum {
+		if !isNum || math.IsNaN(f) { // z.number() rejects NaN
 			return invalid("Invalid input: expected number at speed")
 		}
 		if f < 0.25 {

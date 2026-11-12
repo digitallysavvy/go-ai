@@ -3,7 +3,6 @@ package xai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -104,6 +104,11 @@ func extractXAIBatchProviderOptions(providerOptions map[string]interface{}) (xai
 	}
 	if err := json.Unmarshal(b, &opts); err != nil {
 		return opts, invalidXAIProviderOptions(err)
+	}
+	// TS z.number().optional(): a present null is invalid.
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(b, &probe) == nil && string(probe["inputFileExpiresAfter"]) == "null" {
+		return opts, invalidXAIProviderOptions(fmt.Errorf("inputFileExpiresAfter must be a number"))
 	}
 	if opts.InputFileExpiresAfter != nil && (*opts.InputFileExpiresAfter < 3600 || *opts.InputFileExpiresAfter > 2_592_000) {
 		return opts, invalidXAIProviderOptions(fmt.Errorf("inputFileExpiresAfter must be between 3600 and 2592000"))
@@ -689,7 +694,7 @@ func convertXAIBatchError(errorMessage string, errWire *xaiBatchErrorWire) *prov
 	if errWire != nil && errWire.Code != nil && !isZeroXAIBatchErrorCode(errWire.Code) {
 		switch v := errWire.Code.(type) {
 		case float64:
-			result.Code = strconv.FormatFloat(v, 'f', -1, 64)
+			result.Code = providerutils.JSNumberString(v)
 		case string:
 			result.Code = v
 		default:
@@ -909,6 +914,16 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 				call.Dynamic = true
 			}
 			toolCalls = append(toolCalls, call)
+			// TS pushes the tool-call part in place, ahead of later choices'
+			// parts and the citation sources.
+			content = append(content, types.ToolCallContent{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Input:            call.RawArguments,
+				Arguments:        call.Arguments,
+				ProviderExecuted: call.ProviderExecuted,
+				Dynamic:          call.Dynamic,
+			})
 		}
 	}
 	for _, u := range resp.Citations {
@@ -980,7 +995,7 @@ func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResp
 	for _, d := range resp.Data {
 		switch {
 		case d.B64JSON != nil:
-			decoded, err := base64.StdEncoding.DecodeString(*d.B64JSON)
+			decoded, err := fileutil.ConvertBase64ToBytes(*d.B64JSON)
 			if err != nil {
 				return nil, err
 			}

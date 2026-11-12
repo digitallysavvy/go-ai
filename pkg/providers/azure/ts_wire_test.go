@@ -68,7 +68,12 @@ func TestTSWire(t *testing.T) {
 					return strings.TrimPrefix(auth[i], "Bearer "), nil
 				}
 			}
+			// The TS provider's apiVersion setting (the "modified api
+			// version" cases); before r93 these cases failed on the image
+			// decode before the query was compared.
+			apiVersion, _ := m.Config["apiVersion"].(string)
 			p, err := New(Config{
+				APIVersion:             apiVersion,
 				APIKey:                 apiKey,
 				ADTokenProvider:        tokens,
 				UseDeploymentBasedURLs: usesDeployments(m),

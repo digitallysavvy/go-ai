@@ -579,7 +579,7 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 
 	meta := map[string]json.RawMessage{}
 	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
-		meta["logprobs"] = choice.Logprobs
+		meta["logprobs"] = moonshotLogprobsObject(choice.Logprobs)
 	}
 	if resp.Object != "" {
 		if b, err := json.Marshal(resp.Object); err == nil {
@@ -732,6 +732,68 @@ type moonshotStreamToolCallDelta struct {
 
 type moonshotLogprobsContent struct {
 	Content []json.RawMessage `json:"content"`
+}
+
+// moonshotLogprobEntry is one logprob as TS moonshotAIChatLogprobSchema
+// outputs it: token, logprob, bytes and top_logprobs ({token, logprob,
+// bytes}), other wire keys dropped like the zod object.
+func moonshotLogprobEntry(raw json.RawMessage) json.RawMessage {
+	type top struct {
+		Token   json.RawMessage `json:"token"`
+		Logprob json.RawMessage `json:"logprob"`
+		Bytes   json.RawMessage `json:"bytes"`
+	}
+	var entry struct {
+		Token       json.RawMessage `json:"token"`
+		Logprob     json.RawMessage `json:"logprob"`
+		Bytes       json.RawMessage `json:"bytes"`
+		TopLogprobs []top           `json:"top_logprobs"`
+	}
+	if json.Unmarshal(raw, &entry) != nil || len(entry.Token) == 0 || len(entry.Logprob) == 0 || len(entry.Bytes) == 0 || entry.TopLogprobs == nil {
+		return raw // the response schema check rejects this shape first
+	}
+	for _, t := range entry.TopLogprobs {
+		if len(t.Token) == 0 || len(t.Logprob) == 0 || len(t.Bytes) == 0 {
+			return raw
+		}
+	}
+	out, err := json.Marshal(entry)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// moonshotLogprobsObject is TS moonshotAIChatLogprobsSchema's output for a
+// response's choice.logprobs: {content?: [...] | null}, other keys dropped.
+func moonshotLogprobsObject(raw json.RawMessage) json.RawMessage {
+	var lp map[string]json.RawMessage
+	if json.Unmarshal(raw, &lp) != nil {
+		return raw
+	}
+	content, ok := lp["content"]
+	if !ok {
+		return json.RawMessage(`{}`)
+	}
+	if string(content) != "null" {
+		var items []json.RawMessage
+		if json.Unmarshal(content, &items) != nil {
+			return raw
+		}
+		for i := range items {
+			items[i] = moonshotLogprobEntry(items[i])
+		}
+		b, err := json.Marshal(items)
+		if err != nil {
+			return raw
+		}
+		content = b
+	}
+	out, err := json.Marshal(map[string]json.RawMessage{"content": content})
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // moonshotStream implements provider.TextStream for Moonshot streaming
@@ -905,7 +967,9 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 			var lp moonshotLogprobsContent
 			if err := json.Unmarshal(choice.Logprobs, &lp); err == nil {
-				s.contentLogprobs = append(s.contentLogprobs, lp.Content...)
+				for _, item := range lp.Content {
+					s.contentLogprobs = append(s.contentLogprobs, moonshotLogprobEntry(item))
+				}
 			}
 		}
 

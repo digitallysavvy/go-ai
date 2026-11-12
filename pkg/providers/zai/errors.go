@@ -2,7 +2,6 @@ package zai
 
 import (
 	"errors"
-	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -69,7 +68,7 @@ func zaiErrorCode(code interface{}) string {
 	case string:
 		return c
 	case float64:
-		return strconv.FormatFloat(c, 'f', -1, 64)
+		return providerutils.JSNumberString(c)
 	default:
 		return ""
 	}

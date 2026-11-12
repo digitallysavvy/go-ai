@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // deepseekHTTPStatusCode mirrors TS deepseek-chat-language-model.ts's
@@ -103,7 +104,7 @@ func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.Raw
 	codeStr, _ := code.(string)
 	if codeStr == "" {
 		if n, ok := code.(float64); ok {
-			codeStr = strconv.FormatFloat(n, 'f', -1, 64)
+			codeStr = providerutils.JSNumberString(n)
 		}
 	}
 	statusCode, isRetryable, matched := deepseekStreamErrorMetadata(codeStr, payload.Type)

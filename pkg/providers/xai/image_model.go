@@ -281,7 +281,7 @@ func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([
 	if hasAllBase64 {
 		base64Images := make([]string, 0, len(data))
 		for _, image := range data {
-			decoded, err := base64.StdEncoding.DecodeString(*image.B64JSON)
+			decoded, err := fileutil.ConvertBase64ToBytes(*image.B64JSON)
 			if err != nil {
 				return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
 					fmt.Sprintf("failed to decode b64_json image: %v", err), err)
