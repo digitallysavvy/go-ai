@@ -26,7 +26,7 @@ func TestR33_NonNumericBitRateMatchesNaNSemantics(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if q["bit_rate"] != c.wantRate || (len(warnings) > 0) != c.wantWarn {
+		if q.vals["bit_rate"] != c.wantRate || (len(warnings) > 0) != c.wantWarn {
 			t.Errorf("%s: query=%v warnings=%+v", c.enc, q, warnings)
 		}
 	}
@@ -34,16 +34,16 @@ func TestR33_NonNumericBitRateMatchesNaNSemantics(t *testing.T) {
 	q, _, _ := m.buildArgs(&provider.SpeechGenerateOptions{Text: "x", ProviderOptions: map[string]interface{}{
 		"deepgram": map[string]interface{}{"encoding": "mp3", "bitRate": " 48000 "},
 	}})
-	if q["bit_rate"] != " 48000 " {
+	if q.vals["bit_rate"] != " 48000 " {
 		t.Errorf("query=%v", q)
 	}
 }
 
 // parseInt of a huge digit run is a finite double in JS, not NaN.
 func TestR33_HugeSampleRateInFormatSuffix(t *testing.T) {
-	q := map[string]string{}
+	q := newDGQuery()
 	applyOutputFormat(q, "wav_99999999999999999999")
-	if q["sample_rate"] != "100000000000000000000" || !strings.Contains(q["container"], "wav") {
+	if q.vals["sample_rate"] != "100000000000000000000" || !strings.Contains(q.vals["container"], "wav") {
 		t.Fatalf("query=%v", q)
 	}
 }
@@ -89,7 +89,7 @@ func TestR33_VoiceTrimIsJSTrim(t *testing.T) {
 		t.Error("BOM-only voice accepted")
 	}
 	q, _, err := m.buildArgs(&provider.SpeechGenerateOptions{Text: "x", Voice: "\u0085"})
-	if err != nil || q["model"] != "aura-2-\u0085-en" {
+	if err != nil || q.vals["model"] != "aura-2-\u0085-en" {
 		t.Errorf("NEL voice: %v %v", q, err)
 	}
 }
