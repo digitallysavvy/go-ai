@@ -12,6 +12,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // liveSpeechTranslationWebSocketPath is the Live API bidi service path for
@@ -90,6 +91,8 @@ type speechTranslationModelOptions struct {
 // with googleSpeechTranslationModelOptions: a present value of the wrong type
 // fails with an InvalidArgumentError.
 func parseSpeechTranslationModelOptionsChecked(providerOptions map[string]interface{}) (speechTranslationModelOptions, error) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	var out speechTranslationModelOptions
 	raw, ok := providerOptions["google"]
 	if !ok || raw == nil {

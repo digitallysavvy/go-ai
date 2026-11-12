@@ -72,6 +72,8 @@ type transcriptionModelOptions struct {
 // mode outside SMART/VERBATIM) fails with an InvalidArgumentError. Empty
 // arrays stay non-nil because TS forwards `languageCodes: []`.
 func parseTranscriptionModelOptionsChecked(providerOptions map[string]interface{}) (transcriptionModelOptions, error) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	var out transcriptionModelOptions
 	raw, ok := providerOptions["google"]
 	if !ok || raw == nil {

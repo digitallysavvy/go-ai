@@ -8,6 +8,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // convertToMistralConversationInputs converts a prompt to Conversations API
@@ -65,7 +66,8 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 				flush()
 				if providerExecuted {
 					wireName := names.providerName(name)
-					if mistralOpts, ok := providerOpts["mistral"].(map[string]interface{}); ok {
+					// Typed-option ruling: part options are read in their JSON form.
+					if mistralOpts, ok := providerutils.NormalizeOptionsJSON(providerOpts)["mistral"].(map[string]interface{}); ok {
 						// TS: `mistral?.function ?? mistral?.name`, then used only
 						// when that value is a string; a non-string `function`
 						// shadows `name`.

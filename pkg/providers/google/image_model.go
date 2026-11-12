@@ -9,6 +9,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageAspectRatio constants for Gemini image generation (imageConfig.aspectRatio).
@@ -338,7 +339,7 @@ func extractGoogleOptions(providerOptions map[string]interface{}) map[string]int
 	if providerOptions == nil {
 		return nil
 	}
-	googleOpts, ok := providerOptions["google"].(map[string]interface{})
+	googleOpts, ok := providerutils.NormalizeOptionsJSON(providerOptions)["google"].(map[string]interface{})
 	if !ok {
 		return nil
 	}

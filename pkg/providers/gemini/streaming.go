@@ -58,7 +58,7 @@ type stream struct {
 	// continued (TS groundingMetadataPerRequest).
 	requestGroundingMetadata json.RawMessage
 	groundingPerRequest      []json.RawMessage
-	emittedSourceURLs        map[string]bool
+	emittedSourceKeys        map[string]bool
 	lastUrlContextMetadata   json.RawMessage
 	lastSafetyRatings        json.RawMessage
 	lastFinishMessage        string
@@ -420,16 +420,13 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		return
 	}
 
-	// Grounding chunks become url sources, each URL emitted once (TS
-	// emittedSourceUrls; document sources are not streamed).
-	for _, src := range extractSources(candidate.GroundingMetadata, s.generateID) {
-		if src.SourceType != "url" || s.emittedSourceURLs[src.URL] {
-			continue
-		}
-		if s.emittedSourceURLs == nil {
-			s.emittedSourceURLs = map[string]bool{}
-		}
-		s.emittedSourceURLs[src.URL] = true
+	// Grounding chunks become sources, each emitted once per stream under a
+	// per-type key; document (File Search, RAG) sources stream too (TS
+	// 540509c068 emittedSourceKeys).
+	if s.emittedSourceKeys == nil {
+		s.emittedSourceKeys = map[string]bool{}
+	}
+	for _, src := range extractSourcesDedup(candidate.GroundingMetadata, s.generateID, s.emittedSourceKeys) {
 		src := src
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
 	}
@@ -677,7 +674,7 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
 	// TS: usage?.serviceTier of the final (merged) usage metadata. A
 	// top-level chunk serviceTier is not read.
-	meta["serviceTier"] = serviceTierJSON(s.lastUsageMetadata)
+	meta["serviceTier"] = serviceTierWithHeader(s.lastUsageMetadata, providerutils.ExtractHeaders(s.httpHeaders))
 	// Only surface the token when the response stopped early (budget used up,
 	// or continuing failed), not for the checkpoint tokens of a stream that
 	// finished normally.

@@ -160,8 +160,11 @@ func (p *Provider) resolve() (Config, *internalhttp.Client, error) {
 		timeout = cfg.HTTPClient.Timeout
 	}
 	authedClient := &http.Client{
-		Timeout:   timeout,
-		Transport: &vertexinternal.AuthTransport{Base: baseTransport, TokenFunc: cfg.resolveAuthToken(), OverrideAuthorization: true},
+		Timeout: timeout,
+		Transport: &providerHeadersTransport{
+			headers: cfg.Headers,
+			base:    &vertexinternal.AuthTransport{Base: baseTransport, TokenFunc: cfg.resolveAuthToken(), OverrideAuthorization: true},
+		},
 	}
 
 	p.client = internalhttp.NewClient(internalhttp.Config{
@@ -250,4 +253,25 @@ func (p *Provider) mustClient() *internalhttp.Client {
 func (p *Provider) resolvedConfig() Config {
 	c, _, _ := p.resolve()
 	return c
+}
+
+// providerHeadersTransport applies the provider's Config.Headers after the
+// request's own (call) headers, so a provider header wins over a call header
+// of the same name. TS google-vertex-xai-provider-node.ts:40 customFetch
+// spreads the resolved provider headers after init.headers (then the bearer
+// token, which AuthTransport sets last).
+type providerHeadersTransport struct {
+	headers map[string]string
+	base    http.RoundTripper
+}
+
+func (t *providerHeadersTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if len(t.headers) == 0 {
+		return t.base.RoundTrip(req)
+	}
+	clone := req.Clone(req.Context())
+	for k, v := range t.headers {
+		clone.Header.Set(k, v)
+	}
+	return t.base.RoundTrip(clone)
 }

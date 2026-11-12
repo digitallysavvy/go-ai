@@ -863,12 +863,16 @@ func (m *LanguageModel) providerOptions(opts *provider.GenerateOptions) map[stri
 	if opts == nil {
 		opts = &provider.GenerateOptions{}
 	}
-	providerOptions := cloneProviderOptions(opts.ProviderOptions)
+	// Typed-option ruling: Go-typed option literals (a GatewayProviderOptions
+	// value, map[string]string, ...) are read in their JSON form, so they merge
+	// with the config options and the serviceTier rule like TS values.
+	callerOptions := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	providerOptions := cloneProviderOptions(callerOptions)
 	configGatewayOptions := m.provider.configGatewayProviderOptions()
 	if len(configGatewayOptions) > 0 {
 		providerOptions["gateway"] = configGatewayOptions
 	}
-	if gatewayOptions, ok := opts.ProviderOptions["gateway"]; ok {
+	if gatewayOptions, ok := callerOptions["gateway"]; ok {
 		if configGatewayOptions == nil {
 			providerOptions["gateway"] = gatewayOptions
 			return enforceGatewayServiceTier(providerOptions)

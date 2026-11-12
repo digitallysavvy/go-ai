@@ -10,9 +10,8 @@ import (
 )
 
 // Mirrors TypeScript's `provider.decisionModel = (modelId) => new
-// DecisionLanguageModel({ model: createChatModel(modelId), provider:
-// providerName.replace(/\.generative-ai$/, '') + '.decision' })` in
-// google-provider.ts.
+// DecisionGoogleModel(modelId, {...})` in google-provider.ts (f70336158e:
+// the native Gemini Decisions API).
 
 func TestProvider_DecisionModel_Metadata(t *testing.T) {
 	p := New(Config{APIKey: "k"})
@@ -34,12 +33,15 @@ func TestProvider_DecisionModel_Metadata(t *testing.T) {
 func TestProvider_DecisionModel_DoDecide(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"{\"q0\":\"c0\"}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}`)
+		if r.URL.Path != "/decisions" {
+			t.Errorf("path = %s, want /decisions", r.URL.Path)
+		}
+		_, _ = fmt.Fprint(w, `{"answers":{"topic":{"type":"choice","choice":"billing","probabilities":{"billing":0.9,"other":0.1}}},"usage":{"total_input_tokens":10,"total_output_tokens":0}}`)
 	}))
 	defer server.Close()
 
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
-	model, err := p.DecisionModel(ModelGemini20Flash)
+	model, err := p.DecisionModel(ModelGeminiDecision1)
 	if err != nil {
 		t.Fatalf("DecisionModel: %v", err)
 	}
@@ -50,7 +52,7 @@ func TestProvider_DecisionModel_DoDecide(t *testing.T) {
 			"topic": {
 				Type:         "choice",
 				Instructions: "What is the topic?",
-				Criteria:     map[string]interface{}{"billing": "Billing related"},
+				Criteria:     map[string]interface{}{"billing": "Billing related", "other": "Anything else"},
 			},
 		},
 	})

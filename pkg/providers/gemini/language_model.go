@@ -168,6 +168,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.Warnings = append(warnings, result.Warnings...)
 	result.RawRequest = reqBody
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS convertGenerateContentResponse({responseHeaders}): the served tier
+	// header fills in serviceTier when usageMetadata has none (45337f0e8d).
+	for _, payload := range result.ProviderMetadata {
+		if meta, ok := payload.(map[string]json.RawMessage); ok {
+			meta["serviceTier"] = serviceTierWithHeader(last.UsageMetadata, result.ResponseHeaders)
+		}
+	}
 	if result.ResponseMetadata == nil {
 		result.ResponseMetadata = &types.ResponseMetadata{ModelID: m.modelID}
 	}

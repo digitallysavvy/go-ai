@@ -402,14 +402,13 @@ func gatewayImageFile(file provider.ImageFile) map[string]interface{} {
 	return result
 }
 
+// flattenHeaders is TS extractResponseHeaders: a repeated header joins its
+// values with ", " (fetch Headers semantics), never just the first value.
 func flattenHeaders(headers http.Header) map[string]string {
-	out := make(map[string]string, len(headers))
-	for key, values := range headers {
-		if len(values) > 0 {
-			out[key] = values[0]
-		}
+	if len(headers) == 0 {
+		return map[string]string{}
 	}
-	return out
+	return providerutils.ExtractHeaders(headers)
 }
 
 // handleError converts errors to appropriate provider errors

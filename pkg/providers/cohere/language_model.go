@@ -66,6 +66,12 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
@@ -115,6 +121,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}

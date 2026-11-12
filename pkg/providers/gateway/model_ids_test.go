@@ -81,7 +81,7 @@ func catalogs() map[string][]string {
 
 func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 	want := map[string]int{
-		"language":      321, // + claude-fable-5.2, claude-fable-5.2-batch, muse-ember (TS 84208104a4, 6d65092d9e)
+		"language":      325, // + claude-fable-5.2-fast, deepseek-v4.1-flash-1017-ultrafast, gemini-4-carbon, ampersand-v0.1 (TS c160b74576, eaeb37e514, 5497ff78eb)
 		"embedding":     28,
 		"image":         39,
 		"video":         37,
@@ -89,12 +89,12 @@ func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 		"speech":        24,
 		"transcription": 16,
 		"realtime":      10,
-		"decision":      14,
+		"decision":      18, // + nace-ai drex x3, parallel-decisions-fast (TS eaeb37e514, 5497ff78eb)
 	}
 	got := catalogs()
 	for kind, n := range want {
 		if len(got[kind]) != n {
-			t.Errorf("%s catalog length = %d, want %d (TS 9f7a842ae1)", kind, len(got[kind]), n)
+			t.Errorf("%s catalog length = %d, want %d (TS 2ebc78b654)", kind, len(got[kind]), n)
 		}
 	}
 }

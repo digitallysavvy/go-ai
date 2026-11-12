@@ -535,6 +535,8 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	// than TS by default.
 	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOpts = providerutils.NormalizeOptionsJSON(providerOpts)
 	if providerOpts != nil {
 		// A null "googleVertex" entry falls through to "vertex", like TS
 		// parseProviderOptions treating null as absent.
@@ -586,18 +588,13 @@ func (m *VideoModel) handleError(err error) error {
 }
 
 // convertVertexVideoHeaders flattens net/http.Header into map[string]string,
-// taking the first value for each header key.
+// like TS extractResponseHeaders.
 func convertVertexVideoHeaders(h http.Header) map[string]string {
 	if len(h) == 0 {
 		return map[string]string{}
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	// TS extractResponseHeaders: repeated values are joined with ", ".
+	return providerutils.ExtractHeaders(h)
 }
 
 // vertexVideoOperationWire mirrors TS googleVertexOperationSchema.

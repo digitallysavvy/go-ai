@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
 	"net/url"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type MintRealtimeClientSecretParams struct {
@@ -95,11 +97,13 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 		Token     *string  `json:"token"`
 		ExpiresAt *float64 `json:"expiresAt"`
 	}
-	if err := json.Unmarshal([]byte(textdecode.UTF8(response.Body)), &parsed); err != nil || parsed.Token == nil {
-		if err == nil {
-			err = fmt.Errorf("missing token")
-		}
-		return nil, p.gatewayUnknownError(fmt.Errorf("invalid realtime client secret response: %w", err))
+	decodedBody := []byte(textdecode.UTF8(response.Body))
+	if err := json.Unmarshal(decodedBody, &parsed); err != nil || parsed.Token == nil {
+		// TS createJsonResponseHandler(gatewayClientSecretResponseSchema):
+		// the APICallError "Invalid JSON response" with the response status,
+		// turned into a GatewayResponseError by asGatewayError.
+		pe := providerutils.InvalidJSONResponseError("gateway", resp.StatusCode, resp.Header, decodedBody, nil)
+		return nil, gatewayerrors.CreateGatewayErrorFromResponse(decodedBody, resp.StatusCode, "Gateway request failed", pe, authMethod)
 	}
 	secret := &RealtimeClientSecret{Token: *parsed.Token}
 	if parsed.ExpiresAt != nil {

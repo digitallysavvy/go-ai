@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -211,6 +211,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 			s.requestBody = args
 			s.generateID = m.cfg.GenerateID
 			s.includeRawChunks = opts.IncludeRawChunks
+			s.mapError = m.handleError
 		}
 		return pollStream, nil
 	}
@@ -233,6 +234,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 		s.requestBody = streamArgs
 		s.generateID = m.cfg.GenerateID
 		s.includeRawChunks = opts.IncludeRawChunks
+		s.mapError = m.handleError
 	}
 	return eventStream, nil
 }
@@ -536,7 +538,7 @@ func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, inter
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 			ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractions),
 			Method:           http.MethodGet,
-			Path:             "/interactions/" + url.PathEscape(interactionID),
+			Path:             "/interactions/" + providerutils.EncodeURIComponent(interactionID),
 			Headers:          headers,
 		}, &response)
 		if err != nil {
@@ -561,7 +563,7 @@ func (m *InteractionsLanguageModel) cancelInteraction(ctx context.Context, inter
 	}
 	_, err := m.cfg.Client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/interactions/" + url.PathEscape(interactionID) + "/cancel",
+		Path:    "/interactions/" + providerutils.EncodeURIComponent(interactionID) + "/cancel",
 		Headers: headers,
 		Body:    map[string]interface{}{},
 	})
@@ -594,6 +596,14 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 	raw, ok := providerOptions["google"]
 	if !ok {
 		return out, nil
+	}
+	// Typed-option ruling: anything but the typed options struct is read in
+	// its JSON form, so Go-typed nested literals ([]map[string]string,
+	// map[string]string, int64) parse the way the TS zod schema parses them.
+	switch raw.(type) {
+	case GoogleInteractionsProviderOptions, *GoogleInteractionsProviderOptions:
+	default:
+		raw = providerutils.NormalizeOptionsJSON(map[string]interface{}{"google": raw})["google"]
 	}
 	switch v := raw.(type) {
 	case GoogleInteractionsProviderOptions:
@@ -1179,16 +1189,16 @@ func pruneMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
+// numberToInt reads a number of any Go integer or float kind (typed-option
+// ruling: numeric helpers accept every kind).
 func numberToInt(v interface{}) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	case float64:
-		return int(n), true
-	case float32:
-		return int(n), true
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return int(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return int(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return int(rv.Float()), true
 	default:
 		return 0, false
 	}
@@ -1245,11 +1255,11 @@ func convertInteractionsUsage(usage *interactionsUsage) types.Usage {
 			"grounding_tool_count":        usage.GroundingToolCount,
 		}
 	}
-	if usage.TotalInputTokens != nil || usage.TotalCachedTokens != nil || len(usage.InputTokensByModality) > 0 {
+	// TS reports only total, noCache and cacheRead input details; the
+	// per-modality input breakdown stays in raw.
+	if usage.TotalInputTokens != nil || usage.TotalCachedTokens != nil {
 		details := &types.InputTokenDetails{
 			CacheReadTokens: usage.TotalCachedTokens,
-			TextTokens:      modalityToken(usage.InputTokensByModality, "text"),
-			ImageTokens:     modalityToken(usage.InputTokensByModality, "image"),
 		}
 		if usage.TotalInputTokens != nil {
 			noCache := totalInput - totalCached
@@ -1264,21 +1274,6 @@ func convertInteractionsUsage(usage *interactionsUsage) types.Usage {
 		}
 	}
 	return out
-}
-
-func modalityToken(tokens []interactionsModalityTokens, modality string) *int64 {
-	var total int64
-	found := false
-	for _, item := range tokens {
-		if item.Modality == modality && item.Tokens != nil {
-			total += *item.Tokens
-			found = true
-		}
-	}
-	if !found {
-		return nil
-	}
-	return &total
 }
 
 func mapInteractionsFinishReason(status string, hasFunctionCall bool) types.FinishReason {

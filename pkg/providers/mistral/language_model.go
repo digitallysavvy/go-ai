@@ -184,6 +184,12 @@ func mistralReasoningMapWarningsFor(supported bool, set mistralEffortSet, explic
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
@@ -233,6 +239,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
@@ -326,7 +338,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["messages"] = ConvertToMistralChatMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
 	}
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
+		messages, _ := body["messages"].([]map[string]interface{})
 		systemMsg := map[string]interface{}{
 			"role":    "system",
 			"content": opts.Prompt.System,

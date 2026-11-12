@@ -212,6 +212,8 @@ func isXaiTranscriptionModel(modelID string) bool {
 // requestsXaiDiarization reports whether providerOptions asks for xAI
 // speaker diarization under either the xai or spacexai namespace.
 func requestsXaiDiarization(providerOptions map[string]interface{}) bool {
+	// Typed-option ruling: a Go-typed namespace is read in its JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	for _, ns := range []string{"xai", "spacexai"} {
 		if opts, ok := providerOptions[ns].(map[string]interface{}); ok {
 			if diarize, ok := opts["diarize"].(bool); ok && diarize {

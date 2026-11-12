@@ -1,7 +1,6 @@
 package mistral
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,9 @@ import (
 
 	"context"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -310,6 +311,12 @@ type conversationResponse struct {
 }
 
 func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	body, warnings, err := m.buildRequest(opts)
 	if err != nil {
 		return nil, err
@@ -350,10 +357,11 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 			if len(out.Arguments) > 0 && out.Arguments[0] == '"' {
 				_ = json.Unmarshal(out.Arguments, &argStr)
 			} else {
-				// TS JSON.stringify(output.arguments): minified text.
-				var compact bytes.Buffer
-				if err := json.Compact(&compact, out.Arguments); err == nil {
-					argStr = compact.String()
+				// TS JSON.stringify(output.arguments) of the parsed value:
+				// JS number text, unescaped characters, integer-like keys
+				// first (mistral-conversation-language-model.ts:288).
+				if v, ok := jsonorder.Parse(out.Arguments); ok {
+					argStr = jsonorder.Stringify(v)
 				} else {
 					argStr = string(out.Arguments)
 				}
@@ -393,6 +401,12 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 }
 
 func (m *ConversationLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	body, warnings, err := m.buildRequest(opts)
 	if err != nil {
 		return nil, err
@@ -540,8 +554,10 @@ func (s *conversationStream) handle(data string) {
 	case "conversation.response.started":
 		meta := &provider.ResponseMetadata{ID: ev.ConversationID, Headers: s.headers}
 		if ev.CreatedAt != nil {
-			if ts, err := time.Parse(time.RFC3339Nano, *ev.CreatedAt); err == nil {
-				meta.Timestamp = ts
+			// TS new Date(created_at): Date.parse semantics (zone-less
+			// local times, date-only UTC, ...).
+			if ms, ok := harnessutil.ParseJSDate(*ev.CreatedAt); ok {
+				meta.Timestamp = time.UnixMilli(ms)
 			}
 		}
 		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})

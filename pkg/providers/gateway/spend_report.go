@@ -3,11 +3,12 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // SpendReportParams configures a spend report query.
@@ -82,6 +83,20 @@ func validateSpendReportRows(body []byte) error {
 		return nil // reported by the typed decode
 	}
 	for i, row := range raw.Results {
+		// z.optional fields: present means the right JSON type; null fails.
+		for _, key := range []string{"day", "hour", "user", "model", "tag", "provider"} {
+			if v, ok := row[key]; ok && (len(v) == 0 || v[0] != '"') {
+				return fmt.Errorf("Invalid JSON response: results[%d].%s must be a string", i, key) //nolint:staticcheck // mirrors TS wording
+			}
+		}
+		for _, key := range []string{"market_cost", "input_tokens", "output_tokens", "cached_input_tokens", "cache_creation_input_tokens", "reasoning_tokens", "request_count"} {
+			if v, ok := row[key]; ok {
+				var f float64
+				if json.Unmarshal(v, &f) != nil || string(v) == "null" {
+					return fmt.Errorf("Invalid JSON response: results[%d].%s must be a number", i, key) //nolint:staticcheck // mirrors TS wording
+				}
+			}
+		}
 		cost, ok := row["total_cost"]
 		if !ok || len(cost) == 0 || cost[0] == '"' || string(cost) == "null" {
 			return fmt.Errorf("Invalid JSON response: results[%d].total_cost must be a number", i) //nolint:staticcheck // mirrors TS wording
@@ -126,17 +141,22 @@ func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams)
 		return nil, err
 	}
 
+	// TS createJsonResponseHandler(gatewaySpendReportResponseSchema): a body
+	// that is not JSON or fails the schema is the APICallError "Invalid JSON
+	// response", which asGatewayError turns into a GatewayResponseError.
+	invalid := func() error {
+		return p.handleErrorWithContext(ctx, providerutils.InvalidJSONResponseError("gateway", http.StatusOK, http.Header{}, body, nil))
+	}
 	var wire spendReportResponseWire
 	if err := json.Unmarshal(body, &wire); err != nil {
-		return nil, p.handleErrorWithContext(ctx, fmt.Errorf("failed to decode spend report response: %w", err))
+		return nil, invalid()
 	}
 	// TS schema: `results` must be an array.
 	if wire.Results == nil {
-		return nil, p.handleErrorWithContext(ctx, errors.New("Invalid JSON response: results must be an array")) //nolint:staticcheck // mirrors TS wording
+		return nil, invalid()
 	}
-
 	if err := validateSpendReportRows(body); err != nil {
-		return nil, p.handleErrorWithContext(ctx, err)
+		return nil, invalid()
 	}
 
 	response := &SpendReportResponse{Results: make([]SpendReportRow, 0, len(wire.Results))}

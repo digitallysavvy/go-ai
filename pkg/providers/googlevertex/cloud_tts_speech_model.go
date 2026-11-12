@@ -147,7 +147,9 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to synthesize speech: "+err.Error(), err)
+		// TS postJsonToApi: the client's error (the "Cannot connect to API"
+		// APICallError, or an abort) unchanged, with no prefix.
+		return nil, err
 	}
 	if resp.StatusCode >= 400 {
 		return nil, cloudTTSError(resp.StatusCode, resp.Body, resp.Headers)

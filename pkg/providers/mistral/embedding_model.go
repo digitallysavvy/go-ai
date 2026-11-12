@@ -54,6 +54,12 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 
 // DoEmbed performs embedding for a single input
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	result, err := m.DoEmbedMany(ctx, []string{input}, opts)
 	if err != nil {
 		return nil, err
@@ -76,6 +82,12 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
 		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
 			Provider:             m.Provider(),
@@ -119,6 +131,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS: loadApiKey throws LoadAPIKeyError unchanged
+		}
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}

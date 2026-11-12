@@ -275,8 +275,8 @@ func takoWebSourceSchema() map[string]interface{} {
 // output schema; relevance_score is again (TS 0e869b40fa), with the
 // variable-cost fields (premium_rows, redacted_cells, total_matching,
 // export_pricing premium_row_cpm_usd / variable_cost_max_usd, placeholder,
-// usage data_points / variable_cost). free_rows is no longer declared; it is
-// still accepted as an additive field of the passthrough export_pricing.
+// usage data_points / variable_cost). free_rows is declared again as an
+// optional number (deprecated, always 0; TS 838dd53c25).
 // takoSearchOutputSchemaJSON is the TS output schema (packages/gateway/src/tool/tako-search.ts) as zod's
 // toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
 // tool outputs against it, so nullable fields are anyOf [T, null] and the
@@ -816,6 +816,9 @@ var takoSearchOutputSchemaJSON = `{
 														"type": "object",
 														"properties": {
 															"baseline_usd": {
+																"type": "number"
+															},
+															"free_rows": {
 																"type": "number"
 															},
 															"max_rows_ceiling": {
@@ -1430,6 +1433,9 @@ var takoSearchOutputSchemaJSON = `{
 														"type": "object",
 														"properties": {
 															"baseline_usd": {
+																"type": "number"
+															},
+															"free_rows": {
 																"type": "number"
 															},
 															"max_rows_ceiling": {

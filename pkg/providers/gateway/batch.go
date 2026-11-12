@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -57,7 +59,8 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		return nil, err
 	}
 
-	idempotencyKey, forwardedProviderOptions := extractGatewayBatchIdempotencyKey(opts.ProviderOptions)
+	// Typed-option ruling: a Go-typed gateway entry is read in its JSON form.
+	idempotencyKey, forwardedProviderOptions := extractGatewayBatchIdempotencyKey(providerutils.NormalizeOptionsJSON(opts.ProviderOptions))
 
 	// TS combineHeaders(config, options.headers, {ai-model-id}, o11y, idempotency-key)
 	headers := gatewayRequestHeaders(ctx, opts.Headers, map[string]string{"ai-model-id": modelID})
@@ -78,7 +81,10 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	if opts.WebhookURL != "" {
 		body["callbackUrl"] = opts.WebhookURL
 	}
-	if len(forwardedProviderOptions) > 0 {
+	// TS `...(forwardedProviderOptions != null && {providerOptions})`: a
+	// caller's empty map is forwarded as `{}`; only an omitted map, or one
+	// that held nothing but gateway.idempotencyKey, is left out.
+	if forwardedProviderOptions != nil {
 		body["providerOptions"] = forwardedProviderOptions
 	}
 
@@ -243,8 +249,8 @@ func unsupportedGatewayBatchRequestType(requestType provider.BatchRequestType) e
 // starts — and stripped from the forwarded body so equivalent retries don't
 // produce different request digests.
 func extractGatewayBatchIdempotencyKey(providerOptions map[string]interface{}) (string, map[string]interface{}) {
-	if len(providerOptions) == 0 {
-		return "", providerOptions
+	if providerOptions == nil {
+		return "", nil
 	}
 	gatewayRaw, ok := providerOptions["gateway"]
 	if !ok {
@@ -276,17 +282,37 @@ func extractGatewayBatchIdempotencyKey(providerOptions map[string]interface{}) (
 	} else {
 		restProviderOptions["gateway"] = restGateway
 	}
+	// TS omitGatewayIdempotencyKey returns undefined when stripping the key
+	// leaves no provider options at all.
+	if len(restProviderOptions) == 0 {
+		return key, nil
+	}
 	return key, restProviderOptions
 }
 
 // --- Wire types -------------------------------------------------------
 
 type gatewayBatchRequestCountsWire struct {
-	Total     *int `json:"total"`
-	Pending   *int `json:"pending"`
-	Completed *int `json:"completed"`
-	Failed    *int `json:"failed"`
+	Total     *float64 `json:"total"`
+	Pending   *float64 `json:"pending"`
+	Completed *float64 `json:"completed"`
+	Failed    *float64 `json:"failed"`
 }
+
+// gatewayBatchCount keeps a wire count only when it is a safe integer, the
+// values TS normalizeBatchRequestCounts accepts (Number.isSafeInteger).
+func gatewayBatchCount(v *float64) *int {
+	if v == nil || *v != math.Trunc(*v) || math.Abs(*v) > maxSafeInteger {
+		return nil
+	}
+	n := int(*v)
+	if float64(n) != *v {
+		return nil
+	}
+	return &n
+}
+
+const maxSafeInteger = 1<<53 - 1
 
 type gatewayBatchErrorWire struct {
 	Message    string  `json:"message"`
@@ -327,10 +353,13 @@ func (f gatewayBatchStatusFields) toStatus() provider.BatchV4Status {
 	if f.RawStatus != nil {
 		status.RawStatus = *f.RawStatus
 	}
-	// TS omits requestCounts unless all four counters are present; Go must
-	// not fabricate zeros for the missing ones.
-	if rc := f.RequestCounts; rc != nil && rc.Total != nil && rc.Pending != nil && rc.Completed != nil && rc.Failed != nil {
-		status.RequestCounts = &provider.BatchRequestCounts{Total: *rc.Total, Pending: *rc.Pending, Completed: *rc.Completed, Failed: *rc.Failed}
+	// TS normalizeBatchRequestCounts: requestCounts is reported only when
+	// all four counters are non-negative safe integers and
+	// pending+completed+failed == total.
+	if rc := f.RequestCounts; rc != nil {
+		status.RequestCounts = providerutils.NormalizeBatchRequestCounts(
+			gatewayBatchCount(rc.Total), gatewayBatchCount(rc.Pending),
+			gatewayBatchCount(rc.Completed), gatewayBatchCount(rc.Failed))
 	}
 	status.Error = f.Error.toBatchError()
 	if f.CreatedAt != nil {
@@ -365,21 +394,22 @@ type gatewayBatchStartResponse struct {
 	Warnings []gatewayBatchWarningWire `json:"warnings"`
 }
 
-// gatewayBatchItemResultBody decodes a succeeded text batch item's `result`
-// field. Its shape matches the non-streaming `/language-model` response
-// decoded by LanguageModel.DoGenerate: warnings are decoded separately as raw
-// JSON so an absent field defaults to empty and a malformed one does not fail
-// the whole line.
-type gatewayBatchItemResultBody struct {
-	types.GenerateResult
-	Warnings json.RawMessage `json:"warnings,omitempty"`
+// gatewayBatchItemResultResponse is a succeeded item's `result.response`
+// ({id, modelId, timestamp, headers, body}). TS passes it through and
+// revives the ISO `timestamp` string into a Date.
+type gatewayBatchItemResultResponse struct {
+	ID        *string           `json:"id"`
+	ModelID   *string           `json:"modelId"`
+	Timestamp interface{}       `json:"timestamp"`
+	Headers   map[string]string `json:"headers"`
+	Body      interface{}       `json:"body"`
 }
 
 type gatewayBatchItemResultLine struct {
 	Type             string                            `json:"type"`
 	ID               string                            `json:"id"`
 	Status           string                            `json:"status"`
-	Result           *gatewayBatchItemResultBody       `json:"result,omitempty"`
+	Result           json.RawMessage                   `json:"result,omitempty"`
 	Error            *gatewayBatchErrorWire            `json:"error,omitempty"`
 	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata,omitempty"`
 }
@@ -392,12 +422,45 @@ func (w gatewayBatchItemResultLine) toItemResult() *provider.BatchV4ItemResult {
 		Error:            w.Error.toBatchError(),
 		ProviderMetadata: copyGatewayProviderMetadata(w.ProviderMetadata),
 	}
-	if item.Status == provider.BatchItemSucceeded && w.Result != nil {
-		result := w.Result.GenerateResult
-		result.Warnings = parseGatewayWarnings(w.Result.Warnings)
-		item.TextResult = &result
+	if item.Status == provider.BatchItemSucceeded && len(w.Result) > 0 && string(w.Result) != "null" {
+		item.TextResult = decodeGatewayBatchItemResult(w.Result)
 	}
 	return item
+}
+
+// decodeGatewayBatchItemResult decodes a succeeded item's `result`, a
+// LanguageModelV4GenerateResult in the same V4 shape the non-streaming
+// `/language-model` route returns (TS gateway-batch.ts
+// convertGatewayBatchResultLines passes it through). Unlike doGenerate, the
+// batch result keeps its `response` ({id, modelId, timestamp}).
+func decodeGatewayBatchItemResult(raw json.RawMessage) *types.GenerateResult {
+	result, err := decodeV4GenerateResult(raw)
+	if err != nil || result == nil {
+		// The line schema already accepted the JSON; a non-object result is
+		// passed through by TS untouched, so report an empty result.
+		return &types.GenerateResult{Warnings: []types.Warning{}}
+	}
+	var wire struct {
+		Response *gatewayBatchItemResultResponse `json:"response"`
+	}
+	if json.Unmarshal(raw, &wire) == nil && wire.Response != nil {
+		meta := &types.ResponseMetadata{Headers: wire.Response.Headers, Body: wire.Response.Body}
+		if wire.Response.ID != nil {
+			meta.ID = *wire.Response.ID
+		}
+		if wire.Response.ModelID != nil {
+			meta.ModelID = *wire.Response.ModelID
+		}
+		// TS: `typeof response.timestamp === 'string'` → new Date(timestamp).
+		if ts, ok := wire.Response.Timestamp.(string); ok {
+			if t, perr := time.Parse(time.RFC3339Nano, ts); perr == nil {
+				meta.Timestamp = t
+			}
+		}
+		result.ResponseMetadata = meta
+		result.ResponseHeaders = meta.Headers
+	}
+	return result
 }
 
 var gatewayBatchItemSchema = providerutils.MediaSchemaParser(providerutils.SchemaGatewayBatchItem)
@@ -448,6 +511,7 @@ func (s *gatewayBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) 
 		var wire gatewayBatchItemResultLine
 		if err := json.Unmarshal(line, &wire); err != nil {
 			s.err = err
+			_ = s.body.Close()
 			return nil, err
 		}
 		return wire.toItemResult(), nil

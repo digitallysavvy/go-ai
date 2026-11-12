@@ -52,7 +52,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	var displayName *string
 	pollIntervalMs := float64(2000)
 	pollTimeoutMs := float64(300000)
-	if raw, present := opts.ProviderOptions["google"]; present && raw != nil {
+	if raw, present := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["google"]; present && raw != nil {
 		// TS parseProviderOptions with z.looseObject({displayName: string,
 		// pollIntervalMs/pollTimeoutMs: positive number}, all nullish).
 		google, ok := raw.(map[string]interface{})
@@ -105,7 +105,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	initReq.Header.Set("Content-Type", "application/json")
 	resp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(initReq)
 	if err != nil {
-		return nil, err
+		// TS postToApi/getFromApi handleFetchError: the retryable
+		// "Cannot connect to API" APICallError (aborts unchanged).
+		return nil, internalhttp.TransportError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 400 {
@@ -130,7 +132,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	uploadReq.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 	uploadResp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(uploadReq)
 	if err != nil {
-		return nil, err
+		// TS postToApi/getFromApi handleFetchError: the retryable
+		// "Cannot connect to API" APICallError (aborts unchanged).
+		return nil, internalhttp.TransportError(err)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
@@ -173,7 +177,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		}
 		pollResp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(pollReq)
 		if err != nil {
-			return nil, err
+			// TS postToApi/getFromApi handleFetchError: the retryable
+			// "Cannot connect to API" APICallError (aborts unchanged).
+			return nil, internalhttp.TransportError(err)
 		}
 		if pollResp.StatusCode >= 400 {
 			b, _ := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))

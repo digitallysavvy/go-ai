@@ -42,6 +42,12 @@ func (m *SpeechModel) ModelID() string { return m.modelID }
 
 // DoGenerate performs non-streaming speech synthesis.
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	currentDate := time.Now()
 	// TS parseProviderOptions(mistralSpeechModelOptions): refAudio is a
 	// non-empty string.
@@ -50,13 +56,18 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 	reqBody, warnings := m.buildRequestBody(opts)
 
+	// TS postToApi content: JSON.stringify(requestBody), the body literal's
+	// key order (mistral-speech-model.ts:158).
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/v1/audio/speech",
-		Body:    reqBody,
+		Body:    []byte(providerutils.StringifyOrdered(reqBody, map[string][]string{"": mistralSpeechBodyKeys})),
 		Headers: opts.Headers,
 	})
 	if err != nil {
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS: loadApiKey throws LoadAPIKeyError unchanged
+		}
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}

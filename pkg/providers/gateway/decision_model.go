@@ -258,14 +258,25 @@ func encodeGatewayDecisionState(parts []provider.DecisionStatePart) ([]interface
 			if kind != "" && kind != string(types.FileDataTypeData) {
 				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("Gateway decision file input: %s data", kind)}
 			}
-			mediaType, data, err := part.InlineData()
-			if err != nil {
-				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Gateway decision file input"}
+			// TS `typeof data === 'string' ? data : base64(data)`
+			// (gateway-decision-model.ts:222): a base64 DataString is sent as
+			// given (unpadded or base64url included); only bytes are encoded.
+			var encoded string
+			var mediaType string
+			if fd := part.File.FileData; fd.Type == types.FileDataTypeData && len(fd.Data) == 0 && fd.DataString != "" {
+				mediaType = firstNonEmptyString(part.File.MediaType, part.File.MimeType, fd.MediaType)
+				encoded = fd.DataString
+			} else {
+				mt, data, err := part.InlineData()
+				if err != nil {
+					return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Gateway decision file input"}
+				}
+				mediaType, encoded = mt, base64.StdEncoding.EncodeToString(data)
 			}
 			wire := map[string]interface{}{
 				"type":      "file",
 				"mediaType": mediaType,
-				"data":      map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(data)},
+				"data":      map[string]interface{}{"type": "data", "data": encoded},
 			}
 			if part.File.Filename != "" {
 				wire["filename"] = part.File.Filename
@@ -279,4 +290,13 @@ func encodeGatewayDecisionState(parts []provider.DecisionStatePart) ([]interface
 		}
 	}
 	return out, nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

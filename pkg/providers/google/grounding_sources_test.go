@@ -89,13 +89,14 @@ func TestGroundingSourcesStreamDeduplicates(t *testing.T) {
 			break
 		}
 		if c.Type == provider.ChunkTypeSource {
-			if c.SourceContent.SourceType != "url" || c.SourceContent.ID == "" {
+			if c.SourceContent.ID == "" {
 				t.Fatalf("bad source %#v", c.SourceContent)
 			}
-			got = append(got, c.SourceContent.URL+"|"+c.SourceContent.Title)
+			got = append(got, c.SourceContent.URL+c.SourceContent.Filename+"|"+c.SourceContent.Title)
 		}
 	}
-	want := []string{"https://example.com|Example", "https://unique.com|Unique", "https://another.com|Another"}
+	// TS 540509c068: document sources stream too (deduplicated per key).
+	want := []string{"https://example.com|Example", "https://unique.com|Unique", "https://another.com|Another", "d.pdf|Unknown Document"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sources = %v want %v", got, want)
 	}

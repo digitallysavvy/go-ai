@@ -75,6 +75,8 @@ type vertexGeminiTranscriptionOptions struct {
 // with an InvalidArgumentError. Empty arrays stay non-nil because TS forwards
 // `languageCodes: []`.
 func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexGeminiTranscriptionOptions, error) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	invalid := func(key string, cause error) error {
 		return providererrors.NewArgumentError("providerOptions", "invalid "+key+" provider options", cause)
 	}

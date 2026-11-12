@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/digitallysavvy/go-ai/pkg/ai"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -300,21 +299,19 @@ func (p *Provider) Files() provider.FilesAPI {
 	return &FilesAPI{provider: p}
 }
 
-// DecisionModel returns an experimental decision model backed by the
-// Google Generative AI chat language model. Mirrors TypeScript's
-// GoogleGenerativeAIProvider.decisionModel: `provider.decisionModel =
-// (modelId) => new DecisionLanguageModel({ model: createChatModel(modelId),
-// provider: providerName.replace(/\.generative-ai$/, "") + '.decision' })`.
+// DecisionModel returns an experimental model using the native Gemini
+// Decisions API (POST {baseURL}/decisions), for decision model IDs such as
+// ModelGeminiDecision1. Mirrors TypeScript's GoogleProvider.decisionModel
+// (f70336158e): `new DecisionGoogleModel(modelId, { provider:
+// providerName.replace(/\.generative-ai$/, "") + ".decision", baseURL,
+// headers: getHeaders })`. Language model IDs are not accepted by the
+// endpoint.
 func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
-	model, err := p.LanguageModel(modelID)
-	if err != nil {
-		return nil, err
-	}
-	providerName := strings.TrimSuffix(p.Name(), ".generative-ai") + ".decision"
-	return ai.NewDecisionLanguageModel(ai.DecisionLanguageModelOptions{
-		Model:    model,
-		Provider: providerName,
-	})
+	return &DecisionModel{
+		provider: p,
+		modelID:  modelID,
+		name:     strings.TrimSuffix(p.Name(), ".generative-ai") + ".decision",
+	}, nil
 }
 
 // EvaluationModel is the deprecated form of DecisionModel.

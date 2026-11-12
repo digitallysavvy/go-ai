@@ -114,7 +114,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	resp, err := internalhttp.WithFetchRedirects(m.provider.mainClient().HTTPClient()).Do(req)
 	if err != nil {
-		return nil, err
+		// TS postToApi/getFromApi handleFetchError: the retryable
+		// "Cannot connect to API" APICallError (aborts unchanged).
+		return nil, internalhttp.TransportError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	respBody, err := io.ReadAll(resp.Body)
@@ -150,6 +152,8 @@ type vertexTranscriptionProviderOptions struct {
 // type fails with an InvalidArgumentError. Empty languageCodes stay non-nil
 // because TS forwards `languageCodes: []`.
 func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexTranscriptionProviderOptions, error) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	invalid := func(key string, cause error) error {
 		return providererrors.NewArgumentError("providerOptions", "invalid "+key+" provider options", cause)
 	}
