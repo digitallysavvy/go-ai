@@ -3,6 +3,7 @@
 package jsdate
 
 import (
+	"fmt"
 	"math"
 	"time"
 	"unicode"
@@ -636,4 +637,29 @@ func jsLocalToUTC(localMs int64, loc *time.Location) int64 {
 		return localMs - before
 	}
 	return best
+}
+
+// maxTimeMs is the ECMAScript time value range, +-8.64e15 ms from the epoch.
+const maxTimeMs = 8_640_000_000_000_000
+
+// ISOString formats t like JavaScript's Date#toISOString: UTC, millisecond
+// precision, and a year outside 0..9999 in the expanded form with a sign and
+// six digits ("+010000-01-01T00:00:00.000Z", "-000001-..."). It returns
+// false where toISOString throws a RangeError: t is outside the ECMAScript
+// time range.
+func ISOString(t time.Time) (string, bool) {
+	if t.Before(time.UnixMilli(-maxTimeMs)) || !t.Before(time.UnixMilli(maxTimeMs).Add(time.Millisecond)) {
+		return "", false
+	}
+	u := t.UTC()
+	rest := u.Format("-01-02T15:04:05.000Z")
+	year := u.Year()
+	switch {
+	case year >= 0 && year <= 9999:
+		return fmt.Sprintf("%04d%s", year, rest), true
+	case year < 0:
+		return fmt.Sprintf("-%06d%s", -year, rest), true
+	default:
+		return fmt.Sprintf("+%06d%s", year, rest), true
+	}
 }
