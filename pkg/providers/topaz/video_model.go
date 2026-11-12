@@ -231,7 +231,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS returns a rejected headers()/fetch error as is
 	}
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
@@ -310,7 +310,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS returns a rejected headers()/fetch error as is
 	}
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.

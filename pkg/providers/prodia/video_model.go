@@ -160,7 +160,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	}
 
 	if reqErr != nil {
-		return nil, reqErr
+		return nil, internalhttp.UnwrapFetchRejection(reqErr) // TS postFormDataToApi: a rejected headers()/fetch error propagates as is
 	}
 
 	// TS response.headers.get('content-type') ?? '' (repeated lines joined,

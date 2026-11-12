@@ -88,7 +88,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		}),
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS returns a rejected headers()/fetch error as is
 	}
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
@@ -442,7 +442,7 @@ func (m *ImageModel) getStatus(ctx context.Context, processID string, headers ma
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS returns a rejected headers()/fetch error as is
 	}
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
@@ -483,7 +483,7 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, internalhttp.UnwrapFetchRejection(err) // TS returns a rejected headers()/fetch error as is
 	}
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.

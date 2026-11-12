@@ -139,3 +139,31 @@ func TestR93toolsTopazVideoEmptyFileUploaded(t *testing.T) {
 		t.Fatalf("source.size = %v, want 0", size)
 	}
 }
+
+// prova CR r93: TS resolves config.headers (the apiKey callback) inside the
+// request and rethrows its error as is, so an APIKeyFunc error comes back
+// unwrapped (no internal FetchRejection marker) from the image submit, the
+// image status and download polls and the video status.
+func TestR93toolsTopazAPIKeyFuncErrorAsIs(t *testing.T) {
+	sentinel := errors.New("no key")
+	calls := 0
+	srv := r93toolsImageServer(t, `{"status":"Completed"}`, nil, nil)
+	keyFunc := func(context.Context) (string, error) {
+		calls++
+		return "", sentinel
+	}
+	m := NewImageModel(New(Config{BaseURL: srv.URL, APIKeyFunc: keyFunc}), ImageModelWonder35)
+	if _, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Files: []provider.ImageFile{inputImageFile()}}); err != sentinel {
+		t.Fatalf("image submit err = %T %v, want the key error itself", err, err)
+	}
+	if _, err := m.getStatus(context.Background(), "p", nil); err != sentinel {
+		t.Fatalf("image status err = %T %v", err, err)
+	}
+	if _, _, err := m.download(context.Background(), "p", nil); err != sentinel {
+		t.Fatalf("image download err = %T %v", err, err)
+	}
+	vm := NewVideoModel(New(Config{BaseURL: srv.URL, APIKeyFunc: keyFunc}), VideoModelStarlightPrecise26)
+	if _, err := vm.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: []byte(`{"requestId":"r"}`)}); err != sentinel {
+		t.Fatalf("video status err = %T %v", err, err)
+	}
+}
