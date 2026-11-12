@@ -89,8 +89,11 @@ func byteDanceErrorData(body []byte) interface{} {
 // byteDanceFailedResponseHandler: the message is
 // `error.message ?? message ?? 'Unknown error'` of a body that matches the
 // error schema, and the HTTP status text for any other body.
+//
+// Error() is the TS APICallError message alone (textOnly), with no Go
+// prefix (bytedance-video-model.ts:507).
 func newHTTPError(statusCode int, headers http.Header, body []byte) *Error {
-	return &Error{Code: statusCode, Message: byteDanceErrorMessage(statusCode, body), httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers)}
+	return &Error{Code: statusCode, Message: byteDanceErrorMessage(statusCode, body), httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers), textOnly: true}
 }
 
 func byteDanceErrorMessage(statusCode int, body []byte) string {

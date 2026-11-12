@@ -1098,11 +1098,10 @@ func TestResponse_ProviderMetadata(t *testing.T) {
 	if meta["taskId"] != "test-task-id-123" {
 		t.Errorf("expected taskId 'test-task-id-123', got %v", meta["taskId"])
 	}
-	if _, ok := meta["usage"]; !ok {
-		t.Fatal("expected usage key to be present even when API omits usage")
-	}
-	if meta["usage"] != nil {
-		t.Fatalf("expected nil usage when API omits usage, got %#v", meta["usage"])
+	// TS `usage: statusResponse.usage` is undefined when the API omits usage,
+	// so the key is not reported (r91 provc-13).
+	if v, ok := meta["usage"]; ok {
+		t.Fatalf("expected no usage key when API omits usage, got %#v", v)
 	}
 }
 
