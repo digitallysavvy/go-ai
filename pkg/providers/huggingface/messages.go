@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	goaiprompt "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -26,6 +27,23 @@ type hfContentPart struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
+}
+
+// MarshalJSON always writes text on input_text / output_text parts, an
+// empty string included (TS {type, text: part.text},
+// convert-to-huggingface-responses-messages.ts:68), and image_url on image
+// parts.
+func (p hfContentPart) MarshalJSON() ([]byte, error) {
+	if p.Type == "input_image" {
+		return jsonstr.Marshal(struct {
+			Type     string `json:"type"`
+			ImageURL string `json:"image_url"`
+		}{p.Type, p.ImageURL})
+	}
+	return jsonstr.Marshal(struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{p.Type, p.Text})
 }
 
 // convertToHuggingFaceResponsesInput mirrors TS

@@ -545,3 +545,51 @@ func TestR91provbImageSizeSplit(t *testing.T) {
 		t.Fatalf("fireworks = %v", fb)
 	}
 }
+
+// r91provbRawBody captures the first request body as sent.
+func r91provbRawBody(t *testing.T, call func(base string)) string {
+	t.Helper()
+	var mu sync.Mutex
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		if body == "" {
+			body = string(raw)
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	call(srv.URL)
+	mu.Lock()
+	defer mu.Unlock()
+	return body
+}
+
+// PB-27 (provb2b-05): the GMI Cloud streaming body is sent as built, with <
+// and & literal (TS JSON.stringify), not re-marshaled by the transport.
+func TestR91provbGmicloudStreamBodyVerbatim(t *testing.T) {
+	body := r91provbRawBody(t, func(base string) {
+		m, _ := gmicloud.New(gmicloud.Config{APIKey: "k", BaseURL: base}).LanguageModel("m")
+		_, _ = m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "a<b&c"}}}}}})
+	})
+	if !strings.Contains(body, "a<b&c") || !strings.Contains(body, `"include_usage":true`) {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+// PB-32 (provb2b-12): Hugging Face text parts keep an empty text
+// (convert-to-huggingface-responses-messages.ts:68).
+func TestR91provbHuggingFaceEmptyText(t *testing.T) {
+	body := r91provbRawBody(t, func(base string) {
+		m, _ := huggingface.New(huggingface.Config{APIKey: "k", BaseURL: base}).LanguageModel("m")
+		_, _ = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: ""}}},
+		}}})
+	})
+	if !strings.Contains(body, `{"type":"output_text","text":""}`) {
+		t.Fatalf("body = %s", body)
+	}
+}
