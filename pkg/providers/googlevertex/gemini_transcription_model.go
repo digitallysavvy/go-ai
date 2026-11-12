@@ -213,6 +213,8 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	// TS reads currentDate before the request.
+	currentDate := time.Now()
 
 	audioBase64 := opts.AudioBase64
 	if audioBase64 == "" {
@@ -363,7 +365,7 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		ProviderMetadata: providerMetadata,
 		ProviderUsage:    providerUsage,
 		Response: &types.ResponseMetadata{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
 			Body:      json.RawMessage(resp.Body),

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -225,5 +226,27 @@ func TestR92provgSpeechSampleRateAndMimeTypePresence(t *testing.T) {
 		if isWAV := len(res.Audio) > 4 && string(res.Audio[:4]) == "RIFF"; isWAV != tc.wav {
 			t.Fatalf("%s: wav = %v", tc.inline, isWAV)
 		}
+	}
+}
+
+// TS google-transcription-model.ts reads currentDate before the request.
+func TestR92provgTranscriptionTimestampBeforeRequest(t *testing.T) {
+	var served time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served = time.Now()
+		time.Sleep(20 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"steps":[{"type":"model_output","content":[{"type":"text","text":"hi"}]}]}`))
+	}))
+	defer srv.Close()
+	m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).TranscriptionModel(ModelGemini35Transcribe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "AQID", MimeType: "audio/wav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Response.Timestamp.Before(served) {
+		t.Fatalf("timestamp %v is not before the request %v", res.Response.Timestamp, served)
 	}
 }
