@@ -238,3 +238,11 @@ func TestR91toolsMCPWireKeyOrder(t *testing.T) {
 		t.Errorf("modern tools/call order = %s", data)
 	}
 }
+
+// tools-05 (TS retry-with-exponential-backoff.ts:43): no backoff cap.
+func TestR91toolsMCPToolCallRetryUncapped(t *testing.T) {
+	cfg := mcpToolCallRetryConfig(7)
+	if cfg.MaxDelay != 0 || cfg.InitialDelay != 2*time.Second || cfg.Multiplier != 2 {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+}

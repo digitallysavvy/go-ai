@@ -800,6 +800,18 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[str
 	})
 }
 
+// mcpToolCallRetryConfig is TS retryWithExponentialBackoff for tools/call:
+// 2s initial delay, factor 2 and no cap (the 6th retry waits 64s; tools-05).
+func mcpToolCallRetryConfig(maxRetries int) retry.Config {
+	return retry.Config{
+		MaxRetries:   maxRetries,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     0, // no cap
+		Multiplier:   2.0,
+		ShouldRetry:  isRetryableMCPToolCallError,
+	}
+}
+
 // callToolWithRetry mirrors TypeScript's MCPClient.callToolWithRetry: with
 // MaxRetries==0 (the default) it just executes once; otherwise it retries
 // transient failures with exponential backoff.
@@ -809,13 +821,7 @@ func (c *MCPClient) callToolWithRetry(ctx context.Context, execute func() (*Call
 	}
 
 	var result *CallToolResult
-	cfg := retry.Config{
-		MaxRetries:   c.config.MaxRetries,
-		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
-		Multiplier:   2.0,
-		ShouldRetry:  isRetryableMCPToolCallError,
-	}
+	cfg := mcpToolCallRetryConfig(c.config.MaxRetries)
 
 	err := retry.Do(ctx, cfg, func(ctx context.Context) error {
 		r, err := execute()
