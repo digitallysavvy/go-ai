@@ -1185,15 +1185,31 @@ func validateCallToolResult(r *CallToolResult) error {
 	}
 	for i, block := range blocks {
 		if err := validateToolContentBlock(block); err != nil {
+			if r.toolResultPresent {
+				// TS falls through to the ResultSchema.extend({toolResult})
+				// arm, a loose object that keeps content unvalidated.
+				return nil
+			}
 			return fmt.Errorf("invalid content[%d]: %w", i, err)
 		}
 	}
 	return nil
 }
 
+// optionalRawString reports whether key is absent or a JSON string
+// (z.optional(z.string()) rejects null and other types).
+func optionalRawString(block map[string]json.RawMessage, key string) bool {
+	if _, present := block[key]; !present {
+		return true
+	}
+	_, ok := rawString(block, key)
+	return ok
+}
+
 func rawString(block map[string]json.RawMessage, key string) (string, bool) {
 	raw, ok := block[key]
-	if !ok {
+	// z.string() rejects null, which json.Unmarshal would decode as "".
+	if !ok || !isJSONString(raw) {
 		return "", false
 	}
 	var s string
@@ -1237,6 +1253,9 @@ func validateToolContentBlock(block map[string]json.RawMessage) error {
 		if _, ok := rawString(block, "name"); !ok {
 			return errors.New("resource_link content needs a name string")
 		}
+		if !optionalRawString(block, "description") || !optionalRawString(block, "mimeType") {
+			return errors.New("resource_link description and mimeType must be strings")
+		}
 	case "resource":
 		var resource map[string]json.RawMessage
 		if err := json.Unmarshal(block["resource"], &resource); err != nil || resource == nil {
@@ -1244,6 +1263,9 @@ func validateToolContentBlock(block map[string]json.RawMessage) error {
 		}
 		if _, ok := rawString(resource, "uri"); !ok {
 			return errors.New("resource needs a uri string")
+		}
+		if !optionalRawString(resource, "name") || !optionalRawString(resource, "title") || !optionalRawString(resource, "mimeType") {
+			return errors.New("resource name, title and mimeType must be strings")
 		}
 		_, hasText := rawString(resource, "text")
 		blob, hasBlob := rawString(resource, "blob")

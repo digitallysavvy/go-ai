@@ -54,3 +54,35 @@ func TestR93toolsEventsSubscribeSafeIntegerLifetime(t *testing.T) {
 		t.Fatalf("max safe ttl: %v", err)
 	}
 }
+
+// TS CallToolResultSchema: a resource_link description / mimeType and a
+// resource's name / title / mimeType are z.optional(z.string()), so another
+// type fails the content arm; a result that also carries toolResult then
+// parses through the ResultSchema.extend({toolResult}) arm.
+func TestR93toolsCallToolResultOptionalStringsAndToolResultArm(t *testing.T) {
+	for _, tc := range []struct {
+		result string
+		ok     bool
+	}{
+		{`{"resultType":"complete","content":[{"type":"resource_link","uri":"u","name":"n","description":5}]}`, false},
+		{`{"resultType":"complete","content":[{"type":"resource_link","uri":"u","name":"n","mimeType":null}]}`, false},
+		{`{"resultType":"complete","content":[{"type":"resource","resource":{"uri":"u","text":"t","title":1}}]}`, false},
+		{`{"resultType":"complete","content":[{"type":"resource_link","uri":"u","name":"n","description":"d"}]}`, true},
+		{`{"resultType":"complete","content":[{"type":"text"}],"toolResult":{"v":1}}`, true},
+	} {
+		c, _ := r85toolsSetup(t, tc.result)
+		_, err := c.CallTool(context.Background(), "deploy", nil)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok %v", tc.result, err, tc.ok)
+		}
+	}
+}
+
+// z.string() rejects null: a text block whose text is null fails the
+// content arm.
+func TestR93toolsCallToolResultNullTextRejected(t *testing.T) {
+	c, _ := r85toolsSetup(t, `{"resultType":"complete","content":[{"type":"text","text":null}]}`)
+	if _, err := c.CallTool(context.Background(), "deploy", nil); err == nil {
+		t.Fatal("a null text was accepted")
+	}
+}
