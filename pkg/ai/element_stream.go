@@ -173,14 +173,20 @@ func streamArrayElements[ELEMENT any](
 	}
 
 	var tracker partialOutputTracker
+	// An external (harness) result's output stage follows the turn's first
+	// text block, not reset at step boundaries (TS HarnessStreamTextResult
+	// createOutputTransformStream); its public stream carries that stage's
+	// deltas, so restaging them yields the partials the turn published.
+	var external *externalOutputStage
+	if spec != nil && result.uiChunkBuf != nil {
+		external = &externalOutputStage{spec: spec}
+	}
 	var text string
-	// Consume via Stream() rather than result.nextChunk() directly: for
-	// StreamTextResult values from StreamText, processStream is already
-	// reading the raw provider stream in the background (it always runs
-	// now, to execute tools and multi-step continuations regardless of
-	// callbacks). Reading result.nextChunk() here too would race with
-	// that goroutine over the same underlying stream.
-	stream := result.Stream()
+	// Consume an independent cursor over the processed stream (TS: the
+	// element stream is its own tee), never result.nextChunk(): processStream
+	// is already reading the raw provider stream in the background, and the
+	// shared Stream() cursor belongs to the caller's own reads.
+	stream := result.NewStream()
 	for {
 		chunk, err := stream.Next()
 		if err != nil {
@@ -193,7 +199,15 @@ func streamArrayElements[ELEMENT any](
 			return nil
 		}
 		var partial []ELEMENT
-		if spec != nil {
+		if external != nil {
+			_, v, ok, perr := external.stage(ctx, *chunk)
+			if perr != nil || !ok {
+				continue
+			}
+			if partial, ok = v.([]ELEMENT); !ok {
+				continue
+			}
+		} else if spec != nil {
 			// The output stage keeps its state per step (TS resets at
 			// start-step) and reads the step's first text block only; the
 			// number of published elements is not reset.
