@@ -182,7 +182,7 @@ func (t *LangSmithDeploymentTransport) SendMessagesWithCallbacks(ctx context.Con
 		return out, errs
 	}
 	baseMessages := ConvertModelMessages(messages)
-	streamEvents, err := t.openStream(ctx, baseMessages)
+	streamEvents, err := t.openStream(ctx, baseMessages, langGraphRawToolArgs(messages))
 	if err != nil {
 		out := closedChunkChannel()
 		errs <- err
@@ -210,11 +210,11 @@ func (t *LangSmithDeploymentTransport) ReconnectToStream(context.Context, ai.Cha
 // the assistant id, the messages as input and stream modes values and
 // messages-tuple (plus updates, which RemoteGraph always adds), authenticated
 // with the x-api-key header. The server answers with server-sent events.
-func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages []LangChainMessage) (<-chan StreamEvent, error) {
+func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages []LangChainMessage, rawArgs map[string]interface{}) (<-chan StreamEvent, error) {
 	if t.stream != nil {
 		return t.stream(ctx, messages)
 	}
-	body, err := langGraphRunStreamBody(messages, t.graphID)
+	body, err := langGraphRunStreamBody(messages, t.graphID, rawArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -319,11 +319,11 @@ type langGraphRunStreamRequest struct {
 // LangSmithDeploymentTransport.sendMessages: streamMode ["values",
 // "messages"] becomes ["values", "messages-tuple", "updates"], and each
 // message is RemoteGraph's _serializeInputs form.
-func langGraphRunStreamBody(messages []LangChainMessage, graphID string) ([]byte, error) {
+func langGraphRunStreamBody(messages []LangChainMessage, graphID string, rawArgs map[string]interface{}) ([]byte, error) {
 	var req langGraphRunStreamRequest
 	req.Input.Messages = make([]*jsonorder.Object, 0, len(messages))
 	for _, msg := range messages {
-		req.Input.Messages = append(req.Input.Messages, langGraphWireMessage(msg))
+		req.Input.Messages = append(req.Input.Messages, langGraphWireMessage(msg, rawArgs))
 	}
 	req.Config = langGraphRunConfig{
 		Tags:           []interface{}{},
@@ -337,13 +337,34 @@ func langGraphRunStreamBody(messages []LangChainMessage, graphID string) ([]byte
 	return jsonstr.Marshal(req)
 }
 
+// langGraphRawToolArgs maps each tool call id to the ordered tree of its raw
+// input. TS args is the part's input object, whose keys keep the order of the
+// JSON it came from; the converted args are a Go map, so the raw input gives
+// the order back.
+func langGraphRawToolArgs(messages []types.Message) map[string]interface{} {
+	out := map[string]interface{}{}
+	for _, message := range messages {
+		if message.Role != types.RoleAssistant {
+			continue
+		}
+		for _, part := range message.Content {
+			if call, ok := part.(types.ToolCallContent); ok && call.Input != "" {
+				if tree, ok := jsonorder.Parse([]byte(call.Input)); ok {
+					out[call.ToolCallID] = tree
+				}
+			}
+		}
+	}
+	return out
+}
+
 // langGraphWireMessage is RemoteGraph _serializeInputs for a message:
 // {...message.toDict().data, role: message.getType()}. toDict().data has no
 // "type" key (the message type travels as role), and its keys follow the
 // message constructor: tool_call_id first for a tool message, then content,
 // the AI message's tool_calls and invalid_tool_calls, additional_kwargs and
 // response_metadata, then role.
-func langGraphWireMessage(msg LangChainMessage) *jsonorder.Object {
+func langGraphWireMessage(msg LangChainMessage, rawArgs map[string]interface{}) *jsonorder.Object {
 	lead := []string{"tool_call_id", "content", "tool_calls", "invalid_tool_calls"}
 	tail := []string{"additional_kwargs", "response_metadata", "role"}
 	out := langGraphOrdered(msg, lead, tail, "type")
@@ -354,7 +375,21 @@ func langGraphWireMessage(msg LangChainMessage) *jsonorder.Object {
 		out.Set("content", langGraphOrderedList(content, []string{"type", "text", "url", "data", "mimeType", "filename"}))
 	}
 	if calls, ok := msg["tool_calls"].([]interface{}); ok {
-		out.Set("tool_calls", langGraphOrderedList(calls, []string{"id", "name", "args"}))
+		ordered := langGraphOrderedList(calls, []string{"id", "name", "args"})
+		for _, call := range ordered {
+			o, ok := call.(*jsonorder.Object)
+			if !ok {
+				continue
+			}
+			id, _ := o.Get("id")
+			idText, _ := id.(string)
+			if hint, found := rawArgs[idText]; found {
+				if args, has := o.Get("args"); has {
+					o.Set("args", jsonorder.Hinted{V: args, Hint: hint})
+				}
+			}
+		}
+		out.Set("tool_calls", ordered)
 	}
 	return out
 }

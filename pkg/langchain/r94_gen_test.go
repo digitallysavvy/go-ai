@@ -130,3 +130,22 @@ func TestR94genRunStreamErrorTextKeyOrder(t *testing.T) {
 		}
 	}
 }
+
+// TS args is the tool call part's input object, so its keys keep the order of
+// the raw input (node: AIMessage tool_calls args {"b":1,"a":2} serializes in
+// that order).
+func TestR94genRunStreamToolArgsKeyOrder(t *testing.T) {
+	var got string
+	server := r94genServer(t, 200, "text/event-stream", "event: values\ndata: {}\n\n", func(_ *http.Request, body []byte) { got = string(body) })
+	transport := NewLangSmithDeploymentTransport(LangSmithDeploymentTransportOptions{URL: server.URL})
+	chunks, errs := transport.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{Messages: []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c1", ToolName: "get", Input: `{"b":1,"a":{"z":"<x>","y":2.50}}`}}},
+	}})
+	if _, gotErrs := drain(t, chunks, errs); len(gotErrs) != 0 {
+		t.Fatal(gotErrs)
+	}
+	want := `"tool_calls":[{"id":"c1","name":"get","args":{"b":1,"a":{"z":"<x>","y":2.5}}}]`
+	if !strings.Contains(got, want) {
+		t.Errorf("body =\n%s\nwant to contain\n%s", got, want)
+	}
+}
