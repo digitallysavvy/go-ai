@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 const r91provaBatchJSON = `{
@@ -117,5 +118,48 @@ func TestR91provaBatchResultsTransportError(t *testing.T) {
 	var pe *providererrors.ProviderError
 	if !errors.As(err, &pe) || !pe.IsRetryable() {
 		t.Fatalf("err = %#v, want a retryable ProviderError", err)
+	}
+}
+
+// prova-12: TS z.number() usage counts accept fractional values; Go
+// truncates them (known difference "Fractional counts in integer fields")
+// instead of dropping message_start or failing on message_delta
+// (anthropic-language-model.ts:3335-3342, 3435-3442).
+func TestR91provaStreamFractionalUsage(t *testing.T) {
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-haiku-20240307","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10.5,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2.5}}`,
+		`{"type":"message_stop"}`,
+	}
+	s := r88provaNewServer(t, "", events)
+	stream, err := r88provaModel(t, s, "claude-3-haiku-20240307").DoStream(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := r88provaDrain(stream)
+	if err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	sawMeta := false
+	var finish *provider.StreamChunk
+	for _, p := range parts {
+		switch p.Type {
+		case provider.ChunkTypeResponseMetadata:
+			sawMeta = p.ResponseMetadata != nil && p.ResponseMetadata.ID == "msg_1"
+		case provider.ChunkTypeFinish:
+			finish = p
+		}
+	}
+	if !sawMeta {
+		t.Fatal("no response-metadata for msg_1")
+	}
+	if finish == nil || finish.Usage == nil || finish.Usage.InputTokens == nil || finish.Usage.OutputTokens == nil {
+		t.Fatalf("finish = %+v", finish)
+	}
+	if *finish.Usage.InputTokens != 10 || *finish.Usage.OutputTokens != 2 {
+		t.Fatalf("usage = %d/%d, want 10/2", *finish.Usage.InputTokens, *finish.Usage.OutputTokens)
 	}
 }
