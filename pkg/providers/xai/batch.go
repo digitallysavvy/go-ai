@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -442,16 +443,10 @@ func convertXAIBatchStatus(b xaiBatchResponseWire) provider.BatchV4Status {
 	return result
 }
 
-// xaiIsPastDate mirrors TS isPastDate.
+// xaiIsPastDate mirrors TS isPastDate: Date.parse(value), NaN is not past.
 func xaiIsPastDate(value string) bool {
-	if value == "" {
-		return false
-	}
-	t, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return false
-	}
-	return !t.After(time.Now())
+	ms, ok := jsdate.Parse(value)
+	return ok && ms <= time.Now().UnixMilli()
 }
 
 // --- Batch results streaming --------------------------------------------

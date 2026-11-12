@@ -41,6 +41,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -496,11 +497,12 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 			if !ok {
 				return nil, false
 			}
-			parsed, err := time.Parse(time.RFC3339Nano, s)
-			if err != nil {
+			// TS new Date(timestamp); a NaN date makes the part invalid.
+			ms, ok := jsdate.Parse(s)
+			if !ok {
 				return nil, false
 			}
-			part.Timestamp = parsed
+			part.Timestamp = time.UnixMilli(ms)
 		}
 		part.ModelID, _ = raw["modelId"].(string)
 		if h, ok := raw["headers"].(map[string]interface{}); ok {

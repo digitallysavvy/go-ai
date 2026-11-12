@@ -11,6 +11,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -144,16 +145,18 @@ func (r anthropicFileResponse) metadata() map[string]interface{} {
 	return meta
 }
 
-// anthropicFileTime is TS `new Date(s)` for an RFC 3339 API timestamp; a
-// value that does not parse is left unset (TS gives an Invalid Date).
+// anthropicFileTime is TS `new Date(s)` (Date.parse, millisecond
+// precision); a value that does not parse is left unset (TS gives an
+// Invalid Date).
 func anthropicFileTime(s *string) *time.Time {
 	if s == nil {
 		return nil
 	}
-	t, err := time.Parse(time.RFC3339Nano, *s)
-	if err != nil {
+	ms, ok := jsdate.Parse(*s)
+	if !ok {
 		return nil
 	}
+	t := time.UnixMilli(ms)
 	return &t
 }
 
