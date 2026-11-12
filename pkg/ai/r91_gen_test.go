@@ -3,11 +3,14 @@ package ai
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -184,4 +187,93 @@ func TestR91genZeroToolTimeoutMarkedSet(t *testing.T) {
 	if te.Reason != TimeoutReasonTool || !te.timeoutSet {
 		t.Fatalf("tool timeout error = %+v, want a tool timeout with its duration set", te)
 	}
+}
+
+// r91genTelRecorder records the root and step start events.
+type r91genTelRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu     sync.Mutex
+	starts []telemetry.TelemetryStartEvent
+	steps  []telemetry.TelemetryStepStartEvent
+}
+
+func (r *r91genTelRecorder) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.starts = append(r.starts, e)
+	return ctx
+}
+
+func (r *r91genTelRecorder) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.steps = append(r.steps, e)
+	return ctx
+}
+
+func r91genTextModel() *testutil.MockLanguageModel {
+	return &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{Content: []types.ContentPart{types.TextContent{Text: `{"a":1}`}}, Text: `{"a":1}`, FinishReason: types.FinishReasonStop}, nil
+	}}
+}
+
+// core2-05 / core1-R02 (gen call sites, B3 fields): the step start event
+// carries the step's instructions (TS promptMessages starts with the system
+// message, convertToLanguageModelPrompt), and the root start event carries
+// the caller's string prompt (TS standardizePrompt keeps it, so the legacy
+// root ai.prompt is {"role":"user","content":"hi"}); both are input-gated.
+func TestR91genTelemetryPromptFields(t *testing.T) {
+	f := false
+	for _, tc := range []struct {
+		name         string
+		opts         GenerateTextOptions
+		recordInputs *bool
+		wantSystem   string
+		wantInstr    int
+		wantPrompt   *string
+	}{
+		{name: "system and prompt string", opts: GenerateTextOptions{System: "sys", Prompt: "hi"}, wantSystem: "sys", wantPrompt: func() *string { s := "hi"; return &s }()},
+		{name: "messages keep no prompt string", opts: GenerateTextOptions{System: "sys", Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}}, wantSystem: "sys"},
+		{name: "instruction messages", opts: GenerateTextOptions{InstructionMessages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "a"}}}}, Prompt: "hi"}, wantInstr: 1, wantPrompt: func() *string { s := "hi"; return &s }()},
+		{name: "inputs not recorded", opts: GenerateTextOptions{System: "sys", Prompt: "hi"}, recordInputs: &f},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &r91genTelRecorder{}
+			opts := tc.opts
+			opts.Model = r91genTextModel()
+			opts.Telemetry = &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{rec}, RecordInputs: tc.recordInputs}
+			if _, err := GenerateText(context.Background(), opts); err != nil {
+				t.Fatal(err)
+			}
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			if len(rec.starts) != 1 || len(rec.steps) != 1 {
+				t.Fatalf("starts=%d steps=%d", len(rec.starts), len(rec.steps))
+			}
+			step := rec.steps[0]
+			if step.System != tc.wantSystem || len(step.InstructionMessages) != tc.wantInstr {
+				t.Errorf("step System=%q InstructionMessages=%d, want %q / %d", step.System, len(step.InstructionMessages), tc.wantSystem, tc.wantInstr)
+			}
+			got := rec.starts[0].PromptString
+			if (got == nil) != (tc.wantPrompt == nil) || (got != nil && *got != *tc.wantPrompt) {
+				t.Errorf("PromptString = %v, want %v", got, tc.wantPrompt)
+			}
+		})
+	}
+	t.Run("generateObject step", func(t *testing.T) {
+		rec := &r91genTelRecorder{}
+		_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+			Model: r91genTextModel(), System: "sys", Prompt: "hi",
+			Schema:    schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+			Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{rec}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		if len(rec.steps) != 1 || rec.steps[0].System != "sys" {
+			t.Fatalf("object step events = %+v, want System sys", rec.steps)
+		}
+	})
 }

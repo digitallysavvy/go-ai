@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -87,5 +88,37 @@ func TestR91genAgentZeroToolTimeoutMarkedSet(t *testing.T) {
 	}
 	if te.Reason != ai.TimeoutReasonTool || !reflect.ValueOf(te).Elem().FieldByName("timeoutSet").Bool() {
 		t.Fatalf("tool timeout error = %+v, want its duration marked as set", te)
+	}
+}
+
+type r91genStepRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu    sync.Mutex
+	steps []telemetry.TelemetryStepStartEvent
+}
+
+func (r *r91genStepRecorder) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.steps = append(r.steps, e)
+	return ctx
+}
+
+// core2-05 (agent call site, B3 fields): the legacy loop's step start event
+// carries the step's instructions, the leading system message of TS
+// promptMessages.
+func TestR91genAgentStepTelemetrySystem(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{Content: []types.ContentPart{types.TextContent{Text: "ok"}}, Text: "ok", FinishReason: types.FinishReasonStop}, nil
+	}}
+	rec := &r91genStepRecorder{}
+	a := NewToolLoopAgent(AgentConfig{Model: model, System: "sys", Telemetry: &ai.TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{rec}}})
+	if _, err := a.Execute(context.Background(), "prompt"); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.steps) != 1 || rec.steps[0].System != "sys" {
+		t.Fatalf("step events = %+v, want System sys", rec.steps)
 	}
 }

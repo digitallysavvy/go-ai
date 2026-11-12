@@ -946,6 +946,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// the fire function is a no-op.
 	telSystem := ""
 	var telMessages, telInstructionMessages []types.Message
+	// telPromptString is the caller's string prompt: TS standardizePrompt
+	// keeps it as the user message content, which the legacy root ai.prompt
+	// records as is ({"role":"user","content":"hi"}).
+	var telPromptString *string
 	// A nil *Options records inputs (integrations treat it the same way).
 	if telemetrySettings.ShouldRecordInputs() {
 		telSystem = system
@@ -961,6 +965,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// array. buildPrompt performs the same prompt-string-to-message
 		// normalization Go already does for the actual provider call.
 		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
+		if len(opts.Messages) == 0 && opts.Prompt != "" {
+			promptString := opts.Prompt
+			telPromptString = &promptString
+		}
 	}
 	generateTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	// H5: compute callID before FireOnStart (previously computed further down,
@@ -978,6 +986,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Settings:            telemetrySettings,
 		System:              telSystem,
 		Messages:            telMessages,
+		PromptString:        telPromptString,
 		InstructionMessages: telInstructionMessages,
 		Headers:             opts.Headers,
 		MaxOutputTokens:     opts.MaxTokens,
@@ -1468,18 +1477,30 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Fire step-start telemetry. OTel implementations create a child step span
 		// and embed it in the returned context so OnStepFinish can end it. The
 		// tool choice is TS stepToolChoice (prepareToolChoice: unset is auto).
+		// System and InstructionMessages are the step's instructions, which
+		// TS folds into promptMessages as the leading system message
+		// (convertToLanguageModelPrompt); PromptMessages already starts with
+		// one system message per instruction message.
+		stepTelSystem := ""
+		var stepTelInstructionMessages []types.Message
+		if telemetrySettings.ShouldRecordInputs() {
+			stepTelSystem = stepSystem
+			stepTelInstructionMessages = cloneInstructionMessages(stepInstructionMessages)
+		}
 		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
-			CallID:         callID,
-			OperationType:  "ai.generateText",
-			Settings:       telemetrySettings,
-			StepNumber:     stepIndex,
-			ModelProvider:  stepModel.Provider(),
-			ModelID:        stepModel.ModelID(),
-			ToolChoice:     preparedToolChoice(stepToolChoice),
-			PromptMessages: genOpts.Prompt.Messages,
-			StepTools:      stepTools,
-			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+			CallID:              callID,
+			OperationType:       "ai.generateText",
+			Settings:            telemetrySettings,
+			StepNumber:          stepIndex,
+			ModelProvider:       stepModel.Provider(),
+			ModelID:             stepModel.ModelID(),
+			ToolChoice:          preparedToolChoice(stepToolChoice),
+			PromptMessages:      genOpts.Prompt.Messages,
+			System:              stepTelSystem,
+			InstructionMessages: stepTelInstructionMessages,
+			StepTools:           stepTools,
+			RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+			ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
 		})
 		openStepTelemetryCtx = stepCtx
 
