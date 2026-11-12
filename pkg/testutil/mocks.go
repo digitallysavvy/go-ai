@@ -216,6 +216,8 @@ type MockTextStream struct {
 	err    error
 	closed bool
 	mu     sync.Mutex
+	// readRest is the unread text of the chunk Read is in.
+	readRest string
 }
 
 // NewMockTextStream creates a new MockTextStream with the given chunks.
@@ -254,16 +256,23 @@ func (m *MockTextStream) Next() (*provider.StreamChunk, error) {
 	return chunk, nil
 }
 
+// Read implements io.Reader over the text chunks: it copies at most len(p)
+// bytes, keeps the unread rest of a chunk for the next call and skips
+// non-text chunks (r91 core3-20: it used to report the whole chunk length,
+// so io.ReadAll panicked on a chunk longer than its buffer).
 func (m *MockTextStream) Read(p []byte) (n int, err error) {
-	chunk, err := m.Next()
-	if err != nil {
-		return 0, err
+	for len(m.readRest) == 0 {
+		chunk, err := m.Next()
+		if err != nil {
+			return 0, err
+		}
+		if chunk.Type == provider.ChunkTypeText {
+			m.readRest = chunk.Text
+		}
 	}
-	if chunk.Type == provider.ChunkTypeText {
-		copy(p, chunk.Text)
-		return len(chunk.Text), nil
-	}
-	return 0, nil
+	n = copy(p, m.readRest)
+	m.readRest = m.readRest[n:]
+	return n, nil
 }
 
 func (m *MockTextStream) Close() error {
