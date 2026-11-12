@@ -319,6 +319,20 @@ func New(cfg Config) *Provider {
 	}
 }
 
+// resolvedClient resolves the provider headers (the API key, an APIKeyFunc
+// or a token function) now and returns a client that sends them without
+// resolving them again. TS evaluates `headers: combineHeaders(await
+// resolve(this.config.headers), ...)` before it downloads URL edit inputs, so
+// a missing key is the LoadAPIKeyError even when a download would fail, and
+// the key is resolved once per call. The error is returned as is.
+func (p *Provider) resolvedClient(ctx context.Context) (*http.Client, error) {
+	headers, err := p.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return http.NewClient(http.Config{BaseURL: p.config.BaseURL, Headers: headers, HTTPClient: p.client.HTTPClient()}), nil
+}
+
 // CreateOpenAI creates a new OpenAI provider.
 //
 // It mirrors the TypeScript SDK createOpenAI export while New remains the

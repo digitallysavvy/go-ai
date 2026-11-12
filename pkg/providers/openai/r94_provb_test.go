@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -74,5 +75,25 @@ func TestR94provbMidStreamErrorDataIsSchemaOutput(t *testing.T) {
 			t.Errorf("data = %s", got)
 		}
 		return
+	}
+}
+
+// TestR94provbEditResolvesKeyBeforeDownload (cr-r94-tools-to-provb): TS
+// resolves config.headers before it downloads URL edit inputs, so a missing
+// key or a failing APIKeyFunc is the error even when the download would fail
+// (OpenAI image edits and the OpenAI-compatible image edits).
+func TestR94provbEditResolvesKeyBeforeDownload(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	edit := &provider.ImageGenerateOptions{Prompt: "x", Files: []provider.ImageFile{{Type: "url", URL: "https://127.0.0.1:1/x.png"}}}
+	_, err := NewImageModel(New(Config{}), "gpt-image-1").DoGenerate(context.Background(), edit)
+	if !providererrors.IsLoadAPIKeyError(err) {
+		t.Fatalf("openai: err = %T %v, want LoadAPIKeyError", err, err)
+	}
+	keyErr := errors.New("r94provb key")
+	calls := 0
+	keyFunc := func(context.Context) (string, error) { calls++; return "", keyErr }
+	_, err = NewImageModel(New(Config{APIKeyFunc: keyFunc, Name: "acme", BaseURL: "https://example.invalid/v1", OpenAICompatible: true}), "m").DoGenerate(context.Background(), edit)
+	if !errors.Is(err, keyErr) || calls != 1 {
+		t.Fatalf("compat: err = %T %v (calls %d), want the key function error", err, err, calls)
 	}
 }
