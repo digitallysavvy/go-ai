@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
@@ -121,6 +122,29 @@ func (e *ProviderError) Unwrap() error {
 	return e.Cause
 }
 
+// ResponseHeader returns the response header value for name, matched
+// case-insensitively, or "" when absent. Use it instead of indexing
+// ResponseHeaders directly: NewProviderErrorFromResponse keeps the v0.5.2
+// Go canonical keys ("Retry-After") while every other constructor uses the
+// TS lower-case keys ("retry-after").
+func (e *ProviderError) ResponseHeader(name string) string {
+	if e == nil || len(e.ResponseHeaders) == 0 {
+		return ""
+	}
+	if v, ok := e.ResponseHeaders[strings.ToLower(name)]; ok {
+		return v
+	}
+	if v, ok := e.ResponseHeaders[http.CanonicalHeaderKey(name)]; ok {
+		return v
+	}
+	for k, v := range e.ResponseHeaders {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
 // IsRetryable reports whether the provider error represents a retryable
 // condition. Unknown/no-status errors preserve the SDK's historical generic
 // retry behavior, while HTTP responses follow the TypeScript SDK default:
@@ -164,7 +188,7 @@ type HTTPStatusDetails interface {
 // retryability honest: a 401 must not be classified as a retryable
 // no-status error.
 func NewProviderError(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
-	return newProviderError(provider, statusCode, errorCode, message, cause, true)
+	return newProviderError(provider, statusCode, errorCode, message, cause, true, false)
 }
 
 // NewProviderErrorFromResponse is NewProviderError for a caller that has
@@ -173,10 +197,15 @@ func NewProviderError(provider string, statusCode int, errorCode, message string
 // APICallError keeps "" from a body such as {"error":{"message":""}}). The
 // status code, headers and body are still taken from the HTTP cause.
 func NewProviderErrorFromResponse(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
-	return newProviderError(provider, statusCode, errorCode, message, cause, false)
+	return newProviderError(provider, statusCode, errorCode, message, cause, false, true)
 }
 
-func newProviderError(provider string, statusCode int, errorCode, message string, cause error, replaceEmpty bool) *ProviderError {
+// newProviderError builds a ProviderError. replaceEmpty replaces an empty or
+// raw-cause message with the body's message; canonicalHeaders keeps the
+// v0.5.2 Go canonical ResponseHeaders keys (NewProviderErrorFromResponse
+// only). Every other constructor uses the TS lower-case keys
+// (extract-response-headers.ts: Object.fromEntries(response.headers)).
+func newProviderError(provider string, statusCode int, errorCode, message string, cause error, replaceEmpty, canonicalHeaders bool) *ProviderError {
 	// A body that failed its response schema (TS createJsonResponseHandler)
 	// is already the final APICallError "Invalid JSON response"; it is not
 	// re-wrapped.
@@ -204,7 +233,7 @@ func newProviderError(provider string, statusCode int, errorCode, message string
 	}
 	e.StatusCode = code
 	e.ResponseHeaders = headers
-	if !replaceEmpty {
+	if canonicalHeaders {
 		// NewProviderErrorFromResponse replaces provider code that built
 		// ResponseHeaders with Go canonical keys and comma-joined values in
 		// v0.5.2; keep that shape (accepted deviation from TS lower-case keys).
@@ -276,9 +305,9 @@ type ErrorSchema func(body interface{}) (message string, data interface{}, ok bo
 // Message is the HTTP status text and Data is nil, exactly as TS. A schema of
 // nil gives the TS createStatusCodeErrorResponseHandler shape (status text,
 // no data). Any other cause gives NewProviderError(provider, 0, "",
-// cause.Error(), cause).
+// cause.Error(), cause). ResponseHeaders has the TS lower-case keys.
 func NewSchemaProviderError(provider string, cause error, schema ErrorSchema) *ProviderError {
-	e := newProviderError(provider, 0, "", cause.Error(), cause, false)
+	e := newProviderError(provider, 0, "", cause.Error(), cause, false, false)
 	var hs HTTPStatusDetails
 	if e.StatusCode == 0 || !errors.As(cause, &hs) || e.Message == InvalidJSONResponseMessage {
 		return e
@@ -640,13 +669,13 @@ func NewValidationErrorWithContext(value interface{}, message string, cause erro
 func WrapValidationError(value interface{}, cause error, context *ValidationContext) *ValidationError {
 	// Check if it's already a ValidationError with matching context
 	var existingErr *ValidationError
+	// TS: cause.value === value && cause.context?.field === context?.field
+	// && ... (type-validation-error.ts 109-115). A nil context reads as
+	// all-undefined fields, and the value comparison must never panic on
+	// uncomparable dynamic types (maps, slices, funcs).
 	if errors.As(cause, &existingErr) &&
-		existingErr.Value == value &&
-		existingErr.Context != nil &&
-		context != nil &&
-		existingErr.Context.Field == context.Field &&
-		existingErr.Context.EntityName == context.EntityName &&
-		existingErr.Context.EntityID == context.EntityID {
+		sameJSValue(existingErr.Value, value) &&
+		sameValidationContext(existingErr.Context, context) {
 		return existingErr
 	}
 
@@ -662,6 +691,49 @@ func WrapValidationError(value interface{}, cause error, context *ValidationCont
 		Cause:   cause,
 		Context: context,
 	}
+}
+
+// sameValidationContext compares two contexts like TS optional chaining:
+// a nil context has empty (undefined) fields.
+func sameValidationContext(a, b *ValidationContext) bool {
+	var za, zb ValidationContext
+	if a != nil {
+		za = *a
+	}
+	if b != nil {
+		zb = *b
+	}
+	return za.Field == zb.Field && za.EntityName == zb.EntityName && za.EntityID == zb.EntityID
+}
+
+// sameJSValue reports whether a and b are the same value in the sense of
+// JS ===: comparable values compare with ==, while maps, slices, funcs
+// and pointers-like references compare by identity. It never panics.
+func sameJSValue(a, b interface{}) (same bool) {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	if va.Type() != vb.Type() {
+		return false
+	}
+	switch va.Kind() {
+	case reflect.Map, reflect.Func, reflect.Chan, reflect.Pointer, reflect.UnsafePointer:
+		return va.Pointer() == vb.Pointer()
+	case reflect.Slice:
+		return va.Pointer() == vb.Pointer() && va.Len() == vb.Len()
+	}
+	if !va.Type().Comparable() {
+		return false
+	}
+	// A comparable struct or array can still hold an uncomparable value in
+	// an interface field; == panics then. Treat that as "not the same".
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a == b
 }
 
 // ToolExecutionError represents an error during tool execution
@@ -868,11 +940,13 @@ func (e *DownloadError) Error() string {
 	if e.Message != "" {
 		return e.Message
 	}
-	if e.StatusCode > 0 {
-		return fmt.Sprintf("Failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
-	}
+	// TS download-error.ts 19-21: the cause wins whenever it is set; the
+	// status line is the default only without a cause.
 	if e.Cause != nil {
 		return fmt.Sprintf("Failed to download %s: %v", e.URL, e.Cause)
+	}
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("Failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
 	}
 	return fmt.Sprintf("Failed to download %s", e.URL)
 }
