@@ -198,7 +198,7 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 
 	result, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {
-		return nil, nil, m.handlePollError(err)
+		return nil, nil, m.handlePollError(ctx, err)
 	}
 	// TS response.text(): a BOM is dropped and invalid UTF-8 replaced.
 	result.Data = []byte(textdecode.UTF8(result.Data))
@@ -986,10 +986,15 @@ func minimaxVideoErrorSchemaOutput(v interface{}) (map[string]interface{}, bool)
 // (a providererrors.DownloadError with a body) into a MiniMax API error. TS
 // getFromApi lets any other failure (an abort, "Cannot connect to API", a URL
 // rejected by validateUrl) propagate unchanged (tools-02).
-func (m *VideoModel) handlePollError(err error) error {
+func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return m.parseAPIError([]byte(textdecode.UTF8(dlErr.Body)), dlErr.StatusCode, providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
+	}
+	// TS getFromApi handleFetchError: a connection that failed before any
+	// response is the retryable "Cannot connect to API" error.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return internalhttp.TransportErrorCtx(ctx, cause)
 	}
 	return err
 }

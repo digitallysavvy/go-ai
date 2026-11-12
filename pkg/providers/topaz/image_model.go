@@ -533,6 +533,11 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		if errors.As(err, &dl) && dl.StatusCode >= 100 && (dl.StatusCode < 200 || dl.StatusCode >= 300) {
 			return nil, nil, newTopazAPIError(dl.StatusCode, []byte(textdecode.UTF8(dl.Body)), http.Header(dl.Headers))
 		}
+		// handleFetchError: a network failure is the retryable "Cannot
+		// connect to API" error.
+		if cause, ok := fileutil.TransportFailure(err); ok {
+			return nil, nil, internalhttp.TransportErrorCtx(ctx, cause)
+		}
 		return nil, nil, err
 	}
 

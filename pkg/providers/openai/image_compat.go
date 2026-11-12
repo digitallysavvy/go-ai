@@ -148,7 +148,12 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 		if err != nil {
 			// TS getFromApi with createStatusCodeErrorResponseHandler: an
 			// HTTP failure is an APICallError with the status text; any
-			// other failure (URL validation, abort) propagates unchanged.
+			// other failure (URL validation, abort) propagates unchanged,
+			// and a network failure is the retryable "Cannot connect to
+			// API" error (handleFetchError).
+			if cause, ok := fileutil.TransportFailure(err); ok {
+				return nil, internalhttp.TransportErrorCtx(ctx, cause)
+			}
 			return nil, providerutils.StatusCodeDownloadError(m.Provider(), err)
 		}
 		images = append(images, raw)

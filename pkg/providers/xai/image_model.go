@@ -301,7 +301,12 @@ func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([
 		if err != nil {
 			// TS getFromApi with createStatusCodeErrorResponseHandler: an
 			// HTTP failure is an APICallError with the status text; any
-			// other failure (URL validation, abort) propagates unchanged.
+			// other failure (URL validation, abort) propagates unchanged,
+			// and a network failure is the retryable "Cannot connect to
+			// API" error (handleFetchError).
+			if cause, ok := fileutil.TransportFailure(err); ok {
+				return nil, nil, internalhttp.TransportErrorCtx(ctx, cause)
+			}
 			return nil, nil, providerutils.StatusCodeDownloadError("xai.image", err)
 		}
 		images = append(images, imageBytes)

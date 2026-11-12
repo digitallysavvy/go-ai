@@ -244,6 +244,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		// headers: no credentials go to the image host.
 		result, err := fileutil.DownloadWithMetadata(ctx, *image.url, fileutil.TrustedOriginDownloadOptions(m.prov.imageBaseURL, nil))
 		if err != nil {
+			// TS getFromApi handleFetchError: a network failure is the
+			// retryable "Cannot connect to API" error.
+			if cause, ok := fileutil.TransportFailure(err); ok {
+				return nil, internalhttp.TransportErrorCtx(ctx, cause)
+			}
 			return nil, providerutils.StatusCodeDownloadError("minimax.image", err)
 		}
 		images = append(images, result.Data)

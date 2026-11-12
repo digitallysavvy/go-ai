@@ -425,6 +425,11 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if errors.As(err, &dlErr) && dlErr.StatusCode >= 400 {
 			return nil, newHeyGenAPIError(dlErr.StatusCode, dlErr.Body, http.Header(dlErr.Headers))
 		}
+		// TS getFromApi handleFetchError: a network failure is the
+		// retryable "Cannot connect to API" error.
+		if cause, ok := fileutil.TransportFailure(err); ok {
+			return nil, internalhttp.TransportErrorCtx(ctx, cause)
+		}
 		return nil, err
 	}
 	resp := &internalhttp.Response{StatusCode: http.StatusOK, Headers: http.Header(result.Headers), Body: result.Data}
