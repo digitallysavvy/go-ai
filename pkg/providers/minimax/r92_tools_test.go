@@ -2,6 +2,8 @@ package minimax
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -31,5 +33,23 @@ func TestR92toolsMiniMaxImageAPIKeyFunc(t *testing.T) {
 	}
 	if (*calls)[1].headers.Get("Authorization") != "" {
 		t.Fatalf("download authorization = %q", (*calls)[1].headers.Get("Authorization"))
+	}
+}
+
+// TS getStatus usage metadata {totalSeconds: task.usage.total_seconds, ...}:
+// a null wire member stays null, an absent one is left out.
+func TestR92toolsMiniMaxVideoUsageNullMembers(t *testing.T) {
+	status := `{"task":{"id":"task-123","status":"succeeded","content":{"url":"https://cdn.minimax.io/v.mp4"},"usage":{"total_seconds":5,"input_seconds":null}}}`
+	server, _, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{status})
+	defer server.Close()
+	model := newVideoModel(providerForMinimaxServer(server.URL), ModelH3)
+	op, _ := json.Marshal(minimaxOperation{TaskID: minimaxTestTaskID})
+	result, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := result.ProviderMetadata["minimax"].(map[string]interface{})["usage"]
+	if want := map[string]interface{}{"totalSeconds": 5.0, "inputSeconds": nil}; !reflect.DeepEqual(usage, want) {
+		t.Fatalf("usage = %#v, want %#v", usage, want)
 	}
 }

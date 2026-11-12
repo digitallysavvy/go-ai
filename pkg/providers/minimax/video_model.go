@@ -241,16 +241,28 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 			meta["resolution"] = *task.Resolution
 		}
 		if task.Usage != nil {
-			// TS leaves undefined members out of the object.
+			// TS {totalSeconds: task.usage.total_seconds, ...}: an absent
+			// member is undefined (left out), a null one stays null.
+			var rawTask struct {
+				Task struct {
+					Usage map[string]json.RawMessage `json:"usage"`
+				} `json:"task"`
+			}
+			_ = json.Unmarshal(result.Data, &rawTask)
 			usage := map[string]interface{}{}
-			if task.Usage.TotalSeconds != nil {
-				usage["totalSeconds"] = *task.Usage.TotalSeconds
-			}
-			if task.Usage.InputSeconds != nil {
-				usage["inputSeconds"] = *task.Usage.InputSeconds
-			}
-			if task.Usage.OutputSeconds != nil {
-				usage["outputSeconds"] = *task.Usage.OutputSeconds
+			for _, kv := range []struct {
+				wire, key string
+				value     *float64
+			}{
+				{"total_seconds", "totalSeconds", task.Usage.TotalSeconds},
+				{"input_seconds", "inputSeconds", task.Usage.InputSeconds},
+				{"output_seconds", "outputSeconds", task.Usage.OutputSeconds},
+			} {
+				if kv.value != nil {
+					usage[kv.key] = *kv.value
+				} else if _, present := rawTask.Task.Usage[kv.wire]; present {
+					usage[kv.key] = nil
+				}
 			}
 			meta["usage"] = usage
 		}
