@@ -390,6 +390,19 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			continue
 		}
 
+		// TS system messages carry their content as one string (the core
+		// prompt joins it), so the system text parts are joined here too
+		// rather than sent as a content-part array.
+		if msg.Role == types.RoleSystem {
+			systemMsg := map[string]interface{}{"role": string(msg.Role), "content": assistantTextContent(msg.Content)}
+			if hasName {
+				systemMsg["name"] = name
+			}
+			spreadCompatMetadata(systemMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
+			result = append(result, systemMsg)
+			continue
+		}
+
 		// ── All other roles ───────────────────────────────────────────────────
 		openAIMsg := map[string]interface{}{
 			"role": string(msg.Role),
