@@ -451,16 +451,3 @@ func TestStreamTextSandboxDescriptionNotAddedToSystem(t *testing.T) {
 		}
 	}
 }
-
-func containsSubstring(value, needle string) bool {
-	return len(needle) > 0 && len(value) > 0 && (len(value) >= len(needle)) && (indexOf(value, needle) >= 0)
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
-}

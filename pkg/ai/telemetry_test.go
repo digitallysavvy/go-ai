@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 
@@ -13,17 +12,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
-
-// mustMarshalJSON JSON-encodes v for building expected ai.prompt/ai.value/etc.
-// attribute values in tests, failing the test on error.
-func mustMarshalJSON(t *testing.T, v interface{}) string {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("mustMarshalJSON: %v", err)
-	}
-	return string(b)
-}
 
 // valuesEqual compares two values, handling numeric type conversions
 func valuesEqual(expected, actual interface{}) bool {
