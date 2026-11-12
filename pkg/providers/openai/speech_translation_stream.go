@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
@@ -163,7 +164,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				delta, _ := raw["delta"].(string)
 				// skip empty deltas: an empty `audio` part carries no data
 				if delta != "" {
-					if audioBytes, decodeErr := base64.StdEncoding.DecodeString(delta); decodeErr == nil {
+					if audioBytes, decodeErr := fileutil.ConvertBase64ToBytes(delta); decodeErr == nil {
 						if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, AudioData: audioBytes}) {
 							return
 						}

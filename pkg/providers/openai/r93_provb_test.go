@@ -3,10 +3,12 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -90,5 +92,119 @@ func TestR93provbCompletionLogprobsNullTopLogprobs(t *testing.T) {
 		if got := string(completionLogprobs(json.RawMessage(in))); got != want {
 			t.Errorf("completionLogprobs(%s) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// TS returns b64_json untouched and core decodes it with
+// convertBase64ToUint8Array (atob's forgiving rules): a line-wrapped or
+// unpadded image decodes. Native and OpenAI-compatible image models.
+func TestR93provbImageBase64Forgiving(t *testing.T) {
+	for _, compat := range []bool{false, true} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"created":1,"data":[{"b64_json":"aGVs\nbG8"}]}`)
+		}))
+		m := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: compat}), "dall-e-3")
+		res, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+		srv.Close()
+		if err != nil {
+			t.Fatalf("compat=%v: %v", compat, err)
+		}
+		if len(res.Images) != 1 || string(res.Images[0]) != "hello" {
+			t.Fatalf("compat=%v: images = %q", compat, res.Images)
+		}
+	}
+}
+
+// TS openaiCompatibleImageResponseSchema b64_json is nullish: a present ""
+// is image data (b64_json != null), not a URL-only item.
+func TestR93provbCompatImageEmptyBase64(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":""}]}`)
+	}))
+	defer srv.Close()
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: true}), "img")
+	res, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Base64Images) != 1 || res.Base64Images[0] != "" {
+		t.Fatalf("base64 images = %q", res.Base64Images)
+	}
+}
+
+// Speech translation audio deltas decode with atob's forgiving rules (TS
+// passes the base64 delta on as the audio part).
+func TestR93provbSpeechTranslationAudioForgiving(t *testing.T) {
+	server := newRealtimeTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestSpeechTranslationModel(server.ts.URL)
+	rate := 24000
+	result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+		TargetLanguage:   "es",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForReceived(t, "session.update", time.Second)
+	server.toSend <- map[string]interface{}{"type": "session.output_audio.delta", "delta": "aGVs bG8"}
+	server.toSend <- map[string]interface{}{"type": "session.closed"}
+	parts, _ := drainUntilTranslationFinishOrError(t, result.Stream)
+	var audio []string
+	for _, p := range parts {
+		if p.Type == provider.SpeechTranslationStreamPartTypeAudio {
+			audio = append(audio, string(p.AudioData))
+		}
+	}
+	if len(audio) != 1 || audio[0] != "hello" {
+		t.Fatalf("audio parts = %q, want [hello]", audio)
+	}
+}
+
+// TS resolve(this.config.headers) throws the API key callback's error as is:
+// the internal FetchRejection marker must not reach the caller
+// (cr-r93-prova-to-provb).
+func r93provbFilesHeaderErrors(t *testing.T, files provider.FilesAPI, key string, sentinel error) {
+	t.Helper()
+	ref := types.ProviderReference{key: "file-1"}
+	_, err := files.UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte("x")}, MediaType: "image/png", Filename: "a.png"})
+	if err != sentinel {
+		t.Errorf("UploadFile err = %#v, want the sentinel", err)
+	}
+	if mf, ok := files.(interface {
+		GetFileMetadata(context.Context, provider.FileMetadataOptions) (*provider.FileMetadataResult, error)
+		DownloadFile(context.Context, provider.DownloadFileOptions) (*provider.DownloadFileResult, error)
+		DeleteFile(context.Context, provider.DeleteFileOptions) (*provider.DeleteFileResult, error)
+	}); ok {
+		if _, err := mf.GetFileMetadata(context.Background(), provider.FileMetadataOptions{File: ref}); err != sentinel {
+			t.Errorf("GetFileMetadata err = %#v", err)
+		}
+		if _, err := mf.DownloadFile(context.Background(), provider.DownloadFileOptions{File: ref}); err != sentinel {
+			t.Errorf("DownloadFile err = %#v", err)
+		}
+		if _, err := mf.DeleteFile(context.Background(), provider.DeleteFileOptions{File: ref}); err != sentinel {
+			t.Errorf("DeleteFile err = %#v", err)
+		}
+	}
+}
+
+func TestR93provbHeaderErrorAsIs(t *testing.T) {
+	sentinel := errors.New("no key")
+	p := New(Config{APIKeyFunc: func(context.Context) (string, error) { return "", sentinel }, BaseURL: "http://127.0.0.1:1"})
+	r93provbFilesHeaderErrors(t, p.Files(), "openai", sentinel)
+	_, err := p.Skills().UploadSkill(context.Background(), types.UploadSkillOptions{Files: []types.UploadSkillFile{{Path: "s/SKILL.md", Data: types.FileData{Type: types.FileDataTypeData, Data: []byte("x")}}}})
+	if err != sentinel {
+		t.Errorf("UploadSkill err = %#v", err)
+	}
+	rm, err := p.RealtimeModel("gpt-realtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rm.(*OpenAIRealtimeModel).DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{}); err != sentinel {
+		t.Errorf("DoCreateClientSecret err = %#v", err)
 	}
 }

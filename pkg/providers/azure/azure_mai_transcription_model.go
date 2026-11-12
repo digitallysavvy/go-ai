@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -202,13 +203,12 @@ type azureMaiRealtimeEvent struct {
 	ItemID       string `json:"item_id"`
 	Delta        string `json:"delta"`
 	Intermediate string `json:"intermediate"`
-	// Transcript, Message and Code are pointers: TS reads them with ?? and
-	// != null, so a present "" is a value.
+	// Transcript is a pointer: TS reads it with ??, so a present "" is a
+	// value.
 	Transcript *string `json:"transcript"`
-	Error      *struct {
-		Message *string `json:"message"`
-		Code    *string `json:"code"`
-	} `json:"error"`
+	// Error is untyped: TS reads error?.code / error?.message from whatever
+	// JSON the server sent and formats them with a template string.
+	Error interface{} `json:"error"`
 }
 
 func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig) {
@@ -397,12 +397,14 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 			case "conversation.item.input_audio_transcription.failed", "error":
 				message := "unknown error"
 				prefix := "Azure MAI transcription error"
-				if event.Error != nil {
-					if event.Error.Message != nil {
-						message = *event.Error.Message
+				if errObj, ok := event.Error.(map[string]interface{}); ok {
+					// TS `${event.error.code}` / `${event.error?.message ??
+					// 'unknown error'}`: JS String() of a non-null value.
+					if code := errObj["code"]; code != nil {
+						prefix += " (" + providerutils.JSString(code) + ")"
 					}
-					if event.Error.Code != nil {
-						prefix += " (" + *event.Error.Code + ")"
+					if msg := errObj["message"]; msg != nil {
+						message = providerutils.JSString(msg)
 					}
 				}
 				fail(fmt.Errorf("%s: %s", prefix, message))

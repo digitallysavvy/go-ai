@@ -3,7 +3,6 @@ package azure
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -311,7 +310,7 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 				meta["imageTokens"] = *imageTokens
 			}
 			metadata = append(metadata, meta)
-			decoded, err := base64.StdEncoding.DecodeString(d.B64JSON)
+			decoded, err := fileutil.ConvertBase64ToBytes(d.B64JSON)
 			if err != nil {
 				return nil, providererrors.NewProviderError("azure.image", 0, "", "failed to decode image: "+err.Error(), err)
 			}

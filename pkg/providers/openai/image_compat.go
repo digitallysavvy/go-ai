@@ -58,7 +58,7 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 	args, argWarnings := m.compatImageArgs(opts.ProviderOptions)
 	warnings = append(warnings, argWarnings...)
 
-	var response openaiImageResponse
+	var response openaiCompatImageResponse
 	var httpResp *internalhttp.Response
 	var err error
 	if len(opts.Files) > 0 {
@@ -124,16 +124,16 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 	// to the configured API origin (TS credentialedOrigin); other hosts get
 	// the non-credential allowlist, and cross-origin redirects drop them all.
 	for _, d := range response.Data {
-		if d.B64JSON != "" {
-			raw, err := base64.StdEncoding.DecodeString(d.B64JSON)
+		if d.B64JSON != nil { // TS b64_json != null: "" is data
+			raw, err := fileutil.ConvertBase64ToBytes(*d.B64JSON)
 			if err != nil {
 				return nil, fmt.Errorf("failed to decode base64 image: %w", err)
 			}
 			images = append(images, raw)
-			b64 = append(b64, d.B64JSON)
+			b64 = append(b64, *d.B64JSON)
 			continue
 		}
-		if d.URL == "" {
+		if d.URL == nil {
 			return nil, providererrors.NewProviderError(m.Provider(), 0, "", "Expected url in the image response", nil)
 		}
 		dlOpts := fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport)
@@ -143,8 +143,8 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 		if err != nil {
 			return nil, err
 		}
-		dlOpts.Headers = m.compatDownloadHeaders(providerHeaders, d.URL, opts.Headers)
-		raw, err := fileutil.Download(ctx, d.URL, dlOpts)
+		dlOpts.Headers = m.compatDownloadHeaders(providerHeaders, *d.URL, opts.Headers)
+		raw, err := fileutil.Download(ctx, *d.URL, dlOpts)
 		if err != nil {
 			// TS getFromApi with createStatusCodeErrorResponseHandler: an
 			// HTTP failure is an APICallError with the status text; any
@@ -169,6 +169,20 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 		result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens = u.InputTokens, u.OutputTokens, u.TotalTokens
 	}
 	return result, nil
+}
+
+// openaiCompatImageResponse is TS openaiCompatibleImageResponseSchema: each
+// item has b64_json or url (nullish strings, so a present "" is a value).
+type openaiCompatImageResponse struct {
+	Data []struct {
+		B64JSON *string `json:"b64_json"`
+		URL     *string `json:"url"`
+	} `json:"data"`
+	Usage *struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 // safeUntrustedFirstHopHeaders mirrors TS SAFE_UNTRUSTED_FIRST_HOP_HEADERS:

@@ -527,7 +527,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, internalhttp.UnwrapFetchRejection(err)
 	}
 
 	respHeaders := convertXAIHeaders(resp.Headers)

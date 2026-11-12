@@ -367,14 +367,24 @@ func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definiti
 	return &buf, writer.FormDataContentType(), nil
 }
 
-// azureSpeechErrorBody decodes the error shapes of Azure Speech failures.
-// Message pointers keep an explicit empty string distinct from an absent key,
-// as the zod schemas in TS do.
-type azureSpeechErrorBody struct {
-	Error *struct {
-		Message *string `json:"message"`
-	} `json:"error"`
-	Message *string `json:"message"`
+// azureSpeechErrorMessages reads the two Azure Speech error shapes the way
+// the TS zod schemas check them, each member on its own:
+// {"error":{"message": string}} and {"message": string}. A present "" is a
+// message; a member of another type fails only its own shape.
+func azureSpeechErrorMessages(body []byte) (nested, top *string) {
+	var parsed map[string]interface{}
+	if securejson.Unmarshal(body, &parsed) != nil {
+		return nil, nil
+	}
+	if errObj, ok := parsed["error"].(map[string]interface{}); ok {
+		if m, ok := errObj["message"].(string); ok {
+			nested = &m
+		}
+	}
+	if m, ok := parsed["message"].(string); ok {
+		top = &m
+	}
+	return nested, top
 }
 
 // azureSpeechAPIError builds a *providererrors.ProviderError for a non-200
@@ -393,14 +403,13 @@ type azureSpeechErrorBody struct {
 // HTTP status text as its message.
 func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte, speechSynthesis bool) error {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
-	var parsed azureSpeechErrorBody
-	parseOK := securejson.Unmarshal(body, &parsed) == nil
+	nested, top := azureSpeechErrorMessages(body)
 	var message string
 	var data interface{}
 	if speechSynthesis {
 		switch {
-		case parseOK && parsed.Error != nil && parsed.Error.Message != nil:
-			message = *parsed.Error.Message
+		case nested != nil:
+			message = *nested
 		case statusCode == stdhttp.StatusBadRequest:
 			message = "Azure Speech request failed with status 400. Check the voice name, style, and output format."
 		default:
@@ -409,11 +418,11 @@ func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.He
 	} else {
 		switch {
 		// TS APICallError.data: the matching union member's output.
-		case parseOK && parsed.Error != nil && parsed.Error.Message != nil:
-			message = *parsed.Error.Message
+		case nested != nil:
+			message = *nested
 			data = map[string]interface{}{"error": map[string]interface{}{"message": message}}
-		case parseOK && parsed.Message != nil:
-			message = *parsed.Message
+		case top != nil:
+			message = *top
 			data = map[string]interface{}{"message": message}
 		default:
 			message = stdhttp.StatusText(statusCode)

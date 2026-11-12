@@ -3,7 +3,6 @@ package xai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -344,11 +344,8 @@ func xaiAudioExtension(mediaType string) string {
 }
 
 func decodeXAITranscriptionAudioBase64(content string) ([]byte, error) {
-	normalized := strings.NewReplacer("-", "+", "_", "/").Replace(content)
-	if decoded, err := base64.StdEncoding.DecodeString(normalized); err == nil {
-		return decoded, nil
-	}
-	return base64.RawStdEncoding.DecodeString(normalized)
+	// TS convertBase64ToUint8Array: base64url mapped, atob's forgiving rules.
+	return fileutil.ConvertBase64ToBytes(content)
 }
 
 func stringPtrValue(v *string) string {

@@ -124,7 +124,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		}),
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, openAICompatStatusError("deepseek", resp.StatusCode, resp.Headers, resp.Body)

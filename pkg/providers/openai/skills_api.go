@@ -52,7 +52,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)

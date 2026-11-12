@@ -3,7 +3,6 @@ package xai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -980,7 +980,7 @@ func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResp
 	for _, d := range resp.Data {
 		switch {
 		case d.B64JSON != nil:
-			decoded, err := base64.StdEncoding.DecodeString(*d.B64JSON)
+			decoded, err := fileutil.ConvertBase64ToBytes(*d.B64JSON)
 			if err != nil {
 				return nil, err
 			}

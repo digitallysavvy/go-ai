@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -692,7 +691,7 @@ func (m *ImageModel) convertResponse(response openaiImageResponse) (*types.Image
 	images := make([][]byte, 0, len(response.Data))
 	b64 := make([]string, 0, len(response.Data))
 	for _, d := range response.Data {
-		raw, err := base64.StdEncoding.DecodeString(d.B64JSON)
+		raw, err := fileutil.ConvertBase64ToBytes(d.B64JSON)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode base64 image: %w", err)
 		}

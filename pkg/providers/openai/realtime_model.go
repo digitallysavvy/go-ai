@@ -245,7 +245,7 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		Body:    body,
 	})
 	if err != nil {
-		return provider.ClientSecretResult{}, err
+		return provider.ClientSecretResult{}, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// TS: `OpenAI realtime client secret request failed: ${status} ${text}`.

@@ -1,6 +1,8 @@
 package azure
 
 import (
+	"math"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -92,7 +94,9 @@ func parseAzureSpeechProviderOptions(providerOptions map[string]interface{}) (Az
 	}
 	if v, ok := m["styleDegree"]; ok {
 		f, ok := toFloat64Option(v)
-		if !ok || f < 0.01 || f > 2 {
+		// TS z.number() rejects NaN (a NaN literal skips the JSON
+		// normalization, which cannot encode it).
+		if !ok || math.IsNaN(f) || f < 0.01 || f > 2 {
 			return result, invalidAzureOption("providerOptions.azure.styleDegree", "must be a number between 0.01 and 2")
 		}
 		result.StyleDegree = &f

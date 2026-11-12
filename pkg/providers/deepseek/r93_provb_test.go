@@ -3,6 +3,7 @@ package deepseek
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -87,4 +88,37 @@ func TestR93provbDeepSeekResponsesLogprobsNullish(t *testing.T) {
 			t.Errorf("deepseekResponsesLogprobs(%s) = %s, want %s", in, got, want)
 		}
 	}
+}
+
+// TS resolve(this.config.headers) throws the API key callback's error as is:
+// the internal FetchRejection marker must not reach the caller
+// (cr-r93-prova-to-provb).
+func r93provbFilesHeaderErrors(t *testing.T, files provider.FilesAPI, key string, sentinel error) {
+	t.Helper()
+	ref := types.ProviderReference{key: "file-1"}
+	_, err := files.UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte("x")}, MediaType: "image/png", Filename: "a.png"})
+	if err != sentinel {
+		t.Errorf("UploadFile err = %#v, want the sentinel", err)
+	}
+	if mf, ok := files.(interface {
+		GetFileMetadata(context.Context, provider.FileMetadataOptions) (*provider.FileMetadataResult, error)
+		DownloadFile(context.Context, provider.DownloadFileOptions) (*provider.DownloadFileResult, error)
+		DeleteFile(context.Context, provider.DeleteFileOptions) (*provider.DeleteFileResult, error)
+	}); ok {
+		if _, err := mf.GetFileMetadata(context.Background(), provider.FileMetadataOptions{File: ref}); err != sentinel {
+			t.Errorf("GetFileMetadata err = %#v", err)
+		}
+		if _, err := mf.DownloadFile(context.Background(), provider.DownloadFileOptions{File: ref}); err != sentinel {
+			t.Errorf("DownloadFile err = %#v", err)
+		}
+		if _, err := mf.DeleteFile(context.Background(), provider.DeleteFileOptions{File: ref}); err != sentinel {
+			t.Errorf("DeleteFile err = %#v", err)
+		}
+	}
+}
+
+func TestR93provbHeaderErrorAsIs(t *testing.T) {
+	sentinel := errors.New("no key")
+	p := New(Config{APIKeyFunc: func(context.Context) (string, error) { return "", sentinel }, BaseURL: "http://127.0.0.1:1"})
+	r93provbFilesHeaderErrors(t, p.Files(), "deepseek", sentinel)
 }
