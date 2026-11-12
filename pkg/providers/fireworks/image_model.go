@@ -442,9 +442,11 @@ func (m *ImageModel) buildAsyncRequestBody(opts *provider.ImageGenerateOptions) 
 	}
 
 	if opts.Size != "" {
-		parts := strings.SplitN(opts.Size, "x", 2)
-		if len(parts) == 2 {
-			body["width"] = parts[0]
+		// TS size.split('x'): width = parts[0], height = parts[1] when
+		// present (undefined is left out).
+		parts := strings.Split(opts.Size, "x")
+		body["width"] = parts[0]
+		if len(parts) > 1 {
 			body["height"] = parts[1]
 		}
 	}

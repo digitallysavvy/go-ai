@@ -280,39 +280,30 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// the "fireworks" provider-options namespace resolved above, so they were
 	// silently ignored whenever a caller correctly namespaced them under
 	// providerOptions.fireworks.
-	if thinking, ok := fireworksOptions["thinking"].(map[string]interface{}); ok {
+	// TS transformRequestBody copies the values as given
+	// (fireworks-provider.ts:177): promptCacheKey / serviceTier whenever the
+	// key is present (!== undefined, null included), thinking as
+	// {type, budget_tokens} for any truthy value (a non-object gives {}),
+	// reasoningHistory when truthy.
+	if thinking, present := fireworksOptions["thinking"]; present && providerutils.JSTruthy(thinking) {
 		thinkingBody := make(map[string]interface{})
-
-		if thinkingType, ok := thinking["type"].(string); ok {
-			thinkingBody["type"] = thinkingType
+		if t, ok := thinking.(map[string]interface{}); ok {
+			if thinkingType, has := t["type"]; has {
+				thinkingBody["type"] = thinkingType
+			}
+			if budgetTokens, has := t["budgetTokens"]; has {
+				thinkingBody["budget_tokens"] = budgetTokens
+			}
 		}
-
-		// Convert budgetTokens (camelCase) to budget_tokens (snake_case)
-		if budgetTokens, ok := providerutils.OpenAICompatibleIntOption(thinking, "budgetTokens"); ok {
-			thinkingBody["budget_tokens"] = budgetTokens
-		}
-
-		// TS `...(thinking && { thinking: {...} })`: an empty object is
-		// truthy, so `thinking: {}` is forwarded as {}.
 		body["thinking"] = thinkingBody
 	}
-
-	// Extract reasoningHistory and convert to snake_case (reasoning_history)
-	// TS `...(reasoningHistory && { reasoning_history })`: an empty string is
-	// falsy and is not forwarded.
-	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningHistory"); ok && reasoningHistory != "" {
+	if reasoningHistory, present := fireworksOptions["reasoningHistory"]; present && providerutils.JSTruthy(reasoningHistory) {
 		body["reasoning_history"] = reasoningHistory
 	}
-
-	// A stable key for routing requests with shared prompt prefixes to the
-	// same prompt cache.
-	if promptCacheKey, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "promptCacheKey"); ok {
+	if promptCacheKey, present := fireworksOptions["promptCacheKey"]; present {
 		body["prompt_cache_key"] = promptCacheKey
 	}
-
-	// Fireworks Priority serving path for higher reliability during peak
-	// traffic.
-	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "serviceTier"); ok {
+	if serviceTier, present := fireworksOptions["serviceTier"]; present {
 		body["service_tier"] = serviceTier
 	}
 

@@ -508,3 +508,40 @@ func TestR91provbFireworksAsyncStatusErrors(t *testing.T) {
 		})
 	}
 }
+
+// PB-29 (provb2b-09): Fireworks transformRequestBody copies values as given
+// (fireworks-provider.ts:177).
+func TestR91provbFireworksTransformVerbatim(t *testing.T) {
+	body := r91provbCapture(t, func(base string) {
+		m, err := fireworks.New(fireworks.Config{APIKey: "k", BaseURL: base}).LanguageModel("m")
+		r91provbGenerate(m, err, &provider.GenerateOptions{Prompt: r91provbPrompt(), ProviderOptions: map[string]interface{}{"fireworks": map[string]interface{}{
+			"thinking": map[string]interface{}{"type": "enabled", "budgetTokens": 1500.5}, "promptCacheKey": nil,
+		}}})
+	}).(map[string]interface{})
+	th, _ := body["thinking"].(map[string]interface{})
+	if th["budget_tokens"] != 1500.5 {
+		t.Fatalf("thinking = %v", body["thinking"])
+	}
+	if v, present := body["prompt_cache_key"]; !present || v != nil {
+		t.Fatalf("prompt_cache_key = %v, present %v", v, present)
+	}
+}
+
+// PB-30 (provb2b-10): image size is split on "x" like JS: Together parses
+// each part with parseInt, Fireworks sends the parts as given.
+func TestR91provbImageSizeSplit(t *testing.T) {
+	tb := r91provbCapture(t, func(base string) {
+		m, _ := together.New(together.Config{APIKey: "k", BaseURL: base}).ImageModel("black-forest-labs/FLUX.1-schnell")
+		_, _ = m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p", Size: "1024.5x768"})
+	}).(map[string]interface{})
+	if tb["width"] != float64(1024) || tb["height"] != float64(768) {
+		t.Fatalf("together = %v x %v", tb["width"], tb["height"])
+	}
+	fb := r91provbCapture(t, func(base string) {
+		m, _ := fireworks.New(fireworks.Config{APIKey: "k", BaseURL: base}).ImageModel("accounts/fireworks/models/flux-1-dev-fp8")
+		_, _ = m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p", Size: "1024"})
+	}).(map[string]interface{})
+	if _, hasHeight := fb["height"]; fb["width"] != "1024" || hasHeight {
+		t.Fatalf("fireworks = %v", fb)
+	}
+}

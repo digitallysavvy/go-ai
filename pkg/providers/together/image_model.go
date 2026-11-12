@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -143,12 +144,15 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	}
 
 	if opts.Size != "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height) //nolint:errcheck
-		if width > 0 && height > 0 {
-			reqBody["width"] = width
-			reqBody["height"] = height
+		// TS size.split('x') and parseInt of each part; NaN (or a missing
+		// part) is sent as null (togetherai-image-model.ts:144-157).
+		parts := strings.Split(opts.Size, "x")
+		height := ""
+		if len(parts) > 1 {
+			height = parts[1]
 		}
+		reqBody["width"] = togetherParseInt(parts[0])
+		reqBody["height"] = togetherParseInt(height)
 	}
 
 	if len(opts.Files) > 0 {
@@ -268,4 +272,30 @@ func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
 	}
 
 	return result, nil
+}
+
+// togetherParseInt is JS parseInt(s, 10) as JSON: leading whitespace, an
+// optional sign and the leading digits; nil (JSON null for NaN) when there
+// are none.
+func togetherParseInt(s string) interface{} {
+	s = strings.TrimLeft(s, " \t\n\r\v\f\u00a0\ufeff")
+	sign := 1
+	if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
+		if s[0] == '-' {
+			sign = -1
+		}
+		s = s[1:]
+	}
+	n, digits := 0, 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+		digits++
+	}
+	if digits == 0 {
+		return nil
+	}
+	return sign * n
 }
