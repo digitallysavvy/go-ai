@@ -164,13 +164,35 @@ func (f FileData) IsZero() bool {
 }
 
 // DecodeFileDataString decodes the base64/base64url string variant accepted by
-// the TypeScript SDK for file data.
+// the TypeScript SDK for file data, like TS convertBase64ToUint8Array:
+// base64url characters are mapped, then the string is decoded with atob's
+// WHATWG forgiving-base64 rules (ASCII whitespace ignored, up to two
+// trailing "=" dropped when the length is a multiple of 4, any other "=" or
+// a length of 1 mod 4 rejected). The same rules as
+// fileutil.DecodeForgivingBase64, which this package cannot import.
 func DecodeFileDataString(value string) ([]byte, error) {
-	normalized := strings.NewReplacer("-", "+", "_", "/").Replace(value)
-	if decoded, err := base64.StdEncoding.DecodeString(normalized); err == nil {
-		return decoded, nil
+	compact := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\f', '\r':
+			return -1
+		case '-':
+			return '+'
+		case '_':
+			return '/'
+		}
+		return r
+	}, value)
+	if len(compact)%4 == 0 {
+		if strings.HasSuffix(compact, "==") {
+			compact = compact[:len(compact)-2]
+		} else if strings.HasSuffix(compact, "=") {
+			compact = compact[:len(compact)-1]
+		}
 	}
-	return base64.RawStdEncoding.DecodeString(normalized)
+	if strings.Contains(compact, "=") || len(compact)%4 == 1 {
+		return nil, base64.CorruptInputError(0)
+	}
+	return base64.RawStdEncoding.DecodeString(compact)
 }
 
 // ProviderReferenceString returns a stable single-provider reference for legacy
