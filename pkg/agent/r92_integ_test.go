@@ -35,7 +35,9 @@ func TestR92integAgentToolSpanArgsKeepModelKeyOrder(t *testing.T) {
 		telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")}),
 	}}
 	a := NewToolLoopAgent(AgentConfig{Model: model, Telemetry: tel, Tools: []types.Tool{{Name: "w", Parameters: map[string]interface{}{"type": "object"},
-		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }}}})
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}}})
 	if _, err := a.Execute(context.Background(), "hi"); err != nil {
 		t.Fatal(err)
 	}
