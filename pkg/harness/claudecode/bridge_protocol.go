@@ -48,6 +48,7 @@ type StartFrame struct {
 	// (TS `additionalDirectories !== undefined`).
 	AdditionalDirectories  *[]string         `json:"additionalDirectories,omitempty"`
 	StrictMCPConfig        *bool             `json:"strictMcpConfig,omitempty"`
+	AutoMode               *bool             `json:"autoMode,omitempty"`
 	QuestionTimeoutMs      *int              `json:"questionTimeoutMs,omitempty"`
 	ExcludeDynamicSections *bool             `json:"excludeDynamicSections,omitempty"`
 	AgentProgressSummaries bool              `json:"agentProgressSummaries,omitempty"`

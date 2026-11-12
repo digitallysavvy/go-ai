@@ -56,7 +56,7 @@ func TestSettingsOnDebug_ForwardedToFreshAndAttachedChannels(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			started := make(chan struct{}, 1)
-			srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(*bridgetest.Turn, map[string]any) {
+			srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(*bridgetest.Turn, map[string]any) {
 				select {
 				case started <- struct{}{}:
 				default:
@@ -69,10 +69,10 @@ func TestSettingsOnDebug_ForwardedToFreshAndAttachedChannels(t *testing.T) {
 			rec := &debugRecorder{}
 			newHarness := func(onDebug func(bridge.ChannelDebugEvent)) *claudecode.Harness {
 				h, err := claudecode.New(claudecode.Settings{
-					StartupTimeout:  2 * time.Second,
-					MintBridgeToken: func(string) string { return "tok" },
-					Reconnect:       bridge.ReconnectOptions{MaxElapsed: 30 * time.Millisecond, InitialDelay: time.Millisecond, MaxDelay: 2 * time.Millisecond},
-					OnDebug:         onDebug,
+					StartupTimeout: 2 * time.Second,
+
+					Reconnect: bridge.ReconnectOptions{MaxElapsed: 30 * time.Millisecond, InitialDelay: time.Millisecond, MaxDelay: 2 * time.Millisecond},
+					OnDebug:   onDebug,
 				})
 				if err != nil {
 					t.Fatalf("New: %v", err)

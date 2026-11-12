@@ -9,8 +9,8 @@
 // harness-v1 bridge wire protocol to harness.StreamPart Emit calls.
 //
 // DoStart implements all three TS resume rungs: (1) ATTACH reopens a socket
-// to a still-running bridge using persisted coordinates (no respawn, no
-// fresh token); (2) REPLAY respawns the bridge with `BRIDGE_REPLAY_FROM_DISK`
+// to a still-running bridge using persisted coordinates and the session's
+// host-only authentication private key (no respawn, no new key pair); (2) REPLAY respawns the bridge with `BRIDGE_REPLAY_FROM_DISK`
 // when a continued (suspended) turn's on-disk event log ends in a finished
 // turn; (3) RERUN respawns and rehydrates the Claude conversation via
 // `resumeSessionId`/`continue` otherwise. Mid-turn steering
@@ -92,6 +92,14 @@ type Settings struct {
 	// MCPServers and ignores any other MCP configuration such as a project
 	// `.mcp.json` or user settings. Nil leaves the Claude Code default.
 	StrictMCPConfig *bool
+	// AutoMode, when true, requests Claude Code's classifier-based `auto`
+	// permission mode for the allow-reads and allow-edits permission
+	// presets: only escalated calls ask the host for approval. allow-all
+	// keeps bypassing permissions, and inactive-tool restrictions stay.
+	// Observe the raw init / status parts for the effective permission
+	// mode. Nil sends nothing (Claude Code default: off). Mirrors TS
+	// `autoMode` (5c3842f9d0).
+	AutoMode *bool
 	// QuestionTimeoutMs is the maximum number of milliseconds Claude waits
 	// for an answer to an `AskUserQuestion` question before the question
 	// fails. Nil means the Claude Code default.
@@ -153,7 +161,10 @@ type Settings struct {
 	// reconnect can contain connection details, so avoid logging it as is. It
 	// runs on the connection's goroutine, so it must not block.
 	OnDebug func(bridge.ChannelDebugEvent)
-	// MintBridgeToken creates the bridge channel token. Defaults to a random
-	// 32-byte hex token. Requires the sandbox to expose an ID.
+	// MintBridgeToken is ignored: sandbox bridge authentication uses an
+	// adapter-generated Ed25519 key pair; the sandbox gets only the public
+	// key. New warns once when it is set.
+	//
+	// Deprecated: kept so v0.5.2 code compiles (TS c849d37dac).
 	MintBridgeToken harness.MintBridgeTokenCallback
 }

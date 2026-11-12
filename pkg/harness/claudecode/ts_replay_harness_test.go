@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,7 +109,7 @@ func replayPrompt(t *testing.T, h *claudecode.Harness, sandbox harness.NetworkSa
 
 func newReplayServer() (*bridgetest.Server, chan map[string]any) {
 	ch := make(chan map[string]any, 8)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(_ *bridgetest.Turn, start map[string]any) { ch <- start }})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(_ *bridgetest.Turn, start map[string]any) { ch <- start }})
 	return srv, ch
 }
 
@@ -118,9 +117,6 @@ func replayHarness(t *testing.T, s claudecode.Settings) *claudecode.Harness {
 	t.Helper()
 	if s.StartupTimeout == 0 {
 		s.StartupTimeout = 2 * time.Second
-	}
-	if s.MintBridgeToken == nil {
-		s.MintBridgeToken = func(string) string { return "tok" }
 	}
 	h, err := claudecode.New(s)
 	if err != nil {
@@ -323,44 +319,61 @@ func TestTSReplay_CustomizesProcessEnvironmentCredentials(t *testing.T) {
 	}
 }
 
-// TS 'uses a caller-minted bridge token and reuses it when attaching'.
-func TestTSReplay_CallerMintedTokenReusedOnAttach(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "token-for-test-sandbox"})
+// TS 'keeps the bridge private key on the host and reuses it when attaching'
+// (c849d37dac): the sandbox gets only the public key, the private key is in
+// the lifecycle state alone, and an attach reuses it.
+func TestTSReplay_PrivateKeyStaysOnHostAndIsReusedOnAttach(t *testing.T) {
+	srv, _ := newReplayServer()
 	t.Cleanup(srv.Close)
 	sandbox := newRecSandbox(srv)
-	var mints int32
-	var minted []string
-	h := replayHarness(t, claudecode.Settings{MintBridgeToken: func(id string) string {
-		atomic.AddInt32(&mints, 1)
-		minted = append(minted, id)
-		return "token-for-" + id
-	}})
+	h := replayHarness(t, claudecode.Settings{})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/w"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(minted, []string{"test-sandbox"}) {
-		t.Fatalf("minted = %v", minted)
+	env := sandbox.spawnEnvs[0]
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(env["BRIDGE_AUTH_PUBLIC_KEY"]) {
+		t.Fatalf("BRIDGE_AUTH_PUBLIC_KEY = %q", env["BRIDGE_AUTH_PUBLIC_KEY"])
 	}
-	if got := sandbox.spawnEnvs[0]["BRIDGE_CHANNEL_TOKEN"]; got != "token-for-test-sandbox" {
-		t.Fatalf("BRIDGE_CHANNEL_TOKEN = %q", got)
+	if _, ok := env["BRIDGE_CHANNEL_TOKEN"]; ok {
+		t.Fatal("a shared token reached the sandbox env")
 	}
 	resume, err := sess.DoDetach(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	var data struct{ Bridge struct{ Token string } }
+	var data struct {
+		Bridge map[string]any `json:"bridge"`
+	}
 	_ = json.Unmarshal(resume.Data, &data)
-	if data.Bridge.Token != "token-for-test-sandbox" {
+	privateKey, _ := data.Bridge["privateKey"].(string)
+	if privateKey == "" || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(privateKey) {
 		t.Fatalf("resume.data = %s", resume.Data)
+	}
+	if _, ok := data.Bridge["token"]; ok {
+		t.Fatalf("resume.data has bridge.token: %s", resume.Data)
+	}
+	if b, _ := json.Marshal(sandbox.spawnEnvs); strings.Contains(string(b), privateKey) {
+		t.Fatal("the private key reached the sandbox")
 	}
 	attached, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/w", ResumeFrom: resume})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = attached.DoDestroy(context.Background()) })
-	if atomic.LoadInt32(&mints) != 1 {
-		t.Fatalf("mintBridgeToken called %d times, want 1", mints)
+	if len(sandbox.spawnEnvs) != 1 {
+		t.Fatalf("spawns = %d, want 1 (attach)", len(sandbox.spawnEnvs))
+	}
+	again, err := attached.DoDetach(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data2 struct {
+		Bridge map[string]any `json:"bridge"`
+	}
+	_ = json.Unmarshal(again.Data, &data2)
+	if data2.Bridge["privateKey"] != privateKey {
+		t.Fatalf("attached resume.data = %s", again.Data)
 	}
 }
 
@@ -691,7 +704,7 @@ func TestTSReplay_InstructionsTransport(t *testing.T) {
 // in arrival order (the listener attachment is released only once they are
 // registered).
 func TestTSReplay_AttachedContinuationDeliversReplayInOrder(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
 		turn.Emit(map[string]any{"type": "text-start", "id": "m"})
 		turn.Emit(map[string]any{"type": "text-delta", "id": "m", "delta": "hello"})
 		turn.Emit(map[string]any{"type": "text-end", "id": "m"})

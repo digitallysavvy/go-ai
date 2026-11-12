@@ -31,7 +31,7 @@ func (m *mkdirCounter) Restricted() providerutils.SandboxSession { return m }
 // TS resolves the bridge port before the fresh-start mkdir, so a sandbox
 // without a port fails before anything is created in it.
 func TestR42PortResolvedBeforeMkdir(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := &mkdirCounter{testSandbox: newTestSandbox(srv)}
 	sandbox.ports = nil

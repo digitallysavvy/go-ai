@@ -18,7 +18,7 @@ import (
 func TestDoContinueTurn_ReplayDoesNotSendStart(t *testing.T) {
 	var starts int32
 	markers := make(chan map[string]any, 4)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey,
 		OnToolResult: func(f map[string]any) { markers <- f },
 		OnFrame: func(ft string) {
 			if ft == bridge.TypeStart {
@@ -36,7 +36,7 @@ func TestDoContinueTurn_ReplayDoesNotSendStart(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, _ := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	h, _ := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	state, _ := harness.NewContinueTurnState(claudecode.HarnessID, map[string]any{
 		"bridge": map[string]any{"port": 4319, "token": "stale-token", "lastSeenEventId": 2},
 	})
@@ -60,7 +60,7 @@ func TestDoContinueTurn_ReplayDoesNotSendStart(t *testing.T) {
 // TS: `start` carries the observability debug config.
 func TestDoPromptTurn_ForwardsDebugConfig(t *testing.T) {
 	captured := make(chan map[string]any, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		captured <- start
 		turn.Emit(map[string]any{
 			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
@@ -70,7 +70,7 @@ func TestDoPromptTurn_ForwardsDebugConfig(t *testing.T) {
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h, _ := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	h, _ := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	enabled := true
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir",

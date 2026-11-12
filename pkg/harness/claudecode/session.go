@@ -51,7 +51,7 @@ type sessionOptions struct {
 	deferredToolUseID string
 
 	bridgePort                   int
-	bridgeToken                  string
+	bridgePrivateKey             string
 	sandboxID                    string
 	sandboxCredentialEnvironment map[string]string
 
@@ -90,12 +90,14 @@ type sessionOptions struct {
 
 // startSettings are the Settings forwarded unchanged on every start frame.
 // Mirrors the TS `createSession` parameters skillOverrides, maxBudgetUsd,
-// strictMcpConfig, questionTimeoutMs, excludeDynamicSections and toolHints.
+// strictMcpConfig, autoMode, questionTimeoutMs, excludeDynamicSections and
+// toolHints.
 type startSettings struct {
 	skillOverrides         map[string]SkillOverride
 	maxBudgetUSD           *float64
 	additionalDirectories  []string
 	strictMCPConfig        *bool
+	autoMode               *bool
 	questionTimeoutMs      *int
 	excludeDynamicSections *bool
 	toolHints              map[string]ToolHint
@@ -105,7 +107,7 @@ func startSettingsFrom(settings Settings) startSettings {
 	return startSettings{
 		skillOverrides: settings.SkillOverrides, maxBudgetUSD: settings.MaxBudgetUSD,
 		additionalDirectories: settings.AdditionalDirectories,
-		strictMCPConfig:       settings.StrictMCPConfig, questionTimeoutMs: settings.QuestionTimeoutMs,
+		strictMCPConfig:       settings.StrictMCPConfig, autoMode: settings.AutoMode, questionTimeoutMs: settings.QuestionTimeoutMs,
 		excludeDynamicSections: settings.ExcludeDynamicSections, toolHints: settings.ToolHints,
 	}
 }
@@ -254,6 +256,7 @@ func (s *session) buildStartFrame(prompt harnessutil.PromptContent, ts harness.T
 		frame.AdditionalDirectories = &dirs
 	}
 	frame.StrictMCPConfig = extra.strictMCPConfig
+	frame.AutoMode = extra.autoMode
 	frame.QuestionTimeoutMs = extra.questionTimeoutMs
 	frame.ExcludeDynamicSections = extra.excludeDynamicSections
 	frame.ToolHints = extra.toolHints
@@ -320,7 +323,7 @@ func (s *session) resumeData(lastSeenEventID float64) resumeStateData {
 		ClaudeSessionID:              s.lastSessionID,
 	}
 	if lastSeenEventID >= 0 {
-		data.Bridge = &bridgeCoords{Port: s.opts.bridgePort, Token: s.opts.bridgeToken, LastSeenEventID: lastSeenEventID, StartID: s.activeStartID, SandboxID: s.opts.sandboxID}
+		data.Bridge = &bridgeCoords{Port: s.opts.bridgePort, PrivateKey: s.opts.bridgePrivateKey, LastSeenEventID: lastSeenEventID, StartID: s.activeStartID, SandboxID: s.opts.sandboxID}
 	}
 	return data
 }

@@ -87,11 +87,10 @@ var r85carryWantSettings = map[string]any{
 
 func r85carryHarness(t *testing.T, settings claudecode.Settings, starts *r85carryStarts) (*claudecode.Harness, *testSandbox) {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: starts.onStart})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: starts.onStart})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	settings.MintBridgeToken = func(string) string { return "tok" }
 	settings.StartupTimeout = 2 * time.Second
 	h, err := claudecode.New(settings)
 	if err != nil {
