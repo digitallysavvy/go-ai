@@ -193,7 +193,7 @@ func TestStreamSpeech_FullStreamKeepsMetadataOnlyAudioButDoesNotCountIt(t *testi
 
 func TestStreamSpeech_ResolvesResultPromises(t *testing.T) {
 	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	chars := 12
+	chars := 12.0
 	model := &mockStreamingSpeechModel{doStream: func(context.Context, *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
 		r := speechParts(
 			provider.SpeechStreamPart{Type: provider.SpeechStreamPartTypeStreamStart, Warnings: []types.Warning{{Type: "other", Message: "w"}}},

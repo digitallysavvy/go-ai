@@ -134,7 +134,7 @@ func TestSerializeAndParsePart(t *testing.T) {
 		t.Fatalf("parsed = %+v", part)
 	}
 
-	chars := 12
+	chars := 12.0
 	finish, _ := SerializePart(&provider.SpeechStreamPart{Type: "finish", Usage: &provider.SpeechStreamUsage{InputCharacters: &chars},
 		ProviderMetadata: map[string]interface{}{"gateway": map[string]interface{}{"cost": "0.0005"}}})
 	got, ok := ParsePart(finish)

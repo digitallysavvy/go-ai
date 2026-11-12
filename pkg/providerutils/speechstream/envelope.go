@@ -478,9 +478,9 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 		}
 		if um, ok := raw["usage"].(map[string]interface{}); ok {
 			usage := &provider.SpeechStreamUsage{}
-			usage.InputCharacters = intField(um, "inputCharacters")
-			usage.InputTokens = intField(um, "inputTokens")
-			usage.OutputTokens = intField(um, "outputTokens")
+			usage.InputCharacters = numberField(um, "inputCharacters")
+			usage.InputTokens = numberField(um, "inputTokens")
+			usage.OutputTokens = numberField(um, "outputTokens")
 			if r, ok := um["raw"].(map[string]interface{}); ok {
 				usage.Raw = r
 			}
@@ -535,10 +535,10 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 	return part, true
 }
 
-func intField(m map[string]interface{}, key string) *int {
+// numberField reads an optional JS number as is (no truncation).
+func numberField(m map[string]interface{}, key string) *float64 {
 	if f, ok := m[key].(float64); ok {
-		i := int(f)
-		return &i
+		return &f
 	}
 	return nil
 }

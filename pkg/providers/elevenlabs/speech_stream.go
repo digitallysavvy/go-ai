@@ -381,7 +381,7 @@ func (s *elevenLabsSpeechStream) handleMessage(cfg speechStreamConfig, text stri
 	}
 
 	if event.isFinal {
-		characters := int(s.inputCharacters.Load())
+		characters := float64(s.inputCharacters.Load())
 		if !s.Emit(provider.SpeechStreamPart{
 			Type:  provider.SpeechStreamPartTypeFinish,
 			Usage: &provider.SpeechStreamUsage{InputCharacters: &characters},

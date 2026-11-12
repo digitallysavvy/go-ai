@@ -75,6 +75,6 @@ func main() {
 		log.Fatal(err)
 	}
 	if usage.InputCharacters != nil {
-		fmt.Printf("Wrote %d bytes of audio for %d characters\n", total, *usage.InputCharacters)
+		fmt.Printf("Wrote %d bytes of audio for %g characters\n", total, *usage.InputCharacters)
 	}
 }

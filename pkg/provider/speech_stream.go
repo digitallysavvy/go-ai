@@ -71,17 +71,18 @@ type SpeechTextStream interface {
 
 // SpeechStreamUsage is usage information for a speech stream call (TS
 // Experimental_SpeechModelV4StreamUsage). All fields are optional because
-// providers bill speech in different units.
+// providers bill speech in different units. The counts are *float64, the JS
+// number TS reports (a fractional wire count is kept, not truncated).
 type SpeechStreamUsage struct {
 	// InputCharacters is the number of input text characters (Unicode code
 	// points) sent for synthesis, if known.
-	InputCharacters *int `json:"inputCharacters,omitempty"`
+	InputCharacters *float64 `json:"inputCharacters,omitempty"`
 
 	// InputTokens is the number of input text tokens, if reported.
-	InputTokens *int `json:"inputTokens,omitempty"`
+	InputTokens *float64 `json:"inputTokens,omitempty"`
 
 	// OutputTokens is the number of output audio tokens, if reported.
-	OutputTokens *int `json:"outputTokens,omitempty"`
+	OutputTokens *float64 `json:"outputTokens,omitempty"`
 
 	// Raw is the provider's raw usage information.
 	Raw map[string]interface{} `json:"raw,omitempty"`
