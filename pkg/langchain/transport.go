@@ -17,6 +17,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -226,13 +227,20 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 	if err != nil {
 		return nil, err
 	}
+	// langgraph-sdk prepareFetchOptions: new URL(`${apiUrl}${path}`), so the
+	// request goes to the WHATWG serialization and a URL that does not parse
+	// fails with the URL constructor's TypeError.
+	endpoint, err := urlnorm.Href(t.url + "/runs/stream")
+	if err != nil {
+		return nil, errors.New("Invalid URL") //nolint:staticcheck // exact TS text (TypeError: Invalid URL)
+	}
 	client := internalhttp.WithFetchRedirects(t.httpClient)
 	// langgraph-sdk AsyncCaller.fetch for the POST: up to 4 retries of a
 	// connection failure (a POST is not idempotent, so other network errors
 	// and HTTP errors are not retried); a network failure that is not
 	// retried is a ConnectionError, a non-2xx status an HTTPError.
 	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.url+"/runs/stream", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
