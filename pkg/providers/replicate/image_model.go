@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -177,7 +179,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    path,
-		Body:    reqBody,
+		Body:    orderedImageBody(reqBody),
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Prefer": prefer}),
 		// TS createJsonResponseHandler(replicateImageResponseSchema).
 		ValidateResponse: validateImagePrediction,
@@ -339,7 +341,7 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 	}
 
 	prefer := "wait"
-	if raw, ok := opts.ProviderOptions["replicate"]; ok && raw != nil {
+	if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["replicate"]; ok && raw != nil {
 		repOpts, ok := raw.(map[string]interface{})
 		if !ok {
 			return nil, nil, "", fmt.Errorf("replicate: invalid providerOptions.replicate: expected object")
@@ -369,6 +371,42 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 		body["version"] = version
 	}
 	return body, warnings, prefer, nil
+}
+
+// orderedImageBody sends the prediction body in the TS literal order:
+// input {prompt, aspect_ratio, size, seed, num_outputs, the image inputs,
+// mask, then the input options (sorted: a Go map has no caller order; a
+// repeated key keeps its first position)}, then version.
+func orderedImageBody(body map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	if input, ok := body["input"].(map[string]interface{}); ok {
+		ordered := jsonorder.New()
+		lead := []string{"prompt", "aspect_ratio", "size", "seed", "num_outputs", "input_image"}
+		for i := 2; i <= maxFlux2InputImages; i++ {
+			lead = append(lead, fmt.Sprintf("input_image_%d", i))
+		}
+		lead = append(lead, "image", "mask")
+		for _, k := range lead {
+			if v, has := input[k]; has {
+				ordered.Set(k, v)
+			}
+		}
+		rest := make([]string, 0)
+		for k := range input {
+			if _, done := ordered.Get(k); !done {
+				rest = append(rest, k)
+			}
+		}
+		sort.Strings(rest)
+		for _, k := range rest {
+			ordered.Set(k, input[k])
+		}
+		out.Set("input", ordered)
+	}
+	if v, ok := body["version"]; ok {
+		out.Set("version", v)
+	}
+	return out
 }
 
 // pollImagePrediction polls the prediction's urls.get until it completes (TS
