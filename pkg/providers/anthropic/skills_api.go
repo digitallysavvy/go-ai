@@ -54,7 +54,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
 	if resp.StatusCode >= 400 {
 		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
@@ -124,7 +124,7 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
 	// Bug fix: this branch previously returned (nil, nil) for a non-2xx
 	// response here (the combined `err != nil || resp.StatusCode >= 400`
