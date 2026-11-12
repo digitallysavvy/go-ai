@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -325,7 +326,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAssemblyAISubmit),
 		Method:           http.MethodPost,
 		Path:             "/transcript",
-		Body:             body,
+		Body:             orderedTranscriptBody(body),
 		Headers:          opts.Headers,
 	}, &submitResult)
 	if err != nil {
@@ -347,7 +348,7 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, abortedError(ctx)
 		default:
 		}
 
@@ -380,10 +381,73 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, abortedError(ctx)
 		case <-time.After(pollingInterval):
 		}
 	}
+}
+
+// transcriptionAbortedError is TS waitForCompletion's
+// Error('Transcription request was aborted') for an abort seen between
+// polls (assemblyai-transcription-model.ts:289). It wraps the context error,
+// so errors.Is(err, context.Canceled) keeps working.
+type transcriptionAbortedError struct{ cause error }
+
+func (e *transcriptionAbortedError) Error() string { return "Transcription request was aborted" }
+func (e *transcriptionAbortedError) Unwrap() error { return e.cause }
+
+func abortedError(ctx context.Context) error {
+	return &transcriptionAbortedError{cause: ctx.Err()}
+}
+
+// transcriptBodyKeyOrder is the TS getArgs assignment order of the submit
+// body, then doGenerate's audio_url.
+var transcriptBodyKeyOrder = []string{
+	"speech_model", "speech_models",
+	"audio_end_at", "audio_start_from", "auto_chapters", "auto_highlights", "boost_param",
+	"content_safety", "content_safety_confidence", "custom_spelling", "disfluencies",
+	"entity_detection", "filter_profanity", "format_text", "iab_categories", "language_code",
+	"language_confidence_threshold", "language_detection", "multichannel", "punctuate",
+	"redact_pii", "redact_pii_audio", "redact_pii_audio_quality", "redact_pii_policies",
+	"redact_pii_sub", "sentiment_analysis", "speaker_labels", "speakers_expected",
+	"speech_threshold", "summarization", "summary_model", "summary_type",
+	"webhook_auth_header_name", "webhook_auth_header_value", "webhook_url", "word_boost",
+	"keyterms_prompt", "prompt", "temperature", "remove_audio_tags", "domain",
+	"redact_pii_return_unredacted", "redact_static_entities",
+	"speaker_options", "language_detection_options", "redact_pii_audio_options",
+	"audio_url",
+}
+
+// transcriptNestedKeyOrder is the TS literal order of the nested objects.
+var transcriptNestedKeyOrder = map[string][]string{
+	"speaker_options":            {"min_speakers_expected", "max_speakers_expected"},
+	"language_detection_options": {"expected_languages", "fallback_language", "code_switching", "code_switching_confidence_threshold"},
+	"redact_pii_audio_options":   {"return_redacted_no_speech_audio", "override_audio_redaction_method"},
+}
+
+// orderedTranscriptBody sends the submit body in the TS JSON.stringify
+// order instead of Go's sorted map keys.
+func orderedTranscriptBody(body map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range transcriptBodyKeyOrder {
+		v, ok := body[k]
+		if !ok {
+			continue
+		}
+		if order, nested := transcriptNestedKeyOrder[k]; nested {
+			if m, isMap := v.(map[string]interface{}); isMap {
+				o := jsonorder.New()
+				for _, nk := range order {
+					if nv, has := m[nk]; has {
+						o.Set(nk, nv)
+					}
+				}
+				v = o
+			}
+		}
+		out.Set(k, v)
+	}
+	return out
 }
 
 // convertResponse maps a raw completed transcript response into a
