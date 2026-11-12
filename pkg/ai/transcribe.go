@@ -444,11 +444,11 @@ func transcribeHeadersWithUserAgent(headers map[string]string) map[string]string
 // string: convertBase64ToUint8Array (base64url mapped, then atob's forgiving
 // decode: ASCII whitespace ignored, padding optional).
 func decodeTranscriptionAudioBase64(content string) ([]byte, error) {
-	if decoded, err := fileutil.ConvertBase64ToBytes(content); err == nil {
+	decoded, err := fileutil.ConvertBase64ToBytes(content)
+	if err == nil {
 		return decoded, nil
 	}
-	return nil, &providererrors.InvalidArgumentError{
-		Field:   "audio",
-		Message: "invalid base64 audio data",
-	}
+	// TS InvalidDataContentError text; the v0.5.2 InvalidArgumentError type
+	// (Field "audio") stays for errors.As.
+	return nil, providererrors.NewArgumentError("audio", "Invalid data content. Content string is not a base64-encoded media.", err)
 }

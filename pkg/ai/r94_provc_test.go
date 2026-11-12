@@ -1,6 +1,11 @@
 package ai
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
 
 // TS getAudioMediaType lower-cases with String.prototype.toLowerCase, which
 // maps U+0130 to "i" plus U+0307 (node: "audi̇o/mpeg"), so the type is not
@@ -40,5 +45,15 @@ func TestR94provcVideoHTTPDataStringIsURL(t *testing.T) {
 	}
 	if len(refs.InputReferences) != 1 || refs.InputReferences[0].Type != "url" || refs.InputReferences[0].MediaType != "video/mp4" {
 		t.Fatalf("references = %+v", refs.InputReferences)
+	}
+}
+
+// TS convertDataContentToUint8Array throws InvalidDataContentError
+// "Invalid data content. Content string is not a base64-encoded media."
+func TestR94provcTranscribeInvalidBase64Text(t *testing.T) {
+	_, err := decodeTranscriptionAudioBase64("not base64!!!")
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Field != "audio" || err.Error() != "Invalid data content. Content string is not a base64-encoded media." {
+		t.Fatalf("err = %T %v", err, err)
 	}
 }

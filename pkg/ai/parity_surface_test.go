@@ -662,7 +662,7 @@ func TestTranscribeInvalidAudioBase64AndNegativeMaxRetries(t *testing.T) {
 		Model:       model,
 		AudioBase64: "not base64!!!",
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid base64 audio data") {
+	if err == nil || err.Error() != "Invalid data content. Content string is not a base64-encoded media." {
 		t.Fatalf("invalid base64 error = %v", err)
 	}
 
