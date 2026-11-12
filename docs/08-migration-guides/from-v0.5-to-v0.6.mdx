@@ -703,7 +703,7 @@ already, you can skip them.
 | `ai.toolCall.durationMs` | Removed | silent behavior change | Use the span duration | [No ai.toolCall.durationMs on legacy tool spans](#legacy-tool-span-duration) |
 | `ai.settings.maxRetries` on audio spans | Not recorded | silent behavior change | None | [No ai.settings attributes on legacy speech and transcription spans](#legacy-audio-settings) |
 | Struct-literal `WorkflowAgent` without `StopWhen` | Stream has no default limit | silent behavior change | Set `StopWhen` | [Struct-literal WorkflowAgent stream has no 20-step default](#workflow-literal-stream-steps) |
-| `NormalizeToolModelOutput` | FileContentBlock kept | silent behavior change | Handle file blocks | [Harness file parts stay file parts](#harness-tool-output-file-part) |
+| `NormalizeToolModelOutput` | FileContentBlock for file and image-data parts | silent behavior change | Handle file blocks | [Harness file parts stay file parts](#harness-tool-output-file-part) |
 | `MintBridgeToken`, `BRIDGE_CHANNEL_TOKEN`, `bridge.token` | Public-key bridge auth | wire/protocol change | Drop the token; new sessions | [Harness bridges authenticate with a per-session public key](#bridge-public-key-auth) |
 | MCP `elicitation/create` | TS schema and messages | silent behavior change | Send `requestedSchema` | [MCP elicitation params follow the TS schema](#mcp-elicitation-schema) |
 | MCP `transport error` texts | Unwrapped TS errors | error text only | Use `errors.As` | [MCP send errors are unwrapped](#mcp-send-errors) |
@@ -748,6 +748,18 @@ already, you can skip them.
 | `logitBias` keys, integer and URL options | JS / zod rules | silent behavior change | None | [Provider option number keys, integers and URLs follow JS and zod](#option-schema-js-coercion) |
 | `MockTextStream` `Read` | io.Reader contract | silent behavior change | None | [testutil.MockTextStream.Read follows io.Reader](#mock-text-stream-read) |
 | Rev.ai errors and `config` field | TS codes, headers and key order | wire/protocol change | None | [Rev.ai job errors, headers and config order follow TS](#revai-r91-details) |
+| `ElementStream`, `ElementStreamWithOutput` | First text block only; restarted by stream retries | silent behavior change | None | [Element streams follow the TS output stage](#element-stream-first-block) |
+| `PrepareStep` / tool message `ProviderOptions` with nil values | nil replaces the base value | silent behavior change | Leave the key out | [A nil provider option override replaces the base value](#provider-options-null-override) |
+| MCP events / input_required, MiniMax video usage, Topaz video key and resolution, Vercel runtime + image, DeepInfra image missing key | TS wire order, error types and checks | wire/protocol change | None | [MCP, MiniMax, Topaz, Vercel Sandbox and DeepInfra details follow TS (round 92)](#tools-r92-details) |
+| WorkflowAgent stream `OnStepEnd` | Not called for a step that pauses on a client tool or approval | silent behavior change | Use telemetry or OnEnd | [WorkflowAgent stream skips OnStepEnd for a paused step](#workflow-stream-paused-step-end) |
+| `telemetry.GetBaseAttributes` | Skips credential headers in any case | silent behavior change | None | [GetBaseAttributes skips credential headers in any case](#telemetry-base-attributes-credential-headers) |
+| `ai.response.toolCalls`, `ai.toolCall.args`, `gen_ai.tool.call.arguments` | Model key order | silent behavior change | Compare parsed JSON | [Telemetry tool-call inputs keep the model's key order](#telemetry-tool-input-key-order) |
+| Transport connect / response-header timeouts | Retryable `Cannot connect to API` error, retried; not `context.DeadlineExceeded` | silent behavior change | Use `errors.As(err, &netErr)` | [Transport timeouts are the retryable Cannot connect to API error](#transport-timeouts-retryable) |
+| `retry-after`, `retry-after-ms` response headers | JS `parseFloat` and `Date.parse` | silent behavior change | None | [Retry-After headers are read like TS](#retry-after-js-parsing) |
+| `AWS_BEARER_TOKEN_BEDROCK` set after `bedrock.New` | Read once at provider creation | silent behavior change | Create the provider after setting it | [Bedrock reads AWS_BEARER_TOKEN_BEDROCK when the provider is created](#aws-api-key-env-at-creation) |
+| `ResponseMetadata.Timestamp` from Google Interactions, Gateway, Bedrock; Anthropic Files times; Google realtime `ExpiresAt` | Date.parse, millisecond precision | silent behavior change | None | [Provider timestamps are parsed like JS Date](#js-date-timestamps) |
+| BFL `webhookUrl`, `polling_url`; Perplexity citations | zod `z.url()` check and output | wire/protocol change | None | [BFL and Perplexity URL values follow zod z.url()](#zod-url-values) |
+| Harness turns with `Output`: `PartialOutput()`, text deltas | First text block, grouped deltas | silent behavior change | None | [Harness turns with an output follow the TS output stage](#harness-output-stage) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1979,7 +1991,7 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 ### Generated file URLs use ExperimentalDownload {#generated-file-experimental-download}
 
-- **What changed:** URL-backed generated and reasoning files a model returns were always downloaded with the default downloader. v0.6 uses `ExperimentalDownload` when it is set, in `GenerateText`, `StreamText` and the agent loop, called with `IsURLSupportedByModel: false`; a nil result is a `*DownloadError` `Generated file URL <href> must be downloaded, but the download function returned null`, and the function's own error is returned as is (TS 2ebc78b654). Without it, the validated, DNS-pinned default downloader stays.
+- **What changed:** URL-backed generated and reasoning files a model returns were always downloaded with the default downloader. v0.6 uses `ExperimentalDownload` when it is set, in `GenerateText`, `StreamText` and the agent loop, called with `IsURLSupportedByModel: false`; a nil result is a `*DownloadError` `Generated file URL <href> must be downloaded, but the download function returned null`, and the function's own error is returned as is (TS 2ebc78b654). Without it, the validated, DNS-pinned default downloader stays. The download function gets the URL serialized (`https://x/a%20b.png`), as TS `url.toString()` (review round 92).
 - **Am I affected?** `ExperimentalDownload` functions that return nil when `IsURLSupportedByModel` is false, or that assume only prompt URLs.
 - **What to do:** Download (or reject) generated file URLs in your function too.
 - **Kind:** silent behavior change
@@ -2048,6 +2060,13 @@ res, err := ai.StreamText(ctx, ai.StreamTextOptions{
 - **What changed:** `testutil.MockTextStream.Read` reported the whole chunk length even when the buffer was shorter, so `io.ReadAll` panicked, and returned `0, nil` for non-text chunks. v0.6 copies at most `len(p)` bytes, keeps the rest for the next call and skips non-text chunks (review round 91).
 - **Am I affected?** Tests that read a `MockTextStream` with `Read`.
 - **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Element streams follow the TS output stage {#element-stream-first-block}
+
+- **What changed:** `ElementStream` and `ElementStreamWithOutput` reparsed the whole step text on every chunk, across every text block of the step, and kept a failed attempt's text after a stream retry. v0.6 emits the elements of the step's first text block only; for the call's own `ArrayOutput` they read the partial outputs `StreamText` publishes, so each element is validated once and a `StreamRetries` retry restarts them, as TS createElementStreamTransform (TS 91a67c2f56, review round 92).
+- **Am I affected?** `ElementStream` / `ElementStreamWithOutput` on steps that stream several text blocks, or with `StreamRetries`.
+- **What to do:** No action unless you relied on elements parsed from a later text block of the same step.
 - **Kind:** silent behavior change
 
 ## Prompts and validation {#prompts-and-validation}
@@ -2382,6 +2401,13 @@ res, err := ai.StreamText(ctx, ai.StreamTextOptions{
 - **Am I affected?** Tool results decoded from `image-data` / `file-data` JSON with a wrong `mediaType`.
 - **What to do:** Send the correct `mediaType`.
 - **Kind:** wire/protocol change
+
+### A nil provider option override replaces the base value {#provider-options-null-override}
+
+- **What changed:** Merging `PrepareStep` provider options onto the call's options, and a tool message's options onto its last part, skipped a nil (JSON null) override and kept the base value. v0.6 sets the key to nil, as TS merge-objects.ts skips only undefined (review round 92).
+- **Am I affected?** `PrepareStep` results or tool messages whose `ProviderOptions` maps hold nil values.
+- **What to do:** Leave the key out to keep the base value.
+- **Kind:** silent behavior change
 
 ## Tools {#tools}
 
@@ -3129,6 +3155,13 @@ res, err := ai.StreamText(ctx, ai.StreamTextOptions{
 - **Am I affected?** `ExperimentalToolCallers` with nil entries, or with an empty `Tools` slice.
 - **What to do:** Use an empty non-nil slice to hide a tool.
 - **Kind:** silent behavior change
+
+### MCP, MiniMax, Topaz, Vercel Sandbox and DeepInfra details follow TS (round 92) {#tools-r92-details}
+
+- **What changed:** Small TS alignments (review round 92): MCP experimental events `Subscribe` sends `params: {}` on the first catalog page; input_required retries keep the TS key order; an already-aborted modern MCP request rejects with the abort reason; a failed reply to a server request is reported to `OnError`; MiniMax video null usage members stay null in `providerMetadata.minimax.usage`; Topaz video reports a missing API key before the input-video checks, sends non-integer or non-numeric resolution parts as JS `Number` does (fraction kept, NaN as null), and Topaz `InvalidResponseDataError` data is the schema-parsed response (undeclared keys stripped); Vercel Sandbox rejects runtime + image before resolving credentials; a DeepInfra image call without an API key returns `LoadAPIKeyError`, not a wrapped `ProviderError`.
+- **Am I affected?** Code that matches these texts, errors or wire details.
+- **What to do:** No action unless you match them.
+- **Kind:** wire/protocol change
 
 ## Agents and approvals {#agents-and-approvals}
 
@@ -3962,6 +3995,13 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What changed:** A `WorkflowAgent` built as a struct literal with no `StopWhen` stopped `Stream` after 20 steps. v0.6 streams without a step limit, as TS workflow-agent.ts; generate keeps the 20-step default (review round 91).
 - **Am I affected?** Struct-literal `WorkflowAgent` values without `StopWhen` used with `Stream`.
 - **What to do:** Set `StopWhen` if you relied on the limit.
+- **Kind:** silent behavior change
+
+### WorkflowAgent stream skips OnStepEnd for a paused step {#workflow-stream-paused-step-end}
+
+- **What changed:** In `StreamWithOptions`, `OnStepEnd` / `OnStepFinish` ran for the step that stops the run on a client-side tool (no `Execute`) or a tool approval. v0.6 skips it there in stream mode, as TS workflow-agent.ts; generate mode still calls it, and telemetry still records the step end (review round 92).
+- **Am I affected?** WorkflowAgent stream callers counting `OnStepEnd` calls or reading the paused step from it.
+- **What to do:** Read the paused step from the stream result's `Steps()` or from `OnEnd`.
 - **Kind:** silent behavior change
 
 ## UI message streams {#ui-message-streams}
@@ -5164,7 +5204,7 @@ compile-time changes.
 
 ### Legacy root ai.prompt keeps a string prompt as the user message {#legacy-root-prompt-string}
 
-- **What changed:** The legacy root `ai.prompt` of a string prompt held a Go message with content parts and extra keys. v0.6 writes `{"role":"user","content":"hi"}` for `Prompt: "hi"`, and root messages have only role / content / providerOptions, as TS standardizePrompt (review round 91).
+- **What changed:** The legacy root `ai.prompt` of a string prompt held a Go message with content parts and extra keys. v0.6 writes `{"role":"user","content":"hi"}` for `Prompt: "hi"`, and root messages have only role / content / providerOptions, as TS standardizePrompt (review round 91). `ToolLoopAgent.Execute` and `GenerateAgent` with `Prompt` record the root `ai.prompt` user message with string content too (`{"role":"user","content":"Hello"}`), as GenerateText (review round 92).
 - **Am I affected?** Telemetry queries on the root `ai.prompt`.
 - **What to do:** Update parsers.
 - **Kind:** silent behavior change
@@ -5188,6 +5228,20 @@ compile-time changes.
 - **What changed:** Legacy speech and transcription root spans could carry `ai.settings.*` (`ai.settings.maxRetries`). v0.6 records none, as TS onAudioOperationStart (review round 91).
 - **Am I affected?** Queries on `ai.settings.*` of `ai.generateSpeech` / `ai.transcribe` spans.
 - **What to do:** No action unless you query those.
+- **Kind:** silent behavior change
+
+### GetBaseAttributes skips credential headers in any case {#telemetry-base-attributes-credential-headers}
+
+- **What changed:** `telemetry.GetBaseAttributes` left out `Authorization`, `x-api-key` and `api-key` only in that exact spelling, so `authorization` became an `ai.request.headers.authorization` attribute. v0.6 matches them case-insensitively (review round 92).
+- **Am I affected?** Callers of `GetBaseAttributes` that relied on lower-case credential headers in the attributes.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Telemetry tool-call inputs keep the model's key order {#telemetry-tool-input-key-order}
+
+- **What changed:** `ai.response.toolCalls`, `ai.toolCall.args`, `gen_ai.tool.call.arguments` and the `tool_call` arguments in `gen_ai.output.messages` wrote a tool call's input with sorted keys. v0.6 keeps the order the model sent (`GenerateText`, `StreamText`, `ToolLoopAgent`, `WorkflowAgent` and harness tool spans), as TS writes `toolCall.input`; `TelemetryToolCallStartEvent.ArgsText` carries the raw input text (review round 92).
+- **Am I affected?** Code that compares these attributes as text.
+- **What to do:** Compare parsed JSON.
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
@@ -5462,6 +5516,20 @@ compile-time changes.
 
 - **What changed:** `NormalizeStreamProviderError` built a `*StreamProviderError` from a payload whose error had no string message, and skipped an empty `type`. v0.6 returns the error unchanged without a string message and keeps an empty `type`, as TS normalize-stream-provider-error.ts (review round 91).
 - **Am I affected?** Perplexity / Mistral conversation stream errors checked for `*StreamProviderError`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Transport timeouts are the retryable Cannot connect to API error {#transport-timeouts-retryable}
+
+- **What changed:** A connect, TLS or response-header timeout of the HTTP transport (`http.Transport.ResponseHeaderTimeout`, a dialer timeout, an OS `ETIMEDOUT`) was returned as is, like your own context's deadline, and was not retried. v0.6 returns it as the retryable `Cannot connect to API: <cause>` error, which the core retries, and it no longer matches `errors.Is(err, context.DeadlineExceeded)`. This holds for the shared provider client and for the provider calls that use their own `http.Client` (Azure Speech and MAI image, Google files, batch and realtime tokens, Vertex Chirp transcription, Bedrock, Anthropic batch results, the OpenAI model catalog, BFL polls and image downloads). Your context's cancellation or deadline and an `http.Client` `Timeout` are still returned unchanged. TS handle-fetch-error.ts retries undici `UND_ERR_HEADERS_TIMEOUT`, `UND_ERR_CONNECT_TIMEOUT` and `ETIMEDOUT` the same way (review round 92).
+- **Am I affected?** Code that checks `errors.Is(err, context.DeadlineExceeded)` for transport timeouts, or counts attempts against a slow endpoint; BFL poll or image download errors matched as a raw `*url.Error` value.
+- **What to do:** Match the transport timeout with `var ne net.Error; errors.As(err, &ne) && ne.Timeout()`. Set `MaxRetries` to 0 to keep a single attempt.
+- **Kind:** silent behavior change
+
+### Retry-After headers are read like TS {#retry-after-js-parsing}
+
+- **What changed:** The retry delay read `retry-after-ms` and `retry-after` with `strconv.ParseFloat` and an HTTP date with `http.ParseTime`. v0.6 reads them as TS getRetryDelayInMs does: JS `parseFloat` (a numeric prefix such as `2s` is 2 seconds; an ISO date reads as its year in seconds and is ignored as too long) and `Date.parse` for dates, so a date with a numeric zone is honored (review round 92).
+- **Am I affected?** Servers that send `Retry-After` / `retry-after-ms` values that are not a plain number or an RFC 1123 date.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
@@ -6345,11 +6413,20 @@ compile-time changes.
   `convertBase64ToUint8Array` decode to Mistral speech `audio_data`, Amazon
   Bedrock image bytes (`Image`/`Images`; `Base64Images` keeps the wire
   strings), Perplexity decision image sniffing and Bedrock Converse media
-  type sniffing.
+  type sniffing. Round 92 applies the same decode to `Transcribe`
+  `AudioBase64`, `GenerateVideo` prompt images, references and base64
+  videos, and Cartesia, Gladia, Rev.ai and Fish Audio `AudioBase64` (ASCII
+  whitespace in the string is now ignored), and to every base64 file data
+  string decoded through `types.DecodeFileDataString` (prompt and tool
+  result file data, uploads, the provider files APIs).
 - **Am I affected?** Only if you relied on such payloads producing an empty
   file or an error: Google / Vertex, `mistral` speech `DoGenerate`, `bedrock`
   image `DoGenerate` `Image`/`Images`, `perplexity` decisions with a bare
-  image media type.
+  image media type; `ai.Transcribe` with `AudioBase64`, `ai.GenerateVideo`
+  base64 inputs or outputs, `cartesia` / `gladia` / `revai` / `fishaudio`
+  `TranscriptionOptions.AudioBase64`, Cartesia realtime
+  `input-audio-append`, and base64 strings with line breaks in
+  `types.FileData`.
 - **What to do:** no action.
 - **Kind:** silent behavior change
 
@@ -8701,6 +8778,27 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What to do:** No action.
 - **Kind:** wire/protocol change
 
+### Bedrock reads AWS_BEARER_TOKEN_BEDROCK when the provider is created {#aws-api-key-env-at-creation}
+
+- **What changed:** Bedrock read `AWS_BEARER_TOKEN_BEDROCK` on every request. v0.6 reads it once, when the provider is created, and then picks bearer or SigV4 authentication, as TS createAmazonBedrock (`loadOptionalSetting`); Bedrock Anthropic and Bedrock Mantle do the same, and `anthropicaws` reads `ANTHROPIC_AWS_API_KEY` at creation as v0.5.2 did. SigV4 credentials are still loaded per request (review round 92).
+- **Am I affected?** Setting or rotating `AWS_BEARER_TOKEN_BEDROCK` after creating a `bedrock`, `bedrock/anthropic` or `bedrock/mantle` provider.
+- **What to do:** Create the provider after setting the variable, or pass the key in `Config.APIKey` (or the provider's key or token function) to resolve it yourself.
+- **Kind:** silent behavior change
+
+### Provider timestamps are parsed like JS Date {#js-date-timestamps}
+
+- **What changed:** Provider response timestamps were parsed with `time.Parse` (RFC 3339 or RFC 1123), which kept sub-millisecond digits and dropped forms TS `new Date(str)` accepts (a date-only string, a zone-less time, RFC 850). v0.6 parses them like `Date.parse` with millisecond precision: Google Interactions `created` (generate and stream), the Google realtime token `expireTime`, the Gateway response-metadata, batch result and transcription stream timestamps, the speech stream envelope timestamp, Anthropic Files `created_at` / `expires_at`, the xAI batch expiry check and the Bedrock `date` header (review round 92). `harnessutil.ParseJSDate` is unchanged.
+- **Am I affected?** Code that compares `ResponseMetadata.Timestamp` (or these fields) with sub-millisecond precision.
+- **What to do:** No action unless you rely on sub-millisecond timestamps.
+- **Kind:** silent behavior change
+
+### BFL and Perplexity URL values follow zod z.url() {#zod-url-values}
+
+- **What changed:** BFL sent `webhookUrl` as given, polled `polling_url` as given, and the z.url() checks (BFL submit and poll, Perplexity citations) rejected a URL with surrounding whitespace. v0.6 follows zod 4 `z.url()`: the value is checked JS-trimmed with the WHATWG URL parser, and BFL sends `webhook_url` and polls `polling_url` as the zod output (trimmed, tab / LF / CR removed); `providerutils.ZodURLValue` is that output (review round 92).
+- **Am I affected?** BFL `webhookUrl` values with surrounding whitespace or line breaks; servers that answer with such URLs.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -9486,7 +9584,7 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 
 ### Harness file parts stay file parts {#harness-tool-output-file-part}
 
-- **What changed:** `NormalizeToolModelOutput` turned an inline image file part into an `ImageContentBlock` and lost its filename. v0.6 returns a `FileContentBlock` with filename and provider options, as TS normalize-harness-tool-model-output.ts (review round 91).
+- **What changed:** `NormalizeToolModelOutput` turned an inline image file part into an `ImageContentBlock` and lost its filename, and kept a legacy image-data part as an `ImageContentBlock`. v0.6 returns a `FileContentBlock` with inline data for both (a file's filename and provider options kept), as TS normalize-harness-tool-model-output.ts (review rounds 91, 92).
 - **Am I affected?** `NormalizeToolModelOutput` results checked for `ImageContentBlock`.
 - **What to do:** Handle `FileContentBlock`.
 - **Kind:** silent behavior change
@@ -9497,6 +9595,13 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **Am I affected?** `MintBridgeToken`, stored resume / continue state, custom bridges or proxies that read the channel token.
 - **What to do:** Drop `MintBridgeToken`; start new sessions instead of resuming old token state; treat stored resume state as a secret (it holds the private key).
 - **Kind:** wire/protocol change
+
+### Harness turns with an output follow the TS output stage {#harness-output-stage}
+
+- **What changed:** A harness turn with `ExternalStreamOptions.Output` (or a `HarnessAgent` with an output) parsed each step's whole text for `PartialOutput()`, reset it per step, and passed every text delta on unchanged. v0.6 takes `PartialOutput()` from the turn's first text block (not reset per step), publishes only changed values, and groups that block's text deltas with each changed partial, flushing them at text-end and before finish-step, as TS HarnessStreamTextResult (review round 92).
+- **Am I affected?** Code that reads `PartialOutput()` or text deltas of a harness turn that sets an Output.
+- **What to do:** No action unless you depend on per-delta grouping or on partials from a later step's text.
+- **Kind:** silent behavior change
 
 ## Policy {#policy}
 
@@ -9818,6 +9923,18 @@ after upgrading:
   [Tencent SubAppId and serialization](./known-differences.mdx).
 - **Deepgram error data request id**: Deepgram error data keeps the v0.5 `requestId` key (round 91). See
   [Deepgram error data request id](./known-differences.mdx).
+- **LangGraph run stream invalid event data**: A LangGraph run stream event whose data is not JSON fails with a Go decode error text, not V8's SyntaxError (round 92). See
+  [LangGraph run stream invalid event data](./known-differences.mdx).
+- **UI message validation issue text**: `ValidateUIMessages` reports the first issue as `<path>: <message>`, not zod's issue list (round 92). See
+  [UI message validation issue text](./known-differences.mdx).
+- **Anthropic AWS settings checked at creation**: `anthropicaws.New` fails on a missing workspace ID or region, as v0.5.2 (round 92). See
+  [Anthropic AWS settings checked at creation](./known-differences.mdx).
+- **Open Responses accepts extra provider options**: The Open Responses model reads and sends the v0.5.2 options beyond `reasoningEffort` / `reasoningSummary` (round 92). See
+  [Open Responses accepts extra provider options](./known-differences.mdx).
+- **Realtime millisecond fields are integers**: Realtime event `StartMs` / `EndMs` / `OffsetMs` are v0.5.2 `*int` fields (round 92). See
+  [Realtime millisecond fields are integers](./known-differences.mdx).
+- **Empty API key settings**: An empty `Config.APIKey` or API key environment variable is the missing-key `LoadAPIKeyError` (round 92). See
+  [Empty API key settings](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 

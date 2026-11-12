@@ -757,7 +757,7 @@ TS chat transports validate every received chunk against `uiMessageChunkSchema` 
 TS `2ebc78b654` removed the DNS-pinned default download transport and asks Node.js callers to inject `guarded-fetch`. Go keeps validated, DNS-pinned downloads (`fileutil.SafeTransport`) as the default for every untrusted download, prompt files and the generated file URLs a model returns included (those use `ExperimentalDownload` when it is set). A caller-supplied transport takes over connect-time validation, as an injected `fetch` does in TS: `ai.DownloadOptions.Transport` is the opt-in counterpart of TS `createDownload({ fetch })` and keeps URL, DNS pre-check and redirect validation. URL validation, redirect checks and header isolation apply either way. TS added no opt-in flag, so Go has no new option. The TS tests that route Vertex image and tool-result downloads through a caller `fetch` are skipped in the wire replay for this reason (S2: security is never traded for parity; review round 91).
 
 ## MCP OAuth: DNS protection without a custom fetch
-Go always dials untrusted MCP OAuth discovery, token and registration hops through the DNS-pinned transport unless the caller supplies an HTTP client, so there is no runtime-dependent "requires a custom fetch with connect-time DNS validation" error (TS `88b95757c1` on Bun, Deno and workers) (S2; review round 91).
+Go always dials untrusted MCP OAuth discovery, token and registration hops through the DNS-pinned transport unless the caller supplies an HTTP client, so there is no runtime-dependent "requires a custom fetch with connect-time DNS validation" error (TS `88b95757c1`, and on Node.js too since `2ebc78b654`) (S2; review rounds 91, 92).
 
 ## toolbash command execution
 `toolbash` runs commands with `SandboxSession.Spawn`, a per-stream output bound and a process-group kill instead of TS `sandbox.run()`, which would buffer unbounded command output in memory. A timed-out command ends with exit code 124 in Go; with the TS Vercel adapter the run rejects and the tool returns an error (S2; review round 91).
@@ -836,6 +836,24 @@ TS accepts `subAppId` as `number | string`. Go's `tencent.Config.SubAppID` is a 
 
 ## Deepgram error data request id
 Deepgram error `Data` keeps the v0.5 `requestId` key beside the TS `request_id` (S6; review round 91).
+
+## LangGraph run stream invalid event data
+A LangGraph run stream event whose data is not JSON fails the stream with `langchain: invalid event data: <decode error>`; langgraph-sdk fails it with the `JSON.parse` SyntaxError text of the JS engine (S3: V8 error texts; review round 92).
+
+## UI message validation issue text
+`ValidateUIMessages` reports the first issue of the first invalid message as one `ValidationError` whose text is `<path>: <message>` (for example `[1].id: Invalid input: expected string for id`). TS throws zod's issue list, which holds every issue of that message or part (for `{}`: id, role and parts) (S3: zod issue lists, error text only; review round 92).
+
+## Anthropic AWS settings checked at creation
+`anthropicaws.New` returns a `LoadSettingError` when the workspace ID (`WorkspaceID` / `ANTHROPIC_AWS_WORKSPACE_ID`) is missing, and when neither `BaseURL` nor a region is set. TS `createAnthropicAws` succeeds and throws when a model is created (region) or a request is made (workspace ID). Go keeps the v0.5.2 constructor error (S6; review round 92).
+
+## Open Responses accepts extra provider options
+Go's Open Responses model also reads `strictJsonSchema`, `textVerbosity`, `store`, `serviceTier`, `previousResponseId`, `conversation`, `include`, `logprobs`, `maxToolCalls`, `metadata`, `parallelToolCalls`, `user`, `instructions`, `promptCacheKey`, `promptCacheRetention`, `safetyIdentifier`, `truncation`, `contextManagement` and `allowedTools`, under the provider's key and the `openai` / `openResponses` / `open-responses` aliases, and sends them. TS parses only `reasoningEffort` and `reasoningSummary` under the provider's own key and always sends `strict: true`. v0.5.2 read and sent these options (S6; review round 92).
+
+## Realtime millisecond fields are integers
+`provider.RealtimeServerEvent.StartMs`, `EndMs` and `OffsetMs` are `*int` fields of a v0.5.2 public type, so a fractional value from the wire is truncated; TS keeps the JS number. The raw event keeps the exact value (S6; changing the field types would also break v0.5.2 code at compile time; review round 92). The realtime usage token counts, new in v0.6, keep the JS number (`*float64`).
+
+## Empty API key settings
+An empty `Config.APIKey` and an empty API key environment variable count as unset: the call fails with the missing-key `LoadAPIKeyError` before any request. TS `loadApiKey` returns an explicit `''` key, and an empty environment variable, and sends the request with it (S1: `APIKey` is a plain v0.5.2 string field; S6: v0.5.2 treated an empty environment variable as missing too; review round 92). A credential header in `Config.Headers` still authenticates (see "Header-only API key authentication").
 
 ## Features that are TypeScript-only (not ported)
 
