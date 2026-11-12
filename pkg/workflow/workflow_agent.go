@@ -1965,10 +1965,17 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		useInstructions(ovr.Instructions)
 	}
 	stopWhen := w.StopWhen
-	if streaming && w.stopWhenDefaulted {
-		// TS only defaults generate() to isStepCount(20); stream() runs until
-		// the model stops calling tools.
-		stopWhen = []ai.StopCondition{func(ai.StopConditionState) string { return "" }}
+	if w.stopWhenDefaulted || len(stopWhen) == 0 {
+		// TS `options.stopWhen ?? this.stopWhen ?? (mode === 'generate' ?
+		// isStepCount(20) : undefined)` (workflow-agent.ts 1739-1742): only
+		// generate() defaults to isStepCount(20); stream() runs until the
+		// model stops calling tools. A struct-literal agent with no StopWhen
+		// gets the same defaults as NewWorkflowAgent.
+		if streaming {
+			stopWhen = []ai.StopCondition{func(ai.StopConditionState) string { return "" }}
+		} else {
+			stopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		}
 	}
 	if len(govr.StopWhen) > 0 {
 		stopWhen = govr.StopWhen
