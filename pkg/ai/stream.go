@@ -6262,7 +6262,7 @@ func stepStartTelemetryPrompt(internal *InternalOptions, e telemetry.TelemetrySt
 }
 
 // telemetryInput is v when the telemetry settings record inputs, else "".
-func telemetryInput(settings *telemetry.Settings, v string) string {
+func telemetryInput(settings *telemetry.Options, v string) string {
 	if !settings.ShouldRecordInputs() {
 		return ""
 	}
@@ -6271,7 +6271,7 @@ func telemetryInput(settings *telemetry.Settings, v string) string {
 
 // telemetryInputMessages is messages when the telemetry settings record
 // inputs, else nil.
-func telemetryInputMessages(settings *telemetry.Settings, messages []types.Message) []types.Message {
+func telemetryInputMessages(settings *telemetry.Options, messages []types.Message) []types.Message {
 	if !settings.ShouldRecordInputs() || len(messages) == 0 {
 		return nil
 	}

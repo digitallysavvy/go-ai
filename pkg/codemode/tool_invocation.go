@@ -555,7 +555,7 @@ func (b *toolBridge) invoke(n int, toolName, inputJSON string) (outputJSON strin
 		// jsonSchema(schema, {validate}) the tool's own validator replaces
 		// the schema check, and its value (validation.value) is the input
 		// approval and execute see (as pkg/ai's tool call pipeline).
-		var raw interface{} = inputVal
+		raw := inputVal
 		if !isObject && inputJSON == "" {
 			raw = map[string]interface{}{}
 		}
