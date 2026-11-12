@@ -247,3 +247,31 @@ func TestR94provgJSONStringifyText(t *testing.T) {
 		t.Errorf("upload start bodies = %q", bodies)
 	}
 }
+
+type r94provgCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (c *r94provgCloser) Close() error { c.closed = true; return nil }
+
+// cr-r94-prova-to-provg: TS convertInlineFileDataToUint8Array cancels a
+// stream and throws UnsupportedFunctionalityError('streaming file upload'),
+// after parseProviderOptions and before getHeaders resolves the API key.
+func TestR94provgFilesStreamUploadUnsupported(t *testing.T) {
+	t.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", "")
+	stream := &r94provgCloser{Reader: strings.NewReader("x")}
+	_, err := New(Config{}).Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeStream, Stream: stream}, MediaType: "m"})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &unsupported) || unsupported.Functionality != "streaming file upload" || !stream.closed {
+		t.Fatalf("err = %T %v, closed %v", err, err, stream.closed)
+	}
+	// Invalid options fail first; the stream is not touched.
+	stream2 := &r94provgCloser{Reader: strings.NewReader("x")}
+	_, err = New(Config{APIKey: "k"}).Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeStream, Stream: stream2}, MediaType: "m",
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"pollIntervalMs": -1}}})
+	var argErr *providererrors.InvalidArgumentError
+	if !errors.As(err, &argErr) || stream2.closed {
+		t.Fatalf("invalid options: err = %T %v, closed %v", err, err, stream2.closed)
+	}
+}

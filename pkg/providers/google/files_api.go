@@ -33,24 +33,6 @@ type FilesAPI struct {
 }
 
 func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions) (*types.UploadFileResult, error) {
-	content, err := inlineFileBytes(opts.Data)
-	if err != nil {
-		return nil, err
-	}
-
-	baseURL := f.provider.config.BaseURL
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
-	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
-	// The provider's default headers (user-agent suffix, config headers) like
-	// TS getHeaders, with the request-time key and the call headers on top.
-	authHeaders, err := f.provider.authHeaders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	headers := internalhttp.MergeHeaders(authHeaders, opts.Headers)
-
 	var displayName *string
 	pollIntervalMs := float64(2000)
 	pollTimeoutMs := float64(300000)
@@ -86,6 +68,33 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 			*f.dst = n
 		}
 	}
+
+	// TS order: parseProviderOptions, then convertInlineFileDataToUint8Array
+	// (a stream is released unread and is unsupported), then getHeaders at
+	// the first fetch.
+	if opts.Data.Type == types.FileDataTypeStream {
+		if closer, ok := opts.Data.Stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming file upload"}
+	}
+	content, err := inlineFileBytes(opts.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	baseURL := f.provider.config.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
+	// The provider's default headers (user-agent suffix, config headers) like
+	// TS getHeaders, with the request-time key and the call headers on top.
+	authHeaders, err := f.provider.authHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(authHeaders, opts.Headers)
 
 	initBody := map[string]interface{}{"file": map[string]interface{}{}}
 	// TS: `displayName != null` -- an empty string is still sent.
