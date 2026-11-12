@@ -1,6 +1,8 @@
 package bedrock
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -46,5 +48,28 @@ func TestR94provaReasoningMetadataValidated(t *testing.T) {
 	rc := content[0]["reasoningContent"].(map[string]interface{})["reasoningText"].(map[string]interface{})
 	if rc["signature"] != "sig" {
 		t.Fatalf("content = %v", content)
+	}
+}
+
+// TestR94provaRerankWireItemTags (cr-r94-carry-to-prova): the rerank result
+// decodes into a wire item whose json tags are the exact TS schema keys
+// (types.RerankItem is untagged, which only case-insensitive matching filled).
+func TestR94provaRerankWireItemTags(t *testing.T) {
+	typ := reflect.TypeOf(bedrockRerankWireItem{})
+	want := map[string]string{"Index": "index", "RelevanceScore": "relevanceScore"}
+	if typ.NumField() != len(want) {
+		t.Fatalf("fields = %d", typ.NumField())
+	}
+	for name, tag := range want {
+		f, ok := typ.FieldByName(name)
+		if !ok || f.Tag.Get("json") != tag {
+			t.Errorf("%s tag = %q, want %q", name, f.Tag.Get("json"), tag)
+		}
+	}
+	var parsed struct {
+		Results []bedrockRerankWireItem `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(`{"results":[{"index":2,"relevanceScore":0.5}]}`), &parsed); err != nil || len(parsed.Results) != 1 || parsed.Results[0] != (bedrockRerankWireItem{Index: 2, RelevanceScore: 0.5}) {
+		t.Fatalf("parsed = %+v, %v", parsed, err)
 	}
 }

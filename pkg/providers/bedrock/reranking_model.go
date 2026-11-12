@@ -89,21 +89,34 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if err := bedrockValidator(zbRerank)(resp.StatusCode, resp.Header, respBody); err != nil {
 		return nil, err
 	}
+	// The wire item has the exact keys of TS amazonBedrockRerankingResponseSchema
+	// (types.RerankItem is untagged, so only case-insensitive matching filled it).
 	var parsed struct {
-		Results []types.RerankItem `json:"results"`
+		Results []bedrockRerankWireItem `json:"results"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode rerank response: %w", err)
 	}
+	ranking := make([]types.RerankItem, len(parsed.Results))
+	for i, r := range parsed.Results {
+		ranking[i] = types.RerankItem{Index: r.Index, RelevanceScore: r.RelevanceScore}
+	}
 	var raw interface{}
 	_ = json.Unmarshal(respBody, &raw)
 	return &types.RerankResult{
-		Ranking: parsed.Results,
+		Ranking: ranking,
 		Response: types.RerankResponse{
 			Headers: map[string][]string(resp.Header),
 			Body:    raw,
 		},
 	}, nil
+}
+
+// bedrockRerankWireItem is one TS amazonBedrockRerankingResponseSchema
+// result, with the schema's exact keys.
+type bedrockRerankWireItem struct {
+	Index          int     `json:"index"`
+	RelevanceScore float64 `json:"relevanceScore"`
 }
 
 func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[string]interface{}, error) {
