@@ -146,6 +146,13 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	var warnings []types.Warning
 
 	topazOpts := parseVideoModelOptions(opts.ProviderOptions)
+	// TS resolves the provider headers (loadApiKey) right after the options,
+	// before the input checks, and reuses them for the create and the cancel.
+	authHeaders, err := m.prov.authHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(authHeaders, opts.Headers)
 	addVideoUnsupportedWarnings(&opts.VideoModelV3CallOptions, &warnings)
 
 	input, err := selectInputVideo(&opts.VideoModelV3CallOptions, &warnings)
@@ -212,13 +219,13 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	callCtx, cancel := mergeAbortContext(ctx, opts.AbortSignal)
 	defer cancel()
 
-	resp, err := m.prov.client.Do(callCtx, internalhttp.Request{
+	resp, err := m.prov.presetClient.Do(callCtx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/video/express",
 		// TS JSON.stringify of the express body literal: the key order of
 		// source, output (buildOutput) and the filter, not sorted keys.
 		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, topazExpressBodyOrder)),
-		Headers: opts.Headers,
+		Headers: headers,
 	})
 	if err != nil {
 		return nil, err
@@ -249,7 +256,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		if err := m.uploadVideo(callCtx, requestID, uploadBytes, created.UploadURLs, contentType); err != nil {
 			// Canceling before processing starts refunds any reserved
 			// credits.
-			m.cancelQuietly(context.WithoutCancel(callCtx), requestID, opts.Headers)
+			m.cancelQuietly(context.WithoutCancel(callCtx), requestID, headers)
 			return nil, err
 		}
 	}
@@ -334,7 +341,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		parsedStatus, _ := topazStringField(resp.Body, "status")
 		downloadRaw, _ := parsedStatus.(map[string]interface{})["download"].(map[string]interface{})
 		if downloadRaw["url"] == nil {
-			return nil, providererrors.NewInvalidResponseDataError(parsedStatus, fmt.Sprintf("Topaz reported request %s complete but returned no download URL.", op.RequestID))
+			return nil, providererrors.NewInvalidResponseDataError(topazParsedData(parsedStatus, topazVideoStatusKeys), fmt.Sprintf("Topaz reported request %s complete but returned no download URL.", op.RequestID))
 		}
 
 		mediaType := containerMediaTypes[op.OutputContainer]
@@ -713,16 +720,47 @@ func resolveSource(topazOpts *VideoModelOptions, container string) (resolvedSour
 	}, nil
 }
 
-// parseResolution splits a "{width}x{height}" string.
-func parseResolution(resolution string) (width, height *int) {
+// parseResolution is TS `resolution.split('x').map(Number)` destructured to
+// [width, height]: each part is JS Number(part) (NaN for non-numeric text, a
+// fraction kept), and a missing part is undefined (nil). Nil for an unset
+// resolution.
+func parseResolution(resolution string) (width, height *float64) {
 	if resolution == "" {
 		return nil, nil
 	}
-	var w, h int
-	if _, err := fmt.Sscanf(resolution, "%dx%d", &w, &h); err != nil {
-		return nil, nil
+	parts := strings.Split(resolution, "x")
+	num := func(s string) *float64 {
+		f, ok := providerutils.JSNumber(s)
+		if !ok {
+			f = math.NaN()
+		}
+		return &f
 	}
-	return &w, &h
+	width = num(parts[0])
+	if len(parts) > 1 {
+		height = num(parts[1])
+	}
+	return width, height
+}
+
+// resolutionDimension is TS `output?.width ?? resolution.width ??
+// source.metadata?.width`: the first value that is not undefined (NaN is
+// not nullish), as its JSON value (JSON.stringify writes NaN and Infinity
+// as null). ok is false when every value is undefined.
+func resolutionDimension(output *int, fromResolution *float64, source *int) (value interface{}, ok bool) {
+	switch {
+	case output != nil:
+		return *output, true
+	case fromResolution != nil:
+		f := *fromResolution
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, true
+		}
+		return f, true
+	case source != nil:
+		return *source, true
+	}
+	return nil, false
 }
 
 // buildOutput builds the output request field and resolves the output
@@ -740,10 +778,10 @@ func buildOutput(opts *provider.VideoModelV3CallOptions, topazOpts *VideoModelOp
 
 	resWidth, resHeight := parseResolution(opts.Resolution)
 
-	width := firstIntPtr(outputWidth(output), resWidth, sourceWidth(source))
-	height := firstIntPtr(outputHeight(output), resHeight, sourceHeight(source))
+	width, hasWidth := resolutionDimension(outputWidth(output), resWidth, sourceWidth(source))
+	height, hasHeight := resolutionDimension(outputHeight(output), resHeight, sourceHeight(source))
 
-	if width == nil || height == nil {
+	if !hasWidth || !hasHeight {
 		return nil, "", invalidArgument("resolution",
 			"Topaz needs the output resolution. Set the `resolution` call option or the `output.width` / `output.height` provider options.", nil)
 	}
@@ -756,7 +794,7 @@ func buildOutput(opts *provider.VideoModelV3CallOptions, topazOpts *VideoModelOp
 	}
 
 	result := map[string]interface{}{
-		"resolution": map[string]interface{}{"width": *width, "height": *height},
+		"resolution": map[string]interface{}{"width": width, "height": height},
 	}
 	if frameRate != nil {
 		result["frameRate"] = *frameRate
@@ -869,15 +907,6 @@ func sourceFrameRate(s resolvedSource) *float64 {
 	return &fr
 }
 
-func firstIntPtr(values ...*int) *int {
-	for _, v := range values {
-		if v != nil {
-			return v
-		}
-	}
-	return nil
-}
-
 func firstFloatPtr(values ...*float64) *float64 {
 	for _, v := range values {
 		if v != nil {
@@ -966,7 +995,7 @@ func (m *VideoModel) uploadVideo(ctx context.Context, requestID string, data []b
 // TopazVideoModel#cancelQuietly). Deliberately not tied to the caller's
 // context, which may be the reason the start failed.
 func (m *VideoModel) cancelQuietly(ctx context.Context, requestID string, headers map[string]string) {
-	_, _ = m.prov.client.Do(ctx, internalhttp.Request{ //nolint:errcheck
+	_, _ = m.prov.presetClient.Do(ctx, internalhttp.Request{ //nolint:errcheck
 		Method:  http.MethodDelete,
 		Path:    "/video/" + requestID,
 		Headers: headers,

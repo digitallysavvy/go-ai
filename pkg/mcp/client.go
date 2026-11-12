@@ -1328,6 +1328,17 @@ func (c *MCPClient) receiveLoop() {
 }
 
 // reportError hands a non-fatal error to MCPClientConfig.OnError (TS onError).
+// sendReply sends a reply to a server request and reports a send failure to
+// OnError (TS onRequestMessage's outer catch: this.onError(error)). It
+// reports whether the send succeeded.
+func (c *MCPClient) sendReply(response *MCPMessage) bool {
+	if err := c.transport.Send(c.ctx, response); err != nil {
+		c.reportError(err)
+		return false
+	}
+	return true
+}
+
 func (c *MCPClient) reportError(err error) {
 	if c.config.OnError != nil {
 		c.config.OnError(err)
@@ -1389,13 +1400,13 @@ func (c *MCPClient) handleRequest(msg *MCPMessage) {
 		if err != nil {
 			response = CreateErrorResponse(msg.ID, ErrorCodeInternalError, err.Error(), nil)
 		}
-		_ = c.transport.Send(c.ctx, response)
+		c.sendReply(response)
 		return
 	}
 
 	if msg.Method != "elicitation/create" {
 		response := CreateErrorResponse(msg.ID, ErrorCodeMethodNotFound, fmt.Sprintf("Unsupported request method: %s", msg.Method), nil)
-		_ = c.transport.Send(c.ctx, response)
+		c.sendReply(response)
 		return
 	}
 
@@ -1416,14 +1427,14 @@ func (c *MCPClient) handleElicitationRequest(msg *MCPMessage) {
 
 	if handler == nil {
 		response := CreateErrorResponse(msg.ID, ErrorCodeMethodNotFound, "No elicitation handler registered on client", nil)
-		_ = c.transport.Send(c.ctx, response)
+		c.sendReply(response)
 		return
 	}
 
 	request, invalid, issues := parseElicitationRequestParams(msg.Params)
 	if invalid != "" {
 		response := CreateErrorResponse(msg.ID, ErrorCodeInvalidParams, "Invalid elicitation request: "+invalid, issues)
-		_ = c.transport.Send(c.ctx, response)
+		c.sendReply(response)
 		return
 	}
 
@@ -1443,9 +1454,10 @@ func (c *MCPClient) handleElicitationRequest(msg *MCPMessage) {
 		// so the actual error text is always sent (never the generic
 		// fallback, which TS only reaches for a non-Error throw).
 		response := CreateErrorResponse(msg.ID, ErrorCodeInternalError, err.Error(), nil)
-		_ = c.transport.Send(c.ctx, response)
-		if c.config.OnError != nil {
-			c.config.OnError(err)
+		// TS: a failed send rejects inside the catch, so the outer catch
+		// reports the send error instead of the handler error.
+		if c.sendReply(response) {
+			c.reportError(err)
 		}
 		return
 	}
@@ -1454,7 +1466,7 @@ func (c *MCPClient) handleElicitationRequest(msg *MCPMessage) {
 	if respErr != nil {
 		response = CreateErrorResponse(msg.ID, ErrorCodeInternalError, respErr.Error(), nil)
 	}
-	_ = c.transport.Send(c.ctx, response)
+	c.sendReply(response)
 }
 
 // elicitationRequestIssues is TS ElicitationRequestSchema.safeParse({method,

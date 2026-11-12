@@ -148,6 +148,11 @@ func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions)
 		FailoverRegions:    opts.FailoverRegions,
 		KeepLastSnapshots:  opts.KeepLastSnapshots,
 	})
+	// 3.9.0 Sandbox.create / getOrCreate throw this TypeError before
+	// getCredentials, so it wins over a missing credential.
+	if err := checkRuntimeOrImage(baseParams); err != nil {
+		return nil, err
+	}
 
 	creds, err := resolveCredentialsWithRefresh(ctx, opts.Credentials, opts.OIDCRefresh)
 	if err != nil {

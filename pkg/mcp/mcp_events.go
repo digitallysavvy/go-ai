@@ -111,6 +111,12 @@ func (e *MCPEvents) listPage(ctx context.Context, cursor *string) (*ListEventsRe
 	if cursor != nil {
 		params = map[string]interface{}{"cursor": *cursor}
 	}
+	return e.listWithParams(ctx, params)
+}
+
+// listWithParams sends events/list with params as given (nil: no params
+// key).
+func (e *MCPEvents) listWithParams(ctx context.Context, params interface{}) (*ListEventsResult, error) {
 	var result ListEventsResult
 	if err := e.call(ctx, "events/list", params, &result); err != nil {
 		return nil, err
@@ -160,7 +166,13 @@ func (e *MCPEvents) Subscribe(ctx context.Context, options SubscribeEventOptions
 	var pageCursor *string
 	visited := map[string]bool{}
 	for {
-		page, err := e.listPage(ctx, pageCursor)
+		// TS events.list({params: {cursor: pageCursor}}): a params object
+		// on every page, {} (cursor undefined) on the first.
+		params := map[string]interface{}{}
+		if pageCursor != nil {
+			params["cursor"] = *pageCursor
+		}
+		page, err := e.listWithParams(ctx, params)
 		if err != nil {
 			return nil, err
 		}

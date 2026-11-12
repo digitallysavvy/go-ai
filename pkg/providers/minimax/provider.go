@@ -82,7 +82,7 @@ type Config struct {
 
 	// APIKeyFunc resolves the API key before each request with the
 	// request's context (TS `apiKey: Resolvable<string>`, 7716e189ee), for
-	// chat and video calls. MINIMAX_API_KEY is not read when it is set;
+	// chat, image and video calls. MINIMAX_API_KEY is not read when it is set;
 	// setting both APIKey and APIKeyFunc fails every request with an
 	// InvalidArgumentError.
 	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
