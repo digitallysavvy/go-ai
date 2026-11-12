@@ -192,3 +192,24 @@ func TestR93provbTranscriptionOptionalNull(t *testing.T) {
 		t.Errorf("nullish language rejected: %v", err)
 	}
 }
+
+// TS new URL(baseURL).host leaves out the default port; the client secret
+// request returns an APIKeyFunc error as is.
+func TestR93provbRealtimeURLAndHeaderError(t *testing.T) {
+	sentinel := errors.New("no key")
+	p := New(Config{APIKeyFunc: func(context.Context) (string, error) { return "", sentinel }, BaseURL: "https://API.x.ai:443/v1"})
+	m, err := p.RealtimeModel("grok-voice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm := m.(*XAIRealtimeModel)
+	if _, err := rm.DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{}); err != sentinel {
+		t.Fatalf("client secret err = %#v", err)
+	}
+	p2 := New(Config{APIKey: "k", BaseURL: "https://API.x.ai:443/v1"})
+	m2, _ := p2.RealtimeModel("grok-voice")
+	cfg, err := m2.(*XAIRealtimeModel).GetServerConnection(context.Background(), provider.RealtimeServerConnectionOptions{})
+	if err != nil || cfg.URL != "wss://api.x.ai/v1/realtime?model=grok-voice" {
+		t.Fatalf("url = %q, %v", cfg.URL, err)
+	}
+}

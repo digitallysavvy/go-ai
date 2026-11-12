@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -81,15 +82,17 @@ func (m *XAIRealtimeModel) GetServerConnection(ctx context.Context, opts provide
 	if err := xaiConversationIntent(opts.Intent); err != nil {
 		return provider.WebSocketConfig{}, err
 	}
-	u, err := url.Parse(m.provider.realtimeBaseURL)
+	// TS new URL(baseURL): WHATWG protocol, host (default port left out)
+	// and pathname.
+	scheme, host, pathname, err := xaiJSURLParts(m.provider.realtimeBaseURL)
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}
-	scheme := "wss"
-	if u.Scheme == "http" {
-		scheme = "ws"
+	wsScheme := "wss"
+	if scheme == "http" {
+		wsScheme = "ws"
 	}
-	wsURL := scheme + "://" + u.Host + strings.TrimSuffix(u.EscapedPath(), "/") + "/realtime?model=" + providerutils.EncodeURIComponent(m.modelID)
+	wsURL := wsScheme + "://" + host + strings.TrimSuffix(pathname, "/") + "/realtime?model=" + providerutils.EncodeURIComponent(m.modelID)
 	headers, err := m.provider.client.RequestHeadersCtx(ctx)
 	if err != nil {
 		return provider.WebSocketConfig{}, err
@@ -143,7 +146,7 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 		Body:    body,
 	})
 	if err != nil {
-		return provider.ClientSecretResult{}, err
+		return provider.ClientSecretResult{}, internalhttp.UnwrapFetchRejection(err) // TS: the header error as is
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// TS: `xAI realtime client secret request failed: ${status} ${text}`.
@@ -163,12 +166,30 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 	if err := providerutils.UnmarshalChunk(resp.Body, &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
-	u, _ := url.Parse(m.provider.realtimeBaseURL)
+	_, host, _, err := xaiJSURLParts(m.provider.realtimeBaseURL)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	return provider.ClientSecretResult{
 		Token:     data.Value,
-		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", u.Host, providerutils.EncodeURIComponent(m.modelID)), // TS encodeURIComponent
+		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", host, providerutils.EncodeURIComponent(m.modelID)), // TS encodeURIComponent
 		ExpiresAt: data.ExpiresAt,
 	}, nil
+}
+
+// xaiJSURLParts is TS new URL(raw): the scheme, url.host (with the port
+// unless it is the scheme's default) and url.pathname, or the TypeError
+// "Invalid URL".
+func xaiJSURLParts(raw string) (scheme, host, pathname string, err error) {
+	u, err := urlnorm.Parse(raw)
+	if err != nil {
+		return "", "", "", err
+	}
+	host = u.Host
+	if u.Port >= 0 {
+		host += ":" + strconv.Itoa(u.Port)
+	}
+	return u.Scheme, host, u.Pathname(), nil
 }
 
 func (m *XAIRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {

@@ -348,3 +348,23 @@ func TestR93provbMediaTypeExtension(t *testing.T) {
 		}
 	}
 }
+
+// TS buildServerUrl / doCreateClientSecret / Live getServerWebSocketConfig
+// use new URL(baseURL): url.host leaves out the scheme's default port, the
+// host is lower-cased, and an unparsable base URL is "Invalid URL".
+func TestR93provbRealtimeURLsAreWHATWG(t *testing.T) {
+	p := New(Config{APIKey: "k", BaseURL: "https://API.Example.com:443/v1"})
+	m := NewRealtimeModel(p, "gpt-realtime")
+	cfg, err := m.GetServerConnection(context.Background(), provider.RealtimeServerConnectionOptions{})
+	if err != nil || cfg.URL != "wss://api.example.com/v1/realtime?model=gpt-realtime" {
+		t.Fatalf("server url = %q, %v", cfg.URL, err)
+	}
+	live, err := NewRealtimeModelLive(p, "gpt-live-1").GetServerWebSocketConfig()
+	if err != nil || live.URL != "wss://api.example.com/v1/live/sessions" {
+		t.Fatalf("live url = %q, %v", live.URL, err)
+	}
+	bad := NewRealtimeModel(New(Config{APIKey: "k", BaseURL: "http://[::1"}), "gpt-realtime")
+	if _, err := bad.GetServerConnection(context.Background(), provider.RealtimeServerConnectionOptions{}); err == nil || err.Error() != "Invalid URL" {
+		t.Fatalf("invalid base err = %v", err)
+	}
+}

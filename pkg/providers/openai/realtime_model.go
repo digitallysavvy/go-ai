@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
+	"strconv"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -152,15 +153,17 @@ func (m *OpenAIRealtimeModel) GetServerConnection(ctx context.Context, opts prov
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	u, err := url.Parse(base)
+	// TS buildServerUrl: new URL(baseURL), its WHATWG protocol, host (default
+	// port left out) and pathname.
+	scheme, host, pathname, err := jsURLParts(base)
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}
-	scheme := "wss"
-	if u.Scheme == "http" {
-		scheme = "ws"
+	wsScheme := "wss"
+	if scheme == "http" {
+		wsScheme = "ws"
 	}
-	wsBase := scheme + "://" + u.Host + strings.TrimSuffix(u.EscapedPath(), "/")
+	wsBase := wsScheme + "://" + host + strings.TrimSuffix(pathname, "/")
 	wsURL := wsBase + "/realtime?model=" + providerutils.EncodeURIComponent(m.modelID)
 	if intent == provider.RealtimeSessionIntentTranscription {
 		wsURL = wsBase + "/realtime?intent=transcription"
@@ -251,7 +254,7 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		// TS: `OpenAI realtime client secret request failed: ${status} ${text}`.
 		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
 		return provider.ClientSecretResult{}, providererrors.NewProviderError("openai", 0, "",
-			fmt.Sprintf("OpenAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body)), cause)
+			fmt.Sprintf("OpenAI realtime client secret request failed: %d %s", resp.StatusCode, textdecode.UTF8(resp.Body)), cause) // TS response.text()
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	var data struct {
@@ -265,12 +268,31 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	u, _ := url.Parse(base)
+	// TS `wss://${new URL(baseURL).host}/v1/realtime?model=...`.
+	_, host, _, err := jsURLParts(base)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	return provider.ClientSecretResult{
 		Token:     data.Value,
-		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", u.Host, providerutils.EncodeURIComponent(m.modelID)), // TS encodeURIComponent
+		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", host, providerutils.EncodeURIComponent(m.modelID)), // TS encodeURIComponent
 		ExpiresAt: data.ExpiresAt,
 	}, nil
+}
+
+// jsURLParts is TS new URL(raw): the scheme, url.host (with the port unless
+// it is the scheme's default) and url.pathname, or the TypeError "Invalid
+// URL" for input the WHATWG parser rejects.
+func jsURLParts(raw string) (scheme, host, pathname string, err error) {
+	u, err := urlnorm.Parse(raw)
+	if err != nil {
+		return "", "", "", err
+	}
+	host = u.Host
+	if u.Port >= 0 {
+		host += ":" + strconv.Itoa(u.Port)
+	}
+	return u.Scheme, host, u.Pathname(), nil
 }
 
 func (m *OpenAIRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
