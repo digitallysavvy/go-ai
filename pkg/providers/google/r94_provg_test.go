@@ -275,3 +275,17 @@ func TestR94provgFilesStreamUploadUnsupported(t *testing.T) {
 		t.Fatalf("invalid options: err = %T %v, closed %v", err, err, stream2.closed)
 	}
 }
+
+// TS googleUploadUrlResponseHandler throws only when the header is absent
+// (== null); a present empty x-goog-upload-url is fetched as "" and fails
+// to parse.
+func TestR94provgBatchEmptyUploadURLHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header()["X-Goog-Upload-Url"] = []string{""}
+	}))
+	defer srv.Close()
+	_, err := NewBatch(New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"})).uploadBatchInputFile(t.Context(), []byte("{}"), "d", nil)
+	if err == nil || err.Error() != "Failed to parse URL from " {
+		t.Fatalf("err = %T %v", err, err)
+	}
+}

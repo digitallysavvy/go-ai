@@ -257,6 +257,12 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 		return nil, uploadURLErr
 	}
 	if uploadURL == "" {
+		// TS googleUploadUrlResponseHandler checks headers.get(...) == null:
+		// a present empty header is the URL "", which fetch fails to parse.
+		if len(initResp.Header.Values("x-goog-upload-url")) > 0 {
+			_, err := providerutils.FetchURL("")
+			return nil, err
+		}
 		return nil, providererrors.NewInvalidResponseDataError(nil, "Google did not return a resumable upload URL.")
 	}
 
