@@ -3,6 +3,8 @@ package policy
 import (
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -83,6 +85,9 @@ func evaluateApprovalValue(value any, args types.ToolApprovalOptions) any {
 	}
 }
 
+// isoTimestampMillis is Date#toISOString (jsdate.ISOString: expanded years
+// outside 0..9999); the wall clock is always inside the ECMAScript range.
 func isoTimestampMillis(t time.Time) string {
-	return t.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
+	s, _ := jsdate.ISOString(t)
+	return s
 }

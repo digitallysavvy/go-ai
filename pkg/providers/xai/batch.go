@@ -219,8 +219,17 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	status := convertXAIBatchStatus(createResp)
 	meta := map[string]interface{}{"inputFileId": uploadedFile.ID}
-	if t := xaiUnixSecondsToTime(uploadedFile.ExpiresAt); t != nil {
-		meta["inputFileExpiresAt"] = t.Format("2006-01-02T15:04:05.000Z")
+	if uploadedFile.ExpiresAt != nil {
+		// TS `new Date(expires_at * 1000).toISOString()` with no range guard:
+		// an out-of-range time throws RangeError "Invalid time value".
+		iso, ok := "", false
+		if t := xaiUnixSecondsToTime(uploadedFile.ExpiresAt); t != nil {
+			iso, ok = jsdate.ISOString(*t)
+		}
+		if !ok {
+			return nil, errors.New("Invalid time value") //nolint:staticcheck // TS RangeError text
+		}
+		meta["inputFileExpiresAt"] = iso
 	}
 	status.ProviderMetadata = map[string]interface{}{"xai": meta}
 

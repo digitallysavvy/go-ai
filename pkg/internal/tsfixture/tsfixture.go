@@ -23,8 +23,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -496,7 +498,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 						resp["modelId"] = m.ModelID
 					}
 					if !m.Timestamp.IsZero() {
-						resp["timestamp"] = m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
+						resp["timestamp"] = tsfixtureDateJSON(m.Timestamp)
 					}
 					if m.Body != nil {
 						resp["body"] = m.Body // TS result.response.body
@@ -813,7 +815,7 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 					o["modelId"] = m.ModelID
 				}
 				if !m.Timestamp.IsZero() && !DropResponseTimestamp {
-					o["timestamp"] = m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
+					o["timestamp"] = tsfixtureDateJSON(m.Timestamp)
 				}
 			}
 		case provider.ChunkTypeText:
@@ -1700,4 +1702,13 @@ func alignRequestURL(want, got interface{}, base string) interface{} {
 		return got
 	}
 	return match(want, got)
+}
+
+// tsfixtureDateJSON is Date#toJSON of a recorded timestamp: the toISOString
+// form (expanded years outside 0..9999), or null for an Invalid Date.
+func tsfixtureDateJSON(t time.Time) interface{} {
+	if s, ok := jsdate.ISOString(t); ok {
+		return s
+	}
+	return nil
 }

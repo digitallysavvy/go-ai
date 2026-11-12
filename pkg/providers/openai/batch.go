@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
@@ -166,7 +167,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	metadata := map[string]interface{}{"inputFileId": uploadedFile.ID}
 	// TS convertUnixTimestamp: an Invalid Date is left out.
 	if t := unixSecondsToTime(uploadedFile.ExpiresAt); t != nil {
-		metadata["inputFileExpiresAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		metadata["inputFileExpiresAt"], _ = jsdate.ISOString(*t)
 	}
 
 	status := batchResp.toStatus()
@@ -468,10 +469,10 @@ func (r openAIBatchResponseWire) toStatus() provider.BatchV4Status {
 		status.Error = batchErr
 	}
 	if t := unixSecondsToTime(r.CreatedAt); t != nil {
-		status.CreatedAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		status.CreatedAt, _ = jsdate.ISOString(*t) // TS convertUnixTimestamp: in range here
 	}
 	if t := unixSecondsToTime(r.ExpiresAt); t != nil {
-		status.ExpiresAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
+		status.ExpiresAt, _ = jsdate.ISOString(*t)
 	}
 	return status
 }

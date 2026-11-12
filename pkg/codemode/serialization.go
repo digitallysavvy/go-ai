@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -112,12 +113,12 @@ func jsCompatibleValue(value interface{}, ancestors map[uintptr]bool) (interface
 	case nil:
 		return nil, nil
 	case time.Time:
-		return jsISOString(v), nil
+		return jsDateJSON(v), nil
 	case *time.Time:
 		if v == nil {
 			return nil, nil
 		}
-		return jsISOString(*v), nil
+		return jsDateJSON(*v), nil
 	case map[string]interface{}:
 		if len(v) == 0 {
 			return map[string]interface{}{}, nil
@@ -163,8 +164,14 @@ func jsCompatibleValue(value interface{}, ancestors map[uintptr]bool) (interface
 	}
 }
 
-// jsISOString formats t the way JavaScript's Date#toISOString() does:
-// always UTC, always exactly millisecond precision.
-func jsISOString(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000Z")
+// jsDateJSON is JavaScript's Date#toJSON: the Date#toISOString form (UTC,
+// millisecond precision, a year outside 0..9999 in the expanded
+// "+010000-..." / "-000001-..." form), or JSON null for an Invalid Date (a
+// time outside the ECMAScript range), in any position and without error.
+func jsDateJSON(t time.Time) interface{} {
+	s, ok := jsdate.ISOString(t)
+	if !ok {
+		return nil
+	}
+	return s
 }

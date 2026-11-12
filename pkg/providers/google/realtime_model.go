@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -154,11 +156,24 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	if opts.ExpiresAfterSeconds != nil {
 		seconds = *opts.ExpiresAfterSeconds
 	}
-	now := time.Now()
+	// TS: now = Date.now(); openWindowMs = expiresAfterSeconds * 1000;
+	// new Date(now + openWindowMs).toISOString(), then the same + 30 min.
+	// JS number arithmetic (no int64 overflow); an out-of-range time is the
+	// toISOString RangeError, newSessionExpireTime first.
+	now := float64(time.Now().UnixMilli())
+	openWindowMs := float64(seconds) * 1000
+	newSessionExpireTime, err := googleRealtimeISOString(now + openWindowMs)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
+	expireTime, err := googleRealtimeISOString(now + openWindowMs + 30*60*1000)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	body := map[string]interface{}{
 		"uses":                     0,
-		"expireTime":               googleRealtimeISOString(now.Add(time.Duration(seconds)*time.Second + 30*time.Minute)),
-		"newSessionExpireTime":     googleRealtimeISOString(now.Add(time.Duration(seconds) * time.Second)),
+		"expireTime":               expireTime,
+		"newSessionExpireTime":     newSessionExpireTime,
 		"bidiGenerateContentSetup": m.BuildSessionConfig(valueOrZero(opts.SessionConfig)),
 	}
 	payload, err := jsonstr.Marshal(body)
@@ -851,8 +866,17 @@ func googleRealtimeBaseURL(base string) *url.URL {
 	return u
 }
 
-func googleRealtimeISOString(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000Z")
+// googleRealtimeISOString is new Date(ms).toISOString(): TimeClip (an
+// integral time value, truncated toward zero), jsdate.ISOString (expanded
+// years outside 0..9999), and RangeError "Invalid time value" outside the
+// ECMAScript time range.
+func googleRealtimeISOString(ms float64) (string, error) {
+	if !math.IsNaN(ms) && !math.IsInf(ms, 0) && math.Abs(ms) <= 8.64e15 {
+		if s, ok := jsdate.ISOString(time.UnixMilli(int64(ms))); ok {
+			return s, nil
+		}
+	}
+	return "", errors.New("Invalid time value") //nolint:staticcheck // TS RangeError text
 }
 
 func firstGoogleRawType(raw json.RawMessage) string {
