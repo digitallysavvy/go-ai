@@ -82,6 +82,7 @@ var r94carryResponseTargets = []interface{}{
 	&tools.WebFetchResult20260209{},
 	&tools.WebFetchResult20260318{},
 	&types.FileData{},
+	&types.Warning{},
 }
 
 // A response field with no json tag matches only a wire key spelled like the
