@@ -347,3 +347,35 @@ func TestR91provbDecisionInvalidResponse(t *testing.T) {
 		t.Fatalf("err = %#v", err)
 	}
 }
+
+// PB-16 (provb1-09): Live strictObject members reject unknown keys, the
+// Responses delegation precheck wins over an unknown top-level key, and a
+// present empty outputModalities / tools is rejected (TS
+// openai-live-session-config.ts:24-55).
+func TestR91provbLiveOptionsStrict(t *testing.T) {
+	cfg := func(openai map[string]interface{}) provider.RealtimeSessionConfig {
+		return provider.RealtimeSessionConfig{ProviderOptions: map[string]interface{}{"openai": openai}}
+	}
+	_, err := buildOpenAILiveSessionConfig(cfg(map[string]interface{}{"input": []interface{}{map[string]interface{}{
+		"type": "message", "role": "user", "content": []interface{}{map[string]interface{}{"type": "input_text", "text": "x", "extra": 1}},
+	}}}), "gpt-live-1")
+	if err == nil {
+		t.Fatal("content part extra key accepted")
+	}
+	for _, o := range []map[string]interface{}{
+		{"delegation": map[string]interface{}{"type": "client", "x": 1}},
+		{"voice": map[string]interface{}{"id": "v", "x": 1}},
+	} {
+		if _, err := buildOpenAILiveSessionConfig(cfg(o), "gpt-live-1"); err == nil {
+			t.Fatalf("%v accepted", o)
+		}
+	}
+	_, err = buildOpenAILiveSessionConfig(cfg(map[string]interface{}{"delegation": map[string]interface{}{"type": "responses"}, "bogus": 1}), "gpt-live-1")
+	var uf *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &uf) || !strings.Contains(uf.Functionality, "Responses delegation") {
+		t.Fatalf("responses delegation err = %v", err)
+	}
+	if _, err := buildOpenAILiveSessionConfig(provider.RealtimeSessionConfig{OutputModalities: []string{}}, "gpt-live-1"); err == nil {
+		t.Fatal("empty outputModalities accepted")
+	}
+}
