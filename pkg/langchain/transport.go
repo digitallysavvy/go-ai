@@ -284,36 +284,44 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 // graph state).
 const maxRemoteGraphLine = 64 << 20
 
-// readRemoteGraphEvents decodes the server-sent events of a run stream and
-// maps them like RemoteGraph._streamIterator: "values" and "messages" events
-// become [mode, data] events, an "error" event fails the stream, and every
-// other event ("metadata", ...) is dropped. An "updates" event that carries
-// __interrupt__ fails the stream with a *GraphInterruptError (GraphInterrupt).
+// readRemoteGraphEvents decodes the server-sent events of a run stream the
+// way langgraph-sdk does (utils/sse.js BytesLineDecoder + SSEDecoder: CR, LF
+// and CRLF end a line, a leading BOM is dropped, the data lines are joined
+// and parsed as JSON, empty or whitespace-only data is null, invalid JSON
+// fails the stream) and maps them like RemoteGraph._streamIterator
+// (pregel/remote.js:337-369): an "updates" event that carries __interrupt__
+// fails the stream with a *GraphInterruptError (GraphInterrupt), an "error"
+// event fails it, "values" and "messages" events become [mode, data] events
+// (a namespaced "mode|ns" event only for "messages", since subgraphs are not
+// requested), and every other event ("metadata", ...) is dropped.
 func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan StreamEvent {
 	out := make(chan StreamEvent)
 	go func() {
 		defer close(out)
 		defer func() { _ = body.Close() }()
-		reader := bufio.NewReaderSize(body, 64<<10)
+		scanner := bufio.NewScanner(body)
+		scanner.Buffer(make([]byte, 0, 64<<10), maxRemoteGraphLine)
+		scanner.Split(scanSSELines)
 		var event string
 		var data []string
+		firstLine := true
 		dispatch := func() bool {
 			defer func() { event, data = "", nil }()
 			if event == "" && len(data) == 0 {
 				return true
 			}
 			var payload interface{}
-			raw := strings.Join(data, "\n")
-			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-				payload = raw
+			if raw := strings.Join(data, "\n"); len(data) > 0 && !sseBlankData.MatchString(raw) {
+				if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+					sendStreamEvent(ctx, out, StreamEvent{Err: fmt.Errorf("langchain: invalid event data: %w", err)})
+					return false
+				}
 			}
-			mode, _, _ := strings.Cut(event, "|")
-			switch mode {
-			case "values", "messages":
-				return sendStreamEvent(ctx, out, StreamEvent{Mode: mode, Data: payload})
-			case "updates":
-				// RemoteGraph._streamIterator throws GraphInterrupt for an
-				// updates event that carries __interrupt__, null included
+			mode, _, namespaced := strings.Cut(event, "|")
+			switch {
+			case strings.HasPrefix(event, "updates"):
+				// RemoteGraph throws GraphInterrupt for an updates event that
+				// carries __interrupt__, null included
 				// (`data?.__interrupt__ !== undefined`, remote.js:356).
 				if m, ok := payload.(map[string]interface{}); ok {
 					if interrupts, found := m["__interrupt__"]; found {
@@ -322,7 +330,7 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 					}
 				}
 				return true
-			case "error":
+			case strings.HasPrefix(event, "error"):
 				text, ok := payload.(string)
 				if !ok {
 					encoded, _ := jsonstr.Marshal(payload)
@@ -330,18 +338,18 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 				}
 				sendStreamEvent(ctx, out, StreamEvent{Err: errors.New(text)})
 				return false
+			case mode != "values" && mode != "messages":
+				return true
+			case namespaced && mode != "messages":
+				return true
 			}
-			return true
+			return sendStreamEvent(ctx, out, StreamEvent{Mode: mode, Data: payload})
 		}
-		for {
-			line, err := readSSELine(reader)
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					sendStreamEvent(ctx, out, StreamEvent{Err: err})
-					return
-				}
-				dispatch()
-				return
+		for scanner.Scan() {
+			line := scanner.Text()
+			if firstLine {
+				firstLine = false
+				line = strings.TrimPrefix(line, "\ufeff")
 			}
 			switch {
 			case line == "":
@@ -360,31 +368,47 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 				}
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			if errors.Is(err, bufio.ErrTooLong) {
+				err = errors.New("langchain: event stream line too long")
+			}
+			sendStreamEvent(ctx, out, StreamEvent{Err: err})
+			return
+		}
+		dispatch()
 	}()
 	return out
 }
 
-// readSSELine reads one line without its line terminator, failing on lines
-// longer than maxRemoteGraphLine. It returns the last unterminated line before
-// io.EOF as a line, then io.EOF.
-func readSSELine(reader *bufio.Reader) (string, error) {
-	var line []byte
-	for {
-		chunk, isPrefix, err := reader.ReadLine()
-		if err != nil {
-			if errors.Is(err, io.EOF) && len(line) > 0 {
-				return string(line), nil
+// sseBlankData is langgraph-sdk decodeArraysToJson's null body
+// (/^[\x09-\x0d\x20]*$/).
+var sseBlankData = regexp.MustCompile(`^[\x09-\x0d\x20]*$`)
+
+// scanSSELines splits at CR, LF or CRLF (langgraph-sdk BytesLineDecoder); a
+// trailing unterminated line is a line.
+func scanSSELines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, b := range data {
+		switch b {
+		case '\n':
+			return i + 1, data[:i], nil
+		case '\r':
+			if i+1 < len(data) {
+				if data[i+1] == '\n' {
+					return i + 2, data[:i], nil
+				}
+				return i + 1, data[:i], nil
 			}
-			return "", err
-		}
-		line = append(line, chunk...)
-		if len(line) > maxRemoteGraphLine {
-			return "", errors.New("langchain: event stream line too long")
-		}
-		if !isPrefix {
-			return string(line), nil
+			if atEOF {
+				return i + 1, data[:i], nil
+			}
+			// A CR at the end of the buffer may be the first half of CRLF.
+			return 0, nil, nil
 		}
 	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func sendStreamEvent(ctx context.Context, out chan<- StreamEvent, event StreamEvent) bool {

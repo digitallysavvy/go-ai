@@ -508,7 +508,7 @@ func TestR91genGeneratedFileUsesExperimentalDownload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 1 || got[0].URL != "https://files.example.com/a b.png" || got[0].IsURLSupportedByModel {
+		if len(got) != 1 || got[0].URL != "https://files.example.com/a%20b.png" || got[0].IsURLSupportedByModel {
 			t.Fatalf("download requests = %+v", got)
 		}
 		if len(res.Files) != 1 || string(res.Files[0].Data) != "png" {

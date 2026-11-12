@@ -41,7 +41,13 @@ func reasoningFileURL(file types.ReasoningFileContent) (string, bool) {
 	return "", false
 }
 
+// downloadGeneratedFileURL downloads a generated file URL. The URL is the
+// WHATWG serialization TS hands the download (the provider's `new URL(...)`,
+// url.toString()); a URL that does not parse is used as given.
 func downloadGeneratedFileURL(ctx context.Context, url string, download DownloadFunction) ([]byte, error) {
+	if href, err := urlnorm.Href(url); err == nil {
+		url = href
+	}
 	if download != nil {
 		return downloadGeneratedFileWith(ctx, url, download)
 	}
@@ -58,21 +64,17 @@ func downloadGeneratedFileURL(ctx context.Context, url string, download Download
 	return results[0].Data, nil
 }
 
-// downloadGeneratedFileWith downloads a generated file URL with the call's
-// download function (TS downloadGeneratedFile): generated files have no
-// model to pass the URL through to, so a nil result cannot be honored. The
-// function's own error is returned as is.
+// downloadGeneratedFileWith downloads a generated file URL (already
+// serialized) with the call's download function (TS downloadGeneratedFile):
+// generated files have no model to pass the URL through to, so a nil result
+// cannot be honored. The function's own error is returned as is.
 func downloadGeneratedFileWith(ctx context.Context, url string, download DownloadFunction) ([]byte, error) {
 	results, err := download(ctx, []DownloadRequest{{URL: url, IsURLSupportedByModel: false}})
 	if err != nil {
 		return nil, err
 	}
 	if len(results) == 0 || results[0] == nil {
-		href := url
-		if normalized, hrefErr := urlnorm.Href(url); hrefErr == nil {
-			href = normalized
-		}
-		return nil, providererrors.NewDownloadError(href, 0, "", "Generated file URL "+href+" must be downloaded, but the download function returned null", nil)
+		return nil, providererrors.NewDownloadError(url, 0, "", "Generated file URL "+url+" must be downloaded, but the download function returned null", nil)
 	}
 	return results[0].Data, nil
 }

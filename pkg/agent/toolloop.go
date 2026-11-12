@@ -445,6 +445,7 @@ func (a *ToolLoopAgent) GenerateAgent(ctx context.Context, opts AgentGenerateOpt
 			Role:    types.RoleUser,
 			Content: []types.ContentPart{types.TextContent{Text: opts.Prompt}},
 		}}
+		ctx = withLoopPromptString(ctx, opts.Prompt)
 	}
 	cbs := agentCallbacks{
 		onStart:          opts.OnStart,
@@ -571,7 +572,7 @@ func (a *ToolLoopAgent) Execute(ctx context.Context, prompt string) (*AgentResul
 		},
 	}
 
-	return a.ExecuteWithMessages(ctx, messages)
+	return a.ExecuteWithMessages(withLoopPromptString(ctx, prompt), messages)
 }
 
 // ExecuteWithMessages runs the agent with a message history
@@ -640,7 +641,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	if err := validateToolCallConcurrency(firstCallConfig.ToolCallConcurrency); err != nil {
 		return nil, err
 	}
-	lt, startLoopTelemetry := a.beginLoopTelemetry(ctx, firstCallConfig)
+	// The caller's string prompt (Execute, GenerateAgent) is this call's
+	// only; nested runs on ctx (a subagent inside a tool) must not see it.
+	promptString := loopPromptStringFor(ctx, firstCallConfig.Messages)
+	ctx = context.WithValue(ctx, loopPromptStringKey{}, nil)
+	lt, startLoopTelemetry := a.beginLoopTelemetry(ctx, firstCallConfig, promptString)
 	ctx = context.WithValue(ctx, loopTelemetryKey{}, lt)
 	*ltOut = lt
 

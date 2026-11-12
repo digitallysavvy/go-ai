@@ -245,6 +245,29 @@ func sameContextValue(a, b any) bool {
 	return sameValue(reflect.ValueOf(a), reflect.ValueOf(b))
 }
 
+// loopPromptStringKey carries the string prompt of an Execute or
+// GenerateAgent call to its loop.
+type loopPromptStringKey struct{}
+
+func withLoopPromptString(ctx context.Context, prompt string) context.Context {
+	return context.WithValue(ctx, loopPromptStringKey{}, &prompt)
+}
+
+// loopPromptStringFor is the call's string prompt when the call was given
+// one and the prepared messages are still the single user message built from
+// it (a PrepareCall that replaced them gave the call messages), else nil.
+func loopPromptStringFor(ctx context.Context, messages []types.Message) *string {
+	prompt, _ := ctx.Value(loopPromptStringKey{}).(*string)
+	if prompt == nil || len(messages) != 1 {
+		return nil
+	}
+	built := types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: *prompt}}}
+	if !reflect.DeepEqual(messages[0], built) {
+		return nil
+	}
+	return prompt
+}
+
 // loopStartEvent is the root start event of the legacy loop: call-level
 // request settings and the retry count, as GenerateText reports them on its
 // start event (TS onGenerateStart). c is the call's prepared configuration
@@ -372,7 +395,11 @@ func telemetryUsage(u types.Usage) telemetry.TelemetryUsage {
 // after the user OnStart: TS notify([onStart, telemetry.onStart]) starts the
 // callback first, so the callback runs outside the root span. start returns
 // its context unchanged when the caller already opened the root.
-func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, c PrepareCallConfig) (*loopTelemetry, func(context.Context) context.Context) {
+//
+// promptString is the caller's string prompt when the call was given one
+// (see loopPromptStringFor): the root records it as TS standardizePrompt's
+// [{role: 'user', content: prompt}] (legacy root ai.prompt).
+func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, c PrepareCallConfig, promptString *string) (*loopTelemetry, func(context.Context) context.Context) {
 	settings := a.loopTelemetrySettings()
 	if id, ok := ctx.Value(telemetryCallIDKey{}).(string); ok && id != "" {
 		// The caller's root was opened under the configured settings; a
@@ -390,7 +417,11 @@ func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, c PrepareCallCon
 	}
 	lt := &loopTelemetry{settings: settings, rootSettings: settings, callID: newTelemetryCallID(), ownsRoot: true, baseCtx: ctx, sensitiveRuntimeContext: c.SensitiveRuntimeContext}
 	return lt, func(ctx context.Context) context.Context {
-		ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, c))
+		start := a.loopStartEvent(lt.callID, settings, c)
+		if promptString != nil && settings.ShouldRecordInputs() {
+			start.PromptString = promptString
+		}
+		ctx = telemetry.FireOnStart(ctx, start)
 		if telemetry.Enabled(settings) {
 			lt.rootCtx = ctx
 		}
