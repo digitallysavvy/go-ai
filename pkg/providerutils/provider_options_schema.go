@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net/url"
 	"reflect"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode/utf16"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -266,20 +265,10 @@ func OptKeyMax(n int) func(string) error {
 }
 
 // OptKeyNumeric is the key check for z.record(z.coerce.number<string>(), ...):
-// the key must coerce (JS Number()) to a finite number.
+// the key must coerce (JS Number()) to a finite number (r91 core2-23: Go-only
+// syntax such as "1_000", "-0x10" or hex floats is NaN in JS).
 func OptKeyNumeric(key string) error {
-	trimmed := strings.TrimSpace(key)
-	if trimmed == "" {
-		return nil // Number("") === 0
-	}
-	if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
-		lower := strings.ToLower(strings.TrimLeft(trimmed, "+-"))
-		if !math.IsNaN(f) && !math.IsInf(f, 0) && !strings.HasPrefix(lower, "inf") && !strings.HasPrefix(lower, "nan") {
-			return nil
-		}
-		return fmt.Errorf("invalid input: expected number key, received %q", key)
-	}
-	if _, err := strconv.ParseInt(trimmed, 0, 64); err == nil {
+	if f, ok := JSNumber(key); ok && !math.IsInf(f, 0) {
 		return nil
 	}
 	return fmt.Errorf("invalid input: expected number key, received %q", key)
@@ -311,7 +300,8 @@ func OptInt(min, max *int) OptionCheck {
 		default:
 			n = float64(f.Uint())
 		}
-		if n != math.Trunc(n) {
+		// zod v4 .int() is a safe integer (|n| <= 2^53-1).
+		if n != math.Trunc(n) || math.Abs(n) > maxSafeInteger {
 			return typeIssue(path, "int", v)
 		}
 		if min != nil && n < float64(*min) {
@@ -498,8 +488,10 @@ func OptURL(httpsOnly bool) OptionCheck {
 			return err
 		}
 		s := reflect.ValueOf(v).String()
-		u, err := url.Parse(s)
-		if err != nil || u.Scheme == "" || (u.Host == "" && u.Opaque == "") {
+		// zod v4 z.url(): the JS-trimmed value must parse with the WHATWG URL
+		// parser (new URL), so file:, http:/x and surrounding spaces are
+		// valid (r91 core2-23).
+		if _, err := urlnorm.Parse(JSTrim(s)); err != nil {
 			return fmt.Errorf("invalid string: expected a valid URL (at %s)", path)
 		}
 		if httpsOnly && !strings.HasPrefix(s, "https://") {

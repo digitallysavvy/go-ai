@@ -33,3 +33,33 @@ func TestR91integMatchesSupportedURLReplacesFirstStar(t *testing.T) {
 		t.Fatal(`"IMAGE/*" must match image/png (TS lowercases the key)`)
 	}
 }
+
+// core2-23 (node: Number(), zod 4.6.7 z.number().int() / z.url()).
+func TestR91integOptionSchemaJSCoercion(t *testing.T) {
+	for _, k := range []string{"1_000", "-0x10", "0x1p-2", "12\u0085", "Infinity", "abc"} {
+		if OptKeyNumeric(k) == nil {
+			t.Errorf("OptKeyNumeric(%q) accepted", k)
+		}
+	}
+	for _, k := range []string{"", " 42 ", "0x10", "1e3", "-7"} {
+		if err := OptKeyNumeric(k); err != nil {
+			t.Errorf("OptKeyNumeric(%q) = %v", k, err)
+		}
+	}
+	if OptInt(nil, nil)("p", 1e20) == nil {
+		t.Error("OptInt accepted 1e20")
+	}
+	if err := OptInt(nil, nil)("p", float64(1<<53-1)); err != nil {
+		t.Errorf("OptInt(2^53-1) = %v", err)
+	}
+	for _, u := range []string{"file:///tmp/x", "http:/x", " https://a.com"} {
+		if err := OptURL(false)("p", u); err != nil {
+			t.Errorf("OptURL(%q) = %v", u, err)
+		}
+	}
+	for _, u := range []string{"not a url", "", "//x"} {
+		if OptURL(false)("p", u) == nil {
+			t.Errorf("OptURL(%q) accepted", u)
+		}
+	}
+}
