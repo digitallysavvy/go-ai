@@ -81,7 +81,7 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 			}
 		}()
 		closed := result.closedSignal()
-		err := streamArrayElements(result, arr.ParsePartialOutput, arr.maxItems, func(elem ElementStreamResult[ELEMENT]) bool {
+		err := streamArrayElements(result, nil, arr, arr.ParsePartialOutput, arr.maxItems, func(elem ElementStreamResult[ELEMENT]) bool {
 			if !sendUnlessClosed(ch, elem, closed) {
 				return false
 			}
@@ -98,19 +98,82 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 	return ch
 }
 
-// streamArrayElements reads the full stream of result and calls emit for each
-// array element as it completes (TS createElementStreamTransform over the
-// output transform stream). It returns the stream error, or the maxItems
-// validation error when the model exceeds maxItems.
+// streamArrayElements calls emit for each array element as it completes (TS
+// createElementStreamTransform over the partial outputs of
+// createOutputTransformStream). For the call's own Output (logOutput) it reads
+// the partial outputs StreamText published (parsed incrementally from the
+// step's first text block, reset at step and stream retry boundaries,
+// 91a67c2f56). Otherwise it feeds the full stream through the same output
+// stage with spec; an output that is not one of this package's falls back to
+// parsePartial over the step's text. It returns the stream error, or the
+// maxItems validation error when the model exceeds maxItems.
 func streamArrayElements[ELEMENT any](
 	result *StreamTextResult,
+	logOutput any,
+	spec outputProcessor,
 	parsePartial func(context.Context, ParsePartialOutputOptions) (*PartialOutput[[]ELEMENT], error),
 	maxItems *int,
 	emit func(ElementStreamResult[ELEMENT]) bool,
 ) error {
 	ctx := context.Background()
-	var text string
 	published := 0
+	// publish emits the elements of partial not published yet; false ends the
+	// stream (consumer gone, or maxItems exceeded with *err set).
+	publish := func(partial []ELEMENT, err *error) bool {
+		for ; published < len(partial); published++ {
+			if maxItems != nil && published >= *maxItems {
+				// TS createElementStreamTransform errors with
+				// getArrayLengthValidationError({value: partialOutput,
+				// maxItems}): a TypeValidationError holding the partial
+				// array (maxItems only).
+				lengthErr := arrayLengthValidationError(len(partial), nil, maxItems)
+				*err = objectTypeValidationError(partial, lengthErr.Error(), lengthErr)
+				return false
+			}
+			if !emit(ElementStreamResult[ELEMENT]{Element: partial[published], Index: published}) {
+				return false // consumer abandoned the stream (result closed)
+			}
+		}
+		return true
+	}
+
+	if log := result.partialOutputLog(logOutput); log != nil {
+		closed := result.closedSignal()
+		finished := make(chan struct{})
+		defer close(finished)
+		go func() {
+			select {
+			case <-closed:
+				log.wake()
+			case <-finished:
+			}
+		}()
+		isClosed := func() bool {
+			select {
+			case <-closed:
+				return true
+			default:
+				return false
+			}
+		}
+		for i := 0; ; i++ {
+			v, ok, logErr := log.next(i, isClosed)
+			if !ok {
+				return logErr
+			}
+			partial, isArray := v.([]ELEMENT)
+			if !isArray {
+				continue
+			}
+			var err error
+			if !publish(partial, &err) {
+				return err
+			}
+		}
+	}
+
+	var tracker partialOutputTracker
+	var text string
 	// Consume via Stream() rather than result.nextChunk() directly: for
 	// StreamTextResult values from StreamText, processStream is already
 	// reading the raw provider stream in the background (it always runs
@@ -126,32 +189,40 @@ func streamArrayElements[ELEMENT any](
 			}
 			return nil
 		}
-		switch chunk.Type {
-		case provider.ChunkTypeStartStep:
-			// Output state is per step (TS resets at start-step); the number
-			// of published elements is not.
-			text = ""
-		case provider.ChunkTypeText:
-			text += chunk.Text
-			partial, perr := parsePartial(ctx, ParsePartialOutputOptions{Text: text})
-			if perr != nil || partial == nil {
+		if chunk.Type == provider.ChunkTypeFinish {
+			return nil
+		}
+		var partial []ELEMENT
+		if spec != nil {
+			// The output stage keeps its state per step (TS resets at
+			// start-step) and reads the step's first text block only; the
+			// number of published elements is not reset.
+			v, ok, perr := tracker.observe(ctx, spec, *chunk)
+			if perr != nil || !ok {
 				continue
 			}
-			for ; published < len(partial.Partial); published++ {
-				if maxItems != nil && published >= *maxItems {
-					// TS createElementStreamTransform errors with
-					// getArrayLengthValidationError({value: partialOutput,
-					// maxItems}): a TypeValidationError holding the partial
-					// array (maxItems only).
-					lengthErr := arrayLengthValidationError(len(partial.Partial), nil, maxItems)
-					return objectTypeValidationError(partial.Partial, lengthErr.Error(), lengthErr)
-				}
-				if !emit(ElementStreamResult[ELEMENT]{Element: partial.Partial[published], Index: published}) {
-					return nil // consumer abandoned the stream (result closed)
-				}
+			if partial, ok = v.([]ELEMENT); !ok {
+				continue
 			}
-		case provider.ChunkTypeFinish:
-			return nil
+		} else {
+			switch chunk.Type {
+			case provider.ChunkTypeStartStep:
+				text = ""
+				continue
+			case provider.ChunkTypeText:
+				text += chunk.Text
+			default:
+				continue
+			}
+			p, perr := parsePartial(ctx, ParsePartialOutputOptions{Text: text})
+			if perr != nil || p == nil {
+				continue
+			}
+			partial = p.Partial
+		}
+		var emitErr error
+		if !publish(partial, &emitErr) {
+			return emitErr
 		}
 	}
 }
@@ -194,7 +265,8 @@ func ElementStreamWithOutput[ELEMENT any](result *StreamTextResult, output Outpu
 	go func() {
 		defer close(ch)
 		closed := result.closedSignal()
-		_ = streamArrayElements(result, output.ParsePartialOutput, maxItems, func(elem ElementStreamResult[ELEMENT]) bool {
+		spec, _ := output.(outputProcessor)
+		_ = streamArrayElements(result, output, spec, output.ParsePartialOutput, maxItems, func(elem ElementStreamResult[ELEMENT]) bool {
 			return sendUnlessClosed(ch, elem, closed)
 		})
 	}()

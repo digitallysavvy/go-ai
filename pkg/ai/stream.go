@@ -598,6 +598,12 @@ type StreamTextResult struct {
 	// outputProcessor.parsePartialOutput contract.
 	hasPublishedPartialLegacy bool
 
+	// partials logs the published partial outputs for element streams of
+	// the call's own Output (partialsOutput), nil without an Output or for
+	// a single-consumer run. Set before StreamText returns.
+	partials       *partialLog
+	partialsOutput any
+
 	// Timeout configuration for per-chunk timeouts
 	timeout *TimeoutConfig
 
@@ -906,6 +912,10 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 		result.skipTextAccumulation = !opts.collectContent
 	}
 	result.processingDone = make(chan struct{})
+	if opts.Output != nil && !opts.lowMemory {
+		result.partials = newPartialLog()
+		result.partialsOutput = opts.Output
+	}
 	if opts.Internal != nil {
 		result.onStreamDone = opts.Internal.onStreamDone
 		result.streamModeUsage = opts.Internal.streamModeUsage
@@ -1899,6 +1909,7 @@ func (r *StreamTextResult) fail(err error) {
 	if r.chunkBuf != nil {
 		r.chunkBuf.close(err)
 	}
+	r.partials.close(err)
 	if r.processingDone != nil {
 		close(r.processingDone)
 	}
@@ -2002,6 +2013,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if r.chunkBuf != nil {
 		defer func() { r.chunkBuf.close(r.err) }()
 	}
+	defer func() { r.partials.close(r.err) }()
 	defer r.notifyStreamDone()
 	opts := r.cbStreamOpts
 	currentMessages := r.cbMessages
@@ -2161,6 +2173,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 							r.mu.Lock()
 							r.partialOutput = partial
 							r.mu.Unlock()
+							r.partials.add(partial)
 						}
 					}
 					staged = outputText.stage(c, publish)
@@ -2305,6 +2318,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		toolsByName := make(map[string]*types.Tool, len(stepExecutionTools))
 		for i := range stepExecutionTools {
 			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
+		}
+		modelToolsByName := make(map[string]*types.Tool, len(stepTools))
+		for i := range stepTools {
+			modelToolsByName[stepTools[i].Name] = &stepTools[i]
 		}
 		// toolInputCallbacks invokes Tool.OnInputStart/OnInputDelta/OnInputAvailable
 		// as tool-input-start/delta/tool-call chunks arrive. TS's
@@ -2589,8 +2606,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// metadata (TS stream-language-model-call.ts 866-873: dynamic:
 			// chunk.dynamic ?? tool?.type === 'dynamic', title: tool?.title,
 			// toolMetadata: tool.metadata when set).
+			// The tool is looked up in the step's model tools (TS passes
+			// stepModelTools to streamLanguageModelCall): a callee only a
+			// local tool caller can call is not one.
 			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil {
-				t := toolsByName[chunk.ToolCall.ToolName]
+				t := modelToolsByName[chunk.ToolCall.ToolName]
 				startCall := *chunk.ToolCall
 				if t != nil && t.Type == types.ToolTypeDynamic {
 					startCall.Dynamic = true
