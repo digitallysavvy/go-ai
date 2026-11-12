@@ -2,7 +2,6 @@ package providerutils
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
@@ -11,7 +10,7 @@ import (
 // error schema z.object({ error: z.object({ message: z.string(), code:
 // z.number() }) }) that AssemblyAI, ElevenLabs, fal, Gladia, Hume and Rev.ai
 // share: a body that matches gives its message (even an empty one) and the
-// numeric code as a string; anything else (empty body, not JSON, a missing or
+// numeric code as JS number text (String(code): 1e21 is "1e+21"); anything else (empty body, not JSON, a missing or
 // wrongly typed field) gives the HTTP status text and no code.
 func NestedErrorMessage(statusCode int, body []byte) (message, code string) {
 	var payload struct {
@@ -22,7 +21,7 @@ func NestedErrorMessage(statusCode int, body []byte) (message, code string) {
 	}
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
 		payload.Error.Message != nil && payload.Error.Code != nil {
-		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
+		return *payload.Error.Message, JSNumberString(*payload.Error.Code)
 	}
 	return http.StatusText(statusCode), ""
 }
