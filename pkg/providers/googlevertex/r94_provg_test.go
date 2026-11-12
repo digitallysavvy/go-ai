@@ -175,3 +175,34 @@ func TestR94provgEmbeddingOptionNullAndEmptyTitle(t *testing.T) {
 		t.Errorf("embedContent title = %#v (present %v)", v, ok)
 	}
 }
+
+// The "No videos in response" error text is TS JSON.stringify of the
+// googleVertexOperationSchema parse result.
+func TestR94provgVideoNoVideosErrorText(t *testing.T) {
+	m := &VideoModel{prov: newR93provgProvider(t), modelID: "veo-3.0-generate-001"}
+	body := []byte(`{"extra":1,"response":{"videos":[],"raiMediaFilteredCount":1.0,"x":2},"error":null,"done":true,"name":""}`)
+	var op vertexVideoOperationWire
+	if err := json.Unmarshal(body, &op); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.buildCompletedResult(&op, body, provider.VideoModelV3ResponseInfo{})
+	want := `No videos in response. Response: {"name":"","done":true,"error":null,"response":{"videos":[],"raiMediaFilteredCount":1}}`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// googleVertexOperationSchema reads code and raiMediaFilteredCount with
+// z.number(): a fractional value is valid, so the status call succeeds.
+func TestR94provgVideoFractionalCounts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"op","done":true,"response":{"videos":[{"gcsUri":"gs://b/v.mp4"}],"raiMediaFilteredCount":1.5}}`))
+	}))
+	defer srv.Close()
+	m := NewVideoModel(newVertexTestProvider(t, srv.URL), "veo-3.0-generate-001")
+	res, err := m.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: []byte(`{"operationName":"op"}`)})
+	if err != nil || res.Status != provider.VideoOperationStatusCompleted {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+}

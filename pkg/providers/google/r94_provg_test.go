@@ -438,3 +438,20 @@ func TestR94provgInteractionsEmptyPreviousIDCompaction(t *testing.T) {
 		t.Fatalf("input = %s", b)
 	}
 }
+
+// The "No videos in response" error text is TS JSON.stringify of the
+// googleOperationSchema parse result: unknown keys stripped, schema key
+// order, present nulls and an empty name kept.
+func TestR94provgVideoNoVideosErrorText(t *testing.T) {
+	m := NewVideoModel(New(Config{APIKey: "k"}), "veo-3.0-generate-001")
+	body := []byte(`{"extra":1,"response":{"generateVideoResponse":null,"x":2},"error":null,"done":true,"name":""}`)
+	var op googleVideoOperationWire
+	if err := json.Unmarshal(body, &op); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.buildCompletedResult(context.Background(), &op, body, provider.VideoModelV3ResponseInfo{})
+	want := `No videos in response. Response: {"name":"","done":true,"error":null,"response":{"generateVideoResponse":null}}`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v", err)
+	}
+}

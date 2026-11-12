@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"net/http"
 	"strings"
 	"time"
@@ -415,18 +416,24 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}, nil
 	}
 
-	return m.buildCompletedResult(ctx, &operation, responseInfo)
+	return m.buildCompletedResult(ctx, &operation, httpResp.Body, responseInfo)
 }
 
 // buildCompletedResult converts a done operation's response into a
 // completed status result (TS GoogleVideoModel#buildCompletedResult),
 // appending the API key to same-origin download URLs so the returned URL is
 // directly fetchable.
-func (m *VideoModel) buildCompletedResult(ctx context.Context, operation *googleVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+func (m *VideoModel) buildCompletedResult(ctx context.Context, operation *googleVideoOperationWire, body []byte, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
 	if operation.Response == nil || operation.Response.GenerateVideoResponse == nil ||
 		operation.Response.GenerateVideoResponse.GeneratedSamples == nil || len(*operation.Response.GenerateVideoResponse.GeneratedSamples) == 0 {
-		raw, _ := json.Marshal(operation)
-		return nil, providererrors.NewVideoGenerationError("google", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
+		// TS JSON.stringify(finalOperation): the googleOperationSchema parse
+		// result (schema keys in schema order, nulls kept).
+		text, ok := zodStripText(body, googleOperationShape)
+		if !ok {
+			raw, _ := json.Marshal(operation)
+			text = string(raw)
+		}
+		return nil, providererrors.NewVideoGenerationError("google", m.modelID, fmt.Sprintf("No videos in response. Response: %s", text), nil)
 	}
 
 	// TS resolves config.headers again for the download key; the key
@@ -592,9 +599,9 @@ type googleVideoOperationWire struct {
 	Name  string `json:"name,omitempty"`
 	Done  bool   `json:"done"`
 	Error *struct {
-		Code    *int   `json:"code,omitempty"`
-		Message string `json:"message"`
-		Status  string `json:"status,omitempty"`
+		Code    *float64 `json:"code,omitempty"` // z.number(): a fraction decodes
+		Message string   `json:"message"`
+		Status  string   `json:"status,omitempty"`
 	} `json:"error,omitempty"`
 	Response *struct {
 		GenerateVideoResponse *struct {
@@ -607,4 +614,64 @@ type googleVideoOperationWire struct {
 			} `json:"generatedSamples,omitempty"`
 		} `json:"generateVideoResponse,omitempty"`
 	} `json:"response,omitempty"`
+}
+
+// googleOperationShape is googleOperationSchema (google-video-model.ts).
+var googleOperationShape = zodShape{
+	{key: "name"}, {key: "done"},
+	{key: "error", obj: zodShape{{key: "code"}, {key: "message"}, {key: "status"}}},
+	{key: "response", obj: zodShape{
+		{key: "generateVideoResponse", obj: zodShape{
+			{key: "generatedSamples", elem: zodShape{{key: "video", obj: zodShape{{key: "uri"}}}}},
+		}},
+	}},
+}
+
+// zodShape lists an object schema's keys in schema order; obj is a nested
+// object schema and elem an array's element object schema.
+type zodShape []zodShapeField
+
+type zodShapeField struct {
+	key  string
+	obj  zodShape
+	elem zodShape
+}
+
+// zodStripText is TS JSON.stringify of a z.object parse result: only the
+// schema's keys, in schema order, with present nulls kept. ok is false when
+// raw is not JSON.
+func zodStripText(raw []byte, shape zodShape) (string, bool) {
+	v, ok := jsonorder.Parse(raw)
+	if !ok {
+		return "", false
+	}
+	return jsonorder.Stringify(zodStrip(v, shape)), true
+}
+
+func zodStrip(v interface{}, shape zodShape) interface{} {
+	obj, ok := v.(*jsonorder.Object)
+	if !ok {
+		return v
+	}
+	out := jsonorder.New()
+	for _, f := range shape {
+		x, present := obj.Get(f.key)
+		if !present {
+			continue
+		}
+		switch {
+		case f.obj != nil:
+			x = zodStrip(x, f.obj)
+		case f.elem != nil:
+			if arr, isArr := x.([]interface{}); isArr {
+				items := make([]interface{}, len(arr))
+				for i, item := range arr {
+					items[i] = zodStrip(item, f.elem)
+				}
+				x = items
+			}
+		}
+		out.Set(f.key, x)
+	}
+	return out
 }
