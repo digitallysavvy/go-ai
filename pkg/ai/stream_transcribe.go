@@ -88,6 +88,7 @@ type StreamTranscriptionResult struct {
 	mu          sync.Mutex
 	streamOwner string // "unclaimed" | "full-stream" | "result-promises"
 	ch          chan TranscriptionStreamPart
+	demand      *streamDemand
 	cancel      context.CancelCauseFunc
 	finalErr    *error
 	finalErrMu  sync.Mutex
@@ -128,6 +129,7 @@ func (r *StreamTranscriptionResult) consumeStream() {
 	}
 	r.streamOwner = "result-promises"
 	r.mu.Unlock()
+	r.demand.drainAll()
 	go func() {
 		for range r.ch { //nolint:revive // drain; results surface via the accessors
 		}
@@ -210,6 +212,7 @@ type transcriptionFullStream struct {
 }
 
 func (s *transcriptionFullStream) Next() (*TranscriptionStreamPart, error) {
+	s.result.demand.request()
 	part, ok := <-s.result.ch
 	if !ok {
 		if err := s.result.getFinalErr(); err != nil {
@@ -266,6 +269,7 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 		providerMetadataP: newStreamPromise[map[string]interface{}](),
 		streamOwner:       "unclaimed",
 		ch:                make(chan TranscriptionStreamPart),
+		demand:            newStreamDemand(),
 		cancel:            cancel,
 	}
 
@@ -305,6 +309,13 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 	warningsResolved := false
 	telemetrySettled := false
 
+	// TS destructures `providerOptions = {}`: the start event and the model
+	// call both get {} when the caller gave none.
+	providerOptions := opts.ProviderOptions
+	if providerOptions == nil {
+		providerOptions = map[string]interface{}{}
+	}
+
 	var audioByteLength int64
 	audio := opts.Audio
 	if telemetry.Enabled(opts.ExperimentalTelemetry) && opts.Audio != nil {
@@ -319,6 +330,9 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 		Settings:       opts.ExperimentalTelemetry,
 		AudioMediaType: opts.InputAudioFormat.Type,
 		Headers:        opts.Headers,
+		// TS StreamTranscriptionStartEvent inputAudioFormat / providerOptions.
+		InputAudioFormat: &telemetry.TelemetryAudioFormat{Type: opts.InputAudioFormat.Type, Rate: opts.InputAudioFormat.Rate},
+		ProviderOptions:  providerOptions,
 	})
 
 	fail := func(err error) {
@@ -351,7 +365,7 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 	streamResult, err := streamer.DoStream(ctx, &provider.TranscriptionStreamOptions{
 		Audio:            audio,
 		InputAudioFormat: opts.InputAudioFormat,
-		ProviderOptions:  opts.ProviderOptions,
+		ProviderOptions:  providerOptions,
 		AbortSignal:      ctx,
 		Headers:          transcribeHeadersWithUserAgent(opts.Headers),
 		IncludeRawChunks: opts.IncludeRawChunks,
@@ -369,15 +383,22 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 	}
 	defer streamResult.Stream.Close() //nolint:errcheck
 
+	// resolvedWarnings is TS's `warnings` variable: the stream-start
+	// warnings, reported on the end event.
+	var resolvedWarnings []types.Warning
 	resolveWarnings := func(warnings []types.Warning) {
 		if warnings == nil {
 			warnings = []types.Warning{}
 		}
+		resolvedWarnings = warnings
 		result.warningsP.resolve(warnings)
 		warningsResolved = true
 		logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	}
 
+	// hasDemand: a read of the output is pending (TS transform runs only
+	// on the reader's demand); given back after each forwarded part.
+	hasDemand := false
 	for {
 		part, nextErr := streamResult.Stream.Next()
 		if nextErr == io.EOF {
@@ -386,6 +407,13 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 		if nextErr != nil {
 			fail(abortReason(nextErr))
 			return
+		}
+		if !hasDemand {
+			if !result.demand.wait(ctx) {
+				fail(context.Cause(ctx))
+				return
+			}
+			hasDemand = true
 		}
 
 		switch part.Type {
@@ -405,7 +433,9 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			if part.Headers != nil {
 				headers = part.Headers
 			}
-			response = &TranscriptionModelResponseMetadata{Timestamp: ts, ModelID: modelID, Headers: headers, Body: part.Body}
+			// TS keeps timestamp, modelId and headers only: the part's body
+			// is not part of the transcription response metadata.
+			response = &TranscriptionModelResponseMetadata{Timestamp: ts, ModelID: modelID, Headers: headers}
 
 		case provider.TranscriptionStreamPartTypeDelta,
 			provider.TranscriptionStreamPartTypePartial,
@@ -423,6 +453,7 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 				fail(context.Cause(ctx))
 				return
 			}
+			hasDemand = false
 
 		case provider.TranscriptionStreamPartTypeFinish:
 			if !warningsResolved {
@@ -433,8 +464,10 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 				return
 			}
 			segments := make([]TranscriptionSegment, 0, len(part.Segments))
+			telemetrySegments := make([]telemetry.TelemetryTranscriptTiming, 0, len(part.Segments))
 			for _, seg := range part.Segments {
 				segments = append(segments, TranscriptionSegment{Text: seg.Text, StartSecond: seg.StartSecond, EndSecond: seg.EndSecond})
+				telemetrySegments = append(telemetrySegments, telemetry.TelemetryTranscriptTiming{Text: seg.Text, StartSecond: seg.StartSecond, EndSecond: seg.EndSecond})
 			}
 			providerMetadata := part.ProviderMetadata
 			if providerMetadata == nil {
@@ -463,6 +496,17 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 				// only the result resolves `?? {}`.
 				ProviderMetadata: part.ProviderMetadata,
 				ProviderUsage:    part.Usage,
+				// TS StreamTranscriptionEndEvent segments / language /
+				// durationInSeconds / warnings / response.
+				Segments:          telemetrySegments,
+				Language:          part.Language,
+				DurationInSeconds: part.DurationInSeconds,
+				Warnings:          resolvedWarnings,
+				Response: &telemetry.TelemetryAudioResponse{
+					Timestamp: response.Timestamp,
+					ModelID:   response.ModelID,
+					Headers:   response.Headers,
+				},
 			})
 
 			result.textP.resolve(part.FinishText)

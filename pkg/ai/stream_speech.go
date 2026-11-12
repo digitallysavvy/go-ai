@@ -127,6 +127,7 @@ type StreamSpeechResult struct {
 	mu          sync.Mutex
 	streamOwner string // "unclaimed" | "audio-stream" | "full-stream" | "result-promises"
 	ch          chan SpeechStreamPart
+	demand      *streamDemand
 	ctx         context.Context
 	pipeDone    chan struct{}
 	cancel      context.CancelCauseFunc
@@ -164,6 +165,7 @@ func (r *StreamSpeechResult) consumeStream() {
 	}
 	r.streamOwner = "result-promises"
 	r.mu.Unlock()
+	r.demand.drainAll()
 	go func() {
 		for range r.ch { //nolint:revive // drain; results surface via the accessors
 		}
@@ -239,6 +241,7 @@ type speechFullStream struct {
 
 func (s *speechFullStream) Next() (*SpeechStreamPart, error) {
 	r := s.result
+	r.demand.request()
 	select {
 	case part, ok := <-r.ch:
 		return s.deliver(part, ok)
@@ -343,6 +346,7 @@ func ExperimentalStreamSpeech(ctx context.Context, opts StreamSpeechOptions) (*S
 		providerMetadataP: newStreamPromise[map[string]interface{}](),
 		streamOwner:       "unclaimed",
 		ch:                make(chan SpeechStreamPart),
+		demand:            newStreamDemand(),
 		ctx:               pipeCtx,
 		pipeDone:          make(chan struct{}),
 		cancel:            cancel,
@@ -399,7 +403,16 @@ func runSpeechStreamPipe(pipeCtx context.Context, streamer provider.SpeechStream
 	fail := func(err error) {
 		result.setFinalErr(err)
 		result.rejectAll(err)
-		text.Cancel(err)
+		// TS stream-speech.ts catch: the text stream is cancelled only while
+		// no model stream owns it (doStream rejected or is still pending);
+		// once the model returned its stream, the model's cleanup owns the
+		// text stream (a locked ReadableStream rejects the cancel).
+		streamMu.Lock()
+		owned := stream != nil
+		streamMu.Unlock()
+		if !owned {
+			text.Cancel(err)
+		}
 	}
 
 	// A cancellation settles the result and errors the output immediately,
@@ -474,9 +487,13 @@ func runSpeechStreamPipe(pipeCtx context.Context, streamer provider.SpeechStream
 		return &NoSpeechGeneratedError{Responses: []SpeechModelResponseMetadata{*response}, Cause: cause}
 	}
 
+	// hasDemand: see runTranscriptionStreamPipe (TS transform runs only on
+	// the reader's demand); given back after each emitted part.
+	hasDemand := false
 	emit := func(part SpeechStreamPart) bool {
 		select {
 		case result.ch <- part:
+			hasDemand = false
 			return true
 		case <-pipeCtx.Done():
 			return false
@@ -494,6 +511,13 @@ func runSpeechStreamPipe(pipeCtx context.Context, streamer provider.SpeechStream
 			}
 			fail(nextErr)
 			return
+		}
+		if !hasDemand {
+			if !result.demand.wait(pipeCtx) {
+				fail(context.Cause(pipeCtx))
+				return
+			}
+			hasDemand = true
 		}
 
 		switch part.Type {

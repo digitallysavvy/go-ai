@@ -122,6 +122,7 @@ type StreamTranslationResult struct {
 	mu          sync.Mutex
 	streamOwner string
 	ch          chan TranslationStreamPart
+	demand      *streamDemand
 	cancel      context.CancelCauseFunc
 	finalErr    *error
 	finalErrMu  sync.Mutex
@@ -162,6 +163,7 @@ func (r *StreamTranslationResult) consumeStream() {
 	}
 	r.streamOwner = "result-promises"
 	r.mu.Unlock()
+	r.demand.drainAll()
 	go func() {
 		for range r.ch { //nolint:revive // drain; results surface via the accessors
 		}
@@ -238,6 +240,7 @@ type translationFullStream struct {
 }
 
 func (s *translationFullStream) Next() (*TranslationStreamPart, error) {
+	s.result.demand.request()
 	part, ok := <-s.result.ch
 	if !ok {
 		if err := s.result.getFinalErr(); err != nil {
@@ -282,6 +285,7 @@ func ExperimentalStreamTranslate(ctx context.Context, opts StreamTranslateOption
 		providerMetadataP: newStreamPromise[map[string]interface{}](),
 		streamOwner:       "unclaimed",
 		ch:                make(chan TranslationStreamPart),
+		demand:            newStreamDemand(),
 		cancel:            cancel,
 	}
 
@@ -351,6 +355,9 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	}
 
+	// hasDemand: see runTranscriptionStreamPipe (TS transform runs only on
+	// the reader's demand).
+	hasDemand := false
 	for {
 		part, nextErr := streamResult.Stream.Next()
 		if nextErr == io.EOF {
@@ -359,6 +366,13 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		if nextErr != nil {
 			fail(abortReason(nextErr))
 			return
+		}
+		if !hasDemand {
+			if !result.demand.wait(pipeCtx) {
+				fail(context.Cause(pipeCtx))
+				return
+			}
+			hasDemand = true
 		}
 
 		switch part.Type {
@@ -390,6 +404,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 				fail(context.Cause(pipeCtx))
 				return
 			}
+			hasDemand = false
 
 		case provider.SpeechTranslationStreamPartTypeOutputTextDelta,
 			provider.SpeechTranslationStreamPartTypeOutputTextFinal,
@@ -402,6 +417,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 				fail(context.Cause(pipeCtx))
 				return
 			}
+			hasDemand = false
 
 		case provider.SpeechTranslationStreamPartTypeFinish:
 			if !warningsResolved {
