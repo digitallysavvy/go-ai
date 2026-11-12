@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -141,6 +143,47 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 	return input, nil
 }
 
+// replicateVideoInputOrder is the TS buildInput assignment order of the keys
+// it sets itself; passthrough option keys follow, sorted (a Go map has no
+// caller order).
+var replicateVideoInputOrder = []string{
+	"prompt", "image", "aspect_ratio", "size", "duration", "fps", "seed",
+	"guidance_scale", "num_inference_steps", "motion_bucket_id", "cond_aug",
+	"decoding_t", "video_length", "sizing_strategy", "frames_per_second", "prompt_optimizer",
+}
+
+// orderedVideoBody sends the prediction body in the TS literal order:
+// {input, version, webhook, webhook_events_filter}, input in buildInput
+// order.
+func orderedVideoBody(body map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	if input, ok := body["input"].(map[string]interface{}); ok {
+		ordered := jsonorder.New()
+		for _, k := range replicateVideoInputOrder {
+			if v, has := input[k]; has {
+				ordered.Set(k, v)
+			}
+		}
+		rest := make([]string, 0)
+		for k := range input {
+			if _, done := ordered.Get(k); !done {
+				rest = append(rest, k)
+			}
+		}
+		sort.Strings(rest)
+		for _, k := range rest {
+			ordered.Set(k, input[k])
+		}
+		out.Set("input", ordered)
+	}
+	for _, k := range []string{"version", "webhook", "webhook_events_filter"} {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	return out
+}
+
 // replicateVideoOperation is the opaque operation reference returned by
 // DoStart and passed back into DoStatus.
 type replicateVideoOperation struct {
@@ -182,7 +225,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    predictionPath,
-		Body:    body,
+		Body:    orderedVideoBody(body),
 		Headers: callOpts.Headers,
 		// TS createJsonResponseHandler(replicatePredictionSchema).
 		ValidateResponse: validateVideoPrediction,
