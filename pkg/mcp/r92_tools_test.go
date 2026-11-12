@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,5 +113,39 @@ func TestR92toolsEventsSubscribeFirstPageParams(t *testing.T) {
 	tr.mu.Unlock()
 	if last.Method != "events/list" || len(last.Params) != 0 {
 		t.Fatalf("List params = %q, want none", last.Params)
+	}
+}
+
+// TS mcp-client.ts request(): the retried request is {...request.params,
+// inputResponses, requestState} (the original keys first, the answers in
+// Object.entries order, each answer the ElicitResultSchema output in schema
+// order: _meta, action, content, then other keys), and an already aborted
+// signal rejects with its reason before the first round.
+func TestR92toolsInputRequiredRetryOrderAndPreAbort(t *testing.T) {
+	c, tr := r85toolsSetup(t,
+		`{"resultType":"input_required","inputRequests":{"b":`+r85toolsElicitation+`,"2":`+r85toolsElicitation+`,"a":`+r85toolsElicitation+`},"requestState":"s"}`,
+		r85toolsComplete,
+	)
+	c.OnElicitationRequest(func(context.Context, ElicitationRequest) (ElicitResult, error) {
+		return ElicitResult{Action: "accept", Content: map[string]interface{}{"ok": true}, Meta: map[string]interface{}{"m": 1}, Extra: map[string]interface{}{"zeta": 1}}, nil
+	})
+	if _, err := c.CallTool(context.Background(), "deploy", map[string]interface{}{"target": "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	reqs := tr.recorded()
+	got := string(reqs[1].Params)
+	answer := `{"_meta":{"m":1},"action":"accept","content":{"ok":true},"zeta":1}`
+	// requestOnce then appends _meta ({...request.params, _meta}).
+	wantPrefix := `{"name":"deploy","arguments":{"target":"demo"},"inputResponses":{"2":` + answer + `,"b":` + answer + `,"a":` + answer + `},"requestState":"s","_meta":`
+	wantTail := `}`
+	if !strings.HasPrefix(got, wantPrefix) || !strings.HasSuffix(got, wantTail) {
+		t.Fatalf("round 2 params = %s\nwant %s...%s", got, wantPrefix, wantTail)
+	}
+
+	cause := errors.New("stop")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(cause)
+	if _, err := c.CallTool(ctx, "deploy", nil); err != cause {
+		t.Fatalf("pre-aborted err = %v, want the abort reason", err)
 	}
 }

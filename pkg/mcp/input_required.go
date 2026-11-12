@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
 // Multi-round-trip request limits (TS mcp-client.ts, c3af430640).
@@ -22,32 +24,44 @@ const (
 type inputRequiredRetryParams struct {
 	base           interface{}
 	inputResponses map[string]ElicitResult
-	requestState   *string
+	// responseKeys is the inputRequests key order (TS Object.entries).
+	responseKeys []string
+	requestState *string
 }
 
 func (p inputRequiredRetryParams) MarshalJSON() ([]byte, error) {
-	merged := map[string]interface{}{}
+	// TS {...request.params, inputResponses, requestState}: the original
+	// keys in their order, then the added ones.
+	merged := jsonorder.New()
 	if p.base != nil {
 		data, err := json.Marshal(p.base)
 		if err != nil {
 			return nil, err
 		}
 		if len(data) > 0 && string(data) != "null" {
-			if err := json.Unmarshal(data, &merged); err != nil {
-				return nil, err
+			parsed, ok := jsonorder.Parse(data)
+			obj, isObj := parsed.(*jsonorder.Object)
+			if !ok || !isObj {
+				return nil, errors.New("request params must be an object")
 			}
+			merged = obj
 		}
 	}
 	if len(p.inputResponses) > 0 {
-		merged["inputResponses"] = p.inputResponses
+		responses := jsonorder.New()
+		for _, key := range p.responseKeys {
+			if answer, ok := p.inputResponses[key]; ok {
+				responses.Set(key, answer)
+			}
+		}
+		merged.Set("inputResponses", responses)
 	}
 	if p.requestState != nil {
-		merged["requestState"] = *p.requestState
+		merged.Set("requestState", *p.requestState)
 	}
-	return json.Marshal(merged)
+	return merged.MarshalJSON()
 }
 
-// inputRequiredResult is TS InputRequiredResultSchema.
 type inputRequiredResult struct {
 	InputRequests map[string]inputRequest
 	// keys are the inputRequests keys in JSON order (TS Object.entries).
@@ -72,7 +86,7 @@ func parseInputRequiredResult(raw json.RawMessage) (inputRequiredResult, error) 
 			return out, errors.New("inputRequests must be an object")
 		}
 		out.InputRequests = make(map[string]inputRequest, len(requests))
-		out.keys = orderedObjectKeys(r)
+		out.keys = jsonorder.JSKeyOrder(orderedObjectKeys(r)) // TS Object.entries order
 		for key, rawReq := range requests {
 			var req struct {
 				Method *string         `json:"method"`
@@ -154,8 +168,18 @@ func inputRequestMode(params json.RawMessage) (string, bool) {
 // `requestState`, up to 10 rounds; a round without answers waits 250 ms.
 // Each round has its own timeout; MaxTotalTimeoutMS bounds them all.
 func (c *MCPClient) callWithInputRequired(ctx context.Context, method string, params interface{}, result interface{}) error {
-	if err := ctx.Err(); err != nil {
-		return &MCPClientError{Message: "Request was aborted", Cause: err}
+	if ctx.Err() != nil {
+		select {
+		case <-c.ctx.Done():
+			// TS: a closed client goes straight to requestOnce.
+			return errClosedClient()
+		case <-c.connLost:
+			return errClosedClient()
+		default:
+		}
+		// TS options.signal.throwIfAborted() before the loop rejects with
+		// the abort reason itself.
+		return context.Cause(ctx)
 	}
 	ro, _ := requestOptionsFrom(ctx)
 	startedAt := time.Now()
@@ -313,7 +337,7 @@ func (c *MCPClient) inputRequiredRound(ctx context.Context, method string, param
 	if roundCtx.Err() != nil || closed() {
 		return false, aborted()
 	}
-	*nextParams = inputRequiredRetryParams{base: params, inputResponses: responses, requestState: parsed.RequestState}
+	*nextParams = inputRequiredRetryParams{base: params, inputResponses: responses, responseKeys: parsed.keys, requestState: parsed.RequestState}
 	return false, nil
 }
 

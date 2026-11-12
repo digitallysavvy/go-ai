@@ -1112,20 +1112,33 @@ type ElicitResult struct {
 
 // MarshalJSON writes the declared keys, then Extra's other keys.
 func (r ElicitResult) MarshalJSON() ([]byte, error) {
-	out := map[string]interface{}{}
-	for k, v := range r.Extra {
-		out[k] = v
-	}
-	out["action"] = r.Action
-	delete(out, "content")
-	delete(out, "_meta")
-	if r.Content != nil {
-		out["content"] = r.Content
-	}
+	// TS ElicitResultSchema.parse output: the declared keys in schema order
+	// (_meta, resultType, action, content), then the other keys (sorted: a
+	// Go map has no order).
+	out := jsonorder.New()
 	if r.Meta != nil {
-		out["_meta"] = r.Meta
+		out.Set("_meta", r.Meta)
 	}
-	return json.Marshal(out)
+	if v, ok := r.Extra["resultType"]; ok {
+		out.Set("resultType", v)
+	}
+	out.Set("action", r.Action)
+	if r.Content != nil {
+		out.Set("content", r.Content)
+	}
+	rest := make([]string, 0, len(r.Extra))
+	for k := range r.Extra {
+		switch k {
+		case "_meta", "resultType", "action", "content":
+			continue
+		}
+		rest = append(rest, k)
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		out.Set(k, r.Extra[k])
+	}
+	return out.MarshalJSON()
 }
 
 // LoggingLevel represents the level of logging
