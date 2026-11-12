@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -72,5 +73,24 @@ func TestR94toolsCallToolResultNonArrayContentWithToolResult(t *testing.T) {
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: err = %v, want ok %v", tc.result, err, tc.ok)
 		}
+	}
+}
+
+// The loose toolResult arm keeps content and isError as sent.
+func TestR94toolsCallToolResultLooseArmRoundTrip(t *testing.T) {
+	var r CallToolResult
+	in := `{"content":"x","isError":"yes","toolResult":{"v":1}}`
+	if err := json.Unmarshal([]byte(in), &r); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCallToolResult(&r); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `{"content":"x","toolResult":{"v":1},"isError":"yes"}` && string(out) != `{"content":"x","isError":"yes","toolResult":{"v":1}}` {
+		t.Fatalf("out = %s", out)
 	}
 }

@@ -407,6 +407,9 @@ type CallToolResult struct {
 	structuredContentPresent bool
 	toolResultPresent        bool
 	metadataPresent          bool
+	// looseToolResult marks a result only the loose toolResult arm
+	// accepts: content and isError are kept as sent (rawFields).
+	looseToolResult bool
 }
 
 func (r *CallToolResult) UnmarshalJSON(data []byte) error {
@@ -422,20 +425,22 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var out callToolResultJSON
+	looseArm := false
 	if err := json.Unmarshal(data, &out); err != nil {
 		if _, hasToolResult := raw["toolResult"]; !hasToolResult {
 			return err
 		}
 		// TS CallToolResultSchema's toolResult arm is a loose object: content
 		// and isError of any type pass through unvalidated.
-		var loose struct {
+		var looseFields struct {
 			ToolResult interface{}            `json:"toolResult"`
 			Metadata   map[string]interface{} `json:"_meta,omitempty"`
 		}
-		if looseErr := json.Unmarshal(data, &loose); looseErr != nil {
+		if looseErr := json.Unmarshal(data, &looseFields); looseErr != nil {
 			return err
 		}
-		out = callToolResultJSON{ToolResult: loose.ToolResult, Metadata: loose.Metadata}
+		out = callToolResultJSON{ToolResult: looseFields.ToolResult, Metadata: looseFields.Metadata}
+		looseArm = true
 	}
 	*r = CallToolResult{
 		Content:           out.Content,
@@ -445,6 +450,7 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 		Metadata:          out.Metadata,
 		rawFields:         copyRawFields(raw),
 		rawFieldOrder:     jsonObjectFieldOrder(data),
+		looseToolResult:   looseArm,
 	}
 	_, r.isErrorPresent = raw["isError"]
 	_, r.contentPresent = raw["content"]
@@ -457,7 +463,7 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	// a single text content block from it (JSON.stringify equivalent) and
 	// default isError to false, tolerating any JSON-serializable value
 	// (object/array/string/number/boolean/null).
-	if !r.contentPresent && r.structuredContentPresent {
+	if !r.contentPresent && r.structuredContentPresent && !looseArm {
 		// JSON.stringify(result.structuredContent): the server's key order,
 		// no HTML escaping.
 		text := jsonStringifyRaw(raw["structuredContent"])
@@ -476,6 +482,10 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 }
 
 func (r CallToolResult) MarshalJSON() ([]byte, error) {
+	if r.looseToolResult && r.Content == nil && !r.IsError {
+		// The loose toolResult arm keeps content and isError as sent.
+		r.contentPresent, r.isErrorPresent = false, false
+	}
 	contentPresent := r.contentPresent || r.Content != nil
 	structuredContentPresent := r.structuredContentPresent || r.StructuredContent != nil
 	toolResultPresent := r.toolResultPresent || r.ToolResult != nil
