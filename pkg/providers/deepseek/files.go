@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"mime/multipart"
 	"reflect"
@@ -234,6 +235,13 @@ func deepSeekInlineFileBytes(data types.FileData) ([]byte, error) {
 		return data.Data, nil
 	case types.FileDataTypeText:
 		return []byte(data.Text), nil
+	case types.FileDataTypeStream:
+		// TS convertInlineFileDataToUint8Array: the stream is cancelled and
+		// streaming upload is unsupported (before any request).
+		if closer, ok := data.Stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming file upload"}
 	default:
 		return nil, fmt.Errorf("unsupported file data type %q for deepseek upload", data.Type)
 	}

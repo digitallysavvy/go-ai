@@ -134,3 +134,21 @@ func TestR94provbFilesUnfollowed3xxIsError(t *testing.T) {
 		t.Fatalf("err = %T %v, want the 300 API error", err, err)
 	}
 }
+
+type r94provbClosingReader struct{ closed bool }
+
+func (r *r94provbClosingReader) Read([]byte) (int, error) { return 0, io.EOF }
+func (r *r94provbClosingReader) Close() error           { r.closed = true; return nil }
+
+// TestR94provbFilesStreamUploadUnsupported (cr-r94-prova-to-provb): TS
+// convertInlineFileDataToUint8Array cancels a stream and throws
+// UnsupportedFunctionalityError('streaming file upload') before any request.
+func TestR94provbFilesStreamUploadUnsupported(t *testing.T) {
+	stream := &r94provbClosingReader{}
+	_, err := New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}).Files().UploadFile(context.Background(), types.UploadFileOptions{
+		Data: types.FileData{Type: types.FileDataTypeStream, Stream: stream}, MediaType: "image/png", Filename: "a.png"})
+	var ufe *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &ufe) || ufe.Functionality != "streaming file upload" || !stream.closed {
+		t.Fatalf("err = %T %v, closed %v; want UnsupportedFunctionalityError and a closed stream", err, err, stream.closed)
+	}
+}
