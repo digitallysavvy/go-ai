@@ -117,7 +117,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, m.handleError(err)
 	}
 
-	base64Audio, mimeType := firstGoogleSpeechAudio(response)
+	base64Audio, mimeType, hasMimeType := firstGoogleSpeechAudioPresence(response)
 	pcm := []byte{}
 	if base64Audio != "" {
 		pcm, err = fileutil.ConvertBase64ToBytes(base64Audio)
@@ -125,13 +125,16 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			return nil, fmt.Errorf("failed to decode Gemini TTS audio: %w", err)
 		}
 	}
-	sampleRate := parseGeminiSampleRate(mimeType)
-	if sampleRate == 0 {
+	// TS parseSampleRate(mimeType) ?? DEFAULT_SAMPLE_RATE: a parsed rate=0
+	// is kept.
+	sampleRate, hasRate := parseGeminiSampleRateOK(mimeType)
+	if !hasRate {
 		sampleRate = defaultGeminiTTSSampleRate
 	}
 	// Older models return raw PCM, which needs a container for the default WAV
 	// output. Gemini 3.8 returns WAV itself; another header would corrupt it.
-	isPCM := geminiPCMMimeRE.MatchString(mimeType) || (mimeType == "" && !usesStructured)
+	// TS `mimeType == null`: a present empty mimeType is not absent.
+	isPCM := geminiPCMMimeRE.MatchString(mimeType) || (!hasMimeType && !usesStructured)
 	audio := pcm
 	if outputFormat == "AUDIO_WAV" && isPCM && len(pcm) > 0 {
 		audio = addGeminiWAVHeader(pcm, sampleRate)
@@ -162,7 +165,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		ProviderMetadata: map[string]interface{}{
 			m.cfg.MetadataKey: map[string]interface{}{
 				"sampleRate": sampleRate,
-				"mimeType":   nullableString(mimeType),
+				"mimeType":   googleSpeechMimeType(mimeType, hasMimeType),
 			},
 		},
 		Request: &types.StepRequest{
@@ -654,8 +657,8 @@ type googleSpeechResponse struct {
 		Content *struct {
 			Parts []struct {
 				InlineData *struct {
-					MimeType string `json:"mimeType"`
-					Data     string `json:"data"`
+					MimeType *string `json:"mimeType"`
+					Data     string  `json:"data"`
 				} `json:"inlineData"`
 			} `json:"parts"`
 		} `json:"content"`
@@ -663,26 +666,46 @@ type googleSpeechResponse struct {
 	UsageMetadata map[string]interface{} `json:"usageMetadata,omitempty"`
 }
 
-func firstGoogleSpeechAudio(response googleSpeechResponse) (string, string) {
+// firstGoogleSpeechAudioPresence is firstGoogleSpeechAudio plus whether the
+// part carried a non-null mimeType (TS `inlineData.mimeType ?? undefined`).
+func firstGoogleSpeechAudioPresence(response googleSpeechResponse) (string, string, bool) {
 	for _, candidate := range response.Candidates {
 		if candidate.Content == nil {
 			continue
 		}
 		for _, part := range candidate.Content.Parts {
 			if part.InlineData != nil && part.InlineData.Data != "" {
-				return part.InlineData.Data, part.InlineData.MimeType
+				if part.InlineData.MimeType == nil {
+					return part.InlineData.Data, "", false
+				}
+				return part.InlineData.Data, *part.InlineData.MimeType, true
 			}
 		}
 	}
-	return "", ""
+	return "", "", false
+}
+
+// googleSpeechMimeType is TS `mimeType ?? null`.
+func googleSpeechMimeType(mimeType string, present bool) interface{} {
+	if !present {
+		return nil
+	}
+	return mimeType
 }
 
 var geminiRateRE = regexp.MustCompile(`rate=(\d+)`)
 
 func parseGeminiSampleRate(mimeType string) int {
+	rate, _ := parseGeminiSampleRateOK(mimeType)
+	return rate
+}
+
+// parseGeminiSampleRateOK is TS parseSampleRate: the rate=<digits> value and
+// whether one was parsed.
+func parseGeminiSampleRateOK(mimeType string) (int, bool) {
 	match := geminiRateRE.FindStringSubmatch(mimeType)
 	if len(match) != 2 {
-		return 0
+		return 0, false
 	}
 	// strconv.Atoi clamps to math.MaxInt64/MinInt64 (with a non-nil, here
 	// ignored, error) rather than returning 0 when match[1] overflows an
@@ -690,9 +713,9 @@ func parseGeminiSampleRate(mimeType string) int {
 	// being treated as a real sample rate.
 	rate, err := strconv.Atoi(match[1])
 	if err != nil || rate < 0 || int64(rate) > math.MaxUint32 {
-		return 0
+		return 0, false
 	}
-	return rate
+	return rate, true
 }
 
 func addGeminiWAVHeader(pcm []byte, sampleRate int) []byte {
@@ -729,11 +752,4 @@ func addGeminiWAVHeader(pcm []byte, sampleRate int) []byte {
 	binary.LittleEndian.PutUint32(out[40:], uint32(dataSize))
 	copy(out[headerSize:], pcm)
 	return out
-}
-
-func nullableString(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
 }

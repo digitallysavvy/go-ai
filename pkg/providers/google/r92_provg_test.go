@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -186,6 +187,43 @@ func TestR92provgInteractionsPartOptionsTypedLiterals(t *testing.T) {
 	for _, want := range []string{`"processing":{"fps":2,"start_offset":"3s","type":"static"}`, `"signature":"sig-1"`} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("steps = %s, missing %s", b, want)
+		}
+	}
+}
+
+// TS google-speech-model.ts: parseSampleRate(mimeType) ?? 24000 keeps a
+// parsed rate=0, and `mimeType == null` (not "") decides the PCM fallback
+// and providerMetadata.google.mimeType.
+func TestR92provgSpeechSampleRateAndMimeTypePresence(t *testing.T) {
+	pcm := base64.StdEncoding.EncodeToString([]byte{1, 0, 2, 0})
+	for _, tc := range []struct {
+		inline   string
+		rate     int
+		mimeType interface{}
+		wav      bool
+	}{
+		{`{"mimeType":"audio/L16;rate=0","data":"` + pcm + `"}`, 0, "audio/L16;rate=0", true},
+		{`{"mimeType":"","data":"` + pcm + `"}`, 24000, "", false},
+		{`{"data":"` + pcm + `"}`, 24000, nil, true},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":` + tc.inline + `}]}}]}`))
+		}))
+		m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).SpeechModel(ModelGemini25FlashTTS)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "Hello."})
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := res.ProviderMetadata["google"].(map[string]interface{})
+		if meta["sampleRate"] != tc.rate || meta["mimeType"] != tc.mimeType {
+			t.Fatalf("%s: metadata = %v", tc.inline, meta)
+		}
+		if isWAV := len(res.Audio) > 4 && string(res.Audio[:4]) == "RIFF"; isWAV != tc.wav {
+			t.Fatalf("%s: wav = %v", tc.inline, isWAV)
 		}
 	}
 }
