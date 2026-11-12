@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // r94streamTranscribeEvents records the streamTranscribe start and end
@@ -157,5 +159,405 @@ func TestR94streamTranscribeResponseMetadataDropsBody(t *testing.T) {
 	want := []TranscriptionModelResponseMetadata{{Timestamp: time.Unix(0, 0), ModelID: "resolved-model", Headers: map[string]string{"x-test": "value"}}}
 	if !reflect.DeepEqual(responses, want) {
 		t.Fatalf("Responses() = %#v, want %#v", responses, want)
+	}
+}
+
+// r94streamFinishModel streams the given parts after draining the audio.
+func r94streamFinishModel(capture func(*provider.TranscriptionStreamOptions), parts ...provider.TranscriptionStreamPart) *mockTranscriptionStreamerModel {
+	return &mockTranscriptionStreamerModel{
+		doStreamFn: func(ctx context.Context, opts *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
+			if capture != nil {
+				capture(opts)
+			}
+			for {
+				if _, err := opts.Audio.Next(ctx); err != nil {
+					break
+				}
+			}
+			return sliceStreamResult(parts...), nil
+		},
+	}
+}
+
+// r94streamDrain reads stream to its end and returns the parts and the
+// terminal error (nil at io.EOF).
+func r94streamDrain(stream TranscriptionStream) ([]TranscriptionStreamPart, error) {
+	var parts []TranscriptionStreamPart
+	for {
+		part, err := stream.Next()
+		if err != nil {
+			if err.Error() == "EOF" {
+				return parts, nil
+			}
+			return parts, err
+		}
+		parts = append(parts, *part)
+	}
+}
+
+// TS stream-transcribe.test.ts 59 "should send args to doStream".
+func TestR94streamTranscribeSendsArgsToDoStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var captured *provider.TranscriptionStreamOptions
+	rate := 16000
+	format := provider.AudioFormat{Type: "audio/pcm", Rate: &rate}
+	result, err := ExperimentalStreamTranscribe(ctx, StreamTranscribeOptions{
+		Model: r94streamFinishModel(func(o *provider.TranscriptionStreamOptions) { captured = o },
+			provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart},
+			provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: "Hello world"},
+		),
+		Audio:            newMockChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: format,
+		ProviderOptions:  map[string]interface{}{"mock": map[string]interface{}{"option": "value"}},
+		Headers:          map[string]string{"custom-request-header": "request-header-value"},
+		IncludeRawChunks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r94streamDrain(stream); err != nil {
+		t.Fatal(err)
+	}
+	if captured == nil {
+		t.Fatal("DoStream not called")
+	}
+	if !reflect.DeepEqual(captured.InputAudioFormat, format) {
+		t.Errorf("InputAudioFormat = %#v, want %#v", captured.InputAudioFormat, format)
+	}
+	if want := map[string]interface{}{"mock": map[string]interface{}{"option": "value"}}; !reflect.DeepEqual(captured.ProviderOptions, want) {
+		t.Errorf("ProviderOptions = %#v, want %#v", captured.ProviderOptions, want)
+	}
+	if want := map[string]string{"custom-request-header": "request-header-value", "user-agent": "ai/" + version.Version}; !reflect.DeepEqual(captured.Headers, want) {
+		t.Errorf("Headers = %#v, want %#v", captured.Headers, want)
+	}
+	if !captured.IncludeRawChunks {
+		t.Error("IncludeRawChunks = false, want true")
+	}
+	if captured.Audio == nil {
+		t.Error("Audio = nil")
+	}
+	// The model's signal follows the caller's.
+	if captured.AbortSignal == nil || captured.AbortSignal.Err() != nil {
+		t.Fatalf("AbortSignal before cancel = %v", captured.AbortSignal)
+	}
+	cancel()
+	select {
+	case <-captured.AbortSignal.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("AbortSignal did not follow the caller's cancel")
+	}
+}
+
+// TS stream-transcribe.test.ts 261 "should keep already-resolved promises
+// resolved when the stream errors later".
+func TestR94streamTranscribeKeepsResolvedPromisesOnLaterError(t *testing.T) {
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model: r94streamFinishModel(nil,
+			provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: []types.Warning{{Type: "other", Message: "test warning"}}},
+			provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: ""},
+		),
+		Audio:            newMockChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r94streamDrain(stream); !IsNoTranscriptGeneratedError(err) {
+		t.Fatalf("FullStream error = %v, want NoTranscriptGeneratedError", err)
+	}
+	warnings, err := result.Warnings()
+	if err != nil || !reflect.DeepEqual(warnings, []types.Warning{{Type: "other", Message: "test warning"}}) {
+		t.Errorf("Warnings() = %#v, %v; want the stream-start warning", warnings, err)
+	}
+	if _, err := result.Text(); !IsNoTranscriptGeneratedError(err) {
+		t.Errorf("Text() error = %v, want NoTranscriptGeneratedError", err)
+	}
+}
+
+// r94streamTranscribeAllEvents records every streamTranscribe event a custom
+// integration receives, in order.
+type r94streamTranscribeAllEvents struct {
+	telemetry.NoopTelemetryIntegration
+	mu     sync.Mutex
+	starts []telemetry.TelemetryStartEvent
+	ends   []telemetry.TelemetryFinishEvent
+	errs   []telemetry.TelemetryErrorEvent
+}
+
+func (r *r94streamTranscribeAllEvents) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.starts = append(r.starts, e)
+	return ctx
+}
+
+func (r *r94streamTranscribeAllEvents) OnEnd(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ends = append(r.ends, e)
+}
+
+func (r *r94streamTranscribeAllEvents) OnError(_ context.Context, e telemetry.TelemetryErrorEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errs = append(r.errs, e)
+}
+
+// TS stream-transcribe.test.ts 357 "should emit one correlated telemetry
+// error for a provider stream failure".
+func TestR94streamTranscribeOneCorrelatedTelemetryError(t *testing.T) {
+	streamErr := errors.New("connection lost")
+	rec := &r94streamTranscribeAllEvents{}
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model: &mockTranscriptionStreamerModel{
+			doStreamFn: func(context.Context, *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
+				return &provider.TranscriptionStreamResult{Stream: &erroringTranscriptionStream{
+					parts: []provider.TranscriptionStreamPart{{Type: provider.TranscriptionStreamPartTypeStreamStart}},
+					err:   streamErr,
+				}}, nil
+			},
+		},
+		Audio:            newMockChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		Telemetry:        &TelemetrySettings{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r94streamDrain(stream); err != streamErr { //nolint:errorlint // TS rejects with the same error object
+		t.Fatalf("FullStream error = %v, want the provider error itself", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.starts) != 1 || len(rec.ends) != 0 || len(rec.errs) != 1 {
+		t.Fatalf("events: %d start, %d end, %d error; want 1, 0, 1", len(rec.starts), len(rec.ends), len(rec.errs))
+	}
+	if rec.errs[0].CallID == "" || rec.errs[0].CallID != rec.starts[0].CallID {
+		t.Errorf("error CallID = %q, start CallID = %q; want the same non-empty ID", rec.errs[0].CallID, rec.starts[0].CallID)
+	}
+	if rec.errs[0].Error != streamErr { //nolint:errorlint // TS passes the same error object
+		t.Errorf("error event Error = %v, want the provider error itself", rec.errs[0].Error)
+	}
+	if rec.errs[0].AIVersion == "" {
+		t.Error("error event AIVersion is empty")
+	}
+}
+
+// TS stream-transcribe.test.ts 507 "should reject the result promises
+// without consuming fullStream when no transcript is produced".
+func TestR94streamTranscribeRejectsWithoutFullStreamWhenNoTranscript(t *testing.T) {
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model:            r94streamFinishModel(nil, provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart}),
+		Audio:            newMockChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := result.Text(); err == nil || err.Error() != "No transcript generated." {
+		t.Fatalf("Text() error = %v, want No transcript generated.", err)
+	}
+}
+
+// TS stream-transcribe.test.ts 540 "should support iterating fullStream
+// before awaiting promises".
+func TestR94streamTranscribeIteratesFullStreamBeforePromises(t *testing.T) {
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model: r94streamFinishModel(nil,
+			provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart},
+			provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: "item-1", Delta: "Hello"},
+			provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: "Hello"},
+		),
+		Audio:            newMockChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := r94streamDrain(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []TranscriptionStreamPart{{Type: "transcript-delta", ID: "item-1", Delta: "Hello"}}; !reflect.DeepEqual(parts, want) {
+		t.Errorf("parts = %#v, want %#v", parts, want)
+	}
+	if text, err := result.Text(); err != nil || text != "Hello" {
+		t.Errorf("Text() = %q, %v; want Hello", text, err)
+	}
+}
+
+// r94streamLiveModel returns a model whose stream serves the parts pushed on
+// the returned channel.
+func r94streamLiveModel() (*mockTranscriptionStreamerModel, chan provider.TranscriptionStreamPart) {
+	parts := make(chan provider.TranscriptionStreamPart)
+	return &mockTranscriptionStreamerModel{
+		doStreamFn: func(ctx context.Context, _ *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
+			return &provider.TranscriptionStreamResult{Stream: &liveProviderTranscriptionStream{ctx: ctx, parts: parts}}, nil
+		},
+	}, parts
+}
+
+// TS stream-transcribe.test.ts 561 "should resolve a result promise while
+// fullStream is actively consumed".
+func TestR94streamTranscribeResolvesPromiseWhileFullStreamConsumed(t *testing.T) {
+	model, parts := r94streamLiveModel()
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model:            model,
+		Audio:            newMockChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts <- provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart}
+	go func() {
+		parts <- provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: "item-1", Delta: "Hello"}
+	}()
+	part, err := stream.Next()
+	if err != nil || !reflect.DeepEqual(*part, TranscriptionStreamPart{Type: "transcript-delta", ID: "item-1", Delta: "Hello"}) {
+		t.Fatalf("first part = %#v, %v", part, err)
+	}
+	// Keep consuming fullStream while waiting on the result promise.
+	streamDone := make(chan error, 1)
+	go func() {
+		_, err := stream.Next()
+		streamDone <- err
+	}()
+	textDone := make(chan string, 1)
+	go func() {
+		text, _ := result.Text()
+		textDone <- text
+	}()
+	parts <- provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: "Hello"}
+	close(parts)
+	select {
+	case text := <-textDone:
+		if text != "Hello" {
+			t.Errorf("Text() = %q, want Hello", text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Text() did not resolve")
+	}
+	select {
+	case err := <-streamDone:
+		if err == nil || err.Error() != "EOF" {
+			t.Errorf("stream end = %v, want EOF", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fullStream did not end")
+	}
+}
+
+// TS stream-transcribe.test.ts 600 "should reject a second fullStream
+// access": the second access fails, and cancelling the first rejects the
+// pending result promise.
+func TestR94streamTranscribeRejectsSecondFullStreamAccess(t *testing.T) {
+	model, parts := r94streamLiveModel()
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model:            model,
+		Audio:            newMockChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts <- provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart}
+	textErr := make(chan error, 1)
+	go func() {
+		_, err := result.Text()
+		textErr <- err
+	}()
+	if _, err := result.FullStream(); err == nil || err.Error() != "fullStream can only be accessed once." {
+		t.Fatalf("second FullStream() error = %v, want fullStream can only be accessed once.", err)
+	}
+	_ = stream.Close()
+	select {
+	case err := <-textErr:
+		if err == nil {
+			t.Error("Text() resolved, want a rejection after the cancel")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Text() did not settle after the cancel")
+	}
+}
+
+// TS stream-transcribe.test.ts 622 "should emit telemetry events with the
+// consumed audio byte count" (Go audio chunks are bytes; TS's base64 string
+// chunk 'BAU=' is the two bytes 4, 5).
+func TestR94streamTranscribeTelemetryEventsConsumedByteCount(t *testing.T) {
+	rec := &r94streamTranscribeAllEvents{}
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model: r94streamFinishModel(nil,
+			provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart},
+			provider.TranscriptionStreamPart{
+				Type:             provider.TranscriptionStreamPartTypeFinish,
+				FinishText:       "Hello",
+				ProviderMetadata: map[string]interface{}{"mock": map[string]interface{}{"traceId": "trace-1"}},
+				Usage:            map[string]interface{}{"inputTokens": 3},
+			},
+		),
+		Audio:            newMockChanAudioStream([]byte{1, 2, 3}, []byte{4, 5}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		Telemetry: &TelemetrySettings{
+			IsEnabled:    telemetry.Bool(true),
+			FunctionID:   "stream-audio",
+			Integrations: []telemetry.TelemetryIntegration{rec},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r94streamDrain(stream); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.starts) != 1 || len(rec.ends) != 1 {
+		t.Fatalf("events: %d start, %d end; want 1, 1", len(rec.starts), len(rec.ends))
+	}
+	start, end := rec.starts[0], rec.ends[0]
+	if start.CallID == "" || start.CallID != end.CallID {
+		t.Errorf("CallIDs = %q / %q, want the same non-empty ID", start.CallID, end.CallID)
+	}
+	if start.OperationType != "ai.streamTranscribe" || start.AudioByteLength != nil || start.AudioMediaType != "audio/pcm" || start.Settings == nil || start.Settings.FunctionID != "stream-audio" {
+		t.Errorf("start = %s, size %v, %q, settings %+v", start.OperationType, start.AudioByteLength, start.AudioMediaType, start.Settings)
+	}
+	if end.OperationType != "ai.streamTranscribe" || end.AudioByteLength == nil || *end.AudioByteLength != 5 || end.AudioMediaType != "audio/pcm" || end.Text != "Hello" {
+		t.Errorf("end = %s, size %v, %q, text %q", end.OperationType, end.AudioByteLength, end.AudioMediaType, end.Text)
+	}
+	if !reflect.DeepEqual(end.ProviderUsage, map[string]interface{}{"inputTokens": 3}) || !reflect.DeepEqual(end.ProviderMetadata, map[string]interface{}{"mock": map[string]interface{}{"traceId": "trace-1"}}) {
+		t.Errorf("end usage = %#v, metadata = %#v", end.ProviderUsage, end.ProviderMetadata)
+	}
+	if end.Settings == nil || end.Settings.FunctionID != "stream-audio" {
+		t.Errorf("end settings = %+v, want functionId stream-audio", end.Settings)
 	}
 }
