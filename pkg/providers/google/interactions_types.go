@@ -274,8 +274,8 @@ func (u *interactionsUsage) afterLooseDecode(b []byte) {
 }
 
 type interactionsModalityTokens struct {
-	Modality string `json:"modality,omitempty"`
-	Tokens   *int64 `json:"tokens,omitempty"`
+	Modality *string `json:"modality,omitempty"` // nil when absent or null (TS != null keeps "")
+	Tokens   *int64  `json:"tokens,omitempty"`
 }
 
 type interactionsEvent struct {

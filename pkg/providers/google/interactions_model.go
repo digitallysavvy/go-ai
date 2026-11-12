@@ -1357,8 +1357,8 @@ func outputTokensByModalityMap(usage *interactionsUsage) map[string]interface{} 
 	}
 	out := map[string]interface{}{}
 	for _, entry := range usage.OutputTokensByModality {
-		if entry.Modality != "" && entry.Tokens != nil {
-			out[entry.Modality] = *entry.Tokens
+		if entry.Modality != nil && entry.Tokens != nil {
+			out[*entry.Modality] = *entry.Tokens
 		}
 	}
 	if len(out) == 0 {

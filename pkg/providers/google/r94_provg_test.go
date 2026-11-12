@@ -404,3 +404,18 @@ func TestR94provgInteractionsEmptyServiceTierHeader(t *testing.T) {
 		t.Fatalf("serviceTier = %#v (present %v)", v, ok)
 	}
 }
+
+func r94provgStr(s string) *string { return &s }
+
+// TS getGoogleInteractionsOutputTokensByModality keeps an entry whose
+// modality is != null, so a present empty modality is a key.
+func TestR94provgOutputTokensByEmptyModality(t *testing.T) {
+	var u interactionsUsage
+	if err := json.Unmarshal([]byte(`{"output_tokens_by_modality":[{"modality":"","tokens":3},{"tokens":4},{"modality":null,"tokens":5}]}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	got := outputTokensByModalityMap(&u)
+	if len(got) != 1 || got[""] != int64(3) {
+		t.Fatalf("by modality = %#v", got)
+	}
+}
