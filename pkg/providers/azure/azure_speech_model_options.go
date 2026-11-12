@@ -11,15 +11,15 @@ import (
 // AzureSpeechModelSpeechOptions.
 type AzureSpeechModelSpeechOptions struct {
 	// Style is applied with mstts:express-as, e.g. "excited".
-	Style string
+	Style string `json:"style,omitempty"`
 	// StyleDegree is the intensity of Style, from 0.01 to 2.
-	StyleDegree *float64
+	StyleDegree *float64 `json:"styleDegree,omitempty"`
 }
 
 // AzureSpeechModelOptions is the fully parsed providerOptions.azure for
 // azure.Speech, mirroring TS AzureSpeechModelOptions.
 type AzureSpeechModelOptions struct {
-	API AzureTranscriptionAPI // reuses "openai" | "speech"
+	API AzureTranscriptionAPI `json:"api,omitempty"` // reuses "openai" | "speech"
 	AzureSpeechModelSpeechOptions
 
 	// openaiOptions are the OpenAI speech options passed under

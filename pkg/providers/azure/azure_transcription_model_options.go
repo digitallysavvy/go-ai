@@ -22,12 +22,12 @@ const (
 
 // AzureDiarizationOptions mirrors TS's `diarization: { enabled }` shape.
 type AzureDiarizationOptions struct {
-	Enabled bool
+	Enabled bool `json:"enabled"`
 }
 
 // AzurePhraseListOptions mirrors TS's `phraseList: { phrases }` shape.
 type AzurePhraseListOptions struct {
-	Phrases []string
+	Phrases []string `json:"phrases"`
 }
 
 // AzureSpeechTranscriptionOptions is providerOptions.azure for the Azure
@@ -35,25 +35,25 @@ type AzurePhraseListOptions struct {
 // mirroring TS AzureTranscriptionModelSpeechOptions.
 type AzureSpeechTranscriptionOptions struct {
 	// Timestamps selects "word", "segment", or "none" granularity.
-	Timestamps string
+	Timestamps string `json:"timestamps,omitempty"`
 	// TranscribeStyle is "verbatim" (default) or "clean".
-	TranscribeStyle string
+	TranscribeStyle string `json:"transcribeStyle,omitempty"`
 	// Locales forces a single language, e.g. []string{"en"}.
-	Locales []string
+	Locales []string `json:"locales,omitempty"`
 	// Diarization enables speaker diarization.
-	Diarization *AzureDiarizationOptions
+	Diarization *AzureDiarizationOptions `json:"diarization,omitempty"`
 	// PhraseList biases recognition toward specific phrases.
-	PhraseList *AzurePhraseListOptions
+	PhraseList *AzurePhraseListOptions `json:"phraseList,omitempty"`
 }
 
 // AzureTranscriptionModelOptions is the fully parsed providerOptions.azure
 // for azure.Transcription, mirroring TS AzureTranscriptionModelOptions.
 type AzureTranscriptionModelOptions struct {
-	API AzureTranscriptionAPI
+	API AzureTranscriptionAPI `json:"api,omitempty"`
 	AzureSpeechTranscriptionOptions
 	// Language is a MAI-streaming-only language hint (on the OpenAI route it
 	// is the OpenAI `language` option, TS 6400cf8b88).
-	Language string
+	Language string `json:"language,omitempty"`
 
 	// openaiOptions are the OpenAI transcription options passed under
 	// providerOptions.azure (TS pickAzureOptions with

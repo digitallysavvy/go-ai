@@ -52,13 +52,13 @@ func isMAIImageModel(modelID string) bool {
 type AzureImageModelOptions struct {
 	// API selects the backend: "openai" or "mai". Defaults to "mai" for
 	// MAI-Image models and "openai" otherwise.
-	API string
+	API string `json:"api,omitempty"`
 	// AutoAspectRatio lets the model pick the output aspect ratio from the
 	// prompt and any reference images. MAI-Image-2.6 models only.
-	AutoAspectRatio *bool
+	AutoAspectRatio *bool `json:"autoAspectRatio,omitempty"`
 	// WebGrounding grounds generation in Bing web search results.
 	// MAI-Image-2.6 models only.
-	WebGrounding *bool
+	WebGrounding *bool `json:"webGrounding,omitempty"`
 }
 
 // parseAzureImageProviderOptions parses providerOptions["azure"] for
