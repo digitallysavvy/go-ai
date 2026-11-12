@@ -49,7 +49,7 @@ func holdsStruct(rv reflect.Value) bool {
 	switch rv.Kind() {
 	case reflect.Struct:
 		return true
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		return !rv.IsNil() && holdsStruct(rv.Elem())
 	case reflect.Map:
 		iter := rv.MapRange()
@@ -59,7 +59,7 @@ func holdsStruct(rv reflect.Value) bool {
 			}
 		}
 	case reflect.Slice, reflect.Array:
-		if k := rv.Type().Elem().Kind(); k == reflect.Struct || (k == reflect.Ptr && rv.Type().Elem().Elem().Kind() == reflect.Struct) {
+		if k := rv.Type().Elem().Kind(); k == reflect.Struct || (k == reflect.Pointer && rv.Type().Elem().Elem().Kind() == reflect.Struct) {
 			return true
 		}
 		for i := 0; i < rv.Len(); i++ {
