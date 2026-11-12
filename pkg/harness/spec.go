@@ -554,9 +554,9 @@ type CredentialForwardingOptions struct {
 type CredentialForwarding func(ctx context.Context, opts CredentialForwardingOptions) (string, error)
 
 // MintBridgeTokenCallback created the bridge channel token for one session.
-// Mirrors TS `HarnessV1MintBridgeTokenCallback`.
-//
-// Deprecated: sandbox bridge authentication uses adapter-generated Ed25519
-// key pairs (TS c849d37dac). Adapters ignore a callback passed in their
-// settings and warn once when the harness is created.
+// Mirrors TS `HarnessV1MintBridgeTokenCallback`, which TS c849d37dac
+// deprecates: sandbox bridge authentication uses adapter-generated Ed25519
+// key pairs, and adapters ignore a callback passed in their (deprecated)
+// MintBridgeToken settings and warn once when the harness is created. The
+// adapters' settings fields carry the formal deprecation notice.
 type MintBridgeTokenCallback func(sandboxID string) string

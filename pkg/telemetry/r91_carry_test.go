@@ -279,7 +279,7 @@ func TestR91carryIntegrationsRedactProviderToolCredentials(t *testing.T) {
 	for _, s := range rec.Ended() {
 		for _, kv := range s.Attributes() {
 			if kv.Key == "ai.prompt.tools" || kv.Key == "gen_ai.tool.definitions" {
-				found = append(found, kv.Value.Emit())
+				found = append(found, fmt.Sprint(kv.Value.AsInterface()))
 			}
 		}
 	}
