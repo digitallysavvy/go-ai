@@ -15,7 +15,7 @@ func r94provgUntagged(vs ...interface{}) []string {
 	seen := map[reflect.Type]bool{}
 	var walk func(t reflect.Type, path string)
 	walk = func(t reflect.Type, path string) {
-		for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
+		for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
 			t = t.Elem()
 		}
 		if t.Kind() != reflect.Struct || seen[t] {
