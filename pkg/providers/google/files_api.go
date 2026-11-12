@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -110,7 +111,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, googleRawFetchError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	if resp.StatusCode >= 400 {
+	if !googleFilesStatusOK(resp.StatusCode) {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to initiate resumable upload: %d %s", resp.StatusCode, string(b)))
 	}
@@ -137,7 +138,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, googleRawFetchError(err)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
-	if uploadResp.StatusCode >= 400 {
+	if !googleFilesStatusOK(uploadResp.StatusCode) {
 		b, _ := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
 		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to upload file data: %d %s", uploadResp.StatusCode, string(b)))
 	}
@@ -149,7 +150,11 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	// TS response.text() before JSON.parse.
-	if err := json.Unmarshal([]byte(textdecode.UTF8(uploadBody)), &uploadResult); err != nil {
+	uploadText := []byte(textdecode.UTF8(uploadBody))
+	if err := googleFilesUploadResultShape(uploadText); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(uploadText, &uploadResult); err != nil {
 		return nil, err
 	}
 	file := uploadResult.File
@@ -181,7 +186,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 			// "Cannot connect to API" APICallError (aborts unchanged).
 			return nil, internalhttp.TransportErrorCtx(pollReq.Context(), err)
 		}
-		if pollResp.StatusCode >= 400 {
+		if !googleFilesStatusOK(pollResp.StatusCode) {
 			b, _ := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))
 			_ = pollResp.Body.Close()
 			return nil, f.provider.handleFilesError(pollResp.StatusCode, pollResp.Header, b)
@@ -247,6 +252,37 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		ProviderMetadata:  map[string]interface{}{"google": meta},
 		Warnings:          warnings,
 	}, nil
+}
+
+// googleFilesStatusOK is fetch's response.ok (a 2xx status), which both the
+// raw fetch steps and getFromApi check: an unfollowed 3xx fails too.
+func googleFilesStatusOK(code int) bool {
+	return code >= 200 && code < 300
+}
+
+// googleFilesUploadResultShape is the TypeError TS throws reading
+// `uploadResult.file.state` when the upload body has no file object: a null
+// body fails on `.file`, a missing or null file on `.state`.
+func googleFilesUploadResultShape(body []byte) error {
+	var top interface{}
+	if err := json.Unmarshal(body, &top); err != nil {
+		return err
+	}
+	if top == nil {
+		return errors.New("Cannot read properties of null (reading 'file')") //nolint:staticcheck // TS V8 TypeError text
+	}
+	var file interface{}
+	present := false
+	if m, ok := top.(map[string]interface{}); ok {
+		file, present = m["file"]
+	}
+	switch {
+	case !present:
+		return errors.New("Cannot read properties of undefined (reading 'state')") //nolint:staticcheck // TS V8 TypeError text
+	case file == nil:
+		return errors.New("Cannot read properties of null (reading 'state')") //nolint:staticcheck // TS V8 TypeError text
+	}
+	return nil
 }
 
 // googleRawFetchError is a failed raw fetch (TS google-files.ts and the
