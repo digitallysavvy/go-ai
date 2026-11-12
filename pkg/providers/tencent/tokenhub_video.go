@@ -93,7 +93,8 @@ func durationSetting(opts *provider.VideoModelV3CallOptions) setting {
 	if opts.Duration == nil {
 		return setting{key: "duration"}
 	}
-	return setting{key: "duration", value: *opts.Duration, set: true}
+	// JSON.stringify writes a NaN duration as null.
+	return setting{key: "duration", value: jsonNumberOrNull(*opts.Duration), set: true}
 }
 
 func aspectRatioSetting(opts *provider.VideoModelV3CallOptions) setting {

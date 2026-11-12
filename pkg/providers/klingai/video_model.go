@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -922,7 +923,8 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 		})
 	}
 
-	if opts.Duration != nil && *opts.Duration != 0 {
+	// TS `if (options.duration)`: 0 and NaN are falsy.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "duration",

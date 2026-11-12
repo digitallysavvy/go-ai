@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -101,7 +102,8 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 		input["size"] = opts.Resolution
 	}
 
-	if opts.Duration != nil && *opts.Duration != 0 {
+	// TS `if (options.duration)`: 0 and NaN are falsy.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
 		input["duration"] = *opts.Duration
 	}
 

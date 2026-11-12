@@ -121,7 +121,7 @@ func buildVodCreateTaskBody(modelName, modelVersion string, subAppID int64, opts
 		output.Set("AspectRatio", opts.AspectRatio)
 	}
 	if opts.Duration != nil {
-		output.Set("Duration", *opts.Duration)
+		output.Set("Duration", jsonNumberOrNull(*opts.Duration))
 	}
 	setFlag := func(o *jsonorder.Object, key string, v *bool) {
 		if s, ok := enabledDisabled(v); ok {
