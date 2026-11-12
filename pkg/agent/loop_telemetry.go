@@ -536,37 +536,34 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 		toolChoice = types.AutoToolChoice()
 	}
 	promptMessages, stepTools := loopPromptMessages(c), c.Tools
-	// System and InstructionMessages are the step's instructions (the
-	// leading system message of TS promptMessages); promptMessages already
-	// starts with one system message per instruction message.
+	// System is the step's instructions text (the leading system message of
+	// TS promptMessages). Instructions given as system messages are already
+	// the leading messages of promptMessages (loopPromptMessages), so
+	// InstructionMessages stays empty and the serializer does not write them
+	// twice, and System (their text then) is left empty.
 	stepSystem := ""
-	var stepInstructionMessages []types.Message
-	if lt.settings.ShouldRecordInputs() {
+	if lt.settings.ShouldRecordInputs() && len(c.InstructionMessages) == 0 {
 		stepSystem = c.System
-		if len(c.InstructionMessages) > 0 {
-			stepInstructionMessages = append([]types.Message(nil), c.InstructionMessages...)
-		}
 	}
 	if c.Internal != nil && c.Internal.OmitStepPromptTelemetry {
 		// TS WorkflowAgent's model-call iterator dispatches onStepStart
 		// without promptMessages, stepTools or stepToolChoice.
 		toolChoice, promptMessages, stepTools = types.ToolChoice{}, nil, nil
-		stepSystem, stepInstructionMessages = "", nil
+		stepSystem = ""
 	}
 	stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
-		CallID:              lt.callID,
-		OperationType:       "ai.generateText",
-		Settings:            lt.settings,
-		StepNumber:          stepIndex,
-		ModelProvider:       c.Model.Provider(),
-		ModelID:             c.Model.ModelID(),
-		ToolChoice:          toolChoice,
-		PromptMessages:      promptMessages,
-		System:              stepSystem,
-		InstructionMessages: stepInstructionMessages,
-		StepTools:           stepTools,
-		RuntimeContext:      telemetryRuntimeContextFor(lt.settings, c.RuntimeContext, c.SensitiveRuntimeContext),
-		ToolsContext:        telemetryToolsContextFor(lt.settings, c.ToolsContext),
+		CallID:         lt.callID,
+		OperationType:  "ai.generateText",
+		Settings:       lt.settings,
+		StepNumber:     stepIndex,
+		ModelProvider:  c.Model.Provider(),
+		ModelID:        c.Model.ModelID(),
+		ToolChoice:     toolChoice,
+		PromptMessages: promptMessages,
+		System:         stepSystem,
+		StepTools:      stepTools,
+		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext, c.SensitiveRuntimeContext),
+		ToolsContext:   telemetryToolsContextFor(lt.settings, c.ToolsContext),
 	})
 	if c.SensitiveRuntimeContext {
 		lt.sensitiveRuntimeContext = true

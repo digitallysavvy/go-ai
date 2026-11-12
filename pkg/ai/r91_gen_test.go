@@ -241,7 +241,7 @@ func TestR91genTelemetryPromptFields(t *testing.T) {
 	}{
 		{name: "system and prompt string", opts: GenerateTextOptions{System: "sys", Prompt: "hi"}, wantSystem: "sys", wantPrompt: func() *string { s := "hi"; return &s }()},
 		{name: "messages keep no prompt string", opts: GenerateTextOptions{System: "sys", Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}}, wantSystem: "sys"},
-		{name: "instruction messages", opts: GenerateTextOptions{InstructionMessages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "a"}}}}, Prompt: "hi"}, wantInstr: 1, wantPrompt: func() *string { s := "hi"; return &s }()},
+		{name: "instruction messages lead PromptMessages only", opts: GenerateTextOptions{InstructionMessages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "a"}}}}, Prompt: "hi"}, wantInstr: 0, wantPrompt: func() *string { s := "hi"; return &s }()},
 		{name: "inputs not recorded", opts: GenerateTextOptions{System: "sys", Prompt: "hi"}, recordInputs: &f},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -258,6 +258,9 @@ func TestR91genTelemetryPromptFields(t *testing.T) {
 				t.Fatalf("starts=%d steps=%d", len(rec.starts), len(rec.steps))
 			}
 			step := rec.steps[0]
+			if tc.name == "instruction messages lead PromptMessages only" && (len(step.PromptMessages) == 0 || step.PromptMessages[0].Role != types.RoleSystem) {
+				t.Errorf("PromptMessages = %+v, want the instruction message first", step.PromptMessages)
+			}
 			if step.System != tc.wantSystem || len(step.InstructionMessages) != tc.wantInstr {
 				t.Errorf("step System=%q InstructionMessages=%d, want %q / %d", step.System, len(step.InstructionMessages), tc.wantSystem, tc.wantInstr)
 			}

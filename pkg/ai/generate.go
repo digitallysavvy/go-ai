@@ -1484,30 +1484,29 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Fire step-start telemetry. OTel implementations create a child step span
 		// and embed it in the returned context so OnStepFinish can end it. The
 		// tool choice is TS stepToolChoice (prepareToolChoice: unset is auto).
-		// System and InstructionMessages are the step's instructions, which
-		// TS folds into promptMessages as the leading system message
-		// (convertToLanguageModelPrompt); PromptMessages already starts with
-		// one system message per instruction message.
+		// System is the step's instructions text, which TS folds into
+		// promptMessages as the leading system message
+		// (convertToLanguageModelPrompt). Instructions given as system
+		// messages are already the leading messages of PromptMessages
+		// (prependInstructionMessages), so InstructionMessages stays empty
+		// and the serializer does not write them twice.
 		stepTelSystem := ""
-		var stepTelInstructionMessages []types.Message
 		if telemetrySettings.ShouldRecordInputs() {
 			stepTelSystem = stepSystem
-			stepTelInstructionMessages = cloneInstructionMessages(stepInstructionMessages)
 		}
 		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
-			CallID:              callID,
-			OperationType:       "ai.generateText",
-			Settings:            telemetrySettings,
-			StepNumber:          stepIndex,
-			ModelProvider:       stepModel.Provider(),
-			ModelID:             stepModel.ModelID(),
-			ToolChoice:          preparedToolChoice(stepToolChoice),
-			PromptMessages:      genOpts.Prompt.Messages,
-			System:              stepTelSystem,
-			InstructionMessages: stepTelInstructionMessages,
-			StepTools:           stepTools,
-			RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-			ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
+			CallID:         callID,
+			OperationType:  "ai.generateText",
+			Settings:       telemetrySettings,
+			StepNumber:     stepIndex,
+			ModelProvider:  stepModel.Provider(),
+			ModelID:        stepModel.ModelID(),
+			ToolChoice:     preparedToolChoice(stepToolChoice),
+			PromptMessages: genOpts.Prompt.Messages,
+			System:         stepTelSystem,
+			StepTools:      stepTools,
+			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 		})
 		openStepTelemetryCtx = stepCtx
 
