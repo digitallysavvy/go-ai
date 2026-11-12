@@ -213,6 +213,8 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	// TS reads currentDate before the request.
+	currentDate := time.Now()
 
 	audioBase64 := opts.AudioBase64
 	if audioBase64 == "" {
@@ -283,9 +285,10 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	resp, err := m.provider.mainClient().DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: vertexValidator(m.Provider(), zVertexGeminiTranscription),
 		Method:           http.MethodPost,
-		Path:             fmt.Sprintf("/%s:generateContent", gemini.GetModelPath(m.modelID)),
-		Body:             reqBody,
-		Headers:          opts.Headers,
+		// TS `${baseURL}/models/${modelId}:generateContent` (no getModelPath).
+		Path:    "/models/" + m.modelID + ":generateContent",
+		Body:    reqBody,
+		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -363,7 +366,7 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		ProviderMetadata: providerMetadata,
 		ProviderUsage:    providerUsage,
 		Response: &types.ResponseMetadata{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
 			Body:      json.RawMessage(resp.Body),

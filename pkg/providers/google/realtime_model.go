@@ -14,6 +14,8 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -232,8 +234,6 @@ func isThinkingLiveModel(modelID string) bool {
 	return thinkingLiveModelRe.MatchString(name)
 }
 
-// BuildSessionConfig ports TS buildGoogleSessionConfig
-// (realtime/google-realtime-event-mapper.ts).
 // redactURLErrorQuery drops the query (the API key) from a *url.Error's URL.
 func redactURLErrorQuery(err error) error {
 	ue, ok := err.(*url.Error)
@@ -251,6 +251,8 @@ func redactURLErrorQuery(err error) error {
 	return &redacted
 }
 
+// BuildSessionConfig ports TS buildGoogleSessionConfig
+// (realtime/google-realtime-event-mapper.ts).
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
 	// Typed-option ruling: Go-typed literals are read in their JSON form.
@@ -278,7 +280,9 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 	if config.Instructions != nil {
 		setup["systemInstruction"] = map[string]interface{}{"parts": []map[string]interface{}{{"text": *config.Instructions}}}
 	}
-	defaultToolBehavior, hasDefaultToolBehavior := googleOptions["defaultToolBehavior"]
+	// TS `defaultToolBehavior != null`.
+	defaultToolBehavior := googleOptions["defaultToolBehavior"]
+	hasDefaultToolBehavior := defaultToolBehavior != nil
 	if len(config.Tools) > 0 {
 		decls := make([]map[string]interface{}, 0, len(config.Tools))
 		for _, tool := range config.Tools {
@@ -312,7 +316,9 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 	// merged below) so it survives a raw providerOptions.generationConfig,
 	// while an explicit level/budget (typed or raw) is never replaced.
 	rawGenerationConfig, _ := config.ProviderOptions["generationConfig"].(map[string]interface{})
-	googleThinkingConfig, hasGoogleThinkingConfig := googleOptions["thinkingConfig"]
+	// TS `googleOptions?.thinkingConfig ?? raw...`: a null option is absent.
+	googleThinkingConfig := googleOptions["thinkingConfig"]
+	hasGoogleThinkingConfig := googleThinkingConfig != nil
 	var explicitThinkingConfig map[string]interface{}
 	if hasGoogleThinkingConfig {
 		explicitThinkingConfig, _ = googleThinkingConfig.(map[string]interface{})
@@ -607,10 +613,24 @@ func (m *googleRealtimeEventMapper) parseEvent(raw json.RawMessage) []provider.R
 	if toolCall, ok := data["toolCall"].(map[string]interface{}); ok {
 		m.beginTurnIfClosed()
 		calls, _ := toolCall["functionCalls"].([]interface{})
+		// TS JSON.stringify(functionCall.args ?? {}) keeps the wire key order.
+		var ordered struct {
+			ToolCall struct {
+				FunctionCalls []struct {
+					Args json.RawMessage `json:"args"`
+				} `json:"functionCalls"`
+			} `json:"toolCall"`
+		}
+		_ = json.Unmarshal(raw, &ordered)
 		events := make([]provider.RealtimeServerEvent, 0, len(calls)*2)
-		for _, rawCall := range calls {
+		for i, rawCall := range calls {
 			call, _ := rawCall.(map[string]interface{})
 			args := jsonStringify(valueOrEmptyMap(call["args"]))
+			if i < len(ordered.ToolCall.FunctionCalls) {
+				if v, ok := jsonorder.Parse(ordered.ToolCall.FunctionCalls[i].Args); ok && v != nil {
+					args = jsonorder.Stringify(v)
+				}
+			}
 			id := googleString(call, "id")
 			name := googleString(call, "name")
 			events = append(events,
@@ -868,15 +888,23 @@ func valueOrEmptyMap(v interface{}) interface{} {
 // the socket with 1007. An object is passed through unchanged; everything
 // else (including malformed JSON, preserved as the raw string) is wrapped
 // under an "output" key.
-func toFunctionResponseStruct(output string) map[string]interface{} {
-	var parsed interface{}
-	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+func toFunctionResponseStruct(output string) interface{} {
+	// TS safeParseJSON keeps the object's key order (and rejects
+	// __proto__ / constructor.prototype keys, like securejson).
+	var probe interface{}
+	if securejson.Unmarshal([]byte(output), &probe) != nil {
 		return map[string]interface{}{"output": output}
 	}
-	if m, ok := parsed.(map[string]interface{}); ok {
-		return m
+	parsed, ok := jsonorder.Parse([]byte(output))
+	if !ok {
+		return map[string]interface{}{"output": output}
 	}
-	return map[string]interface{}{"output": parsed}
+	if obj, isObj := parsed.(*jsonorder.Object); isObj {
+		return obj
+	}
+	wrapped := jsonorder.New()
+	wrapped.Set("output", parsed)
+	return wrapped
 }
 
 func valueOrZero(config *provider.RealtimeSessionConfig) provider.RealtimeSessionConfig {

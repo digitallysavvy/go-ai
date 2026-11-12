@@ -559,8 +559,6 @@ func usageKeyPresent(u *UsageMetadata, key string) bool {
 	return false
 }
 
-// serviceTierJSON is TS `usageMetadata?.serviceTier ?? null`: the tier, an
-// empty string the API sent included, else null.
 // serviceTierWithHeader is TS `usage?.serviceTier ??
 // responseHeaders?.['x-gemini-service-tier'] ?? null` (45337f0e8d): the served
 // tier header fills in when the usage metadata has none.
@@ -576,6 +574,8 @@ func serviceTierWithHeader(u *UsageMetadata, headers map[string]string) json.Raw
 	return tier
 }
 
+// serviceTierJSON is TS `usageMetadata?.serviceTier ?? null`: the tier, an
+// empty string the API sent included, else null.
 func serviceTierJSON(u *UsageMetadata) json.RawMessage {
 	tier, present := "", false
 	if u != nil {

@@ -144,7 +144,21 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 			InputTokens:  googleDecisionTokens(response.Usage.TotalInputTokens),
 			OutputTokens: googleDecisionTokens(response.Usage.TotalOutputTokens),
 		}
-		googleMeta["usage"] = googleDecisionDeclared(rawValue, "usage", "total_input_tokens", "total_output_tokens", "total_tokens", "input_tokens_by_modality")
+		usageMeta := googleDecisionDeclared(rawValue, "usage", "total_input_tokens", "total_output_tokens", "total_tokens", "input_tokens_by_modality")
+		// The modality entries are z.object({modality, tokens}) too.
+		if um, ok := usageMeta.(map[string]interface{}); ok {
+			if items, ok := um["input_tokens_by_modality"].([]interface{}); ok {
+				stripped := make([]interface{}, len(items))
+				for i, item := range items {
+					stripped[i] = item
+					if obj, ok := item.(map[string]interface{}); ok {
+						stripped[i] = googleDecisionDeclared(map[string]interface{}{"v": obj}, "v", "modality", "tokens")
+					}
+				}
+				um["input_tokens_by_modality"] = stripped
+			}
+		}
+		googleMeta["usage"] = usageMeta
 	}
 	if response.PromptFeedback != nil {
 		googleMeta["promptFeedback"] = googleDecisionDeclared(rawValue, "prompt_feedback", "block_reason", "block_reason_message")

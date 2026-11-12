@@ -342,8 +342,6 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return stream, nil
 }
 
-// handleError converts an HTTP-level error into a ProviderError, resolving
-// the Agent API's error envelope when present (see errors.go).
 // perplexityCreatedAt is TS `new Date(created_at * 1000)`; created_at is a
 // zod number, so a fractional second is valid.
 func perplexityCreatedAt(createdAt float64) time.Time {
@@ -351,6 +349,8 @@ func perplexityCreatedAt(createdAt float64) time.Time {
 	return time.Unix(int64(sec), int64((createdAt-sec)*1e9))
 }
 
+// handleError converts an HTTP-level error into a ProviderError, resolving
+// the Agent API's error envelope when present (see errors.go).
 func (m *LanguageModel) handleError(err error) error {
 	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged

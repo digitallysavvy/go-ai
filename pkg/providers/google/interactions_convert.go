@@ -321,7 +321,8 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 // when unset, and (nil, warning) for an invalid value (option dropped, block
 // still emitted).
 func videoProcessingField(providerOptions map[string]interface{}) (interface{}, *types.Warning) {
-	google, _ := providerOptions["google"].(map[string]interface{})
+	// Typed-option ruling: part options are read in their JSON form.
+	google, _ := providerutils.NormalizeOptionsJSON(providerOptions)["google"].(map[string]interface{})
 	if google == nil {
 		return nil, nil
 	}
@@ -806,8 +807,6 @@ func builtinResultToolName(block interactionsContentBlock) string {
 	return strings.TrimSuffix(block.Type, "_result")
 }
 
-// annotationsToSources maps the annotations of one text block to sources,
-// de-duplicated by URL or document filename/title (TS annotationsToSources).
 // idOrGenerate is TS `id || generateId()`: the generator runs only when the
 // id is empty, so a custom GenerateID's later ids do not shift.
 func idOrGenerate(id string, gen func() string) string {
@@ -817,6 +816,8 @@ func idOrGenerate(id string, gen func() string) string {
 	return gen()
 }
 
+// annotationsToSources maps the annotations of one text block to sources,
+// de-duplicated by URL or document filename/title (TS annotationsToSources).
 func annotationsToSources(annotations []interactionsAnnotation, generateID func() string) []types.ContentPart {
 	out := make([]types.ContentPart, 0)
 	seen := map[string]bool{}
@@ -844,12 +845,17 @@ func annotationsToSources(annotations []interactionsAnnotation, generateID func(
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
 				src = types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: ann.FileName}
 			} else {
-				// TS file_name ?? basename(uri); title file_name ?? filename.
+				// TS file_name ?? basename(uri); title file_name ?? filename
+				// ?? uri (basename is undefined for a trailing "/").
 				filename := baseName(uri)
 				if ann.present.fileName || ann.FileName != "" {
 					filename = ann.FileName
 				}
-				src = types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: filename, Filename: filename}
+				title := filename
+				if filename == "" && !ann.present.fileName {
+					title = uri
+				}
+				src = types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: title, Filename: filename}
 			}
 		case "place_citation":
 			if ann.URL == "" {
@@ -927,12 +933,17 @@ func builtinToolResultSources(block interactionsContentBlock, generateID func() 
 				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: title})
 			} else {
 				// TS filename = file_name ?? basename(uri); title = title ??
-				// file_name ?? filename (presence, not emptiness).
+				// file_name ?? filename ?? uri (presence, not emptiness;
+				// basename is undefined for a trailing "/").
 				filename := baseName(uri)
+				fileNamePresent := false
 				if v, ok := entry["file_name"]; ok && v != nil {
-					filename = fileName
+					filename, fileNamePresent = fileName, true
 				}
 				docTitle := filename
+				if filename == "" && !fileNamePresent {
+					docTitle = uri
+				}
 				if v, ok := entry["title"]; ok && v != nil {
 					docTitle = title
 				}
@@ -969,16 +980,14 @@ func baseName(uriOrName string) string {
 	return parts[len(parts)-1]
 }
 
-// googleOptString reads providerOptions.google.<key> as a string (the TS
-// converter reads signatures, interaction ids and processing ids from the
-// prompt part's providerOptions).
 // inputSignature is the signature a converted step carries (TS
 // `...(signature != null ? { signature } : {})` over
 // providerOptions.google.signature): a string option, even "", wins; then the
 // Go field; then a string google metadata signature (parts that came back
 // from this provider carry it there). nil leaves the field out.
 func inputSignature(opts map[string]interface{}, field string, googleMeta map[string]interface{}) *string {
-	if google, ok := opts["google"].(map[string]interface{}); ok {
+	// Typed-option ruling: part options are read in their JSON form.
+	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
 		if v, ok := google["signature"].(string); ok {
 			return &v
 		}
@@ -992,8 +1001,12 @@ func inputSignature(opts map[string]interface{}, field string, googleMeta map[st
 	return nil
 }
 
+// googleOptString reads providerOptions.google.<key> as a string (the TS
+// converter reads signatures, interaction ids and processing ids from the
+// prompt part's providerOptions).
 func googleOptString(opts map[string]interface{}, key string) string {
-	if google, ok := opts["google"].(map[string]interface{}); ok {
+	// Typed-option ruling: part options are read in their JSON form.
+	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
 		if v, ok := google[key].(string); ok {
 			return v
 		}

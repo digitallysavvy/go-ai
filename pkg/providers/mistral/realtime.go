@@ -74,6 +74,9 @@ func (r *RealtimeSessions) CreateSession(ctx context.Context, opts RealtimeCreat
 		if noResp, ok := internalhttp.NoResponseError(err); ok {
 			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
 		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS loadApiKey throws LoadAPIKeyError unwrapped
+		}
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
@@ -114,6 +117,9 @@ func (r *RealtimeSessions) CloseSession(ctx context.Context, sessionID string) e
 		}
 		if noResp, ok := internalhttp.NoResponseError(err); ok {
 			return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return err // TS loadApiKey throws LoadAPIKeyError unwrapped
 		}
 		return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}

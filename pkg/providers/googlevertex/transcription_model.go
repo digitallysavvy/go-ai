@@ -43,6 +43,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	// TS reads currentDate before the request.
+	currentDate := time.Now()
 	vertexOpts, err := vertexTranscriptionOptionsChecked(opts.ProviderOptions)
 	if err != nil {
 		return nil, err
@@ -98,10 +100,13 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		},
 		"content": content,
 	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+	// TS JSON.stringify(requestBody): the literal's key order, no HTML
+	// escaping.
+	payload := []byte(providerutils.StringifyOrdered(body, map[string][]string{
+		"":                {"config", "content"},
+		"config":          {"model", "languageCodes", "autoDecodingConfig", "features"},
+		"config.features": {"enableWordTimeOffsets", "enableAutomaticPunctuation"},
+	}))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vertexSpeechRecognizeURL(m.provider.project(), region), bytes.NewReader(payload))
 	if err != nil {
@@ -136,7 +141,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode vertex transcription response: %w", err)
 	}
-	return convertVertexTranscriptionResponse(parsed, m.modelID, resp.Header, respBody), nil
+	result := convertVertexTranscriptionResponse(parsed, m.modelID, resp.Header, respBody)
+	result.Response.Timestamp = currentDate
+	return result, nil
 }
 
 type vertexTranscriptionProviderOptions struct {

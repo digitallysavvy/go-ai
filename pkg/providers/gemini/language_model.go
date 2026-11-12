@@ -768,13 +768,13 @@ func rawOrNull(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// toolCallContentOf is the ordered-content form of a ToolCall.
 // executableCodeInput is JSON.stringify(part.executableCode): the parsed
 // object has its schema key order, language then code.
 func executableCodeInput(language, code string) string {
 	return `{"language":` + marshalJSONCompact(language) + `,"code":` + marshalJSONCompact(code) + `}`
 }
 
+// toolCallContentOf is the ordered-content form of a ToolCall.
 func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 	var meta json.RawMessage
 	if len(tc.ProviderMetadata) > 0 {

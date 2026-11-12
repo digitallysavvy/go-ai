@@ -246,7 +246,8 @@ var deprecatedXaiOptionKeys = []string{
 // leave unset, other keys are not spread into the body, and a deprecated
 // warning is returned.
 func applyDeprecatedXaiOptions(compatibleOptions map[string]interface{}, providerOptions map[string]interface{}) []types.Warning {
-	xaiOptions, ok := providerOptions["xai"].(map[string]interface{})
+	// Typed-option ruling: the deprecated namespace is read in its JSON form.
+	xaiOptions, ok := providerutils.NormalizeOptionsJSON(providerOptions)["xai"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
