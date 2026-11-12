@@ -75,6 +75,19 @@ func TestR91carryHarnessCallOptionsSchema(t *testing.T) {
 	if got["tenant"] != "acme" || got["tier"] != "free" {
 		t.Fatalf("PrepareCall CallOptions = %#v, want the validated value with defaults", prepared[0])
 	}
+
+	// Typed-option probe: other Go-typed literals validate as their JSON
+	// object too (map[string]string valid; an int64 tenant invalid).
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "Hello", HarnessSession: session, CallOptions: map[string]string{"tenant": "acme"}}); err != nil {
+		t.Fatalf("map[string]string options: %v", err)
+	}
+	_, err = a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "Hello", HarnessSession: session, CallOptions: map[string]int64{"tenant": 1}})
+	if !errors.As(err, &ve) {
+		t.Fatalf("int64 tenant: err = %v, want a ValidationError", err)
+	}
+	if len(prepared) != 2 {
+		t.Fatalf("PrepareCall calls = %d, want 2", len(prepared))
+	}
 }
 
 // harness-03: an inline image file part keeps its filename (TS
