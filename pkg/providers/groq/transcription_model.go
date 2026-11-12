@@ -201,7 +201,7 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 		}
 		return nil, providererrors.NewProviderError("groq", 0, "", err.Error(), err)
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// TS groqFailedResponseHandler: error.message from the JSON envelope,
 		// otherwise the status text; headers and body in both cases.
 		statusErr := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}

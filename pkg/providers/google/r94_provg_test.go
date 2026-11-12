@@ -2,11 +2,14 @@ package google
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -67,6 +70,54 @@ func TestR94provgFilesUploadBodyWithoutFile(t *testing.T) {
 		err := r94provgUpload(t, r94provgFilesServer(t, 200, 200, body))
 		if err == nil || err.Error() != want {
 			t.Errorf("body %s: err = %v, want %q", body, err, want)
+		}
+	}
+}
+
+// The batch upload and the results download are TS postToApi / getFromApi
+// (`!response.ok` runs the failed-response handler): an unfollowed 3xx is
+// the Google API error, not a success.
+func TestR94provgBatchNon2xxFails(t *testing.T) {
+	for _, step := range []string{"start", "upload", "download"} {
+		var srv *httptest.Server
+		srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fail := func() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(300)
+				_, _ = w.Write([]byte(`{"error":{"code":300,"message":"moved","status":"X"}}`))
+			}
+			switch {
+			case r.URL.Path == "/upload/v1beta/files":
+				if step == "start" {
+					fail()
+					return
+				}
+				w.Header().Set("x-goog-upload-url", srv.URL+"/session")
+			case r.URL.Path == "/session":
+				if step == "upload" {
+					fail()
+					return
+				}
+				_, _ = w.Write([]byte(`{"file":{"name":"files/in"}}`))
+			case strings.HasPrefix(r.URL.Path, "/download/"):
+				fail()
+			default:
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"name":"batches/b","done":true,"metadata":{"state":"BATCH_STATE_SUCCEEDED","output":{"responsesFile":"files/out"}}}`))
+			}
+		}))
+		p := New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"})
+		b := NewBatch(p)
+		var err error
+		if step == "download" {
+			_, err = b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "batches/b"})
+		} else {
+			_, err = b.uploadBatchInputFile(t.Context(), []byte("{}"), "d", nil)
+		}
+		srv.Close()
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.StatusCode != 300 || pe.Message != "moved" {
+			t.Errorf("%s: err = %T %v, want the 300 API error", step, err, err)
 		}
 	}
 }

@@ -103,3 +103,26 @@ func TestR94provgTypedOptionsNotMutated(t *testing.T) {
 		t.Fatalf("caller options mutated: %q %q", typed.Image.URL, typed.ReferenceImages[0].URL)
 	}
 }
+
+// doStart (postJsonToApi) and doStatus (getFromApi) run
+// heygenFailedResponseHandler for any non-2xx: an unfollowed 3xx is the
+// HeyGen API error, not a start result or a DownloadError.
+func TestR94provgNon2xxIsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(300)
+		_, _ = w.Write([]byte(`{"data":{"video_id":"v","status":"pending"},"error":{"message":"moved"}}`))
+	}))
+	defer srv.Close()
+	m := NewVideoModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "heygen-video-1")
+	_, err := m.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "p"}})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.StatusCode != 300 {
+		t.Errorf("start: err = %T %v, want the 300 API error", err, err)
+	}
+	_, err = m.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: testOperation})
+	var dl *providererrors.DownloadError
+	if !errors.As(err, &pe) || pe.StatusCode != 300 || errors.As(err, &dl) {
+		t.Errorf("status: err = %T %v, want the 300 API error", err, err)
+	}
+}

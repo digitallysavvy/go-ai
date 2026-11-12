@@ -124,3 +124,25 @@ func TestR94provgDecisionNonObjectGatewayOptions(t *testing.T) {
 		t.Fatalf("null namespace: %v", err)
 	}
 }
+
+// The metadata and credits fetches are TS getFromApi (`!response.ok` runs
+// the failed-response handler): an unfollowed 3xx is a Gateway error, not a
+// response to parse.
+func TestR94provgMetadataAndOriginNon2xxFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(300)
+		_, _ = w.Write([]byte(`{"models":[],"balance":"1","total_used":"0","error":{"message":"moved","type":"x"}}`))
+	}))
+	defer srv.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: srv.URL + "/v3/ai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.GetAvailableModels(t.Context()); err == nil {
+		t.Error("metadata: 300 accepted")
+	}
+	if _, err := p.GetCredits(t.Context()); err == nil {
+		t.Error("credits: 300 accepted")
+	}
+}

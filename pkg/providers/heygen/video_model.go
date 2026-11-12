@@ -336,7 +336,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, newHeyGenAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
@@ -422,7 +422,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	result, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {
 		var dlErr *providererrors.DownloadError
-		if errors.As(err, &dlErr) && dlErr.StatusCode >= 400 {
+		if errors.As(err, &dlErr) && dlErr.StatusCode >= 100 && (dlErr.StatusCode < 200 || dlErr.StatusCode >= 300) {
 			return nil, newHeyGenAPIError(dlErr.StatusCode, dlErr.Body, http.Header(dlErr.Headers))
 		}
 		// TS getFromApi handleFetchError: a network failure is the

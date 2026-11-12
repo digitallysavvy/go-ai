@@ -92,7 +92,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, providererrors.NewSchemaProviderError("mistral", &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}, mistralErrorSchema)
 	}
 
