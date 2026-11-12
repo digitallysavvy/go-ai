@@ -582,7 +582,7 @@ func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateIm
 			// TS downloads with replicateFailedResponseHandler, so an HTTP
 			// failure is an API error whose message is `detail ?? error`.
 			var dlErr *providererrors.DownloadError
-			if errors.As(err, &dlErr) && dlErr.StatusCode >= 400 {
+			if errors.As(err, &dlErr) && dlErr.StatusCode >= 100 && (dlErr.StatusCode < 200 || dlErr.StatusCode >= 300) {
 				return nil, replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 			}
 			// TS getFromApi lets any other failure (a URL rejected by

@@ -849,7 +849,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 	if int64(len(body)) > limit {
 		return nil, fmt.Errorf("BFL poll response exceeded maximum size of %d bytes", limit)
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, bflStatusError(resp.StatusCode, resp.Header, body)
 	}
 	return body, nil

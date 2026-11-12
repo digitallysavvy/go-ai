@@ -133,7 +133,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		// TS postJsonToApi lets the transport failure propagate unchanged.
 		return nil, err
 	}
-	if httpResp.StatusCode >= 400 {
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode, httpResp.Headers)
 	}
 	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {

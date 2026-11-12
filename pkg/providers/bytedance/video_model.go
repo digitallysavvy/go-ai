@@ -243,7 +243,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		// "Cannot connect to API" APICallError) propagate unchanged.
 		return nil, err
 	}
-	if submitResp.StatusCode >= 400 {
+	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, submitResp.Headers)
 	}
 

@@ -142,7 +142,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		// TS postJsonToApi lets a transport failure propagate unchanged.
 		return nil, err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 	}
 
@@ -234,7 +234,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 		if err != nil {
 			return "", err // TS getFromApi lets a transport failure propagate unchanged
 		}
-		if resp.StatusCode >= 400 {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return "", m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 		}
 

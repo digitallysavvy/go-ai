@@ -101,7 +101,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if err != nil {
 		return nil, handleError("deepgram", err)
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, handleError("deepgram", &internalhttp.HTTPStatusError{
 			StatusCode: resp.StatusCode,
 			Headers:    resp.Headers,

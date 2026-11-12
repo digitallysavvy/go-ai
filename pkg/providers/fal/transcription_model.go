@@ -338,7 +338,7 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			return nil, nil, nil, m.handleError(err)
 		}
 
-		if resp.StatusCode >= 400 {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			// TS failedResponseHandler reads `(await clone.json()).detail`: a
 			// body that is not JSON (or is JSON null) throws, and getFromApi
 			// wraps that in the APICallError 'Failed to process error
