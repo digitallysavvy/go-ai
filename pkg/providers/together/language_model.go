@@ -315,7 +315,8 @@ func (m *LanguageModel) handleError(err error) error {
 	if pe, ok := providerutils.OpenAICompatibleAPIError("together", err); ok {
 		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 	}
-	return providererrors.NewProviderError("together", 0, "", err.Error(), err)
+	// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+	return err
 }
 
 // convertTogetherUsage converts Together AI usage to detailed Usage struct

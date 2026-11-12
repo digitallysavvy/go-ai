@@ -67,7 +67,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
+		// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

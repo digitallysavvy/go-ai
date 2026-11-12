@@ -1136,7 +1136,8 @@ func (m *LanguageModel) handleError(err error) error {
 	if errors.As(err, &statusErr) {
 		return openResponsesStatusError(m.provider.config.Name, statusErr, err)
 	}
-	return providererrors.NewProviderError(m.provider.config.Name, 0, "", err.Error(), err)
+	// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+	return err
 }
 
 // openResponsesStatusError is TS defaultFailedResponseHandler

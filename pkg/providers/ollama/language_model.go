@@ -3,6 +3,7 @@ package ollama
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -227,6 +228,11 @@ func (m *LanguageModel) handleError(err error) error {
 	}
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+		return err
 	}
 	return providererrors.NewProviderError("ollama", 0, "", err.Error(), err)
 }

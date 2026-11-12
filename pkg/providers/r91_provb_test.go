@@ -631,3 +631,38 @@ func TestR91provbTypedOptionLiteralsRest(t *testing.T) {
 		{"open responses typed struct", &openresponses.OpenResponsesProviderOptions{ReasoningEffort: "high"}, map[string]interface{}{"reasoningEffort": "high"}, chatOpts(models["open responses"], "acme")},
 	})
 }
+
+// PB-22 class sweep (provb2a-04, the remaining provb sites): a failure with
+// no HTTP response (a cancelled call) is returned unchanged like TS
+// handleFetchError, not wrapped in a status-0 ProviderError.
+func TestR91provbTransportErrorsUnchangedSweep(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	check := func(name string, err error) {
+		t.Helper()
+		var pe *providererrors.ProviderError
+		if !errors.Is(err, context.Canceled) || errors.As(err, &pe) {
+			t.Fatalf("%s: err = %#v", name, err)
+		}
+	}
+	gen := &provider.GenerateOptions{Prompt: r91provbPrompt()}
+	for _, name := range []string{"deepseek", "together", "ollama", "open responses"} {
+		m, _ := r91provbChatModels()[name](srv.URL)
+		_, err := m.DoGenerate(ctx, gen)
+		check(name, err)
+	}
+	ti, _ := together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).ImageModel("black-forest-labs/FLUX.1-schnell")
+	_, err := ti.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "p"})
+	check("together image", err)
+	fi, _ := fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).ImageModel("accounts/fireworks/models/flux-1-dev-fp8")
+	_, err = fi.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "p"})
+	check("fireworks image", err)
+	te, _ := together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("e")
+	_, err = te.DoEmbed(ctx, "x", &provider.EmbedModelOptions{})
+	check("together embedding", err)
+	oe, _ := ollama.New(ollama.Config{BaseURL: srv.URL}).EmbeddingModel("e")
+	_, err = oe.DoEmbed(ctx, "x", &provider.EmbedModelOptions{})
+	check("ollama embedding", err)
+}
