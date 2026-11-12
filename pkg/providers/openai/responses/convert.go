@@ -166,6 +166,11 @@ func (o ConvertOptions) toolSearchName() string {
 // ConvertPromptToInputWithOptions converts a prompt to Responses API input and
 // validates file media types according to OpenAI Responses defaults.
 func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
+	// A Go Prompt.Text prompt is one user text message, as the chat
+	// converters read it (TS prompts are always messages; Go sent input: []).
+	if prompt.IsSimple() {
+		prompt.Messages = promptutil.SimpleTextToMessages(prompt.Text)
+	}
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
 	var warnings []types.Warning
 	if err := validateToolOutputFileReferences(prompt, opts); err != nil {

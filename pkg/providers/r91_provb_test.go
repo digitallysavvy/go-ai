@@ -18,11 +18,14 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/azure"
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gmicloud"
+	"github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
 	"github.com/digitallysavvy/go-ai/pkg/providers/moonshot"
 	"github.com/digitallysavvy/go-ai/pkg/providers/ollama"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
+	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/zai"
 )
 
@@ -390,6 +393,87 @@ func TestR91provbToolCallBeforeTextContent(t *testing.T) {
 			want := []string{"ReasoningContent", "ToolCallContent", "TextContent", "ToolErrorContent"}
 			if !reflect.DeepEqual(kinds, want) {
 				t.Fatalf("content = %v, want %v", kinds, want)
+			}
+		})
+	}
+}
+
+// r91provbChatModels is every provb language model entry point.
+func r91provbChatModels() map[string]func(base string) (provider.LanguageModel, error) {
+	return map[string]func(base string) (provider.LanguageModel, error){
+		"together": func(b string) (provider.LanguageModel, error) {
+			return together.New(together.Config{APIKey: "k", BaseURL: b}).LanguageModel("m")
+		},
+		"fireworks": func(b string) (provider.LanguageModel, error) {
+			return fireworks.New(fireworks.Config{APIKey: "k", BaseURL: b}).LanguageModel("m")
+		},
+		"ollama": func(b string) (provider.LanguageModel, error) {
+			return ollama.New(ollama.Config{BaseURL: b}).LanguageModel("m")
+		},
+		"gmicloud": func(b string) (provider.LanguageModel, error) {
+			return gmicloud.New(gmicloud.Config{APIKey: "k", BaseURL: b}).LanguageModel("m")
+		},
+		"zai": func(b string) (provider.LanguageModel, error) {
+			return zai.New(zai.Config{APIKey: "k", BaseURL: b}).LanguageModel("glm-4.6")
+		},
+		"moonshot": func(b string) (provider.LanguageModel, error) {
+			return moonshot.New(moonshot.Config{APIKey: "k", BaseURL: b}).LanguageModel("kimi-k2.5")
+		},
+		"deepseek": func(b string) (provider.LanguageModel, error) {
+			return deepseek.New(deepseek.Config{APIKey: "k", BaseURL: b}).LanguageModel("deepseek-chat")
+		},
+		"alibaba": func(b string) (provider.LanguageModel, error) {
+			return alibaba.New(alibaba.Config{APIKey: "k", BaseURL: b}).LanguageModel("qwen3-max")
+		},
+		"openai chat": func(b string) (provider.LanguageModel, error) {
+			return openai.New(openai.Config{APIKey: "k", BaseURL: b}).ChatModel("gpt-4o")
+		},
+		"openai responses": func(b string) (provider.LanguageModel, error) {
+			return openai.New(openai.Config{APIKey: "k", BaseURL: b}).ResponsesModel("gpt-5")
+		},
+		"openai completion": func(b string) (provider.LanguageModel, error) {
+			return openai.New(openai.Config{APIKey: "k", BaseURL: b}).CompletionModel("gpt-3.5-turbo-instruct")
+		},
+		"azure chat":      func(b string) (provider.LanguageModel, error) { return r91provbAzure(b).ChatModel("gpt-4o") },
+		"azure responses": func(b string) (provider.LanguageModel, error) { return r91provbAzure(b).ResponsesModel("gpt-5") },
+		"xai": func(b string) (provider.LanguageModel, error) {
+			return xai.New(xai.Config{APIKey: "k", BaseURL: b}).LanguageModel("grok-4")
+		},
+		"open responses": func(b string) (provider.LanguageModel, error) {
+			return openresponses.New(openresponses.Config{BaseURL: b, Name: "acme"}).LanguageModel("m")
+		},
+		"huggingface": func(b string) (provider.LanguageModel, error) {
+			return huggingface.New(huggingface.Config{APIKey: "k", BaseURL: b}).LanguageModel("m")
+		},
+	}
+}
+
+// PB-05 (provb2b-01) and the risk-note sweep: a Prompt.Text prompt sends
+// what the one-user-message form sends (Open Responses sent input: null,
+// Hugging Face and xAI Responses input: []), and no model panics on a
+// System-only prompt.
+func TestR91provbPromptForms(t *testing.T) {
+	for name, mk := range r91provbChatModels() {
+		mk := mk
+		t.Run(name, func(t *testing.T) {
+			want := r91provbCapture(t, func(base string) {
+				m, err := mk(base)
+				r91provbGenerate(m, err, &provider.GenerateOptions{Prompt: r91provbPrompt()})
+			})
+			got := r91provbCapture(t, func(base string) {
+				m, err := mk(base)
+				r91provbGenerate(m, err, &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+			})
+			if want == nil || !reflect.DeepEqual(got, want) {
+				g, _ := json.Marshal(got)
+				w, _ := json.Marshal(want)
+				t.Fatalf("Prompt.Text body differs\n got: %s\nwant: %s", g, w)
+			}
+			if r91provbCapture(t, func(base string) {
+				m, err := mk(base)
+				r91provbGenerate(m, err, &provider.GenerateOptions{Prompt: types.Prompt{System: "s"}})
+			}) == nil {
+				t.Fatal("System-only prompt sent no request")
 			}
 		})
 	}

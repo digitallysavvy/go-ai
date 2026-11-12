@@ -20,6 +20,11 @@ import (
 // ids, reasoning parts are replayed as reasoning items, tool errors are sent
 // verbatim, and non-image inline files are rejected.
 func ConvertPromptToXAIInput(prompt types.Prompt) ([]interface{}, []types.Warning, error) {
+	// A Go Prompt.Text prompt is one user text message, as every other
+	// converter reads it (TS prompts are always messages).
+	if prompt.IsSimple() {
+		prompt.Messages = promptutil.SimpleTextToMessages(prompt.Text)
+	}
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
 	var warnings []types.Warning
 

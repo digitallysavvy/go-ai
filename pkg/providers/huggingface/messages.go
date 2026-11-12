@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	goaiprompt "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // hfInputMessage mirrors one entry of the "input" array sent to the
@@ -32,6 +33,11 @@ type hfContentPart struct {
 // the Responses API from the full prompt (Prompt.System, if set, becomes a
 // leading system message; Prompt.Messages is then converted role by role).
 func convertToHuggingFaceResponsesInput(prompt types.Prompt) ([]interface{}, []types.Warning, error) {
+	// A Go Prompt.Text prompt is one user text message, as every other
+	// converter reads it (TS prompts are always messages).
+	if prompt.IsSimple() {
+		prompt.Messages = goaiprompt.SimpleTextToMessages(prompt.Text)
+	}
 	var input []interface{}
 	var warnings []types.Warning
 

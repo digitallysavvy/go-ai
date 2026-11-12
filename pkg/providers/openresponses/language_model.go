@@ -20,6 +20,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -244,8 +245,14 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		})
 	}
 
-	// Convert messages to Open Responses format
-	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
+	// Convert messages to Open Responses format. A Go Prompt.Text prompt is
+	// one user text message, as every other converter reads it (TS prompts
+	// are always messages; Go sent input: null).
+	promptMessages := opts.Prompt.Messages
+	if opts.Prompt.IsSimple() {
+		promptMessages = prompt.SimpleTextToMessages(opts.Prompt.Text)
+	}
+	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(promptMessages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
 	if err != nil {
 		return nil, warnings, err
 	}
