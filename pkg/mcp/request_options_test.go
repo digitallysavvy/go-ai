@@ -87,9 +87,12 @@ func TestMCPClientAbortedRequestMessage(t *testing.T) {
 	defer client.Close() //nolint:errcheck
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	// TS signal.throwIfAborted(): an already aborted request rejects with
+	// the abort reason itself, not the "Request was aborted" wrapper
+	// (tools-01; mid-flight aborts: TestR91toolsMCPSendErrors).
 	_, err := client.ListTools(ctx)
 	var mcpErr *MCPClientError
-	if !errors.As(err, &mcpErr) || mcpErr.Message != "Request was aborted" || !errors.Is(err, context.Canceled) {
+	if errors.As(err, &mcpErr) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
 	}
 }

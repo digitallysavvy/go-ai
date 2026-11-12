@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TS 88b95757c1 oauth-discovery-runtime.test.ts "%s endpoints": registration,
@@ -156,5 +157,54 @@ func TestR91toolsMCPRedirectDropsCredentialHeaders(t *testing.T) {
 	}
 	if got.Get("X-Other") != "kept" {
 		t.Error("other headers must be kept")
+	}
+}
+
+// tools-01 (TS mcp-client.ts:1044 requestOnce): the transport's
+// MCPClientError reaches the caller unwrapped, and a request aborted
+// mid-flight is MCPClientError "Request was aborted" with the abort reason.
+func TestR91toolsMCPSendErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		if m["id"] == nil {
+			w.WriteHeader(202)
+			return
+		}
+		args, _ := m["params"].(map[string]interface{})
+		switch {
+		case m["method"] == "initialize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(mustJSON(m["id"])) + `,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"s","version":"1"}}}`))
+		case args["name"] == "boom":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("boom"))
+		default:
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-r.Context().Done():
+			}
+		}
+	}))
+	defer srv.Close()
+	f := false
+	c := NewMCPClient(NewHTTPTransport(HTTPTransportConfig{URL: srv.URL}), MCPClientConfig{ProtocolVersionDiscovery: &f})
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close() //nolint:errcheck
+
+	_, err := c.CallTool(context.Background(), "boom", nil)
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || err.Error() != "MCP HTTP Transport Error: POSTing to endpoint (HTTP 500): boom" {
+		t.Fatalf("HTTP 500 err = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	_, err = c.CallTool(ctx, "slow", nil)
+	mcpErr = nil
+	if !errors.As(err, &mcpErr) || mcpErr.Message != "Request was aborted" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("abort err = %v (%T)", err, err)
 	}
 }

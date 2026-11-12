@@ -1070,6 +1070,11 @@ func (c *MCPClient) callOnce(ctx context.Context, method string, params interfac
 	if err := c.assertCapability(method); err != nil {
 		return err
 	}
+	// TS signal.throwIfAborted(): an already aborted request rejects with
+	// the abort reason itself (tools-01).
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
 	id := c.idGen.Next()
 	preparedParams, err := c.prepareRequestParams(method, params)
 	if err != nil {
@@ -1126,6 +1131,26 @@ func (c *MCPClient) callOnce(ctx context.Context, method string, params interfac
 		if timedOut() {
 			return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
 		}
+		// TS onAbort rejects a request aborted mid-flight with "Request was
+		// aborted" before the send rejection arrives (tools-01).
+		if ctx.Err() != nil {
+			return &MCPClientError{Message: "Request was aborted", Cause: context.Cause(ctx)}
+		}
+		// TS sendPromise.catch(rejectAndCleanup(error)) passes the
+		// transport's error through: an MCPClientError (HTTP 4xx/5xx) or
+		// UnauthorizedError unwrapped, a transport error not wrapped twice.
+		var mcpErr *MCPClientError
+		if errors.As(err, &mcpErr) {
+			return mcpErr
+		}
+		var unauthorized *UnauthorizedError
+		if errors.As(err, &unauthorized) {
+			return unauthorized
+		}
+		var transportErr *TransportError
+		if errors.As(err, &transportErr) {
+			return err
+		}
 		return NewTransportError("failed to send request", err)
 	}
 
@@ -1172,7 +1197,7 @@ func (c *MCPClient) callOnce(ctx context.Context, method string, params interfac
 			return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
 		}
 		// TS: "Request was aborted" with the abort reason as cause.
-		return &MCPClientError{Message: "Request was aborted", Cause: ctx.Err()}
+		return &MCPClientError{Message: "Request was aborted", Cause: context.Cause(ctx)}
 
 	case <-c.connLost:
 		return NewMCPClientError(0, "Connection closed", nil)
