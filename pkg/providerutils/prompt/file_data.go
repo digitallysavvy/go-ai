@@ -384,6 +384,12 @@ func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool, 
 		if b.FileData.Type != types.FileDataTypeData {
 			continue
 		}
+		// TS returns legacy "file-data" / "image-data" items without
+		// convertPartToLanguageModelPart, so their declared media type is
+		// kept (convert-to-language-model-prompt.ts:679-692,746-758).
+		if legacy := b.LegacyContentType(); legacy == "file-data" || legacy == "image-data" {
+			continue
+		}
 		detected, ok, err := sniffImageType(b.FileData)
 		if err != nil {
 			return t, false, err
