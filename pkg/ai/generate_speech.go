@@ -221,11 +221,12 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		ProviderMetadata: providerMetadata,
 		ProviderUsage:    raw.Usage,
 		Warnings:         warnings,
+		// TS getTelemetryResponseMetadata: timestamp, modelId and headers;
+		// the response body stays out of the end event.
 		Response: &telemetry.TelemetryAudioResponse{
 			Timestamp: responses[0].Timestamp,
 			ModelID:   responses[0].ModelID,
 			Headers:   responses[0].Headers,
-			Body:      responses[0].Body,
 		},
 	})
 	return &GenerateSpeechResult{
