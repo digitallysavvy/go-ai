@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -95,5 +96,40 @@ func TestR91carryNormalizeToolModelOutputKeepsFilename(t *testing.T) {
 	parts, isErr, err := ConvertToolModelOutput(out)
 	if err != nil || isErr || len(parts) != 1 || parts[0].Type != ToolModelOutputContentImage || parts[0].MediaType != "image/png" {
 		t.Fatalf("convert = %+v %v %v", parts, isErr, err)
+	}
+}
+
+// TS 7f1c01e8a2 (harness-session-data-directory-path.test.ts): every
+// session ID is exactly one path segment below the parent, and distinct IDs
+// never alias.
+func TestR91carrySessionDataDirectoryContainment(t *testing.T) {
+	const state = "/home/agent/.ai-sdk-harness"
+	runs := state + "/.agent-runs"
+	cases := [][2]string{
+		{"../../../../work/project", "..%2F..%2F..%2F..%2Fwork%2Fproject"},
+		{"/work/project", "%2Fwork%2Fproject"},
+		{"..", "%2E%2E"},
+		{".", "%2E"},
+		{"", "%"},
+		{"%", "%25"},
+		{"a/b", "a%2Fb"},
+		{"a%2Fb", "a%252Fb"},
+		{"a\\..", "a%5C.."},
+		{"a\x00b", "a%00b"},
+	}
+	for _, c := range cases {
+		if got := EncodePathSegment(c[0]); got != c[1] {
+			t.Errorf("EncodePathSegment(%q) = %q, want %q", c[0], got, c[1])
+		}
+		dir := SessionDataDirectoryPath(state, c[0])
+		if dir != runs+"/"+c[1] || posixpath.Dirname(dir) != runs {
+			t.Errorf("SessionDataDirectoryPath(%q) = %q", c[0], dir)
+		}
+	}
+	if SessionDataDirectoryPath(state, "s1-abc") != runs+"/s1-abc" {
+		t.Error("ordinary IDs stay readable")
+	}
+	if EncodePathSegment("a/b") == EncodePathSegment("a-b") || EncodePathSegment(".") == EncodePathSegment("%2E") {
+		t.Error("distinct values must give distinct segments")
 	}
 }
