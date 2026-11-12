@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -646,7 +647,7 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 					cur = float64(len(x))
 					continue
 				case string:
-					cur = float64(len([]rune(x)))
+					cur = float64(jsLength(x))
 					continue
 				case []request:
 					cur = float64(len(x))
@@ -854,7 +855,7 @@ func (a Assertion) match(got interface{}, fromJS bool) (msg string, skipped bool
 		case []interface{}:
 			pass = float64(len(x)) == n
 		case string:
-			pass = float64(len([]rune(x))) == n
+			pass = float64(jsLength(x)) == n
 		}
 	case "toBeUndefined", "toBeNull":
 		pass = isUndef(got)
@@ -888,6 +889,10 @@ func (a Assertion) match(got interface{}, fromJS bool) (msg string, skipped bool
 	}
 	return a.failure(pass, got), false
 }
+
+// jsLength is a JS string's length: UTF-16 code units, so a character
+// outside the BMP counts two.
+func jsLength(s string) int { return len(utf16.Encode([]rune(s))) }
 
 // failure is the message of an assertion that evaluated to pass, "" when it
 // holds.

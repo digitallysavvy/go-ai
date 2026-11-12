@@ -1168,6 +1168,7 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		ToolCallID:  call.ID,
 		ToolName:    call.ToolName,
 		Args:        call.Arguments,
+		ArgsText:    call.RawArguments,
 		ToolContext: telToolContext,
 	})
 	if opts.startDone != nil {
@@ -1279,6 +1280,56 @@ func mergeToolStart(a, b ToolExecutionStartCallback) ToolExecutionStartCallback 
 func mergeToolEnd(a, b ToolExecutionEndCallback) ToolExecutionEndCallback { return mergeSafe(a, b) }
 
 func mergeStepFinish(a, b StepFinishCallback) StepFinishCallback { return mergeSafe(a, b) }
+
+// publicStepEnd is the public onStepEnd of a run. In stream mode TS calls it
+// only from the model-call iterator, so a step that pauses the loop on a
+// client-side tool (no execute) or a tool approval gets no public onStepEnd
+// (only its telemetry step end); generate calls it for that step too
+// (workflow-agent.ts 2977-2981, "Preserve the public callback behavior on
+// the paused-tool path").
+func publicStepEnd(cb StepFinishCallback, streaming bool, tools []types.Tool) StepFinishCallback {
+	if cb == nil || !streaming {
+		return cb
+	}
+	return func(ctx context.Context, e ai.OnStepFinishEvent) {
+		if workflowPausedStep(e, tools) {
+			return
+		}
+		cb(ctx, e)
+	}
+}
+
+// workflowPausedStep reports whether a step stops the workflow loop on a
+// local tool call: a call to a known tool without Execute, or a tool
+// approval request for a call that is not provider-executed (TS
+// pausedToolCalls).
+func workflowPausedStep(e ai.OnStepFinishEvent, tools []types.Tool) bool {
+	byName := make(map[string]types.Tool, len(tools))
+	for _, t := range tools {
+		byName[t.Name] = t
+	}
+	for _, tc := range e.ToolCalls {
+		if tc.ProviderExecuted {
+			continue
+		}
+		if t, ok := byName[tc.ToolName]; ok && t.Execute == nil {
+			return true
+		}
+	}
+	for _, part := range e.Content {
+		switch p := part.(type) {
+		case types.ToolApprovalRequestContent:
+			if !p.ToolCall.ProviderExecuted {
+				return true
+			}
+		case *types.ToolApprovalRequestContent:
+			if p != nil && !p.ToolCall.ProviderExecuted {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func resolveStepEnd(onStepEnd StepEndCallback, onStepFinish StepFinishCallback) StepFinishCallback {
 	if onStepEnd != nil {
@@ -2282,7 +2333,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnStepStartEvent:               onStepStart,
 		OnToolExecutionStart:           mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
 		OnToolExecutionEnd:             mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
-		OnStepEndEvent:                 mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
+		OnStepEndEvent:                 publicStepEnd(mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))), streaming, tools),
 		OnEndEvent:                     onEnd,
 	}
 	return agent.NewToolLoopAgent(cfg), &earlyPrepare{cfg: cfg, runner: runner, callConcurrencySet: callConcurrencySet, endBase: endBase, stepSettings: settings}

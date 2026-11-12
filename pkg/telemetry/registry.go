@@ -423,10 +423,15 @@ type TelemetryToolCallStartEvent struct {
 	// CallID identifies the logical (generateText/streamText/...) call this
 	// tool call belongs to (H5), distinct from ToolCallID which identifies
 	// the individual tool invocation. See TelemetryStartEvent.CallID.
-	CallID      string
-	ToolCallID  string
-	ToolName    string
-	Args        map[string]interface{}
+	CallID     string
+	ToolCallID string
+	ToolName   string
+	Args       map[string]interface{}
+	// ArgsText is the tool call's input as the model sent it (the raw JSON
+	// text), when known. The integrations record Args in its key order (TS
+	// toolCall.input keeps the parsed object's order); without it Args is
+	// written in sorted key order.
+	ArgsText    string
 	ToolContext map[string]interface{}
 
 	// AIVersion is the version of the Go AI SDK that emitted the event. The
@@ -2413,7 +2418,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	// input-gated — the model's tool-call arguments are treated as part of
 	// the generation's output.
 	if e.Settings.ShouldRecordOutputs() && e.Args != nil {
-		if b, err := jsonstr.Marshal(e.Args); err == nil {
+		if b, err := jsonstr.Marshal(orderedToolInput(e.Args, e.ArgsText)); err == nil {
 			child.SetAttributes(attribute.String("ai.toolCall.args", string(b)))
 		}
 	}
@@ -2506,7 +2511,7 @@ func legacyToolCallsJSON(toolCalls []types.ToolCall) (string, bool) {
 	}
 	entries := make([]toolCallEntry, len(toolCalls))
 	for i, tc := range toolCalls {
-		entries[i] = toolCallEntry{ToolCallID: tc.ID, ToolName: tc.ToolName, Input: tc.Arguments}
+		entries[i] = toolCallEntry{ToolCallID: tc.ID, ToolName: tc.ToolName, Input: orderedToolInput(tc.Arguments, tc.RawArguments)}
 	}
 	b, err := jsonstr.Marshal(entries)
 	if err != nil {

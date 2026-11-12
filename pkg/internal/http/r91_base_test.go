@@ -17,10 +17,13 @@ func (r91timeoutErr) Temporary() bool { return true }
 
 // B1 (OVC-02): TransportError is the exported transportError behavior.
 func TestR91baseTransportError(t *testing.T) {
-	for _, err := range []error{context.Canceled, context.DeadlineExceeded, fmt.Errorf("wrap: %w", context.Canceled), r91timeoutErr{}} {
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, fmt.Errorf("wrap: %w", context.Canceled)} {
 		if got := TransportError(err); got != err {
 			t.Fatalf("TransportError(%v) = %v, want unchanged", err, got)
 		}
+	}
+	if got := TransportError(r91timeoutErr{}); got.Error() != "Cannot connect to API: i/o timeout" {
+		t.Fatalf("TransportError(timeout) = %v, want the retryable connect error", got)
 	}
 
 	rej := &FetchRejection{Err: errors.New("no credentials")}

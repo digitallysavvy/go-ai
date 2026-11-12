@@ -126,7 +126,9 @@ func mergeProviderOptionsDeep(base, overrides map[string]interface{}) map[string
 		result[k] = v
 	}
 	for k, v := range overrides {
-		if v == nil || k == "__proto__" || k == "constructor" || k == "prototype" {
+		// TS skips only undefined overrides (an absent key here); an explicit
+		// nil is JSON null and replaces the base value, like TS null.
+		if k == "__proto__" || k == "constructor" || k == "prototype" {
 			continue
 		}
 		if baseVal, ok := result[k]; ok {

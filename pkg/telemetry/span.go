@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -114,8 +115,9 @@ func GetBaseAttributes(
 
 	// Add request headers (but avoid sensitive headers)
 	for key, value := range headers {
-		// Skip authorization and api key headers
-		if key == "Authorization" || key == "x-api-key" || key == "api-key" {
+		// Skip authorization and api key headers (header names are
+		// case-insensitive).
+		if strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "x-api-key") || strings.EqualFold(key, "api-key") {
 			continue
 		}
 		attrs = append(attrs, attribute.String("ai.request.headers."+key, value))

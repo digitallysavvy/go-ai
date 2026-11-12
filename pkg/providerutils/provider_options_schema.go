@@ -490,15 +490,29 @@ func OptURL(httpsOnly bool) OptionCheck {
 		s := reflect.ValueOf(v).String()
 		// zod v4 z.url(): the JS-trimmed value must parse with the WHATWG URL
 		// parser (new URL), so file:, http:/x and surrounding spaces are
-		// valid (r91 core2-23).
+		// valid (r91 core2-23). Its output (ZodURLValue) is what the
+		// following startsWith check sees.
 		if _, err := urlnorm.Parse(JSTrim(s)); err != nil {
 			return fmt.Errorf("invalid string: expected a valid URL (at %s)", path)
 		}
-		if httpsOnly && !strings.HasPrefix(s, "https://") {
+		if httpsOnly && !strings.HasPrefix(ZodURLValue(s), "https://") {
 			return fmt.Errorf("invalid string: expected string to start with \"https://\" (at %s)", path)
 		}
 		return nil
 	}
+}
+
+// ZodURLValue is the output of zod v4 z.url() for a valid URL: the value
+// JS-trimmed, with every ASCII tab, LF and CR removed (zod
+// stripTabAndNewline). The parsed options TS sends carry this value, so a
+// provider reading a z.url() option sends ZodURLValue(v), not v.
+func ZodURLValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, JSTrim(s))
 }
 
 // OptObjectWith is z.object({...}) for a nested object whose listed members

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"sort"
 	"strings"
 
@@ -239,17 +240,29 @@ func firstNonEmptyStr(values ...string) string {
 // types.ToolCallContent.MarshalJSON does (Arguments when present, else the
 // raw JSON string parsed, else nil), matching TS's `part.input`.
 func toolCallArgumentsValue(t types.ToolCallContent) interface{} {
-	if t.Arguments != nil {
-		return t.Arguments
+	return orderedToolInput(t.Arguments, t.Input)
+}
+
+// orderedToolInput is TS `toolCall.input` for telemetry: the parsed input in
+// the key order the model sent it (raw, the call's input text), with the
+// values of args when set (the parsed, possibly refined input), else the raw
+// text parsed, else the raw text itself (an input that is not JSON), else
+// nil. A Go map alone would be written in sorted key order.
+func orderedToolInput(args map[string]interface{}, raw string) interface{} {
+	tree, parsed := jsonorder.Parse([]byte(raw))
+	if args != nil {
+		if parsed {
+			return jsonorder.Hinted{V: args, Hint: tree}
+		}
+		return args
 	}
-	if t.Input == "" {
+	if raw == "" {
 		return nil
 	}
-	var parsed interface{}
-	if err := json.Unmarshal([]byte(t.Input), &parsed); err == nil {
-		return parsed
+	if parsed {
+		return tree
 	}
-	return t.Input
+	return raw
 }
 
 // toolResultResponseValue derives the "response" field for a tool_call_response
@@ -682,7 +695,7 @@ func FormatOutputMessages(opts FormatOutputMessagesOptions) []SemConvOutputMessa
 		parts = append(parts, SemConvPart{"type": "text", "content": opts.Text})
 	}
 	for _, tc := range opts.ToolCalls {
-		parts = append(parts, SemConvPart{"type": "tool_call", "id": tc.ID, "name": tc.ToolName, "arguments": tc.Arguments})
+		parts = append(parts, SemConvPart{"type": "tool_call", "id": tc.ID, "name": tc.ToolName, "arguments": orderedToolInput(tc.Arguments, tc.RawArguments)})
 	}
 	for _, tr := range opts.ToolResults {
 		if tr.Error != nil || tr.Preliminary {
