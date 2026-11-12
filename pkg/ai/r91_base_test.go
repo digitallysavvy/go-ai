@@ -8,7 +8,8 @@ import (
 )
 
 // B4 (core1-A01): NewToolTimeoutError builds the tool timeout error with
-// its configured duration marked as set; the text is unchanged in the base.
+// its configured duration marked as set; a zero duration has the TS text
+// (core1-A01, AbortSignal.timeout(0)).
 func TestR91baseNewToolTimeoutError(t *testing.T) {
 	e := NewToolTimeoutError(50*time.Millisecond, context.DeadlineExceeded)
 	if e.Reason != TimeoutReasonTool || e.Timeout != 50*time.Millisecond || !e.timeoutSet {
@@ -21,8 +22,8 @@ func TestR91baseNewToolTimeoutError(t *testing.T) {
 		t.Fatalf("text = %q", e.Error())
 	}
 	zero := NewToolTimeoutError(0, context.DeadlineExceeded)
-	if !zero.timeoutSet || zero.Error() != (&TimeoutError{Reason: TimeoutReasonTool, Err: context.DeadlineExceeded}).Error() {
-		t.Fatalf("zero-duration text changed: %q", zero.Error())
+	if !zero.timeoutSet || zero.Error() != "The operation was aborted due to timeout" {
+		t.Fatalf("zero-duration text = %q", zero.Error())
 	}
 
 	d := time.Duration(0)
