@@ -237,10 +237,9 @@ func (m *EmbeddingModel) embedValues(ctx context.Context, values []string, opts 
 	// Make the request using provider-scoped transport.
 	resp, err := internalhttp.WithFetchRedirects(m.provider.Client().HTTPClient()).Do(req)
 	if err != nil {
-		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
-			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
-		}
-		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
+		// TS handleFetchError: a rejected fetch is returned unchanged, a
+		// network failure is the retryable "Cannot connect to API" error.
+		return nil, providerErrorFromTransport(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
