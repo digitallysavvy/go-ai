@@ -9,7 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // TestR93provcPollFallbackWarningLoggedOnce: TS logs the "poll/webhook
@@ -103,5 +110,81 @@ func TestR93provcSplitDataURLMediaType(t *testing.T) {
 		if got, _ := splitVideoDataURL(in); got != want {
 			t.Errorf("splitVideoDataURL(%q) media type = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestR93provcTranscribeEndEventProviderMetadataAsReported
+// (cr-r93-carry-to-provc): TS transcribe.ts end event carries
+// `providerMetadata: result.providerMetadata`, undefined when the model
+// reported none, so neither OTel integration records
+// ai.response.providerMetadata; the result still defaults to {}.
+func TestR93provcTranscribeEndEventProviderMetadataAsReported(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]interface{}
+		wantAttr string
+	}{
+		{name: "none", metadata: nil, wantAttr: ""},
+		{name: "reported", metadata: map[string]interface{}{"p": map[string]interface{}{"k": "v"}}, wantAttr: `{"p":{"k":"v"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &testutil.MockTranscriptionModel{
+				DoTranscribeFunc: func(context.Context, *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+					return &types.TranscriptionResult{Text: "hi", ProviderMetadata: tc.metadata}, nil
+				},
+			}
+			rec := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+			defer func() { _ = tp.Shutdown(context.Background()) }()
+			legacy := telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("ai")})
+			genAI := telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tp.Tracer("gen_ai"), ProviderMetadata: true})
+			res, err := Transcribe(context.Background(), TranscribeOptions{
+				Model: model, Audio: []byte("RIFF....WAVEfmt "),
+				Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{legacy, genAI}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.ProviderMetadata == nil {
+				t.Fatal("result providerMetadata is nil, want {}")
+			}
+			spans := rec.Ended()
+			if len(spans) == 0 {
+				t.Fatal("no spans")
+			}
+			for _, s := range spans {
+				got := ""
+				for _, kv := range s.Attributes() {
+					if kv.Key == attribute.Key("ai.response.providerMetadata") {
+						got = kv.Value.AsString()
+					}
+				}
+				if got != tc.wantAttr {
+					t.Errorf("span %q ai.response.providerMetadata = %q, want %q", s.Name(), got, tc.wantAttr)
+				}
+			}
+		})
+	}
+}
+
+// TestR93provcTranscribeAudioURLIsWHATWGHref: TS passes the URL object, so
+// the download function (and a native-URL provider) gets url.toString().
+func TestR93provcTranscribeAudioURLIsWHATWGHref(t *testing.T) {
+	model := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(context.Context, *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			return &types.TranscriptionResult{Text: "hi"}, nil
+		},
+	}
+	var got string
+	_, err := Transcribe(context.Background(), TranscribeOptions{Model: model, AudioURL: "HTTPS://Audio.Example.com:443/a b.wav",
+		DownloadWithMetadata: func(_ context.Context, url string) (*DownloadResult, error) {
+			got = url
+			return &DownloadResult{Data: []byte("RIFF")}, nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://audio.example.com/a%20b.wav" {
+		t.Errorf("downloaded %q", got)
 	}
 }

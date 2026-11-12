@@ -153,6 +153,13 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		telemetry.FireOnError(prepCtx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
+	// AudioURL is the TS URL object: providers and download functions get its
+	// WHATWG serialization (url.toString()).
+	if opts.AudioURL != "" {
+		if href, err := urlnorm.Href(opts.AudioURL); err == nil {
+			opts.AudioURL = href
+		}
+	}
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
 		decoded, err := decodeTranscriptionAudioBase64(opts.AudioBase64)
@@ -306,15 +313,17 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	}
 	responseMeta := responses[0]
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-		CallID:            callID,
-		OperationType:     "ai.transcribe",
-		ModelProvider:     opts.Model.Provider(),
-		ModelID:           opts.Model.ModelID(),
-		Settings:          opts.ExperimentalTelemetry,
-		Text:              raw.Text,
-		AudioByteLength:   audioByteLength,
-		AudioMediaType:    mediaType,
-		ProviderMetadata:  providerMetadata,
+		CallID:          callID,
+		OperationType:   "ai.transcribe",
+		ModelProvider:   opts.Model.Provider(),
+		ModelID:         opts.Model.ModelID(),
+		Settings:        opts.ExperimentalTelemetry,
+		Text:            raw.Text,
+		AudioByteLength: audioByteLength,
+		AudioMediaType:  mediaType,
+		// TS endEvent providerMetadata: result.providerMetadata, undefined
+		// when the model reported none (only the result defaults to {}).
+		ProviderMetadata:  raw.ProviderMetadata,
 		ProviderUsage:     raw.ProviderUsage,
 		Segments:          telemetrySegments,
 		Words:             telemetryWords,

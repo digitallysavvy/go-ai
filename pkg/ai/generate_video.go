@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
-	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/version"
