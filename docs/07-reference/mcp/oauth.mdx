@@ -234,6 +234,7 @@ Discovery refuses unsafe endpoints. It applies an SSRF guard to every hop of met
 | `Resource` | `*url.URL` |  |
 | `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
 | `HTTPClient` | `*http.Client` |  |
+| `TrustedOrigin` | `string` | TrustedOrigin is a developer-configured origin, never derived from response metadata (TS trustedOrigin, 88b95757c1). An endpoint on it may be loopback and is requested without the DNS-pinned transport. Empty uses the authorization server's own origin when it is loopback. |
 
 {/* /gen:fields */}
 
@@ -247,6 +248,7 @@ Discovery refuses unsafe endpoints. It applies an SSRF guard to every hop of met
 | `Resource` | `*url.URL` |  |
 | `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
 | `HTTPClient` | `*http.Client` |  |
+| `TrustedOrigin` | `string` | TrustedOrigin is a developer-configured origin, never derived from response metadata (TS trustedOrigin, 88b95757c1). An endpoint on it may be loopback and is requested without the DNS-pinned transport. Empty uses the authorization server's own origin when it is loopback. |
 
 {/* /gen:fields */}
 

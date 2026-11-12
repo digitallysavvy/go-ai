@@ -279,6 +279,7 @@ See `examples/harness/image-input` for a runnable program.
 | `MaxBudgetUSD` | `*float64` | MaxBudgetUSD is the maximum estimated spend in USD for each Claude query. When it is exceeded, the query stops and the turn ends with an error. Nil means no limit. |
 | `AdditionalDirectories` | `[]string` | AdditionalDirectories are absolute paths of directories Claude can access in addition to the session working directory; the bridge also trusts reads under them in approvals. Nil sends nothing; a non-nil empty slice is sent as []. Paths are forwarded as given (relative entries are not trusted by the bridge). Mirrors TS `additionalDirectories` (ae4e2363a2). |
 | `StrictMCPConfig` | `*bool` | StrictMCPConfig, when true, uses only the MCP servers configured with MCPServers and ignores any other MCP configuration such as a project `.mcp.json` or user settings. Nil leaves the Claude Code default. |
+| `AutoMode` | `*bool` | AutoMode, when true, requests Claude Code's classifier-based `auto` permission mode for the allow-reads and allow-edits permission presets: only escalated calls ask the host for approval. allow-all keeps bypassing permissions, and inactive-tool restrictions stay. Observe the raw init / status parts for the effective permission mode. Nil sends nothing (Claude Code default: off). Mirrors TS `autoMode` (5c3842f9d0). |
 | `QuestionTimeoutMs` | `*int` | QuestionTimeoutMs is the maximum number of milliseconds Claude waits for an answer to an `AskUserQuestion` question before the question fails. Nil means the Claude Code default. |
 | `ExcludeDynamicSections` | `*bool` | ExcludeDynamicSections moves per-session sections (working directory, memory, git status) out of the Claude Code system prompt and into the first user message, so the system prompt can be cached across sessions. Nil leaves the Claude Code default. |
 | `AgentProgressSummaries` | `bool` | AgentProgressSummaries enables periodic AI-generated progress summaries for running subagents. The summaries are forwarded in raw `task_progress` stream parts. |
@@ -293,7 +294,7 @@ See `examples/harness/image-input` for a runnable program.
 | `HostDisconnectTimeout` | `time.Duration` | HostDisconnectTimeout makes the bridge abort a running turn when its host disconnects and does not reconnect within this duration, so the turn stops spending. A suspended turn is exempt. Zero (or negative) keeps the turn running until it finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6), passed as --host-disconnect-timeout-ms. |
 | `Reconnect` | `bridge.ReconnectOptions` | Reconnect tunes reconnection after an established bridge connection drops. |
 | `OnDebug` | `func(bridge.ChannelDebugEvent)` | OnDebug is called with bridge connection lifecycle events: reconnect attempts, successful reconnects, and "reconnect-failed" once the connection is closed for good. Hosts that cache idle sessions can use it to reattach before sending the next prompt. The Cause of a failed reconnect can contain connection details, so avoid logging it as is. It runs on the connection's goroutine, so it must not block. |
-| `MintBridgeToken` | `harness.MintBridgeTokenCallback` | MintBridgeToken creates the bridge channel token. Defaults to a random 32-byte hex token. Requires the sandbox to expose an ID. |
+| `MintBridgeToken` | `harness.MintBridgeTokenCallback` | MintBridgeToken is ignored: sandbox bridge authentication uses an adapter-generated Ed25519 key pair; the sandbox gets only the public key. New warns once when it is set. Deprecated: kept so v0.5.2 code compiles (TS c849d37dac). |
 
 {/* /gen:fields */}
 
@@ -325,7 +326,7 @@ See `examples/harness/image-input` for a runnable program.
 | `StartupTimeout` | `time.Duration` | StartupTimeout bounds how long to wait for the bridge to announce its port. Defaults to 120s. |
 | `HostDisconnectTimeout` | `time.Duration` | HostDisconnectTimeout aborts a running turn when its host disconnects and does not reconnect within this time, so the turn stops spending. A suspended turn is exempt. Zero keeps the turn running until it finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6). |
 | `Reconnect` | `bridge.ReconnectOptions` | Reconnect tunes reconnection after an established bridge connection drops. |
-| `MintBridgeToken` | `harness.MintBridgeTokenCallback` | MintBridgeToken creates the bridge channel token. Defaults to a random 32-byte hex token. Requires the sandbox to expose an ID. |
+| `MintBridgeToken` | `harness.MintBridgeTokenCallback` | MintBridgeToken is ignored; New logs a warning when it is set. Deprecated: sandbox bridge authentication now uses an adapter-generated Ed25519 key pair (TS c849d37dac). |
 
 {/* /gen:fields */}
 

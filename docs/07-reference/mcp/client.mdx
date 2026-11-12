@@ -449,6 +449,7 @@ A server can ask the user for more input during a tool call. Register a handler 
 | `Message` | `string` |  |
 | `RequestedSchema` | `interface{}` |  |
 | `Meta` | `map[string]interface{}` |  |
+| `Extra` | `map[string]interface{}` | Extra holds the params keys the schema does not name, such as mode, url or elicitationId (TS ElicitationRequestParamsSchema is a loose object; tools-07). |
 
 {/* /gen:fields */}
 
@@ -459,6 +460,7 @@ A server can ask the user for more input during a tool call. Register a handler 
 | `Action` | `string` |  |
 | `Content` | `map[string]interface{}` |  |
 | `Meta` | `map[string]interface{}` |  |
+| `Extra` | `map[string]interface{}` | Extra holds further result keys, sent as they are (TS ElicitResultSchema is a loose object; tools-07). It cannot replace a declared key. |
 
 {/* /gen:fields */}
 
