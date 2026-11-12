@@ -550,7 +550,35 @@ func (b *toolBridge) invoke(n int, toolName, inputJSON string) (outputJSON strin
 		return "", ferr
 	}
 	input, isObject := inputVal.(map[string]interface{})
-	if !isObject && inputJSON != "" {
+	if tool.ValidateInput != nil {
+		// TS validateToolInput uses asSchema(inputSchema).validate: for
+		// jsonSchema(schema, {validate}) the tool's own validator replaces
+		// the schema check, and its value (validation.value) is the input
+		// approval and execute see (as pkg/ai's tool call pipeline).
+		var raw interface{} = inputVal
+		if !isObject && inputJSON == "" {
+			raw = map[string]interface{}{}
+		}
+		validated, verr := tool.ValidateInput(raw)
+		if verr != nil {
+			return "", NewToolError(
+				"Invalid input for tool \""+toolName+"\": "+verr.Error(),
+				map[string]interface{}{"toolName": toolName, "input": inputVal, "cause": verr.Error()},
+			)
+		}
+		if m, ok := validated.(map[string]interface{}); ok {
+			input, isObject = m, true
+		}
+		if !isObject && inputJSON != "" {
+			// A Go tool's Execute takes an object, so a non-object argument
+			// the validator accepted is still an input error.
+			cause := fmt.Sprintf("expected an object, received %s", jsonKindName(inputVal))
+			return "", NewToolError(
+				"Invalid input for tool \""+toolName+"\": "+cause,
+				map[string]interface{}{"toolName": toolName, "input": inputVal, "cause": cause},
+			)
+		}
+	} else if !isObject && inputJSON != "" {
 		// TS passes the sandbox value through unchanged, so a non-object
 		// argument (tools.x("text"), tools.x([1]), tools.x(null)) fails input
 		// validation instead of being replaced by an empty object. A Go tool's
@@ -570,7 +598,7 @@ func (b *toolBridge) invoke(n int, toolName, inputJSON string) (outputJSON strin
 		input = map[string]interface{}{}
 	}
 
-	if validator := toolInputValidator(tool); validator != nil {
+	if validator := toolInputValidator(tool); validator != nil && tool.ValidateInput == nil {
 		// TS's validateToolInput uses asSchema(...).validate, which for a
 		// zod schema fills .default() values as part of validation and
 		// passes validation.value (not the raw input) on to execute. Apply
@@ -618,7 +646,7 @@ func (b *toolBridge) invoke(n int, toolName, inputJSON string) (outputJSON strin
 
 	if !skipApproval {
 		needsApproval, aerr := raceAgainstAbort(b.toolCtx, func() (bool, error) {
-			return resolveNeedsApproval(b.toolCtx, tool, input, execOptions)
+			return resolveNeedsApproval(b.toolCtx, tool, toolName, input, execOptions)
 		})
 		if aerr != nil {
 			return "", aerr
@@ -806,13 +834,25 @@ func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map
 }
 
 // resolveNeedsApproval evaluates a host tool's approval requirement.
-// Mirrors TypeScript's requiresApproval, which only recognizes
-// tool.needsApproval as a boolean or a function (unlike the richer
-// tool-approval status system used by the outer AI SDK step loop).
-func resolveNeedsApproval(ctx context.Context, tool types.Tool, input map[string]interface{}, options types.ToolExecutionOptions) (bool, error) {
+// Mirrors TypeScript's requiresApproval, which honors tool.needsApproval as a
+// boolean or any function. The Go Tool also carries the outer SDK's approval
+// values, read as pkg/ai's resolveToolApprovalValue reads a tool's own
+// setting: an unnamed function literal with an approval function signature
+// is that function, ToolApprovalStatusUserApproval (or "user-approval")
+// needs approval, ToolApprovalStatusDenied (or "denied") fails the call with
+// *ToolApprovalDeniedError, and approved / not-applicable / "" need none.
+// Any other value fails closed with *ToolError instead of running the tool
+// unapproved.
+func resolveNeedsApproval(ctx context.Context, tool types.Tool, toolName string, input map[string]interface{}, options types.ToolExecutionOptions) (bool, error) {
 	setting := tool.ToolApproval
 	if setting == nil {
 		setting = tool.NeedsApproval
+	}
+	switch fn := setting.(type) {
+	case func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool:
+		setting = types.ToolNeedsApprovalFunc(fn)
+	case func(context.Context, map[string]interface{}) bool:
+		setting = types.NeedsApprovalFunc(fn) //nolint:staticcheck // legacy function type still accepted for backward compatibility
 	}
 	switch v := setting.(type) {
 	case nil:
@@ -820,16 +860,46 @@ func resolveNeedsApproval(ctx context.Context, tool types.Tool, input map[string
 	case bool:
 		return v, nil
 	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
+		if v == nil {
+			return false, nil
+		}
 		return v(ctx, input), nil
 	case types.ToolNeedsApprovalFunc:
+		if v == nil {
+			return false, nil
+		}
 		return v(ctx, input, types.ToolNeedsApprovalOptions{
 			ToolCallID: options.ToolCallID,
 			Messages:   options.Messages,
 			Context:    options.ToolContext,
 		}), nil
-	default:
+	case types.ToolApprovalStatus:
+		return approvalStatusNeedsApproval(v, toolName, input, options.ToolCallID)
+	case string:
+		return approvalStatusNeedsApproval(types.ToolApprovalStatus(v), toolName, input, options.ToolCallID)
+	}
+	return false, NewToolError(
+		fmt.Sprintf("Tool %q has an unsupported approval setting of type %T: use a bool, a ToolApprovalStatus or a ToolNeedsApprovalFunc.", toolName, setting),
+		map[string]interface{}{"toolName": toolName},
+	)
+}
+
+// approvalStatusNeedsApproval maps a static approval status on a host tool:
+// user-approval asks, denied rejects the call, approved / not-applicable /
+// "" run it, and an unknown status fails closed.
+func approvalStatusNeedsApproval(status types.ToolApprovalStatus, toolName string, input map[string]interface{}, toolCallID string) (bool, error) {
+	switch status {
+	case types.ToolApprovalStatusUserApproval:
+		return true, nil
+	case types.ToolApprovalStatusDenied:
+		return false, NewToolApprovalDeniedError(toolName, input, toolCallID, "")
+	case "", types.ToolApprovalStatusNotApplicable, types.ToolApprovalStatusApproved:
 		return false, nil
 	}
+	return false, NewToolError(
+		fmt.Sprintf("Tool %q has an unknown approval status %q.", toolName, status),
+		map[string]interface{}{"toolName": toolName},
+	)
 }
 
 // applyToolInputDefaults fills any JSON-Schema "default" values missing from
