@@ -149,7 +149,7 @@ func (c *APIClient) writeCommandStdin(ctx context.Context, sessionID, cmdID stri
 // CommandStdinResponse): an error status is an *APIError; bytesWritten must
 // be a non-negative integer when present.
 func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64, error) {
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		err := toAPIError(&httpinternal.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
 		return nil, &stdinWriteError{err: err, maybeApplied: maybeApplied}
 	}

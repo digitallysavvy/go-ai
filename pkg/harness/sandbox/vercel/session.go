@@ -49,6 +49,10 @@ func (s *Session) Description() string {
 // which likewise returns accumulated output alongside a non-nil error rather
 // than a zero value) — see Sandbox.RunCommand / APIClient.RunCommandWait.
 func (s *Session) Run(ctx context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+	// TS abortSignal?.throwIfAborted(): the abort reason, before any request.
+	if ctx.Err() != nil {
+		return providerutils.SandboxRunResult{}, context.Cause(ctx)
+	}
 	result, err := s.sandbox.RunCommand(ctx, "bash", []string{"-c", opts.Command}, s.resolveWorkingDirectory(opts.WorkingDirectory), opts.Env)
 	return providerutils.SandboxRunResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode}, err
 }
@@ -77,8 +81,8 @@ func (s *Session) resolveWorkingDirectory(workingDirectory string) string {
 // through @vercel/sandbox 3.9.0 writeStdin / closeStdin (TS
 // `createStdinStream`).
 func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxProcess, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted()
+		return nil, context.Cause(ctx)
 	}
 	proc, err := s.sandbox.spawnCommand(ctx, "bash", []string{"-c", opts.Command}, s.resolveWorkingDirectory(opts.WorkingDirectory), opts.Env, opts.Stdin)
 	if err != nil {
@@ -122,8 +126,8 @@ func (a *sandboxProcessAdapter) ExitCode() (int, bool) { return a.proc.ExitCode(
 func (a *sandboxProcessAdapter) Wait() (providerutils.SandboxProcessResult, error) {
 	code, err := a.proc.Wait(a.ctx)
 	if err != nil {
-		if ctxErr := a.ctx.Err(); ctxErr != nil {
-			return providerutils.SandboxProcessResult{}, ctxErr
+		if a.ctx.Err() != nil { // TS abortSignal?.throwIfAborted()
+			return providerutils.SandboxProcessResult{}, context.Cause(a.ctx)
 		}
 		return providerutils.SandboxProcessResult{}, err
 	}
@@ -157,8 +161,8 @@ func (s *Session) ReadFile(ctx context.Context, path string) (io.ReadCloser, err
 
 // ReadBinaryFile reads path fully, returning nil when it does not exist.
 func (s *Session) ReadBinaryFile(ctx context.Context, path string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted()
+		return nil, context.Cause(ctx)
 	}
 	data, err := s.sandbox.ReadFileToBuffer(ctx, path, "")
 	if err != nil && ctx.Err() == nil && isFileNotFoundError(err) {
@@ -203,6 +207,9 @@ func (s *Session) WriteFile(ctx context.Context, path string, content io.Reader)
 // WriteBinaryFile mkdir -p's the parent directory, then writes bytes to
 // path. Mirrors TS `VercelSandboxSession.writeBinaryFile`.
 func (s *Session) WriteBinaryFile(ctx context.Context, path string, content []byte) error {
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted()
+		return context.Cause(ctx)
+	}
 	if parent := posixDir(path); parent != "" && parent != "." && parent != "/" {
 		if _, err := s.sandbox.RunCommand(ctx, "mkdir", []string{"-p", parent}, "", nil); err != nil {
 			return err
@@ -279,8 +286,8 @@ rm -f -- "$1"
 `
 
 func (s *Session) runPathScript(ctx context.Context, script, filePath string) (RunResult, error) {
-	if err := ctx.Err(); err != nil {
-		return RunResult{}, err
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted()
+		return RunResult{}, context.Cause(ctx)
 	}
 	return s.sandbox.RunCommand(ctx, "bash", []string{"-c", script, "bash", filePath}, "", nil)
 }

@@ -309,7 +309,8 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 			return &MCPClientError{Message: fmt.Sprintf("MCP client initialization timed out after %dms", initTimeout/time.Millisecond), Cause: err}
 		}
 		if parent.Err() != nil {
-			return &MCPClientError{Message: "MCP client initialization was aborted", Cause: parent.Err()}
+			// TS cause: externalSignal.reason.
+			return &MCPClientError{Message: "MCP client initialization was aborted", Cause: context.Cause(parent)}
 		}
 		return err
 	}

@@ -235,11 +235,16 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		successful = append(successful, kept{image.URL, image.Size, image.RevisedPrompt})
 	}
 
-	images := make([][]byte, 0, len(successful))
+	// TS Promise.all(successfulImages.map(async image => ...)): every image
+	// without a URL rejects before any download settles, so that error wins
+	// over a failed download of an earlier image.
 	for _, image := range successful {
 		if image.url == nil {
 			return nil, fmt.Errorf("MiniMax returned an image without a URL.") //nolint:staticcheck // matches TS SDK exact error text
 		}
+	}
+	images := make([][]byte, 0, len(successful))
+	for _, image := range successful {
 		// TS getFromApi({validateUrl: true, trustedOrigin: baseURL}) without
 		// headers: no credentials go to the image host.
 		result, err := fileutil.DownloadWithMetadata(ctx, *image.url, fileutil.TrustedOriginDownloadOptions(m.prov.imageBaseURL, nil))

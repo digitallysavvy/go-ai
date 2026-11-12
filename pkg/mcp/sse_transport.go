@@ -376,9 +376,10 @@ func (t *SSETransport) closeLocked() {
 
 // Send posts a JSON-RPC message to the endpoint received from the SSE stream.
 func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
-	// TS send() starts with options.signal.throwIfAborted().
-	if err := ctx.Err(); err != nil {
-		return err
+	// TS send() starts with options.signal.throwIfAborted(): the abort
+	// reason itself.
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
 	}
 	t.mu.Lock()
 	connected := t.connected
