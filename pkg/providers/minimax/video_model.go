@@ -360,7 +360,9 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	_, pollErr := polling.PollForCompletion(ctx, checker, pollOpts)
 	if pollErr != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("video generation aborted: %w", ctx.Err())
+			// TS rejects with the abort reason from delay / fetch unchanged
+			// (tools-10).
+			return nil, context.Cause(ctx)
 		}
 		if jobFailureErr != nil {
 			return nil, jobFailureErr

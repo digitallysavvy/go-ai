@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -335,5 +336,26 @@ func TestR91toolsMiniMaxVideoDurationNonFinite(t *testing.T) {
 		if !strings.Contains(body, tc.wire) {
 			t.Errorf("%v: body %s lacks %s", tc.duration, body, tc.wire)
 		}
+	}
+}
+
+// tools-10 (TS minimax-video-model.ts:764): a cancelled context ends
+// DoGenerate with the abort reason itself.
+func TestR91toolsMiniMaxVideoAbortReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"task_id":"t1"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"task":{"id":"t1","status":"processing"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	model := newVideoModel(New(Config{APIKey: "k", VideoBaseURL: srv.URL}), ModelH3)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	_, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{Prompt: "a cat", PromptSet: true, N: 1,
+		ProviderOptions: map[string]interface{}{"minimax": map[string]interface{}{"pollIntervalMs": 10}}})
+	if !errors.Is(err, context.Canceled) || err.Error() != "context canceled" {
+		t.Fatalf("err = %v", err)
 	}
 }
