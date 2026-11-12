@@ -1,8 +1,10 @@
 package vercel
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -32,5 +34,30 @@ func TestR91toolsVercelRedirectDropsCredentialHeaders(t *testing.T) {
 		if got.Get(h) != "" {
 			t.Errorf("%s reached the other origin", h)
 		}
+	}
+}
+
+// harness-02 (TS vercel-sandbox.test-d.ts:75, vercel-sandbox.ts:106,
+// @vercel/sandbox 3.9.0 BaseCreateSandboxParams.source): a git source is
+// sent as given, still gets the default runtime, and is hashed into the
+// template name as TS does (expected name: node, sha256 of
+// JSON.stringify([3, "recipe-git", {type, url, revision}])).
+func TestR91toolsVercelGitSource(t *testing.T) {
+	src := &SnapshotSource{Type: "git", URL: "https://github.com/o/r", Revision: "main"}
+	params := withDefaultSandboxSettings(CreateParams{Source: src})
+	if params.Runtime != DefaultSandboxRuntime {
+		t.Fatalf("runtime = %q", params.Runtime)
+	}
+	body, _ := json.Marshal(createSandboxRequest{Ports: []int{}, Source: params.Source, Runtime: params.Runtime})
+	if !strings.Contains(string(body), `"source":{"type":"git","url":"https://github.com/o/r","revision":"main"}`) || !strings.Contains(string(body), `"runtime":"node24"`) {
+		t.Fatalf("body = %s", body)
+	}
+	if got := deriveTemplateName("recipe-git", params); got != "ai-sdk-harness-v3-22ca517f39416a12701e22a9" {
+		t.Fatalf("template name = %s", got)
+	}
+	depth := 1
+	tarball, _ := json.Marshal(SnapshotSource{Type: "git", URL: "u", Username: "x", Password: "p", Depth: &depth})
+	if string(tarball) != `{"type":"git","url":"u","username":"x","password":"p","depth":1}` {
+		t.Fatalf("private git source = %s", tarball)
 	}
 }
