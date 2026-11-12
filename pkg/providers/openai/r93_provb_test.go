@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -317,5 +318,24 @@ func TestR93provbBatchExpiresAfterNull(t *testing.T) {
 func TestR93provbStreamErrorCodeNumberText(t *testing.T) {
 	if got := openAIStreamErrorCodeString(1e21); got != "1e+21" {
 		t.Fatalf("code = %q", got)
+	}
+}
+
+// TS speech: z.number() rejects a NaN speed, and response.body is the raw
+// audio (createBinaryResponseHandler rawValue).
+func TestR93provbSpeechNaNAndBody(t *testing.T) {
+	if err := validateSpeechProviderOptions(map[string]interface{}{"openai": map[string]interface{}{"speed": math.NaN()}}); err == nil {
+		t.Fatal("NaN speed accepted")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("audio"))
+	}))
+	defer srv.Close()
+	res, err := NewSpeechModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "tts-1").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := res.Response.Body.([]byte); string(b) != "audio" {
+		t.Fatalf("response body = %#v", res.Response.Body)
 	}
 }
