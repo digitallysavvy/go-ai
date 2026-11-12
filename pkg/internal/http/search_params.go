@@ -59,6 +59,18 @@ func (p *SearchParams) Set(name, value string) {
 	p.pairs = out
 }
 
+// NewSearchParams returns an empty ordered parameter list (new
+// URLSearchParams()).
+func NewSearchParams() *SearchParams { return &SearchParams{} }
+
+// Len is the number of pairs; a nil list has none.
+func (p *SearchParams) Len() int {
+	if p == nil {
+		return 0
+	}
+	return len(p.pairs)
+}
+
 // Append is URLSearchParams.append.
 func (p *SearchParams) Append(name, value string) {
 	p.pairs = append(p.pairs, [2]string{name, value})

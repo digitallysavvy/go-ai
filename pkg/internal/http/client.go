@@ -178,6 +178,12 @@ type Request struct {
 	Body    interface{}
 	Query   map[string]string
 
+	// SearchParams, when non-empty, is an ordered query: its pairs are
+	// encoded in insertion order (TS new URLSearchParams + append/set, then
+	// toString), ahead of any Query entries (sorted). When it is nil or
+	// empty, the URL is built from Query alone, as before.
+	SearchParams *SearchParams
+
 	// ValidateResponse, when set, checks a successful (non-error status) body
 	// in DoJSON and DoJSONResponse before it is decoded: TS createJsonResponseHandler
 	// (response schema). Its error is returned as is.
@@ -337,6 +343,22 @@ func encodeQuery(q map[string]string) string {
 	return b.String()
 }
 
+// requestQuery is the "?query" suffix of req's URL ("" with no parameters):
+// the ordered SearchParams pairs first, then Query in sorted key order.
+func requestQuery(req Request) string {
+	var parts []string
+	if req.SearchParams.Len() > 0 {
+		parts = append(parts, req.SearchParams.Encode())
+	}
+	if len(req.Query) > 0 {
+		parts = append(parts, encodeQuery(req.Query))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "?" + strings.Join(parts, "&")
+}
+
 // EncodeQuery exposes encodeQuery to provider packages that build their own
 // URLs (URLSearchParams escaping).
 func EncodeQuery(q map[string]string) string { return encodeQuery(q) }
@@ -370,10 +392,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	// Build full URL
-	url := baseURL + req.Path
-	if len(req.Query) > 0 {
-		url += "?" + encodeQuery(req.Query)
-	}
+	url := baseURL + req.Path + requestQuery(req)
 
 	// Serialize body if present
 	var bodyReader io.Reader
@@ -610,10 +629,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	}
 
 	// Build full URL
-	url := baseURL + req.Path
-	if len(req.Query) > 0 {
-		url += "?" + encodeQuery(req.Query)
-	}
+	url := baseURL + req.Path + requestQuery(req)
 
 	// Serialize body if present
 	var bodyReader io.Reader
