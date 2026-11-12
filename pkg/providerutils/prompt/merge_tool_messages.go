@@ -1,8 +1,11 @@
 package prompt
 
 import (
+	"reflect"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // MergeConsecutiveToolMessages combines consecutive tool-role messages into a
@@ -101,9 +104,12 @@ func pushDownProviderOptions(part types.ContentPart, base map[string]interface{}
 }
 
 // mergeProviderOptionsDeep mirrors TS util/merge-objects.ts mergeObjects:
-// overrides win over base on conflicting keys, nested maps are merged
-// recursively, and any other value (including slices) is replaced wholesale
-// by the overrides value.
+// overrides win over base on conflicting keys, objects on both sides are
+// merged recursively, and any other value (including slices) is replaced
+// wholesale by the overrides value. Go-typed objects (typed option structs,
+// map[string]string, pointers to them) are objects too and merge through
+// their JSON form, as TS merges every plain object (typed-option ruling);
+// the prototype-polluting keys TS skips are skipped.
 func mergeProviderOptionsDeep(base, overrides map[string]interface{}) map[string]interface{} {
 	if base == nil && overrides == nil {
 		return nil
@@ -120,12 +126,12 @@ func mergeProviderOptionsDeep(base, overrides map[string]interface{}) map[string
 		result[k] = v
 	}
 	for k, v := range overrides {
-		if v == nil {
+		if v == nil || k == "__proto__" || k == "constructor" || k == "prototype" {
 			continue
 		}
 		if baseVal, ok := result[k]; ok {
-			if baseMap, ok1 := baseVal.(map[string]interface{}); ok1 {
-				if overrideMap, ok2 := v.(map[string]interface{}); ok2 {
+			if overrideMap, ok1 := optionsObject(v); ok1 {
+				if baseMap, ok2 := optionsObject(baseVal); ok2 {
 					result[k] = mergeProviderOptionsDeep(baseMap, overrideMap)
 					continue
 				}
@@ -134,6 +140,36 @@ func mergeProviderOptionsDeep(base, overrides map[string]interface{}) map[string
 		result[k] = v
 	}
 	return result
+}
+
+// optionsObject returns v as a JSON object when it is one: a
+// map[string]interface{} as is, and a Go-typed map with string keys, a
+// struct or a pointer to one through its JSON form
+// (providerutils.NormalizeOptionsJSON). Arrays, primitives and nil are not
+// objects.
+func optionsObject(v interface{}) (map[string]interface{}, bool) {
+	if m, ok := v.(map[string]interface{}); ok {
+		return m, true
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	switch {
+	case rv.Kind() == reflect.Struct:
+	case rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String:
+		if rv.IsNil() {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	normalized := providerutils.NormalizeOptionsJSON(map[string]interface{}{"v": v})
+	m, ok := normalized["v"].(map[string]interface{})
+	return m, ok
 }
 
 // MergeProviderOptions deep-merges overrides onto base (TS mergeObjects) and
