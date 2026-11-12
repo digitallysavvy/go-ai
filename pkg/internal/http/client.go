@@ -441,7 +441,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	// Perform request
 	httpResp, err := WithFetchRedirects(c.client).Do(httpReq)
 	if err != nil {
-		return nil, transportError(err)
+		return nil, TransportErrorCtx(ctx, err)
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
 
@@ -694,7 +694,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// via ctx); streamClient drops it.
 	httpResp, err := WithFetchRedirects(c.streamClient()).Do(httpReq)
 	if err != nil {
-		return nil, transportError(err)
+		return nil, TransportErrorCtx(ctx, err)
 	}
 
 	// Check for error status codes
@@ -812,41 +812,111 @@ func (c *Client) SetBaseURL(baseURL string) {
 	c.baseURL = baseURL
 }
 
-// transportError is TransportError (the name the client code uses).
+// transportError is TransportError (the name older client code uses).
 func transportError(err error) error { return TransportError(err) }
 
 // TransportError wraps a failure from an http.Client Do call. Mirrors TS
-// provider-utils handleFetchError: cancellation and timeouts (TS abort
-// errors) are returned unchanged, a FetchRejection is returned as is, and
-// other transport failures become the retryable "Cannot connect to API:
-// <cause>" error (IsRetryable reports true). The cause stays wrapped for
-// errors.Is/As. Provider code that calls a raw http.Client uses it so its
-// transport failures read and retry like the internal client's.
-func TransportError(err error) error {
+// provider-utils handleFetchError: a cancellation or the caller's own
+// timeout (TS AbortError / TimeoutError) is returned unchanged, a
+// FetchRejection is returned as is, and every other transport failure,
+// connect, TLS and response-header timeouts included (TS
+// RETRYABLE_NETWORK_ERROR_CODES ETIMEDOUT, UND_ERR_CONNECT_TIMEOUT,
+// UND_ERR_HEADERS_TIMEOUT), becomes the retryable "Cannot connect to API:
+// <cause>" error (IsRetryable reports true). The cause stays available to
+// errors.As. Provider code that calls a raw http.Client uses it so its
+// transport failures read and retry like the internal client's; with the
+// request's context at hand, TransportErrorCtx tells a dial timeout from the
+// caller's deadline.
+func TransportError(err error) error { return transportErrorFor(err, nil) }
+
+// TransportErrorCtx is TransportError for a request made with ctx: once ctx
+// is done the failure is the caller's abort or deadline and is returned
+// unchanged, and a timeout while ctx is still live is the transport's own
+// (a connect, TLS or response-header timeout), which TS retries.
+func TransportErrorCtx(ctx context.Context, err error) error {
+	return transportErrorFor(err, ctx.Err)
+}
+
+// transportErrorFor is TransportError with ctxErr, the request context's
+// Err (nil when the context is not known).
+func transportErrorFor(err error, ctxErr func() error) error {
 	var rejection *FetchRejection
 	if errors.As(err, &rejection) {
 		return rejection
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	if isCallerAbort(err, ctxErr) {
 		return err
 	}
 	return &connectError{err: err}
 }
 
+// isCallerAbort reports whether a transport failure is TS isAbortError: the
+// caller canceled (context.Canceled), the caller's context ended, or the
+// http.Client's own Timeout fired (TS fetch with AbortSignal.timeout throws
+// a TimeoutError). Without the context (ctxErr nil) a deadline counts as
+// the caller's unless it is net/http's response-header timeout; an OS
+// connect timeout (ETIMEDOUT) is no deadline.
+func isCallerAbort(err error, ctxErr func() error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if ctxErr != nil && ctxErr() != nil {
+		return true
+	}
+	if isClientTimeout(err) {
+		return true
+	}
+	if ctxErr != nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "timeout awaiting response headers")
+}
+
+// isClientTimeout reports an http.Client Timeout (net/http marks it
+// "(Client.Timeout exceeded ...)" in the *url.Error text).
+func isClientTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout() && strings.Contains(err.Error(), "Client.Timeout exceeded")
+}
+
 // connectError is a failure to reach the API (TS: an APICallError with
-// isRetryable=true built by handleFetchError). The cause stays wrapped for
-// errors.Is/As.
+// isRetryable=true built by handleFetchError). The cause stays available to
+// errors.As; a transport timeout's cause no longer matches
+// errors.Is(err, context.DeadlineExceeded), since it is not the caller's
+// deadline (TS: an APICallError, not a TimeoutError), so callers that stop
+// on a deadline still retry it.
 type connectError struct{ err error }
 
 func (e *connectError) Error() string { return "Cannot connect to API: " + e.err.Error() }
-func (e *connectError) Unwrap() error { return e.err }
+func (e *connectError) Unwrap() error {
+	if errors.Is(e.err, context.DeadlineExceeded) {
+		return transportTimeoutCause{e.err}
+	}
+	return e.err
+}
 
 // IsRetryable reports true: TS retries connection failures.
 func (e *connectError) IsRetryable() bool { return true }
+
+// transportTimeoutCause is a transport timeout as a connectError cause: it
+// reads like err (errors.As reaches err's chain, *url.Error and net.Error
+// included, and errors.Is matches what err does) except that it is not
+// context.DeadlineExceeded.
+type transportTimeoutCause struct{ err error }
+
+func (c transportTimeoutCause) Error() string { return c.err.Error() }
+
+func (c transportTimeoutCause) Is(target error) bool {
+	return target != context.DeadlineExceeded && errors.Is(c.err, target)
+}
+
+func (c transportTimeoutCause) As(target interface{}) bool { return errors.As(c.err, target) }
+
+// Timeout reports true (net.Error).
+func (c transportTimeoutCause) Timeout() bool { return true }
+
+// Temporary reports true (net.Error).
+func (c transportTimeoutCause) Temporary() bool { return true }
 
 // FetchRejection marks an error a provider's own http.RoundTripper raises
 // before (or instead of) a network round trip: a credential, signing or
