@@ -3,22 +3,18 @@ package anthropicaws
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 	anthropictools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -300,7 +296,7 @@ func (t *sigV4Transport) credentials(ctx context.Context) (Credentials, error) {
 	secretAccessKey := firstNonEmpty(t.secretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
 	sessionToken := firstNonEmpty(t.sessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 	if accessKeyID == "" {
-		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in Config\n3. Use a CredentialProvider function\n4. Use API key authentication with ANTHROPIC_AWS_API_KEY or Config.APIKey\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") //nolint:staticcheck // message text matches TS
+		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide accessKeyId and secretAccessKey in options\n3. Use a credentialProvider function\n4. Use API key authentication with ANTHROPIC_AWS_API_KEY or apiKey option\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	if secretAccessKey == "" {
 		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
@@ -308,76 +304,14 @@ func (t *sigV4Transport) credentials(ctx context.Context) (Credentials, error) {
 	return Credentials{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, SessionToken: sessionToken}, nil
 }
 
+// signAWSRequest signs req with AWS SigV4 for the aws-external-anthropic
+// service, using the shared Bedrock signer, which canonicalizes like
+// aws4fetch (the TS anthropic-aws-fetch.ts signer): the path is URI-encoded
+// a second time, header values are trimmed with runs of whitespace
+// collapsed, the query is canonicalized, and non-ASCII header values are not
+// signed (TS #22265).
 func signAWSRequest(req *http.Request, payload []byte, region string, creds Credentials) {
-	now := time.Now().UTC()
-	req.Header.Set("Host", req.URL.Host)
-	req.Header.Set("X-Amz-Date", now.Format("20060102T150405Z"))
-	if creds.SessionToken != "" {
-		req.Header.Set("X-Amz-Security-Token", creds.SessionToken)
-	}
-
-	canonicalRequest := canonicalRequest(req, payload)
-	scope := fmt.Sprintf("%s/%s/%s/aws4_request", now.Format("20060102"), region, serviceName)
-	hash := sha256.Sum256([]byte(canonicalRequest))
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s", now.Format("20060102T150405Z"), scope, hex.EncodeToString(hash[:]))
-	signature := signingSignature(creds.SecretAccessKey, now, region, stringToSign)
-	signedHeaders := signedHeaders(req.Header)
-	req.Header.Set("Authorization", fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s", creds.AccessKeyID, scope, signedHeaders, signature))
-}
-
-func canonicalRequest(req *http.Request, payload []byte) string {
-	payloadHash := sha256.Sum256(payload)
-	canonicalHeaders, signed := canonicalHeaders(req.Header)
-	path := req.URL.EscapedPath()
-	if path == "" {
-		path = "/"
-	}
-	return strings.Join([]string{req.Method, path, req.URL.RawQuery, canonicalHeaders, signed, hex.EncodeToString(payloadHash[:])}, "\n")
-}
-
-func canonicalHeaders(headers http.Header) (string, string) {
-	keys := make([]string, 0, len(headers))
-	values := map[string]string{}
-	for k, vals := range headers {
-		if len(vals) > 0 && !isASCII(vals[0]) {
-			// Non-ASCII header values are not signed (TS #22265); they are
-			// still sent as-is.
-			continue
-		}
-		lower := strings.ToLower(k)
-		keys = append(keys, lower)
-		if len(vals) > 0 {
-			values[lower] = strings.TrimSpace(vals[0])
-		}
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteString(":")
-		b.WriteString(values[k])
-		b.WriteString("\n")
-	}
-	return b.String(), strings.Join(keys, ";")
-}
-
-func signedHeaders(headers http.Header) string {
-	_, signed := canonicalHeaders(headers)
-	return signed
-}
-
-func signingSignature(secret string, now time.Time, region, stringToSign string) string {
-	kDate := hmacSHA256([]byte("AWS4"+secret), []byte(now.Format("20060102")))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte(serviceName))
-	kSigning := hmacSHA256(kService, []byte("aws4_request"))
-	return hex.EncodeToString(hmacSHA256(kSigning, []byte(stringToSign)))
-}
-
-func hmacSHA256(key, data []byte) []byte {
-	h := hmac.New(sha256.New, key)
-	_, _ = h.Write(data)
-	return h.Sum(nil)
+	_ = bedrock.NewAWSSignerForService(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region, serviceName).SignRequest(req, payload)
 }
 
 func baseRoundTripper(client *http.Client) http.RoundTripper {
@@ -402,13 +336,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
 }
