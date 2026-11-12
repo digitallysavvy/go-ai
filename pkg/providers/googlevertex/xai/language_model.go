@@ -69,6 +69,12 @@ const vertexXaiProviderKey = "googleVertex"
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	// TS openai-compatible getArgs parses the openai-compatible,
+	// openaiCompatible and googleVertex options before converting the
+	// prompt (openai-compatible-chat-language-model.ts:229).
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "googleVertex"); err != nil {
+		return nil, err
+	}
 	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, vertexXaiProviderKey); err != nil {
 		return nil, err
 	}
@@ -105,6 +111,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	// TS openai-compatible getArgs parses the openai-compatible,
+	// openaiCompatible and googleVertex options before converting the
+	// prompt (openai-compatible-chat-language-model.ts:229).
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "googleVertex"); err != nil {
+		return nil, err
+	}
 	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, vertexXaiProviderKey); err != nil {
 		return nil, err
 	}
