@@ -1634,7 +1634,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case types.ToolApprovalResponseContent:
-			if p.ApprovalID == "" || processedApprovals[p.ApprovalID] {
+			if processedApprovals[p.ApprovalID] { // TS: "" is an id too
 				continue
 			}
 			processedApprovals[p.ApprovalID] = true
@@ -1650,7 +1650,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				Approve:           p.Approved,
 			})
 		case *types.ToolApprovalResponseContent:
-			if p == nil || p.ApprovalID == "" || processedApprovals[p.ApprovalID] {
+			if p == nil || processedApprovals[p.ApprovalID] {
 				continue
 			}
 			processedApprovals[p.ApprovalID] = true
@@ -1804,6 +1804,15 @@ func appendAdditionalTools(items *[]interface{}, part types.ToolResultContent, o
 			return invalid(fmt.Sprintf("entry %d: name must be a non-empty string", i))
 		case def.Parameters == nil:
 			return invalid(fmt.Sprintf("entry %d: parameters must be an object", i))
+		}
+		// description and strict are .optional(): a present null is invalid.
+		var present map[string]json.RawMessage
+		if json.Unmarshal(entry, &present) == nil {
+			for _, key := range []string{"description", "strict"} {
+				if string(present[key]) == "null" {
+					return invalid(fmt.Sprintf("entry %d: %s must not be null", i, key))
+				}
+			}
 		}
 		tools = append(tools, AdditionalToolDef{
 			Type:        "function",

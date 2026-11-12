@@ -46,3 +46,21 @@ func TestR93provbReasoningPartOptionsValidated(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TS: an approval response with an empty approvalId is still sent (the
+// processed-id set only de-duplicates), and additionalTools' optional
+// description / strict reject null.
+func TestR93provbToolMessageEdges(t *testing.T) {
+	msg := types.Message{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: "", Approved: true}}}
+	items, err := convertToolItems(msg, ConvertOptions{processedApprovalIDs: map[string]bool{}})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items = %v, %v", items, err)
+	}
+	result := types.ToolResultContent{ToolCallID: "c1", ToolName: "t", Result: "ok",
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"additionalTools": []interface{}{
+			map[string]interface{}{"type": "function", "name": "x", "parameters": map[string]interface{}{}, "description": nil},
+		}}}}
+	if _, err := convertToolItems(types.Message{Role: types.RoleTool, Content: []types.ContentPart{result}}, ConvertOptions{}); err == nil {
+		t.Fatal("null description accepted")
+	}
+}
