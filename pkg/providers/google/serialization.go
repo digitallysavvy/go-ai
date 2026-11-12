@@ -21,6 +21,21 @@ func init() {
 	provider.RegisterSpeechTranslationModelDeserializer("google.generative-ai.speech-translation", deserializeSpeechTranslationModel)
 	provider.RegisterModelDeserializer("google.interactions", deserializeInteractionsModel)
 	provider.RegisterModelDeserializer("google.generative-ai.interactions", deserializeInteractionsModel)
+	provider.RegisterDecisionModelDeserializer("google.decision", deserializeDecisionModel)
+}
+
+// Serialize implements provider.SerializableModel for workflow boundaries.
+// Mirrors TS google-decision-model.ts [WORKFLOW_SERIALIZE] (credentials and
+// the fetch function are not serialized).
+func (m *DecisionModel) Serialize() provider.SerializedModel {
+	return provider.SerializedModel{Provider: m.Provider(), ModelID: m.ModelID(), Config: provider.SerializableConfig(m.provider.config)}
+}
+
+func deserializeDecisionModel(serialized provider.SerializedModel) (provider.DecisionModel, error) {
+	var cfg Config
+	data, _ := json.Marshal(serialized.Config)
+	_ = json.Unmarshal(data, &cfg)
+	return New(cfg).DecisionModel(serialized.ModelID)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

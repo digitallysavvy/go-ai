@@ -250,3 +250,25 @@ func TestR92provgTranscriptionTimestampBeforeRequest(t *testing.T) {
 		t.Fatalf("timestamp %v is not before the request %v", res.Response.Timestamp, served)
 	}
 }
+
+// TS google-decision.test.ts 'preserves workflow serialization': the model
+// round-trips through its serialized form without the credentials.
+func TestR92provgDecisionWorkflowSerialization(t *testing.T) {
+	p := New(Config{APIKey: "secret-key", BaseURL: "https://example.com/v1beta", Headers: map[string]string{"x-provider": "configured"}})
+	m, _ := p.DecisionModel(ModelGeminiDecision1)
+	s, ok := m.(provider.SerializableModel)
+	if !ok {
+		t.Fatalf("%T is not serializable", m)
+	}
+	serialized := s.Serialize()
+	if b, _ := json.Marshal(serialized); strings.Contains(string(b), "secret-key") {
+		t.Fatalf("serialized config carries the key: %s", b)
+	}
+	restored, err := provider.DeserializeDecisionModel(serialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.ModelID() != m.ModelID() || restored.Provider() != m.Provider() {
+		t.Fatalf("restored %s %s", restored.Provider(), restored.ModelID())
+	}
+}
