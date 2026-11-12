@@ -45,10 +45,10 @@ func TestR92genCreateDownloadForwardsTransportContextAndLimit(t *testing.T) {
 // create-download.test.ts 28 'acts as an experimental_download function when
 // called with a batch' is TestR91genCreateDownloadTransport (r91_gen_test.go).
 
-// util/array-output-stream.test.ts 80 'falls back on schema errors for
-// legacy array output': StreamObject's parser (skipInvalidElements false)
-// falls back on an invalid element; 46 'withholds the last element until a
-// new element starts or the object closes' on the same parser.
+// array-output-stream.test.ts 80 / 46 (util): 'falls back on schema errors
+// for legacy array output' (StreamObject's parser, skipInvalidElements
+// false, falls back on an invalid element) and 'withholds the last element
+// until a new element starts or the object closes' on the same parser.
 func TestR92genObjectArrayStreamParser(t *testing.T) {
 	number := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "number"})
 	if r := newObjectArrayStreamParser(number).next(`{"elements":[1,"invalid",2]}`); !r.fallback {
@@ -99,7 +99,7 @@ func TestR92genGeneratedFileURLSerialized(t *testing.T) {
 	}
 }
 
-// generated-file-download.test.ts 162 'downloads %s file URLs through the
+// generated-file-download.test.ts 161 'downloads %s file URLs through the
 // configured download function instead of global fetch' (generate): the
 // prompt's batch (no URLs, empty) and then the generated file's batch.
 func TestR92genGeneratedFileDownloadBatches(t *testing.T) {
