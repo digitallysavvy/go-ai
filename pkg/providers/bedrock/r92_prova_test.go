@@ -149,3 +149,15 @@ func TestR92provaFalsyCachePoint(t *testing.T) {
 		t.Errorf("truthy cachePoint 1 = %v, %v (known difference: {type: default})", cp, ok)
 	}
 }
+
+// TS `reasons.join(', ')` stringifies each moderation reason like
+// Array.prototype.join: null is empty, numbers use Number::toString and
+// objects are "[object Object]" (Go printed <nil>, map[...]).
+func TestR92provaModerationReasonsJoin(t *testing.T) {
+	m := NewImageModel(New(Config{Region: "us-east-1"}), "amazon.nova-canvas-v1:0")
+	_, err := m.convertResponse([]byte(`{"status":"Request Moderated","details":{"Moderation Reasons":["a",null,1.5,true,{"k":1},[1,null,2]]}}`), http.Header{}, nil)
+	const want = "Amazon Bedrock request was moderated: a, , 1.5, true, [object Object], 1,,2"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
