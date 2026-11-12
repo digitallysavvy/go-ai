@@ -21,7 +21,7 @@ func TestR92integDecodeFileDataStringForgiving(t *testing.T) {
 			t.Errorf("DecodeFileDataString(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"a", "aG=k", "aGk==", "aGk= ", "aG*k"} {
+	for _, in := range []string{"a", "aG=k", "aGk==", "aGk=\u00a0", "aG*k"} {
 		if got, err := DecodeFileDataString(in); err == nil {
 			t.Errorf("DecodeFileDataString(%q) = %q, want an error", in, got)
 		}

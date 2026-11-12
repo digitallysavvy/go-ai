@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
@@ -183,20 +183,23 @@ func retryHeaderDelay(err error, exponentialDelay time.Duration) (time.Duration,
 		}
 	}
 
+	// TS retry-with-exponential-backoff.ts getRetryDelayInMs: parseFloat of
+	// retry-after-ms, then parseFloat of retry-after (seconds), else
+	// Date.parse(retryAfter) - Date.now().
 	var delay time.Duration
 	var hasDelay bool
 	if retryAfterMS != "" {
-		if parsed, err := strconv.ParseFloat(retryAfterMS, 64); err == nil {
+		if parsed, ok := jsParseFloat(retryAfterMS); ok {
 			delay = time.Duration(parsed * float64(time.Millisecond))
 			hasDelay = true
 		}
 	}
 	if retryAfter != "" && !hasDelay {
-		if parsed, err := strconv.ParseFloat(retryAfter, 64); err == nil {
+		if parsed, ok := jsParseFloat(retryAfter); ok {
 			delay = time.Duration(parsed * float64(time.Second))
 			hasDelay = true
-		} else if when, err := http.ParseTime(retryAfter); err == nil {
-			delay = time.Until(when)
+		} else if when, ok := jsdate.Parse(retryAfter); ok {
+			delay = time.Duration(when-time.Now().UnixMilli()) * time.Millisecond
 			hasDelay = true
 		}
 	}
@@ -259,4 +262,70 @@ func IsRetryable(err error) bool {
 	}
 
 	return true
+}
+
+// jsParseFloat is JS parseFloat: leading JS whitespace is skipped and the
+// longest StrDecimalLiteral prefix ("Infinity" included) is read; false
+// where parseFloat returns NaN.
+func jsParseFloat(s string) (float64, bool) {
+	s = strings.TrimLeftFunc(s, isJSWhiteSpace)
+	i := 0
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	if strings.HasPrefix(s[i:], "Infinity") {
+		if s[0] == '-' {
+			return math.Inf(-1), true
+		}
+		return math.Inf(1), true
+	}
+	digits := func(j int) int {
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		return j
+	}
+	start := i
+	i = digits(i)
+	intDigits := i > start
+	fracDigits := false
+	if i < len(s) && s[i] == '.' {
+		j := digits(i + 1)
+		fracDigits = j > i+1
+		if intDigits || fracDigits {
+			i = j
+		}
+	}
+	if !intDigits && !fracDigits {
+		return 0, false
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		j := i + 1
+		if j < len(s) && (s[j] == '+' || s[j] == '-') {
+			j++
+		}
+		if k := digits(j); k > j {
+			i = k
+		}
+	}
+	f, err := strconv.ParseFloat(s[:i], 64)
+	if err != nil {
+		// Only a range error is possible here: JS gives +-Infinity or 0.
+		var numErr *strconv.NumError
+		if errors.As(err, &numErr) && errors.Is(numErr.Err, strconv.ErrRange) {
+			return f, true
+		}
+		return 0, false
+	}
+	return f, true
+}
+
+// isJSWhiteSpace is the JS WhiteSpace and LineTerminator set (String
+// trim / parseFloat).
+func isJSWhiteSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', '\u00a0', '\u1680', '\u2028', '\u2029', '\u202f', '\u205f', '\u3000', '\ufeff':
+		return true
+	}
+	return r >= '\u2000' && r <= '\u200a'
 }
