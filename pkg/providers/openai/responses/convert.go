@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -95,6 +96,11 @@ type ConvertOptions struct {
 	// convert-to-openai-responses-input.ts's `configurationUpdateUnsupportedReason`
 	// parameter.
 	ConfigurationUpdateUnsupportedReason string
+
+	// NormalizeTextFormatSchema normalizes a message-level textFormatUpdate
+	// json_schema schema (TS normalizeOpenAIJsonSchema, set by the OpenAI
+	// model; nil sends the schema as given).
+	NormalizeTextFormatSchema func(schema interface{}) (interface{}, []types.Warning, error)
 
 	// programmaticCallerIDs holds tool-call-ids whose caller was a
 	// programmatic-tool-calling "program", collected from the prompt's
@@ -208,16 +214,14 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	for _, msg := range prompt.Messages {
 		switch msg.Role {
 		case types.RoleSystem:
-			item, itemWarning, err := convertSystemMidConversationMessage(msg, systemMessageMode, opts)
+			item, itemWarnings, err := convertSystemMidConversationMessage(msg, systemMessageMode, opts)
 			if err != nil {
 				return nil, warnings, err
 			}
 			if item != nil {
 				input = append(input, item)
 			}
-			if itemWarning != nil {
-				warnings = append(warnings, *itemWarning)
-			}
+			warnings = append(warnings, itemWarnings...)
 		case types.RoleUser:
 			userMessage, err := convertUserMessage(msg, opts)
 			if err != nil {
@@ -261,7 +265,7 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 // item independent of systemMessageMode's text handling; a message with
 // empty reasoningEffortUpdate is handled as an ordinary system/developer
 // message (or dropped with a warning when systemMessageMode is "remove").
-func convertSystemMidConversationMessage(msg types.Message, systemMessageMode string, opts ConvertOptions) (interface{}, *types.Warning, error) {
+func convertSystemMidConversationMessage(msg types.Message, systemMessageMode string, opts ConvertOptions) (interface{}, []types.Warning, error) {
 	providerName := openAIProviderOptionsName(opts)
 	sysOpts := systemMessageProviderOptions(msg, providerName)
 	effort, _ := sysOpts["reasoningEffortUpdate"].(string)
@@ -269,39 +273,63 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 	// zod `.optional()` enum: a present key must hold a valid value (an empty
 	// string, a number or an explicit null is rejected, not ignored).
 	_, effortPresent := sysOpts["reasoningEffortUpdate"]
+	textFormatRaw, textFormatPresent := sysOpts["textFormatUpdate"]
 
-	if effortPresent {
+	if effortPresent || textFormatPresent {
 		// TS parses this field against a fixed schema enum
 		// (z.enum(['none','low','medium','high','xhigh','max']), row
 		// 94d5d6d3e6) before any model-specific handling, so an
 		// out-of-enum value like "minimal" is rejected the same way on
 		// every model, including ones that support "none". Go has no
 		// schema layer, so validate manually here, first.
-		if !isValidReasoningEffortUpdateValue(effort) {
+		if effortPresent && !isValidReasoningEffortUpdateValue(effort) {
 			return nil, nil, &providererrors.InvalidArgumentError{
 				Field:   "providerOptions." + providerName + ".reasoningEffortUpdate",
 				Message: fmt.Sprintf("must be one of %s", strings.Join(ValidReasoningEffortUpdateValues, ", ")),
 			}
 		}
+		var textFormat *jsonorder.Object
+		if textFormatPresent {
+			parsed, err := ParseTextFormat("providerOptions."+providerName+".textFormatUpdate", textFormatRaw)
+			if err != nil {
+				return nil, nil, err
+			}
+			textFormat = parsed
+		}
 
+		// TS 5a645e92d2: the feature named in the error is the effort
+		// update when set, else the format update.
+		feature := "reasoningEffortUpdate"
+		if !effortPresent {
+			feature = "textFormatUpdate"
+		}
 		var unsupportedReason string
 		if content != "" {
-			unsupportedReason = "Message-level reasoningEffortUpdate requires empty system message content."
+			unsupportedReason = "Message-level " + feature + " requires empty system message content."
 		} else {
 			unsupportedReason = opts.ConfigurationUpdateUnsupportedReason
 		}
 		if unsupportedReason != "" {
 			return nil, nil, &providererrors.UnsupportedFunctionalityError{
-				Functionality: "Message-level reasoningEffortUpdate",
+				Functionality: "Message-level " + feature,
 				Message:       unsupportedReason,
 			}
 		}
 
 		// The control is independent of systemMessageMode's text handling.
-		return map[string]interface{}{
-			"type":      "configuration_update",
-			"reasoning": map[string]interface{}{"effort": effort},
-		}, nil, nil
+		update := map[string]interface{}{"type": "configuration_update"}
+		if effortPresent {
+			update["reasoning"] = map[string]interface{}{"effort": effort}
+		}
+		var formatWarnings []types.Warning
+		if textFormat != nil {
+			normalized, err := NormalizeTextFormat(textFormat, opts.NormalizeTextFormatSchema, &formatWarnings)
+			if err != nil {
+				return nil, nil, err
+			}
+			update["text"] = map[string]interface{}{"format": normalized}
+		}
+		return update, formatWarnings, nil
 	}
 
 	switch systemMessageMode {
@@ -324,10 +352,10 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 		}
 		return sysMsg, nil, nil
 	case "remove":
-		return nil, &types.Warning{
+		return nil, []types.Warning{{
 			Type:    "other",
 			Message: "system messages are removed for this model",
-		}, nil
+		}}, nil
 	default:
 		return nil, nil, fmt.Errorf("openai.responses: unsupported system message mode: %s", systemMessageMode)
 	}

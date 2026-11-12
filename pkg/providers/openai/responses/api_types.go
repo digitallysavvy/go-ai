@@ -745,10 +745,11 @@ type McpApprovalRequestItem struct {
 
 // ResponsesAPIResponse is the body returned by a non-streaming POST /responses.
 type ResponsesAPIResponse struct {
-	ID          string `json:"id"`
-	CreatedAt   int64  `json:"created_at"`
-	Model       string `json:"model"`
-	ServiceTier string `json:"service_tier,omitempty"`
+	ID                     string          `json:"id"`
+	CreatedAt              int64           `json:"created_at"`
+	Model                  string          `json:"model"`
+	ServiceTier            string          `json:"service_tier,omitempty"`
+	PromptCacheDiagnostics json.RawMessage `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
 
 	// PromptCacheKey and SafetyIdentifier are echoed back verbatim when the
 	// request set them (xAI Responses API; row 0a5dd0f9c3).
@@ -1084,13 +1085,14 @@ type ResponseCompletedEvent struct {
 	Response struct {
 		ID string `json:"id"`
 		// Status is "completed", "incomplete", or "failed". Primary finish-reason signal.
-		Status            string                  `json:"status,omitempty"`
-		Usage             *ResponsesAPIUsage      `json:"usage,omitempty"`
-		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
-		ServiceTier       string                  `json:"service_tier,omitempty"`
-		PromptCacheKey    string                  `json:"prompt_cache_key,omitempty"`
-		SafetyIdentifier  string                  `json:"safety_identifier,omitempty"`
-		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
+		Status                 string                  `json:"status,omitempty"`
+		Usage                  *ResponsesAPIUsage      `json:"usage,omitempty"`
+		IncompleteDetails      *IncompleteDetails      `json:"incomplete_details,omitempty"`
+		ServiceTier            string                  `json:"service_tier,omitempty"`
+		PromptCacheDiagnostics json.RawMessage         `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
+		PromptCacheKey         string                  `json:"prompt_cache_key,omitempty"`
+		SafetyIdentifier       string                  `json:"safety_identifier,omitempty"`
+		Reasoning              *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }
 
@@ -1098,10 +1100,11 @@ type ResponseCompletedEvent struct {
 type ResponseFailedEvent struct {
 	Type     string `json:"type"` // "response.failed"
 	Response struct {
-		ID          string             `json:"id"`
-		ServiceTier string             `json:"service_tier,omitempty"`
-		Usage       *ResponsesAPIUsage `json:"usage,omitempty"`
-		Error       *struct {
+		ID                     string             `json:"id"`
+		ServiceTier            string             `json:"service_tier,omitempty"`
+		PromptCacheDiagnostics json.RawMessage    `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
+		Usage                  *ResponsesAPIUsage `json:"usage,omitempty"`
+		Error                  *struct {
 			Code    string `json:"code,omitempty"`
 			Message string `json:"message,omitempty"`
 		} `json:"error,omitempty"`
