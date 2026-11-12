@@ -176,3 +176,37 @@ func TestR94provbFilesUploadOptionEdges(t *testing.T) {
 		t.Errorf("err = %T %v, want LoadAPIKeyError", err, err)
 	}
 }
+
+// TestR94provbBatchResultLineSchema: TS createJsonLinesResponseHandler
+// (openaiBatchResultLineSchema) fails the results stream on a line without a
+// string custom_id or with an error lacking a string code / message.
+func TestR94provbBatchResultLineSchema(t *testing.T) {
+	ok := `{"custom_id":"a","response":null,"error":{"code":"batch_cancelled","message":"x"}}`
+	for _, bad := range []string{
+		`{"response":null,"error":{"code":"batch_cancelled","message":"x"}}`,
+		`{"custom_id":"b","error":{"message":"x"}}`,
+		`{"custom_id":"b","response":{"body":{}}}`,
+	} {
+		mux := http.NewServeMux()
+		srv := httptest.NewServer(mux)
+		mux.HandleFunc("/batches/batch_1", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"batch_1","status":"completed","output_file_id":"file-out"}`))
+		})
+		mux.HandleFunc("/files/file-out/content", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(ok + "\n" + bad + "\n"))
+		})
+		stream, err := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch().DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "batch_1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Next(); err != nil {
+			t.Fatalf("first line: %v", err)
+		}
+		if _, err := stream.Next(); err == nil || err == io.EOF {
+			t.Errorf("%s: err = %v, want a validation error", bad, err)
+		}
+		_ = stream.Close()
+		srv.Close()
+	}
+}

@@ -14,6 +14,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -506,6 +507,38 @@ type openAIBatchResultLineWire struct {
 	} `json:"error"`
 }
 
+// openaiBatchResultLineNode is TS openaiBatchResultLineSchema.
+var openaiBatchResultLineNode = zodlite.Object(
+	zodlite.F("custom_id", zodlite.String),
+	zodlite.F("response", zodlite.Nullish(zodlite.Object(
+		zodlite.F("status_code", zodlite.Number),
+		zodlite.F("request_id", zodlite.Nullish(zodlite.String)),
+		zodlite.F("body", zodlite.Unknown),
+	))),
+	zodlite.F("error", zodlite.Nullish(zodlite.Object(
+		zodlite.F("code", zodlite.String),
+		zodlite.F("message", zodlite.String),
+	))),
+)
+
+// openaiBatchResultLineValid checks one result line against
+// openaiBatchResultLineSchema, returning the JSONParseError or
+// TypeValidationError TS's JSON-lines handler fails the stream with.
+func openaiBatchResultLineValid(line []byte) error {
+	var value interface{}
+	cause := json.Unmarshal(line, &value)
+	if cause == nil {
+		if bad := openaiBatchResultLineNode(value, true, nil); bad != nil {
+			cause = bad
+		}
+	}
+	if cause == nil {
+		return nil
+	}
+	_, typed := providerutils.ChunkParseFailure(string(line), cause)
+	return typed
+}
+
 // openAIBatchResponseBody is the wire shape of a batch line's `response.body`
 // (a Responses API response, plus the top-level `error` field the Responses
 // API can include that responses.ResponsesAPIResponse doesn't model).
@@ -618,6 +651,14 @@ func (s *openAIBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 		line := s.scanner.Bytes()
 		if providerutils.JSONLineIsBlank(line) {
 			continue
+		}
+		// TS createJsonLinesResponseHandler(openaiBatchResultLineSchema): a
+		// line that is not JSON or fails the schema (a missing custom_id, an
+		// error without a string code and message, ...) fails the stream.
+		if err := openaiBatchResultLineValid(line); err != nil {
+			s.err = err
+			_ = s.rc.Close()
+			return nil, err
 		}
 		var wire openAIBatchResultLineWire
 		if err := providerutils.UnmarshalChunk(line, &wire); err != nil {
