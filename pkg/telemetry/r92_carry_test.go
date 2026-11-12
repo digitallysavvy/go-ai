@@ -11,7 +11,7 @@ func TestR92carryGetBaseAttributesSkipsCredentialHeadersCaseInsensitively(t *tes
 		switch string(kv.Key) {
 		case "ai.model.provider", "ai.model.id", "ai.request.headers.x-trace":
 		default:
-			t.Fatalf("unexpected attribute %s = %s", kv.Key, kv.Value.Emit())
+			t.Fatalf("unexpected attribute %s = %s", kv.Key, kv.Value.String())
 		}
 	}
 	if len(attrs) != 3 {
