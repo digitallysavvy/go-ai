@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
@@ -339,6 +340,56 @@ func TestR91provbSystemOnlyPrompt(t *testing.T) {
 			want := []interface{}{map[string]interface{}{"role": "system", "content": "be brief"}}
 			if !reflect.DeepEqual(msgs, want) {
 				t.Fatalf("messages = %#v, want %#v", msgs, want)
+			}
+		})
+	}
+}
+
+// r91provbServe answers every request with a 200 JSON body.
+func r91provbServe(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// PB-04 (provb2a-01 = provb2b-03): Moonshot and DeepSeek doGenerate content
+// is reasoning, tool calls, then text (moonshotai-chat-language-model.ts:503-525,
+// deepseek-chat-language-model.ts:447-472).
+func TestR91provbToolCallBeforeTextContent(t *testing.T) {
+	resp := `{"id":"r","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"done","reasoning_content":"think","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{\"a\":1}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	models := map[string]func(base string) (provider.LanguageModel, error){
+		"moonshot": func(base string) (provider.LanguageModel, error) {
+			return moonshot.New(moonshot.Config{APIKey: "k", BaseURL: base}).LanguageModel("kimi-k2.5")
+		},
+		"deepseek": func(base string) (provider.LanguageModel, error) {
+			return deepseek.New(deepseek.Config{APIKey: "k", BaseURL: base}).LanguageModel("deepseek-chat")
+		},
+	}
+	for name, mk := range models {
+		mk := mk
+		t.Run(name, func(t *testing.T) {
+			srv := r91provbServe(t, resp)
+			m, err := mk(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			zero := 0
+			out, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: m, Prompt: "hi", MaxRetries: &zero})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var kinds []string
+			for _, p := range out.Steps[0].Content {
+				kinds = append(kinds, reflect.TypeOf(p).Name())
+			}
+			// The unknown tool then adds a tool error after the model content.
+			want := []string{"ReasoningContent", "ToolCallContent", "TextContent", "ToolErrorContent"}
+			if !reflect.DeepEqual(kinds, want) {
+				t.Fatalf("content = %v, want %v", kinds, want)
 			}
 		})
 	}

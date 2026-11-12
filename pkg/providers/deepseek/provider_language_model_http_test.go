@@ -82,7 +82,7 @@ data: [DONE]
 	if err != nil {
 		t.Fatalf("DoGenerate error = %v", err)
 	}
-	if out.Text != "ok" || out.FinishReason != types.FinishReasonStop || len(out.ToolCalls) != 1 || len(out.Content) != 1 {
+	if out.Text != "ok" || out.FinishReason != types.FinishReasonStop || len(out.ToolCalls) != 1 || len(out.Content) != 3 { // reasoning, tool call, text (TS order, r91 PB-04)
 		t.Fatalf("generate result mismatch: %#v", out)
 	}
 	if seenBody["thinking"] == nil {

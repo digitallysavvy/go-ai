@@ -561,6 +561,14 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 				Arguments:    args,
 				RawArguments: rawArgs,
 			}
+			// TS pushes the tool calls before the text
+			// (moonshotai-chat-language-model.ts:509-525).
+			result.Content = append(result.Content, types.ToolCallContent{
+				ToolCallID: id,
+				ToolName:   tc.Function.Name,
+				Input:      rawArgs,
+				Arguments:  args,
+			})
 		}
 	}
 
