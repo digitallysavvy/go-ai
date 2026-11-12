@@ -10,9 +10,18 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
+
+// Round 92 Appendix A citations for the 2ebc78b654 delta (stream area):
+// generate-text/array-output-stream.test.ts 47, 84, 119, 145, 161, 186 are
+// ported below; util/array-output-stream.test.ts 7, 46, 57, 71 are ported
+// by TestR91streamArrayStreamParserChunks / ...WithholdAndFallback (81 is the
+// legacy streamObject parser, TestR91genStreamObjectArrayIncremental).
+// to-ui-message-stream.test.ts 262, 308 are TestR91streamUIInvalidToolCallOnErrorOnce;
+// stream-text.test.ts 27044 is TestR72StreamUIInvalidToolCall.
 
 // r92streamTextChunks is TS array-output-stream.test.ts modelFor(text): one
 // text block streamed one character per delta, then finish.
@@ -285,5 +294,51 @@ func TestR92streamToolInputStartUsesModelTools(t *testing.T) {
 	}
 	if start.Title != "" || start.ToolMetadata != nil || start.Dynamic {
 		t.Fatalf("tool-input-start = %+v", *start)
+	}
+}
+
+func r92streamValidateRaw(raw string) error {
+	res := SafeValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: raw})
+	if res.Success {
+		return nil
+	}
+	return res.Error
+}
+
+// TS validate-ui-messages.test.ts (11323f9894), "invalid messages and parts"
+// 2465 / 2488 / 2524 / 2564 / 2581 / 2596 / 2619 / 2636 and "invalid JSON
+// values in metadata" 2668 / 2705 / 2739 / 2772 / 2798: each case fails with
+// one bounded ValidationError naming the first issue (Go reports the first
+// issue as "<path>: <message>", and a non-finite number without its path:
+// known differences). 2844 (unknown properties holding Infinity) is the
+// known difference "Non-finite numbers in UI messages".
+func TestR92streamValidateUIMessagesBoundedIssues(t *testing.T) {
+	nest := func(v string, depth int) string {
+		return strings.Repeat("[", depth) + v + strings.Repeat("]", depth)
+	}
+	many := strings.TrimSuffix(strings.Repeat("1e999,", 1000), ",")
+	for name, tc := range map[string]struct{ raw, want string }{
+		"2465 part schema":    {`[{"id":"1","role":"user","parts":[{"type":"text"}]}]`, "[0].parts[0]: Invalid input: expected string for text"},
+		"2488 unknown type":   {`[{"id":"1","role":"user","parts":[{"type":"unknown"}]}]`, "[0].parts[0].type: " + uiPartTypeMessage},
+		"2524 tool state":     {`[{"id":"1","role":"assistant","parts":[{"type":"tool-foo","toolCallId":"1","state":"unknown"}]}]`, "[0].parts[0].state: " + uiToolStateMessage},
+		"2564 first message":  {`[{"id":"1","role":"user","parts":[{"type":"text","text":"valid"}]},{},{}]`, "[1].id: "},
+		"2581 first part":     {`[{"id":"1","role":"user","parts":[{"type":"text","text":"valid"},{},{}]}]`, "[0].parts[1].type: "},
+		"2596 steering part":  {`[{"id":"1","role":"assistant","parts":[{"type":"steering-message","id":"steer-1","parts":[{"type":"text","text":"valid"},{},{}]}]}]`, "[0].parts[0]: parts[1]: "},
+		"2619 first citation": {`[{"id":"1","role":"assistant","parts":[{"type":"text","text":"valid","citations":[{},{}]}]}]`, "citations[0].source"},
+		"2668 provider meta":  {`[{"id":"1","role":"user","parts":[{"type":"text","text":"Hello","providerMetadata":{"provider":{"key":[1e999]}}}]}]`, uiInvalidJSONValueMessage},
+		"2705 deep nested":    {`[{"id":"1","role":"user","parts":[{"type":"text","text":"Hello","providerMetadata":{"provider":{"key":` + nest("1e999", 300) + `}}}]}]`, uiInvalidJSONValueMessage},
+		"2739 many values":    {`[{"id":"1","role":"assistant","parts":[{"type":"tool-foo","toolCallId":"1","state":"input-available","input":{},"callProviderMetadata":{"provider":{"key":` + nest(many, 100) + `}}}]}]`, uiInvalidJSONValueMessage},
+		"2772 tool metadata":  {`[{"id":"1","role":"assistant","parts":[{"type":"dynamic-tool","toolName":"foo","toolCallId":"1","state":"input-available","input":{},"toolMetadata":{"key":[[1e999]]}}]}]`, uiInvalidJSONValueMessage},
+		"2798 citation meta":  {`[{"id":"1","role":"assistant","parts":[{"type":"text","text":"Hello","citations":[{"source":{"type":"source","sourceType":"url","id":"source-1","url":"https://example.com","providerMetadata":{"provider":{"key":[1e999]}}}}]}]}]`, uiInvalidJSONValueMessage},
+	} {
+		err := r92streamValidateRaw(tc.raw)
+		var verr *providererrors.ValidationError
+		if !errors.As(err, &verr) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v (%T), want %q", name, err, err, tc.want)
+			continue
+		}
+		if len(err.Error()) > len(tc.raw)+5000 {
+			t.Errorf("%s: error length %d for input %d", name, len(err.Error()), len(tc.raw))
+		}
 	}
 }
