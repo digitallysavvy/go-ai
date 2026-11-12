@@ -203,7 +203,7 @@ func mistralTranscriptionProviderMetadata(response mistralTranscriptionResponse)
 
 	var providerSegments []map[string]interface{}
 	for _, seg := range response.Segments {
-		if seg.Type == "" && seg.Score == nil && seg.SpeakerID == "" {
+		if seg.Type == nil && seg.Score == nil && seg.SpeakerID == nil {
 			continue
 		}
 		ps := map[string]interface{}{
@@ -211,14 +211,14 @@ func mistralTranscriptionProviderMetadata(response mistralTranscriptionResponse)
 			"startSecond": seg.Start,
 			"endSecond":   seg.End,
 		}
-		if seg.Type != "" {
-			ps["type"] = seg.Type
+		if seg.Type != nil {
+			ps["type"] = *seg.Type
 		}
 		if seg.Score != nil {
 			ps["score"] = *seg.Score
 		}
-		if seg.SpeakerID != "" {
-			ps["speakerId"] = seg.SpeakerID
+		if seg.SpeakerID != nil {
+			ps["speakerId"] = *seg.SpeakerID
 		}
 		providerSegments = append(providerSegments, ps)
 	}
@@ -483,12 +483,13 @@ type mistralTranscriptionResponse struct {
 	Text     string `json:"text"`
 	Language string `json:"language,omitempty"`
 	Segments []struct {
-		Type      string   `json:"type,omitempty"`
+		// Type / SpeakerID are nil when absent or null (TS `!= null`).
+		Type      *string  `json:"type,omitempty"`
 		Text      string   `json:"text"`
 		Start     float64  `json:"start"`
 		End       float64  `json:"end"`
 		Score     *float64 `json:"score,omitempty"`
-		SpeakerID string   `json:"speaker_id,omitempty"`
+		SpeakerID *string  `json:"speaker_id,omitempty"`
 	} `json:"segments,omitempty"`
 	Usage *struct {
 		// TS z.number(): fractional counts are accepted.
