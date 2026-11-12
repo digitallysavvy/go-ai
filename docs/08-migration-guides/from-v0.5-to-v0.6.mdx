@@ -5,7 +5,7 @@ description: "Migration guide for upgrading Go AI SDK apps from v0.5.x to v0.6.0
 
 # Migrate Go AI SDK v0.5.x to v0.6.0
 
-v0.6.0 catches up with the TypeScript AI SDK `ai@7.0.153`. Read this page if
+v0.6.0 catches up with the TypeScript AI SDK `ai@7.0.170`. Read this page if
 you upgrade an application from any v0.5.x release (v0.5.0 to v0.5.3).
 
 Most v0.5.x code compiles unchanged. A few struct fields changed type, and
@@ -671,6 +671,83 @@ already, you can skip them.
 | `CODEX_HOME=""` | Means the working directory | silent behavior change | Unset `CODEX_HOME` | [Codex: an empty CODEX_HOME and empty refresh tokens](#codex-home-empty) |
 | Codex / OpenCode refreshed auth files; ACP lifecycle state nulls | TS key order and validation | silent behavior change | None | [Harness auth files and lifecycle state follow TS](#harness-r90-details) |
 | `invalid UI message chunk` in WorkflowChatTransport errors | AI_JSONParseError text | error text only | None | [WorkflowChatTransport reconnect error text for a malformed frame](#workflow-chat-transport-parse-error-text) |
+| `tool not found` after provider MCP calls | No client error result or tool message | silent behavior change | None | [Provider-executed MCP calls no longer get a client tool-not-found result](#provider-executed-mcp-no-client-error) |
+| `StopWhen:` allowing over 1000 steps | No built-in ceiling | silent behavior change | Add `StepCountIs(n)` | [GenerateText has no 1000-step ceiling](#generate-text-no-step-ceiling) |
+| `step N failed:` from WorkflowAgent | The step error itself | error text only | Use `errors.As` | [WorkflowAgent returns step errors without the step prefix](#workflow-agent-errors-unwrapped) |
+| `CallID` prefix `call-` (objects) | `aiobj-<24>` | silent behavior change | Accept the new prefix | [GenerateObject and StreamObject call IDs start with aiobj-](#object-call-id-aiobj) |
+| `OnError:` in `StreamObjectOptions` | Also called for prep failures | silent behavior change | Expect the extra call | [StreamObject calls OnError for preparation failures](#stream-object-onerror-prep) |
+| `"image-data"`, `"file-data"` tool results | Declared media type kept | wire/protocol change | Send the right type | [Legacy image-data and file-data tool results keep their media type](#legacy-tool-result-media-type) |
+| `ExperimentalDownload:` | Also downloads generated file URLs | silent behavior change | Handle model-returned URLs | [Generated file URLs use ExperimentalDownload](#generated-file-experimental-download) |
+| `ExperimentalSandbox:` with a description | Not added to the system prompt | wire/protocol change | Add it to `System` | [Sandbox description no longer added to the system prompt](#sandbox-description-not-in-prompt) |
+| Typed values in `DefaultSettingsMiddleware` / `PrepareStep` provider options | Merged, not replaced | silent behavior change | Check the merged options | [DefaultSettingsMiddleware and PrepareStep merge typed provider options](#default-settings-typed-options-merge) |
+| `LangSmithDeploymentTransport`, `LANGGRAPH_API_KEY` | TS client behavior and errors | wire/protocol change | Use `errors.As` | [LangSmithDeploymentTransport follows the TS LangGraph client](#langsmith-transport-ts-client) |
+| `ToolApproval:` on code mode tools | Honored; unknown values fail closed | silent behavior change | Handle denial errors | [Code mode honors approval funcs and statuses and fails closed](#codemode-approval-fail-closed) |
+| `ValidateInput:` on code mode tools | Runs before Execute | silent behavior change | Check the validator | [Code mode honors Tool.ValidateInput](#codemode-validate-input) |
+| `GetCodeModeInterrupt`, `UnwrapCodeModeResult` | Finds interrupts in Go results | silent behavior change | None | [GetCodeModeInterrupt reads Go generate results](#codemode-interrupt-go-results) |
+| Code mode `invalid JSON payload`, timeout texts | Script error kept; guest SyntaxError | error text only | Match the new text | [Code mode script errors keep their own text](#codemode-error-text) |
+| `MessageMetadata` reading `part["type"]` | `tool-error`; no internal markers | silent behavior change | Match `tool-error` | [UI MessageMetadata part types match TS](#ui-message-metadata-tool-error) |
+| `ChunkTypeToolInputStart`, UI `tool-input-start` | Carries title and metadata | wire/protocol change | None | [tool-input-start carries the tool title and metadata](#tool-input-start-title) |
+| `tool-output-error` after `tool-input-error` | Only tool-input-error | wire/protocol change | Read tool-input-error | [Invalid tool calls produce one UI error chunk and one OnError call](#ui-invalid-tool-call-once) |
+| `ValidateUIMessages` error text | TS selector and invalid-value issues | error text only | Match `ValidationError` | [ValidateUIMessages part type, state and invalid-value errors match TS](#validate-ui-messages-selector) |
+| Block IDs reused after `ChunkTypeTextEnd` | Error part; not recorded | silent behavior change | None | [Deltas after a block ends are flagged, not recorded](#orphan-block-delta-error) |
+| `NoObjectGeneratedError` from StreamText output | Final-step usage and response | silent behavior change | None | [StreamText output errors carry the final step's usage and response](#stream-output-final-step-context) |
+| Zero `Timeout` values | TS timeout text | error text only | Match the new text | [Zero timeouts use the TS error text](#zero-timeout-text) |
+| `ResponseHeaders["Retry-After"]` | Lower-case keys for schema errors | silent behavior change | Use `ResponseHeader(name)` | [Schema provider error headers are lower case](#schema-error-response-headers) |
+| `Failed to download` texts | Cause message preferred | error text only | Match the new text | [DownloadError text prefers the cause](#download-error-cause) |
+| Endpoints answering 3xx | HTTP status error | silent behavior change | None | [An unfollowed 3xx response is an HTTP error](#http-3xx-status-error) |
+| `exception.type` | TS error names | silent behavior change | Update queries | [Span exception.type is the TS error name](#span-exception-type) |
+| `http.response.status_code` | Only direct or last retry error | silent behavior change | None | [http.response.status_code only for the error itself or RetryError.LastError](#span-status-code-unwrap) |
+| `ai.prompt.messages` | V4 prompt JSON | silent behavior change | Update parsers | [Legacy ai.prompt.messages is the V4 prompt](#legacy-prompt-messages-v4) |
+| Root `ai.prompt` attribute | String content for a string prompt | silent behavior change | Update parsers | [Legacy root ai.prompt keeps a string prompt as the user message](#legacy-root-prompt-string) |
+| `ai.response.object` | Model key order | silent behavior change | None | [Legacy ai.response.object keeps the model key order](#legacy-response-object-order) |
+| `ai.toolCall.durationMs` | Removed | silent behavior change | Use the span duration | [No ai.toolCall.durationMs on legacy tool spans](#legacy-tool-span-duration) |
+| `ai.settings.maxRetries` on audio spans | Not recorded | silent behavior change | None | [No ai.settings attributes on legacy speech and transcription spans](#legacy-audio-settings) |
+| Struct-literal `WorkflowAgent` without `StopWhen` | Stream has no default limit | silent behavior change | Set `StopWhen` | [Struct-literal WorkflowAgent stream has no 20-step default](#workflow-literal-stream-steps) |
+| `NormalizeToolModelOutput` | FileContentBlock kept | silent behavior change | Handle file blocks | [Harness file parts stay file parts](#harness-tool-output-file-part) |
+| `MintBridgeToken`, `BRIDGE_CHANNEL_TOKEN`, `bridge.token` | Public-key bridge auth | wire/protocol change | Drop the token; new sessions | [Harness bridges authenticate with a per-session public key](#bridge-public-key-auth) |
+| MCP `elicitation/create` | TS schema and messages | silent behavior change | Send `requestedSchema` | [MCP elicitation params follow the TS schema](#mcp-elicitation-schema) |
+| MCP `transport error` texts | Unwrapped TS errors | error text only | Use `errors.As` | [MCP send errors are unwrapped](#mcp-send-errors) |
+| MCP HTTP discovery failures | No initialize fallback on network errors | silent behavior change | None | [MCP does not fall back to initialize after a discover network error](#mcp-discover-network-error) |
+| MiniMax `video generation aborted` | TS errors | silent behavior change | Use `errors.Is` | [MiniMax video errors follow TS](#minimax-video-errors) |
+| `toolwebfetch` offsets, `toolbash` truncation | UTF-16 lengths | silent behavior change | None | [toolwebfetch and toolbash count UTF-16 code units](#utf16-lengths) |
+| `cerebras` / `deepinfra` media factories | NoSuchModelError | silent behavior change | Remove the calls | [Cerebras and DeepInfra unsupported model types return NoSuchModelError](#cerebras-deepinfra-model-types) |
+| MCP / Vercel / Topaz / DeepInfra / OpenCode / Codex / Prodia details | TS details | wire/protocol change | None | [MCP, Vercel, Topaz, DeepInfra, OpenCode, Codex and Prodia details follow TS](#tools-r91-details) |
+| `amazon-bedrock request failed` | Retryable `Cannot connect to API` ProviderError | error text only | Match on the type | [Bedrock connection failures are the retryable Cannot connect to API ProviderError](#bedrock-transport-errors) |
+| `anthropic-beta` in `Config.Headers` with `DoStartBatch` | Not sent on batch start | wire/protocol change | Use `anthropicBeta` options | [Anthropic DoStartBatch drops a configured anthropic-beta header](#anthropic-batch-config-beta) |
+| ElevenLabs `ExperimentalStreamSpeech` warning | TS name | error text only | Match the new text | [ElevenLabs streaming-only warning names experimental_streamSpeech](#elevenlabs-streaming-warning-text) |
+| AWS credential error texts | TS / aws4fetch texts | error text only | Match the new text | [AWS credential errors use the TS texts](#aws-sigv4-credentials-text) |
+| Typed values in `ProviderOptions` | Honored like the map form | silent behavior change | Check applied options | [Go-typed provider option literals are honored](#typed-provider-option-literals) |
+| `MaxInputBytesPerCall` on compatible wrappers | 0 (no byte split) | silent behavior change | None | [OpenAI-compatible embedding batches are not split by bytes](#compat-embedding-byte-budget) |
+| Moonshot / DeepSeek `Content` by index | Reasoning, tool calls, text | silent behavior change | Look up by type | [Moonshot and DeepSeek content order is reasoning, tool calls, text](#moonshot-deepseek-content-order) |
+| `Prompt{Text:` on Responses-style models | Sent as a user message | wire/protocol change | None | [Prompt.Text is one user message for Responses-style models](#responses-prompt-text) |
+| `Fireworks async ... failed` | ProviderError with status text | error text only | Use `errors.As` | [Fireworks async image errors are ProviderErrors with the status text](#fireworks-async-image-errors) |
+| Open Responses with both option namespaces | Provider key wins | silent behavior change | Pass one | [Open Responses provider key wins over the openai alias](#openresponses-provider-key) |
+| `provider error (0)` on cancel | Abort error returned as is | error text only | Use `errors.Is` | [Aborted calls return the abort error, not a status-0 ProviderError](#transport-errors-unchanged) |
+| OpenAI / Azure / xAI / Moonshot / DeepSeek / Open Responses details | TS texts and wire details | wire/protocol change | None | [OpenAI, Azure, xAI, Moonshot, DeepSeek and Open Responses details follow TS](#provb-r91-details) |
+| `bytedance error (code` | TS message | error text only | Match `Code` | [ByteDance HTTP error text is the TS message](#bytedance-error-text) |
+| `baseten` media factories | NoSuchModelError | silent behavior change | Remove the calls | [Baseten media models return NoSuchModelError](#baseten-media-no-such-model) |
+| BFL / AssemblyAI / fal / Gladia errors | TS error types and texts | error text only | Use `errors.As` | [BFL, AssemblyAI, fal and Gladia errors follow TS](#provc-r91-media-errors) |
+| ByteDance `usage` metadata | Absent when not sent | silent behavior change | Check presence | [ByteDance usage metadata and status poll key](#bytedance-metadata-poll) |
+| Repeated response headers (media providers) | Joined with ", " | silent behavior change | Split if needed | [Media providers join repeated response headers](#media-response-headers-joined) |
+| BFL video polling | X-Key sent on polls | wire/protocol change | None | [BFL video polls send the X-Key credential](#bfl-video-poll-auth) |
+| `.DecisionModel(` on `google.Provider` | Native Decisions API | wire/protocol change | Use `ModelGeminiDecision1` | [Google decision models use the native Gemini Decisions API](#google-decision-native) |
+| `InputDetails.TextTokens` (Interactions) | Not set | silent behavior change | Read `Usage.Raw` | [Google Interactions usage has no per-modality input details](#google-interactions-usage-details) |
+| `background: true` Interactions streams | GET errors in the stream | silent behavior change | Read stream errors | [Google Interactions background streams report GET failures in the stream](#google-interactions-background-get) |
+| Missing-key errors (Mistral / Groq / Cohere / Perplexity media) | LoadAPIKeyError unwrapped | error text only | Use `errors.As` | [Missing API key returns LoadAPIKeyError unwrapped](#load-api-key-error-unwrapped) |
+| Google / Vertex transport error texts | `Cannot connect to API` | error text only | Use `errors.As` | [Google and Vertex transport failures read Cannot connect to API](#google-vertex-connect-errors) |
+| Gateway `RequestCounts` | Nil when inconsistent | silent behavior change | Handle nil | [Gateway batch status omits inconsistent request counts](#gateway-batch-request-counts) |
+| Gateway `Invalid error response format` | TS text, real status | error text only | Match the new text | [Gateway invalid success bodies give the TS error text](#gateway-success-schema-errors) |
+| Null tool inputs to Gemini | `args: null` | wire/protocol change | None | [Gemini sends args: null for a JSON null tool input](#gemini-null-tool-args) |
+| `googlevertex/xai` headers and options | Provider headers win; options validated | wire/protocol change | Fix option types | [Vertex xAI provider headers win and compatible options are validated](#vertex-xai-headers-validation) |
+| Google stream source parts | Document sources too | silent behavior change | Handle document sources | [Gemini streams File Search and RAG document sources](#gemini-stream-document-sources) |
+| `advisor_20260301` inputs | Extra keys invalid | silent behavior change | None | [Anthropic advisor tool input is strict](#advisor-input-strict) |
+| `ExperimentalToolCallers:` nil entries | Tool unaffected | silent behavior change | Use an empty slice to hide | [An unset tool-caller entry leaves the tool unaffected](#tool-callers-unset-entry) |
+| Media download error messages | Server reason phrase | error text only | Match the new text | [Media download errors keep the server reason phrase](#download-status-reason-phrase) |
+| Numeric decision question / option IDs | JS key order | wire/protocol change | None | [Decision question and option keys follow JS key order](#decision-js-key-order) |
+| `NormalizeStreamProviderError` | TS message and type rules | silent behavior change | None | [Stream provider error payloads without a string message are kept](#stream-provider-error-normalization) |
+| `logitBias` keys, integer and URL options | JS / zod rules | silent behavior change | None | [Provider option number keys, integers and URLs follow JS and zod](#option-schema-js-coercion) |
+| `MockTextStream` `Read` | io.Reader contract | silent behavior change | None | [testutil.MockTextStream.Read follows io.Reader](#mock-text-stream-read) |
+| Rev.ai errors and `config` field | TS codes, headers and key order | wire/protocol change | None | [Rev.ai job errors, headers and config order follow TS](#revai-r91-details) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1872,6 +1949,107 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** No action unless you cancel from a step callback and expect `OnEnd`. To stop after a step, use `StopWhen`.
 - **Kind:** silent behavior change
 
+### Provider-executed MCP calls no longer get a client tool-not-found result {#provider-executed-mcp-no-client-error}
+
+- **What changed:** A provider-executed call of a tool that is not in `Tools` (OpenAI `mcp.*` calls, the Anthropic MCP connector) produced a `tool not found` tool result and a role:tool response message, which the next OpenAI turn rejected. v0.6 produces neither: the call is the provider's, as TS generate-text.ts (clientToolCalls) and execute-tool-call.ts (review round 91).
+- **Am I affected?** `tool not found` results, `ResponseMessages` with `RoleTool` after OpenAI MCP or Anthropic MCP connector calls.
+- **What to do:** No action unless you relied on that error result.
+- **Kind:** silent behavior change
+
+### GenerateText has no 1000-step ceiling {#generate-text-no-step-ceiling}
+
+- **What changed:** `GenerateText` stopped a tool loop after 1000 steps even when `StopWhen` allowed more. v0.6 ends the loop only through `StopWhen` (or a step without client tool calls), as TS generate-text.ts (review round 91).
+- **Am I affected?** `StopWhen` conditions that allow more than 1000 steps.
+- **What to do:** Add `ai.StepCountIs(n)` to `StopWhen` if you relied on the ceiling.
+- **Kind:** silent behavior change
+
+### GenerateObject and StreamObject call IDs start with aiobj- {#object-call-id-aiobj}
+
+- **What changed:** `GenerateObject` / `StreamObject` call IDs in callbacks and telemetry started with `call-`. v0.6 uses `aiobj-` and 24 characters, as TS generate-object.ts / stream-object.ts (review round 91).
+- **Am I affected?** `CallID` checks for a `call-` prefix in object callbacks or telemetry.
+- **What to do:** No action unless you parse the call ID.
+- **Kind:** silent behavior change
+
+### StreamObject calls OnError for preparation failures {#stream-object-onerror-prep}
+
+- **What changed:** A `StreamObject` prompt, download or response-format failure returned the error without calling `OnError`. v0.6 calls `OnError` with the (gateway-wrapped) error after the telemetry error event, as TS stream-object.ts (review round 91).
+- **Am I affected?** `StreamObjectOptions.OnError` with invalid prompts or failing downloads.
+- **What to do:** No action unless `OnError` must not see these errors.
+- **Kind:** silent behavior change
+
+### Generated file URLs use ExperimentalDownload {#generated-file-experimental-download}
+
+- **What changed:** URL-backed generated and reasoning files a model returns were always downloaded with the default downloader. v0.6 uses `ExperimentalDownload` when it is set, in `GenerateText`, `StreamText` and the agent loop, called with `IsURLSupportedByModel: false`; a nil result is a `*DownloadError` `Generated file URL <href> must be downloaded, but the download function returned null`, and the function's own error is returned as is (TS 2ebc78b654). Without it, the validated, DNS-pinned default downloader stays.
+- **Am I affected?** `ExperimentalDownload` functions that return nil when `IsURLSupportedByModel` is false, or that assume only prompt URLs.
+- **What to do:** Download (or reject) generated file URLs in your function too.
+- **Kind:** silent behavior change
+
+### Sandbox description no longer added to the system prompt {#sandbox-description-not-in-prompt}
+
+- **What changed:** `GenerateText` and `StreamText` appended `ExperimentalSandbox`'s description to the system prompt of every step. TS never does this (the description "is not added to the model prompt automatically"); v0.6 leaves the prompt alone. Tool description functions and `PrepareStep` still read it (review round 91).
+- **Am I affected?** `ExperimentalSandbox` sessions built with `WithShellSandboxDescription` (or any sandbox description) that the model was meant to see.
+- **What to do:** Put the description in the prompt yourself:
+
+```go
+res, err := ai.StreamText(ctx, ai.StreamTextOptions{
+	Model:               model,
+	System:              "You are helpful.\n\nSandbox:\n" + sandboxDescription,
+	Prompt:              "Run the tests.",
+	ExperimentalSandbox: sandbox,
+})
+```
+
+- **Kind:** wire/protocol change
+
+### DefaultSettingsMiddleware and PrepareStep merge typed provider options {#default-settings-typed-options-merge}
+
+- **What changed:** A Go-typed provider-options value (typed option struct, `map[string]string`, pointer) in a `DefaultSettingsMiddleware` default, or in options merged for `PrepareStep` and approval resumes, replaced the other side instead of merging with it. v0.6 merges every object through its JSON form, as TS mergeObjects, and skips `__proto__` / `constructor` / `prototype` keys (review round 91).
+- **Am I affected?** `DefaultSettingsMiddleware` or `PrepareStep` provider options given as typed values.
+- **What to do:** No action unless you relied on the call's value replacing the default.
+- **Kind:** silent behavior change
+
+### tool-input-start carries the tool title and metadata {#tool-input-start-title}
+
+- **What changed:** A forwarded `tool-input-start` chunk had no tool title or metadata. v0.6 sets `Title` and `ToolMetadata` from the tool (UI chunk `title` / `toolMetadata`), as TS stream-language-model-call.ts (review round 91).
+- **Am I affected?** Consumers of `ChunkTypeToolInputStart` or UI `tool-input-start` chunks that compare them exactly.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Deltas after a block ends are flagged, not recorded {#orphan-block-delta-error}
+
+- **What changed:** A text or reasoning delta (or end) for a block that had already ended was recorded. v0.6 forwards it followed by an error part `text part <id> not found` (full stream only) and leaves it out of the text, as TS stream-text.ts; deltas of blocks that never started are still recorded (review round 91).
+- **Am I affected?** Providers or transforms that reuse a block ID after its end.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### StreamText output errors carry the final step's usage and response {#stream-output-final-step-context}
+
+- **What changed:** A `NoObjectGeneratedError` from `StreamText` output carried the total usage and no response. v0.6 carries the final step's usage, response and finish reason, as TS stream-text.ts parseCompleteOutput (review round 91).
+- **Am I affected?** Reading `Usage` / `Response` of that error.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Zero timeouts use the TS error text {#zero-timeout-text}
+
+- **What changed:** A configured zero or negative timeout produced the Go fallback text. v0.6 reads `Step timeout of 0ms exceeded`, and for a tool `The operation was aborted due to timeout` (TS set-abort-timeout.ts, merge-abort-signals.ts) (review round 91).
+- **Am I affected?** Matching timeout error texts with zero or negative durations.
+- **What to do:** No action unless you match the text.
+- **Kind:** error text only
+
+### Decision question and option keys follow JS key order {#decision-js-key-order}
+
+- **What changed:** Decision question IDs and choice options were ordered as sorted strings (`1, 10, 2`). v0.6 puts array-index keys first in numeric order (`1, 2, 10`), as JS objects enumerate them; the telemetry file state part writes type, mediaType, filename, data; and unpadded or base64url file data strings decode (TS convertBase64ToUint8Array) (review round 91).
+- **Am I affected?** Decision prompts or telemetry with numeric question or option IDs.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### testutil.MockTextStream.Read follows io.Reader {#mock-text-stream-read}
+
+- **What changed:** `testutil.MockTextStream.Read` reported the whole chunk length even when the buffer was shorter, so `io.ReadAll` panicked, and returned `0, nil` for non-text chunks. v0.6 copies at most `len(p)` bytes, keeps the rest for the next call and skips non-text chunks (review round 91).
+- **Am I affected?** Tests that read a `MockTextStream` with `Read`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ## Prompts and validation {#prompts-and-validation}
 
 ### Prompt validation matches TS {#prompt-validation}
@@ -2197,6 +2375,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Am I affected?** Code that matches that error's text.
 - **What to do:** Use `FileDataTypeURL` for data URLs.
 - **Kind:** error text only
+
+### Legacy image-data and file-data tool results keep their media type {#legacy-tool-result-media-type}
+
+- **What changed:** A legacy `image-data` / `file-data` tool-result block had its media type sniffed from the bytes. v0.6 keeps the declared type (new `FileContentBlock.LegacyContentType()`), and a URL media type uses the whole pathname when it has no dot, as TS convert-to-language-model-prompt.ts (review round 91).
+- **Am I affected?** Tool results decoded from `image-data` / `file-data` JSON with a wrong `mediaType`.
+- **What to do:** Send the correct `mediaType`.
+- **Kind:** wire/protocol change
 
 ## Tools {#tools}
 
@@ -2915,6 +3100,34 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What changed:** The parsed input of the Anthropic provider tools whose TS input schema is a flat zod `z.object` (bash, text editor, computer, code execution 20250522, tool search, web fetch, web search, advisor) now drops keys the schema does not declare, as zod's default strip does. The tool call's `Arguments`, `execute` input and replayed messages carry the stripped input. Other provider tools and user tools keep every key (review round 87e).
 - **Am I affected?** Code that reads extra keys from the input of those Anthropic tools (`ToolCall.Arguments`, the `execute` input).
 - **What to do:** No action unless you rely on keys the tool schema does not declare.
+- **Kind:** silent behavior change
+
+### toolwebfetch and toolbash count UTF-16 code units {#utf16-lengths}
+
+- **What changed:** `toolwebfetch` offsets, lengths and the URL limit, and `toolbash` truncation, counted bytes or runes. v0.6 counts UTF-16 code units, as TS (review round 91).
+- **Am I affected?** `toolwebfetch` offsets / lengths and `toolbash` truncation on non-ASCII text.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### MCP, Vercel, Topaz, DeepInfra, OpenCode, Codex and Prodia details follow TS {#tools-r91-details}
+
+- **What changed:** Small TS alignments (review round 91): MCP OAuth register / exchange / refresh take a developer-configured `TrustedOrigin` (new `RegisterOAuthClientWithOptions`); MCP Apps `csp.baseUriDomains`; MCP JSON-RPC key order and no `params` on cursor-less list calls; uncapped `tools/call` retry backoff; a closed client reports "closed client" before the capability error; cross-origin MCP and Vercel redirects drop `Proxy-Authorization` and `Cookie`; Vercel git / tarball sources, runtime + image rejected before any request and the stdin `bytesWritten` schema; Topaz video `InvalidResponseDataError`; DeepInfra image error `Data`; OpenCode GitLab null body is "invalid JSON"; Codex sends an empty `ChatGPT-Account-ID`; Prodia keeps large whole numbers as `int64`; typed provider-option literals read in quiverai / deepinfra / voyage / minimax / parallel.
+- **Am I affected?** Code that matches these texts or wire details.
+- **What to do:** No action unless you match them.
+- **Kind:** wire/protocol change
+
+### Anthropic advisor tool input is strict {#advisor-input-strict}
+
+- **What changed:** An `anthropic.advisor_20260301` call with input keys had them stripped to `{}`. v0.6 makes such a call invalid (`InvalidToolInputError`), as TS z.object({}).strict() (review round 91).
+- **Am I affected?** Advisor tool calls whose input is not `{}`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### An unset tool-caller entry leaves the tool unaffected {#tool-callers-unset-entry}
+
+- **What changed:** `ResolveToolCallerConfiguration` kept a nil callers entry as an empty list, hiding that tool from the model, and returned nil for an empty non-nil tool set. v0.6 skips nil entries and reports an unknown tool for an empty tool set, as TS tool-caller-configuration.ts; a provider caller's `PrepareProviderOptions` gets a typed callee `ProviderOptions` as its JSON object (review round 91).
+- **Am I affected?** `ExperimentalToolCallers` with nil entries, or with an empty `Tools` slice.
+- **What to do:** Use an empty non-nil slice to hide a tool.
 - **Kind:** silent behavior change
 
 ## Agents and approvals {#agents-and-approvals}
@@ -3730,6 +3943,27 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** No action unless you match that text; match the suffix.
 - **Kind:** error text only
 
+### WorkflowAgent returns step errors without the step prefix {#workflow-agent-errors-unwrapped}
+
+- **What changed:** A `WorkflowAgent` run returned its model, approval or abort error wrapped as `step N failed: <error>`. v0.6 returns the error itself, as TS workflow-agent.ts; `Execute` and `GenerateAgent` of the legacy agent keep the prefix (review round 91).
+- **Am I affected?** String matching on `step ` / `failed:` in `WorkflowAgent` errors.
+- **What to do:** Use `errors.As` / `errors.Is` on the returned error.
+- **Kind:** error text only
+
+### LangSmithDeploymentTransport follows the TS LangGraph client {#langsmith-transport-ts-client}
+
+- **What changed:** `LangSmithDeploymentTransport` sent no `x-api-key` without `APIKey`, failed on an empty URL, trimmed every trailing slash, never retried, truncated HTTP error bodies and ignored `__interrupt__: null`. v0.6 matches langgraph-sdk 1.14.0: `x-api-key` from `LANGGRAPH_API_KEY` / `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY` (trimmed, one quote pair removed), an empty URL is `http://localhost:8123`, one trailing slash is trimmed, a connection failure is retried up to 4 times and then is a `*LangGraphConnectionError`, non-2xx is a `*LangGraphHTTPError` (`HTTP <status>: <body>`), a non-event-stream response fails, and `__interrupt__: null` is a `*GraphInterruptError` (review round 91).
+- **Am I affected?** `LangSmithDeploymentTransportOptions`, `HTTP <code>:` matching, those environment variables set in the process.
+- **What to do:** Set `APIKey` explicitly if the environment variables hold other keys; match the new error types with `errors.As`.
+- **Kind:** wire/protocol change
+
+### Struct-literal WorkflowAgent stream has no 20-step default {#workflow-literal-stream-steps}
+
+- **What changed:** A `WorkflowAgent` built as a struct literal with no `StopWhen` stopped `Stream` after 20 steps. v0.6 streams without a step limit, as TS workflow-agent.ts; generate keeps the 20-step default (review round 91).
+- **Am I affected?** Struct-literal `WorkflowAgent` values without `StopWhen` used with `Stream`.
+- **What to do:** Set `StopWhen` if you relied on the limit.
+- **Kind:** silent behavior change
+
 ## UI message streams {#ui-message-streams}
 
 ### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
@@ -4339,6 +4573,27 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** No action unless you match that text.
 - **Kind:** error text only
 
+### UI MessageMetadata part types match TS {#ui-message-metadata-tool-error}
+
+- **What changed:** `MessageMetadata` received `type: "tool-result"` for a failed tool result, and harness / `NewStreamTextResultFromParts` streams called it for the Go-only `response-metadata` / `ai.stream.firstChunk` markers. v0.6 passes `tool-error` and no longer calls it for those markers (TS to-ui-message-stream.ts, harness-stream-text-result.ts) (review round 91).
+- **Am I affected?** `UIMessageStreamResultOptions.MessageMetadata` reading `part["type"]`.
+- **What to do:** Match `"tool-error"`.
+- **Kind:** silent behavior change
+
+### Invalid tool calls produce one UI error chunk and one OnError call {#ui-invalid-tool-call-once}
+
+- **What changed:** For an invalid tool call the UI stream wrote `tool-input-error` and then a `tool-output-error` for the tool error `StreamText` injects, calling `OnError` twice. v0.6 writes only `tool-input-error` and calls `OnError` once (TS 8585d7e56f) (review round 91).
+- **Am I affected?** UI consumers expecting `tool-output-error` after `tool-input-error`, or counting `OnError` calls.
+- **What to do:** Read the error from `tool-input-error`.
+- **Kind:** wire/protocol change
+
+### ValidateUIMessages part type, state and invalid-value errors match TS {#validate-ui-messages-selector}
+
+- **What changed:** A part with a missing or unknown type, or a tool part with an unknown state, failed with Go texts, and a non-finite number was an `*InvalidArgumentError`. v0.6 reports TS selector issues at `[i].parts[j].type` / `.state` and a non-finite number as a `*errors.ValidationError` with the TS "Invalid JSON value ..." text (TS 11323f9894) (review round 91).
+- **Am I affected?** Code matching `ValidateUIMessages` error text or `*InvalidArgumentError`.
+- **What to do:** Match `*errors.ValidationError`.
+- **Kind:** error text only
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -4886,6 +5141,55 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+### Span exception.type is the TS error name {#span-exception-type}
+
+- **What changed:** Span error events recorded the Go type (`*errors.ProviderError`) with a stack trace. v0.6 records the TS error name (`AI_APICallError`, `AI_RetryError`, `AbortError`, ...) without a stack trace on GenAI and legacy spans (TS record-span.ts) (review round 91).
+- **Am I affected?** Telemetry queries on `exception.type` or `exception.stacktrace`.
+- **What to do:** Query the TS names.
+- **Kind:** silent behavior change
+
+### http.response.status_code only for the error itself or RetryError.LastError {#span-status-code-unwrap}
+
+- **What changed:** `http.response.status_code` was set for any error that wrapped a `ProviderError`. v0.6 sets it only for the error itself or `RetryError.LastError`, as TS record-span.ts (review round 91).
+- **Am I affected?** Telemetry queries on `http.response.status_code` for wrapped errors.
+- **What to do:** No action unless you query that attribute for wrapped errors.
+- **Kind:** silent behavior change
+
+### Legacy ai.prompt.messages is the V4 prompt {#legacy-prompt-messages-v4}
+
+- **What changed:** The legacy step `ai.prompt.messages` was the Go message JSON. v0.6 writes the TS LanguageModelV4 prompt (stringifyForTelemetry): system and instruction messages lead as `{role:"system",content:"..."}`, V4 part keys (no `tool_calls` / `fileData` / `mimeType` / `signature` / `result`), file data as a string, tool messages combined, empty tool messages dropped (review round 91).
+- **Am I affected?** Telemetry queries or tests on `ai.prompt.messages`.
+- **What to do:** Update parsers to the V4 prompt shape.
+- **Kind:** silent behavior change
+
+### Legacy root ai.prompt keeps a string prompt as the user message {#legacy-root-prompt-string}
+
+- **What changed:** The legacy root `ai.prompt` of a string prompt held a Go message with content parts and extra keys. v0.6 writes `{"role":"user","content":"hi"}` for `Prompt: "hi"`, and root messages have only role / content / providerOptions, as TS standardizePrompt (review round 91).
+- **Am I affected?** Telemetry queries on the root `ai.prompt`.
+- **What to do:** Update parsers.
+- **Kind:** silent behavior change
+
+### Legacy ai.response.object keeps the model key order {#legacy-response-object-order}
+
+- **What changed:** The legacy `ai.response.object` re-sorted keys. v0.6 keeps the order the model returned (TS legacy-open-telemetry.ts) (review round 91).
+- **Am I affected?** Golden tests on `ai.response.object`.
+- **What to do:** No action unless you compare the attribute byte for byte.
+- **Kind:** silent behavior change
+
+### No ai.toolCall.durationMs on legacy tool spans {#legacy-tool-span-duration}
+
+- **What changed:** Legacy tool spans had a Go-only `ai.toolCall.durationMs` attribute. v0.6 drops it, as TS legacy-open-telemetry.ts (review round 91).
+- **Am I affected?** Queries on `ai.toolCall.durationMs`.
+- **What to do:** Use the span duration.
+- **Kind:** silent behavior change
+
+### No ai.settings attributes on legacy speech and transcription spans {#legacy-audio-settings}
+
+- **What changed:** Legacy speech and transcription root spans could carry `ai.settings.*` (`ai.settings.maxRetries`). v0.6 records none, as TS onAudioOperationStart (review round 91).
+- **Am I affected?** Queries on `ai.settings.*` of `ai.generateSpeech` / `ai.transcribe` spans.
+- **What to do:** No action unless you query those.
+- **Kind:** silent behavior change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -5132,6 +5436,34 @@ compile-time changes.
 - **Am I affected?** Matching `err.Error()` of `*klingai.Error` / `*bytedance.Error`.
 - **What to do:** Match `ErrorCode` or use `errors.As`.
 - **Kind:** error text only
+
+### Schema provider error headers are lower case {#schema-error-response-headers}
+
+- **What changed:** `NewSchemaProviderError` built `ResponseHeaders` with Go canonical keys (`Retry-After`). v0.6 uses the TS lower-case keys (`retry-after`), like `NewProviderError`; `NewProviderErrorFromResponse` keeps canonical keys. New `(*ProviderError).ResponseHeader(name)` reads a header in either casing (review round 91).
+- **Am I affected?** `ResponseHeaders["Retry-After"]`-style lookups (grep `ResponseHeaders\["[A-Z]`).
+- **What to do:** Use `perr.ResponseHeader("retry-after")`.
+- **Kind:** silent behavior change
+
+### DownloadError text prefers the cause {#download-error-cause}
+
+- **What changed:** `DownloadError.Error()` used the status text even when a cause was set (`Failed to download u: 200 OK`). v0.6 uses the cause whenever it is set (`Failed to download u: unexpected EOF`), as TS download-error.ts (review round 91).
+- **Am I affected?** Matching `Failed to download` texts.
+- **What to do:** No action unless you match the text.
+- **Kind:** error text only
+
+### Aborted calls return the abort error, not a status-0 ProviderError {#transport-errors-unchanged}
+
+- **What changed:** A cancelled, timed-out or (for some providers) unreachable call was wrapped in a status-0 `*ProviderError`. v0.6 returns an abort or timeout as is (`errors.Is(err, context.Canceled)`, no `*ProviderError`) in every provider error handler, as TS handleFetchError; xAI, Moonshot, DeepSeek, Together, Fireworks, Ollama and Open Responses also return their "Cannot connect to API" error unchanged, and Azure Speech / MAI image and the OpenAI model catalog use it (review round 91).
+- **Am I affected?** Code that type-asserts `*ProviderError` on cancelled or timed-out calls, or matches `provider error (0)` texts.
+- **What to do:** Check `errors.Is(err, context.Canceled)` / `context.DeadlineExceeded` first.
+- **Kind:** error text only
+
+### Stream provider error payloads without a string message are kept {#stream-provider-error-normalization}
+
+- **What changed:** `NormalizeStreamProviderError` built a `*StreamProviderError` from a payload whose error had no string message, and skipped an empty `type`. v0.6 returns the error unchanged without a string message and keeps an empty `type`, as TS normalize-stream-provider-error.ts (review round 91).
+- **Am I affected?** Perplexity / Mistral conversation stream errors checked for `*StreamProviderError`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
 
 ## Providers {#providers}
 
@@ -7831,8 +8163,8 @@ compile-time changes.
 
 ### Authorization is dropped on a redirect to another origin {#redirect-authorization-cross-origin}
 
-- **What changed:** A provider request redirected to the same host on another port or scheme kept the `Authorization` header (net/http drops it only for another host). v0.6 drops it once the redirect chain crosses an origin (scheme, host and port) and does not add it back, as fetch does (TS postToApi / getFromApi). This covers the shared provider client and every credentialed request sent with its own `http.Client`: Bedrock (language, image, embedding, reranking), the OpenAI model catalog, Anthropic batch results, Azure speech / MAI image / speech transcription, Google files and batch uploads, Vertex transcription, Gateway realtime client secrets, OpenCode subscriptions, Vercel OIDC refresh, harness OAuth refresh, the workflow chat transports, the OPA policy client and the LangChain transport. Custom headers (`x-api-key` and the like) are still copied, as fetch copies them (review round 89). Round 90: a hop that comes back to the API origin after a foreign hop (A -> B -> A) gets no Authorization either (fetch never adds it back): the Anthropic AWS SigV4, Bedrock Mantle, Bedrock Anthropic, Vertex Anthropic and Vertex MaaS transports skip it, and the headers fetch keeps are still sent.
-- **Am I affected?** A provider endpoint that redirects to another port or scheme and relies on the Bearer token there.
+- **What changed:** A provider request redirected to the same host on another port or scheme kept the `Authorization` header (net/http drops it only for another host). v0.6 drops it once the redirect chain crosses an origin (scheme, host and port) and does not add it back, as fetch does (TS postToApi / getFromApi). This covers the shared provider client and every credentialed request sent with its own `http.Client`: Bedrock (language, image, embedding, reranking), the OpenAI model catalog, Anthropic batch results, Azure speech / MAI image / speech transcription, Google files and batch uploads, Vertex transcription, Gateway realtime client secrets, OpenCode subscriptions, Vercel OIDC refresh, harness OAuth refresh, the workflow chat transports, the OPA policy client and the LangChain transport. Custom headers (`x-api-key` and the like) are still copied, as fetch copies them (review round 89). Round 90: a hop that comes back to the API origin after a foreign hop (A -> B -> A) gets no Authorization either (fetch never adds it back): the Anthropic AWS SigV4, Bedrock Mantle, Bedrock Anthropic, Vertex Anthropic and Vertex MaaS transports skip it, and the headers fetch keeps are still sent. Round 91: a cross-origin hop also drops `Proxy-Authorization` and `Cookie` (undici fetch), in the shared provider client and the MCP HTTP and Vercel Sandbox clients.
+- **Am I affected?** A provider endpoint that redirects to another port or scheme and relies on the Bearer token (or a cookie) there.
 - **What to do:** No action unless such a redirect target needs the token; point `BaseURL` at the final endpoint.
 - **Kind:** wire/protocol change
 
@@ -8130,6 +8462,245 @@ compile-time changes.
 - **What to do:** Omit the Cartesia key to mean unset.
 - **Kind:** silent behavior change
 
+### An unfollowed 3xx response is an HTTP error {#http-3xx-status-error}
+
+- **What changed:** The internal JSON and stream clients decoded the body of an unfollowed 3xx response. v0.6 returns an HTTP status error for any non-2xx status, as TS post-to-api.ts (`!response.ok`) (review round 91).
+- **Am I affected?** Endpoints that answer with a 3xx the client does not follow.
+- **What to do:** No action unless you relied on decoding such a body.
+- **Kind:** silent behavior change
+
+### MiniMax video errors follow TS {#minimax-video-errors}
+
+- **What changed:** MiniMax video transport failures were not retryable, a cancelled `DoGenerate` was wrapped as `video generation aborted: ...`, API errors had no `Data`, non-matching error bodies kept their text and NaN / Infinity durations were sent. v0.6 follows TS minimax-video-model.ts: transport failures stay retryable, a cancel returns the context error, errors carry `Data`, non-matching bodies give the status text and non-finite durations warn (review round 91).
+- **Am I affected?** MiniMax video error handling.
+- **What to do:** Use `errors.Is(err, context.Canceled)` for cancels.
+- **Kind:** silent behavior change
+
+### Cerebras and DeepInfra unsupported model types return NoSuchModelError {#cerebras-deepinfra-model-types}
+
+- **What changed:** Cerebras `EmbeddingModel` / `ImageModel` / `SpeechModel` / `TranscriptionModel` and DeepInfra `SpeechModel` / `TranscriptionModel` returned inherited OpenAI models that could not work. v0.6 returns a `*NoSuchModelError`, as the TS factories (review round 91).
+- **Am I affected?** Those factory calls.
+- **What to do:** Remove the calls; they never worked against these APIs.
+- **Kind:** silent behavior change
+
+### Bedrock connection failures are the retryable Cannot connect to API ProviderError {#bedrock-transport-errors}
+
+- **What changed:** A Bedrock Converse generate or stream request that could not reach the API returned `amazon-bedrock request failed: Post ...: <dial error>` (a plain error), and embedding, image and rerank a `ProviderError` with the bare transport text. v0.6 returns a retryable `*providererrors.ProviderError` `Cannot connect to API: <cause>` with the cause wrapped (TS handleFetchError); cancel and deadline errors are returned unchanged. The Anthropic batch results download reads the same way (review round 91).
+- **Am I affected?** Matching `amazon-bedrock request failed`, or type-asserting a Bedrock connection error.
+- **What to do:** Use `errors.As(err, &pe)` with `*providererrors.ProviderError` and `pe.IsRetryable()`.
+- **Kind:** error text only
+
+### Anthropic DoStartBatch drops a configured anthropic-beta header {#anthropic-batch-config-beta}
+
+- **What changed:** `DoStartBatch` sent a provider-level `Config.Headers` `anthropic-beta` header. v0.6 sends none when the batch computes no betas, and otherwise only `providerOptions.anthropic.anthropicBeta` plus the betas the requests need (TS getStartBatchHeaders). Other batch calls still send the configured header (review round 91).
+- **Am I affected?** `anthropic.Config{Headers: {"anthropic-beta": ...}}` with `ExperimentalBatch().DoStartBatch`.
+- **What to do:** Pass the betas as `ProviderOptions: {"anthropic": {"anthropicBeta": []string{...}}}` on the start call.
+- **Kind:** wire/protocol change
+
+### ElevenLabs streaming-only warning names experimental_streamSpeech {#elevenlabs-streaming-warning-text}
+
+- **What changed:** The warning for options ElevenLabs supports only when streaming read `(ExperimentalStreamSpeech)`. v0.6 reads `(experimental_streamSpeech)`, as TS (review round 91).
+- **Am I affected?** Matching that warning text.
+- **What to do:** No action unless you match it.
+- **Kind:** error text only
+
+### AWS credential errors use the TS texts {#aws-sigv4-credentials-text}
+
+- **What changed:** anthropicaws, Bedrock Mantle and Bedrock Anthropic missing-credential errors named Go fields, and an incomplete `CredentialProvider` result had Go texts. v0.6 lists the TS options (`2. Provide accessKeyId and secretAccessKey in options`, ...) and fails an incomplete result with `accessKeyId is a required option` / `secretAccessKey is a required option` (aws4fetch), Bedrock included (review round 91).
+- **Am I affected?** Matching `Provide AccessKeyID and SecretAccessKey`, `Provide Credentials in Config`, `incomplete credentials` or `missing accessKeyId or secretAccessKey`.
+- **What to do:** No action unless you match the text.
+- **Kind:** error text only
+
+### Go-typed provider option literals are honored {#typed-provider-option-literals}
+
+- **What changed:** Provider options given as Go-typed literals (`map[string]string`, `map[string]bool`, `[]map[string]interface{}`, typed option structs such as `&anthropic.ModelOptions{...}`, `fireworks.WithThinking(...)` or `*zai.ThinkingConfig`, `int32` / `int64` / `float32` numbers) were validated and then dropped, or rejected with `invalid ... provider options`, by many providers. v0.6 reads every options namespace and message / part / tool `ProviderOptions` through its JSON form, so typed literals work like the `map[string]interface{}` form; numbers given as ints reach the wire through the same JSON (TS options are plain JSON values; coordinator ruling round 91). This covers every provider with option readers (repo-wide probe test) (review round 91).
+- **Am I affected?** Typed values in `ProviderOptions`, part / message `ProviderOptions` or `types.Tool.ProviderOptions`.
+- **What to do:** No action; check that the now-applied options are the ones you meant.
+- **Kind:** silent behavior change
+
+### OpenAI-compatible embedding batches are not split by bytes {#compat-embedding-byte-budget}
+
+- **What changed:** `openai.EmbeddingModel.MaxInputBytesPerCall()` applied the OpenAI byte budget to `Config.OpenAICompatible` wrappers (Baseten, DeepInfra, Vertex MaaS), so `EmbedMany` split their batches. v0.6 returns 0 for those wrappers (TS openai-compatible has no budget) (review round 91).
+- **Am I affected?** `EmbedMany` with Baseten, DeepInfra or Vertex MaaS.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Moonshot and DeepSeek content order is reasoning, tool calls, text {#moonshot-deepseek-content-order}
+
+- **What changed:** Moonshot and DeepSeek `DoGenerate` content was reasoning, text, tool calls. v0.6 orders reasoning, tool calls, text, as TS (review round 91).
+- **Am I affected?** Code that reads Moonshot / DeepSeek content by index.
+- **What to do:** Look parts up by type.
+- **Kind:** silent behavior change
+
+### Prompt.Text is one user message for Responses-style models {#responses-prompt-text}
+
+- **What changed:** Open Responses, Hugging Face, xAI and OpenAI / Azure Responses sent a `Prompt.Text` prompt as no input. v0.6 sends it as one user message (review round 91).
+- **Am I affected?** Direct `DoGenerate` / `DoStream` calls with `Prompt{Text: ...}` on those models.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Fireworks async image errors are ProviderErrors with the status text {#fireworks-async-image-errors}
+
+- **What changed:** Fireworks async image submit / poll HTTP failures were wrapped fmt errors (`Fireworks async ... failed`). v0.6 returns a `*ProviderError` with the status text (TS fireworks-image-model.ts) (review round 91).
+- **Am I affected?** Matching `Fireworks async` error texts.
+- **What to do:** Use `errors.As` with `*ProviderError`.
+- **Kind:** error text only
+
+### Open Responses provider key wins over the openai alias {#openresponses-provider-key}
+
+- **What changed:** When both `providerOptions["openai"]` and `providerOptions[<Config.Name>]` were given, Open Responses let the `openai` alias win. v0.6 lets the provider key win, as TS (review round 91).
+- **Am I affected?** Open Responses calls that pass both namespaces.
+- **What to do:** Pass one namespace.
+- **Kind:** silent behavior change
+
+### OpenAI, Azure, xAI, Moonshot, DeepSeek and Open Responses details follow TS {#provb-r91-details}
+
+- **What changed:** Small TS alignments (review round 91): OpenAI chat sends only `mode` / `ttl` of `promptCacheOptions` and warns once per removed system message; OpenAI batch uploads the file part first; OpenAI Decisions schema failures are `Invalid JSON response`; OpenAI Live rejects unknown keys in delegation / voice / input items and present empty `outputModalities` / `tools`; OpenAI Responses configuration-update errors use the TS "Configuration updates ..." text; Azure MAI transcription close errors add ` (code N: reason)`; xAI image moderation / video request_id / realtime client secret errors carry the bare TS text, video limit errors are `invalid xai provider options` and response headers join repeated values; Moonshot / DeepSeek prompt checks return `*InvalidPromptError`; the Open Responses User-Agent suffix is `ai-sdk-open-responses/<v>`; OpenAI-family converters send `content: []` for an empty user message; `BatchResultDownloads.MaxLineBytes` above 2^53-1 is rejected.
+- **Am I affected?** Code that matches these texts or wire details.
+- **What to do:** No action unless you match them.
+- **Kind:** wire/protocol change
+
+### ByteDance HTTP error text is the TS message {#bytedance-error-text}
+
+- **What changed:** ByteDance errors read `bytedance error (code 400): bad input`. v0.6 reads the TS message (`bad input`); `Code` and the unwrapped ProviderError are unchanged (review round 91).
+- **Am I affected?** Matching `bytedance error (code`.
+- **What to do:** Match on `Code`, or `errors.As(*ProviderError).Message`.
+- **Kind:** error text only
+
+### Baseten media models return NoSuchModelError {#baseten-media-no-such-model}
+
+- **What changed:** Baseten `ImageModel`, `SpeechModel` and `TranscriptionModel` returned the inherited OpenAI models pointed at a Baseten URL. v0.6 returns a `*NoSuchModelError`, as TS baseten-provider.ts (review round 91).
+- **Am I affected?** Those Baseten factory calls.
+- **What to do:** None for working code; those models could not work against Baseten.
+- **Kind:** silent behavior change
+
+### BFL, AssemblyAI, fal and Gladia errors follow TS {#provc-r91-media-errors}
+
+- **What changed:** v0.6 (review round 91): a BFL video timeout is a `*providererrors.VideoGenerationError` with the same text; an AssemblyAI abort between polls reads `Transcription request was aborted` (still `errors.Is(err, context.Canceled)`); a non-JSON or null fal status error body is an error status `Failed to process error response` (transcription returns that ProviderError message); Gladia `ErrorCode` is `TranscriptionJobFailed` or `TranscriptionResultEmpty` and `Data` holds only status, error_code and result.
+- **Am I affected?** Matching these error texts, types or `Data`.
+- **What to do:** Use `errors.As` / `errors.Is`.
+- **Kind:** error text only
+
+### ByteDance usage metadata and status poll key {#bytedance-metadata-poll}
+
+- **What changed:** ByteDance metadata had a `usage` key with a nil value when the response had none, and a status poll without any API key sent an unauthenticated request. v0.6 omits an absent `usage`, makes it a map (`completion_tokens` an int when whole, else float64), and loads the key per request, returning a `LoadAPIKeyError` without one (review round 91).
+- **Am I affected?** Reading ByteDance `ProviderMetadata["bytedance"]["usage"]`, or polling without a key.
+- **What to do:** Check for a missing `usage` key.
+- **Kind:** silent behavior change
+
+### Media providers join repeated response headers {#media-response-headers-joined}
+
+- **What changed:** BFL, ByteDance, Luma, KlingAI, Replicate, fal, Gladia and Rev.ai kept only the first value of a repeated response header. v0.6 joins them with ", " (TS extractResponseHeaders) (review round 91).
+- **Am I affected?** Reading repeated headers from those providers' `Response.Headers` or error `ResponseHeaders`.
+- **What to do:** Split on ", " if you need the values.
+- **Kind:** silent behavior change
+
+### BFL video polls send the X-Key credential {#bfl-video-poll-auth}
+
+- **What changed:** BFL FLUX 3 video status polls were sent without `X-Key` or the provider user agent. v0.6 sends both to a trusted polling URL; a missing key is a `LoadAPIKeyError` (review round 91).
+- **Am I affected?** BFL video polling through proxies that strip or require headers.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Google decision models use the native Gemini Decisions API {#google-decision-native}
+
+- **What changed:** `google.Provider.DecisionModel(id)` wrapped a Gemini language model with `ai.NewDecisionLanguageModel`. v0.6 calls `POST {baseURL}/decisions` and returns native choice / score / boolean answers (TS f70336158e). Language model IDs no longer work; use `google.ModelGeminiDecision1`. `MaxOutputTokens`, `Reasoning` and `providerOptions.google` become `unsupported` warnings, box questions fail with `*errors.DecisionUnsupportedQuestionTypeError`, every question needs `Instructions`, choice and score need 2 to 255 options or levels, a safety-blocked input gives refusals, and `providerMetadata.google` holds `confidence`, `legend`, `usage` and `promptFeedback` (review round 91).
+- **Am I affected?** `.DecisionModel(` or `.EvaluationModel(` on a `google.Provider`.
+- **What to do:** Use the decision model ID:
+
+```go
+// before
+model, _ := google.New(google.Config{}).DecisionModel(google.ModelGemini35FlashLite)
+// after
+model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1)
+```
+
+- **Kind:** wire/protocol change
+
+### Google Interactions usage has no per-modality input details {#google-interactions-usage-details}
+
+- **What changed:** `Usage.InputDetails.TextTokens` / `ImageTokens` came from `input_tokens_by_modality`; TS convertGoogleInteractionsUsage reports only total, noCache and cacheRead. The breakdown stays in `Usage.Raw` (review round 91).
+- **Am I affected?** `InputDetails.TextTokens` or `InputDetails.ImageTokens` from a Google Interactions model.
+- **What to do:** Read `input_tokens_by_modality` from `Usage.Raw`.
+- **Kind:** silent behavior change
+
+### Google Interactions background streams report GET failures in the stream {#google-interactions-background-get}
+
+- **What changed:** A background `DoStream` (`providerOptions.google.background: true`) opened the GET before returning, so a GET failure failed `DoStream` and core retried with a new POST (a duplicate run). v0.6 returns at once and reports a GET failure as a stream error after stream-start (TS stream-google-interactions.ts) (review round 91).
+- **Am I affected?** Error handling of `DoStream` / `StreamText` with background Interactions.
+- **What to do:** No action unless you treated a `DoStream` error as the GET failure; read it from the stream.
+- **Kind:** silent behavior change
+
+### Missing API key returns LoadAPIKeyError unwrapped {#load-api-key-error-unwrapped}
+
+- **What changed:** Mistral embedding / speech / transcription, Groq transcription, Cohere embedding and Perplexity embedding wrapped a missing key in a status-0 `*ProviderError` (`mistral provider error (0):  - Mistral API key is missing...`). v0.6 returns the `LoadAPIKeyError` itself, as TS (review round 91).
+- **Am I affected?** Type assertions of `*ProviderError` or text matching on missing-key errors from those models.
+- **What to do:** Use `errors.As(err, &loadErr)` with `*errors.LoadAPIKeyError` (which also worked before).
+- **Kind:** error text only
+
+### Google and Vertex transport failures read Cannot connect to API {#google-vertex-connect-errors}
+
+- **What changed:** Google batch upload / download, Files upload / poll, the realtime client secret and Vertex transcription returned a raw `*url.Error`; Vertex Cloud TTS and embedding added `failed to synthesize speech: ` / `vertex embedding request failed: `. v0.6 returns the retryable TS `Cannot connect to API: ...` error, and the realtime error no longer includes the `?key=` URL (review round 91).
+- **Am I affected?** Matching those texts or type-asserting `*url.Error`.
+- **What to do:** Use `errors.As` for `*url.Error` (still wrapped) or check `IsRetryable()`.
+- **Kind:** error text only
+
+### Gateway batch status omits inconsistent request counts {#gateway-batch-request-counts}
+
+- **What changed:** `BatchV4Status.RequestCounts` was set from any counts. v0.6 sets it only when all four counts are non-negative integers and pending + completed + failed == total (TS normalizeBatchRequestCounts); succeeded results decode as V4 generate results with their response metadata (review round 91).
+- **Am I affected?** `RequestCounts` from gateway `DoGetBatchStatus` / `DoStartBatch` / `DoCancelBatch`.
+- **What to do:** Handle a nil `RequestCounts`.
+- **Kind:** silent behavior change
+
+### Gateway invalid success bodies give the TS error text {#gateway-success-schema-errors}
+
+- **What changed:** A Gateway metadata, spend-report or client-secret success body that failed the schema gave `Invalid error response format: Gateway request failed: <Go decode text>` with status 500. v0.6 gives `Invalid error response format: Gateway request failed` with the real HTTP status and an "Invalid JSON response" cause; spend rows with a null optional field fail, as TS (review round 91).
+- **Am I affected?** Matching those error texts.
+- **What to do:** No action unless you match the text.
+- **Kind:** error text only
+
+### Gemini sends args: null for a JSON null tool input {#gemini-null-tool-args}
+
+- **What changed:** An assistant tool call whose input is `null` (or the string `"null"`) was sent with `functionCall.args: {}`. v0.6 sends `null`, as TS parseToolCallInput; a call with no input still sends `{}` (review round 91).
+- **Am I affected?** Replaying assistant tool calls with null input to Google or Vertex Gemini.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### Vertex xAI provider headers win and compatible options are validated {#vertex-xai-headers-validation}
+
+- **What changed:** A Vertex xAI call header beat a `Config.Headers` value of the same name, and invalid `openaiCompatible` / `openai-compatible` / `googleVertex` options were not checked. v0.6 lets the provider header win (TS node customFetch) and fails invalid options (for example `user: 123`) with `invalid ... provider options` before any request (review round 91).
+- **Am I affected?** The same header set on provider and call, or invalid compatible options, with `googlevertex/xai`.
+- **What to do:** Set per-call values only in the call, and fix the option types.
+- **Kind:** wire/protocol change
+
+### Gemini streams File Search and RAG document sources {#gemini-stream-document-sources}
+
+- **What changed:** `DoStream` / `StreamText` emitted only URL sources. v0.6 also streams document sources (File Search `fileSearchStore`, `gs://` RAG), each once per stream (TS 540509c068), and `providerMetadata.google.serviceTier` falls back to the `x-gemini-service-tier` header (TS 45337f0e8d) (review round 91).
+- **Am I affected?** Counting or filtering stream source parts from Google / Vertex.
+- **What to do:** No action unless you assume every streamed source is a URL.
+- **Kind:** silent behavior change
+
+### Media download errors keep the server reason phrase {#download-status-reason-phrase}
+
+- **What changed:** A failed provider media download (`StatusCodeDownloadError`) used `http.StatusText` as the `ProviderError` message. v0.6 uses the server's reason phrase, as TS response.statusText (review round 91).
+- **Am I affected?** Matching media download error messages.
+- **What to do:** No action unless you match the text.
+- **Kind:** error text only
+
+### Provider option number keys, integers and URLs follow JS and zod {#option-schema-js-coercion}
+
+- **What changed:** Option checks accepted number keys JS `Number()` rejects (`1_000`, `-0x10`), unsafe integers (`1e20`) and rejected URLs `z.url()` accepts (`file:///tmp/x`, a leading space). v0.6 follows JS and zod 4: OpenAI `logitBias` keys, integer options and BFL / Deepgram URL options (review round 91).
+- **Am I affected?** Those exotic option values.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Rev.ai job errors, headers and config order follow TS {#revai-r91-details}
+
+- **What changed:** Rev.ai job submission and job failures had no error code, repeated response headers kept one value without byte decoding, and the `config` form field had sorted keys. v0.6 sets `ErrorCode` `TranscriptionJobSubmissionFailed` / `TranscriptionJobFailed`, joins and decodes headers (TS extractResponseHeaders) and sends `config` in TS key order (review round 91).
+- **Am I affected?** Rev.ai error handling or wire comparisons.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -8250,6 +8821,27 @@ compile-time changes.
 - **Am I affected?** MCP servers that echo ids with a different JSON type.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
+
+### MCP elicitation params follow the TS schema {#mcp-elicitation-schema}
+
+- **What changed:** `elicitation/create` accepted params without `requestedSchema` and a null `_meta`, and dropped unknown keys. v0.6 requires `requestedSchema` (any value) and an object `_meta`, keeps unknown keys in the new `ElicitationRequest.Extra` / `ElicitResult.Extra`, and reports the zod messages (TS types.ts) (review round 91).
+- **Am I affected?** MCP elicitation handlers and servers sending loose params.
+- **What to do:** No action unless your server omits `requestedSchema`.
+- **Kind:** silent behavior change
+
+### MCP send errors are unwrapped {#mcp-send-errors}
+
+- **What changed:** MCP send failures were wrapped in a `*TransportError` with a double "transport error" prefix, and a mid-flight abort was not `Request was aborted`. v0.6 returns the abort reason (before send) or `MCPClientError` "Request was aborted", and transport `MCPClientError` / `UnauthorizedError` unwrapped (TS mcp-client.ts) (review round 91).
+- **Am I affected?** Matching MCP error texts or `*TransportError`.
+- **What to do:** Use `errors.As` with `*MCPClientError`.
+- **Kind:** error text only
+
+### MCP does not fall back to initialize after a discover network error {#mcp-discover-network-error}
+
+- **What changed:** MCP over HTTP fell back to `initialize` after any `server/discover` failure. v0.6 falls back only for an `MCPClientError`; a network error fails the connection (TS 6141e6fefb) (review round 91).
+- **Am I affected?** MCP HTTP servers that are unreachable during discovery.
+- **What to do:** No action.
+- **Kind:** silent behavior change
 
 ## Code mode {#code-mode}
 
@@ -8387,6 +8979,34 @@ compile-time changes.
 - **Am I affected?** Scripts that pass such values to tools.
 - **What to do:** Pass plain JSON values.
 - **Kind:** silent behavior change
+
+### Code mode honors approval funcs and statuses and fails closed {#codemode-approval-fail-closed}
+
+- **What changed:** Code mode ran a host tool without approval when `ToolApproval` was an unnamed func literal, a `ToolApprovalStatus` / string (even "denied") or another type. v0.6 reads them as `pkg/ai` does: user-approval asks, a denied status fails with `*codemode.ToolApprovalDeniedError`, approved / not-applicable / "" run, anything else is a `*codemode.ToolError` (TS tool-invocation.ts requiresApproval) (review round 91).
+- **Am I affected?** `codemode` tools with `ToolApproval: func(...)` literals, `types.ToolApprovalStatus*` values or strings.
+- **What to do:** No action unless you relied on those tools running unapproved.
+- **Kind:** silent behavior change
+
+### Code mode honors Tool.ValidateInput {#codemode-validate-input}
+
+- **What changed:** Code mode ignored `Tool.ValidateInput`. v0.6 runs it in place of the schema check; an error is `Invalid input for tool "<name>": <msg>` and a returned object is the input approval and `Execute` see (TS validateToolInput) (review round 91).
+- **Am I affected?** Code mode tools with `ValidateInput`.
+- **What to do:** No action unless your validator rejects input you expected to reach `Execute`.
+- **Kind:** silent behavior change
+
+### GetCodeModeInterrupt reads Go generate results {#codemode-interrupt-go-results}
+
+- **What changed:** `GetCodeModeInterrupt` / `UnwrapCodeModeResult` read only a JSON-shaped `toolResults[i].output` map, so they never found the interrupt in a Go result. v0.6 also reads result structs (`ToolResults`, `Content`, value or pointer), typed slices in maps, the `result` key and `ToolResultContent.Output` (TS interrupt-continuation.ts) (review round 91).
+- **Am I affected?** Callers of `GetCodeModeInterrupt` / `UnwrapCodeModeResult` on `GenerateText` results.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Code mode script errors keep their own text {#codemode-error-text}
+
+- **What changed:** A script error whose text contained "context canceled" was reported as a timeout or abort, and a function or symbol result failed with `invalid JSON payload`. v0.6 keeps the script's own error and fails such a result with the guest `SyntaxError`, as TS run-code-mode.ts (review round 91).
+- **Am I affected?** Matching code mode error texts.
+- **What to do:** No action unless you match those texts.
+- **Kind:** error text only
 
 ## Harness, ACP and fx {#harness-acp-and-fx}
 
@@ -8864,6 +9484,20 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+### Harness file parts stay file parts {#harness-tool-output-file-part}
+
+- **What changed:** `NormalizeToolModelOutput` turned an inline image file part into an `ImageContentBlock` and lost its filename. v0.6 returns a `FileContentBlock` with filename and provider options, as TS normalize-harness-tool-model-output.ts (review round 91).
+- **Am I affected?** `NormalizeToolModelOutput` results checked for `ImageContentBlock`.
+- **What to do:** Handle `FileContentBlock`.
+- **Kind:** silent behavior change
+
+### Harness bridges authenticate with a per-session public key {#bridge-public-key-auth}
+
+- **What changed:** Bridge-backed adapters (claude-code, acp, cursor, github-copilot, grok-build, codex, opencode, deepagents) authenticated the in-sandbox bridge with a shared token. v0.6 uses a per-session Ed25519 key pair: the sandbox gets only `BRIDGE_AUTH_PUBLIC_KEY` (no `BRIDGE_CHANNEL_TOKEN`, no `agent_bridge_token` in the URL), resume state stores `bridge.privateKey` instead of `bridge.token`, and `MintBridgeToken` is deprecated, ignored and warned once at creation; the "cannot use mintBridgeToken ... without an id" error is gone (TS c849d37dac). Token state saved by an older version is rejected, except Claude Code state, which is resumed by respawning the bridge (review round 91).
+- **Am I affected?** `MintBridgeToken`, stored resume / continue state, custom bridges or proxies that read the channel token.
+- **What to do:** Drop `MintBridgeToken`; start new sessions instead of resuming old token state; treat stored resume state as a secret (it holds the private key).
+- **Kind:** wire/protocol change
+
 ## Policy {#policy}
 
 ### An OPA HTTP policy response without result is not-applicable {#opa-undefined-result}
@@ -9236,7 +9870,8 @@ next one.
      -e 'ToolCallConcurrency|ToolResults|ChunkTypeToolResult|WorkflowChatTransport|locales|phraseList|diarization|keyframes|utterances|domainSecrets|pendingSafetyChecks|responseJsonSchema|ClientAppVersion|expiresAfter|blackForestLabs|hume|rawInput' \
      -e 'GetTextFromDataURL|ReasonSet|HasReason|HasName\(\)|ToolCall\.Name|Encoding: "|ErrInvalidUTF8Text|"file-data"|"image-url"|anthropicBeta|BaseURL:.*//"|DeprecationWarning' \
      -e 'OutputErr\(\)|OnStepEnd|ApprovalReason|StructuredOutputText|MessageMetadata|ParallelToolCallMetadata|TakoSearch|reasoning-0|CODEX_HOME|CreateFormFile|multipart|failed to download image|provider options|\.Data\b|ProviderUsage|referenceImages|fal_webhook|invalid UI message chunk|SpeechResult' \
-     -e 'FileData\{Type: types\.FileDataTypeURL|remote file URL must|Invalid URL|allowed types are|ImageContent\{|ReasoningFileContent|AbortReason|ReadUIMessageStream|continuationToken|errorCode|InteractionsModel|ClientSecret|ConversationModel|NewJSONSchema\(|ResponseBody|xai\.VideoModel|Size:|AspectRatio' .
+     -e 'FileData\{Type: types\.FileDataTypeURL|remote file URL must|Invalid URL|allowed types are|ImageContent\{|ReasoningFileContent|AbortReason|ReadUIMessageStream|continuationToken|errorCode|InteractionsModel|ClientSecret|ConversationModel|NewJSONSchema\(|ResponseBody|xai\.VideoModel|Size:|AspectRatio' \
+     -e 'LangSmithDeploymentTransport|LANGGRAPH_API_KEY|aiobj-|LegacyContentType|ExperimentalDownload|WithShellSandboxDescription|MintBridgeToken|BRIDGE_AUTH|bridge\.token|DecisionModel\(|LoadAPIKeyError|RequestCounts|ResponseHeaders\["[A-Z]|exception\.type|toolCall\.durationMs|TranscriptionJob|DoStartBatch|amazon-bedrock request failed|elicitation|MaxInputBytesPerCall|textFormat|ExperimentalToolCallers|MockTextStream|provider error \(0\)' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.
