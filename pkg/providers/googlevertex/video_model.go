@@ -588,18 +588,13 @@ func (m *VideoModel) handleError(err error) error {
 }
 
 // convertVertexVideoHeaders flattens net/http.Header into map[string]string,
-// taking the first value for each header key.
+// like TS extractResponseHeaders.
 func convertVertexVideoHeaders(h http.Header) map[string]string {
 	if len(h) == 0 {
 		return map[string]string{}
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	// TS extractResponseHeaders: repeated values are joined with ", ".
+	return providerutils.ExtractHeaders(h)
 }
 
 // vertexVideoOperationWire mirrors TS googleVertexOperationSchema.

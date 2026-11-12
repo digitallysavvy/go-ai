@@ -71,3 +71,10 @@ func TestR91provgTransportErrors(t *testing.T) {
 	_, err = em.DoEmbed(context.Background(), "hi", nil)
 	r91provgWantConnect(t, "embedding", err)
 }
+
+// provc-06: video response headers join repeated values.
+func TestR91provgVideoHeadersJoinValues(t *testing.T) {
+	if got := convertVertexVideoHeaders(http.Header{"X-A": {"1", "2"}}); got["X-A"] != "1, 2" {
+		t.Fatalf("headers = %v", got)
+	}
+}

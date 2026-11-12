@@ -420,3 +420,10 @@ func TestR91provgInteractionsNullishCitationURL(t *testing.T) {
 		t.Fatalf("source = %#v", src)
 	}
 }
+
+// provc-06 / provg1-13: video response headers join repeated values.
+func TestR91provgVideoHeadersJoinValues(t *testing.T) {
+	if got := convertGoogleHeaders(http.Header{"X-A": {"1", "2"}}); got["X-A"] != "1, 2" {
+		t.Fatalf("headers = %v", got)
+	}
+}

@@ -244,3 +244,11 @@ func TestR91provgClientSecretBOMErrorBody(t *testing.T) {
 		t.Fatalf("error = %T %v", err, err)
 	}
 }
+
+// provc-06 (gateway sites): repeated response headers are joined like TS
+// extractResponseHeaders.
+func TestR91provgFlattenHeadersJoinsValues(t *testing.T) {
+	if got := flattenHeaders(http.Header{"X-A": {"1", "2"}}); got["X-A"] != "1, 2" {
+		t.Fatalf("headers = %v", got)
+	}
+}
