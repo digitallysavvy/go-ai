@@ -229,3 +229,30 @@ func TestR92provbCompletionStreamHeldChunkOrder(t *testing.T) {
 		}
 	})
 }
+
+// TS loadApiKey throws LoadAPIKeyError from the headers, before the fetch,
+// and it propagates unchanged; the chat, completion, embedding and
+// Responses handlers already returned it as is, the image, speech and
+// transcription handlers wrapped it in a status-0 ProviderError.
+func TestR92provbMissingAPIKeyUnwrapped(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	p := New(Config{BaseURL: "http://127.0.0.1:1"})
+	want := func(name string, err error) {
+		t.Helper()
+		if _, ok := err.(*providererrors.LoadAPIKeyError); !ok {
+			t.Fatalf("%s: err = %T %v, want *LoadAPIKeyError", name, err, err)
+		}
+	}
+	im, _ := p.ImageModel("dall-e-3")
+	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	want("image", err)
+	_, err = im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x", Files: []provider.ImageFile{{Type: "file", Data: []byte{137, 80, 78, 71}, MediaType: "image/png"}}})
+	want("image edit", err)
+	sm, _ := p.SpeechModel("tts-1")
+	_, err = sm.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "x"})
+	want("speech", err)
+	tm, _ := p.TranscriptionModel("whisper-1")
+	_, err = tm.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	want("transcription", err)
+
+}

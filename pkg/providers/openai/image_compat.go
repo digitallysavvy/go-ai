@@ -109,6 +109,9 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 		if noResp, ok := internalhttp.NoResponseError(err); ok {
 			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
 		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped
+		}
 		if pe, ok := m.provider.apiError(m.Provider(), err); ok {
 			return nil, pe // the wrapper's TS errorStructure
 		}
