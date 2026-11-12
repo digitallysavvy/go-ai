@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -50,6 +51,15 @@ func stripMarkdownCodeFenceSuffix(text string) string {
 // hold back everything from this offset onward so a fence split across
 // chunks is never leaked into already-emitted output. Mirrors TS
 // getPotentialSuffixStart (audit row 1058ed5 / WG12).
+// jsStringLength is the JS string length (UTF-16 code units).
+func jsStringLength(text string) int {
+	n := 0
+	for _, r := range text {
+		n += utf16.RuneLen(r)
+	}
+	return n
+}
+
 func getPotentialSuffixStart(text string) int {
 	runes := []rune(text)
 	index := len(runes)
@@ -202,15 +212,10 @@ func (w *streamingExtractJSONWrapper) emitStart(b *jsonTextBlock) {
 	}
 }
 
-func (w *streamingExtractJSONWrapper) emitText(id, text string, template *provider.StreamChunk) {
-	c := provider.StreamChunk{}
-	if template != nil {
-		c = *template
-	}
-	c.Type = provider.ChunkTypeText
-	c.ID = id
-	c.Text = text
-	w.pending = append(w.pending, &c)
+// emitText queues a text delta {type: 'text-delta', id, delta} (TS copies
+// no other field of the triggering delta).
+func (w *streamingExtractJSONWrapper) emitText(id, text string) {
+	w.pending = append(w.pending, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: id, Text: text})
 }
 
 // flushBlock emits the remaining buffered text of a block (the TS text-end
@@ -231,7 +236,7 @@ func (w *streamingExtractJSONWrapper) flushBlock(id string, b *jsonTextBlock) {
 		remaining = stripMarkdownCodeFenceSuffix(remaining)
 	}
 	if len(remaining) > 0 {
-		w.emitText(id, remaining, nil)
+		w.emitText(id, remaining)
 	}
 	delete(w.blocks, id)
 }
@@ -264,7 +269,7 @@ func (w *streamingExtractJSONWrapper) handleDelta(chunk *provider.StreamChunk) {
 				b.phase = "streaming"
 				w.emitStart(b)
 			}
-		case len(b.buffer) >= 3:
+		case jsStringLength(b.buffer) >= 3:
 			b.phase = "streaming"
 			w.emitStart(b)
 		}
@@ -275,7 +280,9 @@ func (w *streamingExtractJSONWrapper) handleDelta(chunk *provider.StreamChunk) {
 		toStream := b.buffer[:potentialSuffixStart]
 		b.buffer = b.buffer[potentialSuffixStart:]
 		if len(toStream) > 0 {
-			w.emitText(chunk.ID, toStream, chunk)
+			// TS enqueues {type: 'text-delta', id, delta} only: the
+			// triggering delta's metadata is not copied.
+			w.emitText(chunk.ID, toStream)
 		}
 	}
 }

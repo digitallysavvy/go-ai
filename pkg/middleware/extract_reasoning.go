@@ -74,9 +74,10 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 		openingTag = options.Delimiters.Opening
 		closingTag = options.Delimiters.Closing
 		if openingTag == "" || closingTag == "" {
+			// TS passes tagName, here the {opening, closing} object.
 			panic(&providererrors.InvalidArgumentError{
 				Field:   "tagName",
-				Value:   options.TagName,
+				Value:   map[string]interface{}{"opening": openingTag, "closing": closingTag},
 				Message: "Reasoning delimiters must not be empty.",
 			})
 		}
