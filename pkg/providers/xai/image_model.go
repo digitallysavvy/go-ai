@@ -470,6 +470,16 @@ func extractImageProviderOptions(opts map[string]interface{}) (*XAIImageProvider
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
 		return nil, invalid(fmt.Errorf("failed to unmarshal provider options: %w", err))
 	}
+	// TS xaiImageModelOptions members are .optional() (not nullish): a
+	// present null is invalid.
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(jsonData, &probe) == nil {
+		for _, key := range []string{"aspect_ratio", "output_format", "sync_mode", "resolution", "quality", "user"} {
+			if v, present := probe[key]; present && string(v) == "null" {
+				return nil, invalid(fmt.Errorf("%s must not be null", key))
+			}
+		}
+	}
 	if provOpts.Resolution != nil && *provOpts.Resolution != "1k" && *provOpts.Resolution != "1.5k" && *provOpts.Resolution != "2k" {
 		return nil, invalid(fmt.Errorf("invalid xai image resolution %q: expected \"1k\", \"1.5k\", or \"2k\"", *provOpts.Resolution))
 	}

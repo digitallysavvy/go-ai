@@ -129,3 +129,16 @@ func TestR94provbStreamingURLIsWHATWG(t *testing.T) {
 		t.Fatalf("url = %v, %v", u, err)
 	}
 }
+
+// TestR94provbImageOptionsNull: TS xaiImageModelOptions members are
+// .optional(), so a present null fails parseProviderOptions.
+func TestR94provbImageOptionsNull(t *testing.T) {
+	for _, key := range []string{"aspect_ratio", "output_format", "sync_mode", "resolution", "quality", "user"} {
+		if _, err := extractImageProviderOptions(map[string]interface{}{"xai": map[string]interface{}{key: nil}}); err == nil {
+			t.Errorf("%s: null accepted", key)
+		}
+	}
+	if _, err := extractImageProviderOptions(map[string]interface{}{"xai": map[string]interface{}{"quality": "high"}}); err != nil {
+		t.Fatal(err)
+	}
+}
