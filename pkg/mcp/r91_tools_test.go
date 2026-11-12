@@ -246,3 +246,25 @@ func TestR91toolsMCPToolCallRetryUncapped(t *testing.T) {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 }
+
+// tools-06 (TS mcp-client.ts:1033 requestOnce): a closed client reports
+// "Attempted to send a request from a closed client" before any capability
+// error, for completions and events too; an open client still reports the
+// missing capability.
+func TestR91toolsMCPClosedBeforeCapability(t *testing.T) {
+	tr := newLifecycleTransport(ServerCapabilities{})
+	client := NewMCPClient(tr, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(context.Background(), CompleteRequestParams{}); err == nil || err.Error() != "Server does not support completions" {
+		t.Fatalf("open Complete err = %v", err)
+	}
+	_ = client.Close()
+	if _, err := client.Complete(context.Background(), CompleteRequestParams{}); err == nil || !strings.Contains(err.Error(), "Attempted to send a request from a closed client") {
+		t.Fatalf("closed Complete err = %v", err)
+	}
+	if err := client.eventsCall(context.Background(), "events/list", nil, nil); err == nil || !strings.Contains(err.Error(), "Attempted to send a request from a closed client") {
+		t.Fatalf("closed events err = %v", err)
+	}
+}

@@ -247,9 +247,6 @@ func (c *MCPClient) eventsCall(ctx context.Context, method string, params interf
 	if !c.initialized {
 		return errClosedClient()
 	}
-	if c.serverCapability.Events == nil {
-		return NewMCPClientError(0, "Server does not support events", nil)
-	}
 	return c.call(ctx, method, params, result)
 }
 
@@ -1006,10 +1003,6 @@ func (c *MCPClient) Complete(ctx context.Context, params CompleteRequestParams) 
 	if !c.initialized {
 		return nil, errClosedClient()
 	}
-	if c.serverCapability.Completions == nil {
-		return nil, NewMCPClientError(0, "Server does not support completions", nil)
-	}
-
 	var result CompleteResult
 	if err := c.call(ctx, "completion/complete", params, &result); err != nil {
 		return nil, err
@@ -1230,7 +1223,17 @@ func (c *MCPClient) callOnce(ctx context.Context, method string, params interfac
 // advertise, with the TS error text (mcp-client.ts assertCapability).
 func (c *MCPClient) assertCapability(method string) error {
 	var missing string
+	// TS requestOnce checks the closed client first, then the capability
+	// (tools-06), so completions and events are checked here too.
 	switch method {
+	case "completion/complete":
+		if c.serverCapability.Completions == nil {
+			missing = "completions"
+		}
+	case "events/list", "events/subscribe", "events/unsubscribe":
+		if c.serverCapability.Events == nil {
+			missing = "events"
+		}
 	case "tools/list", "tools/call":
 		if c.serverCapability.Tools == nil {
 			missing = "tools"
