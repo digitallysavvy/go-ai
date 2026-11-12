@@ -31,3 +31,20 @@ func TestR92provbFunctionCallNamespaceTypedLiteral(t *testing.T) {
 		}
 	}
 }
+
+// The xAI converter reads a legacy ToolCall's xai.itemId through its JSON
+// form too.
+func TestR92provbXAIToolCallItemIDTypedLiteral(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{Role: types.RoleAssistant,
+		ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "f", RawArguments: `{}`,
+			ProviderMetadata: map[string]interface{}{"xai": map[string]string{"itemId": "fc_1"}}}},
+	}}}
+	input, _, err := ConvertPromptToXAIInput(prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(input)
+	if !strings.Contains(string(b), `"id":"fc_1"`) {
+		t.Fatalf("input %s lacks the item id", b)
+	}
+}

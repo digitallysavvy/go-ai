@@ -297,7 +297,7 @@ func convertXAIAssistantItems(msg types.Message) ([]interface{}, []types.Warning
 			continue
 		}
 		id := ""
-		if meta, ok := tc.ProviderMetadata["xai"].(map[string]interface{}); ok {
+		if meta, ok := providerutils.NormalizeProviderOptionsObject(tc.ProviderMetadata["xai"]); ok {
 			id, _ = meta["itemId"].(string)
 		}
 		args := tc.RawArguments
