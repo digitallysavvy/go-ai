@@ -163,3 +163,31 @@ func TestR92provaRepeatedMessageStartKeepsHeldBackText(t *testing.T) {
 		t.Fatalf("parts = %s, want text-start, text-delta hello, text-end", r88provaJSON(parts))
 	}
 }
+
+// TS anthropicCitationSchema members are z.object schemas: keys a citation
+// does not declare are stripped from providerMetadata.anthropic.citations and
+// from each citation source's providerMetadata (recorded with node on
+// @ai-sdk/anthropic 2ebc78b654, doGenerate and doStream).
+func TestR92provaCitationUndeclaredKeysStripped(t *testing.T) {
+	citations := []map[string]interface{}{
+		{"type": "web_search_result_location", "cited_text": "c", "url": "https://x", "title": nil, "encrypted_index": "e", "extra": 1.0},
+		{"type": "char_location", "cited_text": "c", "document_index": 0.0, "document_title": nil, "start_char_index": 0.0, "end_char_index": 1.0, "future": "x"},
+		{"type": "search_result_location", "cited_text": "c", "search_result_index": 0.0, "source": "s", "title": "t", "start_block_index": 0.0, "end_block_index": 1.0, "z": true},
+	}
+	want := `{"anthropic":{"citations":[{"cited_text":"c","encrypted_index":"e","title":null,"type":"web_search_result_location","url":"https://x"},` +
+		`{"cited_text":"c","document_index":0,"document_title":null,"end_char_index":1,"start_char_index":0,"type":"char_location"},` +
+		`{"cited_text":"c","end_block_index":1,"search_result_index":0,"source":"s","start_block_index":0,"title":"t","type":"search_result_location"}]}}`
+	if got := string(citationsProviderMetadata(citations)); got != want {
+		t.Fatalf("providerMetadata = %s\nwant %s", got, want)
+	}
+	wantSource := []string{
+		`{"anthropic":{"cited_text":"c","encrypted_index":"e","title":null,"type":"web_search_result_location","url":"https://x"}}`,
+		`{"anthropic":{"cited_text":"c","document_index":0,"document_title":null,"end_char_index":1,"start_char_index":0,"type":"char_location"}}`,
+		`{"anthropic":{"cited_text":"c","end_block_index":1,"search_result_index":0,"source":"s","start_block_index":0,"title":"t","type":"search_result_location"}}`,
+	}
+	for i, c := range mapAnthropicCitations(citations, nil) {
+		if got := string(c.Source.ProviderMetadata); got != wantSource[i] {
+			t.Fatalf("citation %d source metadata = %s\nwant %s", i, got, wantSource[i])
+		}
+	}
+}
