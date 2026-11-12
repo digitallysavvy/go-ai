@@ -649,6 +649,11 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 			}
 		case types.ReasoningContent:
 			hasPrecedingReasoning = true
+			// TS parseProviderOptions(openaiResponsesReasoningProviderOptionsSchema):
+			// a non-string itemId / reasoningEncryptedContent fails the call.
+			if _, err := providerutils.ParseProviderOptions(openAIProviderOptionsName(opts), p.ProviderOptions, openAIReasoningPartOptionsSchema); err != nil {
+				return nil, nil, err
+			}
 			item, w := convertReasoningItem(p, opts, reasoningItems)
 			if item != nil {
 				items = append(items, item)
@@ -1156,6 +1161,13 @@ func convertAssistantTextItem(part types.TextContent, opts ConvertOptions, hasPr
 		item["phase"] = phase
 	}
 	return item
+}
+
+// openAIReasoningPartOptionsSchema is TS
+// openaiResponsesReasoningProviderOptionsSchema.
+var openAIReasoningPartOptionsSchema = providerutils.OptionSchema{
+	"itemId":                    providerutils.OptNullable(providerutils.OptString),
+	"reasoningEncryptedContent": providerutils.OptNullable(providerutils.OptString),
 }
 
 func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reasoningItems map[string]map[string]interface{}) (interface{}, []types.Warning) {

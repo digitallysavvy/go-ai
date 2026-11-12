@@ -31,3 +31,18 @@ func TestR93provbEmptyInlineFileIsSent(t *testing.T) {
 		t.Fatalf("xai input = %s", b)
 	}
 }
+
+// TS parses a reasoning part's providerOptions with
+// openaiResponsesReasoningProviderOptionsSchema: a non-string itemId fails.
+func TestR93provbReasoningPartOptionsValidated(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ReasoningContent{Text: "r", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"itemId": 5}}},
+	}}}}
+	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{}); err == nil {
+		t.Fatal("numeric itemId accepted")
+	}
+	prompt.Messages[0].Content[0] = types.ReasoningContent{Text: "r", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"itemId": "rs_1", "reasoningEncryptedContent": nil}}}
+	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{Store: true}); err != nil {
+		t.Fatal(err)
+	}
+}
