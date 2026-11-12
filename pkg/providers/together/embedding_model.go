@@ -114,7 +114,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		if pe, ok := providerutils.OpenAICompatibleAPIError("together", err); ok {
 			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 		}
-		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
+		// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+		return nil, err
 	}
 	embeddings := make([][]float64, len(response.Data))
 	for i, item := range response.Data {

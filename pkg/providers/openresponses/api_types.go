@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // OpenResponsesRequestBody represents the request body for the Open Responses API
@@ -83,7 +84,7 @@ func (t FunctionTool) MarshalJSON() ([]byte, error) {
 	case len(t.Parameters) > 0:
 		w.Parameters = t.Parameters
 	}
-	return json.Marshal(w)
+	return jsonstr.Marshal(w)
 }
 
 // CustomToolItem represents a caller-executed "custom" tool definition sent
@@ -135,7 +136,7 @@ func (r ReasoningInputItem) MarshalJSON() ([]byte, error) {
 	if r.Content != nil {
 		out.Content = &r.Content
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // presentString is the value to write for an omitempty string field: nil
@@ -176,9 +177,9 @@ type MessageItem struct {
 func (m MessageItem) MarshalJSON() ([]byte, error) {
 	type plain MessageItem
 	if m.ID != "" || !m.idSet {
-		return json.Marshal(plain(m))
+		return jsonstr.Marshal(plain(m))
 	}
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		plain
 		ID *string `json:"id"`
 	}{plain: plain(m), ID: &m.ID})
@@ -234,7 +235,7 @@ func (o OutputTextContent) MarshalJSON() ([]byte, error) {
 	if o.Logprobs != nil {
 		out.Logprobs = &o.Logprobs
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // FunctionCallItem represents a function call
@@ -256,9 +257,9 @@ type FunctionCallItem struct {
 func (f FunctionCallItem) MarshalJSON() ([]byte, error) {
 	type plain FunctionCallItem
 	if f.ID != "" || !f.idSet {
-		return json.Marshal(plain(f))
+		return jsonstr.Marshal(plain(f))
 	}
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		plain
 		ID *string `json:"id"`
 	}{plain: plain(f), ID: &f.ID})
@@ -294,9 +295,9 @@ type CustomToolCallItem struct {
 func (c CustomToolCallItem) MarshalJSON() ([]byte, error) {
 	type plain CustomToolCallItem
 	if c.ID != "" || !c.idSet {
-		return json.Marshal(plain(c))
+		return jsonstr.Marshal(plain(c))
 	}
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		plain
 		ID *string `json:"id"`
 	}{plain: plain(c), ID: &c.ID})
@@ -545,9 +546,9 @@ type Annotation struct {
 func (a Annotation) MarshalJSON() ([]byte, error) {
 	if a.Type != "url_citation" {
 		type plain Annotation
-		return json.Marshal(plain(a))
+		return jsonstr.Marshal(plain(a))
 	}
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type       string `json:"type"`
 		URL        string `json:"url"`
 		StartIndex int    `json:"start_index"`

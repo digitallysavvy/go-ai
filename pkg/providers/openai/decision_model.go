@@ -201,11 +201,14 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	var response decisionResponseWire
 	var rawBody interface{}
 	_ = json.Unmarshal(raw, &rawBody)
+	// TS createJsonResponseHandler(openaiDecisionResponseSchema): a body
+	// that fails the schema is the "Invalid JSON response" APICallError with
+	// the status, headers and body (response-handler.ts:259-271).
 	if err := providerutils.UnmarshalChunk(raw, &response); err != nil {
-		return nil, providererrors.NewInvalidResponseDataError(rawBody, "Invalid response from the OpenAI Decisions API: "+err.Error())
+		return nil, providerutils.InvalidJSONResponseError(m.Provider(), httpResp.StatusCode, httpResp.Headers, raw, &providerutils.ChunkSchemaError{Code: "custom", Message: err.Error()})
 	}
 	if err := response.validate(); err != nil {
-		return nil, providererrors.NewInvalidResponseDataError(rawBody, "Invalid response from the OpenAI Decisions API: "+err.Error())
+		return nil, providerutils.InvalidJSONResponseError(m.Provider(), httpResp.StatusCode, httpResp.Headers, raw, &providerutils.ChunkSchemaError{Code: "custom", Message: err.Error()})
 	}
 
 	answers := make(map[string]provider.DecisionAnswer, len(response.Answers))
@@ -366,7 +369,7 @@ func parseDecisionProviderOptions(providerOptions map[string]interface{}) (Decis
 	if !ok || openaiOpts == nil {
 		return out, nil
 	}
-	options, ok := openaiOpts.(map[string]interface{})
+	options, ok := providerutils.NormalizeProviderOptionsObject(openaiOpts)
 	if !ok {
 		return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
 	}
@@ -400,7 +403,7 @@ func parseDecisionProviderOptions(providerOptions map[string]interface{}) (Decis
 var decisionSupportedProviderOptions = map[string]bool{"safetyIdentifier": true, "promptCacheKey": true}
 
 func decisionUnsupportedOptionWarnings(providerOptions map[string]interface{}) []types.Warning {
-	openaiOpts, _ := providerOptions["openai"].(map[string]interface{})
+	openaiOpts, _ := providerutils.NormalizeProviderOptionsObject(providerOptions["openai"])
 	keys := make([]string, 0, len(openaiOpts))
 	for k := range openaiOpts {
 		if !decisionSupportedProviderOptions[k] {
@@ -544,10 +547,28 @@ func decisionImageContent(part provider.DecisionStatePart) (map[string]interface
 			Functionality: fmt.Sprintf("OpenAI decision file input: %s (%s)", declared, kind),
 		}
 	}
-	mediaType, data, err := part.InlineData()
-	if err != nil {
-		return nil, &providererrors.UnsupportedFunctionalityError{
-			Functionality: fmt.Sprintf("OpenAI decision file input: %s (%s)", declared, err),
+	// TS sends string data as given (`typeof part.data.data === 'string'`,
+	// openai-decision-model.ts:192), so unpadded or base64url data is not
+	// strictly decoded; the bytes are only read for media type detection.
+	dataString := ""
+	if part.File.FileData.Type == types.FileDataTypeData && len(part.File.FileData.Data) == 0 {
+		dataString = part.File.FileData.DataString
+	}
+	var mediaType string
+	var data []byte
+	if dataString != "" {
+		mediaType = declared
+		if mediaType == "" {
+			mediaType = part.File.FileData.MediaType
+		}
+		data, _ = types.DecodeFileDataString(dataString)
+	} else {
+		var err error
+		mediaType, data, err = part.InlineData()
+		if err != nil {
+			return nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: fmt.Sprintf("OpenAI decision file input: %s (%s)", declared, err),
+			}
 		}
 	}
 	// Direct DoDecide calls can bypass core's media type detection.
@@ -565,9 +586,9 @@ func decisionImageContent(part provider.DecisionStatePart) (map[string]interface
 	}
 	image := map[string]interface{}{
 		"type":      "input_image",
-		"image_url": "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data),
+		"image_url": "data:" + mediaType + ";base64," + decisionImageData(dataString, data),
 	}
-	if openaiOpts, ok := part.File.ProviderOptions["openai"].(map[string]interface{}); ok {
+	if openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(part.File.ProviderOptions["openai"]); ok {
 		if detail, ok := openaiOpts["imageDetail"]; ok && detail != nil {
 			image["detail"] = detail
 		}
@@ -663,4 +684,13 @@ func pickDecisionUsage(raw interface{}) interface{} {
 		}
 	}
 	return out
+}
+
+// decisionImageData is the data URL payload: a string given verbatim (TS),
+// else the bytes in base64.
+func decisionImageData(dataString string, data []byte) string {
+	if dataString != "" {
+		return dataString
+	}
+	return base64.StdEncoding.EncodeToString(data)
 }

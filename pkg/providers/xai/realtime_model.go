@@ -13,7 +13,6 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -149,8 +148,12 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// TS: `xAI realtime client secret request failed: ${status} ${text}`.
 		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
-		return provider.ClientSecretResult{}, providererrors.NewProviderError("xai", 0, "",
-			fmt.Sprintf("xAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body)), cause)
+		// TS throws a plain Error with exactly this text
+		// (xai-realtime-model.ts:69-74); the HTTP cause stays reachable.
+		return provider.ClientSecretResult{}, &xaiPlainError{
+			msg:   fmt.Sprintf("xAI realtime client secret request failed: %d %s", resp.StatusCode, textdecode.UTF8(resp.Body)),
+			cause: cause,
+		}
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	var data struct {
@@ -575,3 +578,13 @@ func xaiRealtimeTranscriptionUsage(raw interface{}) *provider.RealtimeUsage {
 	}
 	return &u
 }
+
+// xaiPlainError is a TS plain Error: its text is the message alone, and the
+// cause stays reachable through errors.As / errors.Is.
+type xaiPlainError struct {
+	msg   string
+	cause error
+}
+
+func (e *xaiPlainError) Error() string { return e.msg }
+func (e *xaiPlainError) Unwrap() error { return e.cause }

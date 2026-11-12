@@ -147,7 +147,8 @@ func TestBuildRequestBodyWithThinking(t *testing.T) {
 				}
 
 				if budgetTokens, ok := expectedThinking["budget_tokens"].(int); ok {
-					if thinking["budget_tokens"] != budgetTokens {
+					// Options are read through their JSON form (r91 PB-01).
+					if thinking["budget_tokens"] != float64(budgetTokens) {
 						t.Errorf("budget_tokens mismatch: expected %d, got %v",
 							budgetTokens, thinking["budget_tokens"])
 					}

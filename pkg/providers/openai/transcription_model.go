@@ -428,7 +428,7 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 	if providerOptions == nil {
 		return result
 	}
-	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
+	openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["openai"])
 	if !ok {
 		return result
 	}
@@ -598,7 +598,7 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 	fail := func(msg string) error {
 		return providererrors.NewArgumentError("providerOptions", "invalid openai provider options", errors.New(msg))
 	}
-	opts, ok := raw.(map[string]interface{})
+	opts, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return fail("Invalid input: expected object")
 	}

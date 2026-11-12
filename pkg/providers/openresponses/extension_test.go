@@ -646,12 +646,25 @@ func TestOpenResponsesExtensionItemEncodeInputItemFallback(t *testing.T) {
 			"openResponsesExtension": map[string]interface{}{"id": "lmstudio.code_execution", "itemId": "ce_fresh"},
 		},
 	})
+	// TS getExtensionReplay: a part that only references an extension
+	// item (itemId) is skipped, its carrier holds the item (r91 PB-35).
+	refOnly := types.ToolCallContent{ToolCallID: "ce_fresh", ToolName: "run_code", Input: "print(2)", ProviderExecuted: true, ProviderMetadata: refMeta}
+	skipBody, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{refOnly}}}},
+		Tools:  []types.Tool{{Name: "run_code", Type: "provider", ProviderID: "lmstudio.code_execution"}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if in, _ := skipBody["input"].([]interface{}); len(in) != 0 {
+		t.Fatalf("reference-only part sent %#v, want it skipped", in)
+	}
+
 	toolCall := types.ToolCallContent{
 		ToolCallID:       "ce_fresh",
 		ToolName:         "run_code",
 		Input:            "print(2)",
 		ProviderExecuted: true,
-		ProviderMetadata: refMeta,
 	}
 
 	body, _, err := model.buildRequestBody(&provider.GenerateOptions{

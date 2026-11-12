@@ -110,14 +110,14 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 	if !ok || raw == nil {
 		return result, nil
 	}
-	m, ok := raw.(map[string]interface{})
+	// Validate Go-typed values (a map[string]string namespace, []string
+	// locales and phrases, map[string]bool diarization, ...) in their JSON
+	// form, the form TS parses; they failed as "must be an array" / "must be
+	// an object".
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return result, invalidAzureOption("providerOptions.azure", "must be an object")
 	}
-	// Validate Go-typed values ([]string locales and phrases,
-	// map[string]bool diarization, ...) in their JSON form, the form TS
-	// parses; they failed as "must be an array" / "must be an object".
-	m = providerutils.NormalizeOptionsJSON(m)
 
 	allowed := map[string]bool{
 		"api": true, "timestamps": true, "transcribeStyle": true,

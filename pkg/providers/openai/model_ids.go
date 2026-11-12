@@ -169,6 +169,10 @@ const (
 	ModelGPT4oMiniTranscribe            = "gpt-4o-mini-transcribe"
 	ModelGPT4oMiniTranscribe_2025_03_20 = "gpt-4o-mini-transcribe-2025-03-20"
 	ModelGPT4oMiniTranscribe_2025_12_15 = "gpt-4o-mini-transcribe-2025-12-15"
+	// TS OpenAITranscriptionModelId (openai-transcription-model-options.ts:8-18).
+	ModelGPTLiveTranscribe  = "gpt-live-transcribe"
+	ModelGPTRealtimeWhisper = "gpt-realtime-whisper"
+	ModelGPTTranscribe      = "gpt-transcribe"
 )
 
 // Realtime model ID constants for OpenAI realtime models.

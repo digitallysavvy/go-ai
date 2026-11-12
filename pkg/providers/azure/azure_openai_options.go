@@ -1,6 +1,9 @@
 package azure
 
-import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+import (
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // OpenAI API option keys that Azure OpenAI deployments also accept under
 // providerOptions.azure (TS 6400cf8b88: openAITranscriptionModelOptionsShape,
@@ -24,7 +27,7 @@ type azurePickedOptions struct {
 
 func pickAzureOptions(providerOptions map[string]interface{}, shape []string) azurePickedOptions {
 	var picked azurePickedOptions
-	azure, _ := providerOptions["azure"].(map[string]interface{})
+	azure, _ := providerutils.NormalizeProviderOptionsObject(providerOptions["azure"])
 	for _, key := range shape {
 		v, ok := azure[key]
 		if !ok {
@@ -67,7 +70,7 @@ func withAzureOptionsForOpenAI(providerOptions map[string]interface{}, picked az
 		out[k] = v
 	}
 	merged := map[string]interface{}{}
-	if openai, ok := providerOptions["openai"].(map[string]interface{}); ok {
+	if openai, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["openai"]); ok {
 		for k, v := range openai {
 			merged[k] = v
 		}

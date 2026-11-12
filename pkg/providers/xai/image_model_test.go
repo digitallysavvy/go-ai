@@ -694,12 +694,9 @@ func TestXAIImageRespectsAbortSignalOption(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected canceled request error")
 	}
-	var providerErr *providererrors.ProviderError
-	if !errors.As(err, &providerErr) {
-		t.Fatalf("error = %T, want ProviderError", err)
-	}
-	if providerErr.Provider != "xai.image" {
-		t.Fatalf("Provider = %q, want xai.image", providerErr.Provider)
+	// TS handleFetchError returns an abort unchanged (r91 PB-22).
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }
 
@@ -721,12 +718,9 @@ func TestXAIImageRespectsCallContextWhenAbortSignalIsSet(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected canceled request error")
 	}
-	var providerErr *providererrors.ProviderError
-	if !errors.As(err, &providerErr) {
-		t.Fatalf("error = %T, want ProviderError", err)
-	}
-	if providerErr.Provider != "xai.image" {
-		t.Fatalf("Provider = %q, want xai.image", providerErr.Provider)
+	// TS handleFetchError returns an abort unchanged (r91 PB-22).
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }
 

@@ -265,7 +265,7 @@ func DeprecatedOpenAICompatibleOptionWarnings(options map[string]interface{}, re
 }
 
 func mergeProviderOptions(target map[string]interface{}, raw interface{}) {
-	options, ok := raw.(map[string]interface{})
+	options, ok := NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return
 	}
@@ -411,4 +411,22 @@ func PickSchemaKeys(v interface{}, keys ...string) map[string]interface{} {
 		}
 	}
 	return out
+}
+
+// NormalizeProviderOptionsObject returns one provider options namespace value
+// (providerOptions[name], a message, part or tool ProviderOptions[name]) as a
+// JSON object: a Go-typed literal (map[string]string, a typed option struct or
+// pointer, nested []map[string]string, int64 numbers) is read through its JSON
+// form, the shape TS options always have, so every map-based reader sees
+// map[string]interface{}, []interface{} and float64. ok is false when raw is
+// nil or its JSON form is not an object.
+func NormalizeProviderOptionsObject(raw interface{}) (map[string]interface{}, bool) {
+	if raw == nil {
+		return nil, false
+	}
+	normalized, ok := NormalizeOptionsJSON(map[string]interface{}{"v": raw})["v"].(map[string]interface{})
+	if !ok || normalized == nil {
+		return nil, false
+	}
+	return normalized, true
 }

@@ -1212,7 +1212,7 @@ func (m *ResponsesLanguageModel) wrapErr(err error) error {
 	if provErr, ok := xaiStatusError("xai.responses", err); ok {
 		return provErr // TS xaiFailedResponseHandler
 	}
-	return providererrors.NewProviderError("xai.responses", 0, "", err.Error(), err)
+	return err // TS handleFetchError: no HTTP response, returned unchanged
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

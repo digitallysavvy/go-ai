@@ -61,7 +61,7 @@ func TestImageModelBuildRequestBodyAndConvertResponse(t *testing.T) {
 	if body["image_url"] != "data:image/png;base64,aGVsbG8=" {
 		t.Fatalf("expected data URI image_url, got %+v", body)
 	}
-	if body["steps"] != 12 || body["negative_prompt"] != "blur" {
+	if body["steps"] != float64(12) || body["negative_prompt"] != "blur" { // JSON form (r91 PB-01)
 		t.Fatalf("expected provider options merged, got %+v", body)
 	}
 

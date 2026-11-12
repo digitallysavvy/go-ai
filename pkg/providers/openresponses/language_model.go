@@ -20,6 +20,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -244,8 +245,14 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		})
 	}
 
-	// Convert messages to Open Responses format
-	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
+	// Convert messages to Open Responses format. A Go Prompt.Text prompt is
+	// one user text message, as every other converter reads it (TS prompts
+	// are always messages; Go sent input: null).
+	promptMessages := opts.Prompt.Messages
+	if opts.Prompt.IsSimple() {
+		promptMessages = prompt.SimpleTextToMessages(opts.Prompt.Text)
+	}
+	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(promptMessages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
 	if err != nil {
 		return nil, warnings, err
 	}
@@ -428,8 +435,9 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 	if providerOptions == nil {
 		return OpenResponsesProviderOptions{}
 	}
-	keys := []string{"openai", providerName, "openResponses", "open-responses"}
-	for _, key := range keys {
+	// TS reads providerOptions[providerOptionsName]; the v0.5 aliases follow,
+	// so the TS key wins when both are given (open-responses-language-model.ts:333).
+	for _, key := range openResponsesProviderKeys(providerName) {
 		raw, ok := providerOptions[key]
 		if !ok {
 			continue
@@ -443,7 +451,10 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 		// kept regardless so buildRequestBody can report it (TS
 		// parseProviderOptions throws).
 		_ = json.Unmarshal(data, &opts)
-		if values, ok := raw.(map[string]interface{}); ok {
+		// Raw is read through the JSON form (TS options are JSON objects), so
+		// a Go-typed literal (map[string]string, map[string][]string,
+		// []map[string]string, int32) is read like the map form.
+		if values, ok := providerutils.NormalizeProviderOptionsObject(raw); ok {
 			opts.Raw = values
 			if summary, ok := values["reasoningSummary"]; ok {
 				opts.ReasoningSummarySet = true
@@ -1125,7 +1136,8 @@ func (m *LanguageModel) handleError(err error) error {
 	if errors.As(err, &statusErr) {
 		return openResponsesStatusError(m.provider.config.Name, statusErr, err)
 	}
-	return providererrors.NewProviderError(m.provider.config.Name, 0, "", err.Error(), err)
+	// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+	return err
 }
 
 // openResponsesStatusError is TS defaultFailedResponseHandler
@@ -1669,7 +1681,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			}
 			if err != nil {
 				// Mirrors TS's try/catch around decodeExtensionItem: a
-				// decode failure doesn't abort the whole stream.
+				// decode failure doesn't abort the whole stream, and the
+				// finish reason is error (open-responses-language-model.ts:876).
+				s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 			}
 			for _, part := range decoded {
@@ -1812,7 +1826,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		}
 		if err != nil {
 			// Mirrors TS's try/catch around extension.decodeEvent: a decode
-			// failure doesn't abort the whole stream.
+			// failure doesn't abort the whole stream, and the finish reason
+			// is error (open-responses-language-model.ts:716).
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 		}
 		for _, chunk := range decoded {
@@ -1853,7 +1869,9 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 	if id, ok := item.idValue(); ok {
 		payload["itemId"] = id
 	}
-	if item.EncryptedContent != "" {
+	// TS encrypted_content != null: an empty string is kept
+	// (open-responses-language-model.ts:1012).
+	if _, ok := item.rawField("encrypted_content", item.EncryptedContent); ok {
 		payload["reasoningEncryptedContent"] = item.EncryptedContent
 	}
 	raw, err := json.Marshal(map[string]interface{}{providerName: payload})

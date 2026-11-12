@@ -41,7 +41,7 @@ func (r ModelCatalogRefresher) Fetch(ctx context.Context) ([]modelcatalog.ModelI
 
 	resp, err := internalhttp.WithFetchRedirects(client).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.TransportError(err) // TS handleFetchError
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

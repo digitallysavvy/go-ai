@@ -195,6 +195,13 @@ func (t gmicloudIncludeUsageTransport) roundTrip(req *stdhttp.Request) (*stdhttp
 	_ = req.Body.Close()
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err == nil {
+		// buildRequestBody already sends stream_options.include_usage, so a
+		// streaming body that carries stream_options is passed through
+		// byte for byte: re-marshaling HTML-escaped <, > and & and sorted
+		// ordered objects (TS JSON.stringify keeps both, gmicloud-provider.ts:87).
+		if _, has := payload["stream_options"]; has {
+			payload = nil
+		}
 		if stream, _ := payload["stream"].(bool); stream {
 			payload["stream_options"] = map[string]interface{}{"include_usage": true}
 			if transformed, err := json.Marshal(payload); err == nil {

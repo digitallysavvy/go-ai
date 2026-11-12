@@ -180,12 +180,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 // uploadBatchInputFile uploads the JSONL batch input as a "batch"-purpose
 // file (`POST /files`), streaming the body via a multipart writer.
 func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, expiresAfterSeconds int, headers map[string]string) (*openAIFilesResponse, error) {
+	// TS appends the JSONL Blob first, then purpose and expires_after
+	// (openai-batch.ts:261-270).
 	parts := []internalhttp.MultipartStreamPart{
+		{IsFile: true, Name: "file", Filename: "batch.jsonl", MediaType: "application/jsonl", Content: bytes.NewReader(content), FormData: true},
 		{Name: "purpose", Value: "batch"},
 		{Name: "expires_after[anchor]", Value: "created_at"},
 		{Name: "expires_after[seconds]", Value: strconv.Itoa(expiresAfterSeconds)},
-		// TS appends the JSONL Blob to a FormData (openai-batch.ts).
-		{IsFile: true, Name: "file", Filename: "batch.jsonl", MediaType: "application/jsonl", Content: bytes.NewReader(content), FormData: true},
 	}
 	body, contentType, err := internalhttp.NewMultipartStreamBody(parts)
 	if err != nil {
@@ -371,7 +372,7 @@ func openaiBatchInputFileExpiresAfter(providerName string, providerOptions map[s
 		if !present || raw == nil {
 			continue
 		}
-		opts, ok := raw.(map[string]interface{})
+		opts, ok := providerutils.NormalizeProviderOptionsObject(raw)
 		if !ok {
 			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("expected an object"))
 		}
@@ -754,6 +755,9 @@ func shapeOpenAIBatchResult(res *types.GenerateResult, resp responses.ResponsesA
 			if c.ProviderExecuted && openaiBatchDynamicToolNames[c.ToolName] {
 				c.Dynamic = true
 			}
+			if !c.ProviderExecuted {
+				c.ProviderMetadata = withoutBatchAsyncRaw(c.ProviderMetadata)
+			}
 			part = c
 		case types.ToolResultContent:
 			if openaiBatchDynamicToolNames[c.ToolName] {
@@ -767,6 +771,9 @@ func shapeOpenAIBatchResult(res *types.GenerateResult, resp responses.ResponsesA
 	for i := range res.ToolCalls {
 		if res.ToolCalls[i].ProviderExecuted && openaiBatchDynamicToolNames[res.ToolCalls[i].ToolName] {
 			res.ToolCalls[i].Dynamic = true
+		}
+		if !res.ToolCalls[i].ProviderExecuted {
+			res.ToolCalls[i].ProviderMetadata = withoutBatchAsync(res.ToolCalls[i].ProviderMetadata)
 		}
 	}
 	if logprobs := responsesOutputLogprobs(resp.Output); len(logprobs) > 0 {
@@ -823,4 +830,59 @@ func (s *openAIBatchResultsStream) Close() error {
 		return s.rc.Close()
 	}
 	return nil
+}
+
+// withoutBatchAsync drops the async key the shared Responses converter puts
+// in a function / custom tool call's openai metadata: TS's batch converter
+// sets only itemId, namespace and caller (openai-batch.ts:792-822).
+func withoutBatchAsync(meta map[string]interface{}) map[string]interface{} {
+	openaiMeta, ok := meta["openai"].(map[string]interface{})
+	if !ok {
+		return meta
+	}
+	if _, has := openaiMeta["async"]; !has {
+		return meta
+	}
+	out := make(map[string]interface{}, len(meta))
+	for k, v := range meta {
+		out[k] = v
+	}
+	cleaned := make(map[string]interface{}, len(openaiMeta))
+	for k, v := range openaiMeta {
+		if k != "async" {
+			cleaned[k] = v
+		}
+	}
+	out["openai"] = cleaned
+	return out
+}
+
+// withoutBatchAsyncRaw is withoutBatchAsync for a content part's JSON
+// metadata.
+func withoutBatchAsyncRaw(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var meta map[string]json.RawMessage
+	if json.Unmarshal(raw, &meta) != nil {
+		return raw
+	}
+	var openaiMeta map[string]json.RawMessage
+	if json.Unmarshal(meta["openai"], &openaiMeta) != nil {
+		return raw
+	}
+	if _, has := openaiMeta["async"]; !has {
+		return raw
+	}
+	delete(openaiMeta, "async")
+	b, err := json.Marshal(openaiMeta)
+	if err != nil {
+		return raw
+	}
+	meta["openai"] = b
+	out, err := json.Marshal(meta)
+	if err != nil {
+		return raw
+	}
+	return out
 }

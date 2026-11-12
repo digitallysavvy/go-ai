@@ -485,7 +485,18 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
 				RawArguments: tc.Function.Arguments,
 			}
+			// TS pushes the tool calls before the text
+			// (deepseek-chat-language-model.ts:449-472).
+			result.Content = append(result.Content, types.ToolCallContent{
+				ToolCallID: id,
+				ToolName:   tc.Function.Name,
+				Input:      tc.Function.Arguments,
+				Arguments:  args,
+			})
 		}
+	}
+	if choice.Message.Content != "" {
+		result.Content = append(result.Content, types.TextContent{Text: choice.Message.Content})
 	}
 
 	meta := map[string]interface{}{}
@@ -548,7 +559,8 @@ func (m *LanguageModel) handleError(err error) error {
 	if pe, ok := providerutils.OpenAICompatibleAPIError("deepseek", err); ok {
 		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 	}
-	return providererrors.NewProviderError("deepseek", 0, "", err.Error(), err)
+	// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+	return err
 }
 
 // convertDeepseekUsage decodes the DeepSeek usage object twice: once into a

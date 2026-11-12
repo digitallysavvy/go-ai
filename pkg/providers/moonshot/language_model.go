@@ -561,6 +561,14 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 				Arguments:    args,
 				RawArguments: rawArgs,
 			}
+			// TS pushes the tool calls before the text
+			// (moonshotai-chat-language-model.ts:509-525).
+			result.Content = append(result.Content, types.ToolCallContent{
+				ToolCallID: id,
+				ToolName:   tc.Function.Name,
+				Input:      rawArgs,
+				Arguments:  args,
+			})
 		}
 	}
 
@@ -620,8 +628,21 @@ func (m *LanguageModel) handleError(err error) error {
 	if parsed := parseMoonshotProviderError(err); parsed != err {
 		return parsed
 	}
-	pe := providererrors.NewProviderError("moonshot", 0, "", err.Error(), err)
-	pe.Data = nil // TS: no data for a body that does not match the error schema
+	// TS createJsonErrorResponseHandler: a body that does not match the
+	// error schema is the status text with no data (PB-21); a failure with
+	// no HTTP response (abort, deadline, the "Cannot connect to API" error)
+	// is returned unchanged like TS handleFetchError (PB-22).
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return err
+	}
+	pe := providererrors.NewProviderErrorFromResponse("moonshot", 0, "", http.StatusText(statusErr.StatusCode), statusErr)
+	pe.Message = http.StatusText(statusErr.StatusCode)
+	pe.Data = nil
+	// TS APICallError.responseHeaders (lower-case keys): retries honor
+	// retry-after(-ms).
+	_, headers, _ := statusErr.HTTPStatusDetails()
+	pe.ResponseHeaders = headers
 	return pe
 }
 

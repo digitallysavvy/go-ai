@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -153,9 +152,9 @@ func TestXAIModelMetadataAndErrorHelpers(t *testing.T) {
 	if im.ModelID() != ModelGrokImagineImage {
 		t.Fatalf("image model ID = %q", im.ModelID())
 	}
-	ierr := im.handleError(errors.New("image fail"))
-	var ipErr *providererrors.ProviderError
-	if !errors.As(ierr, &ipErr) || ipErr.Provider != "xai.image" {
+	// A failure without an HTTP response is returned unchanged (TS
+	// handleFetchError, r91 PB-22).
+	if ierr := im.handleError(errors.New("image fail")); ierr == nil || ierr.Error() != "image fail" {
 		t.Fatalf("image handleError mismatch: %v", ierr)
 	}
 }
@@ -208,9 +207,8 @@ func TestXAIResponsesStreamHelpers(t *testing.T) {
 	}
 
 	rm := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-3")
-	wrapped := rm.wrapErr(errors.New("boom"))
-	var pErr *providererrors.ProviderError
-	if !errors.As(wrapped, &pErr) || pErr.Provider != "xai.responses" {
+	// No HTTP response: returned unchanged (TS handleFetchError, r91 PB-22).
+	if wrapped := rm.wrapErr(errors.New("boom")); wrapped == nil || wrapped.Error() != "boom" {
 		t.Fatalf("wrapErr mismatch: %v", wrapped)
 	}
 }

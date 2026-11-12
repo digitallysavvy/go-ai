@@ -51,7 +51,9 @@ func TestProviderBasicsAndOptionsExtractors(t *testing.T) {
 		"openai":         map[string]interface{}{"reasoningSummary": "detailed"},
 		"open-responses": map[string]interface{}{"reasoningSummary": "legacy"},
 	}, "open-responses")
-	if opts.ReasoningSummary != "detailed" {
+	// The provider's own key wins over the openai alias (TS reads
+	// providerOptions[providerOptionsName]; r91 PB-07).
+	if opts.ReasoningSummary != "legacy" {
 		t.Fatalf("provider options parse failed: %+v", opts)
 	}
 }
@@ -319,7 +321,7 @@ func TestBuildRequestBodyProviderOptionsParity(t *testing.T) {
 		}
 	}
 	contextManagement := body["context_management"].([]map[string]interface{})
-	if len(contextManagement) != 1 || contextManagement[0]["type"] != "compaction" || contextManagement[0]["compact_threshold"] != 50000 {
+	if len(contextManagement) != 1 || contextManagement[0]["type"] != "compaction" || contextManagement[0]["compact_threshold"] != float64(50000) { // JSON form (r91 PB-01)
 		t.Fatalf("context_management = %#v, want TS snake_case shape", contextManagement)
 	}
 	reasoning := body["reasoning"].(map[string]interface{})

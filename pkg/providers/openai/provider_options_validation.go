@@ -3,8 +3,30 @@ package openai
 import (
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
+
+// normalizedGenerateOptions returns opts with its ProviderOptions read
+// through their JSON form (providerutils.NormalizeOptionsJSON), so every
+// reader sees what TS sees: map[string]interface{}, []interface{} and
+// float64, whether the caller wrote map[string]string, a typed option
+// struct, []map[string]string or int64. The caller's options are not
+// changed.
+func normalizedGenerateOptions(opts *provider.GenerateOptions) *provider.GenerateOptions {
+	if opts == nil || opts.ProviderOptions == nil {
+		return opts
+	}
+	c := *opts
+	c.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	return &c
+}
+
+// optionsObject reads one options namespace value (providerOptions[name], a
+// message, part or tool ProviderOptions[name]) through its JSON form.
+func optionsObject(v interface{}) (map[string]interface{}, bool) {
+	return providerutils.NormalizeProviderOptionsObject(v)
+}
 
 // Schemas mirror the zod objects the TS providers pass to parseProviderOptions
 // (openai-chat-language-model-options.ts, openai-completion-language-model-

@@ -247,7 +247,7 @@ func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) Tr
 	if providerOptions == nil {
 		return result
 	}
-	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
+	openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["openai"])
 	if !ok {
 		return result
 	}
@@ -293,15 +293,7 @@ func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) Tr
 }
 
 func numericValue(v interface{}) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	}
-	return 0, false
+	return goNumber(v)
 }
 
 // openAIRealtimeWSAuth mirrors TS getOpenAIRealtimeConnection: the bearer

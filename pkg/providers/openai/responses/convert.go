@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -96,6 +97,11 @@ type ConvertOptions struct {
 	// parameter.
 	ConfigurationUpdateUnsupportedReason string
 
+	// NormalizeTextFormatSchema normalizes a message-level textFormatUpdate
+	// json_schema schema (TS normalizeOpenAIJsonSchema, set by the OpenAI
+	// model; nil sends the schema as given).
+	NormalizeTextFormatSchema func(schema interface{}) (interface{}, []types.Warning, error)
+
 	// programmaticCallerIDs holds tool-call-ids whose caller was a
 	// programmatic-tool-calling "program", collected from the prompt's
 	// assistant messages by ConvertPromptToInputWithOptions before
@@ -166,6 +172,11 @@ func (o ConvertOptions) toolSearchName() string {
 // ConvertPromptToInputWithOptions converts a prompt to Responses API input and
 // validates file media types according to OpenAI Responses defaults.
 func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
+	// A Go Prompt.Text prompt is one user text message, as the chat
+	// converters read it (TS prompts are always messages; Go sent input: []).
+	if prompt.IsSimple() {
+		prompt.Messages = promptutil.SimpleTextToMessages(prompt.Text)
+	}
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
 	var warnings []types.Warning
 	if err := validateToolOutputFileReferences(prompt, opts); err != nil {
@@ -203,16 +214,14 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	for _, msg := range prompt.Messages {
 		switch msg.Role {
 		case types.RoleSystem:
-			item, itemWarning, err := convertSystemMidConversationMessage(msg, systemMessageMode, opts)
+			item, itemWarnings, err := convertSystemMidConversationMessage(msg, systemMessageMode, opts)
 			if err != nil {
 				return nil, warnings, err
 			}
 			if item != nil {
 				input = append(input, item)
 			}
-			if itemWarning != nil {
-				warnings = append(warnings, *itemWarning)
-			}
+			warnings = append(warnings, itemWarnings...)
 		case types.RoleUser:
 			userMessage, err := convertUserMessage(msg, opts)
 			if err != nil {
@@ -256,7 +265,7 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 // item independent of systemMessageMode's text handling; a message with
 // empty reasoningEffortUpdate is handled as an ordinary system/developer
 // message (or dropped with a warning when systemMessageMode is "remove").
-func convertSystemMidConversationMessage(msg types.Message, systemMessageMode string, opts ConvertOptions) (interface{}, *types.Warning, error) {
+func convertSystemMidConversationMessage(msg types.Message, systemMessageMode string, opts ConvertOptions) (interface{}, []types.Warning, error) {
 	providerName := openAIProviderOptionsName(opts)
 	sysOpts := systemMessageProviderOptions(msg, providerName)
 	effort, _ := sysOpts["reasoningEffortUpdate"].(string)
@@ -264,39 +273,63 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 	// zod `.optional()` enum: a present key must hold a valid value (an empty
 	// string, a number or an explicit null is rejected, not ignored).
 	_, effortPresent := sysOpts["reasoningEffortUpdate"]
+	textFormatRaw, textFormatPresent := sysOpts["textFormatUpdate"]
 
-	if effortPresent {
+	if effortPresent || textFormatPresent {
 		// TS parses this field against a fixed schema enum
 		// (z.enum(['none','low','medium','high','xhigh','max']), row
 		// 94d5d6d3e6) before any model-specific handling, so an
 		// out-of-enum value like "minimal" is rejected the same way on
 		// every model, including ones that support "none". Go has no
 		// schema layer, so validate manually here, first.
-		if !isValidReasoningEffortUpdateValue(effort) {
+		if effortPresent && !isValidReasoningEffortUpdateValue(effort) {
 			return nil, nil, &providererrors.InvalidArgumentError{
 				Field:   "providerOptions." + providerName + ".reasoningEffortUpdate",
 				Message: fmt.Sprintf("must be one of %s", strings.Join(ValidReasoningEffortUpdateValues, ", ")),
 			}
 		}
+		var textFormat *jsonorder.Object
+		if textFormatPresent {
+			parsed, err := ParseTextFormat("providerOptions."+providerName+".textFormatUpdate", textFormatRaw)
+			if err != nil {
+				return nil, nil, err
+			}
+			textFormat = parsed
+		}
 
+		// TS 5a645e92d2: the feature named in the error is the effort
+		// update when set, else the format update.
+		feature := "reasoningEffortUpdate"
+		if !effortPresent {
+			feature = "textFormatUpdate"
+		}
 		var unsupportedReason string
 		if content != "" {
-			unsupportedReason = "Message-level reasoningEffortUpdate requires empty system message content."
+			unsupportedReason = "Message-level " + feature + " requires empty system message content."
 		} else {
 			unsupportedReason = opts.ConfigurationUpdateUnsupportedReason
 		}
 		if unsupportedReason != "" {
 			return nil, nil, &providererrors.UnsupportedFunctionalityError{
-				Functionality: "Message-level reasoningEffortUpdate",
+				Functionality: "Message-level " + feature,
 				Message:       unsupportedReason,
 			}
 		}
 
 		// The control is independent of systemMessageMode's text handling.
-		return map[string]interface{}{
-			"type":      "configuration_update",
-			"reasoning": map[string]interface{}{"effort": effort},
-		}, nil, nil
+		update := map[string]interface{}{"type": "configuration_update"}
+		if effortPresent {
+			update["reasoning"] = map[string]interface{}{"effort": effort}
+		}
+		var formatWarnings []types.Warning
+		if textFormat != nil {
+			normalized, err := NormalizeTextFormat(textFormat, opts.NormalizeTextFormatSchema, &formatWarnings)
+			if err != nil {
+				return nil, nil, err
+			}
+			update["text"] = map[string]interface{}{"format": normalized}
+		}
+		return update, formatWarnings, nil
 	}
 
 	switch systemMessageMode {
@@ -319,10 +352,10 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 		}
 		return sysMsg, nil, nil
 	case "remove":
-		return nil, &types.Warning{
+		return nil, []types.Warning{{
 			Type:    "other",
 			Message: "system messages are removed for this model",
-		}, nil
+		}}, nil
 	default:
 		return nil, nil, fmt.Errorf("openai.responses: unsupported system message mode: %s", systemMessageMode)
 	}
@@ -338,11 +371,11 @@ func systemMessageProviderOptions(msg types.Message, providerName string) map[st
 	if msg.ProviderOptions == nil {
 		return nil
 	}
-	if v, ok := msg.ProviderOptions[providerName].(map[string]interface{}); ok {
+	if v, ok := providerutils.NormalizeProviderOptionsObject(msg.ProviderOptions[providerName]); ok {
 		return v
 	}
 	if providerName != "openai" {
-		if v, ok := msg.ProviderOptions["openai"].(map[string]interface{}); ok {
+		if v, ok := providerutils.NormalizeProviderOptionsObject(msg.ProviderOptions["openai"]); ok {
 			return v
 		}
 	}
@@ -781,7 +814,7 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 // input item (row 1f6dd3a). Mirrors TS's caller.type === 'program' ?
 // {type:'program', caller_id} : caller, applied in reverse (SDK -> wire).
 func toolCallCallerFromMetadata(metadata map[string]interface{}, providerName string) *ToolCaller {
-	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if !ok {
 		return nil
 	}
@@ -805,7 +838,7 @@ func toolCallCallerFromMetadata(metadata map[string]interface{}, providerName st
 // lookup) or ProviderMetadata (checked second), for the
 // execution-denied-for-programmatic-calls rejection below (row e105b2b).
 func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCaller {
-	if openaiOptions, ok := part.ProviderOptions[providerName].(map[string]interface{}); ok {
+	if openaiOptions, ok := providerutils.NormalizeProviderOptionsObject(part.ProviderOptions[providerName]); ok {
 		if caller, ok := openaiOptions["caller"].(map[string]interface{}); ok {
 			callerType, _ := caller["type"].(string)
 			if callerType == "program" {
@@ -1410,7 +1443,7 @@ func openAIReasoningEncryptedContent(part types.ReasoningContent, providerName s
 // openAIReasoningEncryptedFrom reads metadata[provider].reasoningEncryptedContent
 // when it is a string; null (TS nullish) and absent are nil.
 func openAIReasoningEncryptedFrom(metadata map[string]interface{}, providerName string) *string {
-	m, _ := metadata[providerName].(map[string]interface{})
+	m, _ := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if enc, ok := m["reasoningEncryptedContent"].(string); ok {
 		return &enc
 	}
@@ -1453,7 +1486,7 @@ func openAICompactionMetadata(part types.CustomContent, providerName string) (st
 }
 
 func openAICompactionMetadataFromMap(metadata map[string]interface{}, providerName string) (string, string) {
-	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if !ok {
 		return "", ""
 	}
@@ -1478,7 +1511,7 @@ func openAITextMetadata(part types.TextContent, providerName string) (string, st
 }
 
 func openAIItemIDAndPhase(metadata map[string]interface{}, providerName string) (string, string) {
-	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if !ok {
 		return "", ""
 	}
@@ -1716,7 +1749,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 // strict are optional; unknown keys are rejected.
 func appendAdditionalTools(items *[]interface{}, part types.ToolResultContent, opts ConvertOptions) error {
 	providerName := openAIProviderOptionsName(opts)
-	openaiOptions, ok := part.ProviderOptions[providerName].(map[string]interface{})
+	openaiOptions, ok := providerutils.NormalizeProviderOptionsObject(part.ProviderOptions[providerName])
 	if !ok {
 		return nil
 	}
@@ -2334,7 +2367,7 @@ func shouldSkipApprovalDeniedOutput(part types.ToolResultContent) bool {
 	// core builds for provider-executed tools); the part-level options are
 	// also honoured for callers that set it there.
 	for _, options := range []map[string]interface{}{part.Output.ProviderOptions, part.ProviderOptions} {
-		openaiOptions, ok := options["openai"].(map[string]interface{})
+		openaiOptions, ok := providerutils.NormalizeProviderOptionsObject(options["openai"])
 		if !ok {
 			continue
 		}
@@ -2615,7 +2648,7 @@ func openAIResponsesImageDetail(providerOptions map[string]interface{}, provider
 	if len(providerName) > 0 && providerName[0] != "" {
 		name = providerName[0]
 	}
-	openaiOpts, ok := providerOptions[name].(map[string]interface{})
+	openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[name])
 	if !ok {
 		return ""
 	}
@@ -2777,7 +2810,7 @@ func promptCacheBreakpoint(providerOptions map[string]interface{}, providerName 
 	if providerOptions == nil {
 		return nil
 	}
-	opts, ok := providerOptions[providerName].(map[string]interface{})
+	opts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[providerName])
 	if !ok {
 		return nil
 	}

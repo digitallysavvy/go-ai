@@ -57,14 +57,12 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 		}
 
 		if msgOpts != nil && msgOpts.Partial && msg.Role != types.RoleAssistant {
-			return nil, nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+			return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "Moonshot AI Partial Mode requires `partial: true` on an assistant message.",
 			}
 		}
 		if msgOpts != nil && msgOpts.HasTools && msg.Role != types.RoleSystem {
-			return nil, nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+			return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "Moonshot dynamic tools must be configured on a system message.",
 			}
 		}
@@ -73,8 +71,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 		case types.RoleSystem:
 			if msgOpts != nil && len(msgOpts.Tools) > 0 {
 				if extractMoonshotText(msg.Content) != "" {
-					return nil, nil, &providererrors.InvalidArgumentError{
-						Field:   "prompt",
+					return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 						Message: "A Moonshot dynamic-tool system message must use empty content because the API forbids content alongside tools.",
 					}
 				}
@@ -137,14 +134,12 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 		case types.RoleAssistant:
 			if msgOpts != nil && msgOpts.Partial {
 				if index != len(messages)-1 {
-					return nil, nil, &providererrors.InvalidArgumentError{
-						Field:   "prompt",
+					return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 						Message: "Moonshot AI Partial Mode requires the partial assistant message to be the final message.",
 					}
 				}
 				if responseFormatType == "json_object" {
-					return nil, nil, &providererrors.InvalidArgumentError{
-						Field:   "prompt",
+					return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 						Message: "Moonshot AI Partial Mode cannot be combined with JSON object response format.",
 					}
 				}

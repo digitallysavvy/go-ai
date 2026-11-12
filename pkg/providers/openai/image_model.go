@@ -306,7 +306,7 @@ var openAIImageMarkupDataURL = regexp.MustCompile(`(?s)^data:([^;,]*)(;base64)?,
 // it cannot be combined with a mask, and a data URL must be base64 encoded
 // (TS 6549344e0a).
 func openAIImageMarkup(opts *provider.ImageGenerateOptions) (openAIImageMarkupInput, error) {
-	raw, _ := opts.ProviderOptions["openai"].(map[string]interface{})
+	raw, _ := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"])
 	markup, isString := raw["markup"].(string)
 	if !isString {
 		if typed := extractOpenAIImageProviderOptions(opts.ProviderOptions); typed.Markup != "" {

@@ -3,6 +3,7 @@ package fireworks
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -138,7 +139,8 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
+		// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -197,10 +199,7 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 
 	var submitResp AsyncSubmitResponse
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID, Body: body, Headers: opts.Headers, ValidateResponse: providerutils.NodeResponseValidator("fireworks", asyncSubmitNode)}, &submitResp); err != nil {
-		if providerutils.IsInvalidJSONResponse(err) {
-			return "", err
-		}
-		return "", fmt.Errorf("Fireworks async submit failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+		return "", fireworksAsyncCallError(err)
 	}
 
 	if submitResp.RequestID == "" {
@@ -217,10 +216,7 @@ func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string, cal
 
 	var pollResp AsyncPollResponse
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID + "/get_result", Body: pollBody, Headers: callHeaders, ValidateResponse: providerutils.NodeResponseValidator("fireworks", asyncPollNode)}, &pollResp); err != nil {
-		if providerutils.IsInvalidJSONResponse(err) {
-			return "", false, err
-		}
-		return "", false, fmt.Errorf("Fireworks async status check failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+		return "", false, fireworksAsyncCallError(err)
 	}
 
 	switch pollResp.Status {
@@ -235,6 +231,21 @@ func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string, cal
 		// Pending, Running, or any unknown status → continue polling
 		return "", false, nil
 	}
+}
+
+// fireworksAsyncCallError maps a failed async submit / poll call like TS
+// postJsonToApi with createStatusCodeErrorResponseHandler
+// (fireworks-image-model.ts:240): an HTTP error status is a ProviderError
+// whose message is the status text (the body is kept as the response
+// body), and an invalid JSON body or a transport failure (already mapped by
+// the client like TS handleFetchError) is returned unchanged. Go wrapped
+// both in a plain "Fireworks async ... failed" error.
+func fireworksAsyncCallError(err error) error {
+	var status *internalhttp.HTTPStatusError
+	if errors.As(err, &status) {
+		return providererrors.NewSchemaProviderError("fireworks", err, nil)
+	}
+	return err
 }
 
 // asyncPollIntervalMs returns the configured poll interval or the default (500ms).
@@ -432,9 +443,11 @@ func (m *ImageModel) buildAsyncRequestBody(opts *provider.ImageGenerateOptions) 
 	}
 
 	if opts.Size != "" {
-		parts := strings.SplitN(opts.Size, "x", 2)
-		if len(parts) == 2 {
-			body["width"] = parts[0]
+		// TS size.split('x'): width = parts[0], height = parts[1] when
+		// present (undefined is left out).
+		parts := strings.Split(opts.Size, "x")
+		body["width"] = parts[0]
+		if len(parts) > 1 {
 			body["height"] = parts[1]
 		}
 	}
@@ -449,7 +462,7 @@ func (m *ImageModel) buildAsyncRequestBody(opts *provider.ImageGenerateOptions) 
 	// Merge provider-specific options (passthrough); applied last like TS
 	// `...fireworksOptions`.
 	if opts.ProviderOptions != nil {
-		if fwOpts, ok := opts.ProviderOptions["fireworks"].(map[string]interface{}); ok {
+		if fwOpts, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["fireworks"]); ok {
 			for k, v := range fwOpts {
 				body[k] = v
 			}

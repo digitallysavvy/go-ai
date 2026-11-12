@@ -35,7 +35,7 @@ func (m *ImageModel) compatImageArgs(providerOptions map[string]interface{}) (ma
 		}
 	}
 	for _, k := range []string{key, camel} {
-		if raw, ok := providerOptions[k].(map[string]interface{}); ok {
+		if raw, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[k]); ok {
 			for name, v := range raw {
 				args[name] = v
 			}

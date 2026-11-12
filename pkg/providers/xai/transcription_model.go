@@ -18,7 +18,6 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -89,7 +88,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+		return nil, err // TS handleFetchError: abort as is, else "Cannot connect to API"
 	}
 	if resp.StatusCode >= 400 {
 		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body)

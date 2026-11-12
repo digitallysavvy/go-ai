@@ -31,7 +31,8 @@ func TestOpenResponsesModelMetadataAndErrorWrap(t *testing.T) {
 	if urls := m.SupportedURLs(); len(urls["image/*"]) != 1 || urls["image/*"][0] != `^https?://.*$` {
 		t.Fatalf("SupportedURLs() = %#v", urls)
 	}
-	if err := m.handleError(io.EOF); err == nil || !strings.Contains(err.Error(), "open-responses provider error") {
+	// No HTTP response: returned unchanged (TS handleFetchError, r91).
+	if err := m.handleError(io.EOF); err != io.EOF {
 		t.Fatalf("handleError mismatch: %v", err)
 	}
 }

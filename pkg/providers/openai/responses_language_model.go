@@ -78,6 +78,7 @@ func (m *ResponsesLanguageModel) SupportsImageInput() bool { return true }
 
 // DoGenerate performs non-streaming generation via POST /v1/responses.
 func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts = normalizedGenerateOptions(opts)
 	body, store, warnings, err := m.buildRequest(opts, false)
 	if err != nil {
 		return nil, err
@@ -264,6 +265,7 @@ func responsesCreatedAt(data []byte, event bool) (time.Time, bool) {
 
 // DoStream performs streaming generation via POST /v1/responses with stream=true.
 func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	opts = normalizedGenerateOptions(opts)
 	body, _, warnings, err := m.buildRequest(opts, true)
 	if err != nil {
 		return nil, err
@@ -323,6 +325,7 @@ func responsesExplicitStore(body map[string]interface{}) bool {
 }
 
 func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, bool, []types.Warning, error) {
+	opts = normalizedGenerateOptions(opts)
 	// Extract provider options early (store needed before input conversion).
 	store := true
 	storeExplicit := false
@@ -330,6 +333,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	previousResponseID := ""
 	promptCacheRetention := ""
 	var promptCacheOptions interface{}
+	var requestTextFormat *jsonorder.Object
 	promptCacheKey := ""
 	reasoningEffort := ""
 	reasoningEffortUpdate := ""
@@ -362,9 +366,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	if opts.ProviderOptions != nil {
 		var ok bool
-		openaiOpts, ok = opts.ProviderOptions[providerOptionsName].(map[string]interface{})
+		openaiOpts, ok = providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions[providerOptionsName])
 		if !ok && providerOptionsName != "openai" {
-			openaiOpts, ok = opts.ProviderOptions["openai"].(map[string]interface{})
+			openaiOpts, ok = providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"])
 		}
 		if ok {
 			if v, ok := openaiOpts["store"].(bool); ok {
@@ -384,17 +388,27 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				if err := validateResponsesPromptCacheOptions(v, providerOptionsName); err != nil {
 					return nil, store, nil, err
 				}
-				// zod's object schema drops unknown keys before TS sends it.
+				// TS 5a645e92d2 sends {mode, ttl, prewarm,
+				// comparison_response_id} from the parsed options (unknown
+				// keys dropped, undefined members left out).
 				if m, isMap := v.(map[string]interface{}); isMap {
 					known := make(map[string]interface{}, len(m))
-					for _, k := range []string{"mode", "ttl", "prewarm"} {
-						if val, has := m[k]; has {
-							known[k] = val
+					for _, k := range [][2]string{{"mode", "mode"}, {"ttl", "ttl"}, {"prewarm", "prewarm"}, {"comparisonResponseId", "comparison_response_id"}} {
+						if val, has := m[k[0]]; has {
+							known[k[1]] = val
 						}
 					}
 					v = known
 				}
 				promptCacheOptions = v
+			}
+			if v, ok := openaiOpts["textFormat"]; ok {
+				// TS textFormat: openaiResponsesTextFormatSchema().optional().
+				parsed, err := responses.ParseTextFormat("providerOptions."+providerOptionsName+".textFormat", v)
+				if err != nil {
+					return nil, store, nil, err
+				}
+				requestTextFormat = parsed
 			}
 			if v, ok := openaiOpts["promptCacheKey"].(string); ok {
 				promptCacheKey = v
@@ -519,9 +533,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// uniformly to both.
 	configurationUpdateUnsupportedReason := ""
 	if !modelCapabilities.SupportsConfigurationUpdate {
-		configurationUpdateUnsupportedReason = "reasoningEffortUpdate is only supported by GPT-6 and later models"
+		configurationUpdateUnsupportedReason = "Configuration updates are only supported by GPT-6 and later models"
 	} else if reasoningMode == "pro" || contextManagementExplicit || truncation == "auto" {
-		configurationUpdateUnsupportedReason = "reasoningEffortUpdate requires standard reasoning mode without automatic compaction or automatic truncation"
+		configurationUpdateUnsupportedReason = "Configuration updates require standard reasoning mode without automatic compaction or automatic truncation"
 	}
 
 	// getUpdateEffortUnsupportedReason mirrors TS: the schema accepts update
@@ -605,6 +619,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
 		IncludePromptCacheBreakpoint:         true,
 		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
+		NormalizeTextFormatSchema:            NormalizeOpenAISchemaValue,
 		IsReasoningModel:                     isReasoning,
 		WebSearchToolName:                    responsesWebSearchToolName(opts.Tools),
 	})
@@ -679,7 +694,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		curr, ok2 := input[i].(map[string]interface{})
 		if ok1 && ok2 && prev["type"] == "configuration_update" && curr["type"] == "configuration_update" {
 			return nil, store, warnings, &providererrors.UnsupportedFunctionalityError{
-				Functionality: "Adjacent reasoning effort configuration updates",
+				Functionality: "Adjacent configuration updates",
+				Message:       "Configuration updates cannot be consecutive. Set reasoningEffortUpdate and textFormatUpdate in the same empty system message, and omit request-level reasoningEffortUpdate when using message-level updates.",
 			}
 		}
 	}
@@ -697,7 +713,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// warnings below.
 	var normalizedResponseSchema interface{}
 	hasJSONFormat := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json"
-	if hasJSONFormat && opts.ResponseFormat.Schema != nil {
+	// TS 5a645e92d2: a request-level textFormat replaces the response
+	// format on the wire, so the response schema is not normalized.
+	if hasJSONFormat && opts.ResponseFormat.Schema != nil && requestTextFormat == nil {
 		// Normalize the response schema for OpenAI structured outputs
 		// (d5e3024, 411b3f2: drop propertyNames / lookaround patterns),
 		// matching the chat model's handling.
@@ -710,6 +728,13 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			warnings = append(warnings, schemaWarnings...)
 			normalizedResponseSchema = normalizedSchema
 		}
+	}
+	if requestTextFormat != nil {
+		normalized, err := responses.NormalizeTextFormat(requestTextFormat, NormalizeOpenAISchemaValue, &warnings)
+		if err != nil {
+			return nil, false, warnings, err
+		}
+		requestTextFormat = normalized
 	}
 
 	// TS reports the GPT-6 promptCacheRetention removal before the
@@ -872,9 +897,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// Response format and/or text verbosity → "text" object.
 	// TS only creates text.format for responseFormat.type === "json".
-	if hasJSONFormat || textVerbosity != "" {
+	if hasJSONFormat || requestTextFormat != nil || textVerbosity != "" {
 		textObj := map[string]interface{}{}
-		if hasJSONFormat {
+		if requestTextFormat != nil {
+			textObj["format"] = requestTextFormat
+		} else if hasJSONFormat {
 			if opts.ResponseFormat.Schema != nil {
 				responseSchema := normalizedResponseSchema
 				format := map[string]interface{}{
@@ -1065,19 +1092,14 @@ func stringSliceFromInterface(value interface{}) []string {
 }
 
 func intFromInterface(value interface{}) (int, bool) {
-	switch v := value.(type) {
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case float64:
-		return int(v), true
-	case json.Number:
+	if v, ok := value.(json.Number); ok {
 		if i, err := v.Int64(); err == nil {
 			return int(i), true
 		}
+		return 0, false
 	}
-	return 0, false
+	// Every Go integer and float kind (int32, uint16, float32, ...).
+	return providerutils.OpenAICompatibleIntOption(map[string]interface{}{"v": value}, "v")
 }
 
 // responsesTopLogprobs mirrors TS: a number is sent verbatim as top_logprobs
@@ -1337,7 +1359,7 @@ func customToolNames(tools []types.Tool) map[string]bool {
 // responsesLogprobsRequested mirrors TS's truthiness check of
 // providerOptions[providerOptionsName].logprobs (true or a non-zero number).
 func responsesLogprobsRequested(providerOptions map[string]interface{}, providerName string) bool {
-	opts, _ := providerOptions[providerName].(map[string]interface{})
+	opts, _ := providerutils.NormalizeProviderOptionsObject(providerOptions[providerName])
 	switch v := opts["logprobs"].(type) {
 	case bool:
 		return v
@@ -1458,11 +1480,11 @@ func outputSchemaToolNames(tools []types.Tool) map[string]bool {
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
-		options, ok := tool.ProviderOptions.(map[string]interface{})
+		options, ok := optionsObject(tool.ProviderOptions)
 		if !ok {
 			continue
 		}
-		openaiOptions, ok := options["openai"].(map[string]interface{})
+		openaiOptions, ok := optionsObject(options["openai"])
 		if !ok {
 			continue
 		}
@@ -1495,7 +1517,7 @@ func extractApprovalRequestIDToToolCallIDFromPrompt(prompt types.Prompt) map[str
 			if !ok {
 				continue
 			}
-			openaiOpts, ok := toolCall.ProviderOptions["openai"].(map[string]interface{})
+			openaiOpts, ok := optionsObject(toolCall.ProviderOptions["openai"])
 			if !ok {
 				continue
 			}
@@ -2238,6 +2260,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	if resp.Reasoning != nil && resp.Reasoning.Context != "" {
 		meta["reasoningContext"] = resp.Reasoning.Context
 	}
+	// TS 5a645e92d2: prompt_cache_diagnostics != null (generate and batch).
+	if d := responsesPromptCacheDiagnostics(resp.PromptCacheDiagnostics); d != nil {
+		meta["promptCacheDiagnostics"] = d
+	}
 	result.ProviderMetadata = map[string]interface{}{providerName: meta}
 
 	return result, nil
@@ -2958,6 +2984,11 @@ type responsesStream struct {
 	// call with nothing delivered; markOutputStarted releases the chunks.
 	held            []*provider.StreamChunk
 	responseHeaders http.Header
+	// accepted is set by response.in_progress (TS isAcceptedChunk): from
+	// then on a read that blocks longer than responsesAcceptedGrace hands
+	// the stream out (TS acceptedGraceMs), so a later error frame is an
+	// error part, not a failed call.
+	accepted bool
 
 	// hadDecodeError is set when a known event type (one with a dedicated
 	// case below) fails schema decode (row eee6200). The stream keeps
@@ -2979,6 +3010,10 @@ type responsesStream struct {
 	finishUsage      *responses.ResponsesAPIUsage
 	serviceTier      *string
 	reasoningContext *string
+	// promptCacheDiagnostics is the last response.completed / incomplete /
+	// failed prompt_cache_diagnostics (TS `?? undefined`: a frame without
+	// it clears it).
+	promptCacheDiagnostics interface{}
 
 	// tools holds the request's declared tools, used to expand an internal
 	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
@@ -3221,6 +3256,9 @@ func (s *responsesStream) queueEOFFinish() {
 	if s.reasoningContext != nil {
 		fields["reasoningContext"] = *s.reasoningContext
 	}
+	if s.promptCacheDiagnostics != nil {
+		fields["promptCacheDiagnostics"] = s.promptCacheDiagnostics
+	}
 	meta, _ := json.Marshal(map[string]interface{}{s.providerName: fields})
 	usage := convertResponsesUsage(s.finishUsage)
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
@@ -3328,7 +3366,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, s.err
 		}
 
+		readStart := time.Now()
 		event, err := s.parser.Next()
+		if s.accepted && !s.outputStarted && time.Since(readStart) > responsesAcceptedGrace {
+			// TS raceWithTimeout(reader.read(), acceptedGraceMs) timed out:
+			// the stream was already handed out (openai-stream-error.ts:83).
+			s.markOutputStarted()
+		}
 		if err != nil {
 			if err == io.EOF {
 				// End of stream without a terminal event: TS flush() still
@@ -3430,6 +3474,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			default:
 				s.held = append(s.held, rawChunk)
 			}
+		}
+
+		if peek.Type == "response.in_progress" {
+			s.accepted = true // TS isAcceptedChunk: isResponseInProgressChunk
 		}
 
 		switch peek.Type {
@@ -4151,6 +4199,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 			s.finishUsage = e.Response.Usage
+			s.promptCacheDiagnostics = responsesPromptCacheDiagnostics(e.Response.PromptCacheDiagnostics)
 			// TS typeof service_tier === 'string' / reasoning.context != null:
 			// a present "" is reported; an absent one keeps the last value.
 			tier, ctx := responsesEchoes([]byte(event.Data), true)
@@ -4166,8 +4215,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		case "response.failed":
 			var e responses.ResponseFailedEvent
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-				s.err = io.EOF
-				return nil, io.EOF
+				// TS: a chunk that fails its schema is an error part, and
+				// flush() still enqueues the finish part.
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
 			}
 			if !s.outputStarted && e.Response.Error != nil {
 				s.flushQueue = nil
@@ -4175,6 +4229,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
 				return nil, s.err
 			}
+			s.promptCacheDiagnostics = responsesPromptCacheDiagnostics(e.Response.PromptCacheDiagnostics)
 			// No error object: TS keeps peeking past this chunk, so the stream is
 			// handed out with everything held and the raw chunk first.
 			s.markOutputStarted()
@@ -4202,7 +4257,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: e.Response.Error.Message,
-					Err:  newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
+					Err:  newOpenAIStreamProviderErrorChunk(s.providerName, responsesFailedErrorFrame(event.Data)),
 				})
 			}
 			continue
@@ -4247,6 +4302,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 	}
 }
+
+// responsesAcceptedGrace is TS acceptedGraceMs (openai-stream-error.ts:44).
+const responsesAcceptedGrace = 50 * time.Millisecond
 
 func (s *responsesStream) markOutputStarted() {
 	if s.outputStarted {
@@ -5063,6 +5121,12 @@ func validateResponsesPromptCacheOptions(value interface{}, providerOptionsName 
 			return invalid("prewarm", "must be a boolean")
 		}
 	}
+	// TS 5a645e92d2: comparisonResponseId: z.string().optional().
+	if v, ok := m["comparisonResponseId"]; ok {
+		if _, isString := v.(string); !isString {
+			return invalid("comparisonResponseId", "must be a string")
+		}
+	}
 	return nil
 }
 
@@ -5075,4 +5139,60 @@ func responsesErrorResponse(resp *internalhttp.Response) (map[string]string, str
 	}
 	_, headers, _ := (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails()
 	return headers, string(resp.Body)
+}
+
+// responsesFailedErrorFrame is the synthetic frame TS builds for a
+// mid-stream response.failed error part (openai-responses-language-model.ts
+// 2972-2980): {type, sequence_number, response: {error, incomplete_details,
+// service_tier}}, absent members left out like JSON.stringify of undefined.
+func responsesFailedErrorFrame(data string) json.RawMessage {
+	var frame struct {
+		SequenceNumber json.RawMessage `json:"sequence_number"`
+		Response       struct {
+			Error             json.RawMessage `json:"error"`
+			IncompleteDetails json.RawMessage `json:"incomplete_details"`
+			ServiceTier       json.RawMessage `json:"service_tier"`
+		} `json:"response"`
+	}
+	if json.Unmarshal([]byte(data), &frame) != nil {
+		return json.RawMessage(data)
+	}
+	out := jsonorder.New()
+	out.Set("type", "response.failed")
+	if frame.SequenceNumber != nil {
+		out.Set("sequence_number", frame.SequenceNumber)
+	}
+	resp := jsonorder.New()
+	for _, kv := range []struct {
+		key string
+		v   json.RawMessage
+	}{{"error", frame.Response.Error}, {"incomplete_details", frame.Response.IncompleteDetails}, {"service_tier", frame.Response.ServiceTier}} {
+		if kv.v != nil {
+			resp.Set(kv.key, kv.v)
+		}
+	}
+	out.Set("response", resp)
+	b, err := json.Marshal(out)
+	if err != nil {
+		return json.RawMessage(data)
+	}
+	return b
+}
+
+// responsesPromptCacheDiagnostics is the zod output of TS
+// openaiResponsesPromptCacheDiagnosticsSchema (5a645e92d2): {type, reason?,
+// cache_missed_tokens?, comparison_reusable_tokens?}, nil when absent or
+// null.
+func responsesPromptCacheDiagnostics(raw json.RawMessage) interface{} {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var v interface{}
+	if json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	if picked := providerutils.PickSchemaKeys(v, "type", "reason", "cache_missed_tokens", "comparison_reusable_tokens"); picked != nil {
+		return picked
+	}
+	return nil
 }

@@ -220,7 +220,8 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 		cfg.audio.Cancel(err)
 	}
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
 		fail(err)
 		return
@@ -325,9 +326,9 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				if wsutil.IsCleanClose(res.Err) {
 					// A close before the transcript completed (before or
 					// after the commit) is an abnormal end, as TS onClose
-					// reports it. x/net/websocket does not expose the close
-					// code and reason TS appends.
-					fail(errors.New("Azure MAI transcription connection closed before the transcript completed")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+					// reports it, with " (code N: reason)"
+					// (azure-mai-transcription-model.ts:349-355).
+					fail(errors.New("Azure MAI transcription connection closed before the transcript completed" + closeInfo.Suffix())) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 					return
 				}
 				fail(errors.New("Azure MAI transcription WebSocket error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
@@ -407,8 +408,8 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 	}
 }
 
-func (s *azureMaiTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
+func (s *azureMaiTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: closeInfo.Wrap})
 }
 
 func (s *azureMaiTranscriptionStream) send(conn *websocket.Conn, message []byte) error {

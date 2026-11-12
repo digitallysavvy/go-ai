@@ -212,10 +212,9 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 
 	resp, err := internalhttp.WithFetchRedirects(m.httpClient).Do(req)
 	if err != nil {
-		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
-			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
-		}
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+		// TS handleFetchError: abort and timeout unchanged, a rejected fetch
+		// wrapper unchanged, else the retryable "Cannot connect to API" error.
+		return nil, internalhttp.TransportError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 

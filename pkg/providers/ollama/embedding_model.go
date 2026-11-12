@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -89,6 +90,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if err != nil {
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		var statusErr *internalhttp.HTTPStatusError
+		if !errors.As(err, &statusErr) {
+			// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+			return nil, err
 		}
 		return nil, providererrors.NewProviderError("ollama", 0, "", err.Error(), err)
 	}

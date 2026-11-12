@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // openAILiveOptions is the parsed form of
@@ -35,13 +36,65 @@ func parseOpenAILiveOptions(providerOptions map[string]interface{}) (openAILiveO
 	if !ok || raw == nil {
 		return out, nil
 	}
-	m, ok := raw.(map[string]interface{})
+	// Read through the JSON form (TS options are JSON values), so Go-typed
+	// literals ([]map[string]interface{} input, map[string]string voice)
+	// validate like the map[string]interface{} form.
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
+	}
+	// TS checks the loose {delegation: {type: 'responses'}} shape before the
+	// strict schema (openai-live-session-config.ts:41-49), so it wins over
+	// an unknown key.
+	if d, ok := m["delegation"].(map[string]interface{}); ok && d["type"] == "responses" {
+		out.HasDelegation = true
+		out.DelegationResp = true
+		return out, nil
 	}
 	for key := range m {
 		if !openAILiveOptionKeys[key] {
 			return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai." + key, Message: "unrecognized key"}
+		}
+	}
+	// strictObject members (openai-realtime-model-live-options.ts:17-65).
+	strict := func(field string, obj map[string]interface{}, keys ...string) error {
+		for k := range obj {
+			known := false
+			for _, want := range keys {
+				known = known || k == want
+			}
+			if !known {
+				return &providererrors.InvalidArgumentError{Field: field + "." + k, Message: "unrecognized key"}
+			}
+		}
+		return nil
+	}
+	if d, ok := m["delegation"].(map[string]interface{}); ok {
+		if err := strict("providerOptions.openai.delegation", d, "type"); err != nil {
+			return out, err
+		}
+	}
+	if v, ok := m["voice"].(map[string]interface{}); ok {
+		if err := strict("providerOptions.openai.voice", v, "id"); err != nil {
+			return out, err
+		}
+	}
+	if items, ok := m["input"].([]interface{}); ok {
+		for _, raw := range items {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if err := strict("providerOptions.openai.input", item, "type", "role", "content"); err != nil {
+				return out, err
+			}
+			if content, ok := item["content"].([]interface{}); ok && len(content) == 1 {
+				if part, ok := content[0].(map[string]interface{}); ok {
+					if err := strict("providerOptions.openai.input.content", part, "type", "text"); err != nil {
+						return out, err
+					}
+				}
+			}
 		}
 	}
 
@@ -178,7 +231,8 @@ func liveAudioFormat(f *provider.RealtimeAudioFormat) (map[string]interface{}, e
 // only (WebRTC is TS-only). Mirrors the TypeScript SDK's
 // buildOpenAILiveSessionConfig (transport = 'websocket').
 func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID string) (map[string]interface{}, error) {
-	if len(config.OutputModalities) > 0 {
+	// TS rejects any present key (Object.keys(config)), an empty list too.
+	if config.OutputModalities != nil {
 		return nil, liveUnsupported("OpenAI Live session setting: outputModalities")
 	}
 	if config.InputAudioTranscription != nil {
@@ -190,7 +244,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 	if config.TurnDetection != nil {
 		return nil, liveUnsupported("OpenAI Live session setting: turnDetection")
 	}
-	if len(config.Tools) > 0 {
+	if config.Tools != nil {
 		return nil, liveUnsupported("OpenAI Live session setting: tools")
 	}
 
@@ -297,7 +351,7 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 		// delegationId: z.string().min(1).nullable().
 		channel := "thinking"
 		if raw, present := event.ProviderOptions["openai"]; present && raw != nil {
-			openaiOpts, ok := raw.(map[string]interface{})
+			openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(raw)
 			if !ok {
 				return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
 			}

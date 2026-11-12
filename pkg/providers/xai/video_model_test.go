@@ -1416,7 +1416,8 @@ func TestVideoModel_ReferenceVoiceIds_TooMany(t *testing.T) {
 	require.Error(t, err)
 	var invalidArg *providererrors.InvalidArgumentError
 	require.ErrorAs(t, err, &invalidArg)
-	assert.Equal(t, "referenceVoiceIds", invalidArg.Field)
+	// TS parseProviderOptions .max(3): "invalid xai provider options" (r91 PB-25).
+	assert.Equal(t, "providerOptions", invalidArg.Field)
 }
 
 // TestVideoModel_ReferenceVoiceIds_OutsideR2V_Warns verifies referenceVoiceIds

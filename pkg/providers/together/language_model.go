@@ -208,7 +208,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
+		// A System-only prompt has no messages yet (TS sends [{role: system}]).
+		messages, _ := body["messages"].([]map[string]interface{})
 		systemMsg := map[string]interface{}{
 			"role":    "system",
 			"content": opts.Prompt.System,
@@ -314,7 +315,8 @@ func (m *LanguageModel) handleError(err error) error {
 	if pe, ok := providerutils.OpenAICompatibleAPIError("together", err); ok {
 		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 	}
-	return providererrors.NewProviderError("together", 0, "", err.Error(), err)
+	// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+	return err
 }
 
 // convertTogetherUsage converts Together AI usage to detailed Usage struct
@@ -490,7 +492,7 @@ func togetherStrictJSONSchema(_, compatibleOptions map[string]interface{}) bool 
 // following TS docs/examples and writing providerOptions.togetherai.* would
 // otherwise be silently ignored.
 func mergeTogetherAIProviderOptions(compatibleOptions, providerOptions map[string]interface{}) {
-	togetherAI, ok := providerOptions["togetherai"].(map[string]interface{})
+	togetherAI, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["togetherai"])
 	if !ok {
 		return
 	}

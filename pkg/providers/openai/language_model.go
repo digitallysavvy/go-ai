@@ -120,6 +120,7 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts = normalizedGenerateOptions(opts)
 	// Build request body
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, false)
 	if err != nil {
@@ -256,6 +257,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // openChatStream posts the streaming request and returns the unwrapped chat
 // stream with the call warnings.
 func (m *LanguageModel) openChatStream(ctx context.Context, opts *provider.GenerateOptions) (*openAIStream, []types.Warning, error) {
+	opts = normalizedGenerateOptions(opts)
 	// Build request body with streaming enabled
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, true)
 	if err != nil {
@@ -323,6 +325,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 // thrown UnsupportedFunctionalityError (d5e3024: a non-string propertyNames
 // sub-schema).
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	opts = normalizedGenerateOptions(opts)
 	var warnings []types.Warning
 	capabilities := GetLanguageModelCapabilities(m.modelID)
 	if m.provider.config.OpenAICompatible {
@@ -357,7 +360,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// from it.
 	var openaiOpts map[string]interface{}
 	if opts.ProviderOptions != nil {
-		openaiOpts, _ = opts.ProviderOptions["openai"].(map[string]interface{})
+		openaiOpts, _ = providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"])
 	}
 	// TS 6400cf8b88: on an Azure chat model `openai` and `azure` are merged
 	// key by key, `azure` winning.
@@ -365,7 +368,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if len(optionKeys) > 1 {
 		merged := map[string]interface{}{}
 		for _, key := range optionKeys {
-			if o, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
+			if o, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions[key]); ok {
 				for k, v := range o {
 					merged[k] = v
 				}
@@ -562,21 +565,23 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	if msgs, ok := body["messages"].([]map[string]interface{}); ok {
 		kept := make([]map[string]interface{}, 0, len(msgs))
-		removed := false
+		removed := 0
 		for _, mm := range msgs {
 			if mm["role"] == "system" {
 				switch systemRole {
 				case "developer":
 					mm["role"] = "developer"
 				case "remove":
-					removed = true
+					removed++
 					continue
 				}
 			}
 			kept = append(kept, mm)
 		}
 		body["messages"] = kept
-		if removed {
+		// TS warns once per removed system message
+		// (convert-to-openai-chat-messages.ts:115-120).
+		for i := 0; i < removed; i++ {
 			warnings = append(warnings, types.Warning{
 				Type:    "other",
 				Message: "system messages are removed for this model",
@@ -854,6 +859,17 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
 	// prompt_cache_options.
 	if promptCacheOptions, ok := openaiOpts["promptCacheOptions"]; ok && promptCacheOptions != nil {
+		// zod's object schema drops unknown keys before TS sends it
+		// (openai-chat-language-model-options.ts:180-185: mode, ttl).
+		if m, isMap := promptCacheOptions.(map[string]interface{}); isMap {
+			known := make(map[string]interface{}, len(m))
+			for _, k := range []string{"mode", "ttl"} {
+				if v, has := m[k]; has {
+					known[k] = v
+				}
+			}
+			promptCacheOptions = known
+		}
 		body["prompt_cache_options"] = promptCacheOptions
 	}
 	// serviceTier (17d3436/4cd4548): flex requires supportsFlexProcessing;
@@ -1098,7 +1114,7 @@ func (m *LanguageModel) chatProviderOptionKeys() []string {
 // (TS providerOptionsNames.some(name => providerOptions?.[name]?.[option] != null)).
 func chatRawOptionSet(providerOptions map[string]interface{}, keys []string, option string) bool {
 	for _, key := range keys {
-		if o, ok := providerOptions[key].(map[string]interface{}); ok && o[option] != nil {
+		if o, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[key]); ok && o[option] != nil {
 			return true
 		}
 	}
@@ -2205,7 +2221,7 @@ func (s *openAIStream) endStream() {
 func (m *LanguageModel) strictJSONSchema(providerOptions map[string]interface{}) bool {
 	strict := true
 	for _, key := range []string{"openai", m.provider.Name(), providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())} {
-		if opts, ok := providerOptions[key].(map[string]interface{}); ok {
+		if opts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[key]); ok {
 			if v, ok := opts["strictJsonSchema"].(bool); ok {
 				strict = v
 			}
