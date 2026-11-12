@@ -129,7 +129,8 @@ func voyageProviderOptions(opts *provider.EmbedModelOptions) map[string]interfac
 	if opts == nil || opts.ProviderOptions == nil {
 		return nil
 	}
-	raw, ok := opts.ProviderOptions["voyage"]
+	// Go-typed literals read like their JSON form (OVC-01).
+	raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["voyage"]
 	if !ok {
 		return nil
 	}

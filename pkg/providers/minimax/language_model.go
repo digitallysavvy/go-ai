@@ -146,8 +146,10 @@ func (m *LanguageModel) prepareCallOptions(opts *provider.GenerateOptions) (*pro
 	if opts == nil || !m.supportsM31Features || !providerutils.IsCustomReasoning(opts.Reasoning) {
 		return opts, nil
 	}
+	// Go-typed literals read like their JSON form (OVC-01).
+	normalized := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
 	for _, namespace := range []string{"minimax", "anthropic"} {
-		if ns, ok := opts.ProviderOptions[namespace].(map[string]interface{}); ok && ns["effort"] != nil {
+		if ns, ok := normalized[namespace].(map[string]interface{}); ok && ns["effort"] != nil {
 			return opts, nil
 		}
 	}
@@ -162,7 +164,7 @@ func (m *LanguageModel) prepareCallOptions(opts *provider.GenerateOptions) (*pro
 		providerOptions[k] = v
 	}
 	minimaxOptions := map[string]interface{}{}
-	if existing, ok := opts.ProviderOptions["minimax"].(map[string]interface{}); ok {
+	if existing, ok := normalized["minimax"].(map[string]interface{}); ok {
 		for k, v := range existing {
 			minimaxOptions[k] = v
 		}

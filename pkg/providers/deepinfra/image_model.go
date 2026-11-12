@@ -460,6 +460,7 @@ var deepInfraImageOptionsSchema = providerutils.OptionSchema{
 // response_format, quality, style, and user pass through untransformed, and
 // any other key the caller sets is forwarded too.
 func deepInfraImageOptions(providerOptions map[string]interface{}) map[string]interface{} {
-	opts, _ := providerOptions["deepinfra"].(map[string]interface{})
+	// Go-typed literals read like their JSON form (OVC-01).
+	opts, _ := providerutils.NormalizeOptionsJSON(providerOptions)["deepinfra"].(map[string]interface{})
 	return opts
 }

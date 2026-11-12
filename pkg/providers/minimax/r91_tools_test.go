@@ -359,3 +359,22 @@ func TestR91toolsMiniMaxVideoAbortReason(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// OVC-01 probe: an explicit effort given as a Go-typed literal
+// (map[string]string) wins over the top-level reasoning, and other typed
+// minimax options survive the merge.
+func TestR91toolsMiniMaxTypedEffortLiteral(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), ModelM31Flash)
+	high := types.ReasoningLevel("high")
+	prepared, _ := m.prepareCallOptions(&provider.GenerateOptions{Reasoning: &high,
+		ProviderOptions: map[string]interface{}{"minimax": map[string]string{"effort": "low"}}})
+	if got := prepared.ProviderOptions["minimax"].(map[string]string)["effort"]; got != "low" {
+		t.Fatalf("effort = %v", got)
+	}
+	prepared, _ = m.prepareCallOptions(&provider.GenerateOptions{Reasoning: &high,
+		ProviderOptions: map[string]interface{}{"minimax": map[string]bool{"sendReasoning": true}}})
+	mm := prepared.ProviderOptions["minimax"].(map[string]interface{})
+	if mm["sendReasoning"] != true || mm["effort"] == nil {
+		t.Fatalf("merged minimax options = %v", mm)
+	}
+}
