@@ -55,8 +55,11 @@ func MatchesSupportedURL(compiled map[string][]*regexp.Regexp, mediaType, url st
 	mediaType = JSToLower(mediaType)
 	topLevelOnly := !strings.Contains(mediaType, "/")
 	for key, regexes := range compiled {
-		prefix := strings.ReplaceAll(key, "*", "")
-		if key == "*" || key == "*/*" {
+		// TS key.toLowerCase() and key.replace(/\*/, ''): only the first
+		// '*' is removed (r91 core2-11).
+		lowerKey := JSToLower(key)
+		prefix := strings.Replace(lowerKey, "*", "", 1)
+		if lowerKey == "*" || lowerKey == "*/*" {
 			prefix = ""
 		}
 		if prefix != "" {

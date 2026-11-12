@@ -12,12 +12,13 @@ import (
 // ProviderError built from it has the status code, headers and body (TS
 // APICallError statusCode, responseHeaders, responseBody).
 type downloadStatusCause struct {
-	status  int
-	headers map[string]string
-	body    []byte
+	status     int
+	statusText string
+	headers    map[string]string
+	body       []byte
 }
 
-func (c *downloadStatusCause) Error() string { return http.StatusText(c.status) }
+func (c *downloadStatusCause) Error() string { return c.statusText }
 
 func (c *downloadStatusCause) HTTPStatusDetails() (int, map[string]string, []byte) {
 	return c.status, c.headers, c.body
@@ -26,7 +27,7 @@ func (c *downloadStatusCause) HTTPStatusDetails() (int, map[string]string, []byt
 // StatusCodeDownloadError converts the error of a provider-response media
 // download (fileutil.Download*) the way TS createStatusCodeErrorResponseHandler
 // does: a non-2xx HTTP response becomes a *ProviderError (the APICallError
-// analog) whose message is the HTTP status text. Every other failure (URL
+// analog) whose message is the response status text. Every other failure (URL
 // validation, size limit, transport) is returned unchanged, like TS
 // getFromApi.
 func StatusCodeDownloadError(provider string, err error) error {
@@ -38,13 +39,20 @@ func StatusCodeDownloadError(provider string, err error) error {
 	for k, v := range dl.Headers {
 		headers[strings.ToLower(k)] = IsomorphicDecode(FetchHeaderEntry(k, v))
 	}
-	cause := &downloadStatusCause{status: dl.StatusCode, headers: headers, body: dl.Body}
-	pe := providererrors.NewProviderErrorFromResponse(provider, 0, "", http.StatusText(dl.StatusCode), cause)
+	// TS message: response.statusText, the server's reason phrase
+	// (response-handler.ts:459); the Go status text only when the response
+	// had none (r91 core2-06).
+	statusText := dl.StatusText
+	if statusText == "" {
+		statusText = http.StatusText(dl.StatusCode)
+	}
+	cause := &downloadStatusCause{status: dl.StatusCode, statusText: statusText, headers: headers, body: dl.Body}
+	pe := providererrors.NewProviderErrorFromResponse(provider, 0, "", statusText, cause)
 	// TS createStatusCodeErrorResponseHandler builds the APICallError
 	// without data, and its message is the status text even when the body
 	// is JSON with an error message (the cause's text equals the message,
 	// which NewProviderErrorFromResponse would replace from the body).
 	pe.Data = nil
-	pe.Message = http.StatusText(dl.StatusCode)
+	pe.Message = statusText
 	return pe
 }

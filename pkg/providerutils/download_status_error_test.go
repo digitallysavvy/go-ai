@@ -9,7 +9,7 @@ import (
 )
 
 func TestStatusCodeDownloadError(t *testing.T) {
-	dl := providererrors.NewDownloadError("https://x/y", 404, "404 Not Found", "", nil)
+	dl := providererrors.NewDownloadError("https://x/y", 404, "Not Found", "", nil) // fileutil passes the reason phrase
 	dl.Body = []byte("gone")
 	dl.Headers = map[string][]string{"X-Req": {"a", "b"}}
 	err := StatusCodeDownloadError("luma", fmt.Errorf("wrapped: %w", dl))
