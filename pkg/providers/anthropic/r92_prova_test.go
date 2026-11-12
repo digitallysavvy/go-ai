@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // r92provaBatchResultsServer serves a terminal batch whose results_url is on
@@ -243,4 +244,48 @@ func TestR92provaInputTransformationsSafeguardResultsStripped(t *testing.T) {
 		}
 	}
 	t.Fatal("no finish chunk")
+}
+
+// TS anthropicResponseSchema parses provider tool results with z.object
+// members, so undeclared keys are stripped from the tool-result values (bash /
+// text editor / code execution results and their output files, MCP text
+// items, web fetch citations). Expectations recorded with node on
+// @ai-sdk/anthropic 2ebc78b654 (doGenerate tool-result `result` values,
+// compared as parsed JSON).
+func TestR92provaToolResultUndeclaredKeysStripped(t *testing.T) {
+	body := `{"id":"msg_1","type":"message","role":"assistant","model":"m","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"content":[` +
+		`{"type":"bash_code_execution_tool_result","tool_use_id":"t1","content":{"type":"bash_code_execution_result","stdout":"o","stderr":"","return_code":0,"x":1,"content":[{"type":"bash_code_execution_output","file_id":"f","y":2}]}},` +
+		`{"type":"text_editor_code_execution_tool_result","tool_use_id":"t2","content":{"type":"text_editor_code_execution_create_result","is_file_update":false,"x":1}},` +
+		`{"type":"code_execution_tool_result","tool_use_id":"t3","content":{"type":"code_execution_result","stdout":"o","stderr":"","return_code":0,"content":[{"type":"code_execution_output","file_id":"f","z":3}]}},` +
+		`{"type":"mcp_tool_use","id":"m1","name":"echo","server_name":"s","input":{}},` +
+		`{"type":"mcp_tool_result","tool_use_id":"m1","is_error":false,"content":[{"type":"text","text":"hi","w":5},"plain"]},` +
+		`{"type":"web_fetch_tool_result","tool_use_id":"w1","content":{"type":"web_fetch_result","url":"https://x","retrieved_at":null,"content":{"type":"document","title":null,"citations":{"enabled":true,"q":1},"source":{"type":"text","media_type":"text/plain","data":"d"}}}}]}`
+	want := []string{
+		`{"type":"bash_code_execution_result","content":[{"type":"bash_code_execution_output","file_id":"f"}],"stdout":"o","stderr":"","return_code":0}`,
+		`{"type":"text_editor_code_execution_create_result","is_file_update":false}`,
+		`{"type":"code_execution_result","stdout":"o","stderr":"","return_code":0,"content":[{"type":"code_execution_output","file_id":"f"}]}`,
+		`[{"type":"text","text":"hi"},"plain"]`,
+		`{"type":"web_fetch_result","url":"https://x","retrievedAt":null,"content":{"type":"document","title":null,"citations":{"enabled":true},"source":{"type":"text","mediaType":"text/plain","data":"d"}}}`,
+	}
+	var response anthropicResponse
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatal(err)
+	}
+	lm := &LanguageModel{provider: New(Config{APIKey: "k"})}
+	var got []string
+	for _, part := range lm.convertResponseWithOptions(response, convertOptions{}).Content {
+		if tr, ok := part.(types.ToolResultContent); ok {
+			got = append(got, r88provaJSON(tr.Result))
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("tool results = %v, want %d", got, len(want))
+	}
+	for i := range want {
+		var w interface{}
+		_ = json.Unmarshal([]byte(want[i]), &w)
+		if got[i] != r88provaJSON(w) {
+			t.Errorf("result %d = %s\nwant %s", i, got[i], r88provaJSON(w))
+		}
+	}
 }

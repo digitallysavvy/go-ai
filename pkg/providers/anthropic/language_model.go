@@ -796,7 +796,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			}
 			// TS: isError: part.is_error, result: part.content (both kept).
 			trc.IsError = content.IsError
-			trc.Result = parsed
+			trc.Result = mcpToolResultContentValue(parsed)
 			if isTrue(content.IsError) {
 				trc.Error = fmt.Sprintf("%v", parsed)
 			}
@@ -2223,7 +2223,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				}
 				// TS: isError: part.is_error, result: part.content (both kept).
 				tr.IsError = start.ContentBlock.IsError
-				tr.Result = mcpResultContent
+				tr.Result = mcpToolResultContentValue(mcpResultContent)
 				if isTrue(start.ContentBlock.IsError) {
 					tr.Error = fmt.Errorf("mcp tool error: %v", mcpResultContent)
 				}
@@ -3356,9 +3356,10 @@ func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 			"data":      wire.Content.Source.Data,
 		},
 	}
-	// TS passes `citations` through as-is, so an absent value is left out.
+	// TS passes `citations` ({enabled}, z.object) through, so an absent
+	// value is left out.
 	if wire.Content.Citations != nil {
-		content["citations"] = wire.Content.Citations
+		content["citations"] = pickKeys(wire.Content.Citations, "enabled")
 	}
 	return map[string]interface{}{
 		"type":        wire.Type,
