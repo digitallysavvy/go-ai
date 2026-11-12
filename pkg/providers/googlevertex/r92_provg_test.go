@@ -2,6 +2,7 @@ package googlevertex
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,5 +74,30 @@ func TestR92provgGeminiTranscriptionPath(t *testing.T) {
 	}
 	if path != "/models/tuned/gemini-3.5-transcribe:generateContent" {
 		t.Fatalf("path = %s", path)
+	}
+}
+
+// TS JSON.stringify(requestBody) for the Chirp recognize call keeps the
+// literal key order (config: model, languageCodes, autoDecodingConfig,
+// features; then content).
+func TestR92provgChirpRequestKeyOrder(t *testing.T) {
+	var body string
+	p, err := New(Config{
+		Project: "p", Location: "us-central1", AccessToken: "token",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			b, _ := io.ReadAll(r.Body)
+			body = string(b)
+			return jsonResponse(200, `{"results":[]}`), nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := p.TranscriptionModel("chirp_2")
+	if _, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "AQID", MimeType: "audio/wav"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"config":{"model":"chirp_2","languageCodes":["auto"],"autoDecodingConfig":{},"features":{"enableWordTimeOffsets":true,"enableAutomaticPunctuation":true}},"content":"AQID"}`; body != want {
+		t.Fatalf("body = %s", body)
 	}
 }

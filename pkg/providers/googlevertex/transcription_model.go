@@ -100,10 +100,13 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		},
 		"content": content,
 	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+	// TS JSON.stringify(requestBody): the literal's key order, no HTML
+	// escaping.
+	payload := []byte(providerutils.StringifyOrdered(body, map[string][]string{
+		"":                {"config", "content"},
+		"config":          {"model", "languageCodes", "autoDecodingConfig", "features"},
+		"config.features": {"enableWordTimeOffsets", "enableAutomaticPunctuation"},
+	}))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vertexSpeechRecognizeURL(m.provider.project(), region), bytes.NewReader(payload))
 	if err != nil {
