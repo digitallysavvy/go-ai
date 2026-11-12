@@ -159,10 +159,13 @@ func NormalizeStreamProviderError(err error, providerName string, data interface
 			details = errObj
 		}
 
-		// TS uses details.message whenever it is a string, "" included.
-		if m, ok := details["message"].(string); ok {
-			message = m
+		// TS uses details.message whenever it is a string, "" included, and
+		// returns the error unchanged when it is not (r91 core2-21).
+		m, ok := details["message"].(string)
+		if !ok {
+			return err
 		}
+		message = m
 
 		errType = firstString(details["type"], outer["type"])
 		code = firstStringOrNumber(details["code"], outer["code"])
@@ -188,9 +191,11 @@ func asRecord(v interface{}) (map[string]interface{}, bool) {
 	return m, ok
 }
 
+// firstString is TS `getString(a) ?? getString(b)`: the first string value,
+// "" included.
 func firstString(values ...interface{}) string {
 	for _, v := range values {
-		if s, ok := v.(string); ok && s != "" {
+		if s, ok := v.(string); ok {
 			return s
 		}
 	}
