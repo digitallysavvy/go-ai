@@ -50,9 +50,12 @@ type ExternalStreamOptions struct {
 	// value returned by TextOutput/ObjectOutput/ArrayOutput/ChoiceOutput/
 	// JSONOutput), enables structured-output parsing on the returned result:
 	// Output()/OutputErr() resolve once src is fully consumed by parsing the
-	// final step's accumulated text, and PartialOutput() updates after every
-	// text chunk of that step, deduplicated exactly like StreamTextOptions.
-	// Output. A value that does not satisfy outputProcessor is ignored (mirrors
+	// final step's accumulated text, and PartialOutput() follows the turn's
+	// first text block, as TS HarnessStreamTextResult's output stage: it is
+	// not reset at step boundaries, a partial is published when its value
+	// changes, and that block's text deltas reach the full and UI streams
+	// together with each new partial (held deltas are flushed at the block's
+	// text-end or before a finish-step). A value that does not satisfy outputProcessor is ignored (mirrors
 	// StreamTextOptions.Output's `interface{}` + type-assertion contract; see
 	// stream.go's own opts.Output handling for the pattern this mirrors).
 	Output interface{}
@@ -343,16 +346,17 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 	step := &externalStepAccum{}
 	stepStarted := false
 
-	// lastStepText/hasPublishedPartial/lastPartialJSON support r.outputSpec
-	// (see ExternalStreamOptions.Output doc): lastStepText is the most
-	// recently completed step's own text, used for the terminal parse below
-	// (mirrors StreamText's outputSpec.parseCompleteOutput call, scoped to
-	// the final step only — audit row 2a5ed55 / WG4). hasPublishedPartial/
-	// lastPartialJSON dedupe PartialOutput() updates within the current step,
-	// reset at every step boundary, mirroring stepLastPartialJSON in stream.go.
+	// lastStepText is the most recently completed step's own text, used for
+	// the terminal parse below (mirrors StreamText's
+	// outputSpec.parseCompleteOutput call, scoped to the final step only —
+	// audit row 2a5ed55 / WG4).
 	var lastStepText string
-	var hasPublishedPartial bool
-	var lastPartialJSON string
+	// output is the TS harness createOutputTransformStream stage: with an
+	// output spec, the public and UI streams carry its text deltas.
+	var output *externalOutputStage
+	if r.outputSpec != nil {
+		output = &externalOutputStage{spec: r.outputSpec}
+	}
 
 	finishStep := func(terminal bool) {
 		content := append([]types.ContentPart(nil), step.content...)
@@ -403,8 +407,6 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 
 		accumulatedText = append(accumulatedText, step.text)
 		lastStepText = step.text
-		hasPublishedPartial = false
-		lastPartialJSON = ""
 
 		r.mu.Lock()
 		r.cbSteps = append(r.cbSteps, result)
@@ -512,22 +514,35 @@ consumeLoop:
 				r.chunkBuf.push(startStep)
 			}
 		}
-		if r.uiChunkBuf != nil {
-			// A lone first step that ends directly in ChunkTypeFinish is
-			// recorded as a step (see the ChunkTypeFinish case below). The UI
-			// conversion treats a ChunkTypeFinish after a start-step as the
-			// call-level finish only, so give it the step's own finish-step
-			// boundary first (its OnStepEnd and "finish-step" UI part).
-			if chunk.Type == provider.ChunkTypeFinish && stepNumber == 0 && !opts.TerminalFinishClosesTurn {
-				stepFinish := *chunk
-				stepFinish.Type = provider.ChunkTypeFinishStep
-				r.uiChunkBuf.push(stepFinish)
+		published := []provider.StreamChunk{*chunk}
+		if output != nil {
+			var perr error
+			published, perr = output.stage(ctx, *chunk, r)
+			if perr != nil {
+				r.err = perr
+				break consumeLoop
 			}
-			r.uiChunkBuf.push(*chunk)
 		}
-		// The public full stream carries the TS part set only (as StreamText).
-		if r.chunkBuf != nil && !isInternalStreamMarker(chunk.Type) {
-			r.chunkBuf.push(*chunk)
+		for _, out := range published {
+			if r.uiChunkBuf != nil {
+				// A lone first step that ends directly in ChunkTypeFinish is
+				// recorded as a step (see the ChunkTypeFinish case below). The
+				// UI conversion treats a ChunkTypeFinish after a start-step as
+				// the call-level finish only, so give it the step's own
+				// finish-step boundary first (its OnStepEnd and "finish-step"
+				// UI part).
+				if out.Type == provider.ChunkTypeFinish && stepNumber == 0 && !opts.TerminalFinishClosesTurn {
+					stepFinish := out
+					stepFinish.Type = provider.ChunkTypeFinishStep
+					r.uiChunkBuf.push(stepFinish)
+				}
+				r.uiChunkBuf.push(out)
+			}
+			// The public full stream carries the TS part set only (as
+			// StreamText).
+			if r.chunkBuf != nil && !isInternalStreamMarker(out.Type) {
+				r.chunkBuf.push(out)
+			}
 		}
 
 		switch chunk.Type {
@@ -552,29 +567,6 @@ consumeLoop:
 			}
 			if chunk.Text != "" {
 				step.text += chunk.Text
-
-				// Update partial output after each text chunk (deduplicated),
-				// scoped to the in-progress step's own text only. Mirrors the
-				// identical block in stream.go's processStream.
-				if r.outputSpec != nil {
-					partial, hasPartial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
-						Text: step.text,
-					})
-					if partialErr != nil {
-						r.err = partialErr
-						break consumeLoop
-					}
-					if hasPartial {
-						newJSONStr, ok := partialOutputDedupKey(partial)
-						if ok && (!hasPublishedPartial || newJSONStr != lastPartialJSON) {
-							hasPublishedPartial = true
-							lastPartialJSON = newJSONStr
-							r.mu.Lock()
-							r.partialOutput = partial
-							r.mu.Unlock()
-						}
-					}
-				}
 			}
 
 		case provider.ChunkTypeReasoning:
@@ -862,4 +854,79 @@ func opensExternalStep(chunk *provider.StreamChunk, step *externalStepAccum, ste
 		return false
 	}
 	return true
+}
+
+// externalOutputStage is TS harness createOutputTransformStream
+// (harness-stream-text-result.ts): the partial output is parsed from the
+// turn's first text block (the block of the turn's first text part; it is
+// not reset at step boundaries), a partial is published only when its
+// serialized value differs from the last one (initially ""), and that
+// block's deltas are held and published together with each new partial, at
+// its text-end or before a finish-step.
+type externalOutputStage struct {
+	spec          outputProcessor
+	firstID       string
+	hasFirst      bool
+	text          string
+	pending       string
+	metadata      json.RawMessage
+	lastPublished string
+}
+
+func (s *externalOutputStage) flush() []provider.StreamChunk {
+	out := provider.StreamChunk{Type: provider.ChunkTypeText, ID: s.firstID, Text: s.pending, ProviderMetadata: s.metadata}
+	s.pending = ""
+	return []provider.StreamChunk{out}
+}
+
+// stage folds one source part in and returns the parts to publish, in
+// order; a published partial is stored on r.
+func (s *externalOutputStage) stage(ctx context.Context, c provider.StreamChunk, r *StreamTextResult) ([]provider.StreamChunk, error) {
+	var out []provider.StreamChunk
+	if c.Type == provider.ChunkTypeFinishStep && s.pending != "" {
+		out = s.flush()
+	}
+	switch c.Type {
+	case provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd:
+	default:
+		return append(out, c), nil
+	}
+	if !s.hasFirst {
+		s.hasFirst, s.firstID = true, c.ID
+	} else if c.ID != s.firstID {
+		return append(out, c), nil
+	}
+	switch c.Type {
+	case provider.ChunkTypeTextStart:
+		return append(out, c), nil
+	case provider.ChunkTypeTextEnd:
+		if s.pending != "" {
+			out = append(out, s.flush()...)
+		}
+		return append(out, c), nil
+	}
+	s.text += c.Text
+	s.pending += c.Text
+	if len(c.ProviderMetadata) > 0 {
+		s.metadata = c.ProviderMetadata
+	}
+	if c.Text == "" && len(c.ProviderMetadata) > 0 {
+		return append(out, c), nil
+	}
+	partial, ok, err := s.spec.parsePartialOutput(ctx, ParsePartialOutputOptions{Text: s.text})
+	if err != nil {
+		return out, err
+	}
+	if !ok {
+		return out, nil
+	}
+	key, keyOK := partialOutputDedupKey(partial)
+	if !keyOK || key == s.lastPublished {
+		return out, nil
+	}
+	s.lastPublished = key
+	r.mu.Lock()
+	r.partialOutput = partial
+	r.mu.Unlock()
+	return append(out, s.flush()...), nil
 }

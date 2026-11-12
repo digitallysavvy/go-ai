@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -118,11 +119,16 @@ type arrayOutputStreamParser struct {
 	published      bool
 }
 
+// isBuiltinArrayOutput reports whether v is an ArrayOutput of this package.
+func isBuiltinArrayOutput(v any) bool {
+	t := reflect.TypeOf(v)
+	return t != nil && t.Kind() == reflect.Pointer && t.Elem().PkgPath() == arrayOutputPkgPath && strings.HasPrefix(t.Elem().Name(), "arrayOutput[")
+}
+
 // newArrayOutputStreamParser returns the incremental parser for a built-in
 // ArrayOutput, or nil for any other output.
 func newArrayOutputStreamParser(ctx context.Context, spec outputProcessor) *arrayOutputStreamParser {
-	t := reflect.TypeOf(spec)
-	if t == nil || t.Kind() != reflect.Pointer || t.Elem().PkgPath() != arrayOutputPkgPath || !strings.HasPrefix(t.Elem().Name(), "arrayOutput[") {
+	if !isBuiltinArrayOutput(spec) {
 		return nil
 	}
 	empty, ok, err := spec.parsePartialOutput(ctx, ParsePartialOutputOptions{Text: `{"elements":[]}`})
@@ -181,4 +187,87 @@ func (p *arrayOutputStreamParser) feed(ctx context.Context, textDelta string) (p
 	snapshot := reflect.MakeSlice(p.sliceType, p.elements.Len(), p.elements.Len())
 	reflect.Copy(snapshot, p.elements)
 	return snapshot.Interface(), true, false
+}
+
+// partialLog records every partial output StreamText's output stage publishes,
+// in order, so an element stream reads the same partial sequence TS
+// createElementStreamTransform reads from createOutputTransformStream
+// (91a67c2f56): parsed incrementally, from the step's first text block, and
+// reset at step and stream retry boundaries, which the public stream does not
+// mark. Readers replay it from the start and block for values not published
+// yet; close ends it with the run's error.
+type partialLog struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	values []any
+	done   bool
+	err    error
+}
+
+func newPartialLog() *partialLog {
+	l := &partialLog{}
+	l.cond = sync.NewCond(&l.mu)
+	return l
+}
+
+func (l *partialLog) add(v any) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.values = append(l.values, v)
+	l.mu.Unlock()
+	l.cond.Broadcast()
+}
+
+func (l *partialLog) close(err error) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	if !l.done {
+		l.done, l.err = true, err
+	}
+	l.mu.Unlock()
+	l.cond.Broadcast()
+}
+
+// wake releases readers blocked in next so they can check stop again.
+func (l *partialLog) wake() { l.cond.Broadcast() }
+
+// next returns the i-th published partial, blocking until it exists, the log
+// closes (ok false, with the run's error) or stop reports true.
+func (l *partialLog) next(i int, stop func() bool) (v any, ok bool, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i >= len(l.values) && !l.done && (stop == nil || !stop()) {
+		l.cond.Wait()
+	}
+	if i < len(l.values) {
+		return l.values[i], true, nil
+	}
+	return nil, false, l.err
+}
+
+// partialOutputLog returns the result's partial log when spec is the output
+// the call parses its partial outputs with, else nil.
+func (r *StreamTextResult) partialOutputLog(spec any) *partialLog {
+	if r == nil || r.partials == nil || spec == nil {
+		return nil
+	}
+	if !sameOutputValue(spec, r.partialsOutput) {
+		return nil
+	}
+	return r.partials
+}
+
+// sameOutputValue reports a == b for Output values, false when their dynamic
+// type is not comparable.
+func sameOutputValue(a, b any) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a != nil && a == b
 }
