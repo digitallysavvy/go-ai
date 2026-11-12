@@ -597,11 +597,18 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 					// Reasoning files are not re-sent to OpenAI.
 				}
 			}
-			if len(contentParts) > 0 {
+			// TS content.map(...) sends a user message whose parts were all
+			// skipped as content: [] (convert-to-openai-compatible-chat-
+			// messages.ts:255-262).
+			if len(contentParts) > 0 || msg.Role == types.RoleUser {
 				openAIMsg["content"] = contentParts
 			}
 		} else if msg.Role == types.RoleAssistant {
 			openAIMsg["content"] = ""
+		} else if msg.Role == types.RoleUser {
+			// A user message with no parts (core drops empty text parts)
+			// is content: [] in TS, not a message without content.
+			openAIMsg["content"] = []map[string]interface{}{}
 		}
 
 		if hasName {
