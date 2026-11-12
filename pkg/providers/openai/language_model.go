@@ -1781,7 +1781,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				s.held = nil
 				s.pendingRaw = nil
 				s.pendingMetadata = nil
-				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+				s.err = newOpenAIStreamProviderError(s.providerName, openAIErrorField(chunkData.Error), s.responseHeaders) // TS getError: chunk.error
 				return nil, s.err
 			}
 			if rawChunk != nil {
@@ -1795,7 +1795,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				// TS createOpenAIProviderStreamError) so streamRetries/IsRetryable
 				// see the real type/code/statusCode/isRetryable instead of
 				// falling back to generic text-based inference.
-				Err: newOpenAIStreamProviderErrorChunk(s.providerName, chunkData.Error),
+				Err: newOpenAIStreamProviderErrorChunk(s.providerName, openAIErrorField(chunkData.Error)),
 			}
 			if len(s.flushQueue) > 0 {
 				s.flushQueue = append(s.flushQueue, errorChunk)

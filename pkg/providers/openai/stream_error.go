@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -207,6 +208,37 @@ func openAIStreamErrorCodeString(code interface{}) string {
 	default:
 		return ""
 	}
+}
+
+// openAIErrorField is the `error` member of a Chat or Completions error
+// chunk as TS sees it: the openaiErrorDataSchema output (message, type,
+// param and code, in that order, only those present), compact like
+// JSON.stringify. TS passes this inner object (chunk.error), not the whole
+// frame, to throwIfOpenAIStreamErrorBeforeOutput and
+// createOpenAIProviderStreamError, so it is the error's data and
+// responseBody. A value that is not an object is returned unchanged.
+func openAIErrorField(inner json.RawMessage) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(inner, &obj) != nil || obj == nil {
+		return inner
+	}
+	var b strings.Builder
+	b.WriteByte('{')
+	first := true
+	for _, key := range []string{"message", "type", "param", "code"} {
+		v, ok := obj[key]
+		if !ok {
+			continue
+		}
+		if !first {
+			b.WriteByte(',')
+		}
+		first = false
+		b.WriteString(strconv.Quote(key) + ":")
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return json.RawMessage(zodlite.CompactJSON(b.String()))
 }
 
 func isHTTPErrorStatusCode(status int) bool {
