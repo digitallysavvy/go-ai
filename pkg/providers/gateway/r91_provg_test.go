@@ -319,7 +319,7 @@ func TestR91provgTypedOptionLiterals(t *testing.T) {
 		_, _ = w.Write([]byte(`{"batchId":"job","status":"pending"}`))
 	})
 	if _, err := srv.ExperimentalBatch().DoStartBatch(context.Background(), provider.BatchV4StartOptions{
-		Requests: []provider.BatchV4Request{{Type: provider.BatchRequestTypeText, Text: &provider.TextBatchV4Request{ID: "r1", ModelID: "openai/gpt-5", Options: provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}}}},
+		Requests:        []provider.BatchV4Request{{Type: provider.BatchRequestTypeText, Text: &provider.TextBatchV4Request{ID: "r1", ModelID: "openai/gpt-5", Options: provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}}}},
 		ProviderOptions: map[string]interface{}{"gateway": map[string]string{"idempotencyKey": "k1"}},
 	}); err != nil {
 		t.Fatal(err)
