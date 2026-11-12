@@ -1055,7 +1055,7 @@ func anthropicProviderMetadata(usage anthropicUsage, stopSequence *string, stopD
 	anthropic := map[string]interface{}{
 		"usage":             anthropicRawUsage(usage),
 		"stopSequence":      nil,
-		"iterations":        anthropicUsageIterationsMetadata(usage.Iterations),
+		"iterations":        anthropicUsageIterationsMetadata(usage.Iterations, usage.Raw["iterations"]),
 		"container":         nil,
 		"contextManagement": mapAnthropicContextManagement(contextManagement),
 	}
@@ -1114,14 +1114,15 @@ func mapAnthropicStopDetails(stopDetails *anthropicStopDetails) map[string]inter
 	if stopDetails == nil {
 		return nil
 	}
+	// TS `category != null` etc.: a present empty string is kept.
 	out := map[string]interface{}{"type": stopDetails.Type}
-	if stopDetails.Category != "" {
+	if stopDetails.Category != "" || stopDetails.present["category"] {
 		out["category"] = stopDetails.Category
 	}
-	if stopDetails.Explanation != "" {
+	if stopDetails.Explanation != "" || stopDetails.present["explanation"] {
 		out["explanation"] = stopDetails.Explanation
 	}
-	if stopDetails.RecommendedModel != "" {
+	if stopDetails.RecommendedModel != "" || stopDetails.present["recommended_model"] {
 		out["recommendedModel"] = stopDetails.RecommendedModel
 	}
 	return out
@@ -1135,14 +1136,13 @@ func mapAnthropicContainerSkills(skills []anthropicContainerSkillResponse) inter
 	}
 	out := make([]map[string]interface{}, 0, len(skills))
 	for _, skill := range skills {
-		item := map[string]interface{}{
+		// TS `version: skill.version` (a required string, so an empty
+		// version is kept).
+		out = append(out, map[string]interface{}{
 			"type":    skill.Type,
 			"skillId": skill.SkillID,
-		}
-		if skill.Version != "" {
-			item["version"] = skill.Version
-		}
-		out = append(out, item)
+			"version": skill.Version,
+		})
 	}
 	return out
 }
@@ -1216,24 +1216,34 @@ func anthropicRawUsage(usage anthropicUsage) map[string]interface{} {
 	return raw
 }
 
-func anthropicUsageIterationsMetadata(iterations []UsageIteration) interface{} {
+// raw is the wire usage.iterations list (the presence of each model is read
+// from it: TS `iter.model != null` keeps an empty model).
+func anthropicUsageIterationsMetadata(iterations []UsageIteration, raw interface{}) interface{} {
 	if iterations == nil {
 		return nil
 	}
+	rawList, _ := raw.([]interface{})
 	out := make([]map[string]interface{}, 0, len(iterations))
-	for _, iter := range iterations {
+	for i, iter := range iterations {
 		item := map[string]interface{}{
 			"type":         iter.Type,
 			"inputTokens":  iter.InputTokens,
 			"outputTokens": iter.OutputTokens,
 		}
-		if iter.Model != "" {
+		hasModel := iter.Model != ""
+		if !hasModel && i < len(rawList) {
+			if rawIter, ok := rawList[i].(map[string]interface{}); ok {
+				_, hasModel = rawIter["model"].(string)
+			}
+		}
+		if hasModel {
 			item["model"] = iter.Model
 		}
-		if iter.CacheCreationInputTokens > 0 {
+		// TS spreads the cache counts when they are truthy (non-zero).
+		if iter.CacheCreationInputTokens != 0 {
 			item["cacheCreationInputTokens"] = iter.CacheCreationInputTokens
 		}
-		if iter.CacheReadInputTokens > 0 {
+		if iter.CacheReadInputTokens != 0 {
 			item["cacheReadInputTokens"] = iter.CacheReadInputTokens
 		}
 		out = append(out, item)
@@ -1423,6 +1433,32 @@ type anthropicStopDetails struct {
 	Category         string `json:"category,omitempty"`
 	Explanation      string `json:"explanation,omitempty"`
 	RecommendedModel string `json:"recommended_model,omitempty"`
+	// present records the optional string fields the wire carried (an
+	// empty string included); set by UnmarshalJSON.
+	present map[string]bool
+}
+
+// UnmarshalJSON decodes the fields and records which optional ones were
+// non-null strings on the wire.
+func (d *anthropicStopDetails) UnmarshalJSON(data []byte) error {
+	type plain anthropicStopDetails
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*d = anthropicStopDetails(p)
+	var raw map[string]interface{}
+	if json.Unmarshal(data, &raw) == nil {
+		for _, key := range []string{"category", "explanation", "recommended_model"} {
+			if _, ok := raw[key].(string); ok {
+				if d.present == nil {
+					d.present = map[string]bool{}
+				}
+				d.present[key] = true
+			}
+		}
+	}
+	return nil
 }
 
 // anthropicResponse represents the Anthropic API response

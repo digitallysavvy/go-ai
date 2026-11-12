@@ -443,6 +443,14 @@ func contentPartProviderOptions(part types.ContentPart) map[string]interface{} {
 		return p.ProviderOptions
 	case types.ToolResultContent:
 		return p.ProviderOptions
+	// TS pushes the cache point of every assistant part, custom and
+	// reasoning-file parts included.
+	case types.CustomContent:
+		return p.ProviderOptions
+	case types.ReasoningFileContent:
+		return p.ProviderOptions
+	case types.GeneratedFileContent:
+		return p.ProviderOptions
 	default:
 		return nil
 	}

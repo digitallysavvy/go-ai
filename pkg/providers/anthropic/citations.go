@@ -2,10 +2,10 @@ package anthropic
 
 import (
 	"encoding/json"
-	"fmt"
-	"strconv"
+	"math"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -171,15 +171,12 @@ func createCitationSource(citation map[string]interface{}, citationDocuments []c
 		}, true
 
 	case "page_location", "char_location":
-		docIndexF, ok := citation["document_index"].(float64)
-		if !ok {
+		docIndexF, _ := citation["document_index"].(float64)
+		docPtr := citationDocumentAt(citationDocuments, docIndexF)
+		if docPtr == nil {
 			return types.SourceContent{}, false
 		}
-		docIndex := int(docIndexF)
-		if docIndex < 0 || docIndex >= len(citationDocuments) {
-			return types.SourceContent{}, false
-		}
-		doc := citationDocuments[docIndex]
+		doc := *docPtr
 
 		title := doc.Title
 		if dtRaw, exists := citation["document_title"]; exists && dtRaw != nil {
@@ -291,17 +288,14 @@ func mapAnthropicCitation(citation map[string]interface{}, documents []citationD
 		}
 	}
 
-	docIndex := 0
-	if f, ok := citation["document_index"].(float64); ok {
-		docIndex = int(f)
-	}
-	var doc *citationDocument
-	if docIndex >= 0 && docIndex < len(documents) {
-		doc = &documents[docIndex]
-	}
-	id := citationString(citation, "file_id")
-	if id == "" {
-		id = strconv.Itoa(docIndex)
+	docIndex, _ := citation["document_index"].(float64)
+	doc := citationDocumentAt(documents, docIndex)
+	// TS String(citation.document_index) and `file_id ?? ...`: a present
+	// file_id (an empty one included) is the id.
+	index := providerutils.JSNumberString(docIndex)
+	id, hasFileID := citation["file_id"].(string)
+	if !hasFileID {
+		id = index
 	}
 	src := types.SourceContent{
 		SourceType:       "document",
@@ -309,7 +303,7 @@ func mapAnthropicCitation(citation map[string]interface{}, documents []citationD
 		MediaType:        "text/plain",
 		ProviderMetadata: meta,
 	}
-	title := fmt.Sprintf("Document %d", docIndex)
+	title := "Document " + index
 	if doc != nil {
 		src.MediaType = doc.MediaType
 		src.Filename = doc.Filename
@@ -320,6 +314,16 @@ func mapAnthropicCitation(citation map[string]interface{}, documents []citationD
 	}
 	src.Title = title
 	return types.Citation{Source: src, CitedText: citedText}
+}
+
+// citationDocumentAt is TS documents[citation.document_index]: only an
+// integral in-range index names a document (a fractional or negative index
+// is an absent array element).
+func citationDocumentAt(documents []citationDocument, index float64) *citationDocument {
+	if index < 0 || index != math.Trunc(index) || index >= float64(len(documents)) {
+		return nil
+	}
+	return &documents[int(index)]
 }
 
 // anthropicResponseHasWebSearchResults reports whether any web_search_tool_result

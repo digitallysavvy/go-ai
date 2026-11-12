@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -155,13 +156,21 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 
 	imageGenerationConfig := map[string]interface{}{}
 	if opts.Size != "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
-		if width > 0 {
-			imageGenerationConfig["width"] = width
-		}
-		if height > 0 {
-			imageGenerationConfig["height"] = height
+		// TS `size.split('x').map(Number)`, each dimension sent when truthy
+		// (a non-zero number; NaN is falsy).
+		dims := strings.Split(opts.Size, "x")
+		for i, key := range []string{"width", "height"} {
+			if i >= len(dims) {
+				break
+			}
+			n, ok := providerutils.JSNumber(dims[i])
+			switch {
+			case !ok || n == 0 || math.IsNaN(n):
+			case math.IsInf(n, 0):
+				imageGenerationConfig[key] = nil // JSON.stringify(Infinity) is null
+			default:
+				imageGenerationConfig[key] = n
+			}
 		}
 	}
 	if opts.Seed != nil {

@@ -554,7 +554,7 @@ func TestBedrockImageModelHelpers(t *testing.T) {
 		t.Fatalf("buildRequestBody mismatch: %#v", body)
 	}
 	config := body["imageGenerationConfig"].(map[string]interface{})
-	if config["numberOfImages"] != 2 || config["width"] != 640 || config["height"] != 480 || config["seed"] != 7 || config["quality"] != "premium" || config["cfgScale"] != 7.5 {
+	if config["numberOfImages"] != 2 || config["width"] != 640.0 || config["height"] != 480.0 || config["seed"] != 7 || config["quality"] != "premium" || config["cfgScale"] != 7.5 {
 		t.Fatalf("imageGenerationConfig mismatch: %#v", config)
 	}
 	params := body["textToImageParams"].(map[string]interface{})
