@@ -892,8 +892,13 @@ func builtinToolResultSources(block interactionsContentBlock, generateID func() 
 		switch block.Type {
 		case "url_context_result":
 			urlValue, _ := entry["url"].(string)
-			status, _ := entry["status"].(string)
-			if urlValue != "" && (status == "" || status == "success") {
+			// TS `status != null && status !== 'success'` skips the entry,
+			// so a present empty status does too.
+			status, hasStatus := entry["status"], false
+			if status != nil {
+				hasStatus = true
+			}
+			if urlValue != "" && (!hasStatus || status == "success") {
 				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: urlValue})
 			}
 		case "google_search_result":
