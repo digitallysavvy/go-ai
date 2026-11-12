@@ -6,6 +6,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -152,4 +153,16 @@ func (p *Provider) imageClient(baseURL string) *internalhttp.Client {
 			}, "Authorization", "Bearer ")
 		},
 	})
+}
+
+// SpeechModel returns a NoSuchModelError: TS createDeepInfra has no speech
+// factory (provc-05).
+func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
+}
+
+// TranscriptionModel returns a NoSuchModelError: TS createDeepInfra has no
+// transcription factory (provc-05).
+func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }

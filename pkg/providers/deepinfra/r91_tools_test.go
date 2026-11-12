@@ -74,3 +74,15 @@ func TestR91toolsDeepInfraTypedOptionLiterals(t *testing.T) {
 		t.Errorf("body = %s", body)
 	}
 }
+
+// provc-05 (TS createDeepInfra): no speech or transcription factories.
+func TestR91toolsDeepInfraUnsupportedModelTypes(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	var nsm *providererrors.NoSuchModelError
+	if _, err := p.SpeechModel("x"); !errors.As(err, &nsm) {
+		t.Errorf("SpeechModel err = %v", err)
+	}
+	if _, err := p.TranscriptionModel("x"); !errors.As(err, &nsm) {
+		t.Errorf("TranscriptionModel err = %v", err)
+	}
+}

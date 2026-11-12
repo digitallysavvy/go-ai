@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -263,4 +264,27 @@ func forEachMessageMap(messages interface{}, fn func(map[string]interface{})) {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "cerebras"
+}
+
+// EmbeddingModel returns a NoSuchModelError: Cerebras has no embedding
+// models (TS createCerebras embeddingModel throws; provc-05).
+func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
+}
+
+// ImageModel returns a NoSuchModelError (TS imageModel throws; provc-05).
+func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
+}
+
+// SpeechModel returns a NoSuchModelError: TS createCerebras has no speech
+// factory (provc-05).
+func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
+}
+
+// TranscriptionModel returns a NoSuchModelError: TS createCerebras has no
+// transcription factory (provc-05).
+func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
