@@ -938,7 +938,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(err)
 			}
-			return nil, fmt.Errorf("step %d failed: %w", stepNum, err)
+			return nil, stepFailedError(callConfig.Internal, stepNum, err)
 		}
 
 		responseContent := append([]types.ContentPart(nil), stepResult.Content...)
@@ -988,7 +988,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				a.config.OnChainError(failErr)
 			}
 			if inputErr != nil {
-				return nil, fmt.Errorf("step %d failed: %w", stepNum, inputErr)
+				return nil, stepFailedError(callConfig.Internal, stepNum, inputErr)
 			}
 			return nil, approvalErr
 		}
@@ -1360,7 +1360,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(stepTimeoutErr)
 			}
-			return nil, fmt.Errorf("step %d failed: %w", stepNum+1, stepTimeoutErr)
+			return nil, stepFailedError(callConfig.Internal, stepNum+1, stepTimeoutErr)
 		}
 		// TS generateText `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`:
 		// a run aborted after a step ended (e.g. while a tool that ignores
@@ -1370,7 +1370,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(abortErr)
 			}
-			return nil, fmt.Errorf("step %d failed: %w", stepNum+1, abortErr)
+			return nil, stepFailedError(callConfig.Internal, stepNum+1, abortErr)
 		}
 	}
 
@@ -1965,6 +1965,18 @@ func validateAgentPromptOptions(prompt string, messages []types.Message) error {
 		return err
 	}
 	return nil
+}
+
+// stepFailedError is the loop's error for a failed step: the v0.5.2
+// "step N failed: <err>" text for the Go-only Execute / GenerateAgent API,
+// and the error itself for a WorkflowAgent run (internal marks it), because
+// TS WorkflowAgent.generate throws the model, tool-approval or abort error
+// unchanged (workflow-agent.ts:1658).
+func stepFailedError(internal *ai.InternalOptions, stepNum int, err error) error {
+	if internal != nil && internal.ContinueOnMissingProviderResult {
+		return err
+	}
+	return fmt.Errorf("step %d failed: %w", stepNum, err)
 }
 
 type responseFormatProvider interface {

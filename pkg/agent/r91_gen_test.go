@@ -122,3 +122,22 @@ func TestR91genAgentStepTelemetrySystem(t *testing.T) {
 		t.Fatalf("step events = %+v, want System sys", rec.steps)
 	}
 }
+
+// core1-T01: TS WorkflowAgent.generate throws the step's error itself
+// (workflow-agent.ts:1658), so a WorkflowAgent run through the legacy loop
+// (its internal options) gets no "step N failed" prefix; the Go-only
+// GenerateAgent API keeps the v0.5.2 text.
+func TestR91genWorkflowRunStepErrorUnwrapped(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return nil, errors.New("boom")
+	}}
+	a := NewToolLoopAgent(AgentConfig{Model: model})
+	_, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "p", Internal: &ai.InternalOptions{ContinueOnMissingProviderResult: true}})
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("workflow run err = %v, want boom", err)
+	}
+	_, err = a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "p"})
+	if err == nil || err.Error() != "step 1 failed: boom" {
+		t.Fatalf("GenerateAgent err = %v, want step 1 failed: boom", err)
+	}
+}
