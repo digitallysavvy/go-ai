@@ -272,7 +272,11 @@ type boundedOutput struct {
 	maxChars int
 	maxBytes int
 	buf      []byte
-	total    int64 // characters seen (UTF-8 sequence starts); int64 so it cannot wrap where int is 32 bits
+	// total counts the characters seen as JS string length does: UTF-16
+	// code units, one per UTF-8 sequence start and two for a 4-byte
+	// sequence (a character outside the BMP; tools-03). int64 so it cannot
+	// wrap where int is 32 bits.
+	total int64
 }
 
 // maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER; TS rejects a larger
@@ -297,7 +301,10 @@ func (o *boundedOutput) Write(p []byte) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for _, c := range p {
-		if c&0xC0 != 0x80 {
+		switch {
+		case c >= 0xF0 && c <= 0xF4:
+			o.total += 2
+		case c&0xC0 != 0x80:
 			o.total++
 		}
 	}
@@ -316,14 +323,21 @@ func (o *boundedOutput) String() string {
 	if o.total <= int64(o.maxChars) {
 		return string(o.buf)
 	}
-	text, seen := o.buf, 0
+	// TS output.slice(0, maxLength) counts UTF-16 code units. A surrogate
+	// pair the cut would split is dropped whole (UTF-8 cannot carry the lone
+	// half), as toolwebfetch's truncateUTF16 does.
+	text, seen := string(o.buf), 0
 	end := len(text)
-	for i := range string(text) {
-		if seen == o.maxChars {
+	for i, r := range text {
+		units := 1
+		if r >= 0x10000 {
+			units = 2
+		}
+		if seen+units > o.maxChars {
 			end = i
 			break
 		}
-		seen++
+		seen += units
 	}
 	return fmt.Sprintf("%s\n[Output truncated: %d characters omitted.]", text[:end], o.total-int64(o.maxChars))
 }
