@@ -218,7 +218,11 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		AudioByteLength:  &audioByteLength,
 		AudioMediaType:   mediaType,
 		AudioFormat:      format,
-		ProviderMetadata: providerMetadata,
+		// TS GenerateSpeechEndEvent `providerMetadata: result.providerMetadata`:
+		// the model's own value, undefined when it reported none, so no
+		// ai.response.providerMetadata attribute is recorded for it (the
+		// result's `{}` default is DefaultSpeechResult's).
+		ProviderMetadata: raw.ProviderMetadata,
 		ProviderUsage:    raw.Usage,
 		Warnings:         warnings,
 		// TS getTelemetryResponseMetadata: timestamp, modelId and headers;
