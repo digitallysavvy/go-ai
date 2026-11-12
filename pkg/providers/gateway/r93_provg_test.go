@@ -1,6 +1,9 @@
 package gateway
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -44,5 +47,38 @@ func TestR93provgEmptyProviderOptionsForwarded(t *testing.T) {
 	}
 	if _, ok := r93provgBody(t, nil)["providerOptions"]; ok {
 		t.Fatal("nil providerOptions should be omitted")
+	}
+}
+
+// TS gateway-decision-model.ts sends providerOptions when it is truthy, so a
+// caller's empty map is sent as {}.
+func TestR93provgDecisionEmptyProviderOptionsForwarded(t *testing.T) {
+	for _, tc := range []struct {
+		po   map[string]interface{}
+		want bool
+	}{{map[string]interface{}{}, true}, {nil, false}} {
+		var gotBody map[string]interface{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"answers": {}}`))
+		}))
+		p, err := New(Config{APIKey: "k", BaseURL: server.URL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		model, err := p.DecisionModel("typesafe-ai/jev")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
+			State: "s", Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}}, ProviderOptions: tc.po,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		server.Close()
+		if _, ok := gotBody["providerOptions"]; ok != tc.want {
+			t.Fatalf("po %#v: providerOptions present = %v", tc.po, ok)
+		}
 	}
 }
