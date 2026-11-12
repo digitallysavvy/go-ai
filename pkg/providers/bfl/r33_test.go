@@ -27,7 +27,7 @@ func contains(s, sub string) bool {
 }
 
 func TestR33_VideoPollDetailsDraftCacheAndTrim(t *testing.T) {
-	if got := describePollDetails([]byte(`{"a":1.0,"b":"é"}`)); got != `{"a":1,"b":"é"}` {
+	if got, _ := describePollDetails([]byte(`{"a":1.0,"b":"é"}`)); got != `{"a":1,"b":"é"}` {
 		t.Errorf("details = %q", got)
 	}
 
