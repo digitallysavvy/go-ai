@@ -142,12 +142,13 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		// TS postJsonToApi lets a transport failure propagate unchanged.
 		return nil, err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 	}
 
 	// TS createJsonResponseHandler(lumaGenerationResponseSchema).
-	if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	if err := validateLumaGeneration(resp.StatusCode, resp.Headers, []byte(textdecode.UTF8(resp.Body))); err != nil {
 		return nil, err
 	}
 	var genResp lumaGenerationResponse
@@ -234,11 +235,11 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 		if err != nil {
 			return "", err // TS getFromApi lets a transport failure propagate unchanged
 		}
-		if resp.StatusCode >= 400 {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return "", m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 		}
 
-		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, []byte(textdecode.UTF8(resp.Body))); err != nil {
 			return "", err
 		}
 		var status lumaGenerationResponse

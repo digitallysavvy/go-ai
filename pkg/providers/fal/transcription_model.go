@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"reflect"
 	"strings"
@@ -337,8 +338,10 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 		if err != nil {
 			return nil, nil, nil, m.handleError(err)
 		}
+		// TS getFromApi handlers read the body as text (TextDecoder).
+		resp.Body = []byte(textdecode.UTF8(resp.Body))
 
-		if resp.StatusCode >= 400 {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			// TS failedResponseHandler reads `(await clone.json()).detail`: a
 			// body that is not JSON (or is JSON null) throws, and getFromApi
 			// wraps that in the APICallError 'Failed to process error

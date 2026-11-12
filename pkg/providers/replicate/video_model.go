@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"sort"
@@ -282,7 +283,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		return nil, m.handlePollError(ctx, err)
 	}
-	// TS createJsonResponseHandler(replicatePredictionSchema).
+	// TS createJsonResponseHandler(replicatePredictionSchema), over
+	// response.text() (TextDecoder).
+	result.Data = []byte(textdecode.UTF8(result.Data))
 	if err := validateVideoPrediction(http.StatusOK, headersOf(result.Headers), result.Data); err != nil {
 		return nil, err
 	}
@@ -330,8 +333,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			"videos":       []map[string]interface{}{{"url": outputURL}},
 			"predictionId": prediction.ID,
 		}
-		if prediction.Metrics != nil {
-			meta["metrics"] = prediction.Metrics
+		if metrics, present := replicateVideoMetrics(prediction.Metrics); present {
+			meta["metrics"] = metrics
 		}
 
 		return &provider.VideoModelV3OperationStatusResult{
@@ -471,7 +474,8 @@ func (m *VideoModel) handleError(err error) error {
 func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
+		// TS reads the failed body as text (TextDecoder).
+		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
 	}
 	// TS getFromApi handleFetchError: a network failure is the retryable
 	// "Cannot connect to API" error and an abort stays as is; a URL or
@@ -508,10 +512,35 @@ type replicatePredictionWire struct {
 	URLs   struct {
 		Get string `json:"get"`
 	} `json:"urls"`
-	Metrics *struct {
-		PredictTime *float64 `json:"predict_time,omitempty"`
-	} `json:"metrics,omitempty"`
+	// Metrics is the raw metrics member, read with replicateVideoMetrics.
+	Metrics json.RawMessage `json:"metrics,omitempty"`
 }
 
 // headersOf converts fileutil's header map to http.Header.
 func headersOf(h map[string][]string) http.Header { return http.Header(h) }
+
+// replicateVideoMetrics is the zod output of the prediction metrics
+// ({predict_time?: number | null}, undeclared keys stripped) that TS passes
+// as providerMetadata.replicate.metrics: an explicit null stays null, and
+// present is false when the wire has no metrics key (TS undefined).
+func replicateVideoMetrics(raw json.RawMessage) (interface{}, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var fields map[string]json.RawMessage
+	if string(raw) == "null" || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return nil, true
+	}
+	metrics := map[string]interface{}{}
+	if v, ok := fields["predict_time"]; ok {
+		var f *float64
+		if json.Unmarshal(v, &f) == nil {
+			if f == nil {
+				metrics["predict_time"] = nil
+			} else {
+				metrics["predict_time"] = *f
+			}
+		}
+	}
+	return metrics, true
+}

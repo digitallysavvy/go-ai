@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -93,6 +94,7 @@ func byteDanceErrorData(body []byte) interface{} {
 // Error() is the TS APICallError message alone (textOnly), with no Go
 // prefix (bytedance-video-model.ts:507).
 func newHTTPError(statusCode int, headers http.Header, body []byte) *Error {
+	body = []byte(textdecode.UTF8(body)) // TS reads the failed body as text (TextDecoder)
 	return &Error{Code: statusCode, Message: byteDanceErrorMessage(statusCode, body), httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers), textOnly: true}
 }
 

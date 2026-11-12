@@ -2,6 +2,7 @@ package fishaudio
 
 import (
 	"context"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"strings"
 	"time"
@@ -62,8 +63,8 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if err != nil {
 		return nil, handleError(err)
 	}
-	if resp.StatusCode >= 400 {
-		return nil, handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: []byte(textdecode.UTF8(resp.Body))}) // TS reads the failed body as text (TextDecoder)
 	}
 
 	return &types.SpeechResult{

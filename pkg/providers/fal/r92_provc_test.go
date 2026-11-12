@@ -61,7 +61,7 @@ func TestR92provcImageSizeIsJSNumber(t *testing.T) {
 	for size, want := range map[string]string{
 		"1024x768":   `{"width":1024,"height":768}`,
 		"1024.5x768": `{"width":1024.5,"height":768}`,
-		"1024":       `{"width":1024,"height":null}`,
+		"1024":       `{"width":1024}`, // r94: an undefined height is dropped by JSON.stringify
 	} {
 		body, _, err := m.buildRequest(&provider.ImageGenerateOptions{Prompt: "p", Size: size})
 		if err != nil {

@@ -133,17 +133,19 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Headers, submitResp.Body)
 	}
 
-	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAICreate)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	submitBody := []byte(textdecode.UTF8(submitResp.Body))
+	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAICreate)(submitResp.StatusCode, submitResp.Headers, submitBody); err != nil {
 		return nil, err
 	}
 	var createResp createTaskResponse
-	if err := json.Unmarshal([]byte(textdecode.UTF8(submitResp.Body)), &createResp); err != nil {
+	if err := json.Unmarshal(submitBody, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse response: %v", err))
 	}
 	// TS has no `code != 0` check on a 2xx response; a missing task_id is
 	// reported with the (schema-parsed) response.
 	if createResp.Data == nil || createResp.Data.TaskID == "" {
-		return nil, newVideoGenerationErrorText("No task_id returned from KlingAI API. Response: " + zodStringify(submitResp.Body, klingaiCreateSpec))
+		return nil, newVideoGenerationErrorText("No task_id returned from KlingAI API. Response: " + zodStringify(submitBody, klingaiCreateSpec))
 	}
 
 	operation, _ := json.Marshal(klingaiOperation{TaskID: createResp.Data.TaskID, EndpointPath: endpointPath})
@@ -191,11 +193,13 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, m.handlePollError(ctx, err)
 	}
 	// TS createJsonResponseHandler(klingaiTaskStatusSchema).
-	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAIStatus)(http.StatusOK, http.Header(downloaded.Headers), downloaded.Data); err != nil {
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	statusBody := []byte(textdecode.UTF8(downloaded.Data))
+	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAIStatus)(http.StatusOK, http.Header(downloaded.Headers), statusBody); err != nil {
 		return nil, err
 	}
 	var statusResp taskStatusResponse
-	if err := json.Unmarshal([]byte(textdecode.UTF8(downloaded.Data)), &statusResp); err != nil {
+	if err := json.Unmarshal(statusBody, &statusResp); err != nil {
 		return nil, fmt.Errorf("klingai: failed to decode status response: %w", err)
 	}
 	result := downloaded
@@ -216,7 +220,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	switch taskStatus {
 	case "succeed":
-		return m.buildCompletedStatusResult(&statusResp, op.TaskID, responseInfo, result.Data)
+		return m.buildCompletedStatusResult(&statusResp, op.TaskID, responseInfo, statusBody)
 
 	case "failed":
 		// TS `task_status_msg ?? 'Unknown error'`: only null/absent falls back.

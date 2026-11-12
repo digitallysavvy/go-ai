@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	stdhttp "net/http"
 	"time"
 
@@ -133,15 +134,17 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		// TS postJsonToApi lets the transport failure propagate unchanged.
 		return nil, err
 	}
-	if httpResp.StatusCode >= 400 {
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode, httpResp.Headers)
 	}
-	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	respBody := []byte(textdecode.UTF8(httpResp.Body))
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceImage)(httpResp.StatusCode, httpResp.Headers, respBody); err != nil {
 		return nil, err
 	}
 
 	var imgResp byteDanceImageResponse
-	if err := json.Unmarshal(httpResp.Body, &imgResp); err != nil {
+	if err := json.Unmarshal(respBody, &imgResp); err != nil {
 		return nil, fmt.Errorf("bytedance: failed to parse image response: %w", err)
 	}
 

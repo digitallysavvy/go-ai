@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"net/url"
 	"sort"
@@ -233,6 +234,7 @@ func (p *Provider) postTencentCloudAPI(ctx context.Context, service, action, api
 	if err != nil {
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS reads the body as text (TextDecoder)
 	responseHeaders := providerutils.ExtractHeaders(resp.Headers)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, tencentCloudFailedResponse(resp)
