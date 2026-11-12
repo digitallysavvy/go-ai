@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,5 +34,39 @@ func TestR91provaMissingCredentialsText(t *testing.T) {
 		"Original error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable."
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Typed-option ruling (probe): Anthropic call options given as Go-typed
+// literals (map[string]string, int64) reach the request like the map form.
+func TestR91provaTypedOptionLiterals(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "akid")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg","type":"message","role":"assistant","model":"m","content":[],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer srv.Close()
+	model, err := New(Config{Region: "us-east-1", BaseURL: srv.URL, HTTPClient: srv.Client()}).LanguageModel("anthropic.claude-sonnet-4-5-20250929-v1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}, ProviderOptions: map[string]interface{}{
+		"anthropic": map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled", "budgetTokens": int64(2048)}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, `"budget_tokens":2048`) {
+		t.Fatalf("body = %s", body)
+	}
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}, ProviderOptions: map[string]interface{}{
+		"anthropic": map[string]string{"structuredOutputMode": "jsonTool"},
+	}})
+	if err != nil {
+		t.Fatalf("map[string]string options: %v", err)
 	}
 }
