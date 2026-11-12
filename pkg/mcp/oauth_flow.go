@@ -349,7 +349,9 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 
 		registrationMetadata := clientMetadata
 		registrationMetadata.Scope = selectedScope
-		full, err := RegisterOAuthClient(ctx, authorizationServerURL, metadata, registrationMetadata, options.HTTPClient)
+		full, err := RegisterOAuthClientWithOptions(ctx, authorizationServerURL, RegisterOAuthClientOptions{
+			Metadata: metadata, ClientMetadata: registrationMetadata, HTTPClient: options.HTTPClient, TrustedOrigin: trustedASOrigin,
+		})
 		if err != nil {
 			return "", err
 		}
@@ -413,6 +415,7 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 			Resource:                resource,
 			AddClientAuthentication: oauthAuthenticatorFunc(provider),
 			HTTPClient:              options.HTTPClient,
+			TrustedOrigin:           trustedASOrigin,
 		})
 		if err != nil {
 			return "", err
@@ -436,6 +439,7 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 			Resource:                resource,
 			AddClientAuthentication: oauthAuthenticatorFunc(provider),
 			HTTPClient:              options.HTTPClient,
+			TrustedOrigin:           trustedASOrigin,
 		})
 		if refreshErr == nil {
 			// TS saves the refreshed tokens inside the same try block, so a
@@ -724,6 +728,11 @@ type ExchangeOAuthAuthorizationParams struct {
 	Resource                *url.URL
 	AddClientAuthentication func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error
 	HTTPClient              *http.Client
+	// TrustedOrigin is a developer-configured origin, never derived from
+	// response metadata (TS trustedOrigin, 88b95757c1). An endpoint on it may
+	// be loopback and is requested without the DNS-pinned transport. Empty
+	// uses the authorization server's own origin when it is loopback.
+	TrustedOrigin string
 }
 
 // ExchangeOAuthAuthorization exchanges an authorization code for tokens,
@@ -737,7 +746,7 @@ func ExchangeOAuthAuthorization(ctx context.Context, authorizationServerURL stri
 	if err != nil {
 		return nil, err
 	}
-	allowLoopback := oauthEndpointAllowsLoopback(authorizationServerURL, tokenURL)
+	allowLoopback := oauthEndpointAllowsLoopback(authorizationServerURL, params.TrustedOrigin, tokenURL)
 	if err := assertSafeOAuthEndpoint(tokenURL.String(), allowLoopback); err != nil {
 		return nil, err
 	}
@@ -776,6 +785,11 @@ type RefreshOAuthAuthorizationParams struct {
 	Resource                *url.URL
 	AddClientAuthentication func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error
 	HTTPClient              *http.Client
+	// TrustedOrigin is a developer-configured origin, never derived from
+	// response metadata (TS trustedOrigin, 88b95757c1). An endpoint on it may
+	// be loopback and is requested without the DNS-pinned transport. Empty
+	// uses the authorization server's own origin when it is loopback.
+	TrustedOrigin string
 }
 
 // RefreshOAuthAuthorization exchanges a refresh token for a new access token,
@@ -801,7 +815,7 @@ func RefreshOAuthAuthorization(ctx context.Context, authorizationServerURL strin
 		}
 		tokenURL = base.ResolveReference(&url.URL{Path: "/token"})
 	}
-	allowLoopback := oauthEndpointAllowsLoopback(authorizationServerURL, tokenURL)
+	allowLoopback := oauthEndpointAllowsLoopback(authorizationServerURL, params.TrustedOrigin, tokenURL)
 	if err := assertSafeOAuthEndpoint(tokenURL.String(), allowLoopback); err != nil {
 		return nil, err
 	}
@@ -843,6 +857,28 @@ func RefreshOAuthAuthorization(ctx context.Context, authorizationServerURL strin
 // not explicitly set (hash 1f29230). Include the caller's selected scope in
 // clientMetadata.Scope before calling (hash bf591f0).
 func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata, clientMetadata OAuthClientMetadata, httpClient *http.Client) (*OAuthClientInformationFull, error) {
+	return RegisterOAuthClientWithOptions(ctx, authorizationServerURL, RegisterOAuthClientOptions{
+		Metadata: metadata, ClientMetadata: clientMetadata, HTTPClient: httpClient,
+	})
+}
+
+// RegisterOAuthClientOptions configures RegisterOAuthClientWithOptions (TS
+// registerClient options).
+type RegisterOAuthClientOptions struct {
+	Metadata       *OAuthAuthorizationServerMetadata
+	ClientMetadata OAuthClientMetadata
+	HTTPClient     *http.Client
+	// TrustedOrigin is a developer-configured origin, never derived from
+	// response metadata (TS trustedOrigin, 88b95757c1). An endpoint on it may
+	// be loopback and is requested without the DNS-pinned transport. Empty
+	// uses the authorization server's own origin when it is loopback.
+	TrustedOrigin string
+}
+
+// RegisterOAuthClientWithOptions is RegisterOAuthClient with the TS
+// trustedOrigin option.
+func RegisterOAuthClientWithOptions(ctx context.Context, authorizationServerURL string, opts RegisterOAuthClientOptions) (*OAuthClientInformationFull, error) {
+	metadata, clientMetadata, httpClient := opts.Metadata, opts.ClientMetadata, opts.HTTPClient
 	var registrationURL *url.URL
 	var err error
 	if metadata != nil {
@@ -860,7 +896,7 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 		}
 		registrationURL = base.ResolveReference(&url.URL{Path: "/register"})
 	}
-	allowLoopback := oauthEndpointAllowsLoopback(authorizationServerURL, registrationURL)
+	allowLoopback := oauthEndpointAllowsLoopback(authorizationServerURL, opts.TrustedOrigin, registrationURL)
 	if err := assertSafeOAuthEndpoint(registrationURL.String(), allowLoopback); err != nil {
 		return nil, err
 	}
@@ -973,11 +1009,15 @@ func trustedLoopbackOriginFor(authorizationServerURL string) string {
 	return ""
 }
 
-// oauthEndpointAllowsLoopback reports whether endpoint shares the
-// authorization server's loopback origin, matching TS's
-// `allowLoopback: tokenUrl.origin === trustedOrigin` pattern.
-func oauthEndpointAllowsLoopback(authorizationServerURL string, endpoint *url.URL) bool {
-	trusted := trustedLoopbackOriginFor(authorizationServerURL)
+// oauthEndpointAllowsLoopback reports whether endpoint is on the trusted
+// origin, matching TS's `allowLoopback: tokenUrl.origin === trustedOrigin`
+// pattern. An empty trustedOrigin takes the TS default parameter: the
+// authorization server's origin when it is loopback.
+func oauthEndpointAllowsLoopback(authorizationServerURL, trustedOrigin string, endpoint *url.URL) bool {
+	trusted := trustedOrigin
+	if trusted == "" {
+		trusted = trustedLoopbackOriginFor(authorizationServerURL)
+	}
 	return trusted != "" && origin(endpoint) == trusted
 }
 
