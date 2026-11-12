@@ -14,7 +14,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -294,7 +293,7 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		return nil, m.handleError(err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, gemini.GoogleHTTPError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body, nil)
+		return nil, vertexHTTPError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 
 	var plainText, transcriptionText strings.Builder
@@ -393,7 +392,7 @@ func (m *GeminiTranscriptionModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
+		return vertexHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
 	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }

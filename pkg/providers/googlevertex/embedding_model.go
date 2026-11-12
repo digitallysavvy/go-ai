@@ -11,7 +11,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -453,7 +452,7 @@ func vertexEmbeddingError(providerName string, err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return gemini.GoogleHTTPError(providerName, statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
+		return vertexHTTPError(providerName, statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
 	}
 	// TS postJsonToApi: the client's error (the "Cannot connect to API"
 	// APICallError, or an abort) unchanged, with no prefix.

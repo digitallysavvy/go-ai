@@ -20,7 +20,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/text/language"
@@ -129,7 +128,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, gemini.GoogleHTTPError(m.Provider(), resp.StatusCode, resp.Header, respBody, nil)
+		return nil, vertexHTTPError(m.Provider(), resp.StatusCode, resp.Header, respBody, nil)
 	}
 	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text() before JSON.parse
 
