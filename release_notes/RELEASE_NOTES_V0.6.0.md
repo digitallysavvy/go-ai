@@ -362,6 +362,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Decision question and option keys follow JS key order** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decision-js-key-order)
 - **testutil.MockTextStream.Read follows io.Reader** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mock-text-stream-read)
 - **Element streams follow the TS output stage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#element-stream-first-block)
+- **Element streams read their own stream cursor** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#element-stream-own-cursor)
 
 #### Prompts and validation
 
@@ -578,6 +579,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **No ai.settings attributes on legacy speech and transcription spans** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-audio-settings)
 - **GetBaseAttributes skips credential headers in any case** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-base-attributes-credential-headers)
 - **Telemetry tool-call inputs keep the model's key order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-tool-input-key-order)
+- **Speech and transcription end events carry the model's provider metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#audio-end-event-provider-metadata)
 
 #### Errors
 
@@ -913,6 +915,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Bedrock reads AWS_BEARER_TOKEN_BEDROCK when the provider is created** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#aws-api-key-env-at-creation)
 - **Provider timestamps are parsed like JS Date** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#js-date-timestamps)
 - **BFL and Perplexity URL values follow zod z.url()** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#zod-url-values)
+- **Gateway forwards provider options as given** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-provider-options-as-given)
+- **Vertex errors follow the Vertex error schema** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vertex-error-schema)
+- **Deepgram transcription without a channel or alternative fails** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#deepgram-empty-channels-error)
 
 #### MCP
 
@@ -1532,6 +1537,7 @@ in v0.5.3.
 
 - Round 91 (review round 91; TS 2ebc78b654, ai@7.0.170): provider-executed MCP calls get no client tool error; GenerateText has no 1000-step ceiling; StreamText and the agent loop download generated files with `ExperimentalDownload`; code mode approvals fail closed and honor `ValidateInput`; invalid tool calls give one UI error; `ValidateUIMessages` reports TS issues; legacy telemetry writes the TS V4 prompt; span `exception.type` is the TS error name; Anthropic batch betas, Bedrock and Google connection errors, typed provider-option literals in every provider, Gateway batch V4 results, Gemini document sources, BFL video poll authentication, 32-bit seeds (fal, Deepgram, BFL, Stability, Prodia), WebSocket message reassembly, aborted calls returned unchanged by every provider, and Rev.ai / ByteDance / Gladia error codes.
 - Round 92 (review round 92; TS 2ebc78b654, ai@7.0.170): transport connect and response-header timeouts are the retryable `Cannot connect to API` error in the shared client and every raw provider call (Azure, Google, Vertex, Bedrock, Anthropic batch, OpenAI catalog, BFL); WorkflowAgent stream skips `OnStepEnd` for a paused step; telemetry tool inputs keep the model's key order; element streams and harness output follow the TS output stage; the loop root `ai.prompt` keeps a string prompt; LangGraph SSE decoding follows langgraph-sdk; Anthropic `DoGetBatchResults` sends credentials to the API-origin results URL for a provider without an explicit `BaseURL` and uses the configured `HTTPClient`; Anthropic and Bedrock provider metadata and tool results keep only the keys the TS schemas declare; Bedrock reads `AWS_BEARER_TOKEN_BEDROCK` at creation; typed provider-option literals in Google Interactions parts, BFL, fal, Hume and LMNT; forgiving base64 for every `types.DecodeFileDataString` caller and the audio / video inputs; `Date.parse` timestamps (Google, Gateway, Anthropic Files, xAI, Bedrock, speech stream); `Retry-After` read with JS `parseFloat` / `Date.parse`; zod `z.url()` values for BFL and Perplexity; realtime usage token counts keep the JS number; missing API keys returned as `LoadAPIKeyError` (OpenAI media, Together, Fireworks, DeepInfra, Mistral realtime, Google Interactions); query parameter and request body key order (Deepgram, OpenAI batch, Google Interactions, BFL, fal, Replicate, Vertex Chirp); MCP events and input_required wire order.
+- Round 93 (review round 93; TS 2ebc78b654, ai@7.0.170): a network failure in a media poll or download that ports TS getFromApi is the retryable `Cannot connect to API` error (BFL video, Replicate, KlingAI, ByteDance, fal, Gladia, Rev.ai, Luma, LMNT, Topaz, MiniMax, Fireworks, xAI, OpenAI-compatible images, HeyGen), while the Google Files upload and realtime client secret return the raw fetch error; the speech, transcribe and streamTranscribe telemetry end events carry the model's own provider metadata (no `{}` default on the span); element streams read their own replaying cursor and follow a harness turn's first text block; OpenAI Completions, Moonshot and DeepSeek Responses logprobs keep only the TS schema keys; forgiving base64 for OpenAI, Azure MAI, xAI and Together images and audio; API key callback errors returned as is from the OpenAI, xAI, DeepSeek, Anthropic, Topaz and Prodia Files / Skills / media calls; WHATWG URLs for the OpenAI and xAI realtime sockets, the LangSmith transport, BFL polls and the video and transcribe downloads; Gateway language and decision models forward provider options as given; Vertex errors follow the Vertex error schema; Deepgram fails on a response with no channel; `SpeechStreamUsage` counts keep the JS number; numeric error codes read as JS number text; Anthropic and Bedrock citation ids, empty metadata strings, rerank region, image size and cache points follow TS in edge cases; MCP `CallToolResult` validation, the Vercel Sandbox abort and auth checks, Topaz, MiniMax, DeepInfra, You.com, Google batch and Interactions, Perplexity and Azure Speech edge inputs follow TS.
 - Step-end events carry the step (review round 72). `OnStepFinishEvent`
   has `Content` and `Performance`, and `GenerateStepRequest` has `Messages`
   (additive fields), filled by `GenerateText`, `StreamText`, the legacy
@@ -2085,6 +2091,10 @@ Notable ones:
 - **Realtime millisecond fields are integers**: `StartMs` / `EndMs` / `OffsetMs` stay v0.5.2 `*int` fields (S6) (round 92).
 - **Empty API key settings**: an empty `APIKey` or key environment variable is the missing-key error (S1/S6) (round 92).
 - **MCP OAuth: DNS protection without a custom fetch**: now also covers the TS Node.js requirement of 2ebc78b654 (S2) (round 92).
+- **Gladia response body**: `TranscriptionResult.Response.Body` carries the final poll response, as v0.5.2; TS returns none (S6) (round 93).
+- **Audio sample rate is an int**: `provider.AudioFormat.Rate` stays the v0.5.2 `*int` field, so a fractional rate is truncated (S6) (round 93).
+- **OpenAI Responses image detail**: an empty or non-string `imageDetail` is not sent, because `UserImageURLPart.Detail` is a v0.5.2 `string` field (S6) (round 93).
+- **Video response header keys**: MiniMax and Topaz video results also keep the v0.5.2 canonical keys (S6) (round 93).
 - **Realtime transcription WebSocket hint**: widened to ElevenLabs, xAI, Vertex Gemini and the AI Gateway (S3) (round 91).
 - **TS test replays skipped in round 91**: the Google Decisions warnings order (Go map order) and the Vertex caller-fetch download tests (DNS protection stays on) (round 91).
 - **TS test replays skipped in round 88**: Replicate cancel timing, a Gladia pre-aborted call, DeepInfra and Google tests with injected functions (round 88).

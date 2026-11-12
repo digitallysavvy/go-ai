@@ -697,7 +697,7 @@ Anthropic `metadata.userId: ""`, `mcpServers[].authorizationToken: ""`, `contain
 A fractional Files API `size_bytes` is truncated in `ByteSize`; the provider metadata keeps the exact number (S1: `ByteSize` is an `int64` field; review round 89).
 
 ## Video response header keys
-xAI and Alibaba video results report response headers with Go canonical keys (the v0.5.2 shape), where TS uses lower case. Repeated values are joined with ", " as in TS (S6; review round 89). Round 91: the same holds for every `ProviderError.ResponseHeaders` built by `NewProviderErrorFromResponse` (canonical keys, v0.5.2); `NewProviderError` and `NewSchemaProviderError` use the TS lower-case keys. Read a header with `(*ProviderError).ResponseHeader(name)`, which ignores case (S6).
+xAI and Alibaba video results report response headers with Go canonical keys (the v0.5.2 shape), where TS uses lower case. Repeated values are joined with ", " as in TS (S6; review round 89). Round 91: the same holds for every `ProviderError.ResponseHeaders` built by `NewProviderErrorFromResponse` (canonical keys, v0.5.2); `NewProviderError` and `NewSchemaProviderError` use the TS lower-case keys. Read a header with `(*ProviderError).ResponseHeader(name)`, which ignores case (S6). Round 93: MiniMax and Topaz video results (start and status) do the same (S6).
 
 ## Empty binary response
 TS `createBinaryResponseHandler` fails only for a null body (204 / 205 / 304); an empty 200 gives empty bytes. Go's Fireworks sync image path rejects any empty body ("Response body is empty"), as before (S3: Go cannot tell a null body from an empty one; review round 89).
@@ -854,6 +854,15 @@ Go's Open Responses model also reads `strictJsonSchema`, `textVerbosity`, `store
 
 ## Empty API key settings
 An empty `Config.APIKey` and an empty API key environment variable count as unset: the call fails with the missing-key `LoadAPIKeyError` before any request. TS `loadApiKey` returns an explicit `''` key, and an empty environment variable, and sends the request with it (S1: `APIKey` is a plain v0.5.2 string field; S6: v0.5.2 treated an empty environment variable as missing too; review round 92). A credential header in `Config.Headers` still authenticates (see "Header-only API key authentication").
+
+## Gladia response body
+Gladia's `TranscriptionResult.Response.Body` carries the final poll response. TS returns no response body for Gladia. v0.5.2 returned it, and the same data is in `ProviderMetadata["gladia"]` (S6: v0.5.2 runtime contract; review round 93).
+
+## Audio sample rate is an int
+`provider.AudioFormat.Rate` (the sample rate of an audio input or output stream) is a `*int` field of a v0.5.2 public type, so a fractional rate from the wire is truncated; TS keeps the JS number. Sample rates are whole numbers of Hz in practice (S6: changing the field type would break v0.5.2 code at compile time; review round 93). The `SpeechStreamUsage` counts, new in v0.6, keep the JS number (`*float64`).
+
+## OpenAI Responses image detail
+An OpenAI Responses image part sends `providerOptions.openai.imageDetail` (or `detail`) only when it is a non-empty string. TS forwards the value as given, so an empty string or a non-string value is sent as `detail`. Go builds the part as `responses.UserImageURLPart`, whose `Detail` is a v0.5.2 exported `string` field with `omitempty`, so it cannot carry `""` or a non-string (S6: changing the field type would break v0.5.2 code at compile time; review round 93).
 
 ## Features that are TypeScript-only (not ported)
 

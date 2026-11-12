@@ -754,12 +754,17 @@ already, you can skip them.
 | WorkflowAgent stream `OnStepEnd` | Not called for a step that pauses on a client tool or approval | silent behavior change | Use telemetry or OnEnd | [WorkflowAgent stream skips OnStepEnd for a paused step](#workflow-stream-paused-step-end) |
 | `telemetry.GetBaseAttributes` | Skips credential headers in any case | silent behavior change | None | [GetBaseAttributes skips credential headers in any case](#telemetry-base-attributes-credential-headers) |
 | `ai.response.toolCalls`, `ai.toolCall.args`, `gen_ai.tool.call.arguments` | Model key order | silent behavior change | Compare parsed JSON | [Telemetry tool-call inputs keep the model's key order](#telemetry-tool-input-key-order) |
-| Transport connect / response-header timeouts | Retryable `Cannot connect to API` error, retried; not `context.DeadlineExceeded` | silent behavior change | Use `errors.As(err, &netErr)` | [Transport timeouts are the retryable Cannot connect to API error](#transport-timeouts-retryable) |
+| `TelemetryFinishEvent.ProviderMetadata` of speech / transcribe; `ai.response.providerMetadata` `"{}"` | The model's own value; nil when none | silent behavior change | Treat nil as none | [Speech and transcription end events carry the model's provider metadata](#audio-end-event-provider-metadata) |
+| Transport connect / response-header timeouts; `*DownloadError` from a media poll or download network failure | Retryable `Cannot connect to API` error, retried; not `context.DeadlineExceeded` | silent behavior change | Use `errors.As(err, &netErr)` | [Transport timeouts are the retryable Cannot connect to API error](#transport-timeouts-retryable) |
 | `retry-after`, `retry-after-ms` response headers | JS `parseFloat` and `Date.parse` | silent behavior change | None | [Retry-After headers are read like TS](#retry-after-js-parsing) |
 | `AWS_BEARER_TOKEN_BEDROCK` set after `bedrock.New` | Read once at provider creation | silent behavior change | Create the provider after setting it | [Bedrock reads AWS_BEARER_TOKEN_BEDROCK when the provider is created](#aws-api-key-env-at-creation) |
 | `ResponseMetadata.Timestamp` from Google Interactions, Gateway, Bedrock; Anthropic Files times; Google realtime `ExpiresAt` | Date.parse, millisecond precision | silent behavior change | None | [Provider timestamps are parsed like JS Date](#js-date-timestamps) |
 | BFL `webhookUrl`, `polling_url`; Perplexity citations | zod `z.url()` check and output | wire/protocol change | None | [BFL and Perplexity URL values follow zod z.url()](#zod-url-values) |
 | Harness turns with `Output`: `PartialOutput()`, text deltas | First text block, grouped deltas | silent behavior change | None | [Harness turns with an output follow the TS output stage](#harness-output-stage) |
+| `ElementStream` / `ElementStreamWithOutput` with `Stream()`, `FullStream()` or `Chunks()` on the same result | Own replaying cursor (not the shared `Stream()`); harness results follow the turn's first text block | silent behavior change | None | [Element streams read their own stream cursor](#element-stream-own-cursor) |
+| gateway.serviceTier with another provider's serviceTier; empty gateway `ProviderOptions` | Other provider's tier option kept in the body; `{}` sent | wire/protocol change | None | [Gateway forwards provider options as given](#gateway-provider-options-as-given) |
+| Vertex transcription, Cloud TTS, embedding, video `ProviderError.Data` | No details; message read even with a non-array details | error text only | None | [Vertex errors follow the Vertex error schema](#vertex-error-schema) |
+| Deepgram transcription with `results.channels: []` or no alternative | The call fails with the TS TypeError text | silent behavior change | Handle the error | [Deepgram transcription without a channel or alternative fails](#deepgram-empty-channels-error) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -2067,6 +2072,13 @@ res, err := ai.StreamText(ctx, ai.StreamTextOptions{
 - **What changed:** `ElementStream` and `ElementStreamWithOutput` reparsed the whole step text on every chunk, across every text block of the step, and kept a failed attempt's text after a stream retry. v0.6 emits the elements of the step's first text block only; for the call's own `ArrayOutput` they read the partial outputs `StreamText` publishes, so each element is validated once and a `StreamRetries` retry restarts them, as TS createElementStreamTransform (TS 91a67c2f56, review round 92).
 - **Am I affected?** `ElementStream` / `ElementStreamWithOutput` on steps that stream several text blocks, or with `StreamRetries`.
 - **What to do:** No action unless you relied on elements parsed from a later text block of the same step.
+- **Kind:** silent behavior change
+
+### Element streams read their own stream cursor {#element-stream-own-cursor}
+
+- **What changed:** In v0.5, `ElementStream` and `ElementStreamWithOutput` read the result's shared `Stream()` cursor. In v0.6 each element stream reads its own cursor, which replays the stream from the start, as each TS `elementStream` access is its own tee of the stream. Element streams over a harness result now follow the turn's first text block, as TS `HarnessStreamTextResult.elementStream` does, and are not reset at step boundaries (review round 93).
+- **Am I affected?** You are affected if you call `ElementStream` or `ElementStreamWithOutput` and also read `result.Stream()`, `FullStream()` or `Chunks()` on the same result, or if you build element streams from `harness.Agent` stream results.
+- **What to do:** No action is needed unless you relied on the element stream consuming chunks from the shared `Stream()` cursor. Each reader now sees every chunk.
 - **Kind:** silent behavior change
 
 ## Prompts and validation {#prompts-and-validation}
@@ -3985,7 +3997,7 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 
 ### LangSmithDeploymentTransport follows the TS LangGraph client {#langsmith-transport-ts-client}
 
-- **What changed:** `LangSmithDeploymentTransport` sent no `x-api-key` without `APIKey`, failed on an empty URL, trimmed every trailing slash, never retried, truncated HTTP error bodies and ignored `__interrupt__: null`. v0.6 matches langgraph-sdk 1.14.0: `x-api-key` from `LANGGRAPH_API_KEY` / `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY` (trimmed, one quote pair removed), an empty URL is `http://localhost:8123`, one trailing slash is trimmed, a connection failure is retried up to 4 times and then is a `*LangGraphConnectionError`, non-2xx is a `*LangGraphHTTPError` (`HTTP <status>: <body>`), a non-event-stream response fails, and `__interrupt__: null` is a `*GraphInterruptError` (review round 91).
+- **What changed:** `LangSmithDeploymentTransport` sent no `x-api-key` without `APIKey`, failed on an empty URL, trimmed every trailing slash, never retried, truncated HTTP error bodies and ignored `__interrupt__: null`. v0.6 matches langgraph-sdk 1.14.0: `x-api-key` from `LANGGRAPH_API_KEY` / `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY` (trimmed, one quote pair removed), an empty URL is `http://localhost:8123`, one trailing slash is trimmed, a connection failure is retried up to 4 times and then is a `*LangGraphConnectionError`, non-2xx is a `*LangGraphHTTPError` (`HTTP <status>: <body>`), a non-event-stream response fails, and `__interrupt__: null` is a `*GraphInterruptError` (review round 91). Round 93: the request goes to the URL's WHATWG serialization (`new URL(url + '/runs/stream')`: host lowercased, dot segments resolved, path percent-encoded), and a URL that does not parse (for example one without a scheme) fails with `Invalid URL` before any request instead of a `*LangGraphConnectionError`.
 - **Am I affected?** `LangSmithDeploymentTransportOptions`, `HTTP <code>:` matching, those environment variables set in the process.
 - **What to do:** Set `APIKey` explicitly if the environment variables hold other keys; match the new error types with `errors.As`.
 - **Kind:** wire/protocol change
@@ -5244,6 +5256,13 @@ compile-time changes.
 - **What to do:** Compare parsed JSON.
 - **Kind:** silent behavior change
 
+### Speech and transcription end events carry the model's provider metadata {#audio-end-event-provider-metadata}
+
+- **What changed:** The telemetry end event (`TelemetryFinishEvent.ProviderMetadata`) of `GenerateSpeech`, `Transcribe` and `ExperimentalStreamTranscribe` held the result's `{}` default when the model reported no provider metadata, so the OTel integrations recorded `ai.response.providerMetadata: "{}"`. v0.6 passes the model's own value (nil when it reported none), and no attribute is recorded then, as TS passes `result.providerMetadata`; the results still default to `{}` (review round 93).
+- **Am I affected?** Custom telemetry integrations that read `TelemetryFinishEvent.ProviderMetadata` of these operations, or span queries on `ai.response.providerMetadata`.
+- **What to do:** Treat a nil map as no metadata.
+- **Kind:** silent behavior change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -5521,8 +5540,8 @@ compile-time changes.
 
 ### Transport timeouts are the retryable Cannot connect to API error {#transport-timeouts-retryable}
 
-- **What changed:** A connect, TLS or response-header timeout of the HTTP transport (`http.Transport.ResponseHeaderTimeout`, a dialer timeout, an OS `ETIMEDOUT`) was returned as is, like your own context's deadline, and was not retried. v0.6 returns it as the retryable `Cannot connect to API: <cause>` error, which the core retries, and it no longer matches `errors.Is(err, context.DeadlineExceeded)`. This holds for the shared provider client and for the provider calls that use their own `http.Client` (Azure Speech and MAI image, Google files, batch and realtime tokens, Vertex Chirp transcription, Bedrock, Anthropic batch results, the OpenAI model catalog, BFL polls and image downloads). Your context's cancellation or deadline and an `http.Client` `Timeout` are still returned unchanged. TS handle-fetch-error.ts retries undici `UND_ERR_HEADERS_TIMEOUT`, `UND_ERR_CONNECT_TIMEOUT` and `ETIMEDOUT` the same way (review round 92).
-- **Am I affected?** Code that checks `errors.Is(err, context.DeadlineExceeded)` for transport timeouts, or counts attempts against a slow endpoint; BFL poll or image download errors matched as a raw `*url.Error` value.
+- **What changed:** A connect, TLS or response-header timeout of the HTTP transport (`http.Transport.ResponseHeaderTimeout`, a dialer timeout, an OS `ETIMEDOUT`) was returned as is, like your own context's deadline, and was not retried. v0.6 returns it as the retryable `Cannot connect to API: <cause>` error, which the core retries, and it no longer matches `errors.Is(err, context.DeadlineExceeded)`. This holds for the shared provider client and for the provider calls that use their own `http.Client` (Azure Speech and MAI image, Google batch and the Files processing poll, Vertex Chirp transcription, Bedrock, Anthropic batch results, the OpenAI model catalog, BFL polls and image downloads). Your context's cancellation or deadline and an `http.Client` `Timeout` are still returned unchanged. TS handle-fetch-error.ts retries undici `UND_ERR_HEADERS_TIMEOUT`, `UND_ERR_CONNECT_TIMEOUT` and `ETIMEDOUT` the same way (review round 92). Round 93 applies it to the polls and downloads of BFL video, Replicate, KlingAI, ByteDance, fal, Gladia, Rev.ai and Luma, and to LMNT speech (was `request failed: ...`); and to the Topaz image download, the MiniMax video status poll and image download, the Fireworks, xAI and OpenAI-compatible image downloads and the HeyGen video status poll (TS getFromApi `handleFetchError`): a connection that fails before any response there is the retryable `Cannot connect to API: <cause>` error, not a `*providererrors.DownloadError`. A rejected URL or redirect keeps its `DownloadError`. The Google Files resumable upload and the realtime client secret call `fetch` directly in TS, so their transport failure is returned as is (review round 93).
+- **Am I affected?** Code that checks `errors.Is(err, context.DeadlineExceeded)` for transport timeouts, or counts attempts against a slow endpoint; BFL poll or image download errors matched as a raw `*url.Error` value; `errors.As(err, *providererrors.DownloadError)` on a poll or download network failure of those providers.
 - **What to do:** Match the transport timeout with `var ne net.Error; errors.As(err, &ne) && ne.Timeout()`. Set `MaxRetries` to 0 to keep a single attempt.
 - **Kind:** silent behavior change
 
@@ -8717,7 +8736,7 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 
 ### Google and Vertex transport failures read Cannot connect to API {#google-vertex-connect-errors}
 
-- **What changed:** Google batch upload / download, Files upload / poll, the realtime client secret and Vertex transcription returned a raw `*url.Error`; Vertex Cloud TTS and embedding added `failed to synthesize speech: ` / `vertex embedding request failed: `. v0.6 returns the retryable TS `Cannot connect to API: ...` error, and the realtime error no longer includes the `?key=` URL (review round 91).
+- **What changed:** Google batch upload / download, the Files processing poll and Vertex transcription returned a raw `*url.Error`; Vertex Cloud TTS and embedding added `failed to synthesize speech: ` / `vertex embedding request failed: `. v0.6 returns the retryable TS `Cannot connect to API: ...` error. The Files resumable upload start and upload, and the realtime client secret, still return the transport error itself (TS calls `fetch` directly there); the realtime error no longer includes the `?key=` URL (review rounds 91, 93).
 - **Am I affected?** Matching those texts or type-asserting `*url.Error`.
 - **What to do:** Use `errors.As` for `*url.Error` (still wrapped) or check `IsRetryable()`.
 - **Kind:** error text only
@@ -8787,7 +8806,7 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 
 ### Provider timestamps are parsed like JS Date {#js-date-timestamps}
 
-- **What changed:** Provider response timestamps were parsed with `time.Parse` (RFC 3339 or RFC 1123), which kept sub-millisecond digits and dropped forms TS `new Date(str)` accepts (a date-only string, a zone-less time, RFC 850). v0.6 parses them like `Date.parse` with millisecond precision: Google Interactions `created` (generate and stream), the Google realtime token `expireTime`, the Gateway response-metadata, batch result and transcription stream timestamps, the speech stream envelope timestamp, Anthropic Files `created_at` / `expires_at`, the xAI batch expiry check and the Bedrock `date` header (review round 92). `harnessutil.ParseJSDate` is unchanged.
+- **What changed:** Provider response timestamps were parsed with `time.Parse` (RFC 3339 or RFC 1123), which kept sub-millisecond digits and dropped forms TS `new Date(str)` accepts (a date-only string, a zone-less time, RFC 850). v0.6 parses them like `Date.parse` with millisecond precision: Google Interactions `created` (generate and stream), the Google realtime token `expireTime`, the Gateway response-metadata, batch result and transcription stream timestamps, the speech stream envelope timestamp, Anthropic Files `created_at` / `expires_at`, the xAI batch expiry check and the Bedrock `date` header (review round 92). `harnessutil.ParseJSDate` is unchanged. Perplexity response timestamps keep whole milliseconds of a fractional `created_at` (TS `new Date(created_at * 1000)`; review round 93).
 - **Am I affected?** Code that compares `ResponseMetadata.Timestamp` (or these fields) with sub-millisecond precision.
 - **What to do:** No action unless you rely on sub-millisecond timestamps.
 - **Kind:** silent behavior change
@@ -8798,6 +8817,27 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **Am I affected?** BFL `webhookUrl` values with surrounding whitespace or line breaks; servers that answer with such URLs.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
+
+### Gateway forwards provider options as given {#gateway-provider-options-as-given}
+
+- **What changed:** With `providerOptions.gateway.serviceTier` set, v0.5 removed `serviceTier` / `service_tier` from every other provider's options before sending, and it left out an empty `providerOptions` map (language and decision models). v0.6 forwards the options as given, as TS getArgs does: the Gateway applies `gateway.serviceTier` over a provider's own tier server-side, and an empty map is sent as `{}` (review round 93).
+- **Am I affected?** `providerOptions["gateway"]["serviceTier"]` combined with `providerOptions["openai"]["serviceTier"]` (or another provider's tier), or `ProviderOptions: map[string]interface{}{}` on gateway models.
+- **What to do:** No action unless you inspect the request body. The served tier is unchanged.
+- **Kind:** wire/protocol change
+
+### Vertex errors follow the Vertex error schema {#vertex-error-schema}
+
+- **What changed:** Vertex transcription (Chirp and Gemini), Cloud TTS, embedding and video read the error body with the Google schema: `details` had to be an array and was kept in `ProviderError.Data`. v0.6 uses TS googleVertexErrorDataSchema: `Data` holds code, message and status only, and `error.message` is used whatever `details` holds (review round 93).
+- **Am I affected?** `ProviderError.Data` of those models.
+- **What to do:** Read details from `ResponseBody`.
+- **Kind:** error text only
+
+### Deepgram transcription without a channel or alternative fails {#deepgram-empty-channels-error}
+
+- **What changed:** A Deepgram transcription response whose `results` holds no channel (`channels: []`), or whose first channel holds no alternative, returned empty text and segments. v0.6 fails the call with the TypeError text TS throws reading `channels[0].alternatives[0].words` (`Cannot read properties of undefined (reading 'alternatives')` or `(reading 'words')`). A null or absent `results` still gives empty text (review round 93).
+- **Am I affected?** `deepgram` transcription callers that expect a result for audio Deepgram returns no channel for.
+- **What to do:** Handle the error.
+- **Kind:** silent behavior change
 
 ## MCP {#mcp}
 
