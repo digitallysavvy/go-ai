@@ -13,6 +13,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -402,16 +403,22 @@ type elevenLabsRealtimeEvent struct {
 	Error        string                   `json:"error,omitempty"`
 	// HasError reports a present, non-null error (TS raw.error ?? fallback).
 	HasError bool `json:"-"`
+	// Null reports a JSON null message (TS reads raw.message_type of it).
+	Null bool `json:"-"`
 }
 
 // decodeElevenLabsRealtimeEvent reads a server message the way TS does: any
 // JSON value is accepted (safeParseJSON without a schema) and each field is
 // read loosely, so a field of an unexpected type does not drop the message.
-// ok is false only for text that is not JSON.
+// ok is false only for text that safeParseJSON rejects: not JSON, or a
+// __proto__ / constructor.prototype key (secure-json-parse).
 func decodeElevenLabsRealtimeEvent(text string) (elevenLabsRealtimeEvent, bool) {
 	var value interface{}
-	if json.Unmarshal([]byte(text), &value) != nil {
+	if securejson.Unmarshal([]byte(text), &value) != nil {
 		return elevenLabsRealtimeEvent{}, false
+	}
+	if value == nil {
+		return elevenLabsRealtimeEvent{Null: true}, true
 	}
 	m, _ := value.(map[string]interface{})
 	var ev elevenLabsRealtimeEvent
@@ -676,6 +683,12 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
+			}
+			if raw.Null {
+				// TS reads raw.message_type of null: the TypeError fails the
+				// stream through onProcessingError.
+				fail(errors.New("Cannot read properties of null (reading 'message_type')")) //nolint:staticcheck // matches the TS runtime error text
+				return
 			}
 
 			if raw.MessageType != "" && elevenLabsRealtimeErrorTypes[raw.MessageType] {
