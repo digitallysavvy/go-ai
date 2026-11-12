@@ -290,3 +290,30 @@ func TestR92provbCompatFormDataNumberText(t *testing.T) {
 		}
 	}
 }
+
+// TS convertToFormData appends String(value): an object is "[object Object]",
+// a nested list joins with ",", and a null list element is "null".
+func TestR92provbCompatFormDataJSString(t *testing.T) {
+	cases := []struct {
+		v    interface{}
+		want []string
+	}{
+		{map[string]interface{}{"a": 1.0}, []string{`name="x"` + "\r\n\r\n[object Object]\r\n"}},
+		{[]interface{}{[]interface{}{1.0, 2.0}}, []string{`name="x"` + "\r\n\r\n1,2\r\n"}},
+		{[]interface{}{nil, map[string]interface{}{}}, []string{`name="x[]"` + "\r\n\r\nnull\r\n", `name="x[]"` + "\r\n\r\n[object Object]\r\n"}},
+		{true, []string{`name="x"` + "\r\n\r\ntrue\r\n"}},
+	}
+	for i, c := range cases {
+		var buf strings.Builder
+		w := multipart.NewWriter(&buf)
+		if err := writeFormValue(w, "x", c.v); err != nil {
+			t.Fatal(err)
+		}
+		_ = w.Close()
+		for _, want := range c.want {
+			if !strings.Contains(buf.String(), want) {
+				t.Fatalf("case %d: body %q, want %q", i, buf.String(), want)
+			}
+		}
+	}
+}

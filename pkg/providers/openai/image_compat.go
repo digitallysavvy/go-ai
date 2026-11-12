@@ -294,28 +294,26 @@ func (m *ImageModel) buildCompatEditBody(ctx context.Context, opts *provider.Ima
 	return pr, writer.FormDataContentType(), nil
 }
 
-// writeFormValue appends a form value like FormData.append: scalars as their
-// string form, lists as repeated `key[]` (a single element keeps the bare key).
+// writeFormValue appends a form value like TS convertToFormData: a null
+// value is skipped, a single-element list keeps the bare key, a longer list
+// is repeated `key[]`, and each appended value is FormData.append's
+// String(value) (JS number text, "null", "[object Object]", nested lists
+// joined with ",").
 func writeFormValue(w *multipart.Writer, key string, v interface{}) error {
 	switch x := v.(type) {
 	case nil:
 		return nil
 	case []interface{}:
 		if len(x) == 1 {
-			return writeFormValue(w, key, x[0])
+			return providerutils.WriteFormDataField(w, key, providerutils.JSString(x[0]))
 		}
 		for _, e := range x {
-			if err := writeFormValue(w, key+"[]", e); err != nil {
+			if err := providerutils.WriteFormDataField(w, key+"[]", providerutils.JSString(e)); err != nil {
 				return err
 			}
 		}
 		return nil
-	case string:
-		return providerutils.WriteFormDataField(w, key, x)
-	case float64:
-		// FormData.append(key, number) is String(number): JS number text.
-		return providerutils.WriteFormDataField(w, key, providerutils.JSNumberString(x))
 	default:
-		return providerutils.WriteFormDataField(w, key, fmt.Sprint(x))
+		return providerutils.WriteFormDataField(w, key, providerutils.JSString(x))
 	}
 }
