@@ -463,3 +463,10 @@ func TestR91provgReasoningFileDataString(t *testing.T) {
 		t.Fatalf("contents = %s", b)
 	}
 }
+
+// TS c160b74576: gemini-4-carbon model ID.
+func TestR91provgGemini4CarbonID(t *testing.T) {
+	if ModelGemini4Carbon != "gemini-4-carbon" {
+		t.Fatal(ModelGemini4Carbon)
+	}
+}

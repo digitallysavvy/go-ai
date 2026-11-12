@@ -78,3 +78,10 @@ func TestR91provgVideoHeadersJoinValues(t *testing.T) {
 		t.Fatalf("headers = %v", got)
 	}
 }
+
+// TS c160b74576: gemini-4-carbon model ID.
+func TestR91provgGemini4CarbonID(t *testing.T) {
+	if ModelGemini4Carbon != "gemini-4-carbon" {
+		t.Fatal(ModelGemini4Carbon)
+	}
+}

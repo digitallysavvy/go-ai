@@ -265,3 +265,35 @@ func TestR91provgDecisionFileDataStringVerbatim(t *testing.T) {
 		t.Fatalf("state = %s", b)
 	}
 }
+
+// TS c160b74576, eaeb37e514, 5497ff78eb: new gateway model IDs.
+func TestR91provgGatewayModelIDAdditions(t *testing.T) {
+	has := func(list []string, id string) bool {
+		for _, v := range list {
+			if v == id {
+				return true
+			}
+		}
+		return false
+	}
+	var lang, dec []string
+	for _, v := range GatewayLanguageModelIDs {
+		lang = append(lang, string(v))
+	}
+	for _, v := range GatewayDecisionModelIDs {
+		dec = append(dec, string(v))
+	}
+	for _, id := range []string{"google/gemini-4-carbon", "anthropic/claude-fable-5.2-fast", "deepseek/deepseek-v4.1-flash-1017-ultrafast", "humansand/ampersand-v0.1"} {
+		if !has(lang, id) {
+			t.Errorf("language %s missing", id)
+		}
+	}
+	for _, id := range []string{"nace-ai/drex-max-finance", "nace-ai/drex-max-v1.1", "nace-ai/drex-v2.0", "parallel/parallel-decisions-fast"} {
+		if !has(dec, id) {
+			t.Errorf("decision %s missing", id)
+		}
+	}
+	if string(GatewayLanguageModelGoogleGemini4Carbon) != "google/gemini-4-carbon" || string(GatewayDecisionModelParallelParallelDecisionsFast) != "parallel/parallel-decisions-fast" {
+		t.Fatal("constants")
+	}
+}
