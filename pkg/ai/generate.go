@@ -2975,6 +2975,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolCallID:  call.ID,
 				ToolName:    call.ToolName,
 				Args:        call.Arguments,
+				ArgsText:    call.RawArguments,
 				ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
 			})
 			if callbacks.startDone != nil {

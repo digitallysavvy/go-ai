@@ -2700,6 +2700,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ToolCallID:  call.ID,
 				ToolName:    call.ToolName,
 				Args:        call.Arguments,
+				ArgsText:    call.RawArguments,
 				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
 			})
 			startGate.fired()
