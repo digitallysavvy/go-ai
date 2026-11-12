@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func r91carryTracer(t *testing.T) (*tracetest.SpanRecorder, *sdktrace.TracerProvider) {
@@ -92,5 +93,129 @@ func TestR91carrySpanStatusCodeNoUnwrap(t *testing.T) {
 	}
 	if _, ok := attrValue(ended[2], "http.response.status_code"); ok {
 		t.Fatal("RetryError with a wrapped lastError must not set http.response.status_code")
+	}
+}
+
+// core2-05 (+core1-R01): the legacy step ai.prompt.messages is TS
+// stringifyForTelemetry of the V4 prompt. Expected text from a node run of
+// TS 2ebc78b654 convertToLanguageModelPrompt + stringifyForTelemetry on the
+// same prompt.
+func TestR91carryLegacyStepPromptMessagesV4Shape(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.TextContent{Text: "hi"}, types.TextContent{Text: ""},
+			types.FileContent{FileData: types.FileData{Type: types.FileDataTypeData, Data: png}, Data: png, MimeType: "image/png", MediaType: "image/png", Filename: "a.png"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ReasoningContent{Text: "think", Signature: "sig"}, types.TextContent{Text: ""}, types.TextContent{Text: "ok"},
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: `{"b":1,"a":2}`},
+		}, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{"b": 1, "a": 2}}}},
+		{Role: types.RoleTool, Content: []types.ContentPart{
+			types.ToolResultContent{ToolCallID: "c1", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"x": 1}}},
+		}, ProviderOptions: map[string]interface{}{"p": map[string]interface{}{"a": 1}}},
+		{Role: types.RoleTool, Content: []types.ContentPart{}, ProviderOptions: map[string]interface{}{"p": map[string]interface{}{"b": 2}}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "again"}}},
+	}
+	want := `[{"role":"system","content":"be nice"},{"role":"user","content":[{"type":"text","text":"hi"},{"type":"file","mediaType":"image/png","filename":"a.png","data":"iVBORw0KGgo="}]},{"role":"assistant","content":[{"type":"reasoning","text":"think"},{"type":"text","text":"ok"},{"type":"tool-call","toolCallId":"c1","toolName":"t","input":{"b":1,"a":2}}]},{"role":"tool","content":[{"type":"tool-result","toolCallId":"c1","toolName":"t","output":{"type":"json","value":{"x":1}},"providerOptions":{"p":{"a":1}}}],"providerOptions":{"p":{"b":2}}},{"role":"user","content":[{"type":"text","text":"again"}]}]`
+
+	rec, tp := r91carryTracer(t)
+	lot := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	ctx := lot.OnStart(context.Background(), TelemetryStartEvent{CallID: "c", OperationType: "ai.generateText", Settings: settings})
+	sctx := lot.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "c", OperationType: "ai.generateText", Settings: settings, System: "be nice", PromptMessages: msgs})
+	lot.OnStepEnd(sctx, TelemetryStepEndEvent{CallID: "c", OperationType: "ai.generateText", Settings: settings})
+	lot.OnEnd(ctx, TelemetryFinishEvent{CallID: "c", OperationType: "ai.generateText", Settings: settings})
+	got, ok := attrValue(findSpan(rec, "ai.generateText.doGenerate"), "ai.prompt.messages")
+	if !ok || got.(string) != want {
+		t.Fatalf("ai.prompt.messages =\n%v\nwant\n%s", got, want)
+	}
+
+	// Instruction messages lead as one system message each.
+	text, _ := legacyPromptMessagesJSON("ignored", []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "a"}}, ProviderOptions: map[string]interface{}{"x": map[string]interface{}{"y": true}}}}, msgs[4:])
+	if text != `[{"role":"system","content":"a","providerOptions":{"x":{"y":true}}},{"role":"user","content":[{"type":"text","text":"again"}]}]` {
+		t.Fatalf("instruction messages: %s", text)
+	}
+}
+
+// core1-R02 / core1-R01 root: a string prompt is recorded as TS
+// standardizePrompt keeps it, and messages carry no Go-only keys
+// (legacy-open-telemetry.ts 373-379).
+func TestR91carryLegacyRootPromptShape(t *testing.T) {
+	hi := "hi"
+	if got := legacyPromptJSON(false, "sys", "", []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}, nil, &hi); got != `{"system":"sys","messages":[{"role":"user","content":"hi"}]}` {
+		t.Fatalf("string prompt: %s", got)
+	}
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "x"}}, ToolCalls: []types.ToolCall{{ID: "c"}}, Name: "n"}}
+	if got := legacyPromptJSON(false, "", "", msgs, nil, nil); got != `{"messages":[{"role":"assistant","content":[{"type":"text","text":"x"}]}]}` {
+		t.Fatalf("messages: %s", got)
+	}
+	// Hidden inputs drop the prompt string too.
+	ev := FilterEvent(TelemetryStartEvent{PromptString: &hi}, &Options{RecordInputs: Bool(false)})
+	if ev.PromptString != nil {
+		t.Fatal("PromptString not hidden")
+	}
+}
+
+// core1-R03: ai.response.object keeps the model's key order on the step
+// and root spans (TS JSON.stringify(JSON.parse(objectText)) /
+// JSON.stringify(object)).
+func TestR91carryLegacyResponseObjectKeyOrder(t *testing.T) {
+	rec, tp := r91carryTracer(t)
+	lot := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	ctx := lot.OnStart(context.Background(), TelemetryStartEvent{CallID: "o", OperationType: "ai.generateObject", Settings: settings})
+	sctx := lot.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "o", OperationType: "ai.generateObject", Settings: settings})
+	lot.OnStepEnd(sctx, TelemetryStepEndEvent{CallID: "o", OperationType: "ai.generateObject", Settings: settings, Text: `{"b":1,"a":{"z":2,"y":3}}`})
+	lot.OnEnd(ctx, TelemetryFinishEvent{CallID: "o", OperationType: "ai.generateObject", Settings: settings,
+		Object: map[string]interface{}{"b": 1, "a": map[string]interface{}{"z": 2, "y": 3}}})
+	want := `{"b":1,"a":{"z":2,"y":3}}`
+	if v, _ := attrValue(findSpan(rec, "ai.generateObject.doGenerate"), "ai.response.object"); v != want {
+		t.Fatalf("step ai.response.object = %v", v)
+	}
+	if v, _ := attrValue(findSpan(rec, "ai.generateObject"), "ai.response.object"); v != want {
+		t.Fatalf("root ai.response.object = %v", v)
+	}
+}
+
+// core1-F03: the legacy tool span has no Go-only ai.toolCall.durationMs.
+func TestR91carryLegacyToolSpanNoDuration(t *testing.T) {
+	rec, tp := r91carryTracer(t)
+	lot := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	ctx := lot.OnStart(context.Background(), TelemetryStartEvent{CallID: "x", OperationType: "ai.generateText", Settings: settings})
+	sctx := lot.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "x", OperationType: "ai.generateText", Settings: settings})
+	tctx := lot.OnToolExecutionStart(sctx, TelemetryToolCallStartEvent{CallID: "x", ToolCallID: "t1", ToolName: "tool", Settings: settings})
+	lot.OnToolExecutionEnd(tctx, TelemetryToolCallFinishEvent{CallID: "x", ToolCallID: "t1", ToolName: "tool", Settings: settings, DurationMs: 5, Result: "ok"})
+	lot.OnStepEnd(sctx, TelemetryStepEndEvent{CallID: "x", OperationType: "ai.generateText", Settings: settings})
+	lot.OnEnd(ctx, TelemetryFinishEvent{CallID: "x", OperationType: "ai.generateText", Settings: settings})
+	for _, s := range rec.Ended() {
+		if _, ok := attrValue(s, "ai.toolCall.durationMs"); ok {
+			t.Fatalf("span %s has ai.toolCall.durationMs", s.Name())
+		}
+	}
+	if findSpan(rec, "ai.toolCall") == nil {
+		t.Fatal("no tool span")
+	}
+}
+
+// core1-05 (carry fields): the speech / transcription event fields follow TS
+// filterTelemetryEvent: instructions and providerOptions are inputs,
+// segments and words are outputs, and the response body is always dropped.
+func TestR91carrySpeechTranscriptionFieldsFiltered(t *testing.T) {
+	start := FilterEvent(TelemetryStartEvent{
+		OperationType: "ai.generateSpeech", Text: "say", Voice: "alloy", Instructions: "calm",
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"x": 1}},
+	}, &Options{RecordInputs: Bool(false)})
+	if start.Instructions != "" || start.Text != "" || len(start.ProviderOptions) != 0 || start.ProviderOptions == nil || start.Voice != "alloy" {
+		t.Fatalf("start = %+v", start)
+	}
+	fin := FilterEvent(TelemetryFinishEvent{
+		OperationType: "ai.transcribe", Text: "t", Language: "en",
+		Segments: []TelemetryTranscriptTiming{{Text: "s"}}, Words: []TelemetryTranscriptTiming{{Text: "w"}},
+		Response: &TelemetryAudioResponse{ModelID: "m", Body: "raw"},
+	}, &Options{RecordOutputs: Bool(false)})
+	if fin.Text != "" || len(fin.Segments) != 0 || len(fin.Words) != 0 || fin.Response == nil || fin.Response.Body != nil || fin.Response.ModelID != "m" || fin.Language != "en" {
+		t.Fatalf("finish = %+v", fin)
 	}
 }

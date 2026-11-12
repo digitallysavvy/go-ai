@@ -213,10 +213,10 @@ type TelemetryStepStartEvent struct {
 	// step, emitted as ai.prompt.messages (input-gated, JSON-encoded) by
 	// LegacyOpenTelemetry.OnStepStart, mirroring TS's onStepStart
 	// (legacy-open-telemetry.ts: `'ai.prompt.messages': {input: () =>
-	// stringifyForTelemetry(event.promptMessages)}`). Go's types.Message list
-	// stands in for TS's LanguageModelV4Prompt (which folds the system
-	// message into the message array); this is an accepted Go-runtime
-	// divergence, same as legacyPromptJSON elsewhere in this file.
+	// stringifyForTelemetry(event.promptMessages)}`). The step's messages
+	// stand in for TS's LanguageModelV4Prompt; legacyPromptMessagesJSON
+	// writes them in the V4 shape, led by System / InstructionMessages as
+	// system messages.
 	PromptMessages []types.Message
 	// System is the step's system / instructions text, which TS folds into
 	// the LanguageModelV4Prompt as the leading system message
@@ -1038,6 +1038,10 @@ type legacyCallState struct {
 	// its steps from the delegated stream ("ai.streamText") under the
 	// "ai.workflowAgent.stream" root.
 	operationType string
+	// objectHint is the last object step's parsed text (ordered), whose
+	// key order the root ai.response.object keeps (TS JSON.stringify of the
+	// object parsed from the model text).
+	objectHint interface{}
 }
 
 // legacyStepOperation returns the operation that shapes a step span: the
@@ -1511,19 +1515,18 @@ func legacyJSONOrEmpty(v interface{}) string {
 // legacy-open-telemetry.ts. Field order matches the TS object-literal
 // insertion order (Go struct fields marshal in declared order, unlike map
 // keys which json.Marshal sorts alphabetically); `omitempty` mirrors
-// JSON.stringify dropping undefined fields. Unlike TS — whose ModelMessage
-// content can be a bare string for simple text — Go's types.Message.Content
-// is always a slice of parts, so a simple single-text message serializes as
-// an array-of-parts object rather than a bare string; this is an accepted
-// Go-runtime type-system divergence (same one already present in
-// ai.prompt.messages / ai.prompt.tools elsewhere).
+// JSON.stringify dropping undefined fields. Messages have the TS
+// ModelMessage keys (role, content, providerOptions; see
+// legacyModelMessages). A string prompt (promptString, generateText /
+// streamText) is recorded as TS standardizePrompt keeps it:
+// {"role":"user","content":"hi"}; other messages keep their parts.
 //
 // When the instructions were given as system messages (TS
 // `instructions: SystemModelMessage[]`), `system` is that array in the TS
 // SystemModelMessage shape ({role, content, providerOptions}, content the
 // message text) rather than the joined text, as `JSON.stringify` writes
 // `event.instructions`.
-func legacyPromptJSON(isObjectOp bool, system, prompt string, messages, instructionMessages []types.Message) string {
+func legacyPromptJSON(isObjectOp bool, system, prompt string, messages, instructionMessages []types.Message, promptString *string) string {
 	var sys interface{}
 	if len(instructionMessages) > 0 {
 		sys = legacySystemMessages(instructionMessages)
@@ -1532,21 +1535,29 @@ func legacyPromptJSON(isObjectOp bool, system, prompt string, messages, instruct
 	}
 	// An empty, non-nil message list is recorded as [] (TS messages: []);
 	// only nil (TS undefined) is left out.
-	var msgs *[]types.Message
-	if messages != nil {
-		msgs = &messages
+	// Messages are the TS ModelMessage shape (no Go-only tool_calls / name
+	// keys); a string prompt is the user message's string content (TS
+	// standardizePrompt).
+	var msgs *[]interface{}
+	switch {
+	case !isObjectOp && promptString != nil:
+		list := legacyModelMessages(nil, promptString)
+		msgs = &list
+	case messages != nil:
+		list := legacyModelMessages(messages, nil)
+		msgs = &list
 	}
 	if isObjectOp {
 		v := struct {
-			System   interface{}      `json:"system,omitempty"`
-			Prompt   string           `json:"prompt,omitempty"`
-			Messages *[]types.Message `json:"messages,omitempty"`
+			System   interface{}    `json:"system,omitempty"`
+			Prompt   string         `json:"prompt,omitempty"`
+			Messages *[]interface{} `json:"messages,omitempty"`
 		}{System: sys, Prompt: prompt, Messages: msgs}
 		return legacyJSONOrEmpty(v)
 	}
 	v := struct {
-		System   interface{}      `json:"system,omitempty"`
-		Messages *[]types.Message `json:"messages,omitempty"`
+		System   interface{}    `json:"system,omitempty"`
+		Messages *[]interface{} `json:"messages,omitempty"`
 	}{System: sys, Messages: msgs}
 	return legacyJSONOrEmpty(v)
 }
@@ -1718,7 +1729,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		// non-empty.
 		isObjectOp := e.OperationType == "ai.generateObject" || e.OperationType == "ai.streamObject"
 		if recordInputs {
-			if promptJSON := legacyPromptJSON(isObjectOp, e.System, e.Prompt, e.Messages, e.InstructionMessages); promptJSON != "" {
+			if promptJSON := legacyPromptJSON(isObjectOp, e.System, e.Prompt, e.Messages, e.InstructionMessages, e.PromptString); promptJSON != "" {
 				span.SetAttributes(attribute.String("ai.prompt", promptJSON))
 			}
 		}
@@ -2097,9 +2108,11 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	// attributes are naturally absent there).
 	recordInputs := e.Settings.ShouldRecordInputs()
 	if recordInputs {
-		if len(e.PromptMessages) > 0 {
-			if b, err := jsonstr.Marshal(e.PromptMessages); err == nil {
-				stepSpan.SetAttributes(attribute.String("ai.prompt.messages", string(b)))
+		// TS stringifyForTelemetry(event.promptMessages): the V4 prompt with
+		// the instructions as leading system messages.
+		if len(e.PromptMessages) > 0 || e.System != "" || len(e.InstructionMessages) > 0 {
+			if text, ok := legacyPromptMessagesJSON(e.System, e.InstructionMessages, e.PromptMessages); ok {
+				stepSpan.SetAttributes(attribute.String("ai.prompt.messages", text))
 			}
 		}
 		if len(e.StepTools) > 0 {
@@ -2424,8 +2437,8 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 // OnToolExecutionEnd ends the tool execution child span, mirroring TS's
 // onToolExecutionEnd: a successful call records ai.toolCall.result
 // (output-gated, JSON-encoded), a failed one records the error on the span
-// instead. ai.toolCall.durationMs is a Go-only addition (TS carries no
-// duration on this span) kept as an additive, non-conflicting attribute.
+// instead. No duration attribute is recorded (TS legacy-open-telemetry.ts
+// 741-771 has none).
 func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	// H5: look up OUR OWN tool span by (CallID, ToolCallID) instead of
 	// trace.SpanFromContext(ctx). TS returns when there is no such span
@@ -2447,7 +2460,6 @@ func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e Telemetry
 	if !span.IsRecording() {
 		return
 	}
-	span.SetAttributes(attribute.Int64("ai.toolCall.durationMs", e.DurationMs))
 	if e.Error != nil {
 		legacyRecordSpanError(span, e.Error)
 	} else if e.Settings.ShouldRecordOutputs() && e.Result != nil {
@@ -2637,11 +2649,14 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		// try/catch), no reasoning/toolCalls/files. Empty text is recorded as
 		// "" (JSON.parse throws, so TS records the raw text).
 		if recordOutputs {
+			// JSON.stringify(JSON.parse(text)) keeps the model's key order.
 			objectAttr := e.Text
-			var parsed interface{}
-			if json.Unmarshal([]byte(e.Text), &parsed) == nil {
-				if b, err := jsonstr.Marshal(parsed); err == nil {
-					objectAttr = string(b)
+			if tree, ok := jsonorder.Parse([]byte(e.Text)); ok {
+				objectAttr = jsonorder.Stringify(tree)
+				if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
+					st.mu.Lock()
+					st.objectHint = tree
+					st.mu.Unlock()
 				}
 			}
 			stepSpan.SetAttributes(attribute.String("ai.response.object", objectAttr))
@@ -2824,7 +2839,13 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 	case "ai.rerank":
 		// TS onRerankOperationEnd sets nothing beyond ending the span.
 	case "ai.generateObject", "ai.streamObject":
-		i.legacyOnObjectOperationEnd(span, e, recordOutputs)
+		var hint interface{}
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
+			st.mu.Lock()
+			hint = st.objectHint
+			st.mu.Unlock()
+		}
+		i.legacyOnObjectOperationEnd(span, e, recordOutputs, hint)
 	case "ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
 		recordInputs := e.Settings.ShouldRecordInputs()
 		i.legacyOnAudioOperationEnd(span, e, recordInputs, recordOutputs)
@@ -2927,12 +2948,20 @@ func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFin
 // legacyOnObjectOperationEnd mirrors TS's onObjectOperationEnd
 // (generateObject/streamObject): ai.response.object instead of text, and the
 // smaller legacyObjectUsageAttrs usage set.
-func (i LegacyOpenTelemetry) legacyOnObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
+//
+// hint is the last object step's ordered parse: a Go map object is written
+// in the model's key order (TS JSON.stringify(event.object)); a
+// json.RawMessage or ordered object keeps its own order.
+func (i LegacyOpenTelemetry) legacyOnObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool, hint interface{}) {
 	if e.FinishReason != "" {
 		span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
 	}
 	if recordOutputs && e.Object != nil {
-		if b, err := jsonstr.Marshal(e.Object); err == nil {
+		obj := e.Object
+		if _, ordered := jsonorder.Normalize(obj); !ordered && hint != nil {
+			obj = jsonorder.Hinted{V: obj, Hint: hint}
+		}
+		if b, err := jsonstr.Marshal(obj); err == nil {
 			span.SetAttributes(attribute.String("ai.response.object", string(b)))
 		}
 	}

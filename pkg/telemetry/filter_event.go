@@ -44,7 +44,7 @@ func isHiddenToolError(err error) bool {
 // When neither flag is false nothing else changes. Otherwise,
 // field by name (the Go spelling of the TS keys):
 //   - inputs hidden: Instructions, InstructionMessages, System, Prompt,
-//     Tools, StepTools, Schema, SchemaName, SchemaDescription, Args and a
+//     PromptString, Tools, StepTools, Schema, SchemaName, SchemaDescription, Args and a
 //     non-string Output are cleared; Messages, PromptMessages,
 //     ExperimentalSteeringMessages, Values, Documents and ProviderOptions
 //     become empty; Value and Query become empty; State becomes an empty
@@ -230,7 +230,7 @@ func filterStruct(s reflect.Value, hideInputs, hideOutputs bool) {
 	isToolEvent := hasField(s, "ToolCallID") && hasField(s, "ToolName")
 
 	if hideInputs {
-		clearFields(s, "Instructions", "System", "Prompt", "Tools", "StepTools",
+		clearFields(s, "Instructions", "System", "Prompt", "PromptString", "Tools", "StepTools",
 			"Schema", "SchemaName", "SchemaDescription", "Args")
 		emptyFields(s, "InstructionMessages", "Messages", "PromptMessages",
 			"ExperimentalSteeringMessages", "Values", "Documents",
