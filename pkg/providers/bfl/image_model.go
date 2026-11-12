@@ -264,8 +264,12 @@ func bflLatestProviderOptions(opts *provider.ImageGenerateOptions) (map[string]i
 	if len(parts) > 1 {
 		height = jsNumber(parts[1])
 	}
-	merged := make(map[string]interface{}, len(opts.ProviderOptions)+1)
-	for k, v := range opts.ProviderOptions {
+	// Go-typed option literals (typed maps, structs) read through their JSON
+	// form, so they merge over size like the decoded object (typed-option
+	// ruling).
+	normalized := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	merged := make(map[string]interface{}, len(normalized)+1)
+	for k, v := range normalized {
 		merged[k] = v
 	}
 	bfl := map[string]interface{}{"width": sizeDimension(width), "height": sizeDimension(height)}
