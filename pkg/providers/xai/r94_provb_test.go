@@ -74,3 +74,49 @@ func TestR94provbBatchTextEmptyErrorAndImageDownloadErrors(t *testing.T) {
 		t.Fatalf("err = %T %v, want the xAI API error", err, err)
 	}
 }
+
+// TestR94provbTranscriptionAbortCause (cr-r94-prova-to-provb): TS
+// connectToWebSocket fails the stream with abortSignal.reason, so a caller's
+// cancel cause is the stream error.
+func TestR94provbTranscriptionAbortCause(t *testing.T) {
+	server := newXAISTTTestServer(t)
+	defer server.close()
+	cause := errors.New("r94provb caller cancelled")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	rate := 16000
+	result, err := newTestXAITranscriptionModel(server.ts.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio:            newXAIBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.send(map[string]interface{}{"type": "transcript.created"})
+	if _, err := result.Stream.Next(); err != nil { // stream-start
+		t.Fatal(err)
+	}
+	cancel(cause)
+	for {
+		if _, err = result.Stream.Next(); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("err = %v, want the caller's cause", err)
+	}
+}
+
+// TestR94provbImageBOMBody (cr-r94-provc-to-provb): TS
+// createJsonResponseHandler reads response.text(), which drops a UTF-8 BOM.
+func TestR94provbImageBOMBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("\xEF\xBB\xBF" + `{"data":[{"b64_json":"AQID"}]}`))
+	}))
+	defer srv.Close()
+	res, err := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL + "/v1"}), ModelGrokImagineImage).DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	if err != nil || len(res.Images) != 1 || string(res.Images[0]) != "\x01\x02\x03" {
+		t.Fatalf("res = %#v, err = %v", res, err)
+	}
+}
