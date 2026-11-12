@@ -105,7 +105,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Body: bytes.NewBufferString(providerutils.StringifyOrdered(body, minimaxVideoBodyOrder)),
 	})
 	if err != nil {
-		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
+		// TS postJsonToApi: a transport failure is the retryable APICallError
+		// "Cannot connect to API" (tools-02), returned unchanged.
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if submitResp.StatusCode >= 400 {
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, providerutils.ExtractHeaders(submitResp.Headers))
@@ -358,7 +360,9 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	_, pollErr := polling.PollForCompletion(ctx, checker, pollOpts)
 	if pollErr != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("video generation aborted: %w", ctx.Err())
+			// TS rejects with the abort reason from delay / fetch unchanged
+			// (tools-10).
+			return nil, context.Cause(ctx)
 		}
 		if jobFailureErr != nil {
 			return nil, jobFailureErr
@@ -749,22 +753,21 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	if m.modelID == ModelH3 {
 		minDurationSeconds = 4
 	}
-	duration := minimaxDefaultDuration
+	var duration interface{} = minimaxDefaultDuration
 	if opts.Duration != nil {
 		raw := *opts.Duration
-		// JS Math.round rounds half toward +Infinity.
+		// JS Math.round rounds half toward +Infinity (and keeps NaN and
+		// ±Infinity); !Number.isInteger is true for NaN and ±Infinity too
+		// (tools-09).
 		rounded := math.Floor(raw + 0.5)
-		if math.IsNaN(raw) || math.IsInf(raw, 0) {
-			rounded = raw
-		}
-		if rounded != raw {
+		if math.IsNaN(raw) || math.IsInf(raw, 0) || math.Trunc(raw) != raw {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
 				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %s was rounded to %s.", m.modelID, providerutils.JSNumberString(raw), providerutils.JSNumberString(rounded)),
 			})
 		}
-		var d int
+		var d interface{}
 		switch {
 		case rounded > minimaxMaxDuration:
 			warnings = append(warnings, types.Warning{
@@ -780,6 +783,8 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				Details: fmt.Sprintf("%s requires at least %d seconds. The requested duration of %s was clamped to %d.", m.modelID, minDurationSeconds, providerutils.JSNumberString(raw), minDurationSeconds),
 			})
 			d = minDurationSeconds
+		case math.IsNaN(rounded):
+			d = nil // JSON.stringify(NaN) is null
 		default:
 			d = int(rounded)
 		}
@@ -885,32 +890,90 @@ func minimaxEncodeFile(f *provider.VideoModelV3File) (string, error) {
 // minimaxVideoFailedResponseHandler / minimaxVideoErrorSchema).
 func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers map[string]string) error {
 	// TS createJsonErrorResponseHandler: the message is
-	// `error?.message ?? 'MiniMax video generation error'`; a body that is
-	// empty or not a JSON object gives the HTTP status text.
+	// `error?.message ?? 'MiniMax video generation error'` and the data the
+	// schema output; a body that is empty, not JSON or not matching the
+	// schema gives the HTTP status text and no data (tools-08).
 	message := stdhttp.StatusText(statusCode)
-	var errResp struct {
-		Error *struct {
-			Message *string `json:"message"`
-		} `json:"error"`
-	}
-	if securejson.Unmarshal(body, &errResp) == nil {
-		message = "MiniMax video generation error"
-		if errResp.Error != nil && errResp.Error.Message != nil {
-			message = *errResp.Error.Message
+	var data interface{}
+	var parsed interface{}
+	if strings.TrimSpace(string(body)) != "" && securejson.Unmarshal(body, &parsed) == nil {
+		if out, ok := minimaxVideoErrorSchemaOutput(parsed); ok {
+			data = out
+			message = "MiniMax video generation error"
+			if e, ok := out["error"].(map[string]interface{}); ok {
+				if msg, ok := e["message"].(string); ok {
+					message = msg
+				}
+			}
 		}
 	}
-	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body), ResponseHeaders: headers}
+	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body), ResponseHeaders: headers, Data: data}
 }
 
-// handlePollError converts a fileutil poll error (a providererrors.DownloadError
-// for a non-2xx HTTP response, or a validation/network error) into a
-// MiniMax API error where possible.
+// minimaxVideoErrorSchemaOutput validates minimaxVideoErrorSchema ({type?:
+// string|null, error?: {type?, message?: string|null, http_code?: string |
+// number | null} | null, request_id?: string|null}) and returns its zod
+// output: the declared keys that are present, null kept, others stripped.
+func minimaxVideoErrorSchemaOutput(v interface{}) (map[string]interface{}, bool) {
+	obj, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	nullishString := func(m map[string]interface{}, key string) bool {
+		value, present := m[key]
+		if !present || value == nil {
+			return true
+		}
+		_, isString := value.(string)
+		return isString
+	}
+	out := map[string]interface{}{}
+	for _, key := range []string{"type", "request_id"} {
+		if !nullishString(obj, key) {
+			return nil, false
+		}
+		if value, present := obj[key]; present {
+			out[key] = value
+		}
+	}
+	if raw, present := obj["error"]; present {
+		if raw == nil {
+			out["error"] = nil
+		} else {
+			e, ok := raw.(map[string]interface{})
+			if !ok || !nullishString(e, "type") || !nullishString(e, "message") {
+				return nil, false
+			}
+			errOut := map[string]interface{}{}
+			for _, key := range []string{"type", "message"} {
+				if value, present := e[key]; present {
+					errOut[key] = value
+				}
+			}
+			if code, present := e["http_code"]; present {
+				switch code.(type) {
+				case nil, string, float64:
+				default:
+					return nil, false
+				}
+				errOut["http_code"] = code
+			}
+			out["error"] = errOut
+		}
+	}
+	return out, true
+}
+
+// handlePollError converts a fileutil poll error for a non-2xx HTTP response
+// (a providererrors.DownloadError with a body) into a MiniMax API error. TS
+// getFromApi lets any other failure (an abort, "Cannot connect to API", a URL
+// rejected by validateUrl) propagate unchanged (tools-02).
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
 	}
-	return NewVideoGenerationError(fmt.Sprintf("failed to check status: %v", err))
+	return err
 }
 
 // minimaxStatusResponse is the response from the task status endpoint (TS

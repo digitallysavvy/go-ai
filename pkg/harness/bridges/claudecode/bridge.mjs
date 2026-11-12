@@ -1,14 +1,76 @@
 import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
+import { Buffer as Buffer$1 } from "node:buffer";
 import * as claudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
 import * as mcpServerModule from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod/v4";
 import path from "node:path";
 //#region ../harness/dist/bridge/index.js
+const BRIDGE_AUTH_TIMEOUT_MS = 1e4;
+const BRIDGE_AUTH_MESSAGE_PREFIX = "ai-sdk-harness-bridge-auth-v1\0";
+const PROOF_FRAME_REGEXP = /^\{"type":"bridge-auth-proof","signature":"([A-Za-z0-9_-]{86})"\}$/;
+function createBridgeAuthMessage({ challenge }) {
+	return Buffer$1.from(`${BRIDGE_AUTH_MESSAGE_PREFIX}${challenge}`, "utf8");
+}
+function serializeBridgeAuthChallengeFrame({ challenge }) {
+	return JSON.stringify({
+		type: "bridge-auth-challenge",
+		challenge
+	});
+}
+function parseBridgeAuthProofFrame({ text }) {
+	return PROOF_FRAME_REGEXP.exec(text)?.[1];
+}
+const PUBLIC_KEY_REGEXP = /^[A-Za-z0-9_-]{43}$/;
+const UNAUTHORIZED_CLOSE_CODE = 1008;
+const INVALID_PUBLIC_KEY_MESSAGE = "The bridge requires a valid Ed25519 public key for authentication.";
+function parseBridgeAuthPublicKey({ publicKey }) {
+	if (publicKey == null || !PUBLIC_KEY_REGEXP.test(publicKey)) throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	let key;
+	try {
+		key = createPublicKey({
+			key: {
+				kty: "OKP",
+				crv: "Ed25519",
+				x: publicKey
+			},
+			format: "jwk"
+		});
+	} catch {
+		throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	}
+	if (key.asymmetricKeyType !== "ed25519") throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	return key;
+}
+function authenticateBridgeConnection({ ws, publicKey, timeoutMs = BRIDGE_AUTH_TIMEOUT_MS, onAuthenticated }) {
+	const challenge = randomBytes(32).toString("hex");
+	const timeout = setTimeout(() => ws.terminate(), timeoutMs);
+	timeout.unref?.();
+	const onError = () => {};
+	ws.on("error", onError);
+	ws.once("close", () => clearTimeout(timeout));
+	ws.once("message", (raw, isBinary) => {
+		clearTimeout(timeout);
+		const text = isBinary ? void 0 : rawDataToString(raw);
+		const signature = text == null ? void 0 : parseBridgeAuthProofFrame({ text });
+		if (signature == null || !verify(null, createBridgeAuthMessage({ challenge }), publicKey, Buffer$1.from(signature, "base64url"))) {
+			ws.close(UNAUTHORIZED_CLOSE_CODE, "unauthorized");
+			return;
+		}
+		ws.off("error", onError);
+		onAuthenticated();
+	});
+	ws.send(serializeBridgeAuthChallengeFrame({ challenge }));
+}
+function rawDataToString(raw) {
+	const buffer = Array.isArray(raw) ? Buffer$1.concat(raw) : Buffer$1.isBuffer(raw) ? raw : Buffer$1.from(raw);
+	if (buffer.byteLength > 1024) return void 0;
+	return buffer.toString("utf8");
+}
 const name = "AI_HarnessBridgeCapabilityUnsupportedError";
 /**
 * Signals an unsupported capability discovered inside a sandbox bridge.
@@ -207,7 +269,7 @@ async function runBridge(options) {
 		clearTimeout(hostDisconnectTimer);
 		hostDisconnectTimer = void 0;
 	};
-	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
+	const authPublicKey = parseBridgeAuthPublicKey({ publicKey: options.publicKey ?? env["BRIDGE_AUTH_PUBLIC_KEY"] });
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
 	const startConfigPath = `${bridgeStateDir}/start-config.json`;
@@ -588,11 +650,12 @@ async function runBridge(options) {
 		}) + "\n");
 		options.onListening?.(currentBoundPort);
 	});
-	wss.on("connection", (ws, req) => {
-		if (new URL(req.url ?? "/", "http://localhost").searchParams.get("agent_bridge_token") !== expectedToken) {
-			ws.close(1008, "unauthorized");
-			return;
-		}
+	wss.on("connection", (ws) => authenticateBridgeConnection({
+		ws,
+		publicKey: authPublicKey,
+		onAuthenticated: () => acceptConnection(ws)
+	}));
+	const acceptConnection = (ws) => {
 		sendControl(ws, {
 			type: "bridge-hello",
 			state: currentTurnState,
@@ -630,7 +693,7 @@ async function runBridge(options) {
 			}
 		});
 		ws.on("error", () => {});
-	});
+	};
 	process.on("uncaughtException", (err) => {
 		emitError({
 			error: err,
@@ -767,6 +830,17 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 				...initModel ? { modelId: initModel } : {}
 			});
 			streamStarted = true;
+		}
+		if (type === "system" && (msg.subtype === "init" || msg.subtype === "status")) {
+			emit({
+				type: "raw",
+				rawValue: {
+					type,
+					subtype: msg.subtype,
+					...msg.permissionMode != null ? { permissionMode: msg.permissionMode } : {}
+				}
+			});
+			return;
 		}
 		if (type === "system" && msg.subtype === "api_retry") {
 			if (typeof msg.error_status === "number" && UNRECOVERABLE_API_RETRY_STATUSES.has(msg.error_status)) {
@@ -1596,13 +1670,16 @@ await runBridge({
 });
 function createPermissionOptions(input) {
 	const permissionMode = input.start.permissionMode ?? "allow-all";
+	const autoMode = input.start.autoMode === true && permissionMode !== "allow-all";
 	const inactiveNativeTools = new Set(input.inactiveNativeTools);
 	const permissionSettings = createPermissionSettings({
 		permissionMode,
+		autoMode,
 		inactiveNativeTools
 	});
 	const baseOptions = {
-		permissionMode: permissionMode === "allow-all" ? "bypassPermissions" : permissionMode === "allow-edits" ? "acceptEdits" : "default",
+		permissionMode: permissionMode === "allow-all" ? "bypassPermissions" : autoMode ? "auto" : permissionMode === "allow-edits" ? "acceptEdits" : "default",
+		...autoMode ? { allowedTools: ["mcp__harness-tools__*"] } : {},
 		allowDangerouslySkipPermissions: permissionMode === "allow-all",
 		...permissionSettings ? { settings: permissionSettings } : {}
 	};
@@ -1613,7 +1690,7 @@ function createPermissionOptions(input) {
 	return {
 		...baseOptions,
 		canUseTool: async (toolName, toolInput, options) => {
-			if (!await needsHostApproval({
+			if (toolName.startsWith("mcp__harness-tools__") || !autoMode && !await needsHostApproval({
 				toolName,
 				toolInput,
 				permissionMode,
@@ -1711,7 +1788,7 @@ function createQuestionPreToolUseHook(input) {
 }
 function createPermissionSettings(input) {
 	const askRules = /* @__PURE__ */ new Set();
-	for (const [nativeName, kind] of Object.entries(NATIVE_TOOL_KINDS)) if (input.inactiveNativeTools.has(nativeName) || (input.permissionMode === "allow-reads" ? kind === "edit" || kind === "bash" : input.permissionMode === "allow-edits" ? kind === "bash" : false)) askRules.add(`${nativeName}(*)`);
+	for (const [nativeName, kind] of Object.entries(NATIVE_TOOL_KINDS)) if (input.inactiveNativeTools.has(nativeName) || !input.autoMode && (input.permissionMode === "allow-reads" ? kind === "edit" || kind === "bash" : input.permissionMode === "allow-edits" ? kind === "bash" : false)) askRules.add(`${nativeName}(*)`);
 	if (askRules.size === 0) return void 0;
 	return {
 		permissions: { ask: [...askRules] },
@@ -2026,7 +2103,7 @@ async function runTurn(start, turn) {
 			} } : {},
 			includePartialMessages: true,
 			hooks: {
-				PreToolUse: [...permissionMode === "allow-all" ? [] : [{ hooks: [approvalPreToolUseHook] }], {
+				PreToolUse: [...permissionMode === "allow-all" || start.autoMode === true ? [] : [{ hooks: [approvalPreToolUseHook] }], {
 					matcher: "AskUserQuestion",
 					hooks: [questionPreToolUseHook],
 					...start.questionTimeoutMs !== void 0 ? { timeout: Math.ceil(start.questionTimeoutMs / 1e3) } : {}
@@ -2042,7 +2119,7 @@ async function runTurn(start, turn) {
 			mcpServers,
 			settingSources: ["user"],
 			cwd: workdir,
-			abortSignal: abortCtl.signal
+			abortController: abortCtl
 		}
 	};
 	let deferredToolUseId = start.deferredToolUseId;

@@ -8,11 +8,24 @@ import "encoding/json"
 // this package actually reads or writes are modeled; the API accepts and
 // returns more.
 
-// SnapshotSource selects how a sandbox is created: from a git/tarball source
-// (omitted here; unused) or from a snapshot.
+// SnapshotSource selects how a sandbox is created (the @vercel/sandbox
+// 3.9.0 `source` union): a snapshot ({Type: "snapshot", SnapshotID}), a git
+// repository ({Type: "git", URL, optional Depth / Revision, and Username +
+// Password for a private one}) or a tarball ({Type: "tarball", URL}). It is
+// sent as given and, for a template, hashed into the template name
+// (harness-02). JSON keys follow the field order.
 type SnapshotSource struct {
 	Type       string `json:"type"`
 	SnapshotID string `json:"snapshotId,omitempty"`
+	// URL is the git repository or tarball URL.
+	URL string `json:"url,omitempty"`
+	// Username and Password authenticate a private git repository.
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	// Depth makes a shallow git clone (minimum 1).
+	Depth *int `json:"depth,omitempty"`
+	// Revision is the git commit, branch or tag to check out.
+	Revision string `json:"revision,omitempty"`
 }
 
 // ResourcesParams selects vCPU allocation for the sandbox. Mirrors TS

@@ -8,11 +8,11 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 )
 
 func gatewaySettings(mut func(*Settings)) Settings {
 	return testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "gw-token" }
 		s.ForwardEnv = nil
 		s.Env = map[string]string{}
 		s.Auth = harness.AuthEnvironment(map[string]string{
@@ -29,7 +29,7 @@ func gatewaySettings(mut func(*Settings)) Settings {
 
 func startGateway(t *testing.T, s Settings) (spawnEnv map[string]string) {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "gw-token"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateACP(s)

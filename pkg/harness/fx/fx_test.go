@@ -286,7 +286,7 @@ func TestBuildConfig_ForwardsUserConfigurableSettings(t *testing.T) {
 	if !reflect.DeepEqual(cfg.MCPServers, map[string]any{"external": map[string]any{"command": "external-mcp"}}) {
 		t.Errorf("MCPServers = %+v", cfg.MCPServers)
 	}
-	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "token-for-sbx-1" {
+	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "token-for-sbx-1" { //nolint:staticcheck // the deprecated setting is still forwarded (ACP warns)
 		t.Errorf("MintBridgeToken not forwarded correctly")
 	}
 	if cfg.ModelMapping != (acp.ModelMapping{Type: acp.ModelMappingSessionConfigOption, Path: "model"}) {

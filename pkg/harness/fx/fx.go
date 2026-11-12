@@ -150,7 +150,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		// The bridge no longer resolves host tools itself (TS 03dac28304); fx's
 		// sandbox-ACP runtime keeps the v0.5 bridge matching.
 		ResolveHostToolCall: acp.LegacyResolveHostToolCall,
-		MintBridgeToken:     settings.MintBridgeToken,
+		MintBridgeToken:     settings.MintBridgeToken, //nolint:staticcheck // forwarded so ACP warns, as TS
 		BuiltinTools:        BuiltinTools,
 		Source: acp.Source{
 			Type:    acp.SourceInstallCommand,

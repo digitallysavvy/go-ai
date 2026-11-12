@@ -58,9 +58,7 @@ func TestUnsupportedModelTypes(t *testing.T) {
 	if _, err := p.EmbeddingModel("model"); err == nil {
 		t.Fatal("EmbeddingModel() expected error, got nil")
 	}
-	if _, err := p.ImageModel("model"); err == nil {
-		t.Fatal("ImageModel() expected error, got nil")
-	}
+	// TS c4c8523cc3: imageModel is supported (TestR91toolsMiniMaxImage*).
 	if _, err := p.SpeechModel("model"); err == nil {
 		t.Fatal("SpeechModel() expected error, got nil")
 	}

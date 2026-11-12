@@ -59,7 +59,6 @@ func mustACP(t *testing.T) harness.Harness {
 	t.Helper()
 	st := testSettings(func(s *Settings) {
 		s.StartupTimeout = 2 * time.Second
-		s.MintBridgeToken = func(string) string { return "tok" }
 	})
 	h, err := CreateACP(st)
 	if err != nil {

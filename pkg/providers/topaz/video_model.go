@@ -239,8 +239,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	requestID := created.RequestID
-	if requestID == "" {
-		return nil, fmt.Errorf("Topaz did not return a requestId for the video request.") //nolint:staticcheck // matches TS SDK's exact error text
+	// TS requireRequestId: only a missing or null requestId fails, with an
+	// InvalidResponseDataError whose data is that value (tools-11).
+	if _, present := topazStringField(resp.Body, "requestId"); !present {
+		return nil, providererrors.NewInvalidResponseDataError(nil, "Topaz did not return a requestId for the video request.")
 	}
 
 	if uploadBytes != nil {
@@ -327,8 +329,12 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		// which it recomputes once the source upload has been received.
 		credits := lowerBoundCredits(status.Estimates)
 
-		if status.Download == nil || status.Download.URL == "" {
-			return nil, fmt.Errorf("Topaz reported request %s complete but returned no download URL.", op.RequestID) //nolint:staticcheck // matches TS SDK's exact error text
+		// TS `status.download?.url == null`: an InvalidResponseDataError
+		// with the parsed status as data; an empty URL is a URL (tools-11).
+		parsedStatus, _ := topazStringField(resp.Body, "status")
+		downloadRaw, _ := parsedStatus.(map[string]interface{})["download"].(map[string]interface{})
+		if downloadRaw["url"] == nil {
+			return nil, providererrors.NewInvalidResponseDataError(parsedStatus, fmt.Sprintf("Topaz reported request %s complete but returned no download URL.", op.RequestID))
 		}
 
 		mediaType := containerMediaTypes[op.OutputContainer]

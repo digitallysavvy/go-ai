@@ -57,7 +57,7 @@ func TestAgent_PausesAtHostInputFinishStep(t *testing.T) {
 
 func mustOpenCode(t *testing.T) harness.Harness {
 	t.Helper()
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h, err := CreateOpenCode(Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -67,6 +67,39 @@ type MCPMessage struct {
 	Error   *MCPError       `json:"error,omitempty"`
 }
 
+// MarshalJSON writes the TS key order (tools-04): a request or notification
+// is {method, params, jsonrpc, id} ({...request, jsonrpc, id}), a response
+// {jsonrpc, id, result | error}. Absent members are left out as before.
+func (m MCPMessage) MarshalJSON() ([]byte, error) {
+	obj := jsonorder.New()
+	set := func(key string, value interface{}) { obj.Set(key, value) }
+	if m.Method != "" {
+		set("method", m.Method)
+		if len(m.Params) > 0 {
+			set("params", m.Params)
+		}
+		set("jsonrpc", m.JSONRpc)
+		if m.ID != nil {
+			set("id", m.ID)
+		}
+	} else {
+		set("jsonrpc", m.JSONRpc)
+		if m.ID != nil {
+			set("id", m.ID)
+		}
+		if len(m.Params) > 0 {
+			set("params", m.Params)
+		}
+		if len(m.Result) > 0 {
+			set("result", m.Result)
+		}
+		if m.Error != nil {
+			set("error", m.Error)
+		}
+	}
+	return obj.MarshalJSON()
+}
+
 // MCPError represents an error in the MCP protocol
 type MCPError struct {
 	Code    int         `json:"code"`
@@ -1059,6 +1092,10 @@ type ElicitationRequest struct {
 	Message         string                 `json:"message"`
 	RequestedSchema interface{}            `json:"requestedSchema"`
 	Meta            map[string]interface{} `json:"_meta,omitempty"`
+	// Extra holds the params keys the schema does not name, such as mode,
+	// url or elicitationId (TS ElicitationRequestParamsSchema is a loose
+	// object; tools-07).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // ElicitResult is the client's response to an ElicitationRequest, matching TS
@@ -1068,6 +1105,27 @@ type ElicitResult struct {
 	Action  string                 `json:"action"`
 	Content map[string]interface{} `json:"content,omitempty"`
 	Meta    map[string]interface{} `json:"_meta,omitempty"`
+	// Extra holds further result keys, sent as they are (TS ElicitResultSchema
+	// is a loose object; tools-07). It cannot replace a declared key.
+	Extra map[string]interface{} `json:"-"`
+}
+
+// MarshalJSON writes the declared keys, then Extra's other keys.
+func (r ElicitResult) MarshalJSON() ([]byte, error) {
+	out := map[string]interface{}{}
+	for k, v := range r.Extra {
+		out[k] = v
+	}
+	out["action"] = r.Action
+	delete(out, "content")
+	delete(out, "_meta")
+	if r.Content != nil {
+		out["content"] = r.Content
+	}
+	if r.Meta != nil {
+		out["_meta"] = r.Meta
+	}
+	return json.Marshal(out)
 }
 
 // LoggingLevel represents the level of logging

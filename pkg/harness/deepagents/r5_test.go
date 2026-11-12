@@ -15,7 +15,7 @@ import (
 func TestDoStart_ResumeRespawnPassesResumeFlagNotDiskReplay(t *testing.T) {
 	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
-	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return "tok" }})
+	h := CreateDeepAgents(Settings{})
 	resume, err := harness.NewResumeSessionState(HarnessID, map[string]any{})
 	if err != nil {
 		t.Fatal(err)

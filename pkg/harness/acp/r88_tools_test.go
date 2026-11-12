@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 )
 
 // TS deeb2bfb62 acp-harness.test.ts "awaits sandbox preparation after
@@ -17,7 +18,7 @@ import (
 // restricted sandbox and the work dir after the authentication files are
 // written and before the bridge is spawned; its error rejects the start.
 func TestR88toolsPrepareSandboxRunsAfterAuthFilesBeforeSpawn(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	failure := errors.New("preparation failed")
@@ -77,7 +78,6 @@ func TestR88toolsPrepareSandboxSkippedOnReattach(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 		s.PrepareSandbox = func(context.Context, PrepareSandboxOptions) error {
 			mu.Lock()
 			calls++
@@ -114,7 +114,7 @@ func TestR88toolsACPHostDisconnectTimeout(t *testing.T) {
 		timeout time.Duration
 		want    string
 	}{{60 * time.Second, "--bridge-type 'test-acp' --host-disconnect-timeout-ms '60000'"}, {0, ""}} {
-		srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+		srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 		t.Cleanup(srv.Close)
 		sandbox := newFakeSandbox(srv)
 		h, err := CreateACP(testSettings(func(s *Settings) { s.HostDisconnectTimeout = tc.timeout }))

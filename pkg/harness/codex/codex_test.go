@@ -2,6 +2,7 @@ package codex_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/codex"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 )
 
 // TS: "declares the harness id and builtin tools"
@@ -51,7 +53,7 @@ func TestDoPromptTurn_ForwardsBuiltinToolFiltering(t *testing.T) {
 	var captured map[string]any
 	captureDone := make(chan struct{})
 	filtering := &harness.BuiltinToolFiltering{Mode: harness.BuiltinToolFilteringDeny, ToolNames: []string{"bash"}}
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		captured = start
 		close(captureDone)
 		turn.Emit(finishFrame())
@@ -60,7 +62,7 @@ func TestDoPromptTurn_ForwardsBuiltinToolFiltering(t *testing.T) {
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 
-	h := codex.New(codex.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir",
 		BuiltinToolFiltering: filtering,
@@ -94,11 +96,11 @@ func TestDoPromptTurn_ForwardsBuiltinToolFiltering(t *testing.T) {
 
 // TS: "rejects built-in permission modes other than allow-all"
 func TestDoStart_RejectsNonAllowAllPermissionMode(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{MintBridgeToken: func(string) string { return "tok" }})
+	h := codex.New(codex.Settings{})
 	_, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir",
 		PermissionMode: harness.PermissionModeAllowReads,
@@ -111,12 +113,12 @@ func TestDoStart_RejectsNonAllowAllPermissionMode(t *testing.T) {
 // TS: "throws HarnessCapabilityUnsupportedError when the network sandbox
 // session exposes no ports"
 func TestDoStart_NoPortsUnsupportedError(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	sandbox.ports = nil
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{MintBridgeToken: func(string) string { return "tok" }})
+	h := codex.New(codex.Settings{})
 	_, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir",
 	})
@@ -127,12 +129,10 @@ func TestDoStart_NoPortsUnsupportedError(t *testing.T) {
 
 func startedHarness(t *testing.T, settings codex.Settings, onStart func(turn *bridgetest.Turn, start map[string]any)) (*codex.Harness, harness.Session) {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: onStart})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: onStart})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-
-	settings.MintBridgeToken = func(string) string { return "tok" }
 	settings.StartupTimeout = 2 * time.Second
 	h := codex.New(settings)
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
@@ -320,19 +320,12 @@ func TestDoCompact_Unsupported(t *testing.T) {
 // coordinates let a later DoStart reopen a socket to the same still-running
 // bridge instead of respawning it).
 func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
-	var mintCalls int32
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 
-	h := codex.New(codex.Settings{
-		StartupTimeout: 2 * time.Second,
-		MintBridgeToken: func(string) string {
-			atomic.AddInt32(&mintCalls, 1)
-			return "tok"
-		},
-	})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir",
 	})
@@ -359,8 +352,13 @@ func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
 	if sandbox.SpawnCount() != 1 {
 		t.Fatalf("SpawnCount after attach = %d, want 1 (attach must not respawn)", sandbox.SpawnCount())
 	}
-	if atomic.LoadInt32(&mintCalls) != 1 {
-		t.Fatalf("mintBridgeToken called %d times, want 1 (attach reuses the persisted token)", mintCalls)
+	// The attach reuses the persisted private key (TS: no spawn, no fresh key).
+	again, err := attached.DoDetach(context.Background())
+	if err != nil {
+		t.Fatalf("DoDetach (attached): %v", err)
+	}
+	if !strings.Contains(string(again.Data), `"privateKey":"`+bridgeauthkeys.Testing().PrivateKey+`"`) {
+		t.Fatalf("attached resume state = %s, want the persisted private key", again.Data)
 	}
 	if !attached.IsResume() {
 		t.Error("attached session.IsResume() = false, want true")
@@ -373,7 +371,7 @@ func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
 func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	var starts int32
 	var lastStart map[string]any
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		atomic.AddInt32(&starts, 1)
 		lastStart = start
 		turn.Emit(finishFrame())
@@ -383,8 +381,7 @@ func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	wireSpawn(sandbox)
 
 	h := codex.New(codex.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
+		StartupTimeout: 2 * time.Second,
 	})
 
 	// Port 9999 does not match sandbox.Ports()[0] (4319), so
@@ -392,7 +389,7 @@ func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	// attach connect is refused immediately, exactly like a bridge process
 	// that no longer exists.
 	resumeState, err := harness.NewResumeSessionState(codex.HarnessID, map[string]any{
-		"bridge":   map[string]any{"port": 9999, "token": "tok", "lastSeenEventId": 0},
+		"bridge":   map[string]any{"port": 9999, "privateKey": bridgeauthkeys.Testing().PrivateKey, "lastSeenEventId": 0},
 		"threadId": "thread-1",
 	})
 	if err != nil {
@@ -515,7 +512,7 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 		reported <- struct{}{}
 	}
 
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		turn.Emit(map[string]any{"type": "sandbox-log", "source": "codex", "stream": "stderr", "line": "boom"})
 		turn.Emit(map[string]any{"type": "debug-event", "level": "warn", "subsystem": "codex.bridge", "message": "retrying"})
 		turn.Emit(finishFrame())
@@ -524,7 +521,7 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 
-	h := codex.New(codex.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "diag-session", SandboxSession: sandbox, SessionWorkDir: "/workdir",
 		Observability: &harness.Observability{Report: report},
@@ -573,7 +570,7 @@ func resumedRerunSession(t *testing.T) (harness.Session, *int32, <-chan map[stri
 	t.Helper()
 	var starts int32
 	markers := make(chan map[string]any, 4)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnToolResult: func(f map[string]any) { markers <- f },
 		OnFrame: func(ft string) {
 			if ft == bridge.TypeStart {
 				atomic.AddInt32(&starts, 1)
@@ -585,7 +582,7 @@ func resumedRerunSession(t *testing.T) (harness.Session, *int32, <-chan map[stri
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	resumeState, err := harness.NewResumeSessionState(codex.HarnessID, map[string]any{"threadId": "thread-1"})
 	if err != nil {
 		t.Fatalf("NewResumeSessionState: %v", err)
@@ -671,14 +668,14 @@ func TestDoContinueTurn_AfterRecoveredPromptSendsNoStart(t *testing.T) {
 // `toolResult` alongside output/isError.
 func TestSubmitToolResult_ForwardsToolResult(t *testing.T) {
 	got := make(chan map[string]any, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart:      func(turn *bridgetest.Turn, _ map[string]any) {},
 		OnToolResult: func(f map[string]any) { got <- f },
 	})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir"})
 	if err != nil {
 		t.Fatal(err)

@@ -373,14 +373,20 @@ func TestRefetchesAtOffsetZero(t *testing.T) {
 	}
 }
 
+// Offsets count UTF-16 code units (TS string length / slice, tools-03), and
+// an end inside a surrogate pair steps back one unit (TS sliceDocument).
 func TestOffsetsCountCharactersAndNeverSplitThem(t *testing.T) {
 	ft := fixed(200, "abc😀def", "Content-Type", "text/plain")
 	tool := newTool(t, Options{Transport: ft, MaxLength: intp(4)})
 	first := doc(t, run(t, tool, "https://example.com/", 0))
-	if first.Content != "abc😀" || first.NextOffset == nil || *first.NextOffset != 4 || first.TotalLength != 7 {
+	if first.Content != "abc" || first.NextOffset == nil || *first.NextOffset != 3 || first.TotalLength != 8 {
 		t.Fatalf("first = %+v", first)
 	}
-	if rest := doc(t, run(t, tool, "https://example.com/", 4)); rest.Content != "def" || rest.NextOffset != nil {
+	second := doc(t, run(t, tool, "https://example.com/", 3))
+	if second.Content != "😀de" || second.NextOffset == nil || *second.NextOffset != 7 {
+		t.Fatalf("second = %+v", second)
+	}
+	if rest := doc(t, run(t, tool, "https://example.com/", 7)); rest.Content != "f" || rest.NextOffset != nil {
 		t.Fatalf("rest = %+v", rest)
 	}
 }

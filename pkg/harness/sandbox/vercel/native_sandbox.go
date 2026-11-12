@@ -98,11 +98,24 @@ func newSandboxFromResponse(client *APIClient, resp *sandboxAndSessionResponse) 
 
 // CreateSandbox posts a create request and wraps the result.
 func CreateSandbox(ctx context.Context, client *APIClient, params CreateParams) (*Sandbox, error) {
+	if err := checkRuntimeOrImage(params); err != nil {
+		return nil, err
+	}
 	resp, err := client.CreateSandbox(ctx, params.toRequest())
 	if err != nil {
 		return nil, err
 	}
 	return newSandboxFromResponse(client, resp), nil
+}
+
+// checkRuntimeOrImage is 3.9.0 Sandbox.create / getOrCreate's TypeError for
+// a runtime and an image given together, raised before any request (extra,
+// step 5).
+func checkRuntimeOrImage(params CreateParams) error {
+	if params.Runtime != "" && params.Image != "" {
+		return errors.New("`runtime` and `image` cannot be used together.") //nolint:staticcheck // matches @vercel/sandbox TypeError text
+	}
+	return nil
 }
 
 // GetSandbox fetches an existing sandbox by name, optionally resuming.
@@ -120,6 +133,9 @@ func GetSandbox(ctx context.Context, client *APIClient, name string, resume *boo
 // sandbox first, then creates. onCreate runs exactly once, only on a fresh
 // create.
 func GetOrCreateSandbox(ctx context.Context, client *APIClient, params CreateParams, onCreate func(context.Context, *Sandbox) error) (*Sandbox, error) {
+	if err := checkRuntimeOrImage(params); err != nil {
+		return nil, err
+	}
 	create := func() (*Sandbox, error) {
 		sbx, err := CreateSandbox(ctx, client, params)
 		if err != nil {

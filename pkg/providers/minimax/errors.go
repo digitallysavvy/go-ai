@@ -20,6 +20,10 @@ type Error struct {
 	// ResponseHeaders are the response headers of a non-2xx API response
 	// (TS APICallError responseHeaders), when known.
 	ResponseHeaders map[string]string
+	// Data is the parsed error body (the TS error schema output) of a
+	// non-2xx API response that matched minimaxVideoErrorSchema (TS
+	// APICallError data), nil otherwise.
+	Data interface{}
 }
 
 // Unwrap exposes a non-2xx API response as a *providererrors.ProviderError
@@ -35,6 +39,7 @@ func (e *Error) Unwrap() error {
 		Message:         e.Message,
 		ResponseBody:    e.ResponseBody,
 		ResponseHeaders: e.ResponseHeaders,
+		Data:            e.Data,
 	}
 }
 

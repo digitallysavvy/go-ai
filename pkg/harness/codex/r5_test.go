@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/codex"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -17,7 +18,7 @@ import (
 func TestDoContinueTurn_ReplayDoesNotSendStart(t *testing.T) {
 	var starts int32
 	markers := make(chan map[string]any, 4)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnToolResult: func(f map[string]any) { markers <- f },
 		OnFrame: func(ft string) {
 			if ft == bridge.TypeStart {
@@ -35,9 +36,9 @@ func TestDoContinueTurn_ReplayDoesNotSendStart(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	state, _ := harness.NewContinueTurnState(codex.HarnessID, map[string]any{
-		"bridge": map[string]any{"port": 9999, "token": "tok", "lastSeenEventId": 2},
+		"bridge": map[string]any{"port": 9999, "privateKey": bridgeauthkeys.Testing().PrivateKey, "lastSeenEventId": 2},
 	})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir", ContinueFrom: state,
@@ -67,14 +68,14 @@ func TestDoContinueTurn_ReplayDoesNotSendStart(t *testing.T) {
 // TS: `start` carries the observability debug config.
 func TestDoPromptTurn_ForwardsDebugConfig(t *testing.T) {
 	captured := make(chan map[string]any, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		captured <- start
 		turn.Emit(finishFrame())
 	}})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	enabled := true
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir",
@@ -100,7 +101,7 @@ func TestDoPromptTurn_ForwardsDebugConfig(t *testing.T) {
 // continuation does not re-send the recovery start.
 func TestDoContinueTurn_AbortedRerunConsumesRecoveryStart(t *testing.T) {
 	var starts int32
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnFrame: func(ft string) {
 			if ft == bridge.TypeStart {
 				atomic.AddInt32(&starts, 1)
@@ -109,7 +110,7 @@ func TestDoContinueTurn_AbortedRerunConsumesRecoveryStart(t *testing.T) {
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	state, _ := harness.NewResumeSessionState(codex.HarnessID, map[string]any{"threadId": "th"})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir", ResumeFrom: state,

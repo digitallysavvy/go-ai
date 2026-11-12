@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/codex"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -20,7 +21,7 @@ func TestR88toolsCodexHostDisconnectTimeout(t *testing.T) {
 		timeout time.Duration
 		want    string
 	}{{60 * time.Second, " --host-disconnect-timeout-ms '60000'"}, {0, ""}} {
-		srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+		srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 		t.Cleanup(srv.Close)
 		sandbox := newTestSandbox(srv)
 		var mu sync.Mutex

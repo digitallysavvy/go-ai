@@ -45,7 +45,8 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if opts.TopN != nil {
 		reqBody["top_k"] = *opts.TopN
 	}
-	if po, ok := opts.ProviderOptions["voyage"].(map[string]interface{}); ok {
+	// Go-typed literals read like their JSON form (OVC-01).
+	if po, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["voyage"].(map[string]interface{}); ok {
 		if v, ok := po["returnDocuments"]; ok {
 			reqBody["return_documents"] = v
 		}

@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -187,25 +186,29 @@ func stripDataURLPrefix(image string) string {
 	return dataURLPrefix.ReplaceAllString(image, "")
 }
 
-type deepInfraGenerateError struct {
-	Detail *struct {
-		Error *string `json:"error"`
-	} `json:"detail"`
-}
-
 // parseGenerateError is TS createJsonErrorResponseHandler with
 // deepInfraErrorSchema ({detail: {error: string}}): a blank body or one that
-// does not match the schema gives the status text; a matching body gives
-// detail.error, even "".
+// does not match the schema gives the status text and no data; a matching
+// body gives detail.error, even "", and the schema output as data
+// ({detail: {error}}, undeclared keys stripped; tools-08).
 func (m *ImageModel) parseGenerateError(resp *internalhttp.Response) error {
-	var errResp deepInfraGenerateError
-	message, matched := http.StatusText(resp.StatusCode), false
-	if strings.TrimSpace(string(resp.Body)) != "" {
-		if err := securejson.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail != nil && errResp.Detail.Error != nil {
-			message, matched = *errResp.Detail.Error, true
-		}
+	return deepInfraSchemaError(resp, deepInfraGenerateErrorSchema)
+}
+
+func deepInfraGenerateErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok {
+		return "", nil, false
 	}
-	return deepInfraAPIError(resp, message, matched)
+	detail, ok := obj["detail"].(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	message, ok := detail["error"].(string)
+	if !ok {
+		return "", nil, false
+	}
+	return message, map[string]interface{}{"detail": map[string]interface{}{"error": message}}, true
 }
 
 // doEdit performs image editing via DeepInfra's OpenAI-compatible
@@ -269,38 +272,39 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 // deepInfraEditErrorSchema ({error?: {message: string}}) and
 // `error.error?.message ?? 'Unknown error'`: a blank body or one that does
 // not match the schema (error null or not an object, message not a string)
-// gives the status text; a matching body without error gives "Unknown
-// error".
+// gives the status text and no data; a matching body without error gives
+// "Unknown error" and data {}, one with error gives its message and data
+// {error: {message}} (tools-08).
 func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
-	message, matched := http.StatusText(resp.StatusCode), false
-	if strings.TrimSpace(string(resp.Body)) != "" {
-		var fields map[string]json.RawMessage
-		if err := securejson.Unmarshal(resp.Body, &fields); err == nil && fields != nil {
-			raw, present := fields["error"]
-			var errObj map[string]json.RawMessage
-			var text *string
-			switch {
-			case !present:
-				message, matched = "Unknown error", true
-			case json.Unmarshal(raw, &errObj) == nil && errObj != nil && json.Unmarshal(errObj["message"], &text) == nil && text != nil:
-				message, matched = *text, true
-			}
-		}
-	}
-	return deepInfraAPIError(resp, message, matched)
+	return deepInfraSchemaError(resp, deepInfraEditErrorSchema)
 }
 
-// deepInfraAPIError is the APICallError of createJsonErrorResponseHandler:
-// status, response headers (so retry-after(-ms) reaches the retry loop) and
-// body, with the parsed body as data only when it matched the error schema.
-func deepInfraAPIError(resp *internalhttp.Response, message string, matched bool) error {
-	cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
-	perr := providererrors.NewProviderErrorFromResponse("deepinfra", 0, "", message, cause)
-	perr.Message = message
-	if !matched {
-		perr.Data = nil
+func deepInfraEditErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok {
+		return "", nil, false
 	}
-	return perr
+	raw, present := obj["error"]
+	if !present {
+		return "Unknown error", map[string]interface{}{}, true
+	}
+	errObj, ok := raw.(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	message, ok := errObj["message"].(string)
+	if !ok {
+		return "", nil, false
+	}
+	return message, map[string]interface{}{"error": map[string]interface{}{"message": message}}, true
+}
+
+// deepInfraSchemaError is the APICallError of createJsonErrorResponseHandler:
+// status, response headers (so retry-after(-ms) reaches the retry loop) and
+// body, with the schema output as data only when the body matched.
+func deepInfraSchemaError(resp *internalhttp.Response, schema providererrors.ErrorSchema) error {
+	cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+	return providererrors.NewSchemaProviderError("deepinfra", cause, schema)
 }
 
 func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.ImageGenerateOptions) (io.Reader, string, error) {
@@ -456,6 +460,7 @@ var deepInfraImageOptionsSchema = providerutils.OptionSchema{
 // response_format, quality, style, and user pass through untransformed, and
 // any other key the caller sets is forwarded too.
 func deepInfraImageOptions(providerOptions map[string]interface{}) map[string]interface{} {
-	opts, _ := providerOptions["deepinfra"].(map[string]interface{})
+	// Go-typed literals read like their JSON form (OVC-01).
+	opts, _ := providerutils.NormalizeOptionsJSON(providerOptions)["deepinfra"].(map[string]interface{})
 	return opts
 }

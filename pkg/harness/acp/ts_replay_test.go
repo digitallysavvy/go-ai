@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -67,7 +68,7 @@ var _ harness.NetworkSandboxSession = plainSandbox{}
 
 func replaySandbox(t *testing.T, token string) *fakeSandbox {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: token})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	return newFakeSandbox(srv)
 }
@@ -90,7 +91,6 @@ func TestTSReplay_BrokersHostResolvedDirectCredentials(t *testing.T) {
 	var gotEnv, gotSandboxEnv map[string]string
 	var forwarded []harness.CredentialForwardingOptions
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.ForwardEnv = []string{"PROVIDER_BASE_URL", "HOST_PROVIDER_BASE_URL"}
 		s.CredentialEnv = []string{"PROVIDER_API_KEY"}
 		s.Env = map[string]string{"STATIC_SETTING": "literal-value"}
@@ -149,7 +149,6 @@ func TestTSReplay_AuthenticationFilesWithBrokeredCredentials(t *testing.T) {
 	var gotEnv, gotSandboxEnv map[string]string
 	var gotBrokered bool
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.CredentialEnv = []string{"PROVIDER_API_KEY"}
 		s.CredentialBrokering = func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation { return nil }
 		s.CredentialForwarding = func(context.Context, harness.CredentialForwardingOptions) (string, error) {
@@ -201,7 +200,6 @@ func TestTSReplay_GatewayProfileBrokering(t *testing.T) {
 	var gotEnv, gotSandboxEnv, gotHeaders map[string]string
 	var forwarded []harness.CredentialForwardingOptions
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "gateway-brokered-acp"
 		s.Auth = harness.Authentication{Mode: harness.AuthModeAIGateway}
 		s.ForwardEnv = nil
@@ -267,7 +265,6 @@ func TestTSReplay_GatewayCredentialUsesExposedVariableName(t *testing.T) {
 	var gotEnv, gotSandboxEnv map[string]string
 	var forwarded []harness.CredentialForwardingOptions
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "renamed-gateway-credential-acp"
 		s.Auth = harness.Authentication{Mode: harness.AuthModeAIGateway}
 		s.ForwardEnv = nil
@@ -319,7 +316,6 @@ func TestTSReplay_PersistsSandboxCredentialsAcrossResumes(t *testing.T) {
 	sandbox := replaySandbox(t, "tok")
 	create := func() harness.Harness {
 		h, err := CreateACP(testSettings(func(s *Settings) {
-			s.MintBridgeToken = func(string) string { return "tok" }
 			s.HarnessID = "resumable-brokered-acp"
 			s.ForwardEnv = nil
 			s.CredentialEnv = []string{"PROVIDER_API_KEY"}
@@ -379,12 +375,11 @@ func TestTSReplay_PersistsSandboxCredentialsAcrossResumes(t *testing.T) {
 // TS 'preserves real credential forwarding when additive transformations are unavailable'.
 func TestTSReplay_RealForwardingWithoutAdditiveTransformations(t *testing.T) {
 	t.Setenv("PROVIDER_API_KEY", "legacy-secret")
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	called := false
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.ForwardEnv = nil
 		s.CredentialEnv = []string{"PROVIDER_API_KEY"}
 		s.CredentialBrokering = func(env, sandboxEnv, _ map[string]string) []harness.RequestTransformation {
@@ -416,7 +411,6 @@ func TestTSReplay_CustomizesDirectAndGatewayCredentials(t *testing.T) {
 	var forwarded []harness.CredentialForwardingOptions
 	called := false
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "custom-forwarding-acp"
 		s.Auth = harness.Authentication{Mode: harness.AuthModeAIGateway}
 		s.ForwardEnv = nil
@@ -480,7 +474,7 @@ func TestTSReplay_CredentialFailuresAbortBeforeSpawn(t *testing.T) {
 		}
 	})
 	t.Run("brokering", func(t *testing.T) {
-		srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+		srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 		t.Cleanup(srv.Close)
 		sandbox := &failingAdder{fakeSandbox: newFakeSandbox(srv), err: errors.New("request transformation installation failed")}
 		h, _ := CreateACP(testSettings(func(s *Settings) {
@@ -512,7 +506,6 @@ func TestTSReplay_LifecycleIdentityMismatchRejected(t *testing.T) {
 	sandbox := replaySandbox(t, "tok")
 	mk := func(args ...string) harness.Harness {
 		h, err := CreateACP(testSettings(func(s *Settings) {
-			s.MintBridgeToken = func(string) string { return "tok" }
 			s.HarnessID = "identity-acp"
 			s.Args = args
 		}))
@@ -562,7 +555,7 @@ func finishingServer(t *testing.T) (*bridgetest.Server, func() []map[string]any)
 	t.Helper()
 	var mu sync.Mutex
 	var starts []map[string]any
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		mu.Lock()
 		starts = append(starts, start)
 		mu.Unlock()
@@ -601,7 +594,7 @@ func promptTexts(start map[string]any) []string {
 func TestTSReplay_SkillsMaterializedNatively(t *testing.T) {
 	srv, starts := finishingServer(t)
 	sandbox := newFakeSandbox(srv)
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	h, _ := CreateACP(testSettings(func(*Settings) {}))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
 	if err != nil {
 		t.Fatal(err)
@@ -655,7 +648,6 @@ func TestTSReplay_InstructionMappings(t *testing.T) {
 		srv, starts := finishingServer(t)
 		sandbox := newFakeSandbox(srv)
 		h, _ := CreateACP(testSettings(func(s *Settings) {
-			s.MintBridgeToken = func(string) string { return "tok" }
 			s.SkillsDirectory = ".claude/skills"
 			s.InstructionMapping = &InstructionMapping{Type: InstructionMappingSessionMeta, Path: []string{"systemPrompt", "append"}}
 		}))
@@ -684,7 +676,6 @@ func TestTSReplay_InstructionMappings(t *testing.T) {
 		srv, starts := finishingServer(t)
 		sandbox := newFakeSandbox(srv)
 		h, _ := CreateACP(testSettings(func(s *Settings) {
-			s.MintBridgeToken = func(string) string { return "tok" }
 			s.InstructionMapping = &InstructionMapping{Type: InstructionMappingFilesystem, FilePath: ".cursor/rules/AGENTS.md"}
 		}))
 		sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
@@ -712,7 +703,7 @@ func TestTSReplay_InstructionMappings(t *testing.T) {
 func TestTSReplay_ChangedSkillsReplaced(t *testing.T) {
 	srv, _ := finishingServer(t)
 	sandbox := newFakeSandbox(srv)
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	h, _ := CreateACP(testSettings(func(*Settings) {}))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
 	if err != nil {
 		t.Fatal(err)
@@ -740,7 +731,7 @@ func TestTSReplay_StructuredOutputMapping(t *testing.T) {
 	srv, starts := finishingServer(t)
 	sandbox := newFakeSandbox(srv)
 	rf := &harness.ResponseFormat{Type: harness.ResponseFormatJSON, Schema: map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}, "required": []any{"answer"}}}
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	h, _ := CreateACP(testSettings(func(*Settings) {}))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w"})
 	if err != nil {
 		t.Fatal(err)
@@ -754,7 +745,6 @@ func TestTSReplay_StructuredOutputMapping(t *testing.T) {
 
 	srv2, starts2 := finishingServer(t)
 	h2, _ := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.OutputSchemaMapping = &OutputSchemaMapping{Path: []string{"outputSchema"}}
 	}))
 	sess2, err := h2.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: newFakeSandbox(srv2), SessionWorkDir: "/w"})
@@ -782,7 +772,7 @@ func TestTSReplay_ResumeDoesNotReapplyGuidance(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			var mu sync.Mutex
 			var starts []map[string]any
-			srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+			srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 				mu.Lock()
 				starts = append(starts, start)
 				n := len(starts)
@@ -796,7 +786,7 @@ func TestTSReplay_ResumeDoesNotReapplyGuidance(t *testing.T) {
 			}})
 			t.Cleanup(srv.Close)
 			sandbox := newFakeSandbox(srv)
-			h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+			h, _ := CreateACP(testSettings(func(*Settings) {}))
 			ctx := context.Background()
 			first, err := h.DoStart(ctx, harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w"})
 			if err != nil {
@@ -846,11 +836,11 @@ func TestTSReplay_ResumeDoesNotReapplyGuidance(t *testing.T) {
 
 // TS 'preserves capability errors reported by the sandbox bridge'.
 func TestTSReplay_PreservesBridgeCapabilityErrors(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
 		turn.Emit(map[string]any{"type": "error", "error": map[string]any{"name": "AI_HarnessBridgeCapabilityUnsupportedError", "message": "The catalog was not refreshed."}})
 	}})
 	t.Cleanup(srv.Close)
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" }; s.HarnessID = "codex-acp" }))
+	h, _ := CreateACP(testSettings(func(s *Settings) { s.HarnessID = "codex-acp" }))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: newFakeSandbox(srv), SessionWorkDir: "/w"})
 	if err != nil {
 		t.Fatal(err)
@@ -965,7 +955,6 @@ func TestTSReplay_ProviderAuthentication(t *testing.T) {
 			}
 			sandbox := replaySandbox(t, "tok")
 			h, err := CreateACP(testSettings(func(s *Settings) {
-				s.MintBridgeToken = func(string) string { return "tok" }
 				s.HarnessID = "codex-acp"
 				tc.mut(s)
 			}))
@@ -997,12 +986,11 @@ func TestTSReplay_TranslatesQuestionRequestsAndClientResults(t *testing.T) {
 	adapterMeta := harness.ProviderMetadata{"test": {"preserved": true}, "test-acp": {"own": 1}}
 	toolResults := make(chan map[string]any, 4)
 	started := make(chan *bridgetest.Turn, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart:      func(turn *bridgetest.Turn, _ map[string]any) { started <- turn },
 		OnToolResult: func(f map[string]any) { toolResults <- f }})
 	t.Cleanup(srv.Close)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "test-acp"
 		s.AskUserQuestions = &AskUserQuestionsSettings{
 			RequestMethod: "test/ask",
@@ -1100,11 +1088,10 @@ func TestTSReplay_TranslatesQuestionRequestsAndClientResults(t *testing.T) {
 // undefined flag (ProviderExecutedOmitted in Go) fails the turn.
 func TestTSReplay_QuestionToolCallWithOmittedProviderExecutedIsRejected(t *testing.T) {
 	started := make(chan *bridgetest.Turn, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn }})
 	t.Cleanup(srv.Close)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "test-acp"
 		s.AskUserQuestions = &AskUserQuestionsSettings{
 			RequestMethod: "test/ask",
@@ -1152,11 +1139,10 @@ func TestTSReplay_QuestionToolCallWithOmittedProviderExecutedIsRejected(t *testi
 // fromNativeRequest fails the turn with an error part instead of crashing.
 func TestTSReplay_QuestionCallbackPanicFailsTurn(t *testing.T) {
 	started := make(chan *bridgetest.Turn, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn }})
 	t.Cleanup(srv.Close)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "test-acp"
 		s.AskUserQuestions = &AskUserQuestionsSettings{
 			RequestMethod: "test/ask",
@@ -1206,7 +1192,6 @@ func TestTSReplay_QuestionCallbackPanicFailsTurn(t *testing.T) {
 func TestLifecycleStateAuthenticationProfileValidatedLikeZod(t *testing.T) {
 	sandbox := replaySandbox(t, "tok")
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "auth-profile-acp"
 	}))
 	if err != nil {
@@ -1259,14 +1244,16 @@ func TestLifecycleStateNestedNullsRejectedLikeZod(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := h.(harness.LifecycleStateValidator)
-	const br = `"bridge":{"port":1,"token":"t","lastSeenEventId":0`
+	const br = `"bridge":{"port":1,"privateKey":"t","lastSeenEventId":0`
 	if err := v.ValidateLifecycleStateData(json.RawMessage(`{"agentIdentity":"i",` + br + `}}`)); err != nil {
 		t.Fatalf("valid state rejected: %v", err)
 	}
 	bad := []string{
-		`{"agentIdentity":"i","bridge":{"port":1,"token":null,"lastSeenEventId":0}}`,
-		`{"agentIdentity":"i","bridge":{"port":null,"token":"t","lastSeenEventId":0}}`,
-		`{"agentIdentity":"i","bridge":{"port":1,"token":"t","lastSeenEventId":null}}`,
+		`{"agentIdentity":"i","bridge":{"port":1,"privateKey":null,"lastSeenEventId":0}}`,
+		`{"agentIdentity":"i","bridge":{"port":null,"privateKey":"t","lastSeenEventId":0}}`,
+		`{"agentIdentity":"i","bridge":{"port":1,"privateKey":"t","lastSeenEventId":null}}`,
+		// TS c849d37dac: legacy token-based coordinates are rejected.
+		`{"agentIdentity":"i","bridge":{"port":1,"token":"t","lastSeenEventId":0}}`,
 		`{"agentIdentity":"i",` + br + `,"sandboxId":null}}`,
 		`{"agentIdentity":"i",` + br + `,"stateDir":null}}`,
 		`{"agentIdentity":"i","authenticationProfile":{"digest":null,"providerKind":"direct"}}`,
@@ -1286,12 +1273,11 @@ func TestLifecycleStateNestedNullsRejectedLikeZod(t *testing.T) {
 func TestTSReplay_SubmitToolResultToNativeResponsePanicIsReturnedAsError(t *testing.T) {
 	started := make(chan *bridgetest.Turn, 1)
 	toolResults := make(chan map[string]any, 4)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart:      func(turn *bridgetest.Turn, _ map[string]any) { started <- turn },
 		OnToolResult: func(f map[string]any) { toolResults <- f }})
 	t.Cleanup(srv.Close)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.HarnessID = "test-acp"
 		s.AskUserQuestions = &AskUserQuestionsSettings{
 			RequestMethod: "test/ask",

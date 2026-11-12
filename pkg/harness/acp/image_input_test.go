@@ -62,7 +62,7 @@ func TestDoPromptTurnSendsImageBlocks(t *testing.T) {
 			"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}},
 		})
 	})
-	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	h, err := CreateACP(testSettings(func(*Settings) {}))
 	if err != nil {
 		t.Fatal(err)
 	}

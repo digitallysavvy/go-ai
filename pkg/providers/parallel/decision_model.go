@@ -203,7 +203,8 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	if opts.Reasoning != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "reasoning"})
 	}
-	if raw, ok := opts.ProviderOptions["parallel"].(map[string]interface{}); ok {
+	// Go-typed literals read like their JSON form (OVC-01).
+	if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["parallel"].(map[string]interface{}); ok {
 		keys := make([]string, 0, len(raw))
 		for k := range raw {
 			if k != "includeExcerpts" {

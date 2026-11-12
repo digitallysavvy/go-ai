@@ -136,7 +136,9 @@ func prepareQuiverAICall(opts *provider.GenerateOptions) (*provider.GenerateOpti
 		opts = &provider.GenerateOptions{}
 	}
 
-	raw, _ := opts.ProviderOptions["quiverai"].(map[string]interface{})
+	// Go-typed literals (the exported options struct, map[string]string)
+	// read like their JSON form (OVC-01).
+	raw, _ := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["quiverai"].(map[string]interface{})
 	var reasoningEffort, reasoningSummary string
 	if raw != nil {
 		if v, ok := raw["reasoningEffort"]; ok && v != nil {
@@ -231,11 +233,13 @@ func quiverAIStripReasoningText(messages []types.Message) []types.Message {
 // `part.providerOptions?.quiverai ?? part.providerMetadata?.quiverai`
 // (checked as a whole, not per-field).
 func quiverAIReasoningMetadata(rc types.ReasoningContent) map[string]interface{} {
-	metadata, ok := rc.ProviderOptions["quiverai"].(map[string]interface{})
-	if !ok {
-		metadata = decodeQuiverAIProviderMetadata(rc.ProviderMetadata)
+	// Typed part options read like their JSON form (OVC-01); TS `??`
+	// falls back only for a missing or null quiverai key.
+	if value, present := providerutils.NormalizeOptionsJSON(rc.ProviderOptions)["quiverai"]; present && value != nil {
+		metadata, _ := value.(map[string]interface{})
+		return metadata
 	}
-	return metadata
+	return decodeQuiverAIProviderMetadata(rc.ProviderMetadata)
 }
 
 // decodeQuiverAIProviderMetadata decodes the "quiverai" key out of a

@@ -31,7 +31,7 @@ func (s boundPortSandbox) Restricted() providerutils.SandboxSession { return s }
 func TestDoStartPersistsBoundBridgePort(t *testing.T) {
 	const token = "bound-port-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}

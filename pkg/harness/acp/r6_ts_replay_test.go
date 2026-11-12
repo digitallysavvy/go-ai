@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"reflect"
 	"strings"
@@ -94,7 +95,6 @@ func TestTSReplay_PermissionModeOnStartFrame(t *testing.T) {
 			turn.Emit(finishFrame())
 		})
 		h, _ := CreateACP(testSettings(func(s *Settings) {
-			s.MintBridgeToken = func(string) string { return "tok" }
 			s.PermissionModeMapping = pm
 		}))
 		sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv), PermissionMode: mode})
@@ -140,7 +140,7 @@ func newBasicSandbox(srv *bridgetest.Server) basicSandbox {
 // 'uses a basic sandbox session with explicit bridge settings' and
 // 'requires a sandbox id for custom bridge token minting'.
 func TestTSReplay_BasicSandboxSession(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	start := func(mut func(*Settings)) (harness.Session, error) {
 		h, err := CreateACP(testSettings(mut))
@@ -160,17 +160,11 @@ func TestTSReplay_BasicSandboxSession(t *testing.T) {
 	if !errors.As(err, &cu) || !strings.Contains(err.Error(), "explicit `portEndpoint`") {
 		t.Fatalf("missing portEndpoint: %v", err)
 	}
-	_, err = start(func(s *Settings) {
-		s.Port, s.PortEndpoint = 4319, endpoint
-		s.MintBridgeToken = func(id string) string { return id }
-	})
-	if !errors.As(err, &cu) || !strings.Contains(err.Error(), "does not expose an id") {
-		t.Fatalf("mintBridgeToken without id: %v", err)
-	}
-
+	// TS c849d37dac: mintBridgeToken is ignored, so a basic session with a
+	// callback no longer fails for its missing sandbox id.
 	sess, err := start(func(s *Settings) {
 		s.Port, s.PortEndpoint = 4319, endpoint
-		s.MintBridgeToken = nil
+		s.MintBridgeToken = func(id string) string { return id }
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +178,7 @@ func TestTSReplay_BasicSandboxSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := data["bridge"].(map[string]any)
-	if b["port"] != float64(4319) || b["token"] == "" || b["lastSeenEventId"] != float64(0) {
+	if b["port"] != float64(4319) || b["privateKey"] != bridgeauthkeys.Testing().PrivateKey || b["token"] != nil || b["lastSeenEventId"] != float64(0) {
 		t.Fatalf("bridge coords = %v", b)
 	}
 	if _, ok := b["sandboxId"]; ok {
@@ -194,7 +188,7 @@ func TestTSReplay_BasicSandboxSession(t *testing.T) {
 
 func startSession(t *testing.T, srv *bridgetest.Server) harness.Session {
 	t.Helper()
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	h, _ := CreateACP(testSettings(func(*Settings) {}))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv)})
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +214,7 @@ func TestTSReplay_CompactionUnsupported(t *testing.T) {
 func TestTSReplay_StopAndDestroyIdempotent(t *testing.T) {
 	var mu sync.Mutex
 	counts := map[string]int{}
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { turn.Emit(finishFrame()) },
 		OnFrame: func(ft string) { mu.Lock(); counts[ft]++; mu.Unlock() }})
 	t.Cleanup(srv.Close)
@@ -261,10 +255,9 @@ func TestTSReplay_StopAndDestroyIdempotent(t *testing.T) {
 // blocks are closed and the turn rejects with the abort reason.
 func TestTSReplay_CancelledTurnRejectsWhenConnectionFails(t *testing.T) {
 	started := make(chan *bridgetest.Turn, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn }})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn }})
 	t.Cleanup(srv.Close)
 	h, _ := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.Reconnect = bridge.ReconnectOptions{MaxElapsed: 300 * time.Millisecond, InitialDelay: 20 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	}))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv)})
@@ -353,7 +346,7 @@ func TestTSReplay_SuspendAndAttachContinuation(t *testing.T) {
 			var mu sync.Mutex
 			var starts, resumes int
 			started := make(chan *bridgetest.Turn, 2)
-			srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+			srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 				OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn },
 				OnFrame: func(ft string) {
 					mu.Lock()
@@ -367,7 +360,7 @@ func TestTSReplay_SuspendAndAttachContinuation(t *testing.T) {
 				}})
 			t.Cleanup(srv.Close)
 			sandbox := newFakeSandbox(srv)
-			h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+			h, _ := CreateACP(testSettings(func(*Settings) {}))
 			ctx := context.Background()
 			first, err := h.DoStart(ctx, harness.StartOptions{SessionID: "session-1", SessionWorkDir: "/workspace/user-project", SandboxSession: sandbox})
 			if err != nil {

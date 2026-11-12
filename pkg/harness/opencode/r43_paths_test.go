@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -25,7 +26,7 @@ func (s *trailingSlashHomeSandbox) Restricted() providerutils.SandboxSession { r
 // TS builds the skills and bootstrap directories with path.posix.join and
 // path.posix.resolve, which normalize a HOME with a trailing slash.
 func TestR43SpawnPathsNormalizeHomeTrailingSlash(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := &trailingSlashHomeSandbox{newFakeSandbox(srv)}
 	h, err := CreateOpenCode()

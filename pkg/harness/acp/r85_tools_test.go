@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 )
 
 // r85toolsRunResolution runs one turn whose bridge sends the given
@@ -19,11 +20,10 @@ import (
 // host sent and the turn error.
 func r85toolsRunResolution(t *testing.T, resolver ResolveHostToolCallFunc, requests ...map[string]any) ([]map[string]any, []harness.StreamPart, error) {
 	t.Helper()
-	const token = "r85-resolve-token"
 	var mu sync.Mutex
 	var results []map[string]any
 	srv := bridgetest.NewServer(bridgetest.Options{
-		Token: token,
+		PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
 			for _, r := range requests {
 				turn.Emit(r)
@@ -43,7 +43,6 @@ func r85toolsRunResolution(t *testing.T, resolver ResolveHostToolCallFunc, reque
 	t.Cleanup(srv.Close)
 	h, err := CreateACP(testSettings(func(s *Settings) {
 		s.HarnessID = "codex-acp"
-		s.MintBridgeToken = func(string) string { return token }
 		s.ResolveHostToolCall = resolver
 	}))
 	if err != nil {

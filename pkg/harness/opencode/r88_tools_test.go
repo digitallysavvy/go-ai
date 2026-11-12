@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 )
 
 func r88toolsAwait(t *testing.T, c harness.PromptControl) {
@@ -31,7 +32,7 @@ func TestR88toolsOpenCodeReadableSkillRoots(t *testing.T) {
 		starts <- start
 		turn.Emit(finishPayload())
 	})
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestR88toolsOpenCodeHostDisconnectTimeout(t *testing.T) {
 		timeout time.Duration
 		want    string
 	}{{60 * time.Second, " --host-disconnect-timeout-ms '60000'"}, {0, ""}} {
-		srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+		srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 		t.Cleanup(srv.Close)
 		sandbox := newFakeSandbox(srv)
 		h, err := CreateOpenCode(Settings{HostDisconnectTimeout: tc.timeout})

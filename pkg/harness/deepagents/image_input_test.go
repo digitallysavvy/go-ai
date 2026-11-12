@@ -35,7 +35,7 @@ func promptStartWithSkills(t *testing.T, prompt harness.Prompt, skills []harness
 		})
 	})
 	sandbox := newFakeSandbox(srv)
-	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }})
+	h := CreateDeepAgents(Settings{})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "image-session", SessionWorkDir: "/vercel/sandbox/image-session", SandboxSession: sandbox,
 	})

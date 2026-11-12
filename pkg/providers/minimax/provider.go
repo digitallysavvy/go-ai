@@ -1,5 +1,5 @@
-// Package minimax implements the MiniMax provider's chat/language-model and
-// video-generation surfaces. It mirrors @ai-sdk/minimax at ai@7.0.113.
+// Package minimax implements the MiniMax provider's chat/language-model, image
+// (H3, TS c4c8523cc3) and video-generation surfaces. It mirrors @ai-sdk/minimax.
 //
 // MiniMax chat delegates to the Anthropic Messages protocol: TS
 // createMiniMax constructs an AnthropicLanguageModel directly against
@@ -52,6 +52,11 @@ type Provider struct {
 	// on the next request.
 	videoClient  *internalhttp.Client
 	videoBaseURL string
+
+	// imageClient serves the image API with the same per-request headers
+	// as video (TS getMediaHeaders).
+	imageClient  *internalhttp.Client
+	imageBaseURL string
 }
 
 // Config contains configuration for the MiniMax provider.
@@ -67,6 +72,10 @@ type Config struct {
 	// VideoBaseURL is the base URL for video generation API calls. Defaults
 	// to https://api.minimax.io.
 	VideoBaseURL string
+
+	// ImageBaseURL is the base URL for image generation and editing calls
+	// (TS imageBaseURL). Defaults to https://api.minimax.io/v1.
+	ImageBaseURL string
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string
@@ -122,6 +131,11 @@ func New(cfg Config) *Provider {
 	videoClient := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: videoBaseURL,
 	})
+	imageBaseURL := strings.TrimSuffix(cfg.ImageBaseURL, "/")
+	if imageBaseURL == "" {
+		imageBaseURL = DefaultImageBaseURL
+	}
+	imageClient := internalhttp.NewClient(internalhttp.Config{BaseURL: imageBaseURL})
 
 	return &Provider{
 		config:            cfg,
@@ -129,6 +143,8 @@ func New(cfg Config) *Provider {
 		anthropicConfig:   anthropicConfig,
 		videoClient:       videoClient,
 		videoBaseURL:      videoBaseURL,
+		imageClient:       imageClient,
+		imageBaseURL:      imageBaseURL,
 	}
 }
 
@@ -188,10 +204,15 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
-// ImageModel returns an error: MiniMax does not support image generation (TS
-// createMiniMax throws NoSuchModelError for imageModel).
+// ImageModel returns a MiniMax image generation or editing model, such as
+// ModelH3Image (TS provider.imageModel, c4c8523cc3).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
+	return newImageModel(p, modelID), nil
+}
+
+// Image is an alias for ImageModel (TS provider.image).
+func (p *Provider) Image(modelID string) (provider.ImageModel, error) {
+	return p.ImageModel(modelID)
 }
 
 // SpeechModel returns an error: MiniMax's chat surface does not support

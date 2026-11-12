@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -96,9 +97,8 @@ var _ harness.NetworkSandboxSession = (*e2eFakeSandbox)(nil)
 // configures), and a prompt turn streams a text delta back through the real
 // ACP session/channel machinery.
 func TestCreateCursor_E2ERoundTrip(t *testing.T) {
-	const token = "cursor-e2e-token"
 	srv := bridgetest.NewServer(bridgetest.Options{
-		Token: token,
+		PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 			turn.Emit(map[string]any{"type": "text-start", "id": "m"})
 			turn.Emit(map[string]any{"type": "text-delta", "id": "m", "delta": "hello from cursor"})
@@ -114,9 +114,8 @@ func TestCreateCursor_E2ERoundTrip(t *testing.T) {
 
 	port := 4319
 	h, err := CreateCursor(Settings{
-		Port:            &port,
-		PortEndpoint:    &harness.PortEndpoint{URL: "ws://" + sandbox.bridgeAddr + "/"},
-		MintBridgeToken: func(string) string { return token },
+		Port:         &port,
+		PortEndpoint: &harness.PortEndpoint{URL: "ws://" + sandbox.bridgeAddr + "/"},
 	})
 	if err != nil {
 		t.Fatalf("CreateCursor: %v", err)

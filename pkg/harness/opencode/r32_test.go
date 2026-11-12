@@ -72,7 +72,7 @@ func TestDoCompact_ErrorObjectKeepsWireKeyOrder(t *testing.T) {
 		turn.Emit(map[string]any{"type": "error", "error": json.RawMessage(`{"zeta":1,"alpha":2}`)})
 	})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}

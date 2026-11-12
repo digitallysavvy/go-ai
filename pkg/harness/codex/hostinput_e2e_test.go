@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/codex"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -16,7 +17,7 @@ import (
 // and then goes quiet: no `finish`, no close. The host must pause there
 // instead of hanging until the context ends (TS #23260).
 func TestAgent_PausesAtHostInputFinishStep(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
 		turn.Emit(map[string]any{"type": "tool-call", "toolCallId": "c1", "toolName": "lookup", "input": `{}`})
 		turn.Emit(map[string]any{
 			"type": "finish-step", "finishReason": map[string]any{"unified": "tool-calls", "raw": "host-input"},
@@ -27,7 +28,7 @@ func TestAgent_PausesAtHostInputFinishStep(t *testing.T) {
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	a, err := harness.NewAgent(harness.AgentSettings{
 		Harness:   h,
 		UserTools: map[string]types.Tool{"lookup": {Name: "lookup", Parameters: map[string]interface{}{"type": "object"}}},

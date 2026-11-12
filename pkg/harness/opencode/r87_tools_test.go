@@ -103,8 +103,7 @@ func TestR87toolsGitLabBrokeringOnStartupAndResume(t *testing.T) {
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateOpenCode(Settings{
-		MintBridgeToken: func(string) string { return token },
-		Provider:        "gitlab",
+		Provider: "gitlab",
 		Auth: harness.AuthEnvironment(map[string]string{
 			"GITLAB_TOKEN": "gitlab-secret", "GITLAB_INSTANCE_URL": "https://gitlab.example",
 		}),

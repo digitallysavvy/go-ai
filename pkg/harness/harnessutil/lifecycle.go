@@ -11,9 +11,11 @@ import (
 // ValidateLifecycleStateObject validates adapter lifecycle `data` the way the
 // TS adapters' zod `lifecycleStateSchema` does: the data must be an object
 // whose fields have the types dst declares, and live bridge coordinates (a
-// `bridge` object) must carry the required `port`, `token` and
-// `lastSeenEventId`. Empty data and JSON null are accepted. Unknown keys are
-// kept (loose objects), so dst only needs the known fields.
+// `bridge` object) must carry every key dst's bridge struct declares without
+// omitempty (the adapters' `port`, `privateKey` and `lastSeenEventId` since
+// TS c849d37dac, so legacy token-based state is rejected). Empty data and
+// JSON null are accepted. Unknown keys are kept (loose objects), so dst only
+// needs the known fields.
 func ValidateLifecycleStateObject(data json.RawMessage, dst any) error {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || string(trimmed) == "null" {
@@ -41,7 +43,7 @@ func ValidateLifecycleStateObject(data json.RawMessage, dst any) error {
 		if err := json.Unmarshal(raw, &coords); err != nil {
 			return fmt.Errorf("invalid lifecycle state data: bridge must be an object: %w", err)
 		}
-		for _, key := range []string{"port", "token", "lastSeenEventId"} {
+		for _, key := range requiredBridgeKeys(dst) {
 			if v, ok := coords[key]; !ok || string(bytes.TrimSpace(v)) == "null" {
 				return fmt.Errorf("invalid lifecycle state data: bridge.%s is required", key)
 			}
@@ -74,6 +76,41 @@ func RejectNullRecordValues(probe map[string]json.RawMessage, key string) error 
 		}
 	}
 	return nil
+}
+
+// requiredBridgeKeys lists the JSON keys without omitempty of the struct
+// behind dst's `bridge` field (the adapter's bridge coordinates schema). A
+// dst without one falls back to the coordinates every adapter requires.
+func requiredBridgeKeys(dst any) []string {
+	t := reflect.TypeOf(dst)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t != nil && t.Kind() == reflect.Struct {
+		for i := 0; i < t.NumField(); i++ {
+			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+			if name != "bridge" {
+				continue
+			}
+			bt := t.Field(i).Type
+			for bt.Kind() == reflect.Pointer {
+				bt = bt.Elem()
+			}
+			if bt.Kind() != reflect.Struct {
+				break
+			}
+			var keys []string
+			for j := 0; j < bt.NumField(); j++ {
+				name, opts, _ := strings.Cut(bt.Field(j).Tag.Get("json"), ",")
+				if name == "" || name == "-" || strings.Contains(","+opts+",", ",omitempty,") {
+					continue
+				}
+				keys = append(keys, name)
+			}
+			return keys
+		}
+	}
+	return []string{"port", "privateKey", "lastSeenEventId"}
 }
 
 // jsonFieldNames lists the JSON keys of the struct dst points to.

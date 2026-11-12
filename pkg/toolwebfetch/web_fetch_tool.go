@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -325,7 +324,7 @@ func validateURL(raw string) (string, *ErrorOutput) {
 		e := errorResult(raw, code, message, 0)
 		return "", &e
 	}
-	if utf8.RuneCountInString(raw) > maxURLLength {
+	if utf16Length(raw) > maxURLLength {
 		return invalid(errInvalidURL, fmt.Sprintf("The URL exceeds the maximum length of %d characters.", maxURLLength))
 	}
 	// The URL parser strips leading and trailing C0 controls and spaces.
@@ -401,7 +400,7 @@ func (w *webFetchTool) execute(ctx context.Context, rawURL string, offset int, m
 	}
 	doc := convertedDocument{
 		finalURL: result.finalURL, contentType: reported, title: title, content: content,
-		length: utf8.RuneCountInString(content),
+		length: utf16Length(content),
 	}
 	if doc.length > w.maxLength {
 		w.cacheSet(href, doc)
@@ -410,18 +409,23 @@ func (w *webFetchTool) execute(ctx context.Context, rawURL string, offset int, m
 }
 
 // sliceDocument returns characters [offset, offset+maxLength) of the content.
-// Offsets and lengths count Unicode code points, so a character is never split.
+// Offsets and lengths count UTF-16 code units, as JS string length and slice
+// do (tools-03); an end that would split a surrogate pair steps back one unit
+// (TS sliceDocument).
 func sliceDocument(rawURL string, doc convertedDocument, offset, maxLength int) DocumentOutput {
 	end := offset + maxLength
 	if end > doc.length || end < offset {
 		end = doc.length
+	}
+	if end < doc.length && end > 0 && utf16HighSurrogateAt(doc.content, end-1) {
+		end--
 	}
 	out := DocumentOutput{
 		Type: "document", URL: rawURL, FinalURL: doc.finalURL, ContentType: doc.contentType,
 		Title: doc.title, Offset: offset, TotalLength: doc.length,
 	}
 	if offset < doc.length {
-		out.Content = runeSlice(doc.content, offset, end)
+		out.Content = utf16Slice(doc.content, offset, end)
 	}
 	if offset < end && end < doc.length {
 		next := end
@@ -430,19 +434,59 @@ func sliceDocument(rawURL string, doc convertedDocument, offset, maxLength int) 
 	return out
 }
 
-// runeSlice returns the code points [from, to) of s.
-func runeSlice(s string, from, to int) string {
-	startByte, endByte := len(s), len(s)
-	i := 0
-	for pos := range s {
-		if i == from {
-			startByte = pos
+// utf16Length is JS string length: UTF-16 code units.
+func utf16Length(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r >= 0x10000 {
+			n++
 		}
-		if i == to {
-			endByte = pos
+	}
+	return n
+}
+
+// utf16HighSurrogateAt reports whether UTF-16 unit index of s is the high
+// half of a surrogate pair.
+func utf16HighSurrogateAt(s string, index int) bool {
+	pos := 0
+	for _, r := range s {
+		if pos == index {
+			return r >= 0x10000
+		}
+		if pos > index {
+			return false
+		}
+		pos++
+		if r >= 0x10000 {
+			pos++
+		}
+	}
+	return false
+}
+
+// utf16Slice returns the UTF-16 units [from, to) of s (JS slice). A pair cut
+// at either end is dropped whole, since UTF-8 cannot carry a lone half.
+func utf16Slice(s string, from, to int) string {
+	startByte, endByte := len(s), len(s)
+	pos := 0
+	started := false
+	for i, r := range s {
+		if !started && pos >= from {
+			startByte, started = i, true
+		}
+		if pos >= to {
+			endByte = i
 			break
 		}
-		i++
+		pos++
+		if r >= 0x10000 {
+			pos++
+		}
+		if pos > to {
+			endByte = i
+			break
+		}
 	}
 	if startByte > endByte {
 		return ""

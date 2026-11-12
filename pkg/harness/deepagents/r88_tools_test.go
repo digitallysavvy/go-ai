@@ -8,13 +8,14 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 )
 
 // r88toolsSpawn starts a session against a fake sandbox and returns the
 // first spawn command.
 func r88toolsSpawn(t *testing.T, settings Settings) string {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	sess, err := CreateDeepAgents(settings).DoStart(context.Background(), harness.StartOptions{
@@ -81,7 +82,7 @@ func TestR88toolsDeepAgentsReadableSkillRoots(t *testing.T) {
 			turn.Emit(map[string]any{"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
 				"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}}})
 		})
-		sess, err := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }}).DoStart(context.Background(), harness.StartOptions{
+		sess, err := CreateDeepAgents(Settings{}).DoStart(context.Background(), harness.StartOptions{
 			SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/deepagents-test-session", SandboxSession: newFakeSandbox(srv),
 		})
 		if err != nil {

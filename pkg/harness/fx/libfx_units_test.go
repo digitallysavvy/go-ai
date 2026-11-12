@@ -194,7 +194,7 @@ func TestLifecycleDataSchemas(t *testing.T) {
 			t.Errorf("%s accepted", data)
 		}
 	}
-	legacy := json.RawMessage(`{"agentIdentity":"fx","acpSessionId":"s1","bridge":{"port":1,"token":"t","lastSeenEventId":0}}`)
+	legacy := json.RawMessage(`{"agentIdentity":"fx","acpSessionId":"s1","bridge":{"port":1,"privateKey":"k","lastSeenEventId":0}}`)
 	var inc *IncompatibleStateError
 	if err := h.ValidateLifecycleStateData(legacy); !errors.As(err, &inc) || !strings.Contains(err.Error(), "RuntimeSandboxACP") {
 		t.Errorf("legacy under libfx = %v", err)

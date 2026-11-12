@@ -23,7 +23,7 @@ func TestAgent_PausesAtHostInputFinishStep(t *testing.T) {
 			"harnessMetadata": map[string]any{"deepagents": map[string]any{"inferredStep": true}},
 		})
 	})
-	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h := CreateDeepAgents(Settings{StartupTimeout: 2 * time.Second})
 	a, err := harness.NewAgent(harness.AgentSettings{
 		Harness:   h,
 		UserTools: map[string]types.Tool{"lookup": {Name: "lookup", Parameters: map[string]interface{}{"type": "object"}}},

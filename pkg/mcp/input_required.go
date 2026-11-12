@@ -111,9 +111,9 @@ func parseInputRequiredResult(raw json.RawMessage) (inputRequiredResult, error) 
 // elicitation request whose params carry a string message, an optional
 // mode "form" and a requestedSchema object with type "object".
 func parseFormElicitation(params json.RawMessage) (ElicitationRequest, error) {
-	req, err := parseElicitationRequestParams(params)
-	if err != nil {
-		return req, err
+	req, invalid, _ := parseElicitationRequestParams(params)
+	if invalid != "" {
+		return req, errors.New(invalid)
 	}
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(params, &fields)
@@ -284,8 +284,13 @@ func (c *MCPClient) inputRequiredRound(ctx context.Context, method string, param
 		if err != nil {
 			return false, wrap(err)
 		}
-		if answer.Action != "accept" && answer.Action != "decline" && answer.Action != "cancel" {
-			return false, wrap(errors.New(`invalid elicit result: action must be "accept", "decline", or "cancel"`))
+		// TS ElicitResultSchema.parse(answer): the ZodError message.
+		encoded, encErr := json.Marshal(answer)
+		if encErr != nil {
+			return false, wrap(encErr)
+		}
+		if message, _ := zodIssues(elicitResultSchema, encoded); message != "" {
+			return false, wrap(errors.New(message))
 		}
 		responses[key] = answer
 	}

@@ -104,7 +104,7 @@ func TestDoStart_ResumeAcceptsV052AuthenticationDigest(t *testing.T) {
 	auth := &Authentication{MethodID: "m", Meta: map[string]any{"A_B": 1, "AB": 2, "a": 3}}
 	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" }; s.Authentication = auth }))
+	h, _ := CreateACP(testSettings(func(s *Settings) { s.Authentication = auth }))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SessionWorkDir: "/w", SandboxSession: sandbox})
 	if err != nil {
 		t.Fatal(err)

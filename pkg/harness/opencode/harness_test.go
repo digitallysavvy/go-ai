@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -92,7 +93,7 @@ func newFakeSandbox(srv *bridgetest.Server) *fakeSandbox {
 
 func newServer(t *testing.T, token string, onStart func(*bridgetest.Turn, map[string]any)) *bridgetest.Server {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: token, OnStart: onStart})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: onStart})
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -190,8 +191,7 @@ func TestDoStartFullRoundTrip(t *testing.T) {
 	})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateOpenCode(Settings{
-		MintBridgeToken: func(string) string { return token },
-		Provider:        "anthropic", ReasoningVariant: "high",
+		Provider: "anthropic", ReasoningVariant: "high",
 		OpenCodeConfig: map[string]any{"theme": "dark"},
 	})
 	if err != nil {
@@ -294,7 +294,7 @@ func TestDoPromptTurn_DrainsAbortedTurnBeforeNextTurn(t *testing.T) {
 		mu.Unlock()
 	})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestDoPromptTurn_DrainsAbortedTurnBeforeNextTurn(t *testing.T) {
 
 func TestDoStartSpawnsBridgeWithSkillsDirFlag(t *testing.T) {
 	// The default random token is unknown to the test, so the server accepts any.
-	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateOpenCode()
@@ -509,7 +509,6 @@ func TestDoStartBrokersCredentials(t *testing.T) {
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateOpenCode(Settings{
-		MintBridgeToken: func(string) string { return token },
 		Auth: harness.AuthEnvironment(map[string]string{
 			"ANTHROPIC_API_KEY": "anthropic-secret", "ANTHROPIC_BASE_URL": "https://anthropic.example",
 		}),
@@ -550,12 +549,12 @@ func TestDoStartResumeFromContinueReplaysWhenLogTerminal(t *testing.T) {
 	sandbox.files["/home/vercel-sandbox/.ai-sdk-harness/.agent-runs/test-session/bridge/event-log.ndjson"] =
 		`{"type":"text-delta","id":"m","delta":"x"}` + "\n" +
 			`{"type":"finish","finishReason":{"unified":"stop"},"totalUsage":{"inputTokens":{},"outputTokens":{}}}`
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }, StartupTimeout: 300 * time.Millisecond})
+	h, err := CreateOpenCode(Settings{StartupTimeout: 300 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
 	continueFrom, err := harness.NewContinueTurnState("opencode", map[string]any{
-		"bridge": map[string]any{"port": 9, "token": "stale-token-not-matching", "lastSeenEventId": 3},
+		"bridge": map[string]any{"port": 9, "privateKey": "stale-key-not-matching", "lastSeenEventId": 3},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -627,7 +626,6 @@ func TestDoPromptTurn_SendsMCPServersInStartFrame(t *testing.T) {
 	})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateOpenCode(Settings{
-		MintBridgeToken: func(string) string { return token },
 		MCPServers: map[string]any{
 			"my-server": map[string]any{"type": "http", "url": "https://example.com/mcp"},
 		},
@@ -693,7 +691,7 @@ func TestDoCompact_SendsCompactOperation(t *testing.T) {
 		})
 	})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +734,7 @@ func TestDoCompact_RejectsCustomInstructions(t *testing.T) {
 	const token = "compact-reject-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -763,7 +761,7 @@ func TestDoPromptTurn_SubmitUserMessage(t *testing.T) {
 	const token = "submit-user-message-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,9 +793,9 @@ func TestDoPromptTurn_SubmitUserMessage(t *testing.T) {
 
 // Port of TS "passes connection settings to spawned and attached bridge
 // channels" (opencode-harness.test.ts:292): DoDetach returns bridge
-// coordinates carrying the caller-minted token, and reattaching (a second
-// DoStart with that ResumeSessionState) must reuse the same token — no
-// second MintBridgeToken call — and the identical `reconnect` config, and a
+// coordinates carrying the session's bridge private key, and reattaching (a
+// second DoStart with that ResumeSessionState) must reuse the same key and
+// the identical `reconnect` config, and a
 // custom PortEndpoint's headers must travel to both the initial and the
 // reattach WebSocket handshake.
 func TestDoStart_ReusesTokenHeadersAndReconnectAcrossAttach(t *testing.T) {
@@ -805,17 +803,9 @@ func TestDoStart_ReusesTokenHeadersAndReconnectAcrossAttach(t *testing.T) {
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
 
-	var mintMu sync.Mutex
-	var mintCalls []string
 	reconnect := bridge.ReconnectOptions{MaxElapsed: 120 * time.Second, InitialDelay: 100 * time.Millisecond, MaxDelay: 5 * time.Second}
 	traceHeaders := map[string]string{"E2B-Traffic-Access-Token": "traffic-token"}
 	h, err := CreateOpenCode(Settings{
-		MintBridgeToken: func(sandboxID string) string {
-			mintMu.Lock()
-			mintCalls = append(mintCalls, sandboxID)
-			mintMu.Unlock()
-			return token
-		},
 		Reconnect:    reconnect,
 		PortEndpoint: &harness.PortEndpoint{URL: "ws://" + srv.Addr() + "/?existing=value", Headers: traceHeaders},
 	})
@@ -830,12 +820,6 @@ func TestDoStart_ReusesTokenHeadersAndReconnectAcrossAttach(t *testing.T) {
 		t.Fatalf("DoStart (initial): %v", err)
 	}
 
-	mintMu.Lock()
-	if len(mintCalls) != 1 || mintCalls[0] != "test-sandbox" {
-		t.Fatalf("mintCalls after initial start = %v, want exactly [test-sandbox]", mintCalls)
-	}
-	mintMu.Unlock()
-
 	initialChannel := sess.(*session).p.channel
 	if got := initialChannel.ReconnectOptions(); got != reconnect {
 		t.Fatalf("initial channel reconnect options = %+v, want %+v", got, reconnect)
@@ -849,8 +833,8 @@ func TestDoStart_ReusesTokenHeadersAndReconnectAcrossAttach(t *testing.T) {
 	if err := json.Unmarshal(resumeFrom.Data, &resumeData); err != nil {
 		t.Fatalf("unmarshal resumeFrom.Data: %v", err)
 	}
-	if resumeData.Bridge == nil || resumeData.Bridge.Token != token {
-		t.Fatalf("resumeFrom bridge coords = %+v, want token %q", resumeData.Bridge, token)
+	if resumeData.Bridge == nil || resumeData.Bridge.PrivateKey != bridgeauthkeys.Testing().PrivateKey {
+		t.Fatalf("resumeFrom bridge coords = %+v, want the session private key", resumeData.Bridge)
 	}
 
 	attachedSess, err := h.DoStart(context.Background(), harness.StartOptions{
@@ -860,12 +844,6 @@ func TestDoStart_ReusesTokenHeadersAndReconnectAcrossAttach(t *testing.T) {
 		t.Fatalf("DoStart (reattach): %v", err)
 	}
 	t.Cleanup(func() { _ = attachedSess.DoDestroy(context.Background()) })
-
-	mintMu.Lock()
-	defer mintMu.Unlock()
-	if len(mintCalls) != 1 {
-		t.Fatalf("mintCalls after reattach = %v, want still exactly 1 (the token must be reused, not re-minted)", mintCalls)
-	}
 
 	attachedChannel := attachedSess.(*session).p.channel
 	if got := attachedChannel.ReconnectOptions(); got != reconnect {
@@ -937,7 +915,6 @@ func TestDoStart_PropagatesNativeConfigThroughPromptsCompactionAndResumedSession
 	openCodeConfig := map[string]any{"agent": map[string]any{"general": map[string]any{"model": "openai/gpt-5.4-mini"}}}
 	headers := map[string]string{"x-tenant": "acme"}
 	h, err := CreateOpenCode(Settings{
-		MintBridgeToken:  func(string) string { return token },
 		OpenCodeConfig:   openCodeConfig,
 		ReasoningVariant: "high",
 		MCPServers:       mcpServers,
@@ -1064,7 +1041,7 @@ func TestDoCompact_ReturnsWhenContextEnds(t *testing.T) {
 	const token = "compact-ctx-token"
 	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}

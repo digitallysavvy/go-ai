@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 )
 
 func finishFrame() map[string]any {
@@ -27,7 +28,7 @@ func TestDoPromptTurn_StartCarriesDebugConfig(t *testing.T) {
 		turn.Emit(finishFrame())
 	})
 	sandbox := newFakeSandbox(srv)
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	h, _ := CreateACP(testSettings(func(*Settings) {}))
 	enabled := true
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SessionWorkDir: "/w", SandboxSession: sandbox,
@@ -59,7 +60,7 @@ func TestDoPromptTurn_StartCarriesDebugConfig(t *testing.T) {
 func TestDoPromptTurn_AbortSettlesOnBridgeFinish(t *testing.T) {
 	aborted := make(chan struct{}, 1)
 	started := make(chan *bridgetest.Turn, 2)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn },
 		OnFrame: func(ft string) {
 			if ft == "abort" {
@@ -68,7 +69,7 @@ func TestDoPromptTurn_AbortSettlesOnBridgeFinish(t *testing.T) {
 		}})
 	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	h, _ := CreateACP(testSettings(func(*Settings) {}))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SessionWorkDir: "/w", SandboxSession: sandbox})
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +126,7 @@ func TestDoPromptTurn_AbortSettlesOnBridgeFinish(t *testing.T) {
 func TestDoPromptTurn_PreAbortedRejects(t *testing.T) {
 	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) { t.Error("start must not be sent") })
 	sandbox := newFakeSandbox(srv)
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	h, _ := CreateACP(testSettings(func(*Settings) {}))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SessionWorkDir: "/w", SandboxSession: sandbox})
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +146,7 @@ func TestDoPromptTurn_PreAbortedRejects(t *testing.T) {
 func TestDoStart_ResumeWithoutAuthenticationProfileRejected(t *testing.T) {
 	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
-	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	h, _ := CreateACP(testSettings(func(*Settings) {}))
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SessionWorkDir: "/w", SandboxSession: sandbox})
 	if err != nil {
 		t.Fatal(err)

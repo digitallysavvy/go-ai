@@ -31,7 +31,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-github-copilot"
-	ClientAppVersion = "1.0.75" // TS VERSION: the bridge manifest's source version
+	ClientAppVersion = "1.0.78" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "github-copilot"
 
 	githubOAuthTokenBodyLength         = 36
@@ -77,7 +77,12 @@ type Settings struct {
 	// suspended turn is exempt (TS a54f0fd8c6).
 	HostDisconnectTimeoutMS *int
 	Reconnect               *bridge.ReconnectOptions
-	MintBridgeToken         harness.MintBridgeTokenCallback
+	// MintBridgeToken is forwarded to the ACP adapter, which ignores it and
+	// logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
+	MintBridgeToken harness.MintBridgeTokenCallback
 }
 
 // GatewayModel is the AI Gateway model the Copilot CLI runs with in BYOK mode
@@ -179,7 +184,7 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		},
 		ResolveHostToolCall: ResolveHostToolCall,
 		PortEndpoint:        settings.PortEndpoint,
-		MintBridgeToken:     settings.MintBridgeToken,
+		MintBridgeToken:     settings.MintBridgeToken, //nolint:staticcheck // forwarded so ACP warns, as TS
 	}
 	if settings.Port != nil {
 		cfg.Port = *settings.Port
