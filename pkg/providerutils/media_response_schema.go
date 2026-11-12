@@ -3,7 +3,6 @@ package providerutils
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
@@ -143,16 +142,13 @@ const (
 	SchemaFalTranscr MediaResponseSchema = "fal-transcription"
 )
 
-// zIntNonneg is z.number().int().nonnegative().
+// zIntNonneg is z.number().int().nonnegative(): zod 4 int() is a safe
+// integer (zodlite.Int), so an integer above 2^53-1 fails too.
 func zIntNonneg(v interface{}, present bool, path []interface{}) *zodlite.Issue {
-	f, ok := v.(float64)
-	if !ok {
-		return zodlite.Invalid("number", v, present, path)
+	if bad := zodlite.Int(v, present, path); bad != nil {
+		return bad
 	}
-	if f != math.Trunc(f) {
-		return &zodlite.Issue{Path: path, Code: "invalid_type", Expected: "int", Message: "Invalid input: expected int, received number"}
-	}
-	if f < 0 {
+	if f := v.(float64); f < 0 {
 		return &zodlite.Issue{Path: path, Code: "too_small", Message: "Too small: expected number to be >=0"}
 	}
 	return nil
