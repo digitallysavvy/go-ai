@@ -114,6 +114,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		if noResp, ok := internalhttp.NoResponseError(err); ok {
 			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
 		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped
+		}
 		return nil, providererrors.NewSchemaProviderError("together", err, togetherErrorSchema)
 	}
 

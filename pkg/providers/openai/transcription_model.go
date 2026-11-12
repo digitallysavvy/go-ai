@@ -84,6 +84,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		if noResp, ok := internalhttp.NoResponseError(err); ok {
 			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
 		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped
+		}
 		if pe, ok := m.provider.apiError(m.Provider(), err); ok {
 			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 		}
@@ -605,6 +608,13 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 	if !ok {
 		return fail("Invalid input: expected object")
 	}
+	// TS z.object(...): every field is .optional() (not nullish), so a
+	// present null fails like any other wrong type.
+	for _, key := range []string{"include", "language", "languages", "keywords", "prompt", "temperature", "timestampGranularities", "responseFormat", "chunkingStrategy", "streaming"} {
+		if v, present := opts[key]; present && v == nil {
+			return fail("Invalid input: expected a value, received null at " + key)
+		}
+	}
 	isStringList := func(v interface{}) bool {
 		switch list := v.(type) {
 		case []string:
@@ -675,6 +685,11 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 				return fail(`Invalid input at chunkingStrategy`)
 			}
 		case map[string]interface{}:
+			for _, k := range []string{"threshold", "prefixPaddingMs", "silenceDurationMs"} {
+				if t, present := cs[k]; present && t == nil {
+					return fail("Invalid input: expected number, received null at chunkingStrategy." + k)
+				}
+			}
 			if t, _ := cs["type"].(string); t != "server_vad" {
 				return fail(`Invalid input: expected "server_vad" at chunkingStrategy.type`)
 			}
@@ -700,6 +715,11 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 		st, ok := v.(map[string]interface{})
 		if !ok {
 			return fail("Invalid input: expected object at streaming")
+		}
+		for _, k := range []string{"delay", "include"} {
+			if d, present := st[k]; present && d == nil {
+				return fail("Invalid input: expected a value, received null at streaming." + k)
+			}
 		}
 		if d, ok := st["delay"]; ok && d != nil {
 			s, _ := d.(string)

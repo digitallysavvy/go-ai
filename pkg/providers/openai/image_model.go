@@ -205,6 +205,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		if noResp, ok := internalhttp.NoResponseError(err); ok {
 			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
 		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped
+		}
 		if pe, ok := m.provider.apiError(m.Provider(), err); ok {
 			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
 		}
@@ -373,6 +376,9 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 		}
 		if noResp, ok := internalhttp.NoResponseError(err); ok {
 			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped
 		}
 		if pe, ok := m.provider.apiError(m.Provider(), err); ok {
 			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure

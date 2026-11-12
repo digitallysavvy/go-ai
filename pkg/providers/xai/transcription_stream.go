@@ -411,17 +411,20 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 				continue
 			}
 
-			var raw xaiStreamingTranscriptionEvent
-			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+			// TS safeParseJSON: any JSON value is a message and is reported
+			// as a raw part; only an object with known fields is an event.
+			var rawValue interface{}
+			if jsonErr := json.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
-
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
+			}
+			var raw xaiStreamingTranscriptionEvent
+			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+				continue
 			}
 
 			switch raw.Type {

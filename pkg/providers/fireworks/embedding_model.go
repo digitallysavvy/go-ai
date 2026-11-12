@@ -114,6 +114,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		if noResp, ok := internalhttp.NoResponseError(err); ok {
 			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
 		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped
+		}
 		// TS OpenAICompatibleEmbeddingModel with fireworksErrorStructure: a
 		// body outside the schema gives the status text and no data.
 		if parsed := parseFireworksProviderError(err); parsed != nil {

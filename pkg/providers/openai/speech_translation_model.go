@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -79,9 +78,7 @@ func buildOpenAISpeechTranslationSession(targetLanguage string) map[string]inter
 // translations URL, mirroring TS `this.config.url({ path:
 // '/realtime/translations?model=...' })`.
 func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
-	wsBase := strings.Replace(baseURL, "https://", "wss://", 1)
-	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
-	return wsBase + "/realtime/translations?model=" + encodeURIComponent(modelID)
+	return openAIToWebSocketURL(baseURL + "/realtime/translations?model=" + encodeURIComponent(modelID))
 }
 
 // encodeURIComponent is ECMAScript encodeURIComponent (TS encodes the model

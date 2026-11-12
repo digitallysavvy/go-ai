@@ -390,6 +390,19 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			continue
 		}
 
+		// TS system messages carry their content as one string (the core
+		// prompt joins it), so the system text parts are joined here too
+		// rather than sent as a content-part array.
+		if msg.Role == types.RoleSystem {
+			systemMsg := map[string]interface{}{"role": string(msg.Role), "content": assistantTextContent(msg.Content)}
+			if hasName {
+				systemMsg["name"] = name
+			}
+			spreadCompatMetadata(systemMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
+			result = append(result, systemMsg)
+			continue
+		}
+
 		// ── All other roles ───────────────────────────────────────────────────
 		openAIMsg := map[string]interface{}{
 			"role": string(msg.Role),
@@ -916,7 +929,11 @@ func openAIToolResultContentParts(p types.ToolResultContent, refs *providerRefRe
 func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *providerRefResolver) (map[string]interface{}, bool) {
 	switch b := block.(type) {
 	case types.TextContentBlock:
-		return map[string]interface{}{"type": "text", "text": b.Text}, true
+		// TS convertToOpenAICompatibleContentPart spreads each part's
+		// providerOptions.openaiCompatible metadata.
+		part := map[string]interface{}{"type": "text", "text": b.Text}
+		spreadCompatMetadata(part, b.ProviderOptions, true)
+		return part, true
 	case types.FileContentBlock:
 		fc := types.FileContent{
 			MediaType:       firstNonEmpty(b.MediaType, b.FileData.MediaType),
@@ -935,6 +952,7 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *
 			part = openAIFileContentPartResolving(fc, true, refs)
 		}
 		withDefaultPDFFilename(part, "document.pdf")
+		spreadCompatMetadata(part, b.ProviderOptions, true)
 		return part, true
 	case types.ImageContentBlock:
 		img := types.FileContent{
@@ -942,10 +960,12 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *
 			Data:            b.Data,
 			ProviderOptions: b.ProviderOptions,
 		}
-		if part := strictToolFilePart(img, refs); part != nil {
-			return part, true
+		part := strictToolFilePart(img, refs)
+		if part == nil {
+			part = openAIFileContentPartResolving(img, true, refs)
 		}
-		return openAIFileContentPartResolving(img, true, refs), true
+		spreadCompatMetadata(part, b.ProviderOptions, true)
+		return part, true
 	default:
 		if refs != nil && refs.strict && block != nil && block.ToolResultContentType() == "custom" {
 			refs.fail(&providererrors.UnsupportedFunctionalityError{Functionality: "custom tool content parts"})

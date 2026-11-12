@@ -737,7 +737,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		argsJSON := []byte(responsesFunctionCallArguments(tc.Arguments, tc.RawArguments))
 		namespace := ""
 		var async *bool
-		if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
+		if openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(tc.ProviderMetadata[providerName]); ok {
 			if rawNS, ok := openaiMeta["namespace"].(string); ok {
 				namespace = rawNS
 			}
@@ -789,7 +789,7 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 	// the comment in convertAssistantItems).
 	namespace := ""
 	var async *bool
-	if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
+	if openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(tc.ProviderMetadata[providerName]); ok {
 		if rawNS, ok := openaiMeta["namespace"].(string); ok {
 			namespace = rawNS
 		}
@@ -1075,7 +1075,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 	if opts.CustomToolNames[tc.ToolName] || opts.CustomToolNames[toolName] {
 		input := customToolCallInputText(tc)
 		var async *bool
-		if openaiMeta, ok := tc.ProviderMetadata[openAIProviderOptionsName(opts)].(map[string]interface{}); ok {
+		if openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(tc.ProviderMetadata[openAIProviderOptionsName(opts)]); ok {
 			if rawAsync, ok := openaiMeta["async"].(bool); ok {
 				async = &rawAsync
 			}

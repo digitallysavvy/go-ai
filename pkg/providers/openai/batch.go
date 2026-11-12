@@ -245,12 +245,14 @@ func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4Operatio
 
 // DoListBatches lists batches (`GET /batches`).
 func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOptions) (*provider.BatchV4ListResult, error) {
-	query := map[string]string{}
+	// TS url.searchParams.set('limit') then set('after')
+	// (openai-batch.ts:385-390): insertion order on the wire.
+	query := internalhttp.NewSearchParams()
 	if opts.Limit != nil {
-		query["limit"] = strconv.Itoa(*opts.Limit)
+		query.Set("limit", strconv.Itoa(*opts.Limit))
 	}
 	if opts.Cursor != "" {
-		query["after"] = opts.Cursor
+		query.Set("after", opts.Cursor)
 	}
 
 	var resp openAIBatchListResponseWire
@@ -258,7 +260,7 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatchList),
 		Method:           http.MethodGet,
 		Path:             "/batches",
-		Query:            query,
+		SearchParams:     query,
 		Headers:          opts.Headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
