@@ -214,10 +214,10 @@ func r81streamWaitNext(t *testing.T, cancel func(), next func() (string, error))
 	}
 	ch := make(chan res, 1)
 	go func() {
-		d, err := next()
+		d, err := r81streamWaitingNext(next)
 		ch <- res{d, err}
 	}()
-	time.Sleep(2 * time.Millisecond)
+	r81streamWaitBlocked(t)
 	cancel()
 	select {
 	case r := <-ch:
@@ -226,6 +226,45 @@ func r81streamWaitNext(t *testing.T, cancel func(), next func() (string, error))
 		t.Fatal("Next did not return after the cancellation")
 		return "", nil
 	}
+}
+
+// r81streamWaitingNext calls next; its frame name marks the reader's
+// goroutine for r81streamWaitBlocked.
+//
+//go:noinline
+func r81streamWaitingNext(next func() (string, error)) (string, error) {
+	return next()
+}
+
+// r81streamWaitBlocked waits until both the reader goroutine (inside
+// Next) and the pipe's provider read (a r81streamLate* Next waiting for its
+// ctx) are parked, so the cancellation reaches a waiting reader of a running
+// pipe, as in TS where doStream has started before the caller can abort. A
+// fixed 2ms sleep raced both goroutines' start under load (round 93: one
+// failure in 20 -race runs, five with the machine loaded).
+func r81streamWaitBlocked(t *testing.T) {
+	t.Helper()
+	parked := func(stacks []string, marker string) bool {
+		for _, g := range stacks {
+			header, _, _ := strings.Cut(g, "\n")
+			if strings.Contains(g, marker) && !strings.Contains(header, "[running]") &&
+				!strings.Contains(header, "[runnable]") && !strings.Contains(header, "[sleep]") {
+				return true
+			}
+		}
+		return false
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	buf := make([]byte, 1<<20)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buf, true)
+		stacks := strings.Split(string(buf[:n]), "\n\n")
+		if parked(stacks, "r81streamWaitingNext") && parked(stacks, ".(*r81streamLate") {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the reader and the provider read never both blocked")
 }
 
 // r81streamTranscriptionRun starts a transcription over the late provider
