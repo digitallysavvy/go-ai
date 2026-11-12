@@ -1356,7 +1356,7 @@ func legacyRecordSpanError(span trace.Span, err error) {
 		span.SetStatus(codes.Error, "")
 		return
 	}
-	span.RecordError(err)
+	recordSpanException(span, err)
 	span.SetStatus(codes.Error, err.Error())
 }
 
