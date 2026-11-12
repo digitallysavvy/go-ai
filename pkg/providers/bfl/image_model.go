@@ -569,6 +569,10 @@ func extractBFLProviderOptions(providerOptions map[string]interface{}) map[strin
 	}
 	for key, value := range raw {
 		if mapped, ok := mappings[key]; ok {
+			// TS sends the zod z.url() output for webhookUrl.
+			if s, isString := value.(string); isString && key == "webhookUrl" {
+				value = providerutils.ZodURLValue(s)
+			}
 			out[mapped] = value
 			continue
 		}
@@ -616,7 +620,9 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 	// webhook-shaped object (no polling_url). The task is then polled at the
 	// documented get_result endpoint of the configured base URL, and a
 	// transient "Task not found" counts as pending.
-	pollURL := createResp.PollingURL
+	// TS bflSubmitSchema polling_url is z.url().nullish(): the zod output
+	// (JS-trimmed, tab / LF / CR removed) is polled.
+	pollURL := providerutils.ZodURLValue(createResp.PollingURL)
 	allowTaskNotFound := pollURL == ""
 	if allowTaskNotFound {
 		pollURL = m.provider.baseURL() + "/get_result"

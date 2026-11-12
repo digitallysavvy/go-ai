@@ -4,8 +4,12 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 type r92integBFLDialTimeout struct{}
@@ -44,4 +48,67 @@ func TestR92integPollAndDownloadNetworkFailureIsConnectError(t *testing.T) {
 	check("poll", err)
 	_, _, err = m.downloadImage(context.Background(), "https://delivery.example.com/x.png", nil)
 	check("download", err)
+}
+
+// TestR92integWebhookURLIsZodOutput (cr-r92-carry-to-provc-applied): TS
+// sends the z.url() output of webhookUrl, JS-trimmed without tab, LF and CR
+// (black-forest-labs-image-model-options.ts webhookUrl: z.url()).
+func TestR92integWebhookURLIsZodOutput(t *testing.T) {
+	out := extractBFLProviderOptions(map[string]interface{}{"blackForestLabs": map[string]interface{}{"webhookUrl": " https://x.dev/ho\tok\n"}})
+	if out["webhook_url"] != "https://x.dev/hook" {
+		t.Errorf("webhook_url = %q", out["webhook_url"])
+	}
+}
+
+// TestR92integPollingURLIsZodOutput: TS bflSubmitSchema polling_url is
+// z.url().nullish() and bflVideoSubmitSchema polling_url z.url(), so the
+// poll goes to the zod output, not the raw string.
+func TestR92integPollingURLIsZodOutput(t *testing.T) {
+	old := downloadTransport
+	downloadTransport = func() http.RoundTripper { return http.DefaultTransport }
+	t.Cleanup(func() { downloadTransport = old })
+	var mu sync.Mutex
+	var polled []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/flux-pro":
+			_, _ = w.Write([]byte(`{"id":"r1","polling_url":" http://` + r.Host + `/poll\n"}`))
+		case "/flux-3-video":
+			_, _ = w.Write([]byte(`{"id":"v1","polling_url":" https://api.bfl.ai/v1/get_result\r\n"}`))
+		case "/poll":
+			mu.Lock()
+			polled = append(polled, r.URL.RequestURI())
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"status":"Ready","result":{"sample":"http://` + r.Host + `/img.png"}}`))
+		case "/img.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("png"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	_, err := NewImageModel(p, "flux-pro").DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:          "x",
+		ProviderOptions: map[string]interface{}{"blackForestLabs": map[string]interface{}{"pollIntervalMillis": 1}},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	mu.Lock()
+	got := strings.Join(polled, ",")
+	mu.Unlock()
+	if got != "/poll?id=r1" {
+		t.Errorf("polled %q, want /poll?id=r1", got)
+	}
+
+	start, err := NewVideoModel(p, VideoModelFlux3Video).DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "x"}})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	if !strings.Contains(string(start.Operation), `"pollingUrl":"https://api.bfl.ai/v1/get_result"`) {
+		t.Errorf("operation = %s", start.Operation)
+	}
 }

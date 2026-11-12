@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"net/url"
-	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 )
 
@@ -159,13 +158,14 @@ func zIntNonneg(v interface{}, present bool, path []interface{}) *zodlite.Issue 
 	return nil
 }
 
-// zURLStr is z.string().url(): a string `new URL()` accepts.
+// zURLStr is z.string().url(): zod 4 $ZodURL checks the JS-trimmed string
+// with the WHATWG URL parser (URL.canParse).
 func zURLStr(v interface{}, present bool, path []interface{}) *zodlite.Issue {
 	str, ok := v.(string)
 	if !ok {
 		return zodlite.Invalid("string", v, present, path)
 	}
-	if u, err := url.Parse(str); err != nil || u.Scheme == "" || (u.Host == "" && u.Opaque == "" && !strings.HasPrefix(str, u.Scheme+":/")) {
+	if _, err := urlnorm.Parse(JSTrim(str)); err != nil {
 		return &zodlite.Issue{Path: path, Code: "invalid_format", Message: "Invalid URL"}
 	}
 	return nil

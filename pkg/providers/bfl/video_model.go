@@ -510,7 +510,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	operation, _ := json.Marshal(bflVideoOperation{
 		RequestID:  submit.ID,
-		PollingURL: submit.PollingURL,
+		PollingURL: providerutils.ZodURLValue(submit.PollingURL), // TS bflVideoSubmitSchema polling_url: z.url() output
 		Cost:       submit.Cost,
 		InputMP:    submit.InputMP,
 		OutputMP:   submit.OutputMP,

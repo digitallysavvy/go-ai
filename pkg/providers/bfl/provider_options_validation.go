@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net/url"
 	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -192,12 +192,13 @@ func validateBFLVideoOptions(providerOptions map[string]interface{}) error {
 	return err
 }
 
-// bflURLNode is z.url().
+// bflURLNode is z.url(): zod 4 $ZodURL checks the JS-trimmed value with the
+// WHATWG URL parser (URL.canParse); its output is ZodURLValue.
 func bflURLNode(v interface{}, present bool, path []interface{}) *zodlite.Issue {
 	if bad := zodlite.String(v, present, path); bad != nil {
 		return bad
 	}
-	if u, err := url.Parse(v.(string)); err != nil || u.Scheme == "" || (u.Host == "" && u.Opaque == "") {
+	if _, err := urlnorm.Parse(providerutils.JSTrim(v.(string))); err != nil {
 		return &zodlite.Issue{Path: path, Code: "invalid_format", Message: "Invalid URL"}
 	}
 	return nil
