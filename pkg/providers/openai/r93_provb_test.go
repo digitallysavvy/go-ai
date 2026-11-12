@@ -377,3 +377,20 @@ func TestR93provbLiveContextAppendNullChannel(t *testing.T) {
 		t.Fatal("null channel accepted")
 	}
 }
+
+// TS transcription options: z.number() rejects NaN, and .int() requires a
+// safe integer (zod 4).
+func TestR93provbTranscriptionNumberChecks(t *testing.T) {
+	for _, opts := range []map[string]interface{}{
+		{"temperature": math.NaN()},
+		{"chunkingStrategy": map[string]interface{}{"type": "server_vad", "threshold": math.NaN()}},
+		{"chunkingStrategy": map[string]interface{}{"type": "server_vad", "prefixPaddingMs": float64(1 << 60)}},
+	} {
+		if err := validateTranscriptionProviderOptions(map[string]interface{}{"openai": opts}); err == nil {
+			t.Errorf("%v accepted", opts)
+		}
+	}
+	if err := validateTranscriptionProviderOptions(map[string]interface{}{"openai": map[string]interface{}{"chunkingStrategy": map[string]interface{}{"type": "server_vad", "prefixPaddingMs": 300}}}); err != nil {
+		t.Errorf("300 rejected: %v", err)
+	}
+}

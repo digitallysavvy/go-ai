@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"regexp"
 	"time"
@@ -626,7 +627,7 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 	}
 	if v, ok := opts["temperature"]; ok && v != nil {
 		f, isNum := speechSpeedOption(v)
-		if !isNum {
+		if !isNum || math.IsNaN(f) { // z.number() rejects NaN
 			return fail("Invalid input: expected number at temperature")
 		}
 		if f < 0 || f > 1 {
@@ -678,14 +679,15 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 			}
 			if t, ok := cs["threshold"]; ok && t != nil {
 				f, isNum := speechSpeedOption(t)
-				if !isNum || f < 0 || f > 1 {
+				if !isNum || math.IsNaN(f) || f < 0 || f > 1 {
 					return fail("Invalid input: expected number between 0 and 1 at chunkingStrategy.threshold")
 				}
 			}
 			for _, k := range []string{"prefixPaddingMs", "silenceDurationMs"} {
 				if t, ok := cs[k]; ok && t != nil {
 					f, isNum := speechSpeedOption(t)
-					if !isNum || f < 0 || f != float64(int64(f)) {
+					// z.number().int(): a safe integer (zod 4).
+					if !isNum || f < 0 || f > 9007199254740991 || f != math.Trunc(f) {
 						return fail("Invalid input: expected non-negative integer at chunkingStrategy." + k)
 					}
 				}
