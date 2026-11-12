@@ -627,10 +627,10 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 	if allowTaskNotFound {
 		pollURL = m.provider.baseURL() + "/get_result"
 	}
-	if strings.HasPrefix(pollURL, "http://") || strings.HasPrefix(pollURL, "https://") {
-		if withID, err := ensurePollingURLHasID(pollURL, createResp.ID); err == nil {
-			pollURL = withID
-		}
+	// TS: new URL(pollUrl), searchParams.set('id') when it has none, and the
+	// poll goes to url.toString() (the WHATWG href).
+	if withID, err := ensurePollingURLHasID(pollURL, createResp.ID); err == nil {
+		pollURL = withID
 	}
 	taskNotFoundErr := func() error {
 		return fmt.Errorf("Black Forest Labs task %s was not found via get_result before timing out", createResp.ID) //nolint:staticcheck // matches TS SDK's exact error text
@@ -805,10 +805,10 @@ func isBFLTaskNotFoundError(err error) bool {
 // redirect protection, so a malicious or compromised poll URL could reach an
 // internal address (e.g. the cloud metadata endpoint).
 func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers map[string]string) ([]byte, error) {
+	// pollURL is absolute (the z.url() polling_url or the get_result
+	// fallback); a non-http(s) scheme fails the URL check below, like TS
+	// getFromApi validateUrl.
 	resolvedURL := pollURL
-	if !strings.HasPrefix(pollURL, "http://") && !strings.HasPrefix(pollURL, "https://") {
-		resolvedURL = m.provider.baseURL() + "/" + strings.TrimLeft(pollURL, "/") // base already withoutTrailingSlash
-	}
 	baseURL := m.provider.baseURL()
 	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 	opts := fileutil.DefaultDownloadOptions()
@@ -889,6 +889,9 @@ func (m *ImageModel) convertResponse(ctx context.Context, result bflResult, crea
 	if result.Result.Sample == "" {
 		return nil, fmt.Errorf("no image URL in result")
 	}
+	// TS bflPollSchema result.sample is z.url(): the zod output (JS-trimmed,
+	// tab / LF / CR removed) is the image URL.
+	result.Result.Sample = providerutils.ZodURLValue(result.Result.Sample)
 
 	// Download image from URL
 	imageData, responseHeaders, err := m.downloadImage(ctx, result.Result.Sample, headers)

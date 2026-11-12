@@ -17,11 +17,11 @@ func TestImagePollErrorUsesReplicateFailedResponseHandler(t *testing.T) {
 	m := &ImageModel{}
 	dl := &providererrors.DownloadError{StatusCode: 404, Body: []byte(`{"detail":"Not found"}`)}
 	var perr *providererrors.ProviderError
-	if err := m.handlePollError(dl); !errors.As(err, &perr) || perr.Message != "Not found" || perr.StatusCode != 404 {
+	if err := m.handlePollError(context.Background(), dl); !errors.As(err, &perr) || perr.Message != "Not found" || perr.StatusCode != 404 {
 		t.Fatalf("got %v", err)
 	}
 	dl = &providererrors.DownloadError{StatusCode: 502, Body: []byte(`<html>`)}
-	if err := m.handlePollError(dl); !errors.As(err, &perr) || perr.Message != "Bad Gateway" {
+	if err := m.handlePollError(context.Background(), dl); !errors.As(err, &perr) || perr.Message != "Bad Gateway" {
 		t.Fatalf("got %v", err)
 	}
 }
