@@ -538,7 +538,13 @@ type falVideoStatusResponse struct {
 // as z.number(), so 1280.5 or 1e21 must not fail the decode.
 func falNumber(f float64) interface{} {
 	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
-		return int(f)
+		// int keeps the v0.5.2 metadata type; a whole value outside the
+		// platform int range (a fal seed above 2^31-1 on 32-bit builds) is an
+		// int64 instead of a corrupted int.
+		if f >= math.MinInt && f <= math.MaxInt {
+			return int(f)
+		}
+		return int64(f)
 	}
 	return f
 }
@@ -551,6 +557,8 @@ func falNumberPtr(f *float64) interface{} {
 	}
 	switch n := falNumber(*f).(type) {
 	case int:
+		return &n
+	case int64:
 		return &n
 	default:
 		return f

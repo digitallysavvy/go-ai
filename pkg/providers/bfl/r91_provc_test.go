@@ -193,3 +193,25 @@ func TestR91provcVideoHeadersAndBodyOrder(t *testing.T) {
 		t.Errorf("body = %s\nwant %s", body, want)
 	}
 }
+
+// TestR91provcSizeDimensionKeepsLargeValues (provc-03): a whole number above
+// the 32-bit int range keeps its value (an int64 there), as the TS number does.
+func TestR91provcSizeDimensionKeepsLargeValues(t *testing.T) {
+	for _, f := range []float64{3851223452, -3851223452, 1024} {
+		var got float64
+		switch v := sizeDimension(f).(type) {
+		case int:
+			got = float64(v)
+		case int64:
+			got = float64(v)
+		default:
+			t.Fatalf("sizeDimension(%v) = %T", f, v)
+		}
+		if got != f {
+			t.Errorf("sizeDimension(%v) = %v", f, got)
+		}
+	}
+	if _, ok := sizeDimension(1024).(int); !ok {
+		t.Error("an in-range value must stay an int (v0.5.2 type)")
+	}
+}

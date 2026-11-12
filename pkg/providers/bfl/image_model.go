@@ -303,7 +303,12 @@ func bflJSONNumber(f float64) interface{} {
 // anything else (NaN, fractions) as a float the integer schema rejects.
 func sizeDimension(f float64) interface{} {
 	if f == math.Trunc(f) && !math.IsInf(f, 0) && math.Abs(f) < 1e15 {
-		return int(f)
+		// int keeps the v0.5.2 type; outside the platform int range (32-bit
+		// builds) the value is an int64 instead of a corrupted int.
+		if f >= math.MinInt && f <= math.MaxInt {
+			return int(f)
+		}
+		return int64(f)
 	}
 	return f
 }
