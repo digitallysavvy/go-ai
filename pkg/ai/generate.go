@@ -2989,7 +2989,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			if toolTimeout := callbacks.timeout.GetToolTimeout(call.ToolName); toolTimeout != nil {
 				// TS mergeAbortSignals(abortSignal, toolMs): the tool's
 				// signal aborts with AbortSignal.timeout's TimeoutError.
-				execCtx, execCancel = context.WithTimeoutCause(toolCtx, *toolTimeout, &TimeoutError{Reason: TimeoutReasonTool, Err: context.DeadlineExceeded, Timeout: *toolTimeout})
+				execCtx, execCancel = context.WithTimeoutCause(toolCtx, *toolTimeout, NewToolTimeoutError(*toolTimeout, context.DeadlineExceeded))
 			}
 
 			toolStarted := time.Now()
@@ -3023,7 +3023,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// operation was aborted due to timeout").
 			if callbacks.timeout != nil && timedOut && toolErr != nil {
 				if toolTimeout := callbacks.timeout.GetToolTimeout(call.ToolName); toolTimeout != nil {
-					toolErr = &TimeoutError{Reason: TimeoutReasonTool, Err: toolErr, Timeout: *toolTimeout}
+					toolErr = NewToolTimeoutError(*toolTimeout, toolErr)
 				}
 			}
 			// No Title: TS builds a client tool's tool-result and tool-error without it.

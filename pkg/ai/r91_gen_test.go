@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -144,3 +145,43 @@ func TestR91genOutputParseErrorResponse(t *testing.T) {
 }
 
 func r91genInt64(v int64) *int64 { return &v }
+
+// r91genTimeoutTool blocks until its context ends and fails with the cause.
+func r91genTimeoutTool() types.Tool {
+	return types.Tool{Name: "slow", Parameters: map[string]interface{}{"type": "object"}, Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		<-ctx.Done()
+		return nil, context.Cause(ctx)
+	}}
+}
+
+// core1-A01 (gen tool sites): a configured tool timeout is the TS
+// mergeAbortSignals(abortSignal, toolMs) reason even when it is zero
+// (AbortSignal.timeout(0)), so the tool error is built with
+// NewToolTimeoutError, which marks the duration as set.
+func TestR91genZeroToolTimeoutMarkedSet(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(_ context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{
+			Content:      []types.ContentPart{types.ToolCallContent{ToolCallID: "c", ToolName: "slow", Input: `{}`}},
+			ToolCalls:    []types.ToolCall{{ID: "c", ToolName: "slow", Arguments: map[string]interface{}{}, RawArguments: `{}`}},
+			FinishReason: types.FinishReasonToolCalls,
+		}, nil
+	}}
+	zero := time.Duration(0)
+	res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", Tools: []types.Tool{r91genTimeoutTool()}, Timeout: &TimeoutConfig{ToolMs: &zero}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolErr error
+	for _, part := range res.Steps[0].Content {
+		if e, ok := part.(types.ToolErrorContent); ok {
+			toolErr = e.Err
+		}
+	}
+	var te *TimeoutError
+	if !errors.As(toolErr, &te) {
+		t.Fatalf("tool error = %v, want *TimeoutError", toolErr)
+	}
+	if te.Reason != TimeoutReasonTool || !te.timeoutSet {
+		t.Fatalf("tool timeout error = %+v, want a tool timeout with its duration set", te)
+	}
+}
