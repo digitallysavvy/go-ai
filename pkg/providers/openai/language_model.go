@@ -565,21 +565,23 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	if msgs, ok := body["messages"].([]map[string]interface{}); ok {
 		kept := make([]map[string]interface{}, 0, len(msgs))
-		removed := false
+		removed := 0
 		for _, mm := range msgs {
 			if mm["role"] == "system" {
 				switch systemRole {
 				case "developer":
 					mm["role"] = "developer"
 				case "remove":
-					removed = true
+					removed++
 					continue
 				}
 			}
 			kept = append(kept, mm)
 		}
 		body["messages"] = kept
-		if removed {
+		// TS warns once per removed system message
+		// (convert-to-openai-chat-messages.ts:115-120).
+		for i := 0; i < removed; i++ {
 			warnings = append(warnings, types.Warning{
 				Type:    "other",
 				Message: "system messages are removed for this model",
@@ -857,6 +859,17 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
 	// prompt_cache_options.
 	if promptCacheOptions, ok := openaiOpts["promptCacheOptions"]; ok && promptCacheOptions != nil {
+		// zod's object schema drops unknown keys before TS sends it
+		// (openai-chat-language-model-options.ts:180-185: mode, ttl).
+		if m, isMap := promptCacheOptions.(map[string]interface{}); isMap {
+			known := make(map[string]interface{}, len(m))
+			for _, k := range []string{"mode", "ttl"} {
+				if v, has := m[k]; has {
+					known[k] = v
+				}
+			}
+			promptCacheOptions = known
+		}
 		body["prompt_cache_options"] = promptCacheOptions
 	}
 	// serviceTier (17d3436/4cd4548): flex requires supportsFlexProcessing;

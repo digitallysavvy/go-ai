@@ -222,3 +222,36 @@ func TestR91provbResponsesAcceptedGrace(t *testing.T) {
 		t.Fatalf("chunks = %v", kinds)
 	}
 }
+
+// PB-09 (provb1-02) and PB-15 (provb1-08): chat sends only the schema keys
+// of promptCacheOptions (zod strips the rest), and systemMessageMode
+// "remove" warns once per removed system message.
+func TestR91provbChatPromptCacheKeysAndRemoveWarnings(t *testing.T) {
+	m, _ := New(Config{APIKey: "k"}).ChatModel("gpt-4o")
+	lm := m.(*LanguageModel)
+	sys := func(s string) types.Message {
+		return types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: s}}}
+	}
+	body, warnings, err := lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{sys("a"), sys("b"), {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{
+			"systemMessageMode":  "remove",
+			"promptCacheOptions": map[string]interface{}{"mode": "explicit", "ttl": "30m", "prewarm": true, "extra": 1},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := body["prompt_cache_options"]; !reflect.DeepEqual(got, map[string]interface{}{"mode": "explicit", "ttl": "30m"}) {
+		t.Fatalf("prompt_cache_options = %v", got)
+	}
+	n := 0
+	for _, w := range warnings {
+		if w.Message == "system messages are removed for this model" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("remove warnings = %d, want 2 (%v)", n, warnings)
+	}
+}
