@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -218,4 +220,89 @@ func TestR91carrySpeechTranscriptionFieldsFiltered(t *testing.T) {
 	if fin.Text != "" || len(fin.Segments) != 0 || len(fin.Words) != 0 || fin.Response == nil || fin.Response.Body != nil || fin.Response.ModelID != "m" || fin.Language != "en" {
 		t.Fatalf("finish = %+v", fin)
 	}
+}
+
+func r91carryCredentialTools(sample string) []types.Tool {
+	policy := func() map[string]interface{} {
+		return map[string]interface{}{"type": "allowlist", "allowedDomains": []interface{}{"example.com"},
+			"domainSecrets": []interface{}{map[string]interface{}{"domain": "example.com", "name": "EXAMPLE", "value": sample}}}
+	}
+	return []types.Tool{
+		{Name: "remote", Type: "provider", ProviderID: "openai.mcp", ProviderArgs: map[string]interface{}{
+			"serverLabel": "example", "serverUrl": "https://example.com/mcp", "authorization": sample,
+			"headers": map[string]interface{}{"X-Example": sample}}},
+		{Name: "python", Type: "provider", ProviderID: "openai.code_interpreter", ProviderArgs: map[string]interface{}{"container": map[string]interface{}{"networkPolicy": policy()}}},
+		{Name: "terminal", Type: "provider", ProviderID: "openai.shell", ProviderArgs: map[string]interface{}{"environment": map[string]interface{}{"type": "containerAuto", "networkPolicy": policy()}}},
+	}
+}
+
+// TS a41a6cf7b3 (security): both integrations redact OpenAI provider tool
+// credentials in their tool definition attributes themselves, also for an
+// event handed to them without the Fire* dispatch, and never touch the
+// caller's tools.
+func TestR91carryIntegrationsRedactProviderToolCredentials(t *testing.T) {
+	const sample = "sample-value"
+	tools := r91carryCredentialTools(sample)
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	rec, tp := r91carryTracer(t)
+	lot := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("l")})
+	ctx := lot.OnStart(context.Background(), TelemetryStartEvent{CallID: "a", OperationType: "ai.generateText", Settings: settings})
+	sctx := lot.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "a", OperationType: "ai.generateText", Settings: settings, StepTools: tools})
+	lot.OnStepEnd(sctx, TelemetryStepEndEvent{CallID: "a", OperationType: "ai.generateText", Settings: settings})
+	lot.OnEnd(ctx, TelemetryFinishEvent{CallID: "a", OperationType: "ai.generateText", Settings: settings})
+
+	ot := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("g")})
+	gctx := ot.OnStart(context.Background(), TelemetryStartEvent{CallID: "b", OperationType: "ai.generateText", Settings: settings, ModelProvider: "openai", ModelID: "m"})
+	gsctx := ot.OnStepStart(gctx, TelemetryStepStartEvent{CallID: "b", OperationType: "ai.generateText", Settings: settings})
+	cctx := ot.OnLanguageModelCallStart(gsctx, LanguageModelCallStartEvent{CallID: "b", Settings: settings, ModelProvider: "openai", ModelID: "m", Tools: tools})
+	ot.OnLanguageModelCallEnd(cctx, LanguageModelCallEndEvent{CallID: "b", Settings: settings})
+	ot.OnStepEnd(gsctx, TelemetryStepEndEvent{CallID: "b", OperationType: "ai.generateText", Settings: settings})
+	ot.OnEnd(gctx, TelemetryFinishEvent{CallID: "b", OperationType: "ai.generateText", Settings: settings})
+
+	// Prebuilt definitions (the WorkflowAgent form) are redacted too.
+	var prebuilt []*jsonorder.Object
+	for _, tool := range tools {
+		prebuilt = append(prebuilt, languageModelToolDefinitionUnredacted(tool))
+	}
+	gctx = ot.OnStart(context.Background(), TelemetryStartEvent{CallID: "c", OperationType: "ai.generateText", Settings: settings, ModelProvider: "openai", ModelID: "m"})
+	gsctx = ot.OnStepStart(gctx, TelemetryStepStartEvent{CallID: "c", OperationType: "ai.generateText", Settings: settings})
+	cctx = ot.OnLanguageModelCallStart(gsctx, LanguageModelCallStartEvent{CallID: "c", Settings: settings, ModelProvider: "openai", ModelID: "m", Tools: prebuilt})
+	ot.OnLanguageModelCallEnd(cctx, LanguageModelCallEndEvent{CallID: "c", Settings: settings})
+	ot.OnStepEnd(gsctx, TelemetryStepEndEvent{CallID: "c", OperationType: "ai.generateText", Settings: settings})
+	ot.OnEnd(gctx, TelemetryFinishEvent{CallID: "c", OperationType: "ai.generateText", Settings: settings})
+	if !strings.Contains(prebuilt[0].String(), sample) {
+		t.Fatal("caller definitions modified")
+	}
+
+	var found []string
+	for _, s := range rec.Ended() {
+		for _, kv := range s.Attributes() {
+			if kv.Key == "ai.prompt.tools" || kv.Key == "gen_ai.tool.definitions" {
+				found = append(found, kv.Value.Emit())
+			}
+		}
+	}
+	if len(found) != 3 {
+		t.Fatalf("tool definition attributes = %d, want 3: %v", len(found), found)
+	}
+	for _, v := range found {
+		if strings.Contains(v, sample) || !strings.Contains(v, "[redacted]") || !strings.Contains(v, "X-Example") || !strings.Contains(v, "example.com") {
+			t.Fatalf("definitions not redacted as TS: %s", v)
+		}
+	}
+	if fmt.Sprint(tools) != fmt.Sprint(r91carryCredentialTools(sample)) {
+		t.Fatal("caller tools modified")
+	}
+}
+
+// languageModelToolDefinitionUnredacted is the {type, name, id, args}
+// definition with the real args, as a caller could prebuild it.
+func languageModelToolDefinitionUnredacted(tool types.Tool) *jsonorder.Object {
+	def := jsonorder.New()
+	def.Set("type", "provider")
+	def.Set("name", tool.Name)
+	def.Set("id", tool.ProviderID)
+	def.Set("args", tool.ProviderArgs)
+	return def
 }

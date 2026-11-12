@@ -866,12 +866,25 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 // Definitions already built as []*jsonorder.Object are used as given, an
 // empty list included. WorkflowAgent passes its step tools like
 // generateText/streamText (TS 4d6d830c14 toLanguageModelToolDefinitions).
+//
+// Provider credentials are redacted in the definitions here too (TS
+// a41a6cf7b3 redactToolDefinition, open-telemetry.ts 1089), prebuilt
+// definitions included: FilterEvent already redacted them for events that
+// came through the Fire* dispatch, and this keeps the span free of them for
+// an event handed to the integration directly.
 func toolDefinitionsList(tools interface{}, harness bool) []*jsonorder.Object {
 	if defs, ok := tools.([]*jsonorder.Object); ok {
 		if defs == nil {
 			return nil
 		}
-		return append(make([]*jsonorder.Object, 0, len(defs)), defs...)
+		out := make([]*jsonorder.Object, 0, len(defs))
+		for _, def := range defs {
+			if r, changed := redactOrderedToolDefinition(def); changed {
+				def = r
+			}
+			out = append(out, def)
+		}
+		return out
 	}
 	list, ok := tools.([]types.Tool)
 	if !ok || len(list) == 0 {
@@ -883,7 +896,7 @@ func toolDefinitionsList(tools interface{}, harness bool) []*jsonorder.Object {
 			defs = append(defs, harnessToolDefinition(t))
 			continue
 		}
-		defs = append(defs, languageModelToolDefinition(t))
+		defs = append(defs, languageModelToolDefinition(t)) // redacts provider args
 	}
 	return defs
 }
