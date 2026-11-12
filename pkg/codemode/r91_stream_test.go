@@ -149,3 +149,46 @@ func TestR91streamCodeModeValidateInput(t *testing.T) {
 		t.Fatalf("non-object err = %v", err)
 	}
 }
+
+// core3-05 (TS interrupt-continuation.ts:83-110 getCodeModeInterrupt scans
+// toolResults / content parts' output): a Go generate result carries tool
+// results as structs (ToolResults []types.ToolResult, Content
+// []types.ContentPart) whose output is Result (JSON key "result").
+func TestR91streamGetCodeModeInterruptGoResults(t *testing.T) {
+	var calls atomic.Int32
+	pending, err := RunCodeMode(context.Background(), RunInput{
+		JS:                   "return await tools.act({});",
+		Tools:                ToolSet{"act": r91streamActTool(&calls, true)},
+		ToolExecutionOptions: &types.ToolExecutionOptions{ToolCallID: "outer"},
+		Options:              &Options{Approval: &ApprovalOptions{Mode: ApprovalModeInterrupt}},
+	})
+	interrupt, ok := pending.(*Interrupt)
+	if err != nil || !ok {
+		t.Fatalf("pending = %#v, %v", pending, err)
+	}
+	type r91streamGenResult struct {
+		Content     []types.ContentPart
+		ToolResults []types.ToolResult
+	}
+	for name, result := range map[string]interface{}{
+		"struct ToolResults":       &r91streamGenResult{ToolResults: []types.ToolResult{{ToolName: "code", Result: interrupt}}},
+		"struct value ToolResults": r91streamGenResult{ToolResults: []types.ToolResult{{ToolName: "code", Result: *interrupt}}},
+		"struct Content result":    &r91streamGenResult{Content: []types.ContentPart{types.ToolResultContent{ToolName: "code", Result: interrupt}}},
+		"struct Content output": &r91streamGenResult{Content: []types.ContentPart{&types.ToolResultContent{ToolName: "code",
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: interrupt}}}},
+		"map result key":  map[string]interface{}{"toolResults": []interface{}{map[string]interface{}{"result": interrupt}}},
+		"map typed slice": map[string]interface{}{"toolResults": []map[string]interface{}{{"output": interrupt}}},
+		"map output (TS)": map[string]interface{}{"toolResults": []interface{}{map[string]interface{}{"output": interrupt}}},
+	} {
+		got := GetCodeModeInterrupt(result)
+		if got == nil || got.InterruptID != interrupt.InterruptID {
+			t.Errorf("%s: GetCodeModeInterrupt = %#v", name, got)
+		}
+		if u := UnwrapCodeModeResult(result); u.Status != "interrupted" {
+			t.Errorf("%s: UnwrapCodeModeResult status = %q", name, u.Status)
+		}
+	}
+	if got := GetCodeModeInterrupt(&r91streamGenResult{ToolResults: []types.ToolResult{{Result: "done"}}}); got != nil {
+		t.Fatalf("completed result read as interrupt: %#v", got)
+	}
+}

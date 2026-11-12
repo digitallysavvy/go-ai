@@ -332,31 +332,110 @@ func ContinueCodeModeInterrupt(ctx context.Context, interrupt Interrupt, resolut
 // shapes RunCodeMode's return value and typical tool-result batches take.
 // Returns nil if none is found. Mirrors TypeScript's
 // experimental_getCodeModeInterrupt.
+//
+// A Go generate result carries its tool results as structs, so a value
+// (or pointer) with exported ToolResults / Content slice fields is read
+// too, and a tool result's output is its Output (a *ToolResultOutput, the
+// TS output) or, failing that, its Result (types.ToolResult /
+// ToolResultContent.Result, JSON key "result"), the Go field the TS output
+// maps to.
 func GetCodeModeInterrupt(result interface{}, security ...ContinuationSecurityOptions) *Interrupt {
 	sec := resolveSecurityArg(security)
 	if interrupt := readInterruptValue(result, sec); interrupt != nil {
 		return interrupt
 	}
-	record, ok := result.(map[string]interface{})
-	if !ok {
-		return nil
-	}
 	for _, key := range []string{"toolResults", "content"} {
-		parts, ok := record[key].([]interface{})
+		parts, ok := interruptResultParts(result, key)
 		if !ok {
 			continue
 		}
 		for _, part := range parts {
-			partRecord, ok := part.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if interrupt := readInterruptValue(partRecord["output"], sec); interrupt != nil {
+			if interrupt := readToolResultPartInterrupt(part, sec); interrupt != nil {
 				return interrupt
 			}
 		}
 	}
 	return nil
+}
+
+// interruptResultParts returns result's toolResults / content entries: the
+// map key's array, or the exported ToolResults / Content slice field of a
+// struct (or pointer to one).
+func interruptResultParts(result interface{}, key string) ([]interface{}, bool) {
+	if record, ok := result.(map[string]interface{}); ok {
+		return sliceElements(record[key])
+	}
+	rv := reflect.ValueOf(result)
+	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() || rv.Kind() != reflect.Struct {
+		return nil, false
+	}
+	field := "ToolResults"
+	if key == "content" {
+		field = "Content"
+	}
+	f := rv.FieldByName(field)
+	if !f.IsValid() || !f.CanInterface() {
+		return nil, false
+	}
+	return sliceElements(f.Interface())
+}
+
+// sliceElements returns the elements of any slice or array value.
+func sliceElements(v interface{}) ([]interface{}, bool) {
+	if parts, ok := v.([]interface{}); ok {
+		return parts, true
+	}
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() || (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) {
+		return nil, false
+	}
+	parts := make([]interface{}, rv.Len())
+	for i := range parts {
+		parts[i] = rv.Index(i).Interface()
+	}
+	return parts, true
+}
+
+// readToolResultPartInterrupt reads the interrupt from one tool result
+// entry's output (TS part.output).
+func readToolResultPartInterrupt(part interface{}, sec ContinuationSecurityOptions) *Interrupt {
+	switch p := part.(type) {
+	case map[string]interface{}:
+		if interrupt := readInterruptValue(p["output"], sec); interrupt != nil {
+			return interrupt
+		}
+		return readInterruptValue(p["result"], sec)
+	case types.ToolResult:
+		return readInterruptValue(p.Result, sec)
+	case *types.ToolResult:
+		if p == nil {
+			return nil
+		}
+		return readInterruptValue(p.Result, sec)
+	case types.ToolResultContent:
+		return readToolResultContentInterrupt(&p, sec)
+	case *types.ToolResultContent:
+		if p == nil {
+			return nil
+		}
+		return readToolResultContentInterrupt(p, sec)
+	}
+	return nil
+}
+
+func readToolResultContentInterrupt(p *types.ToolResultContent, sec ContinuationSecurityOptions) *Interrupt {
+	if p.Output != nil {
+		if interrupt := readInterruptValue(map[string]interface{}{"type": string(p.Output.Type), "value": p.Output.Value}, sec); interrupt != nil {
+			return interrupt
+		}
+	}
+	return readInterruptValue(p.Result, sec)
 }
 
 func readInterruptValue(value interface{}, security ContinuationSecurityOptions) *Interrupt {
