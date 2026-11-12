@@ -252,6 +252,13 @@ var wireSuites = map[string]tsfixture.WireSuite{
 			cfg.SupportsStructuredOutputs = &v
 		}
 		return deepseek.New(cfg), nil
+	}, Language: func(p provider.Provider, cls, id string) (provider.LanguageModel, error) {
+		// deepseek__responses.jsonl.gz: TS f9d43bdaa7
+		// deepseek-responses-language-model.test.ts.
+		if cls == "DeepSeekResponsesLanguageModel" {
+			return p.(*deepseek.Provider).ResponsesModel(id)
+		}
+		return p.LanguageModel(id)
 	}},
 	"moonshotai": {LanguageResults: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return moonshot.New(moonshot.Config{APIKey: k, BaseURL: b, Headers: h})

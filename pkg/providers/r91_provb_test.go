@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
-	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -593,22 +592,6 @@ func TestR91provbHuggingFaceEmptyText(t *testing.T) {
 	if !strings.Contains(body, `{"type":"output_text","text":""}`) {
 		t.Fatalf("body = %s", body)
 	}
-}
-
-// TS f9d43bdaa7: the DeepSeek Responses model tests
-// (deepseek-responses-language-model.test.ts, recorded at 2ebc78b654) replay
-// through deepseek.ResponsesModel. The recording is kept apart from
-// deepseek.jsonl.gz so the chat suite stays as it is; the integrator can
-// fold it into the registry (cr-r91-provb-to-integrator).
-func TestR91provbDeepSeekResponsesWire(t *testing.T) {
-	suite := wireSuites["deepseek"]
-	suite.Language = func(p provider.Provider, cls, id string) (provider.LanguageModel, error) {
-		if cls == "DeepSeekResponsesLanguageModel" {
-			return p.(*deepseek.Provider).ResponsesModel(id)
-		}
-		return p.LanguageModel(id)
-	}
-	tsfixture.RunWire(t, "testdata/tswire/deepseek-responses.jsonl.gz", suite)
 }
 
 // PB-01 probe (coordinator ruling): Go-typed namespace literals through the

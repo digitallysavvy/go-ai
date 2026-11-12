@@ -52,7 +52,7 @@ func TestAnthropicGoogleFamiliesUnsupportedModelTypesReturnNoSuchModelError(t *t
 		"bedrock":           {bedrock.New(bedrock.Config{Region: "us-east-1"}), []string{"speechModel", "transcriptionModel"}},
 		"bedrock-anthropic": {bedrockanthropic.New(bedrockanthropic.Config{}), all},
 		"bedrock-mantle":    {mantle.New(mantle.ProviderSettings{}), all},
-		"minimax":           {minimax.New(minimax.Config{APIKey: "k"}), all},
+		"minimax":           {minimax.New(minimax.Config{APIKey: "k"}), []string{"embeddingModel", "speechModel", "transcriptionModel", "rerankingModel"}}, // imageModel: MiniMax H3 (TS c4c8523cc3)
 	}
 	call := func(p allModelFactories, typ string) error {
 		var err error
