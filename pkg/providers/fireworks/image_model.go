@@ -2,8 +2,8 @@ package fireworks
 
 import (
 	"context"
-	"errors"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
