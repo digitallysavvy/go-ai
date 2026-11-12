@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -530,4 +532,35 @@ func TestR91genGeneratedFileUsesExperimentalDownload(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+}
+
+type r91genRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f r91genRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TS 2ebc78b654 createDownload({fetch}): the download uses the given
+// transport; URL validation stays on (a private host is still rejected
+// before the transport is called; Go also keeps the DNS pre-check).
+func TestR91genCreateDownloadTransport(t *testing.T) {
+	var calls []string
+	download := CreateDownload(&DownloadOptions{Transport: r91genRoundTripper(func(r *http.Request) (*http.Response, error) {
+		calls = append(calls, r.URL.String())
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: io.NopCloser(strings.NewReader("Hello World")), Request: r}, nil
+	})})
+	results, err := download(context.Background(), []DownloadRequest{
+		{URL: "https://93.184.215.14/supported", IsURLSupportedByModel: true},
+		{URL: "https://93.184.215.14/unsupported"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0] != nil || results[1] == nil || string(results[1].Data) != "Hello World" || results[1].MediaType != "text/plain" {
+		t.Fatalf("results = %+v", results)
+	}
+	if len(calls) != 1 || calls[0] != "https://93.184.215.14/unsupported" {
+		t.Fatalf("transport calls = %v", calls)
+	}
+	if _, err := download(context.Background(), []DownloadRequest{{URL: "http://127.0.0.1/x"}}); err == nil || len(calls) != 1 {
+		t.Fatalf("private URL: err = %v, calls = %v", err, calls)
+	}
 }
