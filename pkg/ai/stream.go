@@ -995,8 +995,15 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// from processStream or ReadAll once the stream completes.
 	telSystem := ""
 	var telMessages, telInstructionMessages []types.Message
+	var telPromptString *string
 	// A nil *Options records inputs (integrations treat it the same way).
 	if telemetrySettings.ShouldRecordInputs() {
+		// TS standardizePrompt keeps a string prompt as the user message's
+		// string content, which the legacy root ai.prompt records as is.
+		if len(opts.Messages) == 0 && opts.Prompt != "" {
+			promptString := opts.Prompt
+			telPromptString = &promptString
+		}
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
@@ -1055,6 +1062,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Settings:            telemetrySettings,
 		System:              telSystem,
 		Messages:            telMessages,
+		PromptString:        telPromptString,
 		InstructionMessages: telInstructionMessages,
 		Headers:             opts.Headers,
 		MaxOutputTokens:     opts.MaxTokens,
@@ -1449,9 +1457,13 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// TS stepToolChoice is prepareToolChoice(...): auto when unset.
 		ToolChoice:     preparedToolChoice(stepToolChoice),
 		PromptMessages: genOpts.Prompt.Messages,
-		StepTools:      stepTools,
-		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+		// TS folds the instructions into the step prompt as its leading
+		// system message (ai.prompt.messages).
+		System:              telemetryInput(telemetrySettings, stepSystem),
+		InstructionMessages: telemetryInputMessages(telemetrySettings, stepInstructionMessages),
+		StepTools:           stepTools,
+		RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
 	}))
 	r.stepReopenTelemetryStepCtx = telemetryStepCtx
 
@@ -4383,17 +4395,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// loop iteration — which processes the stream DoStream returns here —
 		// reads it back instead of firing FireOnStepStart again.
 		nextTelemetryStepCtx := telemetry.FireOnStepStart(nextStepCtx, stepStartTelemetryPrompt(opts.Internal, telemetry.TelemetryStepStartEvent{
-			CallID:         r.cbCallID,
-			OperationType:  "ai.streamText",
-			Settings:       r.telemetrySettings,
-			StepNumber:     stepNum,
-			ModelProvider:  nextModel.Provider(),
-			ModelID:        nextModel.ModelID(),
-			ToolChoice:     preparedToolChoice(nextToolChoice),
-			PromptMessages: nextGenOpts.Prompt.Messages,
-			StepTools:      nextTools,
-			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+			CallID:              r.cbCallID,
+			OperationType:       "ai.streamText",
+			Settings:            r.telemetrySettings,
+			StepNumber:          stepNum,
+			ModelProvider:       nextModel.Provider(),
+			ModelID:             nextModel.ModelID(),
+			ToolChoice:          preparedToolChoice(nextToolChoice),
+			PromptMessages:      nextGenOpts.Prompt.Messages,
+			System:              telemetryInput(r.telemetrySettings, nextSystem),
+			InstructionMessages: telemetryInputMessages(r.telemetrySettings, nextInstructionMessages),
+			StepTools:           nextTools,
+			RuntimeContext:      telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
+			ToolsContext:        telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		}))
 		r.stepReopenTelemetryStepCtx = nextTelemetryStepCtx
 		// As for the first step: a retried DoStream open is a new model call.
@@ -6240,9 +6254,28 @@ func stepStartTelemetryPrompt(internal *InternalOptions, e telemetry.TelemetrySt
 	if internal != nil && internal.OmitStepPromptTelemetry {
 		e.ToolChoice = types.ToolChoice{}
 		e.PromptMessages = nil
+		e.System = ""
+		e.InstructionMessages = nil
 		e.StepTools = nil
 	}
 	return e
+}
+
+// telemetryInput is v when the telemetry settings record inputs, else "".
+func telemetryInput(settings *telemetry.Settings, v string) string {
+	if !settings.ShouldRecordInputs() {
+		return ""
+	}
+	return v
+}
+
+// telemetryInputMessages is messages when the telemetry settings record
+// inputs, else nil.
+func telemetryInputMessages(settings *telemetry.Settings, messages []types.Message) []types.Message {
+	if !settings.ShouldRecordInputs() || len(messages) == 0 {
+		return nil
+	}
+	return messages
 }
 
 // readChunk reads the next chunk, returning ctx's error once ctx is done.

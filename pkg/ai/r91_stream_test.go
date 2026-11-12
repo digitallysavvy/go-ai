@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -319,5 +320,75 @@ func TestR91streamOutputParseFinalStepContext(t *testing.T) {
 	}
 	if noObj.Response == nil || noObj.Response.ID != "final-id" || noObj.FinishReason != types.FinishReasonStop {
 		t.Fatalf("response = %+v, finish %q", noObj.Response, noObj.FinishReason)
+	}
+}
+
+type r91streamTelRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu    sync.Mutex
+	start []telemetry.TelemetryStartEvent
+	steps []telemetry.TelemetryStepStartEvent
+}
+
+func (r *r91streamTelRecorder) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.start = append(r.start, e)
+	return ctx
+}
+
+func (r *r91streamTelRecorder) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.steps = append(r.steps, e)
+	return ctx
+}
+
+// core2-05 / core1-R02 call sites (TS legacy-open-telemetry.ts:358-365,
+// 654-660; standardize-prompt.ts): StreamText gives the root start event the
+// string prompt and every step start event the step's system text, only
+// when inputs are recorded.
+func TestR91streamTelemetryPromptFields(t *testing.T) {
+	run := func(record bool, prompt string, messages []types.Message) *r91streamTelRecorder {
+		rec := &r91streamTelRecorder{}
+		settings := &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{rec}}
+		if !record {
+			f := false
+			settings.RecordInputs = &f
+		}
+		r, err := StreamText(context.Background(), StreamTextOptions{
+			Model:     r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "value"}), r71streamHelloWorld),
+			System:    "be nice",
+			Prompt:    prompt,
+			Messages:  messages,
+			Tools:     []types.Tool{r71streamTool1(true, nil, nil)},
+			StopWhen:  []StopCondition{StepCountIs(3)},
+			Telemetry: settings,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r91streamDrain(r.FullStream())
+		return rec
+	}
+	rec := run(true, "hi", nil)
+	if len(rec.start) != 1 || rec.start[0].PromptString == nil || *rec.start[0].PromptString != "hi" {
+		t.Fatalf("start PromptString = %+v", rec.start)
+	}
+	if len(rec.steps) != 2 {
+		t.Fatalf("step starts = %d", len(rec.steps))
+	}
+	for i, e := range rec.steps {
+		if e.System != "be nice" {
+			t.Errorf("step %d System = %q", i, e.System)
+		}
+	}
+	rec = run(true, "", []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}})
+	if rec.start[0].PromptString != nil {
+		t.Fatalf("messages input has PromptString %q", *rec.start[0].PromptString)
+	}
+	rec = run(false, "hi", nil)
+	if rec.start[0].PromptString != nil || rec.steps[0].System != "" || rec.steps[1].System != "" {
+		t.Fatalf("inputs recorded with RecordInputs false: %+v / %+v", rec.start[0].PromptString, rec.steps)
 	}
 }
