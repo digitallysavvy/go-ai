@@ -93,3 +93,35 @@ func TestR94provgSessionUpdateIsJSONStringifyText(t *testing.T) {
 }
 
 func r94provgIntPtr(v int) *int { return &v }
+
+// cr-r94-prova-to-provg 2 sweep: a cancelled call fails the realtime stream
+// with the cancel cause (TS onAbort(abortSignal.reason)).
+func TestR94provgAbortCause(t *testing.T) {
+	srv := httptest.NewServer(websocket.Server{Handler: func(conn *websocket.Conn) {
+		_ = websocket.Message.Send(conn, `{"type":"session.created"}`)
+		var text string
+		for websocket.Message.Receive(conn, &text) == nil {
+		}
+	}})
+	defer srv.Close()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL + "/v1"}), ModelVoxtralMiniTranscribeRealtime3)
+	res, err := m.DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio: &r87provaAudio{block: make(chan struct{})}, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: r94provgIntPtr(16000)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Stream.Close() //nolint:errcheck
+	time.Sleep(50 * time.Millisecond)
+	reason := errors.New("r94provg user stop")
+	cancel(reason)
+	for {
+		if _, err := res.Stream.Next(); err != nil {
+			if !errors.Is(err, reason) {
+				t.Fatalf("err = %v, want the cancel cause", err)
+			}
+			return
+		}
+	}
+}

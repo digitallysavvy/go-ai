@@ -289,3 +289,53 @@ func TestR94provgBatchEmptyUploadURLHeader(t *testing.T) {
 		t.Fatalf("err = %T %v", err, err)
 	}
 }
+
+// cr-r94-prova-to-provg 2 sweep: the Live transcription and speech
+// translation streams fail with the caller's cancel cause (TS
+// abortSignal.reason).
+func TestR94provgAbortCause(t *testing.T) {
+	reason := errors.New("r94provg user stop")
+	check := func(name string, next func() error, cancel context.CancelCauseFunc) {
+		t.Helper()
+		time.Sleep(50 * time.Millisecond)
+		cancel(reason)
+		done := make(chan error, 1)
+		go func() {
+			for {
+				if err := next(); err != nil {
+					done <- err
+					return
+				}
+			}
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, reason) {
+				t.Errorf("%s: err = %v, want the cancel cause", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s: no error after cancel", name)
+		}
+	}
+	srv, _ := r94provgFirstFrame(t)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	res, err := newLiveTestModel(t, srv.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio: newBlockingAudioStream(), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Stream.Close() //nolint:errcheck
+	check("transcription", func() error { _, err := res.Stream.Next(); return err }, cancel)
+
+	srv2, _ := r94provgFirstFrame(t)
+	ctx2, cancel2 := context.WithCancelCause(context.Background())
+	res2, err := NewSpeechTranslationModel(New(Config{APIKey: "k", BaseURL: srv2.URL}), "m").DoStream(ctx2, &provider.SpeechTranslationStreamOptions{
+		Audio: newBlockingAudioStream(), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)}, TargetLanguage: "fr",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res2.Stream.Close() //nolint:errcheck
+	check("speech translation", func() error { _, err := res2.Stream.Next(); return err }, cancel2)
+}

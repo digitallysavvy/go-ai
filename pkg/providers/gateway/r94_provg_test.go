@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -230,4 +231,56 @@ func TestR94provgJSONStringifySweep(t *testing.T) {
 	if !strings.Contains(body, `"a<b&c"`) {
 		t.Errorf("client secret body = %q", body)
 	}
+}
+
+// cr-r94-prova-to-provg 2: TS connectToWebSocket fails the stream with
+// abortSignal.reason, so the caller's cancel cause is the stream error.
+func TestR94provgAbortCause(t *testing.T) {
+	reason := errors.New("r94provg user stop")
+	drain := func(name string, next func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() {
+			for {
+				if err := next(); err != nil {
+					done <- err
+					return
+				}
+			}
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, reason) {
+				t.Errorf("%s: err = %v, want the cancel cause", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s: no error after cancel", name)
+		}
+	}
+
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	res, err := newTestGatewayTranscriptionModel(t, server.ts.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio: newChanTestAudioStream(), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Stream.Close() //nolint:errcheck
+	time.Sleep(50 * time.Millisecond)
+	cancel(reason)
+	drain("transcription", func() error { _, err := res.Stream.Next(); return err })
+
+	server2 := newGatewayTranscriptionTestServer(t)
+	defer server2.close()
+	ctx2, cancel2 := context.WithCancelCause(context.Background())
+	sres, err := newTestGatewaySpeechModel(t, server2.ts.URL).DoStreamSpeech(ctx2, &provider.SpeechStreamOptions{Text: newSpeechTestText()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sres.Stream.Close() //nolint:errcheck
+	time.Sleep(50 * time.Millisecond)
+	cancel2(reason)
+	drain("speech", func() error { _, err := sres.Stream.Next(); return err })
 }
