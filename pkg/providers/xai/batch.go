@@ -788,8 +788,10 @@ type xaiBatchTextResponseWire struct {
 	Usage       *xaiBatchTextUsageWire `json:"usage"`
 	Citations   []string               `json:"citations"`
 	ServiceTier *string                `json:"service_tier"` // TS != null: a present "" is reported
-	Code        string                 `json:"code"`
-	Error       string                 `json:"error"`
+	// Code and Error are pointers: TS checks `error != null` / `code !=
+	// null`, so a present "" counts.
+	Code  *string `json:"code"`
+	Error *string `json:"error"`
 }
 
 // mapXAIChatFinishReason mirrors TS mapXaiFinishReason (Chat Completions
@@ -850,10 +852,10 @@ func convertXAIBatchTextUsage(u xaiBatchTextUsageWire) types.Usage {
 
 // convertXAIBatchTextResponse mirrors TS convertXaiBatchTextResponse.
 func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.GenerateResult, *provider.BatchError) {
-	if resp.Error != "" {
-		berr := &provider.BatchError{Message: resp.Error}
-		if resp.Code != "" {
-			berr.Code = resp.Code
+	if resp.Error != nil {
+		berr := &provider.BatchError{Message: *resp.Error}
+		if resp.Code != nil {
+			berr.Code = *resp.Code
 		}
 		return nil, berr
 	}
@@ -1008,6 +1010,17 @@ func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResp
 		default:
 			data, err := im.downloadImage(ctx, d.URL)
 			if err != nil {
+				// TS getFromApi with xaiFailedResponseHandler: a network
+				// failure is the retryable "Cannot connect to API" error and
+				// an HTTP failure is the xAI API error; anything else (URL
+				// validation, abort) propagates unchanged.
+				if cause, ok := fileutil.TransportFailure(err); ok {
+					return nil, internalhttp.TransportErrorCtx(ctx, cause)
+				}
+				var dl *providererrors.DownloadError
+				if errors.As(err, &dl) && dl.StatusCode >= 100 && (dl.StatusCode < 200 || dl.StatusCode >= 300) {
+					return nil, newXAIProviderError(b.Provider(), dl.StatusCode, dl.Headers, dl.Body)
+				}
 				return nil, err
 			}
 			images = append(images, data)

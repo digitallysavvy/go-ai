@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -47,5 +48,29 @@ func TestR94provbFilesKeyBeforeData(t *testing.T) {
 	_, err := New(Config{BaseURL: "http://127.0.0.1:1/v1"}).Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, DataString: "!!not base64!!"}})
 	if !providererrors.IsLoadAPIKeyError(err) {
 		t.Fatalf("err = %T %v, want LoadAPIKeyError", err, err)
+	}
+}
+
+// TestR94provbBatchTextEmptyErrorAndImageDownloadErrors: TS
+// convertXaiBatchTextResponse fails on `error != null` (a present "" too),
+// and the image batch URL download uses xaiFailedResponseHandler, so an HTTP
+// failure is the xAI API error with the body's message.
+func TestR94provbBatchTextEmptyErrorAndImageDownloadErrors(t *testing.T) {
+	empty := ""
+	if _, berr := convertXAIBatchTextResponse(xaiBatchTextResponseWire{Error: &empty}); berr == nil || berr.Message != "" {
+		t.Fatalf("empty error: berr = %#v, want a failure with message \"\"", berr)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"code":"boom","error":"image store down"}`))
+	}))
+	defer srv.Close()
+	b := NewBatch(New(Config{APIKey: "k", BaseURL: srv.URL + "/v1"}))
+	_, err := b.convertImageBatchResponse(context.Background(), xaiImageResponse{Data: []xaiImageData{{URL: srv.URL + "/img.png"}}})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.StatusCode != 500 || !strings.Contains(pe.Message, "image store down") {
+		t.Fatalf("err = %T %v, want the xAI API error", err, err)
 	}
 }
