@@ -330,8 +330,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			"videos":       []map[string]interface{}{{"url": outputURL}},
 			"predictionId": prediction.ID,
 		}
-		if prediction.Metrics != nil {
-			meta["metrics"] = prediction.Metrics
+		if metrics, present := replicateVideoMetrics(prediction.Metrics); present {
+			meta["metrics"] = metrics
 		}
 
 		return &provider.VideoModelV3OperationStatusResult{
@@ -508,10 +508,35 @@ type replicatePredictionWire struct {
 	URLs   struct {
 		Get string `json:"get"`
 	} `json:"urls"`
-	Metrics *struct {
-		PredictTime *float64 `json:"predict_time,omitempty"`
-	} `json:"metrics,omitempty"`
+	// Metrics is the raw metrics member, read with replicateVideoMetrics.
+	Metrics json.RawMessage `json:"metrics,omitempty"`
 }
 
 // headersOf converts fileutil's header map to http.Header.
 func headersOf(h map[string][]string) http.Header { return http.Header(h) }
+
+// replicateVideoMetrics is the zod output of the prediction metrics
+// ({predict_time?: number | null}, undeclared keys stripped) that TS passes
+// as providerMetadata.replicate.metrics: an explicit null stays null, and
+// present is false when the wire has no metrics key (TS undefined).
+func replicateVideoMetrics(raw json.RawMessage) (interface{}, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var fields map[string]json.RawMessage
+	if string(raw) == "null" || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return nil, true
+	}
+	metrics := map[string]interface{}{}
+	if v, ok := fields["predict_time"]; ok {
+		var f *float64
+		if json.Unmarshal(v, &f) == nil {
+			if f == nil {
+				metrics["predict_time"] = nil
+			} else {
+				metrics["predict_time"] = *f
+			}
+		}
+	}
+	return metrics, true
+}
