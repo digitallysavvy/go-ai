@@ -231,8 +231,9 @@ func (c *MCPClient) inputRequiredRound(ctx context.Context, method string, param
 	// "Request was aborted", the round timeout is the timeout error, and a
 	// closed client is "Connection closed".
 	aborted := func() error {
-		if err := ctx.Err(); err != nil {
-			return &MCPClientError{Message: "Request was aborted", Cause: err}
+		if ctx.Err() != nil {
+			// TS cause: options.signal.reason.
+			return &MCPClientError{Message: "Request was aborted", Cause: context.Cause(ctx)}
 		}
 		if errors.Is(context.Cause(roundCtx), errRequestTimeout) {
 			return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
