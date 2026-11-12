@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -282,5 +283,22 @@ func TestR93provbRealtimeNumericErrorMessage(t *testing.T) {
 	}
 	if len(msgs) != 1 || msgs[0] != "true" {
 		t.Fatalf("translation error parts = %q, want [true]", msgs)
+	}
+}
+
+// TS fileToBlob sends every url file through downloadBlob: an empty URL
+// fails the download instead of uploading empty bytes (cr-r93-tools-to-provb;
+// native and OpenAI-compatible edits).
+func TestR93provbImageEditEmptyURLIsDownloaded(t *testing.T) {
+	for _, compat := range []bool{false, true} {
+		var calls int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ }))
+		m := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: compat}), "gpt-image-1")
+		_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p", Files: []provider.ImageFile{{Type: "url", URL: ""}}})
+		srv.Close()
+		var de *providererrors.DownloadError
+		if !errors.As(err, &de) || calls != 0 {
+			t.Fatalf("compat=%v: err = %#v, calls = %d, want DownloadError and no request", compat, err, calls)
+		}
 	}
 }

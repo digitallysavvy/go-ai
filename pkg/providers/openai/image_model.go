@@ -506,7 +506,7 @@ func writeOpenAIImageMarkup(ctx context.Context, writer *multipart.Writer, marku
 // downloaded input is typed by its response content type (TS downloadBlob).
 func prefetchOpenAIImageInputs(ctx context.Context, opts *provider.ImageGenerateOptions) (*provider.ImageGenerateOptions, error) {
 	fetch := func(file provider.ImageFile) (provider.ImageFile, error) {
-		if file.Type != "url" || file.URL == "" {
+		if file.Type != "url" {
 			return file, nil
 		}
 		res, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
@@ -542,7 +542,7 @@ func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.W
 	// TS appends a Blob typed with the file's media type; FormData names a
 	// Blob "blob". Providers reject application/octet-stream image parts.
 	data, mediaType := file.Data, file.MediaType
-	if file.Type == "url" && file.URL != "" {
+	if file.Type == "url" {
 		// file.URL is caller-supplied data (an image-edit input or mask
 		// URL), not the provider's own endpoint, so it must go through the
 		// same validated, DNS-pinned download path as any other
