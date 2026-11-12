@@ -38,3 +38,14 @@ func TestR94provbUnfollowed3xxIsError(t *testing.T) {
 	_, err = NewImageModel(p, ModelGrokImagineImage).DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
 	check("image", err)
 }
+
+// TestR94provbFilesKeyBeforeData: TS resolves the headers (loadApiKey)
+// before convertInlineFileDataToUint8Array, so a missing key wins over bad
+// inline data.
+func TestR94provbFilesKeyBeforeData(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "")
+	_, err := New(Config{BaseURL: "http://127.0.0.1:1/v1"}).Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, DataString: "!!not base64!!"}})
+	if !providererrors.IsLoadAPIKeyError(err) {
+		t.Fatalf("err = %T %v, want LoadAPIKeyError", err, err)
+	}
+}

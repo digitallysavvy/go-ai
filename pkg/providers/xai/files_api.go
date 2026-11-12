@@ -100,6 +100,12 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
+	// TS resolves the headers (the API key) before it converts the file data.
+	client, err := f.provider.resolvedClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	// xAI rejects uploads where expires_after (or team_id) arrives after the
 	// file part, so all fields precede the file, mirroring TS's FormData
 	// append order / MultipartStreamPart ordering.
@@ -138,7 +144,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 	defer body.Close() //nolint:errcheck
 
-	resp, err := f.provider.client.Do(ctx, internalhttp.Request{
+	resp, err := client.Do(ctx, internalhttp.Request{
 		Method: stdhttp.MethodPost,
 		Path:   "/files",
 		Body:   body,

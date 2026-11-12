@@ -90,6 +90,18 @@ func New(cfg Config) *Provider {
 	}
 }
 
+// resolvedClient resolves the provider headers (the API key or an
+// APIKeyFunc) now and returns a client that sends them without resolving
+// them again: TS resolves config.headers before it converts upload data.
+// The error is returned as is.
+func (p *Provider) resolvedClient(ctx context.Context) (*http.Client, error) {
+	headers, err := p.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return http.NewClient(http.Config{BaseURL: p.config.BaseURL, Headers: headers, HTTPClient: p.client.HTTPClient()}), nil
+}
+
 func normalizeBaseURL(baseURL string) string {
 	if baseURL == "" {
 		baseURL = "https://api.x.ai/v1"
