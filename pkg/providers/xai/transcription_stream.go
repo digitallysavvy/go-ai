@@ -69,16 +69,16 @@ func xaiInputAudioFormatTypesList() string {
 // transcription URL with query parameters, mirroring TS
 // buildXaiStreamingTranscriptionUrl.
 func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat provider.AudioFormat, opts XAITranscriptionProviderOptions) (*url.URL, error) {
-	full := baseURL + "/stt" // TS `${baseURL}/stt`; New removed one trailing "/"
-	u, err := url.Parse(full)
+	// TS toWebSocketUrl(`${baseURL}/stt`): new URL (WHATWG: host
+	// lower-cased, a default port left out), http: to ws:, https: to wss:.
+	// New removed one trailing "/".
+	normalized, err := wsutil.ToWebSocketURL(baseURL + "/stt")
 	if err != nil {
 		return nil, err
 	}
-	switch u.Scheme {
-	case "https":
-		u.Scheme = "wss"
-	case "http":
-		u.Scheme = "ws"
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return nil, err
 	}
 
 	// TS appendXaiSttParams appends to url.searchParams in object order

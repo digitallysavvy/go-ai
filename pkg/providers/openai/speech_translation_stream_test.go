@@ -610,8 +610,10 @@ func TestSpeechTranslationModel_DoStream_RejectsNonObjectProviderOptions(t *test
 
 // The model id is encoded with encodeURIComponent (space -> %20, not +).
 func TestRealtimeSpeechTranslationWebSocketURL_EncodesModelLikeJS(t *testing.T) {
-	got := realtimeSpeechTranslationWebSocketURL("https://api.openai.com/v1", "a b/c*(d)!'~")
-	want := "wss://api.openai.com/v1/realtime/translations?model=a%20b%2Fc*(d)!'~"
+	got, _ := realtimeSpeechTranslationWebSocketURL("https://api.openai.com/v1", "a b/c*(d)!'~")
+	// TS toWebSocketUrl(new URL(...)): the WHATWG special-query set also
+	// encodes the apostrophe.
+	want := "wss://api.openai.com/v1/realtime/translations?model=a%20b%2Fc*(d)!%27~"
 	if got != want {
 		t.Fatalf("url = %q, want %q", got, want)
 	}

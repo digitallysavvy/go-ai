@@ -239,3 +239,14 @@ func TestR94provbTranscriptionAbortCause(t *testing.T) {
 		t.Fatalf("err = %v, want the caller's cause", err)
 	}
 }
+
+// TestR94provbRealtimeStreamURLsAreWHATWG: TS toWebSocketUrl(config.url(...))
+// is new URL: default port left out, host lower-cased.
+func TestR94provbRealtimeStreamURLsAreWHATWG(t *testing.T) {
+	if got, _ := realtimeTranscriptionWebSocketURL("https://API.Example.com:443/v1"); got != "wss://api.example.com/v1/realtime?intent=transcription" {
+		t.Errorf("transcription url = %q", got)
+	}
+	if got, _ := realtimeSpeechTranslationWebSocketURL("https://API.Example.com:443/v1", "m"); got != "wss://api.example.com/v1/realtime/translations?model=m" {
+		t.Errorf("translation url = %q", got)
+	}
+}

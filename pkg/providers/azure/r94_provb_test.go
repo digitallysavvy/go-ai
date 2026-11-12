@@ -97,3 +97,10 @@ func (r94provbBlockingAudio) Next(ctx context.Context) ([]byte, error) {
 	return nil, ctx.Err()
 }
 func (r94provbBlockingAudio) Cancel(error) {}
+
+// TestR94provbMaiWebSocketURLIsWHATWG: TS toWebSocketUrl is new URL.
+func TestR94provbMaiWebSocketURLIsWHATWG(t *testing.T) {
+	if got, err := toWebSocketURL("https://R.services.ai.azure.com:443/mai/v1/realtime?intent=transcription"); err != nil || got != "wss://r.services.ai.azure.com/mai/v1/realtime?intent=transcription" {
+		t.Fatalf("url = %q, %v", got, err)
+	}
+}

@@ -120,3 +120,12 @@ func TestR94provbImageBOMBody(t *testing.T) {
 		t.Fatalf("res = %#v, err = %v", res, err)
 	}
 }
+
+// TestR94provbStreamingURLIsWHATWG: TS toWebSocketUrl(`${baseURL}/stt`)
+// serializes the URL the WHATWG way (default port left out, host lower-cased).
+func TestR94provbStreamingURLIsWHATWG(t *testing.T) {
+	u, err := buildXAIStreamingTranscriptionURL("https://API.x.ai:443/v1", "m", provider.AudioFormat{Type: "audio/pcm"}, XAITranscriptionProviderOptions{})
+	if err != nil || u.String() != "wss://api.x.ai/v1/stt?model=m&encoding=pcm" {
+		t.Fatalf("url = %v, %v", u, err)
+	}
+}

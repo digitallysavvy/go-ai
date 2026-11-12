@@ -135,38 +135,11 @@ func (m *AzureMaiTranscriptionModel) DoStream(ctx context.Context, opts *provide
 	}, nil
 }
 
-// toWebSocketURL rewrites an http(s) URL to ws(s), mirroring TS
-// provider-utils toWebSocketUrl.
+// toWebSocketURL is TS provider-utils toWebSocketUrl: new URL(url) with
+// http: set to ws: and https: to wss: (the WHATWG serialization; "Invalid
+// URL" for input it rejects).
 func toWebSocketURL(rawURL string) (string, error) {
-	switch {
-	case hasPrefixFold(rawURL, "https://"):
-		return "wss://" + rawURL[len("https://"):], nil
-	case hasPrefixFold(rawURL, "http://"):
-		return "ws://" + rawURL[len("http://"):], nil
-	case hasPrefixFold(rawURL, "wss://"), hasPrefixFold(rawURL, "ws://"):
-		return rawURL, nil
-	default:
-		return "", providererrors.NewArgumentError("url", "URL must use http(s) or ws(s) scheme: "+rawURL, nil)
-	}
-}
-
-func hasPrefixFold(s, prefix string) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
-	for i := 0; i < len(prefix); i++ {
-		c1, c2 := s[i], prefix[i]
-		if c1 >= 'A' && c1 <= 'Z' {
-			c1 += 'a' - 'A'
-		}
-		if c2 >= 'A' && c2 <= 'Z' {
-			c2 += 'a' - 'A'
-		}
-		if c1 != c2 {
-			return false
-		}
-	}
-	return true
+	return wsutil.ToWebSocketURL(rawURL)
 }
 
 type azureMaiTranscriptionStreamConfig struct {
