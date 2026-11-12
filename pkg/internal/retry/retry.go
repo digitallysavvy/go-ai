@@ -186,28 +186,32 @@ func retryHeaderDelay(err error, exponentialDelay time.Duration) (time.Duration,
 	// TS retry-with-exponential-backoff.ts getRetryDelayInMs: parseFloat of
 	// retry-after-ms, then parseFloat of retry-after (seconds), else
 	// Date.parse(retryAfter) - Date.now().
-	var delay time.Duration
+	// The delay is kept as a JS number of milliseconds until the range check
+	// passes, so a far date or a huge value cannot overflow time.Duration
+	// into a short delay.
+	var ms float64
 	var hasDelay bool
 	if retryAfterMS != "" {
 		if parsed, ok := jsParseFloat(retryAfterMS); ok {
-			delay = time.Duration(parsed * float64(time.Millisecond))
+			ms = parsed
 			hasDelay = true
 		}
 	}
 	if retryAfter != "" && !hasDelay {
 		if parsed, ok := jsParseFloat(retryAfter); ok {
-			delay = time.Duration(parsed * float64(time.Second))
+			ms = parsed * 1000
 			hasDelay = true
 		} else if when, ok := jsdate.Parse(retryAfter); ok {
-			delay = time.Duration(when-time.Now().UnixMilli()) * time.Millisecond
+			ms = float64(when - time.Now().UnixMilli())
 			hasDelay = true
 		}
 	}
 	if !hasDelay {
 		return 0, false
 	}
-	if delay >= 0 && (delay < 60*time.Second || delay < exponentialDelay) {
-		return delay, true
+	exponentialMs := float64(exponentialDelay) / float64(time.Millisecond)
+	if ms >= 0 && (ms < 60*1000 || ms < exponentialMs) {
+		return time.Duration(ms * float64(time.Millisecond)), true
 	}
 	return 0, false
 }
