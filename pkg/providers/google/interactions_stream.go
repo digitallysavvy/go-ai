@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -73,6 +72,16 @@ type interactionsStream struct {
 	// to a random id.
 	generateID func() string
 
+	// pendingOpen defers the first GET of a background interaction to the
+	// first Next after stream-start (TS opens the reader inside
+	// ReadableStream.start), so a GET failure is a stream error and never
+	// fails DoStream (which core would retry with a second POST).
+	pendingOpen bool
+
+	// mapError maps a failed GET (connect or HTTP status) to the model's
+	// error (TS getFromApi with googleFailedResponseHandler).
+	mapError func(error) error
+
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -123,9 +132,7 @@ func newInteractionsStream(ctx context.Context, client *internalhttp.Client, int
 		open:            map[int]*interactionOpenBlock{},
 		resumable:       true,
 		serviceTier:     interactionsServiceTier(nil, headerServiceTier(responseHeaders)),
-	}
-	if err := s.openWithRetry(); err != nil {
-		return nil, err
+		pendingOpen:     true,
 	}
 	return s, nil
 }
@@ -280,6 +287,13 @@ restart:
 			warnings = []types.Warning{}
 		}
 		return &provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: warnings}, nil
+	}
+	if s.pendingOpen {
+		s.pendingOpen = false
+		if err := s.openWithRetry(); err != nil {
+			s.err = err
+			return nil, err
+		}
 	}
 	for {
 		var event *streaming.SSEEvent
@@ -451,11 +465,16 @@ func (s *interactionsStream) openGETStream() error {
 	}
 	resp, err := s.client.DoStream(s.ctx, internalhttp.Request{
 		Method:  http.MethodGet,
-		Path:    "/interactions/" + url.PathEscape(s.interactionID),
+		Path:    "/interactions/" + providerutils.EncodeURIComponent(s.interactionID),
 		Query:   query,
 		Headers: internalhttp.MergeHeaders(s.headers, map[string]string{"Accept": "text/event-stream"}),
 	})
 	if err != nil {
+		// An abort keeps its own error; other failures read like the
+		// model's (TS googleFailedResponseHandler / handleFetchError).
+		if s.mapError != nil && s.ctx.Err() == nil {
+			return s.mapError(err)
+		}
 		return err
 	}
 	s.reader = resp.Body

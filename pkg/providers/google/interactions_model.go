@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -211,6 +210,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 			s.requestBody = args
 			s.generateID = m.cfg.GenerateID
 			s.includeRawChunks = opts.IncludeRawChunks
+			s.mapError = m.handleError
 		}
 		return pollStream, nil
 	}
@@ -233,6 +233,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 		s.requestBody = streamArgs
 		s.generateID = m.cfg.GenerateID
 		s.includeRawChunks = opts.IncludeRawChunks
+		s.mapError = m.handleError
 	}
 	return eventStream, nil
 }
@@ -536,7 +537,7 @@ func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, inter
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 			ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractions),
 			Method:           http.MethodGet,
-			Path:             "/interactions/" + url.PathEscape(interactionID),
+			Path:             "/interactions/" + providerutils.EncodeURIComponent(interactionID),
 			Headers:          headers,
 		}, &response)
 		if err != nil {
@@ -561,7 +562,7 @@ func (m *InteractionsLanguageModel) cancelInteraction(ctx context.Context, inter
 	}
 	_, err := m.cfg.Client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/interactions/" + url.PathEscape(interactionID) + "/cancel",
+		Path:    "/interactions/" + providerutils.EncodeURIComponent(interactionID) + "/cancel",
 		Headers: headers,
 		Body:    map[string]interface{}{},
 	})
@@ -1253,11 +1254,11 @@ func convertInteractionsUsage(usage *interactionsUsage) types.Usage {
 			"grounding_tool_count":        usage.GroundingToolCount,
 		}
 	}
-	if usage.TotalInputTokens != nil || usage.TotalCachedTokens != nil || len(usage.InputTokensByModality) > 0 {
+	// TS reports only total, noCache and cacheRead input details; the
+	// per-modality input breakdown stays in raw.
+	if usage.TotalInputTokens != nil || usage.TotalCachedTokens != nil {
 		details := &types.InputTokenDetails{
 			CacheReadTokens: usage.TotalCachedTokens,
-			TextTokens:      modalityToken(usage.InputTokensByModality, "text"),
-			ImageTokens:     modalityToken(usage.InputTokensByModality, "image"),
 		}
 		if usage.TotalInputTokens != nil {
 			noCache := totalInput - totalCached
@@ -1272,21 +1273,6 @@ func convertInteractionsUsage(usage *interactionsUsage) types.Usage {
 		}
 	}
 	return out
-}
-
-func modalityToken(tokens []interactionsModalityTokens, modality string) *int64 {
-	var total int64
-	found := false
-	for _, item := range tokens {
-		if item.Modality == modality && item.Tokens != nil {
-			total += *item.Tokens
-			found = true
-		}
-	}
-	if !found {
-		return nil
-	}
-	return &total
 }
 
 func mapInteractionsFinishReason(status string, hasFunctionCall bool) types.FinishReason {

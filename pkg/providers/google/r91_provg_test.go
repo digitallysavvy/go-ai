@@ -3,13 +3,17 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
@@ -194,5 +198,100 @@ func TestR91provgFilesTypedOptionLiterals(t *testing.T) {
 	}
 	if !strings.Contains(start, `"display_name":"report"`) {
 		t.Fatalf("start body = %s", start)
+	}
+}
+
+// provg1-03: a background DoStream returns before the GET; a GET that keeps
+// failing is a stream error mapped like the model's (TS
+// googleFailedResponseHandler), and core makes exactly one POST.
+func TestR91provgInteractionsBackgroundStreamLazyGET(t *testing.T) {
+	old := interactionsStreamRetryDelay
+	interactionsStreamRetryDelay = time.Millisecond
+	t.Cleanup(func() { interactionsStreamRetryDelay = old })
+	var mu sync.Mutex
+	posts, gets := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			posts++
+			_, _ = io.WriteString(w, `{"id":"i1","status":"in_progress"}`)
+		case http.MethodGet:
+			gets++
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":{"code":500,"message":"backend exploded","status":"INTERNAL"}}`)
+		}
+	}))
+	defer server.Close()
+	model, _ := New(Config{APIKey: "k", BaseURL: server.URL}).Interactions(ModelGemini25Flash)
+	st, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "x"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"background": true}},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed on the GET: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+	mu.Lock()
+	if gets != 0 {
+		t.Fatalf("GET opened before the first Next: %d", gets)
+	}
+	mu.Unlock()
+	if c, err := st.Next(); err != nil || c.Type != provider.ChunkTypeStreamStart {
+		t.Fatalf("first chunk = %+v, %v", c, err)
+	}
+	_, err = st.Next()
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.StatusCode != 500 || !strings.Contains(err.Error(), "backend exploded") {
+		t.Fatalf("stream error = %T %v", err, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 1 || gets != interactionsStreamMaxRetries {
+		t.Fatalf("posts=%d gets=%d", posts, gets)
+	}
+}
+
+// provg1-11: interaction ids use encodeURIComponent (TS
+// poll-google-interactions.ts:84, cancel-google-interaction.ts:42,
+// stream-google-interactions.ts:96).
+func TestR91provgInteractionsIDEncodeURIComponent(t *testing.T) {
+	var paths []string
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.Method+" "+r.URL.EscapedPath())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"a:b","status":"completed","steps":[]}`)
+	}))
+	defer server.Close()
+	m := &InteractionsLanguageModel{cfg: InteractionsConfig{Client: New(Config{APIKey: "k", BaseURL: server.URL}).client}}
+	if _, _, err := m.pollUntilTerminal(context.Background(), "a:b", nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.cancelInteraction(context.Background(), "a:b", nil)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 2 || paths[0] != "GET /interactions/a%3Ab" || paths[1] != "POST /interactions/a%3Ab/cancel" {
+		t.Fatalf("paths = %v", paths)
+	}
+}
+
+// provg1-09: TS convertGoogleInteractionsUsage reports no per-modality
+// input token details.
+func TestR91provgInteractionsUsageNoModalityDetails(t *testing.T) {
+	five := int64(5)
+	u := convertInteractionsUsage(&interactionsUsage{TotalInputTokens: &five, InputTokensByModality: []interactionsModalityTokens{{Modality: "text", Tokens: &five}, {Modality: "image", Tokens: &five}}})
+	if u.InputDetails == nil || u.InputDetails.TextTokens != nil || u.InputDetails.ImageTokens != nil {
+		t.Fatalf("input details = %+v", u.InputDetails)
+	}
+	if u.InputDetails.NoCacheTokens == nil || *u.InputDetails.NoCacheTokens != 5 {
+		t.Fatalf("noCache = %v", u.InputDetails.NoCacheTokens)
+	}
+	if u2 := convertInteractionsUsage(&interactionsUsage{InputTokensByModality: []interactionsModalityTokens{{Modality: "text", Tokens: &five}}}); u2.InputDetails != nil {
+		t.Fatalf("modality-only input details = %+v", u2.InputDetails)
 	}
 }
