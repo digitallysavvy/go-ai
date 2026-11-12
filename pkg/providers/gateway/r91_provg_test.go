@@ -3,15 +3,19 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
 func r91provgBatchServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request, body []byte)) *Provider {
@@ -150,5 +154,93 @@ func TestR91provgBatchStartEmptyProviderOptions(t *testing.T) {
 		if ok != tc.present || (ok && string(raw) != tc.want) {
 			t.Fatalf("case %d: providerOptions present=%v %s, want present=%v %s", i, ok, raw, tc.present, tc.want)
 		}
+	}
+}
+
+// provg2-03: concurrent first calls to Gateway() do not race and share one
+// provider.
+func TestR91provgDefaultGatewayConcurrent(t *testing.T) {
+	t.Setenv("AI_GATEWAY_API_KEY", "k")
+	defaultProviderMu.Lock()
+	defaultProvider = nil
+	defaultProviderMu.Unlock()
+	t.Cleanup(func() {
+		defaultProviderMu.Lock()
+		defaultProvider = nil
+		defaultProviderMu.Unlock()
+	})
+	var wg sync.WaitGroup
+	got := make([]*Provider, 8)
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i], _ = Gateway()
+		}(i)
+	}
+	wg.Wait()
+	for _, p := range got {
+		if p == nil || p != got[0] {
+			t.Fatalf("providers = %v", got)
+		}
+	}
+}
+
+func r91provgSchemaError(t *testing.T, err error, status int) {
+	t.Helper()
+	var re *gatewayerrors.GatewayResponseError
+	if !errors.As(err, &re) || err.Error() != "Invalid error response format: Gateway request failed" || re.GetStatusCode() != status {
+		t.Fatalf("error = %T %v", err, err)
+	}
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "Invalid JSON response" {
+		t.Fatalf("cause = %v", err)
+	}
+}
+
+// provg2-06: TS gateway-fetch-metadata.ts:37 createJsonResponseHandler +
+// asGatewayError for /config, the spend report and the client secret.
+func TestR91provgGatewaySuccessSchemaErrors(t *testing.T) {
+	for _, body := range []string{`{"models":5}`, `not json`, `{"models":[{"id":"a","name":"A","description":5,"specification":{"specificationVersion":"v4","provider":"p","modelId":"a"}}]}`} {
+		serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.WriteString(w, body)
+		}))
+		p, _ := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+		_, err := p.GetAvailableModels(context.Background())
+		closeServer()
+		r91provgSchemaError(t, err, 200)
+	}
+	for _, body := range []string{`{"results":[{"total_cost":1,"day":null}]}`, `{"results":[{"total_cost":1,"input_tokens":"3"}]}`} {
+		serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.WriteString(w, body)
+		}))
+		p, _ := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+		_, err := p.GetSpendReport(context.Background(), SpendReportParams{StartDate: "a", EndDate: "b"})
+		closeServer()
+		r91provgSchemaError(t, err, 200)
+	}
+	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(201)
+		_, _ = io.WriteString(w, `{"token":5}`)
+	}))
+	defer closeServer()
+	p, _ := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+	_, err := p.MintRealtimeClientSecret(context.Background(), MintRealtimeClientSecretParams{ModelID: "m"})
+	r91provgSchemaError(t, err, 201)
+}
+
+// provg2-12: a BOM-prefixed 401 mint error body is decoded like TS
+// response.text() and gives a GatewayAuthenticationError.
+func TestR91provgClientSecretBOMErrorBody(t *testing.T) {
+	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		_, _ = io.WriteString(w, "\uFEFF"+`{"error":{"message":"bad key","type":"authentication_error"}}`)
+	}))
+	defer closeServer()
+	p, _ := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+	_, err := p.MintRealtimeClientSecret(context.Background(), MintRealtimeClientSecretParams{ModelID: "m"})
+	var ae *gatewayerrors.GatewayAuthenticationError
+	if !errors.As(err, &ae) {
+		t.Fatalf("error = %T %v", err, err)
 	}
 }

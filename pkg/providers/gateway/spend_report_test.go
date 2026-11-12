@@ -78,7 +78,8 @@ func TestGetSpendReportDecodeError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	if _, err := p.GetSpendReport(context.Background(), SpendReportParams{StartDate: "2026-05-01", EndDate: "2026-05-02"}); err == nil || !strings.Contains(err.Error(), "failed to decode spend report response") {
+	if _, err := p.GetSpendReport(context.Background(), SpendReportParams{StartDate: "2026-05-01", EndDate: "2026-05-02"}); err == nil || err.Error() != "Invalid error response format: Gateway request failed" {
+		// provg2-06: TS createJsonResponseHandler + asGatewayError text.
 		t.Fatalf("expected decode error, got %v", err)
 	}
 }

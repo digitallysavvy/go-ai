@@ -709,12 +709,16 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
+	// TS createJsonResponseHandler(gatewayAvailableModelsResponseSchema): a
+	// body that is not JSON or fails the schema is the APICallError "Invalid
+	// JSON response" with the response status, which asGatewayError turns
+	// into a GatewayResponseError (gateway-fetch-metadata.ts:37).
 	var wire metadataResponseWire
 	if err := json.Unmarshal(resp.Body, &wire); err != nil {
-		return nil, p.handleErrorWithContext(ctx, err)
+		return nil, p.handleErrorWithContext(ctx, providerutils.InvalidJSONResponseError("gateway", resp.StatusCode, resp.Headers, resp.Body, nil))
 	}
 	if err := validateMetadataResponse(resp.Body); err != nil {
-		return nil, p.handleErrorWithContext(ctx, err)
+		return nil, p.handleErrorWithContext(ctx, providerutils.InvalidJSONResponseError("gateway", resp.StatusCode, resp.Headers, resp.Body, nil))
 	}
 	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
 	for _, model := range wire.Models {
@@ -855,6 +859,11 @@ func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, au
 	if resp == nil {
 		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
 	}
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced) before parsing (gateway-provider.ts:462).
+	decoded := *resp
+	decoded.Body = []byte(textdecode.UTF8(resp.Body))
+	resp = &decoded
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
@@ -1083,18 +1092,26 @@ func NewTools() *Tools {
 	return &Tools{}
 }
 
-// Default gateway provider instance
-var defaultProvider *Provider
+// Default gateway provider instance, guarded by defaultProviderMu so
+// concurrent first calls to Gateway() build it once (TS creates the default
+// `gateway` once at module load).
+var (
+	defaultProviderMu sync.Mutex
+	defaultProvider   *Provider
+)
 
 // Gateway returns the default gateway provider
-// It reads configuration from environment variables
+// It reads configuration from environment variables. It is safe for
+// concurrent use; a failed construction is retried on the next call.
 func Gateway() (*Provider, error) {
+	defaultProviderMu.Lock()
+	defer defaultProviderMu.Unlock()
 	if defaultProvider == nil {
-		var err error
-		defaultProvider, err = New(Config{})
+		p, err := New(Config{})
 		if err != nil {
 			return nil, err
 		}
+		defaultProvider = p
 	}
 	return defaultProvider, nil
 }
