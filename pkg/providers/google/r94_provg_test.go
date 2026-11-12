@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -338,4 +339,55 @@ func TestR94provgAbortCause(t *testing.T) {
 	}
 	defer res2.Stream.Close() //nolint:errcheck
 	check("speech translation", func() error { _, err := res2.Stream.Next(); return err }, cancel2)
+}
+
+func r94provgInteractionsBody(t *testing.T, google map[string]interface{}, msgs []types.Message) (map[string]interface{}, []types.Warning, error) {
+	t.Helper()
+	m := NewInteractionsLanguageModel(New(Config{APIKey: "k"}), "gemini-3-flash-preview")
+	args, warnings, _, err := m.buildArgs(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: msgs}, AllowSystemInMessages: true,
+		ProviderOptions: map[string]interface{}{"google": google},
+	}, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	b, _ := json.Marshal(args)
+	var body map[string]interface{}
+	_ = json.Unmarshal(b, &body)
+	return body, warnings, nil
+}
+
+// TS reads the Interactions string options with `?? undefined`: a present ""
+// systemInstruction is sent (and conflicts with a system message), a present
+// "" previousInteractionId is sent and compacts the history; an enum option
+// given as "" fails parseProviderOptions.
+func TestR94provgInteractionsEmptyStringOptions(t *testing.T) {
+	user := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}
+	body, _, err := r94provgInteractionsBody(t, map[string]interface{}{"systemInstruction": "", "previousInteractionId": ""}, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := body["system_instruction"]; !ok || v != "" {
+		t.Errorf("system_instruction = %#v (present %v)", v, ok)
+	}
+	if v, ok := body["previous_interaction_id"]; !ok || v != "" {
+		t.Errorf("previous_interaction_id = %#v (present %v)", v, ok)
+	}
+	sys := append([]types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "s"}}}}, user...)
+	_, warnings, err := r94provgInteractionsBody(t, map[string]interface{}{"systemInstruction": ""}, sys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range warnings {
+		found = found || strings.Contains(w.Message, "both AI SDK system message")
+	}
+	if !found {
+		t.Errorf("no conflict warning: %+v", warnings)
+	}
+	for _, k := range []string{"mediaResolution", "serviceTier", "thinkingLevel", "thinkingSummaries"} {
+		if _, _, err := r94provgInteractionsBody(t, map[string]interface{}{k: ""}, user); err == nil {
+			t.Errorf("%s: \"\" accepted", k)
+		}
+	}
 }

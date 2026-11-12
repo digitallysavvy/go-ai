@@ -38,10 +38,10 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 		messages = append([]types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: p.System}}}}, messages...)
 	}
 
-	if opts.PreviousInteractionID != "" && opts.Store != nil && !*opts.Store {
+	if opts.hasPreviousInteractionID() && opts.Store != nil && !*opts.Store {
 		msg := "google.interactions: providerOptions.google.previousInteractionId was set together with store: false. These are incoherent (the prior interaction cannot be referenced when nothing was stored on the server); the full history will be sent and previous_interaction_id will still be emitted."
 		warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
-	} else if opts.PreviousInteractionID != "" {
+	} else if opts.hasPreviousInteractionID() {
 		messages = compactMessagesForInteraction(messages, opts.PreviousInteractionID)
 	}
 
