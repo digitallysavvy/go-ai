@@ -10,13 +10,19 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
-// TokenQueryParam is the query parameter the bridge authenticates host
+// TokenQueryParam is the query parameter a legacy bridge authenticates host
 // connections with. A connection with a missing or wrong token is closed with
 // code 1008 ("unauthorized").
+//
+// Deprecated: bridges authenticate hosts with a per-session Ed25519 key pair
+// (CreateBridgeAuthKeyPair; TS c849d37dac).
 const TokenQueryParam = "agent_bridge_token"
 
 // CreateBridgeToken returns a random 32-byte hexadecimal bridge channel
-// token. Mirrors TS `createBridgeToken` (371e954).
+// token. Mirrors the removed TS `createBridgeToken` (371e954).
+//
+// Deprecated: use CreateBridgeAuthKeyPair. A token readable in the sandbox
+// lets sandbox code take over the bridge.
 func CreateBridgeToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -32,6 +38,9 @@ func CreateBridgeToken() string {
 // `withBridgeToken`: `new URL(endpoint.url)`, `searchParams.set` and the
 // WHATWG serialization (lowercased host, default port dropped, the query
 // re-encoded as application/x-www-form-urlencoded).
+//
+// Deprecated: current bridges authenticate with a public key, and the
+// endpoint is used unchanged (BridgeConnectOptions.AuthPrivateKey).
 func WithBridgeToken(endpoint harness.PortEndpoint, token string) (harness.PortEndpoint, error) {
 	u, err := urlnorm.Parse(endpoint.URL)
 	if err != nil {

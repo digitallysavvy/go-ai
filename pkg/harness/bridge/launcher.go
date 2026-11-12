@@ -10,8 +10,14 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// Environment variables read by the in-sandbox bridge (`runBridge`).
+// Environment variables read by the in-sandbox bridge (`runBridge`). The
+// authentication public key is EnvAuthPublicKey.
 const (
+	// EnvChannelToken is the legacy shared-token variable.
+	//
+	// Deprecated: bridges authenticate hosts with a public key
+	// (EnvAuthPublicKey, LaunchOptions.AuthPublicKey); a token readable in
+	// the sandbox lets sandbox code take over the bridge.
 	EnvChannelToken   = "BRIDGE_CHANNEL_TOKEN"
 	EnvWSPort         = "BRIDGE_WS_PORT"
 	EnvReplayFromDisk = "BRIDGE_REPLAY_FROM_DISK"
@@ -56,8 +62,11 @@ func ResolveBridgeEndpoint(ctx context.Context, session providerutils.SandboxSes
 	return harness.PortEndpoint{}, ErrNoPortEndpoint
 }
 
-// BridgeEnvironment returns the spawn environment every bridge reads: the
-// channel token, the port and, for disk replay, BRIDGE_REPLAY_FROM_DISK=1.
+// BridgeEnvironment returns the legacy spawn environment: the channel token,
+// the port and, for disk replay, BRIDGE_REPLAY_FROM_DISK=1.
+//
+// Deprecated: use BridgeAuthEnvironment, which passes the authentication
+// public key instead of a shared secret.
 func BridgeEnvironment(token string, port int, replayFromDisk bool) map[string]string {
 	env := map[string]string{EnvChannelToken: token, EnvWSPort: strconv.Itoa(port)}
 	if replayFromDisk {
@@ -79,12 +88,21 @@ type LaunchOptions struct {
 	Sandbox providerutils.SandboxSession
 	// Command is the full spawn command (`node <dir>/bridge.mjs --workdir ...`).
 	Command string
-	// Env is merged under the bridge variables (token/port/replay win).
+	// Env is merged under the bridge variables (key/port/replay win).
 	Env map[string]string
 	// Port is the port the bridge should bind (BRIDGE_WS_PORT).
 	Port int
-	// Token authorizes host connections (CreateBridgeToken or the adapter's
-	// MintBridgeToken result).
+	// AuthPublicKey is the session's BridgeAuthKeyPair.PublicKey, passed to
+	// the bridge as EnvAuthPublicKey. Connect with the matching PrivateKey
+	// (BridgeConnectOptions.AuthPrivateKey). When set, Token is ignored: it
+	// is neither put in the sandbox env nor added to the endpoint URL.
+	AuthPublicKey string
+	// Token authorizes host connections of a legacy bridge (the
+	// BRIDGE_CHANNEL_TOKEN env and the endpoint URL's agent_bridge_token).
+	// Used only when AuthPublicKey is empty.
+	//
+	// Deprecated: set AuthPublicKey. Current bridges require public-key
+	// authentication and refuse to start without a public key.
 	Token string
 	// ReplayFromDisk asks a respawned bridge to reload its event log.
 	ReplayFromDisk bool
@@ -106,7 +124,8 @@ type Launched struct {
 	Proc providerutils.SandboxProcess
 	// Port is the port the bridge bound.
 	Port int
-	// Endpoint is the resolved endpoint with the token applied.
+	// Endpoint is the resolved endpoint (with the legacy token applied when
+	// LaunchOptions.AuthPublicKey is empty).
 	Endpoint    harness.PortEndpoint
 	ReadySource ReadySource
 	StdoutTail  []string
@@ -116,10 +135,11 @@ type Launched struct {
 }
 
 // Launch runs the host-side startup sequence shared by every TS bridge
-// adapter: mark bridge-meta.json "starting", spawn the bridge with its token
-// and port, forward stderr (keeping a tail), wait for readiness (stdout line
-// or metadata fallback) with startup errors that carry the exit code and
-// output tails, drain stdout, resolve the endpoint and apply the token.
+// adapter: mark bridge-meta.json "starting", spawn the bridge with its
+// authentication public key and port, forward stderr (keeping a tail), wait
+// for readiness (stdout line or metadata fallback) with startup errors that
+// carry the exit code and output tails, drain stdout and resolve the
+// endpoint.
 // Callers then build a Channel with NewConnectFunc(launched.Endpoint, ...).
 func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 	timeout := opts.StartupTimeout
@@ -137,7 +157,14 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 	for k, v := range opts.Env {
 		env[k] = v
 	}
-	for k, v := range BridgeEnvironment(opts.Token, opts.Port, opts.ReplayFromDisk) {
+	bridgeEnv := BridgeAuthEnvironment(opts.AuthPublicKey, opts.Port, opts.ReplayFromDisk)
+	if opts.AuthPublicKey == "" {
+		bridgeEnv = BridgeEnvironment(opts.Token, opts.Port, opts.ReplayFromDisk) //nolint:staticcheck // legacy token flow
+	} else {
+		// A caller env must not smuggle a shared token in either.
+		delete(env, EnvChannelToken) //nolint:staticcheck // legacy name
+	}
+	for k, v := range bridgeEnv {
 		env[k] = v
 	}
 	proc, err := opts.Sandbox.Spawn(ctx, providerutils.SandboxProcessOptions{Command: opts.Command, Env: env})
@@ -187,9 +214,11 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err = WithBridgeToken(endpoint, opts.Token)
-	if err != nil {
-		return nil, err
+	if opts.AuthPublicKey == "" {
+		endpoint, err = WithBridgeToken(endpoint, opts.Token) //nolint:staticcheck // legacy token flow
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Launched{
 		Proc:        proc,

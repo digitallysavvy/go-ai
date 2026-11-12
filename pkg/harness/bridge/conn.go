@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"sync"
@@ -24,12 +25,14 @@ type Conn interface {
 }
 
 // closeCodeUnauthorized is the close code the bridge uses for a connection
-// with a missing or wrong token.
+// that failed authentication (a wrong or missing proof; with a legacy bridge,
+// a wrong or missing token).
 const closeCodeUnauthorized = 1008
 
 // UnauthorizedError means the bridge closed the connection with code 1008
-// because it rejected the bridge token. Retrying cannot help, so the retrying
-// open fails fast on it. Mirrors TS `BridgeWebSocketUnauthorizedError`.
+// because it rejected the host's authentication proof (or, with a legacy
+// bridge, its token). Retrying cannot help, so the retrying open fails fast
+// on it. Mirrors TS `BridgeWebSocketAuthenticationError` for a 1008 close.
 type UnauthorizedError struct{ Code int }
 
 func (e *UnauthorizedError) Error() string {
@@ -154,6 +157,14 @@ type DialOptions struct {
 	OnHello func(*Hello)
 	// WriteTimeout bounds each write (default DefaultWriteTimeout).
 	WriteTimeout time.Duration
+	// AuthPrivateKey is the host-only BridgeAuthKeyPair.PrivateKey. When set,
+	// Dial answers the bridge's authentication challenge (the first frame)
+	// with a signed proof before anything else, also without WaitForHello,
+	// and the hello deadline covers the challenge. A bridge that sends no
+	// valid challenge fails with *AuthenticationError. Empty keeps the
+	// legacy token flow (the token in the endpoint URL), which current
+	// bridges reject.
+	AuthPrivateKey string
 	// Origin is unused: Dial derives the handshake's Origin header from the
 	// target URL itself (x/net/websocket requires one; TS's bridge client,
 	// dialing through a browser or Node WebSocket client, sets none). Kept
@@ -169,6 +180,18 @@ type DialOptions struct {
 // accepts cannot be missed. On any failure or ctx cancellation the socket is
 // closed and no goroutine is left behind (ab46c30).
 func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) (Conn, error) {
+	var authKey ed25519.PrivateKey
+	if opts.AuthPrivateKey != "" {
+		key, err := ParseBridgeAuthPrivateKey(opts.AuthPrivateKey)
+		if err != nil {
+			return nil, err
+		}
+		authKey = key
+	}
+	return dial(ctx, endpoint, opts, authKey)
+}
+
+func dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions, authKey ed25519.PrivateKey) (Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, abortError(ctx)
 	}
@@ -200,7 +223,8 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 		writeTimeout = DefaultWriteTimeout
 	}
 	conn := &wsConn{ws: ws, closeInfo: closeInfo, writeTimeout: writeTimeout}
-	if !opts.WaitForHello {
+	authenticated := authKey == nil
+	if !opts.WaitForHello && authenticated {
 		if ctx.Err() != nil {
 			_ = conn.Close()
 			return nil, abortError(ctx)
@@ -253,12 +277,32 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 			}
 			// Like the TS `ws` close event: the server's status code, 1005
 			// for a close frame without one, 1006 for no close frame. Like
-			// TS, 1008 is a rejected token and is final.
+			// TS, 1008 is a rejected proof (or legacy token) and is final.
 			code := closeInfo.Code()
 			if code == closeCodeUnauthorized {
 				return fail(&UnauthorizedError{Code: code})
 			}
 			return fail(fmt.Errorf("The harness bridge closed the WebSocket (code %d) before sending bridge-hello.", code)) //nolint:staticcheck // matches TS SDK's exact error text
+		}
+		if !authenticated {
+			// The first frame is the bridge's challenge: answer it before
+			// anything else (TS openBridgeWebSocket onMessage).
+			proof, err := CreateBridgeAuthProof(authKey, string(msg))
+			if err != nil {
+				return fail(&AuthenticationError{Message: invalidChallengeMessage})
+			}
+			authenticated = true
+			if err := conn.Send([]byte(proof)); err != nil {
+				return fail(err)
+			}
+			if !opts.WaitForHello {
+				if !stop() {
+					return fail(abortError(ctx))
+				}
+				_ = ws.SetReadDeadline(time.Time{})
+				return conn, nil
+			}
+			continue
 		}
 		hello, ok := parseHello(msg)
 		if !ok {
@@ -316,8 +360,9 @@ func abortError(ctx context.Context) error {
 
 // sanitizeDialError strips the dial target's query string out of a
 // golang.org/x/net/websocket *DialError before it is allowed to propagate.
-// Launch embeds the bridge's secret channel token into the dial URL's query
-// string via WithBridgeToken (the `agent_bridge_token` param). x/net's
+// A legacy (token) endpoint carries the bridge's secret channel token in the
+// dial URL's query string via WithBridgeToken (the `agent_bridge_token`
+// param), and a caller-supplied endpoint URL may carry other secrets. x/net's
 // DialError.Error() unconditionally renders the full dial URL
 // (config.Location.String()) for every kind of dial failure — DNS failure,
 // connection refused, TLS failure, a non-101 handshake response — so without
@@ -348,6 +393,10 @@ type OpenOptions struct {
 	OnHello func(*Hello)
 	// WriteTimeout bounds each write.
 	WriteTimeout time.Duration
+	// AuthPrivateKey answers the bridge's authentication challenge on every
+	// attempt (see DialOptions.AuthPrivateKey). An invalid key fails before
+	// any attempt.
+	AuthPrivateKey string
 }
 
 // OpenBridgeWebSocket dials endpoint and waits for bridge-hello, retrying
@@ -359,13 +408,25 @@ func OpenBridgeWebSocket(ctx context.Context, endpoint harness.PortEndpoint, opt
 	if name == "" {
 		name = "bridge"
 	}
+	var authKey ed25519.PrivateKey
+	if opts.AuthPrivateKey != "" {
+		key, err := ParseBridgeAuthPrivateKey(opts.AuthPrivateKey)
+		if err != nil {
+			return nil, err
+		}
+		authKey = key
+	}
+	return openBridgeWebSocket(ctx, endpoint, opts, name, authKey)
+}
+
+func openBridgeWebSocket(ctx context.Context, endpoint harness.PortEndpoint, opts OpenOptions, name string, authKey ed25519.PrivateKey) (Conn, error) {
 	deadline := time.Now().Add(opts.Timeout)
 	attempt := 0
 	var lastErr error
 	for ctx.Err() == nil && time.Now().Before(deadline) {
 		attempt++
 		remaining := max(time.Until(deadline), time.Millisecond)
-		conn, err := Dial(ctx, endpoint, DialOptions{
+		conn, err := dial(ctx, endpoint, DialOptions{
 			Name:          name,
 			OpenTimeout:   min(10*time.Second, remaining),
 			WaitForHello:  true,
@@ -373,7 +434,7 @@ func OpenBridgeWebSocket(ctx context.Context, endpoint harness.PortEndpoint, opt
 			HelloDeadline: deadline,
 			OnHello:       opts.OnHello,
 			WriteTimeout:  opts.WriteTimeout,
-		})
+		}, authKey)
 		if err == nil {
 			return conn, nil
 		}
@@ -381,7 +442,8 @@ func OpenBridgeWebSocket(ctx context.Context, endpoint harness.PortEndpoint, opt
 			return nil, abortError(ctx)
 		}
 		var unauthorized *UnauthorizedError
-		if errors.As(err, &unauthorized) {
+		var authErr *AuthenticationError
+		if errors.As(err, &unauthorized) || errors.As(err, &authErr) {
 			return nil, err
 		}
 		lastErr = err

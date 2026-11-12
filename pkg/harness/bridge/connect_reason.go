@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"crypto/ed25519"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -53,6 +54,13 @@ type BridgeConnectOptions struct {
 	OnHello func(*Hello)
 	// WriteTimeout bounds each write (default DefaultWriteTimeout).
 	WriteTimeout time.Duration
+	// AuthPrivateKey is the host-only BridgeAuthKeyPair.PrivateKey (TS
+	// createBridgeWebSocketConnect privateKey). It answers the bridge's
+	// authentication challenge on every connect and reconnect. It is parsed
+	// once: an invalid key makes every connect fail with that error before
+	// dialing. Empty keeps the legacy token flow, which current bridges
+	// reject.
+	AuthPrivateKey string
 }
 
 const (
@@ -63,20 +71,31 @@ const (
 // NewBridgeConnectFunc is the shared connect function for bridge-backed
 // adapters. Mirrors TS `createBridgeWebSocketConnect`.
 //
-// A connection only counts as established once the socket is open and the
+// A connection only counts as established once the socket is open, the host
+// answered the bridge's authentication challenge (AuthPrivateKey), and the
 // bridge has sent `bridge-hello`. Some sandbox runtimes complete the host-side
 // upgrade before the connection reaches the bridge process, and frames sent in
-// that gap are dropped. The bridge sends `bridge-hello` the instant it accepts a
-// connection and nothing else until the host sends `start` or `resume`, so no
-// frame is lost between the handshake and the channel wiring the socket.
+// that gap are dropped. The host therefore sends nothing until the bridge sends
+// its challenge. The bridge sends `bridge-hello` once the proof is verified,
+// and nothing else until the host sends `start` or `resume`, so no frame is
+// lost between the handshake and the channel wiring the socket.
 //
-// A connection the bridge closes with code 1008 (bad token) fails at once with
-// *UnauthorizedError instead of being retried. x/net/websocket does not expose
+// A connection the bridge closes with code 1008 (rejected proof) fails at once
+// with *UnauthorizedError, and one whose bridge sends no valid challenge with
+// *AuthenticationError, instead of being retried. x/net/websocket does not expose
 // close codes, so Dial reads the code off the raw connection (websocket.CloseInfo).
 func NewBridgeConnectFunc(endpoint harness.PortEndpoint, opts BridgeConnectOptions) ConnectFunc {
 	name := opts.Name
 	if name == "" {
 		name = "bridge"
+	}
+	var authKey ed25519.PrivateKey
+	if opts.AuthPrivateKey != "" {
+		key, err := ParseBridgeAuthPrivateKey(opts.AuthPrivateKey)
+		if err != nil {
+			return func(context.Context) (Conn, error) { return nil, err }
+		}
+		authKey = key
 	}
 	return func(ctx context.Context) (Conn, error) {
 		initial := ConnectReasonFromContext(ctx) == ConnectReasonOpen
@@ -88,13 +107,13 @@ func NewBridgeConnectFunc(endpoint harness.PortEndpoint, opts BridgeConnectOptio
 			defer stop()
 		}
 		if initial && opts.OpenRetryTimeout > 0 {
-			return OpenBridgeWebSocket(ctx, endpoint, OpenOptions{
+			return openBridgeWebSocket(ctx, endpoint, OpenOptions{
 				Name: name, Timeout: opts.OpenRetryTimeout, OnHello: opts.OnHello, WriteTimeout: opts.WriteTimeout,
-			})
+			}, name, authKey)
 		}
-		return Dial(ctx, endpoint, DialOptions{
+		return dial(ctx, endpoint, DialOptions{
 			Name: name, OpenTimeout: bridgeOpenTimeout, WaitForHello: true, HelloTimeout: bridgeHelloTimeout,
 			OnHello: opts.OnHello, WriteTimeout: opts.WriteTimeout,
-		})
+		}, authKey)
 	}
 }

@@ -2,6 +2,7 @@ package bridgetest
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +21,19 @@ type handshake struct{ headers http.Header }
 
 // Options configures a Server.
 type Options struct {
-	// Token is the required `agent_bridge_token` query parameter value.
+	// PublicKey, when set, makes the server authenticate hosts like the
+	// current TS runBridge (bridge-auth.ts): every connection gets a fresh
+	// challenge, the first inbound frame must be a valid proof signed by
+	// this BridgeAuthKeyPair.PublicKey's private key (otherwise the
+	// connection is closed with 1008 "unauthorized"), and bridge-hello
+	// follows the proof. Token and AnyToken are then ignored, and URL()
+	// carries no token.
+	PublicKey string
+	// AuthTimeout bounds the wait for the proof (default bridge.AuthTimeout);
+	// the connection is dropped without a close frame when it passes.
+	AuthTimeout time.Duration
+	// Token is the required `agent_bridge_token` query parameter value
+	// (legacy token bridges).
 	Token string
 	// AnyToken accepts every `agent_bridge_token` value, for tests where the
 	// host mints a random token the test cannot know.
@@ -99,9 +112,13 @@ func NewServer(opts Options) *Server {
 // Addr returns the fake bridge's host:port.
 func (s *Server) Addr() string { return strings.TrimPrefix(s.ts.URL, "http://") }
 
-// URL returns a ws:// endpoint URL carrying the configured token.
+// URL returns a ws:// endpoint URL carrying the configured token, or the
+// plain endpoint for a public-key server.
 func (s *Server) URL() string {
-	return "ws://" + s.Addr() + "/?" + bridge.TokenQueryParam + "=" + s.opts.Token
+	if s.opts.PublicKey != "" {
+		return "ws://" + s.Addr() + "/"
+	}
+	return "ws://" + s.Addr() + "/?" + bridge.TokenQueryParam + "=" + s.opts.Token //nolint:staticcheck // legacy token bridges
 }
 
 // Endpoint returns a harness.PortEndpoint for URL().
@@ -139,9 +156,72 @@ func (s *Server) DropActive() {
 	}
 }
 
+// authFrameCodec receives one frame with its opcode.
+var authFrameCodec = websocket.Codec{
+	Unmarshal: func(data []byte, payloadType byte, v interface{}) error {
+		f := v.(*authFrame)
+		f.data, f.binary = data, payloadType == websocket.BinaryFrame
+		return nil
+	},
+}
+
+type authFrame struct {
+	data   []byte
+	binary bool
+}
+
+// authenticate runs the bridge side of the public-key handshake (TS
+// authenticateBridgeConnection) and reports whether the host proved it holds
+// the private key.
+func (s *Server) authenticate(ws *websocket.Conn) bool {
+	publicKey, err := bridge.ParseBridgeAuthPublicKey(s.opts.PublicKey)
+	if err != nil {
+		_ = ws.Close()
+		return false
+	}
+	timeout := s.opts.AuthTimeout
+	if timeout <= 0 {
+		timeout = bridge.AuthTimeout
+	}
+	challenge := bridge.NewBridgeAuthChallenge()
+	if err := websocket.Message.Send(ws, bridge.SerializeBridgeAuthChallengeFrame(challenge)); err != nil {
+		_ = ws.Close()
+		return false
+	}
+	_ = ws.SetReadDeadline(time.Now().Add(timeout))
+	var f authFrame
+	if err := authFrameCodec.Receive(ws, &f); err != nil {
+		if errors.Is(err, websocket.ErrFrameTooLarge) {
+			closeUnauthorized(ws)
+			return false
+		}
+		_ = ws.Close() // timeout or disconnect: TS ws.terminate()
+		return false
+	}
+	_ = ws.SetReadDeadline(time.Time{})
+	if !bridge.VerifyBridgeAuthProof(publicKey, challenge, f.data, f.binary) {
+		closeUnauthorized(ws)
+		return false
+	}
+	return true
+}
+
+// closeUnauthorized mirrors runBridge: accept the WebSocket, then close it
+// with code 1008 "unauthorized", rather than rejecting the HTTP upgrade.
+func closeUnauthorized(ws *websocket.Conn) {
+	ws.PayloadType = websocket.CloseFrame
+	_, _ = ws.Write(append([]byte{0x03, 0xf0}, "unauthorized"...))
+	_ = ws.Close()
+}
+
 func (s *Server) handle(ws *websocket.Conn) {
-	token := ws.Request().URL.Query().Get(bridge.TokenQueryParam)
-	if !s.opts.AnyToken && token != s.opts.Token {
+	if s.opts.PublicKey != "" {
+		ws.MaxPayloadBytes = bridge.AuthMaxFrameBytes
+		if !s.authenticate(ws) {
+			return
+		}
+		ws.MaxPayloadBytes = 0
+	} else if token := ws.Request().URL.Query().Get(bridge.TokenQueryParam); !s.opts.AnyToken && token != s.opts.Token { //nolint:staticcheck // legacy token bridges
 		// Mirrors runBridge: accept the WebSocket, then close it with code
 		// 1008 "unauthorized", rather than rejecting the HTTP upgrade.
 		ws.PayloadType = websocket.CloseFrame
