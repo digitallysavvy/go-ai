@@ -7,8 +7,8 @@ import (
 	"io"
 	"reflect"
 	"strings"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
