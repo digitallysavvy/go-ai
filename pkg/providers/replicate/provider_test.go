@@ -138,7 +138,9 @@ func TestVideoModelHelpers(t *testing.T) {
 	if _, ok := input["pollIntervalMs"]; ok {
 		t.Fatalf("pollIntervalMs should not be forwarded in input: %#v", input)
 	}
-	if input["motion_bucket"] != 127 {
+	// Option values are read through their JSON form (typed-option
+	// normalization), so the number is a float64 with the same wire text.
+	if input["motion_bucket"] != float64(127) {
 		t.Fatalf("provider option should be forwarded: %#v", input)
 	}
 
