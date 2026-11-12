@@ -119,3 +119,12 @@ func TestR93provbMaiTranscriptionNumericErrorCode(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TS mediaTypeToExtension: the lower-cased second segment ("a/b/c" -> "b").
+func TestR93provbMediaTypeExtension(t *testing.T) {
+	for in, want := range map[string]string{"audio/X-WAV": "wav", "audio/OGG": "ogg", "audio/webm/x": "webm", "": "", "audio": ""} {
+		if got := mediaTypeToExtension(in); got != want {
+			t.Errorf("mediaTypeToExtension(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

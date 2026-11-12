@@ -9,7 +9,6 @@ import (
 	"io"
 	"mime/multipart"
 	"regexp"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -525,23 +524,7 @@ func durationOrZero(d *float64) float64 {
 
 // getExtensionFromMimeType mirrors TS provider-utils mediaTypeToExtension.
 func getExtensionFromMimeType(mimeType string) string {
-	parts := strings.SplitN(strings.ToLower(mimeType), "/", 2)
-	subtype := ""
-	if len(parts) == 2 {
-		subtype = parts[1]
-	}
-	switch subtype {
-	case "mpeg":
-		return "mp3"
-	case "x-wav":
-		return "wav"
-	case "opus":
-		return "ogg"
-	case "mp4", "x-m4a":
-		return "m4a"
-	default:
-		return subtype
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 // openaiTranscriptionLanguages maps the language names whisper returns to

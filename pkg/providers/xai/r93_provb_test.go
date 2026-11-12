@@ -167,3 +167,12 @@ func TestR93provbBatchTextToolCallContentOrder(t *testing.T) {
 		t.Fatalf("content = %v", kinds)
 	}
 }
+
+// TS mediaTypeToExtension: the lower-cased second segment ("a/b/c" -> "b").
+func TestR93provbMediaTypeExtension(t *testing.T) {
+	for in, want := range map[string]string{"audio/X-WAV": "wav", "audio/OGG": "ogg", "audio/webm/x": "webm", "": "", "audio": ""} {
+		if got := xaiAudioExtension(in); got != want {
+			t.Errorf("xaiAudioExtension(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

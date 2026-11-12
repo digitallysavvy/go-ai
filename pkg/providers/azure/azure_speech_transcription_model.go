@@ -24,23 +24,7 @@ import (
 // mediaTypeToExtension maps a media type to a file extension, mirroring TS
 // provider-utils mediaTypeToExtension.
 func mediaTypeToExtension(mediaType string) string {
-	parts := strings.SplitN(strings.ToLower(mediaType), "/", 2)
-	subtype := ""
-	if len(parts) == 2 {
-		subtype = parts[1]
-	}
-	switch subtype {
-	case "mpeg":
-		return "mp3"
-	case "x-wav":
-		return "wav"
-	case "opus":
-		return "ogg"
-	case "mp4", "x-m4a":
-		return "m4a"
-	default:
-		return subtype
-	}
+	return providerutils.MediaTypeToExtension(mediaType)
 }
 
 // AzureSpeechTranscriptionModel is the Azure Speech "Fast Transcription" file

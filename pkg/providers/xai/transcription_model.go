@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -235,10 +234,10 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		}
 		audio = decoded
 	}
+	// TS File type is the media type (an empty one is sent as
+	// application/octet-stream by FormData) and the name is
+	// audio.<mediaTypeToExtension(mediaType)>.
 	mediaType := opts.MimeType
-	if mediaType == "" {
-		mediaType = "application/octet-stream"
-	}
 	filename := "audio." + xaiAudioExtension(mediaType)
 	part, err := providerutils.CreateFormDataFile(writer, "file", filename, mediaType)
 	if err != nil {
@@ -318,29 +317,7 @@ func xaiKeyterms(raw interface{}) []string {
 }
 
 func xaiAudioExtension(mediaType string) string {
-	switch strings.ToLower(mediaType) {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/opus":
-		return "ogg"
-	case "audio/mp4", "audio/m4a", "audio/x-m4a":
-		return "m4a"
-	case "audio/pcm":
-		return "pcm"
-	case "audio/mulaw":
-		return "mulaw"
-	case "audio/alaw":
-		return "alaw"
-	default:
-		if slash := strings.LastIndex(mediaType, "/"); slash >= 0 && slash < len(mediaType)-1 {
-			return mediaType[slash+1:]
-		}
-		return ""
-	}
+	return providerutils.MediaTypeToExtension(mediaType) // TS mediaTypeToExtension
 }
 
 func decodeXAITranscriptionAudioBase64(content string) ([]byte, error) {
