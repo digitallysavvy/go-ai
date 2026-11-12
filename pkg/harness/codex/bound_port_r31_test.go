@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/codex"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -25,12 +26,12 @@ func (s anyPortSandbox) Restricted() providerutils.SandboxSession { return s }
 // lifecycle bridge coordinates, not the requested one: the sandbox exposes
 // 4000 but the fake bridge reports 4319.
 func TestDetachPersistsBoundBridgePort(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	sandbox.ports = []int{4000}
 	wireSpawn(sandbox)
-	h := codex.New(codex.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s1", SandboxSession: anyPortSandbox{sandbox}, SessionWorkDir: "/workdir",
 	})

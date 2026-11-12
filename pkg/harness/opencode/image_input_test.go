@@ -30,7 +30,7 @@ func promptStart(t *testing.T, prompt harness.Prompt) (any, error) {
 		})
 	})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}

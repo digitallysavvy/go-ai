@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -126,7 +127,7 @@ func newFakeSandbox(srv *bridgetest.Server) *fakeSandbox {
 
 func newServer(t *testing.T, token string, onStart func(*bridgetest.Turn, map[string]any)) *bridgetest.Server {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: token, OnStart: onStart})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: onStart})
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -334,7 +335,6 @@ func TestDoStartFullRoundTrip(t *testing.T) {
 	})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +415,6 @@ func TestDoStartBrokersCredentials(t *testing.T) {
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 		s.ForwardEnv = nil
 		s.CredentialEnv = []string{"TEST_API_KEY"}
 		s.Env = map[string]string{}
@@ -474,7 +473,6 @@ func TestDoStartAskUserQuestionsToolCallCandidate(t *testing.T) {
 	})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 		s.IsMcpToolCall = func(tc ToolCall) bool {
 			mu.Lock()
 			suppressed = tc.ToolCallID == "tc-1"
@@ -618,7 +616,7 @@ func TestDoStartACPProcessLossDiskReplay(t *testing.T) {
 		// call here would mean the port regressed to a fresh turn.
 	})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	h, err := CreateACP(testSettings(func(*Settings) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +713,7 @@ func TestDoStartACPProcessLossLossyRerun(t *testing.T) {
 		})
 	})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	h, err := CreateACP(testSettings(func(*Settings) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -853,7 +851,7 @@ func TestDoStartACPProcessLossColdRestore(t *testing.T) {
 		})
 	})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	h, err := CreateACP(testSettings(func(*Settings) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -940,7 +938,6 @@ func TestDoStartForwardsHostToolMCPTransportMCPServersAndBuiltinToolMetadata(t *
 	})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 		s.HostToolMCPTransport = HostToolMCPHTTP
 		s.MCPServers = map[string]any{"my-server": map[string]any{"url": "https://example.com/mcp"}}
 		s.BuiltinTools = map[string]harness.BuiltinTool{
@@ -1037,11 +1034,9 @@ func TestDoStart_AuthResolvedAtStartNotConstruction(t *testing.T) {
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
 
-	h2, ok := h.(*acpHarness)
-	if !ok {
+	if _, ok := h.(*acpHarness); !ok {
 		t.Fatalf("harness type = %T", h)
 	}
-	h2.settings.MintBridgeToken = func(string) string { return token }
 
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "auth-deferral-session", SessionWorkDir: "/vercel/sandbox/test-acp-auth-deferral", SandboxSession: sandbox,
@@ -1082,11 +1077,11 @@ func TestDoStart_AuthResolvedAtStartNotConstruction(t *testing.T) {
 	}
 }
 
-// Port of TS "reuses a caller-minted token and passes endpoint headers when
-// attaching" (acp-harness.test.ts:2022): DoDetach returns bridge coordinates
-// carrying the caller-minted token, and reattaching (a second DoStart with
-// that ResumeSessionState) must reuse the same token — no second
-// MintBridgeToken call — and the identical `reconnect` config, and a custom
+// Port of TS "reuses the bridge private key and passes endpoint headers when
+// attaching" (acp-harness.test.ts, c849d37dac): DoDetach returns bridge
+// coordinates carrying the session's private key, and reattaching (a second
+// DoStart with that ResumeSessionState) must reuse the same key and the
+// identical `reconnect` config, and a custom
 // PortEndpoint's headers must travel to both the initial and the reattach
 // WebSocket handshake.
 func TestDoDetach_ReattachReusesTokenHeadersAndReconnect(t *testing.T) {
@@ -1094,17 +1089,9 @@ func TestDoDetach_ReattachReusesTokenHeadersAndReconnect(t *testing.T) {
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
 
-	var mintMu sync.Mutex
-	var mintCalls []string
 	reconnect := bridge.ReconnectOptions{MaxElapsed: 120 * time.Second, InitialDelay: 100 * time.Millisecond, MaxDelay: 5 * time.Second}
 	traceHeaders := map[string]string{"E2B-Traffic-Access-Token": "traffic-token"}
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(sandboxID string) string {
-			mintMu.Lock()
-			mintCalls = append(mintCalls, sandboxID)
-			mintMu.Unlock()
-			return token
-		}
 		s.Reconnect = reconnect
 		s.PortEndpoint = &harness.PortEndpoint{URL: "ws://" + srv.Addr() + "/?existing=value", Headers: traceHeaders}
 	}))
@@ -1119,12 +1106,6 @@ func TestDoDetach_ReattachReusesTokenHeadersAndReconnect(t *testing.T) {
 		t.Fatalf("DoStart (initial): %v", err)
 	}
 
-	mintMu.Lock()
-	if len(mintCalls) != 1 || mintCalls[0] != "test-sandbox" {
-		t.Fatalf("mintCalls after initial start = %v, want exactly [test-sandbox]", mintCalls)
-	}
-	mintMu.Unlock()
-
 	initialChannel := sess.(*session).p.channel
 	if got := initialChannel.ReconnectOptions(); got != reconnect {
 		t.Fatalf("initial channel reconnect options = %+v, want %+v", got, reconnect)
@@ -1138,8 +1119,8 @@ func TestDoDetach_ReattachReusesTokenHeadersAndReconnect(t *testing.T) {
 	if err := json.Unmarshal(resumeFrom.Data, &resumeData); err != nil {
 		t.Fatalf("unmarshal resumeFrom.Data: %v", err)
 	}
-	if resumeData.Bridge == nil || resumeData.Bridge.Token != token {
-		t.Fatalf("resumeFrom bridge coords = %+v, want token %q", resumeData.Bridge, token)
+	if resumeData.Bridge == nil || resumeData.Bridge.PrivateKey != bridgeauthkeys.Testing().PrivateKey {
+		t.Fatalf("resumeFrom bridge coords = %+v, want the session private key", resumeData.Bridge)
 	}
 
 	attachedSess, err := h.DoStart(context.Background(), harness.StartOptions{
@@ -1150,12 +1131,6 @@ func TestDoDetach_ReattachReusesTokenHeadersAndReconnect(t *testing.T) {
 		t.Fatalf("DoStart (reattach): %v", err)
 	}
 	t.Cleanup(func() { _ = attachedSess.DoDestroy(context.Background()) })
-
-	mintMu.Lock()
-	defer mintMu.Unlock()
-	if len(mintCalls) != 1 {
-		t.Fatalf("mintCalls after reattach = %v, want still exactly 1 (the token must be reused, not re-minted)", mintCalls)
-	}
 
 	attachedChannel := attachedSess.(*session).p.channel
 	if got := attachedChannel.ReconnectOptions(); got != reconnect {
@@ -1232,7 +1207,7 @@ func TestDoStartACPContinueRecoveryPropagatesEventLogReadFailure(t *testing.T) {
 	const token = "readerr-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	h, err := CreateACP(testSettings(func(*Settings) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1320,7 +1295,7 @@ func TestDoStartColdRestoreDropsStaleRecoveryStatus(t *testing.T) {
 		})
 	})
 	sandbox := newFakeSandbox(srv)
-	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	h, err := CreateACP(testSettings(func(*Settings) {}))
 	if err != nil {
 		t.Fatal(err)
 	}

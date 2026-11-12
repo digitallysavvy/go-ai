@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -102,7 +103,7 @@ func newFakeSandbox(srv *bridgetest.Server) *fakeSandbox {
 // tests set it directly).
 func newServer(t *testing.T, token string, onStart func(*bridgetest.Turn, map[string]any)) *bridgetest.Server {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: token, OnStart: onStart})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnStart: onStart})
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -190,12 +191,10 @@ func TestGetBootstrapCachesAcrossCalls(t *testing.T) {
 
 // TS: "passes the harness client app to the bridge environment"
 func TestDoStartSpawnsBridgeWithClientAppAndToken(t *testing.T) {
-	// The default random token is unknown to the test, so the server accepts any.
-	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	h := CreateDeepAgents()
-	// No MintBridgeToken override: exercise the default random-token path.
 	// This test only checks what the adapter did *before* connecting (the
 	// spawn command and environment), which happen first.
 	_, _ = h.DoStart(context.Background(), harness.StartOptions{
@@ -212,8 +211,11 @@ func TestDoStartSpawnsBridgeWithClientAppAndToken(t *testing.T) {
 	if env["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk-harness-deepagents/"+Version {
 		t.Fatalf("AI_SDK_HARNESS_CLIENT_APP = %q", env["AI_SDK_HARNESS_CLIENT_APP"])
 	}
-	if len(env[bridge.EnvChannelToken]) != 64 {
-		t.Fatalf("bridge token = %q, want a 64-char hex token", env[bridge.EnvChannelToken])
+	if env[bridge.EnvAuthPublicKey] != bridgeauthkeys.Testing().PublicKey {
+		t.Fatalf("bridge public key = %q, want the session public key", env[bridge.EnvAuthPublicKey])
+	}
+	if _, ok := env["BRIDGE_CHANNEL_TOKEN"]; ok {
+		t.Fatal("spawn env carries a shared bridge token")
 	}
 	if len(sandbox.spawnCommands) == 0 {
 		t.Fatal("expected a spawn command")
@@ -260,9 +262,8 @@ func TestDoStartFullRoundTrip(t *testing.T) {
 	})
 	sandbox := newFakeSandbox(srv)
 	h := CreateDeepAgents(Settings{
-		MintBridgeToken: func(string) string { return token },
-		Effort:          "max",
-		Thinking:        &ThinkingConfig{Type: ThinkingTypeAdaptive, Display: "summarized"},
+		Effort:   "max",
+		Thinking: &ThinkingConfig{Type: ThinkingTypeAdaptive, Display: "summarized"},
 	})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/deepagents-test-session",
@@ -330,7 +331,7 @@ func TestDoStartResumeFromPassesResumeFlag(t *testing.T) {
 	const token = "resume-token"
 	srv := newServer(t, token, func(turn *bridgetest.Turn, _ map[string]any) {})
 	sandbox := newFakeSandbox(srv)
-	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }})
+	h := CreateDeepAgents(Settings{})
 	resumeFrom, err := harness.NewResumeSessionState("deepagents", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -361,7 +362,6 @@ func TestDoStartBrokersCredentialsWhenSupported(t *testing.T) {
 	var forwarded []harness.CredentialForwardingOptions
 	var fmu sync.Mutex
 	h := CreateDeepAgents(Settings{
-		MintBridgeToken: func(string) string { return token },
 		Auth: harness.AuthEnvironment(map[string]string{
 			"ANTHROPIC_API_KEY": "anthropic-secret", "ANTHROPIC_BASE_URL": "https://anthropic.example",
 		}),
@@ -434,7 +434,7 @@ func TestDoStartPassesMCPServers(t *testing.T) {
 	})
 	sandbox := newFakeSandbox(srv)
 	mcpServers := map[string]any{"memory": map[string]any{"command": "memory-mcp", "args": []any{}}}
-	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }, MCPServers: mcpServers})
+	h := CreateDeepAgents(Settings{MCPServers: mcpServers})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/deepagents-test-session",
 		SandboxSession: sandbox,
@@ -474,7 +474,7 @@ func TestSuspendResolvesTurnCleanly(t *testing.T) {
 		<-release
 	})
 	sandbox := newFakeSandbox(srv)
-	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }})
+	h := CreateDeepAgents(Settings{})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "suspend-session", SessionWorkDir: "/vercel/sandbox/deepagents-suspend-session",
 		SandboxSession: sandbox,
@@ -518,8 +518,7 @@ func TestPromptTurnRejectsOnNonSuspendedClose(t *testing.T) {
 	})
 	sandbox := newFakeSandbox(srv)
 	h := CreateDeepAgents(Settings{
-		MintBridgeToken: func(string) string { return token },
-		Reconnect:       bridge.ReconnectOptions{MaxElapsed: 20 * time.Millisecond, InitialDelay: time.Millisecond, MaxDelay: 2 * time.Millisecond},
+		Reconnect: bridge.ReconnectOptions{MaxElapsed: 20 * time.Millisecond, InitialDelay: time.Millisecond, MaxDelay: 2 * time.Millisecond},
 	})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "drop-session", SessionWorkDir: "/vercel/sandbox/deepagents-drop-session", SandboxSession: sandbox,
@@ -568,14 +567,13 @@ func TestResolveAuthenticationModeAndEnv(t *testing.T) {
 // TS #22367: SubmitToolResult forwards the full tool-result part as
 // `toolResult` alongside output/isError.
 func TestSubmitToolResult_ForwardsToolResult(t *testing.T) {
-	const token = "tr-token"
 	got := make(chan map[string]any, 1)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: token,
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey,
 		OnStart:      func(*bridgetest.Turn, map[string]any) {},
 		OnToolResult: func(f map[string]any) { got <- f },
 	})
 	t.Cleanup(srv.Close)
-	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }})
+	h := CreateDeepAgents(Settings{})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "s", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv),
 	})

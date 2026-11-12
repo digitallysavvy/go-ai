@@ -108,8 +108,10 @@ type Settings struct {
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions
-	// MintBridgeToken creates the bridge channel token. Defaults to a random
-	// 32-byte hex token. Requires the sandbox to expose an ID.
+	// MintBridgeToken is ignored; New logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
 	MintBridgeToken harness.MintBridgeTokenCallback
 }
 

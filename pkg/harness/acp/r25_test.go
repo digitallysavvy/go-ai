@@ -92,7 +92,6 @@ func TestDoStartPersistsBoundBridgePort(t *testing.T) {
 	const token = "bound-port-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +131,6 @@ func TestToolCallClassificationErrorKeepsTypeInForwardedErrorPart(t *testing.T) 
 		turn.Emit(map[string]any{"type": "tool-call", "toolCallId": "tc-1", "toolName": "run", "input": "{}"})
 	})
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 		s.IsMcpToolCall = func(ToolCall) bool { panic(sentinel) }
 	}))
 	if err != nil {
@@ -193,7 +191,6 @@ func TestTurnInFlightClearsWhenBridgeFinishesAfterEarlySettle(t *testing.T) {
 		})
 	})
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 		s.IsMcpToolCall = func(ToolCall) bool { panic("classifier failed") }
 	}))
 	if err != nil {

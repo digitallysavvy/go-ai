@@ -23,7 +23,7 @@ type sessionParams struct {
 	thinking                     *ThinkingConfig
 	effort                       string
 	bridgePort                   int
-	bridgeToken                  string
+	bridgePrivateKey             string
 	sandboxID                    string
 	sandboxCredentialEnvironment map[string]string
 	isResume                     bool
@@ -265,7 +265,7 @@ func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState
 	data := resumeStateData{
 		SandboxCredentialEnvironment: s.p.sandboxCredentialEnvironment,
 		Bridge: &bridgeCoords{
-			Port: s.p.bridgePort, Token: s.p.bridgeToken, LastSeenEventID: lastSeenEventID, SandboxID: s.p.sandboxID,
+			Port: s.p.bridgePort, PrivateKey: s.p.bridgePrivateKey, LastSeenEventID: lastSeenEventID, SandboxID: s.p.sandboxID,
 		},
 	}
 	return harness.NewContinueTurnState(HarnessID, data)
@@ -284,7 +284,7 @@ func (s *session) DoDetach(ctx context.Context) (*harness.ResumeSessionState, er
 	data := resumeStateData{
 		SandboxCredentialEnvironment: s.p.sandboxCredentialEnvironment,
 		Bridge: &bridgeCoords{
-			Port: s.p.bridgePort, Token: s.p.bridgeToken, LastSeenEventID: lastSeenEventID, SandboxID: s.p.sandboxID,
+			Port: s.p.bridgePort, PrivateKey: s.p.bridgePrivateKey, LastSeenEventID: lastSeenEventID, SandboxID: s.p.sandboxID,
 		},
 	}
 	return harness.NewResumeSessionState(HarnessID, data)
@@ -344,16 +344,17 @@ func teardown(channel *bridge.Channel, proc providerutils.SandboxProcess, operat
 // returns the resulting session. On any failure it returns ok=false so the
 // caller falls through to a fresh spawn.
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, bool) {
+	if coords.PrivateKey == "" {
+		// Legacy token coordinates (rejected by ValidateLifecycleStateData):
+		// a current bridge cannot be authenticated without the key.
+		return nil, false
+	}
 	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, HarnessID)
 	if err != nil {
 		return nil, false
 	}
-	endpoint, err = bridge.WithBridgeToken(endpoint, coords.Token)
-	if err != nil {
-		return nil, false
-	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge"}),
+		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge", AuthPrivateKey: coords.PrivateKey}),
 		InitialLastSeenEventID: coords.LastSeenEventID,
 		OnBridgeError:          onBridgeErr,
 		OnDiagnostic:           onDiagnostic,
@@ -365,7 +366,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	p.channel = channel
 	p.proc = nil
 	p.bridgePort = coords.Port
-	p.bridgeToken = coords.Token
+	p.bridgePrivateKey = coords.PrivateKey
 	p.isResume = true
 	return newSession(p), true
 }

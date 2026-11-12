@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
@@ -60,6 +61,7 @@ func CreateACP(settings Settings) (harness.Harness, error) {
 	if err := validateImplementation(impl); err != nil {
 		return nil, err
 	}
+	bridge.WarnMintBridgeTokenIgnored(settings.HarnessID, settings.MintBridgeToken, nil)
 	clientApp := settings.ClientApp
 	if clientApp == (ClientApp{}) {
 		clientApp = DefaultClientApp
@@ -127,8 +129,10 @@ type resumeStateData struct {
 }
 
 type bridgeCoords struct {
-	Port            int     `json:"port"`
-	Token           string  `json:"token"`
+	Port int `json:"port"`
+	// PrivateKey is the host-only bridge authentication key (TS c849d37dac);
+	// it never reaches the sandbox.
+	PrivateKey      string  `json:"privateKey"`
 	LastSeenEventID float64 `json:"lastSeenEventId"`
 	SandboxID       string  `json:"sandboxId,omitempty"`
 	StateDir        string  `json:"stateDir,omitempty"`
@@ -161,7 +165,7 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 	if b := v.Bridge; b != nil {
 		var bridgeProbe map[string]json.RawMessage
 		_ = json.Unmarshal(probe["bridge"], &bridgeProbe)
-		for _, key := range []string{"port", "token", "lastSeenEventId"} {
+		for _, key := range []string{"port", "privateKey", "lastSeenEventId"} {
 			if raw, ok := bridgeProbe[key]; !ok || isJSONNull(raw) {
 				return fmt.Errorf("ACP lifecycle state data: bridge.%s is required.", key) //nolint:staticcheck // mirrors the TS zod requirement
 			}
@@ -374,7 +378,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	if isNetwork {
 		sandboxID = networkSession.ID()
 	}
-	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, settings.HarnessID); err != nil {
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, nil, settings.HarnessID); err != nil {
 		return nil, err
 	}
 
@@ -669,7 +673,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	if err != nil {
 		return nil, err
 	}
-	token := mintBridgeToken(settings.MintBridgeToken, sandboxID)
+	bridgeAuth := bridgeauthkeys.New()
 
 	if _, err := toolSafeSandboxSession.Run(ctx, providerutils.SandboxProcessOptions{
 		Command: "mkdir -p " + harnessutil.ShellQuote(workDir) + " " + harnessutil.ShellQuote(bridgeStateDir),
@@ -700,7 +704,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	for k, v := range sandboxProviderAuthEnvironment {
 		env[k] = v
 	}
-	env[bridge.EnvChannelToken] = token
+	env[bridge.EnvAuthPublicKey] = bridgeAuth.PublicKey
 	env[bridge.EnvWSPort] = fmt.Sprint(port)
 
 	command := "node " + harnessutil.ShellQuote(resolvedBridgeDir+"/bridge.mjs") +
@@ -715,7 +719,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	}
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: settings.HarnessID + " ACP bridge", Source: settings.HarnessID, Sandbox: toolSafeSandboxSession,
-		Command: command, Env: env, Port: port, Token: token,
+		Command: command, Env: env, Port: port, AuthPublicKey: bridgeAuth.PublicKey,
 		BridgeStateDir: bridgeStateDir, BridgeType: settings.HarnessID, StartupTimeout: timeout,
 		ReplayFromDisk: respawnStrategy != nil && respawnStrategy.mode == acpRecoveryDiskReplay,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
@@ -727,7 +731,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	}
 
 	channelOpts := bridge.ChannelOptions{
-		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge", OpenRetryTimeout: timeout, StartContext: ctx}),
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey}),
 		Decode:        decodeOutbound,
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
@@ -776,7 +780,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
 	sessionArgs.bridgePort = launched.Port
-	sessionArgs.bridgeToken = token
+	sessionArgs.bridgePrivateKey = bridgeAuth.PrivateKey
 	sessionArgs.isResume = isResume
 	sessionArgs.acpSessionID = resumeData.ACPSessionID
 	switch {
@@ -813,13 +817,6 @@ func askUserQuestionsRequestMethod(s *AskUserQuestionsSettings) string {
 		return ""
 	}
 	return s.RequestMethod
-}
-
-func mintBridgeToken(cb harness.MintBridgeTokenCallback, sandboxID string) string {
-	if cb == nil {
-		return bridge.CreateBridgeToken()
-	}
-	return cb(sandboxID)
 }
 
 func uniqueStrings(values []string) []string {

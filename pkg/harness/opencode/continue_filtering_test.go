@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 )
 
 func finishPayload() map[string]any {
@@ -45,7 +46,7 @@ func TestDoPromptTurn_SendsInactiveBuiltinToolNames(t *testing.T) {
 				mu.Unlock()
 				turn.Emit(finishPayload())
 			})
-			h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }})
+			h, err := CreateOpenCode(Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -86,7 +87,7 @@ func TestDoPromptTurn_SendsInactiveBuiltinToolNames(t *testing.T) {
 
 func TestDoStart_RejectsSplitWriteEditFiltering(t *testing.T) {
 	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,14 +110,14 @@ func TestDoStart_RejectsSplitWriteEditFiltering(t *testing.T) {
 func TestDoContinueTurn_DoesNotWaitForPausedTurn(t *testing.T) {
 	var starts int32
 	markers := make(chan map[string]any, 4)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnToolResult: func(f map[string]any) { markers <- f },
 		OnFrame: func(ft string) {
 			if ft == bridge.TypeStart {
 				atomic.AddInt32(&starts, 1)
 			}
 		}})
 	t.Cleanup(srv.Close)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }})
+	h, err := CreateOpenCode(Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func TestDoContinueTurn_DoesNotWaitForPausedTurn(t *testing.T) {
 func TestDoContinueTurn_RerunSendsStartOnce(t *testing.T) {
 	var starts int32
 	markers := make(chan map[string]any, 4)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnToolResult: func(f map[string]any) { markers <- f },
 		OnFrame: func(ft string) {
 			if ft == bridge.TypeStart {
 				atomic.AddInt32(&starts, 1)
@@ -169,7 +170,7 @@ func TestDoContinueTurn_RerunSendsStartOnce(t *testing.T) {
 		},
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { turn.Emit(finishPayload()) }})
 	t.Cleanup(srv.Close)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h, err := CreateOpenCode(Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +207,7 @@ func TestDoContinueTurn_RerunSendsStartOnce(t *testing.T) {
 func TestDoContinueTurn_AfterRecoveredPromptSendsNoStart(t *testing.T) {
 	var starts int32
 	markers := make(chan map[string]any, 4)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey, OnToolResult: func(f map[string]any) { markers <- f },
 		OnFrame: func(ft string) {
 			if ft == bridge.TypeStart {
 				atomic.AddInt32(&starts, 1)
@@ -214,7 +215,7 @@ func TestDoContinueTurn_AfterRecoveredPromptSendsNoStart(t *testing.T) {
 		},
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { turn.Emit(finishPayload()) }})
 	t.Cleanup(srv.Close)
-	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h, err := CreateOpenCode(Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

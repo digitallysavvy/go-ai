@@ -18,7 +18,6 @@ func startFrameFor(t *testing.T, pm *PermissionModeMapping) map[string]any {
 	})
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return "tok" }
 		s.PermissionModeMapping = pm
 	}))
 	if err != nil {

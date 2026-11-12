@@ -243,7 +243,7 @@ func TestBuildConfig_ForwardsLaunchAndBridgeSettings(t *testing.T) {
 	if cfg.Port != 4319 || cfg.PortEndpoint != portEndpoint || cfg.StartupTimeout.Milliseconds() != 45_000 {
 		t.Errorf("port/portEndpoint/startupTimeout = %d/%+v/%v", cfg.Port, cfg.PortEndpoint, cfg.StartupTimeout)
 	}
-	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "sbx-1" {
+	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "sbx-1" { //nolint:staticcheck // the deprecated setting is still forwarded (ACP warns)
 		t.Error("MintBridgeToken not forwarded correctly")
 	}
 	if _, err := cfg.CredentialForwarding(context.Background(), harness.CredentialForwardingOptions{

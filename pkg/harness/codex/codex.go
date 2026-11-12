@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -35,6 +36,7 @@ type Harness struct {
 
 // New builds the codex harness. Mirrors TS `createCodex`.
 func New(settings Settings) *Harness {
+	bridge.WarnMintBridgeTokenIgnored(HarnessID, settings.MintBridgeToken, nil) //nolint:staticcheck // TS warnMintBridgeTokenIgnored
 	return &Harness{settings: settings, tools: builtinTools()}
 }
 
@@ -70,8 +72,10 @@ type resumeStateData struct {
 }
 
 type bridgeCoords struct {
-	Port            int     `json:"port"`
-	Token           string  `json:"token"`
+	Port int `json:"port"`
+	// PrivateKey is the host-only bridge authentication key (TS c849d37dac);
+	// it never reaches the sandbox.
+	PrivateKey      string  `json:"privateKey"`
 	LastSeenEventID float64 `json:"lastSeenEventId"`
 	SandboxID       string  `json:"sandboxId,omitempty"`
 }
@@ -98,7 +102,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if isNetwork {
 		sandboxID = networkSandbox.ID()
 	}
-	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, HarnessID); err != nil {
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, nil, HarnessID); err != nil {
 		return nil, err
 	}
 
@@ -176,7 +180,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	// Rung 1 — ATTACH. When lifecycle state carries live bridge coordinates,
 	// try to reopen a socket to the still-running bridge instead of
-	// respawning. No spawn, no fresh token. A continued (suspended) turn
+	// respawning. No spawn, no fresh key. A continued (suspended) turn
 	// requests replay of everything past the persisted cursor; a resumed
 	// (parked) session just attaches and waits for the next start. If the
 	// bridge is gone the open fails and DoStart falls through to a
@@ -219,10 +223,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if err != nil {
 		return nil, err
 	}
-	token := bridge.CreateBridgeToken()
-	if settings.MintBridgeToken != nil {
-		token = settings.MintBridgeToken(sandboxID)
-	}
+	bridgeAuth := bridgeauthkeys.New()
 
 	forwardedAuthEnv := sandboxAuthEnv
 	if !credentialsBrokered {
@@ -257,7 +258,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		Command: fmt.Sprintf("node %s --workdir %s --bridge-state-dir %s",
 			harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)) +
 			harnessutil.HostDisconnectTimeoutFlag(settings.HostDisconnectTimeout),
-		Env: env, Port: port, Token: token, ReplayFromDisk: respawnStrategy == "replay",
+		Env: env, Port: port, AuthPublicKey: bridgeAuth.PublicKey, ReplayFromDisk: respawnStrategy == "replay",
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
 			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, HarnessID)
@@ -268,7 +269,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	channelOpts := bridge.ChannelOptions{
-		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "codex bridge", OpenRetryTimeout: timeout, StartContext: ctx}),
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "codex bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey}),
 		Reconnect:     settings.Reconnect,
 		OnDiagnostic:  onDiagnostic,
 		OnBridgeError: bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID),
@@ -297,7 +298,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		codexConfig:          settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
 		isResume: isResume, seedResumeThreadOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun",
 		resumeThreadID: resumeData.ThreadID,
-		bridgePort:     launched.Port, bridgeToken: token, sandboxID: sandboxID,
+		bridgePort:     launched.Port, bridgePrivateKey: bridgeAuth.PrivateKey, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
 		permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 		turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,
@@ -332,21 +333,22 @@ type attachOptions struct {
 }
 
 // tryAttach reopens a socket to a still-running bridge using persisted
-// coordinates, reusing the existing token (no new mint) and reusing the
+// coordinates, reusing the persisted private key (no new key) and reusing the
 // existing process (proc: nil). Returns nil when the bridge is unreachable,
 // so the caller falls through to a spawn-based recovery. Mirrors TS rung 1
 // of `doStart`.
 func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
+	if opts.coords.PrivateKey == "" {
+		// Legacy token coordinates (rejected by ValidateLifecycleStateData):
+		// a current bridge cannot be authenticated without the key.
+		return nil
+	}
 	endpoint, err := bridge.ResolveBridgeEndpoint(ctx, opts.sandboxSession, opts.settings.PortEndpoint, opts.coords.Port)
 	if err != nil {
 		return nil
 	}
-	attachEndpoint, err := bridge.WithBridgeToken(endpoint, opts.coords.Token)
-	if err != nil {
-		return nil
-	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:                bridge.NewBridgeConnectFunc(attachEndpoint, bridge.BridgeConnectOptions{Name: "codex bridge"}),
+		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: "codex bridge", AuthPrivateKey: opts.coords.PrivateKey}),
 		Reconnect:              opts.settings.Reconnect,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
 		OnDiagnostic:           opts.onDiagnostic,
@@ -370,7 +372,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		codexConfig:          opts.codexConfig, mcpServers: opts.mcpServers, headers: opts.headers,
 		isResume: true, seedResumeThreadOnFirstPrompt: false, rerunContinue: false,
 		resumeThreadID: opts.resumeThreadID,
-		bridgePort:     opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.sandboxID,
+		bridgePort:     opts.coords.Port, bridgePrivateKey: opts.coords.PrivateKey, sandboxID: opts.sandboxID,
 		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
 		permissionMode:               opts.permissionMode, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
 		turnConfigurationFingerprint: opts.turnConfigurationFingerprint,

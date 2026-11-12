@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -16,7 +17,7 @@ type basicSandbox struct{ providerutils.SandboxSession }
 // TS OpenCode harness tests: a basic (non-network) sandbox session needs an
 // explicit port and portEndpoint, and cannot mint a bridge token without an id.
 func TestBasicSandboxSessionRequiresExplicitBridgeSettings(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	endpoint := &harness.PortEndpoint{URL: "ws://" + srv.Addr() + "/"}
 	for _, tc := range []struct {
@@ -26,10 +27,6 @@ func TestBasicSandboxSessionRequiresExplicitBridgeSettings(t *testing.T) {
 	}{
 		{"no port", func(s *Settings) { s.PortEndpoint = endpoint }, "The harness requires an explicit `port` setting when using a basic sandbox session."},
 		{"no endpoint", func(s *Settings) { s.Port = 4319 }, "The harness requires an explicit `portEndpoint` setting when using a basic sandbox session."},
-		{"mint without id", func(s *Settings) {
-			s.Port, s.PortEndpoint = 4319, endpoint
-			s.MintBridgeToken = func(id string) string { return id }
-		}, "The harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var s Settings

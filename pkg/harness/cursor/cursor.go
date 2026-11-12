@@ -72,8 +72,11 @@ type Settings struct {
 	// MCPServers are MCP server definitions keyed by server name, in
 	// Cursor's native ACP MCP server configuration format.
 	MCPServers map[string]any
-	// MintBridgeToken creates the bridge channel token for the session.
-	// Defaults to a random 32-byte hexadecimal token.
+	// MintBridgeToken is forwarded to the ACP adapter, which ignores it and
+	// logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
 	MintBridgeToken harness.MintBridgeTokenCallback
 }
 
@@ -107,7 +110,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		MCPServers:                       settings.MCPServers,
 		IsMcpToolCall:                    IsMCPToolCall,
 		ResolveHostToolCall:              ResolveHostToolCall,
-		MintBridgeToken:                  settings.MintBridgeToken,
+		MintBridgeToken:                  settings.MintBridgeToken, //nolint:staticcheck // forwarded so ACP warns, as TS
 		BuiltinTools:                     BuiltinTools,
 		Source: acp.Source{
 			Type:    acp.SourceInstallCommand,

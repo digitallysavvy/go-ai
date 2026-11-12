@@ -31,7 +31,7 @@ func (s boundPortSandbox) Restricted() providerutils.SandboxSession { return s }
 func TestDoStartPersistsBoundBridgePort(t *testing.T) {
 	const token = "bound-port-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
-	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }})
+	h := CreateDeepAgents(Settings{})
 	sess, err := h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/deepagents-test-session",
 		SandboxSession: boundPortSandbox{newFakeSandbox(srv)},

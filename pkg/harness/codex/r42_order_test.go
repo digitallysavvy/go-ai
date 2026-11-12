@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/codex"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -31,7 +32,7 @@ func (m *mkdirCounter) Restricted() providerutils.SandboxSession { return m }
 // TS resolves the bridge port before the fresh-start mkdir, so a sandbox
 // without a port fails before anything is created in it.
 func TestR42PortResolvedBeforeMkdir(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: bridgeauthkeys.Testing().PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := &mkdirCounter{testSandbox: newTestSandbox(srv)}
 	sandbox.ports = nil

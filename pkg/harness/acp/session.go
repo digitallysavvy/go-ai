@@ -49,16 +49,16 @@ type sessionParams struct {
 	initialGuidanceApplied  bool
 	instructionsFingerprint string
 
-	bridgePort      int
-	bridgeToken     string
-	isResume        bool
-	turnInFlight    bool
-	acpSessionID    string           // lifecycleData.acpSessionId at start, regardless of tier
-	turnStartConfig *TurnStartConfig // persisted config to resume from, for lossy-rerun/cold-restore
-	recoveryStatus  *recoveryInfo
-	restoration     *restorationInfo
-	replayOnly      bool
-	lossyRerun      bool
+	bridgePort       int
+	bridgePrivateKey string
+	isResume         bool
+	turnInFlight     bool
+	acpSessionID     string           // lifecycleData.acpSessionId at start, regardless of tier
+	turnStartConfig  *TurnStartConfig // persisted config to resume from, for lossy-rerun/cold-restore
+	recoveryStatus   *recoveryInfo
+	restoration      *restorationInfo
+	replayOnly       bool
+	lossyRerun       bool
 }
 
 type bufferedQuestionResult struct {
@@ -986,7 +986,7 @@ func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState
 
 	lastSeenEventID := <-s.p.channel.Suspend()
 	data := s.createLifecycleData(&bridgeCoords{
-		Port: s.p.bridgePort, Token: s.p.bridgeToken, LastSeenEventID: lastSeenEventID,
+		Port: s.p.bridgePort, PrivateKey: s.p.bridgePrivateKey, LastSeenEventID: lastSeenEventID,
 		SandboxID: s.p.sandboxID, StateDir: s.p.bridgeStateDir,
 	}, true)
 	return harness.NewContinueTurnState(s.p.harnessID, data)
@@ -1007,7 +1007,7 @@ func (s *session) DoDetach(ctx context.Context) (*harness.ResumeSessionState, er
 
 	lastSeenEventID := <-s.p.channel.Suspend()
 	data := s.createLifecycleData(&bridgeCoords{
-		Port: s.p.bridgePort, Token: s.p.bridgeToken, LastSeenEventID: lastSeenEventID,
+		Port: s.p.bridgePort, PrivateKey: s.p.bridgePrivateKey, LastSeenEventID: lastSeenEventID,
 		SandboxID: s.p.sandboxID, StateDir: s.p.bridgeStateDir,
 	}, true)
 	return harness.NewResumeSessionState(s.p.harnessID, data)
@@ -1171,16 +1171,17 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 }
 
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeData resumeStateData, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, error) {
+	if coords.PrivateKey == "" {
+		// Legacy token coordinates (rejected by ValidateLifecycleStateData):
+		// a current bridge cannot be authenticated without the key.
+		return nil, errors.New("bridge coordinates carry no bridge authentication private key")
+	}
 	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, settings.HarnessID)
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err = bridge.WithBridgeToken(endpoint, coords.Token)
-	if err != nil {
-		return nil, err
-	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge"}),
+		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge", AuthPrivateKey: coords.PrivateKey}),
 		Decode:                 decodeOutbound,
 		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic, Reconnect: settings.Reconnect,
 	})
@@ -1190,7 +1191,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	p.channel = channel
 	p.proc = nil
 	p.bridgePort = coords.Port
-	p.bridgeToken = coords.Token
+	p.bridgePrivateKey = coords.PrivateKey
 	p.isResume = true
 	p.turnInFlight = isContinue
 	p.acpSessionID = resumeData.ACPSessionID

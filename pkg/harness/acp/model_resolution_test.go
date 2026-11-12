@@ -26,7 +26,6 @@ func runPromptTurn(t *testing.T, mut func(*Settings), streamStart map[string]any
 		})
 	})
 	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.MintBridgeToken = func(string) string { return token }
 		if mut != nil {
 			mut(s)
 		}

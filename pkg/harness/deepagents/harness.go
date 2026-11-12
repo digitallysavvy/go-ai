@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -53,8 +54,11 @@ type Settings struct {
 	// Reconnect configures reconnection after an established bridge
 	// connection drops.
 	Reconnect bridge.ReconnectOptions
-	// MintBridgeToken creates the bridge channel token for one session.
-	// Defaults to a random 32-byte hex token.
+	// MintBridgeToken is ignored; CreateDeepAgents logs a warning when it is
+	// set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
 	MintBridgeToken harness.MintBridgeTokenCallback
 	// RecursionLimit is the maximum LangGraph super-steps per turn before it
 	// errors. Nil applies the Deep Agents default.
@@ -75,6 +79,7 @@ func CreateDeepAgents(settings ...Settings) harness.Harness {
 	if len(settings) > 0 {
 		s = settings[0]
 	}
+	bridge.WarnMintBridgeTokenIgnored(HarnessID, s.MintBridgeToken, nil)
 	return &deepAgentsHarness{settings: s}
 }
 
@@ -102,8 +107,10 @@ type resumeStateData struct {
 // doSuspendTurn so a later process can reattach. Mirrors TS
 // `deepAgentsBridgeCoordsSchema`.
 type bridgeCoords struct {
-	Port            int     `json:"port"`
-	Token           string  `json:"token"`
+	Port int `json:"port"`
+	// PrivateKey is the host-only bridge authentication key (TS c849d37dac);
+	// it never reaches the sandbox.
+	PrivateKey      string  `json:"privateKey"`
 	LastSeenEventID float64 `json:"lastSeenEventId"`
 	SandboxID       string  `json:"sandboxId,omitempty"`
 }
@@ -127,7 +134,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	if isNetwork {
 		sandboxID = networkSession.ID()
 	}
-	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, HarnessID); err != nil {
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, nil, HarnessID); err != nil {
 		return nil, err
 	}
 
@@ -231,7 +238,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	if err != nil {
 		return nil, err
 	}
-	token := mintBridgeToken(settings.MintBridgeToken, sandboxID)
+	bridgeAuth := bridgeauthkeys.New()
 
 	forwardedAuthEnvironment := sandboxAuthEnvironment
 	if !credentialsBrokered {
@@ -271,7 +278,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "deepagents bridge", Source: HarnessID, Sandbox: toolSafeSandboxSession,
-		Command: command, Env: env, Port: port, Token: token, // The TS adapter never sets BRIDGE_REPLAY_FROM_DISK: a respawned
+		Command: command, Env: env, Port: port, AuthPublicKey: bridgeAuth.PublicKey, // The TS adapter never sets BRIDGE_REPLAY_FROM_DISK: a respawned
 		// deepagents bridge resumes through `--resume true` only.
 		ReplayFromDisk: false,
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
@@ -284,7 +291,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	}
 
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge", OpenRetryTimeout: timeout, StartContext: ctx}),
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey}),
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
 		OnDiagnostic:  onDiagnostic,
@@ -296,14 +303,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
 	sessionArgs.bridgePort = launched.Port
-	sessionArgs.bridgeToken = token
+	sessionArgs.bridgePrivateKey = bridgeAuth.PrivateKey
 	sessionArgs.isResume = isResume
 	return newSession(sessionArgs), nil
-}
-
-func mintBridgeToken(cb harness.MintBridgeTokenCallback, sandboxID string) string {
-	if cb == nil {
-		return bridge.CreateBridgeToken()
-	}
-	return cb(sandboxID)
 }

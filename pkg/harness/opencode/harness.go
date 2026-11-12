@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -43,7 +44,12 @@ type Settings struct {
 	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
 	HostDisconnectTimeout time.Duration
 	Reconnect             bridge.ReconnectOptions
-	MintBridgeToken       harness.MintBridgeTokenCallback
+	// MintBridgeToken is ignored; CreateOpenCode logs a warning when it is
+	// set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
+	MintBridgeToken harness.MintBridgeTokenCallback
 }
 
 type openCodeHarness struct {
@@ -57,6 +63,7 @@ func CreateOpenCode(settings ...Settings) (harness.Harness, error) {
 	if len(settings) > 0 {
 		s = settings[0]
 	}
+	bridge.WarnMintBridgeTokenIgnored(HarnessID, s.MintBridgeToken, nil)
 	if _, reserved := s.MCPServers["harness-tools"]; reserved {
 		return nil, errors.New(`OpenCode MCP server name "harness-tools" is reserved for HarnessAgent tools.`) //nolint:staticcheck // matches TS SDK exact error text
 	}
@@ -79,8 +86,10 @@ type resumeStateData struct {
 }
 
 type bridgeCoords struct {
-	Port            int     `json:"port"`
-	Token           string  `json:"token"`
+	Port int `json:"port"`
+	// PrivateKey is the host-only bridge authentication key (TS c849d37dac);
+	// it never reaches the sandbox.
+	PrivateKey      string  `json:"privateKey"`
 	LastSeenEventID float64 `json:"lastSeenEventId"`
 	SandboxID       string  `json:"sandboxId,omitempty"`
 }
@@ -148,7 +157,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	if isNetwork {
 		sandboxID = networkSession.ID()
 	}
-	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, HarnessID); err != nil {
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, nil, HarnessID); err != nil {
 		return nil, err
 	}
 
@@ -299,7 +308,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	if err != nil {
 		return nil, err
 	}
-	token := mintBridgeToken(settings.MintBridgeToken, sandboxID)
+	bridgeAuth := bridgeauthkeys.New()
 
 	forwardedAuthEnvironment := sandboxAuthEnvironment
 	if !credentialsBrokered {
@@ -338,7 +347,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "OpenCode bridge", Source: HarnessID, Sandbox: toolSafeSandboxSession,
-		Command: command, Env: env, Port: port, Token: token, ReplayFromDisk: respawnStrategy == "replay",
+		Command: command, Env: env, Port: port, AuthPublicKey: bridgeAuth.PublicKey, ReplayFromDisk: respawnStrategy == "replay",
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
 			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, HarnessID)
@@ -351,7 +360,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	var supportsUserMessageResponses atomic.Bool
 	channelOpts := bridge.ChannelOptions{
 		Connect: bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{
-			Name: "OpenCode bridge", OpenRetryTimeout: timeout, StartContext: ctx,
+			Name: "OpenCode bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey,
 			OnHello: trackUserMessageResponses(&supportsUserMessageResponses),
 		}),
 		Reconnect: settings.Reconnect, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic,
@@ -367,7 +376,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
 	sessionArgs.bridgePort = launched.Port
-	sessionArgs.bridgeToken = token
+	sessionArgs.bridgePrivateKey = bridgeAuth.PrivateKey
 	sessionArgs.isResume = respawnStrategy != ""
 	sessionArgs.seedResumeSessionOnFirstPrompt = respawnStrategy != ""
 	sessionArgs.rerunContinue = respawnStrategy == "rerun"
@@ -380,13 +389,6 @@ func debugConfig(o *harness.Observability) *harness.DebugConfig {
 		return nil
 	}
 	return o.Debug
-}
-
-func mintBridgeToken(cb harness.MintBridgeTokenCallback, sandboxID string) string {
-	if cb == nil {
-		return bridge.CreateBridgeToken()
-	}
-	return cb(sandboxID)
 }
 
 // validateBuiltinToolFiltering mirrors TS `validateBuiltinToolFiltering`

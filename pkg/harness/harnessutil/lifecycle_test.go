@@ -7,24 +7,29 @@ import (
 
 func TestValidateLifecycleStateObject(t *testing.T) {
 	type coords struct {
-		Port int `json:"port"`
+		Port            int     `json:"port"`
+		PrivateKey      string  `json:"privateKey"`
+		LastSeenEventID float64 `json:"lastSeenEventId"`
+		SandboxID       string  `json:"sandboxId,omitempty"`
 	}
 	type state struct {
 		ThreadID string  `json:"threadId,omitempty"`
 		Bridge   *coords `json:"bridge,omitempty"`
 	}
 	valid := []string{``, `null`, `{}`, `{"threadId":"t","extra":1}`,
-		`{"bridge":{"port":1,"token":"x","lastSeenEventId":0}}`,
-		`{"bridge":{"port":1,"token":"x","lastSeenEventId":0,"stateDir":null}}`}
+		`{"bridge":{"port":1,"privateKey":"x","lastSeenEventId":0}}`,
+		`{"bridge":{"port":1,"privateKey":"x","lastSeenEventId":0,"stateDir":null}}`}
 	for _, v := range valid {
 		if err := ValidateLifecycleStateObject(json.RawMessage(v), &state{}); err != nil {
 			t.Errorf("%q: unexpected error %v", v, err)
 		}
 	}
 	invalid := []string{`[]`, `"x"`, `{"threadId":5}`,
-		`{"bridge":{"port":1,"token":"x"}}`, `{"bridge":{"port":"1","token":"x","lastSeenEventId":0}}`,
+		`{"bridge":{"port":1,"privateKey":"x"}}`, `{"bridge":{"port":"1","privateKey":"x","lastSeenEventId":0}}`,
 		`{"bridge":[]}`, `{"bridge":null}`, `{"threadId":null}`,
-		`{"bridge":{"port":1,"token":"x","lastSeenEventId":0,"sandboxId":null}}`, `{"bridge":{"token":"x","lastSeenEventId":0}}`}
+		`{"bridge":{"port":1,"privateKey":"x","lastSeenEventId":0,"sandboxId":null}}`, `{"bridge":{"privateKey":"x","lastSeenEventId":0}}`,
+		// TS c849d37dac: legacy token-based coordinates are rejected.
+		`{"bridge":{"port":1,"token":"x","lastSeenEventId":0}}`}
 	for _, v := range invalid {
 		if err := ValidateLifecycleStateObject(json.RawMessage(v), &state{}); err == nil {
 			t.Errorf("%q: expected an error", v)

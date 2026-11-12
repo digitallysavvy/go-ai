@@ -149,7 +149,7 @@ func TestTSReplay_Skills(t *testing.T) {
 func TestTSReplay_LifecycleCompatibilityRejections(t *testing.T) {
 	sandbox := replaySandbox(t, "tok")
 	mk := func(id string) harness.Harness {
-		h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" }; s.HarnessID = id }))
+		h, err := CreateACP(testSettings(func(s *Settings) { s.HarnessID = id }))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -373,7 +373,11 @@ type Settings struct {
 	AskUserQuestions      *AskUserQuestionsSettings
 	PermissionModeMapping *PermissionModeMapping
 	SessionMeta           map[string]any
-	MintBridgeToken       harness.MintBridgeTokenCallback
+	// MintBridgeToken is ignored; CreateACP logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
+	MintBridgeToken harness.MintBridgeTokenCallback
 }
 
 // PrepareSandboxOptions is passed to Settings.PrepareSandbox. Mirrors the TS

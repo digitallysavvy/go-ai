@@ -51,7 +51,7 @@ type sessionOptions struct {
 	resumeThreadID                string
 
 	bridgePort                   int
-	bridgeToken                  string
+	bridgePrivateKey             string
 	sandboxID                    string
 	sandboxCredentialEnvironment map[string]string
 
@@ -301,7 +301,7 @@ func (s *session) resumeData(lastSeenEventID float64) resumeStateData {
 	return resumeStateData{
 		ThreadID: s.latestThreadID, TurnConfigurationFingerprint: s.latestTurnConfigurationFingerprint,
 		SandboxCredentialEnvironment: s.opts.sandboxCredentialEnvironment,
-		Bridge:                       &bridgeCoords{Port: s.opts.bridgePort, Token: s.opts.bridgeToken, LastSeenEventID: lastSeenEventID, SandboxID: s.opts.sandboxID},
+		Bridge:                       &bridgeCoords{Port: s.opts.bridgePort, PrivateKey: s.opts.bridgePrivateKey, LastSeenEventID: lastSeenEventID, SandboxID: s.opts.sandboxID},
 	}
 }
 
