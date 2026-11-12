@@ -151,7 +151,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	headers := b.startBatchHeaders(betas.list, opts.Headers)
 
 	var response anthropicBatchResponseWire
-	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
+	if err := b.startBatchClient(len(betas.list) > 0).DoJSON(ctx, internalhttp.Request{
 		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
 		Method:           stdhttp.MethodPost,
 		Path:             "/messages/batches",
@@ -198,12 +198,13 @@ func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4Operatio
 
 // DoListBatches lists batches (`GET /messages/batches`).
 func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOptions) (*provider.BatchV4ListResult, error) {
-	query := map[string]string{}
+	// TS url.searchParams.set in this order: limit, then after_id.
+	query := internalhttp.NewSearchParams()
 	if opts.Limit != nil {
-		query["limit"] = strconv.Itoa(*opts.Limit)
+		query.Set("limit", strconv.Itoa(*opts.Limit))
 	}
 	if opts.Cursor != "" {
-		query["after_id"] = opts.Cursor
+		query.Set("after_id", opts.Cursor)
 	}
 
 	var response anthropicBatchListResponseWire
@@ -211,7 +212,7 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchList),
 		Method:           stdhttp.MethodGet,
 		Path:             "/messages/batches",
-		Query:            query,
+		SearchParams:     query,
 		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
@@ -292,7 +293,9 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	client := fileutil.NewDownloadClient(resultsURL, downloadOpts)
 	httpResp, err := internalhttp.WithFetchRedirects(client).Do(httpReq)
 	if err != nil {
-		return nil, b.handleError(err)
+		// TS getFromApi → handleFetchError: a network failure is the
+		// retryable "Cannot connect to API: ..." APICallError.
+		return nil, b.handleError(internalhttp.TransportError(err))
 	}
 	if httpResp.StatusCode >= 400 {
 		defer httpResp.Body.Close() //nolint:errcheck
@@ -348,6 +351,34 @@ func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map
 		out["anthropic-beta"] = strings.Join(betas, ",")
 	}
 	return out
+}
+
+// startBatchClient is the client for the create-batch request. TS
+// getStartBatchHeaders normalizes the provider headers and then sets
+// 'anthropic-beta' to the computed set, or to undefined when the set is
+// empty, so a provider-level Config.Headers anthropic-beta never reaches the
+// wire (the batch beta set takes only providerOptions betas). With betas the
+// computed request header replaces the default one; without, a sibling
+// client built without the default anthropic-beta sends the request.
+func (b *Batch) startBatchClient(hasBetas bool) *internalhttp.Client {
+	if hasBetas || b.provider.clientConfig.Headers == nil {
+		return b.provider.client
+	}
+	filtered := make(map[string]string, len(b.provider.clientConfig.Headers))
+	dropped := false
+	for k, v := range b.provider.clientConfig.Headers {
+		if strings.EqualFold(k, "anthropic-beta") {
+			dropped = true
+			continue
+		}
+		filtered[k] = v
+	}
+	if !dropped {
+		return b.provider.client
+	}
+	cfg := b.provider.clientConfig
+	cfg.Headers = filtered
+	return internalhttp.NewClient(cfg)
 }
 
 // rawRequestHeaders builds the provider headers used for a raw
