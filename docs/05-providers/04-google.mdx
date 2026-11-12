@@ -575,6 +575,39 @@ Usage includes per-modality token details when the API returns them. Text, image
 
 Use the `"google"` provider key for AI Studio options. Vertex options use the `"googleVertex"` key (see the [Google Vertex AI provider](18-google-vertex.mdx#provider-specific-options) for its lookup order) — the hyphenated `"google-vertex"` string is only the Vertex model's `Provider()` identity, not a `ProviderOptions` key.
 
+## Decisions (experimental)
+
+`google.Provider.DecisionModel(id)` calls the Gemini Decisions API (`POST {baseURL}/decisions`, `v1beta`; not on Vertex AI) for choice, score and boolean questions (TS f70336158e). Use a decision model ID such as `google.ModelGeminiDecision1` (`"gemini-decision-1"`); Gemini language model IDs do not work here.
+
+```go
+p := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
+model, err := p.DecisionModel(google.ModelGeminiDecision1)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalDecide(ctx, ai.DecideOptions{
+    Model: model,
+    State: "I was charged twice for my subscription and want my money back.",
+    Questions: map[string]provider.DecisionQuestion{
+        "requestsRefund": {
+            Type:         "boolean",
+            Instructions: "Is the customer asking for a refund?",
+            Criteria: map[string]interface{}{
+                "true":  "The customer wants a charge refunded.",
+                "false": "The customer only wants information.",
+            },
+        },
+    },
+})
+```
+
+- Choice and score answers include the native probability distributions; scores are probability-weighted positions on the zero-based rubric. Boolean questions use Google's `noul` type, and the answer's `Probability` is its calibrated P(true).
+- `providerMetadata.google` holds `confidence` (by question ID), `legend` (score legends), `usage` and `promptFeedback`. Usage reports input tokens and zero output tokens.
+- A safety-blocked request gives refusal answers, which `ExperimentalDecide` returns as `*errors.DecisionRefusalError`.
+- Every question needs `Instructions`; choice and score need 2 to 255 options or levels. Box questions fail with `*errors.DecisionUnsupportedQuestionTypeError`.
+- `MaxOutputTokens`, `Reasoning` and `providerOptions.google` are not sent; each gives an `unsupported` warning. The deprecated `EvaluationModel` factory is an alias.
+
 ## Examples
 
 ### Basic Text Generation

@@ -143,6 +143,69 @@ DeepSeek has no batch API and no additional Files methods beyond upload —
 this matches the upstream TypeScript `@ai-sdk/deepseek` package, which has
 neither.
 
+## Responses API
+
+`Provider.ResponsesModel(id)` returns a model for DeepSeek's [Responses API](https://api-docs.deepseek.com/guides/responses_api) (`POST /responses`, TS `deepSeek.responses()`). It supports `deepseek-flash` and `deepseek-v4-pro`, JSON schema structured output, every `ToolChoice` mode and DeepSeek's server-side web search.
+
+```go
+p := deepseek.New(deepseek.Config{APIKey: os.Getenv("DEEPSEEK_API_KEY")})
+model, err := p.ResponsesModel("deepseek-v4-pro")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Write a vegetarian lasagna recipe for 4 people.",
+})
+```
+
+The Responses API is stateless: the provider sends the whole conversation, including reasoning and earlier web search calls, on every request.
+
+Options under `ProviderOptions["deepseek"]`:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `thinking` | object | `{"type": "disabled"}` turns thinking off (sent as `reasoning.effort: "none"`). |
+| `reasoningEffort` | `"low"`, `"high"`, `"max"` | Thinking strength while thinking is on. The top-level `Reasoning` setting maps to the same values (`medium` to `high`, `xhigh` to `max`). |
+| `topLogprobs` | number | 0 to 20 most likely tokens per position, returned in `providerMetadata.deepseek.logprobs`. |
+| `userId` | string | Opaque end-user id, sent as `user` (`^[a-zA-Z0-9_-]+$`, at most 512 characters). |
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: `How many "r"s are in the word "strawberry"?`,
+    ProviderOptions: map[string]interface{}{
+        "deepseek": map[string]interface{}{"reasoningEffort": "high"},
+    },
+})
+```
+
+The Responses API does not support `StopSequences`, `FrequencyPenalty`, `PresencePenalty`, `TopK`, `Seed` or strict function tools; the provider leaves them out and returns an unsupported warning. DeepSeek rejects `required` and forced tool choices while thinking is on (the default): set `thinking.type` to `disabled` to use them. `auto` and `none` work in both modes.
+
+### Web Search
+
+DeepSeek can search the web and read pages on the server while it answers. Add `deepseek.WebSearch()` (also `p.Tools().WebSearch()`; provider tool `deepseek.web_search`, sent as `{"type": "web_search"}`) to a `deepseek-v4-pro` Responses model. DeepSeek ignores the tool on `deepseek-flash`.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What is the official Python website?",
+    Tools:  []types.Tool{deepseek.WebSearch()},
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.Text)
+fmt.Println(result.FinalStep.ProviderMetadata["deepseek"]) // serverToolUse: map[toolFetch:0 toolSearch:1]
+```
+
+Each server-side search is a provider-executed `web_search` tool call and result. The raw `web_search_call` item rides in the tool call's provider metadata, so later turns send it back and DeepSeek restores its results. DeepSeek bills successful searches and page reads per operation; the counts are in `providerMetadata.deepseek.serverToolUse` (`toolSearch`, `toolFetch`) and in `Usage.Raw["server_tool_use"]`.
+
+### Responses Provider Metadata
+
+`providerMetadata.deepseek` holds `responseId`, `serverToolUse` (when a search or page read ran) and `logprobs` (when `topLogprobs` is set). Reasoning parts carry the DeepSeek reasoning item id in `providerMetadata.deepseek.itemId`, and reasoning is replayed through it.
+
 ## Examples
 
 ### Basic Text Generation
