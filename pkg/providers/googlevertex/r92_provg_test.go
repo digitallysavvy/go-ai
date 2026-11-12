@@ -56,3 +56,22 @@ func TestR92provgTranscriptionTimestampBeforeRequest(t *testing.T) {
 		t.Fatalf("gemini timestamp %v is not before the request %v", res.Response.Timestamp, served)
 	}
 }
+
+// TS google-vertex-gemini-transcription-model.ts posts to
+// `${baseURL}/models/${modelId}:generateContent` (no getModelPath), so a
+// model id with a slash keeps the models/ prefix.
+func TestR92provgGeminiTranscriptionPath(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`))
+	}))
+	defer srv.Close()
+	m := NewGeminiTranscriptionModel(newVertexTestProvider(t, srv.URL), "tuned/gemini-3.5-transcribe")
+	if _, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "AQID", MimeType: "audio/wav"}); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/models/tuned/gemini-3.5-transcribe:generateContent" {
+		t.Fatalf("path = %s", path)
+	}
+}

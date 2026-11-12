@@ -285,7 +285,8 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	resp, err := m.provider.mainClient().DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: vertexValidator(m.Provider(), zVertexGeminiTranscription),
 		Method:           http.MethodPost,
-		Path:             fmt.Sprintf("/%s:generateContent", gemini.GetModelPath(m.modelID)),
+		// TS `${baseURL}/models/${modelId}:generateContent` (no getModelPath).
+		Path:             "/models/" + m.modelID + ":generateContent",
 		Body:             reqBody,
 		Headers:          opts.Headers,
 	}, &response)
