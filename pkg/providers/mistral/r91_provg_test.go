@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -39,5 +40,41 @@ func TestR91provgSystemOnlyPrompt(t *testing.T) {
 	_ = json.Unmarshal(*got, &body)
 	if string(body.Messages) != `[{"content":"be brief","role":"system"}]` {
 		t.Fatalf("messages = %s", body.Messages)
+	}
+}
+
+// provg2-05: a missing API key is the LoadAPIKeyError itself (TS
+// mistral-provider.ts:144 loadApiKey), not a wrapping ProviderError.
+func TestR91provgMissingAPIKeyIsLoadAPIKeyError(t *testing.T) {
+	t.Setenv("MISTRAL_API_KEY", "")
+	p := New(Config{})
+	em, _ := p.EmbeddingModel("mistral-embed")
+	_, err := em.DoEmbed(context.Background(), "hi", nil)
+	r91provgWantLoadKeyError(t, "embedding", err)
+	sm, _ := p.SpeechModel("voxtral-mini-tts-2603")
+	_, err = sm.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"})
+	r91provgWantLoadKeyError(t, "speech", err)
+	tm, _ := p.TranscriptionModel("voxtral-mini-latest")
+	_, err = tm.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	r91provgWantLoadKeyError(t, "transcription", err)
+}
+
+func r91provgWantLoadKeyError(t *testing.T, what string, err error) {
+	t.Helper()
+	if _, ok := err.(*providererrors.LoadAPIKeyError); !ok {
+		t.Fatalf("%s: error = %T %v", what, err, err)
+	}
+}
+
+// provg2-10: the speech body goes out as JSON.stringify of the TS literal
+// (model, input, voice_id, ..., response_format, stream).
+func TestR91provgSpeechBodyKeyOrder(t *testing.T) {
+	server, got := r91provgCapture(t, "application/json", `{"audio_data":"AAEC"}`)
+	sm, _ := New(Config{APIKey: "k", BaseURL: server.URL}).SpeechModel("voxtral-mini-tts-2603")
+	if _, err := sm.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi", Voice: "v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"model":"voxtral-mini-tts-2603","input":"hi","voice_id":"v1","response_format":"mp3","stream":false}`; string(*got) != want {
+		t.Fatalf("body = %s, want %s", *got, want)
 	}
 }

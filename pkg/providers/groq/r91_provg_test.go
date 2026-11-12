@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -32,5 +34,28 @@ func TestR91provgSystemOnlyPrompt(t *testing.T) {
 	_ = json.Unmarshal(got, &body)
 	if string(body.Messages) != `[{"content":"be brief","role":"system"}]` {
 		t.Fatalf("messages = %s", body.Messages)
+	}
+}
+
+// provg2-05: a missing API key is the LoadAPIKeyError itself.
+func TestR91provgMissingAPIKeyIsLoadAPIKeyError(t *testing.T) {
+	t.Setenv("GROQ_API_KEY", "")
+	tm, _ := New(Config{}).TranscriptionModel("whisper-large-v3")
+	_, err := tm.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}})
+	if _, ok := err.(*providererrors.LoadAPIKeyError); !ok {
+		t.Fatalf("error = %T %v", err, err)
+	}
+}
+
+// provg2-07: TS getArgs parses providerOptions.groq before the audio URL.
+func TestR91provgTranscriptionValidatesOptionsFirst(t *testing.T) {
+	tm, _ := New(Config{APIKey: "k"}).TranscriptionModel("whisper-large-v3")
+	urlModel := tm.(*TranscriptionModel)
+	_, err := urlModel.DoTranscribeFromURL(context.Background(), &provider.TranscriptionURLOptions{
+		AudioURL:        "ftp://x",
+		ProviderOptions: map[string]interface{}{"groq": map[string]interface{}{"temperature": 5}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid groq provider options") {
+		t.Fatalf("error = %v", err)
 	}
 }

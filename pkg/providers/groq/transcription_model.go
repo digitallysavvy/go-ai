@@ -152,6 +152,10 @@ func groqTranscriptionURL(raw string) (string, error) {
 func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInput) (*types.TranscriptionResult, error) {
 	// TS reads currentDate at the start of doGenerate, before the request.
 	timestamp := time.Now()
+	// TS getArgs parses providerOptions.groq before the audio is read.
+	if err := validateGroqTranscriptionOptions(in.providerOptions); err != nil {
+		return nil, err
+	}
 	var audio []byte
 	var audioURL, mimeType string
 	if in.isURL {
@@ -170,9 +174,6 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 			mimeType = "audio/wav"
 		}
 	}
-	if err := validateGroqTranscriptionOptions(in.providerOptions); err != nil {
-		return nil, err
-	}
 	groqOpts := resolveGroqTranscriptionOptions(in.providerOptions)
 
 	body, contentType, err := m.buildMultipartBody(audio, audioURL, in.isURL, mimeType, groqOpts)
@@ -187,6 +188,9 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 		Headers: internalhttp.MergeHeaders(in.headers, map[string]string{"Content-Type": contentType}),
 	})
 	if err != nil {
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS: loadApiKey throws LoadAPIKeyError unchanged
+		}
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
