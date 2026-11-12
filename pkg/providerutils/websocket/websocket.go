@@ -251,21 +251,19 @@ var frameCodec = websocket.Codec{
 	},
 }
 
-// receiveText reads one frame as TS readWebSocketMessageText (websocket.ts
-// 49) sees it: a text frame's leading BOM is dropped and invalid UTF-8 fails
-// the connection (close 1007, ErrInvalidUTF8Text); a binary frame goes
-// through TextDecoder (BOM dropped, one U+FFFD per maximal invalid subpart).
+// receiveText reads one whole message (ReceiveMessage: continuation frames
+// joined, as Node delivers event.data) as TS readWebSocketMessageText
+// (websocket.ts 49) sees it: a text message's leading BOM is dropped and
+// invalid UTF-8 in the whole message fails the connection (close 1007,
+// ErrInvalidUTF8Text); a binary message goes through TextDecoder (BOM
+// dropped, one U+FFFD per maximal invalid subpart). One frame per message
+// split a fragmented message and failed UTF-8 split across fragments.
 func receiveText(conn *websocket.Conn) (string, error) {
-	var f frame
-	if err := frameCodec.Receive(conn, &f); err != nil {
+	data, _, err := ReceiveMessage(conn)
+	if err != nil {
 		return "", err
 	}
-	if !f.binaryType && !utf8.Valid(f.data) {
-		closeFrame := append([]byte{0x03, 0xef}, ErrInvalidUTF8Text.Error()...) // status 1007
-		_ = frameCodec.Send(conn, closeFrame)
-		return "", ErrInvalidUTF8Text
-	}
-	return frameText(string(f.data)), nil
+	return frameText(string(data)), nil
 }
 
 // frameText drops a leading BOM and decodes invalid UTF-8 (binary frames)
