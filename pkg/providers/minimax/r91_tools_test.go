@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -233,5 +234,32 @@ func TestR91toolsMiniMaxImageMaskErrorAndFactories(t *testing.T) {
 	_, err = m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x", ProviderOptions: map[string]interface{}{"minimax": map[string]interface{}{"outputCompression": int64(101)}}})
 	if err == nil || !strings.Contains(err.Error(), "invalid minimax provider options") {
 		t.Fatalf("invalid option err = %v", err)
+	}
+}
+
+// tools-02 (TS minimax-video-model.ts:581, postJsonToApi): a transport
+// failure of the submit call is the retryable "Cannot connect to API" error,
+// not a non-retryable *minimax.Error.
+func TestR91toolsMiniMaxVideoSubmitNetworkErrorRetryable(t *testing.T) {
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	model := newVideoModel(New(Config{APIKey: "k", VideoBaseURL: srv.URL}), ModelH3)
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "a cat", PromptSet: true, N: 1}})
+	var mmErr *Error
+	if err == nil || errors.As(err, &mmErr) {
+		t.Fatalf("err = %v (%T), want the transport error", err, err)
+	}
+	if !strings.Contains(err.Error(), "Cannot connect to API") || !retry.IsRetryable(err) {
+		t.Fatalf("err = %v, want a retryable Cannot connect to API error", err)
 	}
 }

@@ -105,7 +105,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Body: bytes.NewBufferString(providerutils.StringifyOrdered(body, minimaxVideoBodyOrder)),
 	})
 	if err != nil {
-		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
+		// TS postJsonToApi: a transport failure is the retryable APICallError
+		// "Cannot connect to API" (tools-02), returned unchanged.
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if submitResp.StatusCode >= 400 {
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, providerutils.ExtractHeaders(submitResp.Headers))
@@ -902,15 +904,16 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers map[stri
 	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body), ResponseHeaders: headers}
 }
 
-// handlePollError converts a fileutil poll error (a providererrors.DownloadError
-// for a non-2xx HTTP response, or a validation/network error) into a
-// MiniMax API error where possible.
+// handlePollError converts a fileutil poll error for a non-2xx HTTP response
+// (a providererrors.DownloadError with a body) into a MiniMax API error. TS
+// getFromApi lets any other failure (an abort, "Cannot connect to API", a URL
+// rejected by validateUrl) propagate unchanged (tools-02).
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
 	}
-	return NewVideoGenerationError(fmt.Sprintf("failed to check status: %v", err))
+	return err
 }
 
 // minimaxStatusResponse is the response from the task status endpoint (TS
