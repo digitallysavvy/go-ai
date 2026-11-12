@@ -52,6 +52,7 @@ import (
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/replicate"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/revai"
+	_ "github.com/digitallysavvy/go-ai/pkg/providers/tencent"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/together"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/topaz"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/typesafeai"
