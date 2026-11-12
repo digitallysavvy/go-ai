@@ -75,9 +75,9 @@ func CreateBedrockMantle(settings ProviderSettings) *BedrockMantleProvider {
 	region := firstNonEmpty(settings.Region, os.Getenv("AWS_REGION"))
 	settings.Region = region
 
-	// Credentials (bearer token or SigV4) are resolved per request by the
-	// transport, so AWS_BEARER_TOKEN_BEDROCK / AWS_* set or rotated after the
-	// provider was created are honored (TS loadApiKey semantics).
+	// TS createBedrockMantle reads AWS_BEARER_TOKEN_BEDROCK once, when the
+	// provider is created (loadOptionalSetting, trimmed), and picks bearer or
+	// SigV4 then; SigV4 credentials are loaded per request by the transport.
 	apiKey := settings.APIKey
 	headers := copyHeaders(settings.Headers)
 	httpClient := withAuthTransport(settings.HTTPClient, settings, region)
@@ -253,9 +253,13 @@ func withAuthTransport(client *http.Client, settings ProviderSettings, region st
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	apiKey := settings.APIKey
+	if settings.APIKeyFunc == nil {
+		apiKey = providerutils.JSTrim(providerutils.APIKeyOrEnv(settings.APIKey, "AWS_BEARER_TOKEN_BEDROCK"))
+	}
 	client.Transport = &sigV4Transport{
 		base:               base,
-		apiKey:             settings.APIKey,
+		apiKey:             apiKey,
 		apiKeyFunc:         settings.APIKeyFunc,
 		accessKeyID:        settings.AccessKeyID,
 		secretAccessKey:    settings.SecretAccessKey,

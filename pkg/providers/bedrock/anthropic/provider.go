@@ -92,11 +92,20 @@ type Config struct {
 // via AWS Bedrock.
 type BedrockAnthropicProvider struct {
 	config Config
+	// bearerToken is the trimmed bearer API key (Config.BearerToken, else
+	// AWS_BEARER_TOKEN_BEDROCK), read once when the provider is created like
+	// TS createAmazonBedrockAnthropic (loadOptionalSetting); "" selects SigV4.
+	bearerToken string
 }
 
 // New creates a new Bedrock Anthropic provider.
 func New(config Config) *BedrockAnthropicProvider {
-	return &BedrockAnthropicProvider{config: config}
+	p := &BedrockAnthropicProvider{config: config}
+	if config.BearerTokenFunc == nil {
+		// TS rawApiKey.trim() is a JavaScript trim.
+		p.bearerToken = providerutils.JSTrim(firstNonEmpty(config.BearerToken, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
+	}
+	return p
 }
 
 // awsRegion resolves the region on every use (TS loadSetting reads AWS_REGION
@@ -286,9 +295,7 @@ func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response
 		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
 		return t.base.RoundTrip(req)
 	}
-	// TS rawApiKey.trim() is a JavaScript trim.
-	bearerToken := providerutils.JSTrim(firstNonEmpty(t.provider.config.BearerToken, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
-	if bearerToken != "" {
+	if bearerToken := t.provider.bearerToken; bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+bearerToken)
 		return t.base.RoundTrip(req)
 	}

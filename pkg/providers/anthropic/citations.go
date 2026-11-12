@@ -92,13 +92,45 @@ func citationsProviderMetadata(citations []map[string]interface{}) json.RawMessa
 	if len(citations) == 0 {
 		return nil
 	}
+	stripped := make([]map[string]interface{}, len(citations))
+	for i, c := range citations {
+		stripped[i] = stripAnthropicCitation(c)
+	}
 	meta, err := json.Marshal(map[string]interface{}{
-		"anthropic": map[string]interface{}{"citations": citations},
+		"anthropic": map[string]interface{}{"citations": stripped},
 	})
 	if err != nil {
 		return nil
 	}
 	return meta
+}
+
+// anthropicCitationKeys are the keys TS anthropicCitationSchema declares per
+// citation type. The schema is a discriminated union of z.object members, so
+// the parsed citation TS reports in providerMetadata keeps only these keys.
+var anthropicCitationKeys = map[string][]string{
+	"web_search_result_location": {"type", "cited_text", "url", "title", "encrypted_index"},
+	"page_location":              {"type", "cited_text", "document_index", "document_title", "start_page_number", "end_page_number", "file_id"},
+	"char_location":              {"type", "cited_text", "document_index", "document_title", "start_char_index", "end_char_index", "file_id"},
+	"content_block_location":     {"type", "cited_text", "document_index", "document_title", "start_block_index", "end_block_index", "file_id"},
+	"search_result_location":     {"type", "cited_text", "search_result_index", "source", "title", "start_block_index", "end_block_index"},
+}
+
+// stripAnthropicCitation returns the citation with the keys its TS schema
+// declares (zod strips the others); a citation of an unknown type is returned
+// as is (the response schema rejects it before conversion).
+func stripAnthropicCitation(c map[string]interface{}) map[string]interface{} {
+	keys, ok := anthropicCitationKeys[citationType(c)]
+	if !ok {
+		return c
+	}
+	out := make(map[string]interface{}, len(keys))
+	for _, k := range keys {
+		if v, present := c[k]; present {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func citationType(c map[string]interface{}) string {
@@ -238,7 +270,7 @@ func mapAnthropicCitations(citations []map[string]interface{}, documents []citat
 // other kind becomes a document source whose id is the file_id or the
 // document index. The full raw citation is kept under providerMetadata.anthropic.
 func mapAnthropicCitation(citation map[string]interface{}, documents []citationDocument) types.Citation {
-	meta, _ := json.Marshal(map[string]interface{}{"anthropic": citation})
+	meta, _ := json.Marshal(map[string]interface{}{"anthropic": stripAnthropicCitation(citation)})
 	citedText := citationString(citation, "cited_text")
 
 	switch citationType(citation) {

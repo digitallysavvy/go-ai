@@ -295,9 +295,14 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 		reasons := []string{"Unknown"}
 		// TS: Array.isArray(reasons) ? reasons : ['Unknown'] -- an empty array stays empty.
 		if rawReasons, ok := response.Details["Moderation Reasons"].([]interface{}); ok {
+			// Array.prototype.join: String(element), null as "".
 			reasons = reasons[:0]
 			for _, reason := range rawReasons {
-				reasons = append(reasons, fmt.Sprint(reason))
+				if reason == nil {
+					reasons = append(reasons, "")
+					continue
+				}
+				reasons = append(reasons, providerutils.JSString(reason))
 			}
 		}
 		return nil, fmt.Errorf("Amazon Bedrock request was moderated: %s", strings.Join(reasons, ", ")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue

@@ -118,9 +118,10 @@ func TestSigV4MissingRegionFailsBeforeSending(t *testing.T) {
 	}
 }
 
-// The API key is read at request time: ANTHROPIC_AWS_API_KEY set after the
-// provider was created is used, and no SigV4 credentials are needed.
-func TestAPIKeyFromEnvReadAtRequestTime(t *testing.T) {
+// The API key is read when the provider is created (TS createAnthropicAws
+// loadOptionalSetting): ANTHROPIC_AWS_API_KEY set later is not used (the
+// request is SigV4-signed), and a key read at creation stays in use.
+func TestAPIKeyFromEnvReadAtCreation(t *testing.T) {
 	var gotKey, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -130,17 +131,31 @@ func TestAPIKeyFromEnvReadAtRequestTime(t *testing.T) {
 	}))
 	defer srv.Close()
 	t.Setenv("ANTHROPIC_AWS_API_KEY", "")
-	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "akid")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	generate := func(p *Provider) {
+		t.Helper()
+		m, _ := p.LanguageModel("claude-sonnet-4-6")
+		if _, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	p, err := New(Config{Region: "us-east-1", WorkspaceID: "w", BaseURL: srv.URL, HTTPClient: srv.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ANTHROPIC_AWS_API_KEY", "late-key")
-	m, _ := p.LanguageModel("claude-sonnet-4-6")
-	if _, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err != nil {
+	generate(p)
+	if gotKey != "" || !strings.HasPrefix(gotAuth, "AWS4-HMAC-SHA256") {
+		t.Fatalf("x-api-key=%q Authorization=%q, want SigV4 (key set after creation)", gotKey, gotAuth)
+	}
+	p, err = New(Config{Region: "us-east-1", WorkspaceID: "w", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("ANTHROPIC_AWS_API_KEY", "")
+	generate(p)
 	if gotKey != "late-key" || gotAuth != "" {
-		t.Fatalf("x-api-key=%q Authorization=%q", gotKey, gotAuth)
+		t.Fatalf("x-api-key=%q Authorization=%q, want the key read at creation", gotKey, gotAuth)
 	}
 }

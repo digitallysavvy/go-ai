@@ -330,10 +330,10 @@ func (s *bedrockConverseStream) handleMetadata(metadata map[string]interface{}) 
 		payload["trace"] = trace
 	}
 	if pc := metadata["performanceConfig"]; pc != nil {
-		payload["performanceConfig"] = pc
+		payload["performanceConfig"] = schemaKeys(pc, "latency")
 	}
 	if st := metadata["serviceTier"]; st != nil {
-		payload["serviceTier"] = st
+		payload["serviceTier"] = schemaKeys(st, "type")
 	}
 	if len(payload) > 0 {
 		s.providerMetadataPayload = payload

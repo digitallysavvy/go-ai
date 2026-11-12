@@ -213,6 +213,123 @@ func rawJSONValue(raw json.RawMessage) interface{} {
 	return v
 }
 
+// pickKeys returns the keys of m that a TS z.object schema declares (zod
+// strips the others); a value that is not an object is returned as is.
+func pickKeys(v interface{}, keys ...string) interface{} {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return v
+	}
+	out := make(map[string]interface{}, len(keys))
+	for _, k := range keys {
+		if val, present := m[k]; present {
+			out[k] = val
+		}
+	}
+	return out
+}
+
+// pickListKeys applies pickKeys to every element of a list value.
+func pickListKeys(v interface{}, keys ...string) interface{} {
+	list, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, len(list))
+	for i, item := range list {
+		out[i] = pickKeys(item, keys...)
+	}
+	return out
+}
+
+// codeExecution20250825ResultKeys are the keys TS anthropicResponseSchema
+// declares per bash / text editor code execution result type.
+var codeExecution20250825ResultKeys = map[string][]string{
+	"bash_code_execution_result":                    {"type", "content", "stdout", "stderr", "return_code"},
+	"bash_code_execution_tool_result_error":         {"type", "error_code"},
+	"text_editor_code_execution_tool_result_error":  {"type", "error_code"},
+	"text_editor_code_execution_view_result":        {"type", "content", "file_type", "num_lines", "start_line", "total_lines"},
+	"text_editor_code_execution_create_result":      {"type", "is_file_update"},
+	"text_editor_code_execution_str_replace_result": {"type", "lines", "new_lines", "new_start", "old_lines", "old_start"},
+}
+
+// codeExecution20250825ResultValue is the bash / text editor code execution
+// result as TS parses it (part.content): the declared keys only, and the
+// bash output files as {type, file_id}.
+func codeExecution20250825ResultValue(v interface{}) interface{} {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return v
+	}
+	resultType, _ := m["type"].(string)
+	keys, ok := codeExecution20250825ResultKeys[resultType]
+	if !ok {
+		return v
+	}
+	out, _ := pickKeys(m, keys...).(map[string]interface{})
+	if resultType == "bash_code_execution_result" {
+		if files, present := out["content"]; present {
+			out["content"] = pickListKeys(files, "type", "file_id")
+		}
+	}
+	return out
+}
+
+// mcpToolResultContentValue is an mcp_tool_result content as TS
+// anthropicMcpToolResultContentSchema parses it: a string, or a list of
+// strings and {type: 'text', text, citations?} objects (other keys stripped).
+func mcpToolResultContentValue(v interface{}) interface{} {
+	return pickListKeys(v, "type", "text", "citations")
+}
+
+// inputTransformationsValue decodes input_transformations as TS
+// anthropicInputTransformationSchema parses it: each entry keeps type, path
+// and reason. nil for absent or null.
+func inputTransformationsValue(raw json.RawMessage) interface{} {
+	v := rawJSONValue(raw)
+	list, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, len(list))
+	for i, item := range list {
+		out[i] = pickKeys(item, "type", "path", "reason")
+	}
+	return out
+}
+
+// safeguardResultsValue decodes safeguard_results as TS
+// anthropicSafeguardResultSchema parses it: {type, status: {type,
+// tool_uses?: {[id]: {type, outcome?, explanation?}}}}. nil for absent or
+// null.
+func safeguardResultsValue(raw json.RawMessage) interface{} {
+	v := rawJSONValue(raw)
+	list, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, len(list))
+	for i, item := range list {
+		result, ok := pickKeys(item, "type", "status").(map[string]interface{})
+		if !ok {
+			out[i] = item
+			continue
+		}
+		if status, ok := pickKeys(result["status"], "type", "tool_uses").(map[string]interface{}); ok {
+			if uses, ok := status["tool_uses"].(map[string]interface{}); ok {
+				stripped := make(map[string]interface{}, len(uses))
+				for id, use := range uses {
+					stripped[id] = pickKeys(use, "type", "outcome", "explanation")
+				}
+				status["tool_uses"] = stripped
+			}
+			result["status"] = status
+		}
+		out[i] = result
+	}
+	return out
+}
+
 // toolCallContentOf is the ordered-content form of a ToolCall (what the core
 // derives from result.ToolCalls when a provider leaves Content to it).
 func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
@@ -266,12 +383,12 @@ func convertDeferredToolResult(blockType string, raw json.RawMessage, toolNameMa
 		case "code_execution_result":
 			return deferredToolResult{ToolName: name, Result: map[string]interface{}{
 				"type": "code_execution_result", "stdout": str("stdout"), "stderr": str("stderr"),
-				"return_code": str("return_code"), "content": orEmptyList("content"),
+				"return_code": str("return_code"), "content": pickListKeys(orEmptyList("content"), "type", "file_id"),
 			}}, true
 		case "encrypted_code_execution_result":
 			return deferredToolResult{ToolName: name, Result: map[string]interface{}{
 				"type": "encrypted_code_execution_result", "encrypted_stdout": str("encrypted_stdout"), "stderr": str("stderr"),
-				"return_code": str("return_code"), "content": orEmptyList("content"),
+				"return_code": str("return_code"), "content": pickListKeys(orEmptyList("content"), "type", "file_id"),
 			}}, true
 		case "code_execution_tool_result_error":
 			code, _ := content["error_code"].(string)
@@ -283,7 +400,7 @@ func convertDeferredToolResult(blockType string, raw json.RawMessage, toolNameMa
 	case "bash_code_execution_tool_result", "text_editor_code_execution_tool_result":
 		var passthrough interface{}
 		_ = json.Unmarshal(raw, &passthrough)
-		return deferredToolResult{ToolName: mapAnthropicToolName("code_execution", toolNameMap), Result: passthrough}, true
+		return deferredToolResult{ToolName: mapAnthropicToolName("code_execution", toolNameMap), Result: codeExecution20250825ResultValue(passthrough)}, true
 	case "tool_search_tool_result":
 		provider := serverToolName
 		if provider == "" {

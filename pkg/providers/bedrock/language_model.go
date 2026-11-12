@@ -1252,10 +1252,10 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 		}
 	}
 	if len(resp.PerformanceConfig) > 0 {
-		metadataPayload["performanceConfig"] = resp.PerformanceConfig
+		metadataPayload["performanceConfig"] = schemaKeys(resp.PerformanceConfig, "latency")
 	}
 	if len(resp.ServiceTier) > 0 {
-		metadataPayload["serviceTier"] = resp.ServiceTier
+		metadataPayload["serviceTier"] = schemaKeys(resp.ServiceTier, "type")
 	}
 	if usageMap != nil {
 		usageMeta := map[string]interface{}{}
@@ -1300,6 +1300,23 @@ func converseInputText(raw json.RawMessage, orEmpty bool) string {
 		return jsonorder.Stringify(v)
 	}
 	return "{}"
+}
+
+// schemaKeys returns the keys of a decoded z.object value that its TS schema
+// declares (zod strips the others, e.g. performanceConfig {latency} and
+// serviceTier {type}); a non-object value is returned as is.
+func schemaKeys(v interface{}, keys ...string) interface{} {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return v
+	}
+	out := make(map[string]interface{}, len(keys))
+	for _, k := range keys {
+		if val, present := m[k]; present {
+			out[k] = val
+		}
+	}
+	return out
 }
 
 func mustMarshalProviderMetadata(v interface{}) json.RawMessage {

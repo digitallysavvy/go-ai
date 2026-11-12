@@ -15,8 +15,8 @@ import (
 )
 
 // sigV4Transport authenticates each request: a bearer token (settings.APIKey or
-// AWS_BEARER_TOKEN_BEDROCK, trimmed) when one is available, otherwise SigV4.
-// Everything is read at request time.
+// AWS_BEARER_TOKEN_BEDROCK, trimmed, read when the provider is created) when
+// one is available, otherwise SigV4 with credentials read at request time.
 type sigV4Transport struct {
 	base               http.RoundTripper
 	apiKey             string
@@ -71,9 +71,9 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
 		return t.base.RoundTrip(req)
 	}
-	if key := providerutils.JSTrim(providerutils.APIKeyOrEnv(t.apiKey, "AWS_BEARER_TOKEN_BEDROCK")); key != "" {
+	if t.apiKey != "" {
 		req = req.Clone(req.Context())
-		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Authorization", "Bearer "+t.apiKey)
 		return t.base.RoundTrip(req)
 	}
 	// TS loads the region first, at request time, and fails when it is missing.

@@ -796,7 +796,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			}
 			// TS: isError: part.is_error, result: part.content (both kept).
 			trc.IsError = content.IsError
-			trc.Result = parsed
+			trc.Result = mcpToolResultContentValue(parsed)
 			if isTrue(content.IsError) {
 				trc.Error = fmt.Sprintf("%v", parsed)
 			}
@@ -894,8 +894,8 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		result.ContextManagement = response.Usage.ContextManagement
 	}
 	result.ProviderMetadata = withCustomProviderKeyMetadata(anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
-		inputTransformations: rawJSONValue(response.InputTransformations),
-		safeguardResults:     rawJSONValue(response.SafeguardResults),
+		inputTransformations: inputTransformationsValue(response.InputTransformations),
+		safeguardResults:     safeguardResultsValue(response.SafeguardResults),
 		serviceTier:          firstServiceTier(response.Usage.Raw, response.ServiceTier),
 	}), co.providerOptionsName, co.usedCustomProviderKey)
 
@@ -2223,7 +2223,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				}
 				// TS: isError: part.is_error, result: part.content (both kept).
 				tr.IsError = start.ContentBlock.IsError
-				tr.Result = mcpResultContent
+				tr.Result = mcpToolResultContentValue(mcpResultContent)
 				if isTrue(start.ContentBlock.IsError) {
 					tr.Error = fmt.Errorf("mcp tool error: %v", mcpResultContent)
 				}
@@ -2420,8 +2420,6 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			continue
 
 		case "message_start":
-			// Block indexes restart with each message (TS e10aebbad6).
-			s.heldBackTextByIndex = nil
 			// Capture input/cache tokens for inclusion in the final finish chunk.
 			// These are only available here — the message_delta only has output_tokens.
 			//
@@ -2485,6 +2483,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
+				// Block indexes restart with each message (TS e10aebbad6); a
+				// repeated message_start of the open message returned above.
+				s.heldBackTextByIndex = nil
 				if msg.Message.StopReason != "" {
 					// TS: a message_start that already carries a stop_reason
 					// sets the stream-wide finish reason.
@@ -2510,7 +2511,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					},
 				})
 				s.pending = append(s.pending, messageStartChunk(event.Data))
-				if v := rawJSONValue(msg.Message.InputTransformations); v != nil {
+				if v := inputTransformationsValue(msg.Message.InputTransformations); v != nil {
 					s.inputTransformations = v
 				}
 				s.inputTokens = int64(msg.Message.Usage.InputTokens)
@@ -2932,12 +2933,12 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			if delta.Usage.ServiceTier != nil {
 				s.serviceTier = delta.Usage.ServiceTier
 			}
-			if v := rawJSONValue(delta.InputTransformations); v != nil {
+			if v := inputTransformationsValue(delta.InputTransformations); v != nil {
 				s.inputTransformations = v
 			}
 			// Earlier deltas may carry null while the classifier is still running;
 			// the last non-null value is the final verdict.
-			if v := rawJSONValue(delta.Delta.SafeguardResults); v != nil {
+			if v := safeguardResultsValue(delta.Delta.SafeguardResults); v != nil {
 				s.safeguardResults = v
 			}
 			if delta.Usage.OutputTokensDetails != nil {
@@ -3355,9 +3356,10 @@ func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 			"data":      wire.Content.Source.Data,
 		},
 	}
-	// TS passes `citations` through as-is, so an absent value is left out.
+	// TS passes `citations` ({enabled}, z.object) through, so an absent
+	// value is left out.
 	if wire.Content.Citations != nil {
-		content["citations"] = wire.Content.Citations
+		content["citations"] = pickKeys(wire.Content.Citations, "enabled")
 	}
 	return map[string]interface{}{
 		"type":        wire.Type,
