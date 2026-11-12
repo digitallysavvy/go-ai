@@ -328,7 +328,11 @@ func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	}
 }
 
-func TestGenerateTextSandboxDescriptionAppendedToSystem(t *testing.T) {
+// TS adds no sandbox description to the model prompt ("The experimental
+// sandbox description is not added to the model prompt automatically",
+// content/docs/03-agents/02-building-agents.mdx); tool description functions
+// and prepareStep read it.
+func TestGenerateTextSandboxDescriptionNotAddedToSystem(t *testing.T) {
 	var seenSystem string
 	model := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
@@ -346,8 +350,8 @@ func TestGenerateTextSandboxDescriptionAppendedToSystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateText() error = %v", err)
 	}
-	if seenSystem == "" || !containsSubstring(seenSystem, "Ubuntu 22.04, root: /workspace") {
-		t.Fatalf("system prompt missing sandbox description: %q", seenSystem)
+	if seenSystem != "You are helpful." {
+		t.Fatalf("system prompt = %q, want the instructions only", seenSystem)
 	}
 }
 

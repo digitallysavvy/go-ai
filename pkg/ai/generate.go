@@ -1396,7 +1396,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		logPromptDeprecations(promptDeprecations.forStep(stepMessages))
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 			Messages: messagesForModel(stepMessages),
-			System:   appendSandboxDescription(stepSystem, stepSandbox),
+			// The sandbox description is not added to the prompt (TS:
+			// "The experimental sandbox description is not added to the
+			// model prompt automatically"; tool description functions and
+			// PrepareStep read it).
+			System: stepSystem,
 		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 		if normErr != nil {
 			return nil, normErr
