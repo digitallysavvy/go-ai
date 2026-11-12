@@ -93,6 +93,7 @@ func TestLangSmithDeploymentTransportSpeaksRunsStreamProtocol(t *testing.T) {
 
 func TestLangSmithDeploymentTransportServerErrorEventBecomesErrorChunk(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "event: error\ndata: {\"error\":\"GraphRecursionError\",\"message\":\"too deep\"}\n\n")
 	}))
 	defer server.Close()
@@ -120,13 +121,14 @@ func TestLangSmithDeploymentTransportHTTPFailure(t *testing.T) {
 	transport := NewLangSmithDeploymentTransport(LangSmithDeploymentTransportOptions{URL: server.URL})
 	chunks, errs := transport.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{})
 	_, gotErrs := drain(t, chunks, errs)
-	if len(gotErrs) != 1 || gotErrs[0].Error() != "HTTP 401: bad key" {
+	if len(gotErrs) != 1 || gotErrs[0].Error() != "HTTP 401: bad key\n" {
 		t.Fatalf("errors: %v", gotErrs)
 	}
 }
 
 func TestLangSmithDeploymentTransportUpdatesInterruptThrowsGraphInterrupt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "event: updates\ndata: {\"node\":{\"x\":1}}\n\n")
 		_, _ = io.WriteString(w, "event: updates\ndata: {\"__interrupt__\":[{\"value\":\"ok?\",\"id\":\"i1\"}]}\n\n")
 		_, _ = io.WriteString(w, "event: values\ndata: {\"messages\":[]}\n\n")

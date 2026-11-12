@@ -8,10 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
+	"net"
 	"net/http"
+	"os"
+	"regexp"
+	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -56,15 +61,100 @@ func NewLangSmithDeploymentTransport(options LangSmithDeploymentTransportOptions
 	if client == nil {
 		client = http.DefaultClient
 	}
+	// langgraph-sdk BaseClient: apiUrl.replace(/\/$/, "") (one trailing
+	// slash) || "http://localhost:8123".
+	url := strings.TrimSuffix(options.URL, "/")
+	if url == "" {
+		url = defaultLangGraphAPIURL
+	}
+	apiKey := options.APIKey
+	if apiKey == "" {
+		apiKey = langGraphAPIKeyFromEnv()
+	}
 	return &LangSmithDeploymentTransport{
-		url:        strings.TrimRight(options.URL, "/"),
-		apiKey:     options.APIKey,
+		url:        url,
+		apiKey:     apiKey,
 		graphID:    graphID,
 		httpClient: client,
 		headers:    options.Headers,
 		stream:     options.Stream,
 	}
 }
+
+// defaultLangGraphAPIURL is the langgraph-sdk Client default API URL.
+const defaultLangGraphAPIURL = "http://localhost:8123"
+
+// langGraphEnvQuote strips one leading and one trailing quote.
+var langGraphEnvQuote = regexp.MustCompile(`^["']|["']$`)
+
+// langGraphAPIKeyFromEnv mirrors langgraph-sdk getApiKey without an explicit
+// key: the first non-empty LANGGRAPH_API_KEY, LANGSMITH_API_KEY or
+// LANGCHAIN_API_KEY, trimmed, with one leading and one trailing quote
+// removed (client/base.js getApiKey).
+func langGraphAPIKeyFromEnv() string {
+	for _, prefix := range []string{"LANGGRAPH", "LANGSMITH", "LANGCHAIN"} {
+		if v := os.Getenv(prefix + "_API_KEY"); v != "" {
+			return langGraphEnvQuote.ReplaceAllString(strings.TrimSpace(v), "")
+		}
+	}
+	return ""
+}
+
+// langGraphMaxRetries is the langgraph-sdk AsyncCaller retry count.
+const langGraphMaxRetries = 4
+
+// langGraphRetryDelay is p-retry's randomized exponential backoff
+// (minTimeout 1000ms, factor 2, randomize: a factor in [1, 2)) before
+// retry attempt n (1-based). A variable so tests can shorten it.
+var langGraphRetryDelay = func(n int) time.Duration {
+	base := float64(time.Second) * float64(int64(1)<<(n-1))
+	return time.Duration((rand.Float64() + 1) * base) //nolint:gosec // backoff jitter, not security
+}
+
+// LangGraphConnectionError is the langgraph-sdk ConnectionError: the run
+// stream request failed on the network (after the connection retries).
+// Unwrap returns the transport error.
+type LangGraphConnectionError struct {
+	Err error
+}
+
+// Error returns the TS message; undici reports every network failure as
+// "fetch failed".
+func (e *LangGraphConnectionError) Error() string {
+	return "Unable to connect to LangGraph server. Please ensure the server is running and accessible. Original error: fetch failed"
+}
+
+// ErrorName is the TS error name.
+func (e *LangGraphConnectionError) ErrorName() string { return "ConnectionError" }
+
+func (e *LangGraphConnectionError) Unwrap() error { return e.Err }
+
+// LangGraphHTTPError is the langgraph-sdk HTTPError for a non-2xx response:
+// "HTTP <status>: <body text>".
+type LangGraphHTTPError struct {
+	Status int
+	Text   string
+}
+
+func (e *LangGraphHTTPError) Error() string { return fmt.Sprintf("HTTP %d: %s", e.Status, e.Text) }
+
+// ErrorName is the TS error name.
+func (e *LangGraphHTTPError) ErrorName() string { return "HTTPError" }
+
+// isLangGraphConnectError mirrors async_caller isConnectError: the
+// connection could not be opened (refused, DNS failure, unreachable host or
+// network, connect timeout).
+func isLangGraphConnectError(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+// maxLangGraphErrorBody bounds the HTTP error body kept in the error text.
+const maxLangGraphErrorBody = 1 << 20
 
 // LangSmithDeploymentTransport implements ai.ChatTransport, matching TS's
 // `class LangSmithDeploymentTransport<UI_MESSAGE> implements
@@ -121,9 +211,6 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 	if t.stream != nil {
 		return t.stream(ctx, messages)
 	}
-	if t.url == "" {
-		return nil, errors.New("langchain: URL is required")
-	}
 	body, err := json.Marshal(map[string]interface{}{
 		"input": map[string]interface{}{"messages": messages},
 		"config": map[string]interface{}{
@@ -139,28 +226,58 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.url+"/runs/stream", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	client := internalhttp.WithFetchRedirects(t.httpClient)
+	// langgraph-sdk AsyncCaller.fetch for the POST: up to 4 retries of a
+	// connection failure (a POST is not idempotent, so other network errors
+	// and HTTP errors are not retried); a network failure that is not
+	// retried is a ConnectionError, a non-2xx status an HTTPError.
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.url+"/runs/stream", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		for name, value := range t.headers {
+			req.Header.Set(name, value)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		if t.apiKey != "" {
+			req.Header.Set("x-api-key", t.apiKey)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			if attempt < langGraphMaxRetries && isLangGraphConnectError(err) {
+				timer := time.NewTimer(langGraphRetryDelay(attempt + 1))
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, ctx.Err()
+				case <-timer.C:
+				}
+				continue
+			}
+			return nil, &LangGraphConnectionError{Err: err}
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			defer func() { _ = resp.Body.Close() }()
+			data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxLangGraphErrorBody))
+			text := string(data)
+			if readErr != nil {
+				// HTTPError.fromResponse falls back to statusText.
+				text = strings.TrimSpace(strings.TrimPrefix(resp.Status, fmt.Sprint(resp.StatusCode)))
+			}
+			return nil, &LangGraphHTTPError{Status: resp.StatusCode, Text: text}
+		}
+		// streamWithRetry: a response that is not an event stream fails.
+		if contentType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";"); contentType != "" && !strings.Contains(contentType, "text/event-stream") {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("Expected response header Content-Type to contain 'text/event-stream', got '%s'", contentType) //nolint:staticcheck // exact TS text
+		}
+		return readRemoteGraphEvents(ctx, resp.Body), nil
 	}
-	for name, value := range t.headers {
-		req.Header.Set(name, value)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	if t.apiKey != "" {
-		req.Header.Set("x-api-key", t.apiKey)
-	}
-	resp, err := internalhttp.WithFetchRedirects(t.httpClient).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		defer func() { _ = resp.Body.Close() }()
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	}
-	return readRemoteGraphEvents(ctx, resp.Body), nil
 }
 
 // maxRemoteGraphLine bounds one SSE line (a "values" event carries the whole
@@ -196,9 +313,10 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 				return sendStreamEvent(ctx, out, StreamEvent{Mode: mode, Data: payload})
 			case "updates":
 				// RemoteGraph._streamIterator throws GraphInterrupt for an
-				// updates event that carries __interrupt__.
+				// updates event that carries __interrupt__, null included
+				// (`data?.__interrupt__ !== undefined`, remote.js:356).
 				if m, ok := payload.(map[string]interface{}); ok {
-					if interrupts, found := m["__interrupt__"]; found && interrupts != nil {
+					if interrupts, found := m["__interrupt__"]; found {
 						sendStreamEvent(ctx, out, StreamEvent{Err: newGraphInterrupt(interrupts)})
 						return false
 					}
