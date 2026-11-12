@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type r92toolsRoundTripper func(*http.Request) (*http.Response, error)
@@ -147,5 +149,46 @@ func TestR92toolsInputRequiredRetryOrderAndPreAbort(t *testing.T) {
 	cancel(cause)
 	if _, err := c.CallTool(ctx, "deploy", nil); err != cause {
 		t.Fatalf("pre-aborted err = %v, want the abort reason", err)
+	}
+}
+
+type r92toolsFailReplyTransport struct {
+	*eventsTransport
+	sendErr error
+}
+
+func (t *r92toolsFailReplyTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	if msg.Method == "" && msg.ID != nil {
+		return t.sendErr
+	}
+	return t.eventsTransport.Send(ctx, msg)
+}
+
+// TS onRequestMessage: a reply to a server request (ping, an unsupported
+// method, elicitation) whose transport.send rejects is reported through
+// onError; for a failing elicitation handler the send error is reported
+// instead of the handler error.
+func TestR92toolsServerRequestReplySendErrorReported(t *testing.T) {
+	sendErr := errors.New("send failed")
+	tr := &r92toolsFailReplyTransport{eventsTransport: newEventsTransport(), sendErr: sendErr}
+	reported := make(chan error, 8)
+	c := NewMCPClient(tr, MCPClientConfig{OnError: func(err error) { reported <- err }})
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	c.OnElicitationRequest(func(context.Context, ElicitationRequest) (ElicitResult, error) {
+		return ElicitResult{}, errors.New("handler failed")
+	})
+	for i, method := range []string{"ping", "sampling/createMessage", "elicitation/create"} {
+		tr.messages <- &MCPMessage{JSONRpc: "2.0", ID: float64(100 + i), Method: method, Params: json.RawMessage(`{"message":"m","requestedSchema":{}}`)}
+		select {
+		case err := <-reported:
+			if err != sendErr {
+				t.Fatalf("%s: reported %v, want the send error", method, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: send error not reported", method)
+		}
 	}
 }
