@@ -50,3 +50,27 @@ func TestR91toolsTopazVideoInvalidResponseData(t *testing.T) {
 		t.Fatalf("data = %#v", ird.Data)
 	}
 }
+
+// OVC-01 probe: Go-typed option literals validate and read like their JSON
+// form (map[string]string, the exported struct, float32).
+func TestR91toolsTopazTypedOptionLiterals(t *testing.T) {
+	strength := "low"
+	for name, options := range map[string]interface{}{
+		"map[string]string": map[string]string{"enhancementStrength": "low"},
+		"struct":            ImageModelOptions{EnhancementStrength: &strength},
+	} {
+		po := map[string]interface{}{"topaz": options}
+		if err := validateImageOptions(po); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := parseImageModelOptions(po); got == nil || got.EnhancementStrength == nil || *got.EnhancementStrength != "low" {
+			t.Fatalf("%s: parsed = %+v", name, got)
+		}
+	}
+	if err := validateImageOptions(map[string]interface{}{"topaz": map[string]string{"enhancementStrength": "bogus"}}); err == nil {
+		t.Fatal("bogus typed value accepted")
+	}
+	if got := parseImageModelOptions(map[string]interface{}{"topaz": map[string]float32{"grainDensity": 0.25}}); got == nil || got.GrainDensity == nil || *got.GrainDensity != 0.25 {
+		t.Fatalf("float32 grainDensity = %+v", got)
+	}
+}
