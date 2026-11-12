@@ -200,8 +200,10 @@ func TestR85integInvalidToolCallErrorText(t *testing.T) {
 	if inputErr["input"] != "" || inputErr["errorText"] != "Model tried to call unavailable tool 't9'. Available tools: t1." {
 		t.Fatalf("tool-input-error = %#v", inputErr)
 	}
-	if outputErr["errorText"] != want {
-		t.Fatalf("tool-output-error = %#v", outputErr)
+	// TS 8585d7e56f: the UI stream skips the tool-error injected after an
+	// invalid call, so onError runs once (tool-input-error).
+	if outputErr != nil {
+		t.Fatalf("tool-output-error for an invalid call = %#v", outputErr)
 	}
 	var toolErr *types.ToolErrorContent
 	for _, s := range result.Steps() {

@@ -453,11 +453,15 @@ func stringSlicesEqual(a, b []string) bool {
 // (bindCodeModeDispatch). Mirrors TypeScript's createCodeModeSource; the
 // proxy routes every name through the same bridge, and the Go host resolves
 // an unknown name into "Unknown tool: x" (toolBridge.invoke), as TS's
-// `__codeMode.missing` does.
+// `__codeMode.missing` does. Like TS, the user code runs in an inner async
+// function whose result is round-tripped through JSON.parse(JSON.stringify)
+// in the sandbox, so a value JSON.stringify maps to undefined (a function,
+// a symbol) fails with the guest's own SyntaxError.
 func wrapCodeModeSource(js string) string {
 	return "(async()=>{\n" +
-		"const tools=__codeModeTools;\n" +
+		"const tools=__codeModeTools;const __codeModeResult=await(async()=>{\n" +
 		js + "\n" +
+		"})();if(__codeModeResult===undefined)return undefined;return JSON.parse(JSON.stringify(__codeModeResult));\n" +
 		"})()"
 }
 

@@ -2,6 +2,7 @@ package codemode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -413,7 +414,16 @@ func runInSandboxCtx(ctx context.Context, policy resolvedPolicy, drive func(sand
 // message is preserved verbatim (RunCodeMode further prefers a preserved
 // *typed* CodeModeError captured by the tool bridge, when one caused the
 // failure; see toolBridge.preservedCodeModeErr).
+//
+// The script's own rejection (*guestRejection) is never reclassified: TS
+// toCodeModeRuntimeError maps only the runner's RUN_TIMEOUT / RUN_ABORTED
+// codes, so a script or tool error whose text merely contains "context
+// canceled" or "wasm error:" keeps its own error.
 func classifySandboxFailure(err error, outerCtx context.Context, policy resolvedPolicy, budget *cpuBudget) error {
+	var rejected *guestRejection
+	if errors.As(err, &rejected) {
+		return err
+	}
 	msg := err.Error()
 	if looksLikeContextCancellation(msg) {
 		if outerCtx.Err() != nil {

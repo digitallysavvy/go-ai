@@ -995,8 +995,15 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// from processStream or ReadAll once the stream completes.
 	telSystem := ""
 	var telMessages, telInstructionMessages []types.Message
+	var telPromptString *string
 	// A nil *Options records inputs (integrations treat it the same way).
 	if telemetrySettings.ShouldRecordInputs() {
+		// TS standardizePrompt keeps a string prompt as the user message's
+		// string content, which the legacy root ai.prompt records as is.
+		if len(opts.Messages) == 0 && opts.Prompt != "" {
+			promptString := opts.Prompt
+			telPromptString = &promptString
+		}
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
@@ -1055,6 +1062,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Settings:            telemetrySettings,
 		System:              telSystem,
 		Messages:            telMessages,
+		PromptString:        telPromptString,
 		InstructionMessages: telInstructionMessages,
 		Headers:             opts.Headers,
 		MaxOutputTokens:     opts.MaxTokens,
@@ -1356,7 +1364,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	}
 
 	logPromptDeprecations(r.promptDeprecations.forStep(stepMessages))
-	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: stepSystem, Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
 			stepCancel()
@@ -1449,6 +1457,12 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// TS stepToolChoice is prepareToolChoice(...): auto when unset.
 		ToolChoice:     preparedToolChoice(stepToolChoice),
 		PromptMessages: genOpts.Prompt.Messages,
+		// TS folds the instructions into the step prompt as its leading
+		// system message (ai.prompt.messages).
+		// Instructions given as system messages are already the leading
+		// messages of PromptMessages (prependInstructionMessages), so
+		// InstructionMessages stays empty and they are not written twice.
+		System:         telemetryInput(telemetrySettings, stepSystem),
 		StepTools:      stepTools,
 		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
@@ -1654,6 +1668,13 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// they stay available through OnChunk.
 		if !isInternalStreamMarker(c.Type) {
 			r.chunkBuf.push(c)
+		}
+		// The orphan block error part is enqueued after TS's event processor
+		// (stream-text.ts 1739-1820): it reaches the full stream only, not
+		// onChunk or onError.
+		var orphanErr *orphanBlockPartError
+		if c.Type == provider.ChunkTypeError && errors.As(c.Err, &orphanErr) {
+			return
 		}
 		// TS's event processor skips onChunk and onError only for the error
 		// value the model stream reader already reported
@@ -2100,6 +2121,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	var transformFailErr error
 	var outputTracker partialOutputTracker
 	var outputText outputTextStage
+	// sinkBlocks tracks the text / reasoning blocks of the parts leaving the
+	// transform chain (TS eventProcessor activeTextContent /
+	// activeReasoningContent).
+	var sinkBlocks orphanBlockTracker
 	var sinkPartialErr error
 	var preliminaryMu sync.Mutex
 	stopTransformStream := StreamTransformStopper(func() { transformStopped = true })
@@ -2141,11 +2166,25 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					staged = outputText.stage(c, publish)
 				}
 				for _, out := range staged {
-					if rec != nil {
+					// TS eventProcessor forwards a delta or end of a block
+					// that is no longer open, then an error part
+					// "<text|reasoning> part <id> not found", and does not
+					// record it.
+					// Reset per step: a later step's blocks are remapped to
+					// fresh IDs, and a step that streams deltas without
+					// block parts stays accepted.
+					if out.Type == provider.ChunkTypeStartStep {
+						sinkBlocks.reset()
+					}
+					orphanErr := sinkBlocks.observe(out)
+					if rec != nil && orphanErr == nil {
 						rec.record(out)
 					}
 					if onChunk != nil {
 						onChunk(out)
+						if orphanErr != nil {
+							onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: orphanErr, Text: orphanErr.Error()})
+						}
 					}
 				}
 			}
@@ -2338,6 +2377,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var pendingInvalidToolErrors []provider.StreamChunk
 		var stepContent []types.ContentPart
 		var stepBlocks blockContent
+		// rawBlocks: the step's open text / reasoning blocks of the raw
+		// chunks, so a delta or end of an ended block is not recorded (TS
+		// eventProcessor; see sinkBlocks).
+		var rawBlocks orphanBlockTracker
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
 		// modelCallPerformance is the model call's performance at its finish
@@ -2542,13 +2585,24 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				chunk.ReasoningFileContent = &resolved
 			}
-			// A tool-input-start for a dynamic tool carries dynamic: true (TS).
-			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil && !chunk.ToolCall.Dynamic {
-				if t := toolsByName[chunk.ToolCall.ToolName]; t != nil && t.Type == types.ToolTypeDynamic {
-					startCall := *chunk.ToolCall
+			// A tool-input-start carries the tool's dynamic flag, title and
+			// metadata (TS stream-language-model-call.ts 866-873: dynamic:
+			// chunk.dynamic ?? tool?.type === 'dynamic', title: tool?.title,
+			// toolMetadata: tool.metadata when set).
+			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil {
+				t := toolsByName[chunk.ToolCall.ToolName]
+				startCall := *chunk.ToolCall
+				if t != nil && t.Type == types.ToolTypeDynamic {
 					startCall.Dynamic = true
-					chunk.ToolCall = &startCall
 				}
+				startCall.Title = ""
+				if t != nil {
+					startCall.Title = t.Title
+					if t.Metadata != nil {
+						startCall.ToolMetadata = cloneStringAnyMap(t.Metadata)
+					}
+				}
+				chunk.ToolCall = &startCall
 			}
 			forwardChunk := !suppressReasoningBoundaries || !isReasoningBoundaryChunk(chunk.Type)
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
@@ -2639,18 +2693,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// immediately following another one (e.g. an Anthropic compaction
 			// block followed by plain text) doesn't merge into the previous
 			// block's part and inherit its providerMetadata.
+			rawOrphan := rawBlocks.observe(*chunk) != nil
 			if chunk.Type == provider.ChunkTypeTextStart && !r.skipTextAccumulation {
 				stepContent = stepBlocks.openText(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
 			// A text-end boundary: attach its providerMetadata and citations to the text part.
-			if chunk.Type == provider.ChunkTypeTextEnd && !r.skipTextAccumulation {
+			if chunk.Type == provider.ChunkTypeTextEnd && !r.skipTextAccumulation && !rawOrphan {
 				stepContent = stepBlocks.closeText(stepContent, chunk.ID, chunk.ProviderMetadata, chunk.Citations)
 			}
 
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
-				if !r.skipTextAccumulation {
+				if !r.skipTextAccumulation && !rawOrphan {
 					stepTextParts = append(stepTextParts, chunk.Text)
 					accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
 					stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
@@ -2667,7 +2722,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeReasoningStart {
 				stepContent = stepBlocks.openReasoning(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
-			if chunk.Type == provider.ChunkTypeReasoningEnd {
+			if chunk.Type == provider.ChunkTypeReasoningEnd && !rawOrphan {
 				stepContent = stepBlocks.closeReasoning(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
@@ -2676,7 +2731,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// signature_delta) still carries signature metadata that must
 			// be merged onto the accumulated part so it can be replayed in
 			// the next request's history.
-			if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "" || len(chunk.ProviderMetadata) > 0) {
+			if chunk.Type == provider.ChunkTypeReasoning && !rawOrphan && (chunk.Text != "" || chunk.Reasoning != "" || len(chunk.ProviderMetadata) > 0) {
 				reasoningText := chunk.Reasoning
 				if reasoningText == "" {
 					reasoningText = chunk.Text
@@ -3126,6 +3181,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					pendingInvalidToolErrors = nil
 					stepContent = nil
 					stepBlocks.reset()
+					rawBlocks.reset()
+					sinkBlocks.reset()
 					stepReasoningBuilder.Reset()
 					modelCallEndFired = false
 					modelCallPerformance = nil
@@ -4272,7 +4329,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		logPromptDeprecations(r.promptDeprecations.forStep(nextMessages))
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
-			System:   appendSandboxDescription(nextSystem, nextSandbox),
+			System:   nextSystem,
 		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
 			nextStepCancel()
@@ -4348,6 +4405,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ModelID:        nextModel.ModelID(),
 			ToolChoice:     preparedToolChoice(nextToolChoice),
 			PromptMessages: nextGenOpts.Prompt.Messages,
+			System:         telemetryInput(r.telemetrySettings, nextSystem),
 			StepTools:      nextTools,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
@@ -4603,11 +4661,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// Output spec throws NoObjectGeneratedError from output.parseCompleteOutput
 	// itself (e.g. on empty text) rather than being silently skipped here.
 	if r.outputSpec != nil {
-		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         lastStepText,
-			FinishReason: r.finishReason,
-			Usage:        &r.usage,
-		})
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, finalStepOutputOptions(lastStepText, allSteps, r.finishReason, r.usage))
 		r.mu.Lock()
 		// Only publish a result on success: the generic outputProcessor
 		// interface returns the parse method's zero value (e.g. a
@@ -5782,11 +5836,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	// eed7950/9de0baf / WG4). Unconditional, matching TS StreamText's
 	// getOutputPromise() — see the comment at the other call site above.
 	if r.outputSpec != nil {
-		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         r.text,
-			FinishReason: r.finishReason,
-			Usage:        &r.usage,
-		})
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, finalStepOutputOptions(r.text, []types.StepResult{step}, r.finishReason, r.usage))
 		r.mu.Lock()
 		if parseErr == nil {
 			r.outputResult = parsed
@@ -6205,9 +6255,19 @@ func stepStartTelemetryPrompt(internal *InternalOptions, e telemetry.TelemetrySt
 	if internal != nil && internal.OmitStepPromptTelemetry {
 		e.ToolChoice = types.ToolChoice{}
 		e.PromptMessages = nil
+		e.System = ""
+		e.InstructionMessages = nil
 		e.StepTools = nil
 	}
 	return e
+}
+
+// telemetryInput is v when the telemetry settings record inputs, else "".
+func telemetryInput(settings *telemetry.Options, v string) string {
+	if !settings.ShouldRecordInputs() {
+		return ""
+	}
+	return v
 }
 
 // readChunk reads the next chunk, returning ctx's error once ctx is done.
@@ -6643,4 +6703,81 @@ func orderToolResultsByContent(results []types.ToolResult, content []types.Conte
 		return okA && pa < pb
 	})
 	return ordered
+}
+
+// orphanBlockPartError is the error part TS streamText's event processor
+// enqueues for a text / reasoning delta or end whose block is not open:
+// "text part <id> not found" (stream-text.ts 1739-1820).
+type orphanBlockPartError struct{ message string }
+
+func (e *orphanBlockPartError) Error() string { return e.message }
+
+// orphanBlockTracker tracks open text and reasoning block IDs. A block that
+// was started and then ended is closed; a delta or end for it returns the TS
+// error. Deltas of a block that was never started stay accepted (v0.5
+// providers stream text without block parts; known difference, S6).
+type orphanBlockTracker struct {
+	text, reasoning map[string]bool
+}
+
+func (t *orphanBlockTracker) reset() { t.text, t.reasoning = nil, nil }
+
+func (t *orphanBlockTracker) observe(c provider.StreamChunk) error {
+	var blocks *map[string]bool
+	var label string
+	var start bool
+	switch c.Type {
+	case provider.ChunkTypeTextStart:
+		blocks, start = &t.text, true
+	case provider.ChunkTypeText, provider.ChunkTypeTextEnd:
+		blocks, label = &t.text, "text"
+	case provider.ChunkTypeReasoningStart:
+		blocks, start = &t.reasoning, true
+	case provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd:
+		blocks, label = &t.reasoning, "reasoning"
+	default:
+		return nil
+	}
+	if *blocks == nil {
+		*blocks = map[string]bool{}
+	}
+	if start {
+		(*blocks)[c.ID] = true
+		return nil
+	}
+	open, seen := (*blocks)[c.ID]
+	if seen && !open {
+		return &orphanBlockPartError{message: label + " part " + c.ID + " not found"}
+	}
+	if c.Type == provider.ChunkTypeTextEnd || c.Type == provider.ChunkTypeReasoningEnd {
+		if seen {
+			(*blocks)[c.ID] = false
+		}
+	}
+	return nil
+}
+
+// finalStepOutputOptions are the parseCompleteOutput options of the final
+// step (TS stream-text.ts parseOutput: response: step.response, usage:
+// step.usage, finishReason: step.finishReason), so a NoObjectGeneratedError
+// carries the final step's response and usage, not the multi-step total.
+// Without a recorded step the call-level finish reason and usage are used.
+func finalStepOutputOptions(text string, steps []types.StepResult, finishReason types.FinishReason, usage types.Usage) ParseCompleteOutputOptions {
+	if len(steps) == 0 {
+		return ParseCompleteOutputOptions{Text: text, FinishReason: finishReason, Usage: &usage}
+	}
+	step := steps[len(steps)-1]
+	stepUsage := step.Usage
+	return ParseCompleteOutputOptions{
+		Text:         text,
+		FinishReason: step.FinishReason,
+		Usage:        &stepUsage,
+		Response: &types.ResponseMetadata{
+			ID:        step.Response.ID,
+			Timestamp: step.Response.Timestamp,
+			ModelID:   step.Response.ModelID,
+			Headers:   step.Response.Headers,
+			Body:      step.Response.Body,
+		},
+	}
 }

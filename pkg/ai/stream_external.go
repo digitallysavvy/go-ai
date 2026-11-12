@@ -798,11 +798,7 @@ consumeLoop:
 	// WG4); skipped when the turn itself failed, matching stream.go's r.err
 	// != nil early return before that point.
 	if r.err == nil && r.outputSpec != nil {
-		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         lastStepText,
-			FinishReason: r.finishReason,
-			Usage:        &r.usage,
-		})
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, finalStepOutputOptions(lastStepText, r.cbSteps, r.finishReason, r.usage))
 		r.mu.Lock()
 		if parseErr == nil {
 			r.outputResult = parsed

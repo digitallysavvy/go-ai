@@ -263,8 +263,9 @@ func TestR72StreamUIAbortInSecondStep(t *testing.T) {
 	}
 }
 
-// TS 26901: invalid tool calls > single invalid tool call > should add tool
-// call and result error parts to the ui message stream.
+// TS 27044: invalid tool calls > single invalid tool call > should add a
+// tool input error part to the ui message stream (TS 8585d7e56f: the
+// injected tool-error is not converted).
 func TestR72StreamUIInvalidToolCall(t *testing.T) {
 	steps := []provider.StreamChunk{
 		{Type: provider.ChunkTypeStreamStart},
@@ -281,7 +282,6 @@ func TestR72StreamUIInvalidToolCall(t *testing.T) {
 		{"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-input-start"},
 		{"inputTextDelta":"{ \"cities\": \"San Francisco\" }","toolCallId":"call-1","type":"tool-input-delta"},
 		{"errorText":"An error occurred.","input":{"cities":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-input-error"},
-		{"errorText":"An error occurred.","toolCallId":"call-1","type":"tool-output-error"},
 		{"type":"finish-step"},
 		{"finishReason":"stop","type":"finish"}]`)
 }
