@@ -705,7 +705,7 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 	if err != nil {
 		return nil, p.handleErrorWithContext(ctx, err)
 	}
-	if resp.StatusCode >= http.StatusBadRequest {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
@@ -849,7 +849,7 @@ func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, er
 	if err != nil {
 		return nil, p.handleErrorWithContext(ctx, err)
 	}
-	if resp.StatusCode >= http.StatusBadRequest {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
 	return []byte(textdecode.UTF8(resp.Body)), nil // TS response.text() before JSON.parse

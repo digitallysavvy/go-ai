@@ -334,10 +334,7 @@ func (m *ImageModel) convertResponse(response gatewayImageResponse, headers http
 			images = append(images, []byte(image))
 		}
 	}
-	warnings := response.Warnings
-	if warnings == nil {
-		warnings = []types.Warning{}
-	}
+	warnings := warningsOrEmpty(response.Warnings)
 	providerMetadata := response.ProviderMetadata
 	if response.IsRetryable != nil {
 		providerMetadata = cloneMapStringInterface(providerMetadata)

@@ -79,10 +79,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if err != nil {
 		return nil, err
 	}
-	warnings := response.Warnings
-	if warnings == nil {
-		warnings = []types.Warning{}
-	}
+	warnings := warningsOrEmpty(response.Warnings)
 	return &types.SpeechResult{
 		Audio:            audio,
 		Warnings:         warnings,

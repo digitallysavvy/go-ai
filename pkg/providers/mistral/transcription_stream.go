@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"net/url"
 	"strconv"
 	"strings"
@@ -404,7 +405,7 @@ func (s *mistralRealtimeTranscriptionStream) run(cfg mistralRealtimeTranscriptio
 					continue
 				}
 				configured = true
-				update, _ := json.Marshal(struct {
+				update, _ := jsonstr.Marshal(struct {
 					Type    string                 `json:"type"`
 					Session mistralRealtimeSession `json:"session"`
 				}{"session.update", cfg.session})

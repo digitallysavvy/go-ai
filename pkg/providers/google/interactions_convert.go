@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -38,10 +39,10 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 		messages = append([]types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: p.System}}}}, messages...)
 	}
 
-	if opts.PreviousInteractionID != "" && opts.Store != nil && !*opts.Store {
+	if opts.hasPreviousInteractionID() && opts.Store != nil && !*opts.Store {
 		msg := "google.interactions: providerOptions.google.previousInteractionId was set together with store: false. These are incoherent (the prior interaction cannot be referenced when nothing was stored on the server); the full history will be sent and previous_interaction_id will still be emitted."
 		warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
-	} else if opts.PreviousInteractionID != "" {
+	} else if opts.hasPreviousInteractionID() {
 		messages = compactMessagesForInteraction(messages, opts.PreviousInteractionID)
 	}
 
@@ -534,7 +535,8 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 						content = append(content, types.GeneratedFileContent{MediaType: inner.mimeTypeOr("image/png"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
 						mediaType := inner.mimeTypeOr("image/png")
-						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
+						uri := interactionsFileURL(inner.URI)
+						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}, URL: uri, ProviderMetadata: meta})
 					}
 				case "video":
 					if inner.Data != "" {
@@ -542,7 +544,8 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 						content = append(content, types.GeneratedFileContent{MediaType: inner.mimeTypeOr("video/mp4"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
 						mediaType := inner.mimeTypeOr("video/mp4")
-						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
+						uri := interactionsFileURL(inner.URI)
+						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}, URL: uri, ProviderMetadata: meta})
 					}
 				}
 			}
@@ -658,7 +661,7 @@ func compactMessagesForInteraction(messages []types.Message, interactionID strin
 				}
 			}
 			for _, call := range msg.ToolCalls {
-				if googleInteractionFromMap(call.ProviderMetadata) == interactionID {
+				if callGoogle, _ := call.ProviderMetadata["google"].(map[string]interface{}); interactionIDMatches(callGoogle, interactionID) {
 					matches = true
 				}
 			}
@@ -764,15 +767,6 @@ func mergeAdjacentInteractionText(content []map[string]interface{}) []map[string
 		out = append(out, block)
 	}
 	return out
-}
-
-func googleInteractionFromMap(meta map[string]interface{}) string {
-	if google, ok := meta["google"].(map[string]interface{}); ok {
-		if s, ok := google["interactionId"].(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 func isBuiltinInteractionsToolCall(t string) bool {
@@ -1006,23 +1000,24 @@ func inputSignature(opts map[string]interface{}, field string, googleMeta map[st
 	return nil
 }
 
-// googleOptString reads providerOptions.google.<key> as a string (the TS
-// converter reads signatures, interaction ids and processing ids from the
-// prompt part's providerOptions).
-func googleOptString(opts map[string]interface{}, key string) string {
-	// Typed-option ruling: part options are read in their JSON form.
-	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
-		if v, ok := google[key].(string); ok {
-			return v
-		}
-	}
-	return ""
-}
-
 // partMatchesInteraction: TS compares providerOptions.google.interactionId; Go
 // parts that came back from this provider carry it in providerMetadata.
+// Only a present string id is compared (TS `===`: an absent id is undefined,
+// never equal to a given "").
 func partMatchesInteraction(opts map[string]interface{}, meta json.RawMessage, interactionID string) bool {
-	return googleOptString(opts, "interactionId") == interactionID || googleInteractionID(meta) == interactionID
+	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
+		if v, ok := google["interactionId"].(string); ok && v == interactionID {
+			return true
+		}
+	}
+	return interactionIDMatches(extractGoogleMetadata(meta), interactionID)
+}
+
+// interactionIDMatches reports whether google metadata carries interactionId
+// as a string equal to interactionID.
+func interactionIDMatches(google map[string]interface{}, interactionID string) bool {
+	v, ok := google["interactionId"].(string)
+	return ok && v == interactionID
 }
 
 // orderedArguments returns args so that it marshals with the key order of raw,
@@ -1129,4 +1124,35 @@ func (m *InteractionsLanguageModel) generateID() string {
 		return m.cfg.GenerateID()
 	}
 	return streaming.GenerateID()
+}
+
+// interactionsFileURL is TS `new URL(uri)` for a generated file URL: the
+// WHATWG serialization (lower-cased host, default port dropped, ...). A URI
+// that does not parse is reported by interactionsOutputsURLError first.
+func interactionsFileURL(uri string) string {
+	if href, err := urlnorm.Href(uri); err == nil {
+		return href
+	}
+	return uri
+}
+
+// interactionsOutputsURLError is the TypeError TS parseGoogleInteractionsOutputs
+// throws from `new URL(uri)` for a model_output image or video block that has
+// no inline data and a URI that does not parse.
+func interactionsOutputsURLError(steps []interactionsContentBlock) error {
+	for _, block := range steps {
+		if block.Type != "model_output" || len(block.ContentRaw) == 0 {
+			continue
+		}
+		var inner []interactionsContentBlock
+		_ = json.Unmarshal(block.ContentRaw, &inner)
+		for _, b := range inner {
+			if (b.Type == "image" || b.Type == "video") && b.Data == "" && b.URI != "" {
+				if _, err := urlnorm.Href(b.URI); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }

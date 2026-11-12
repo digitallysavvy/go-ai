@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"math"
 	"net/http"
@@ -31,24 +33,6 @@ type FilesAPI struct {
 }
 
 func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions) (*types.UploadFileResult, error) {
-	content, err := inlineFileBytes(opts.Data)
-	if err != nil {
-		return nil, err
-	}
-
-	baseURL := f.provider.config.BaseURL
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
-	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
-	// The provider's default headers (user-agent suffix, config headers) like
-	// TS getHeaders, with the request-time key and the call headers on top.
-	authHeaders, err := f.provider.authHeaders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	headers := internalhttp.MergeHeaders(authHeaders, opts.Headers)
-
 	var displayName *string
 	pollIntervalMs := float64(2000)
 	pollTimeoutMs := float64(300000)
@@ -85,12 +69,39 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		}
 	}
 
+	// TS order: parseProviderOptions, then convertInlineFileDataToUint8Array
+	// (a stream is released unread and is unsupported), then getHeaders at
+	// the first fetch.
+	if opts.Data.Type == types.FileDataTypeStream {
+		if closer, ok := opts.Data.Stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming file upload"}
+	}
+	content, err := inlineFileBytes(opts.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	baseURL := f.provider.config.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
+	// The provider's default headers (user-agent suffix, config headers) like
+	// TS getHeaders, with the request-time key and the call headers on top.
+	authHeaders, err := f.provider.authHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(authHeaders, opts.Headers)
+
 	initBody := map[string]interface{}{"file": map[string]interface{}{}}
 	// TS: `displayName != null` -- an empty string is still sent.
 	if displayName != nil {
 		initBody["file"] = map[string]interface{}{"display_name": *displayName}
 	}
-	payload, _ := json.Marshal(initBody)
+	payload, _ := jsonstr.Marshal(initBody)
 	initReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseOrigin+"/upload/v1beta/files", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -110,7 +121,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, googleRawFetchError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	if resp.StatusCode >= 400 {
+	if !googleFilesStatusOK(resp.StatusCode) {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to initiate resumable upload: %d %s", resp.StatusCode, string(b)))
 	}
@@ -137,7 +148,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, googleRawFetchError(err)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
-	if uploadResp.StatusCode >= 400 {
+	if !googleFilesStatusOK(uploadResp.StatusCode) {
 		b, _ := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
 		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to upload file data: %d %s", uploadResp.StatusCode, string(b)))
 	}
@@ -149,7 +160,11 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	// TS response.text() before JSON.parse.
-	if err := json.Unmarshal([]byte(textdecode.UTF8(uploadBody)), &uploadResult); err != nil {
+	uploadText := []byte(textdecode.UTF8(uploadBody))
+	if err := googleFilesUploadResultShape(uploadText); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(uploadText, &uploadResult); err != nil {
 		return nil, err
 	}
 	file := uploadResult.File
@@ -181,7 +196,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 			// "Cannot connect to API" APICallError (aborts unchanged).
 			return nil, internalhttp.TransportErrorCtx(pollReq.Context(), err)
 		}
-		if pollResp.StatusCode >= 400 {
+		if !googleFilesStatusOK(pollResp.StatusCode) {
 			b, _ := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))
 			_ = pollResp.Body.Close()
 			return nil, f.provider.handleFilesError(pollResp.StatusCode, pollResp.Header, b)
@@ -247,6 +262,37 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		ProviderMetadata:  map[string]interface{}{"google": meta},
 		Warnings:          warnings,
 	}, nil
+}
+
+// googleFilesStatusOK is fetch's response.ok (a 2xx status), which both the
+// raw fetch steps and getFromApi check: an unfollowed 3xx fails too.
+func googleFilesStatusOK(code int) bool {
+	return code >= 200 && code < 300
+}
+
+// googleFilesUploadResultShape is the TypeError TS throws reading
+// `uploadResult.file.state` when the upload body has no file object: a null
+// body fails on `.file`, a missing or null file on `.state`.
+func googleFilesUploadResultShape(body []byte) error {
+	var top interface{}
+	if err := json.Unmarshal(body, &top); err != nil {
+		return err
+	}
+	if top == nil {
+		return errors.New("Cannot read properties of null (reading 'file')") //nolint:staticcheck // TS V8 TypeError text
+	}
+	var file interface{}
+	present := false
+	if m, ok := top.(map[string]interface{}); ok {
+		file, present = m["file"]
+	}
+	switch {
+	case !present:
+		return errors.New("Cannot read properties of undefined (reading 'state')") //nolint:staticcheck // TS V8 TypeError text
+	case file == nil:
+		return errors.New("Cannot read properties of null (reading 'state')") //nolint:staticcheck // TS V8 TypeError text
+	}
+	return nil
 }
 
 // googleRawFetchError is a failed raw fetch (TS google-files.ts and the

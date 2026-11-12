@@ -54,7 +54,7 @@ func TestR86provaVideoDownloadKeyFuncGetsCallerCtx(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.WithValue(context.Background(), r86provaCtxKey{}, true)
-	res, err := m.buildCompletedResult(ctx, &op, provider.VideoModelV3ResponseInfo{})
+	res, err := m.buildCompletedResult(ctx, &op, nil, provider.VideoModelV3ResponseInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}

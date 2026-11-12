@@ -75,7 +75,15 @@ type VertexEmbeddingProviderOptions struct {
 	// AutoTruncate controls whether input text is truncated when too long.
 	// Defaults to true. When false, an error is returned for oversized input.
 	AutoTruncate *bool
+
+	// titleSet records a present title read from a providerOptions map, ""
+	// included (TS sends title: "").
+	titleSet bool
 }
+
+// hasTitle is TS `title !== undefined`: a typed struct sets it by a
+// non-empty Title.
+func (o VertexEmbeddingProviderOptions) hasTitle() bool { return o.titleSet || o.Title != "" }
 
 // DoEmbed performs embedding for a single text input.
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
@@ -134,7 +142,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		if vopts.TaskType != "" {
 			inst["task_type"] = vopts.TaskType
 		}
-		if vopts.Title != "" {
+		if vopts.hasTitle() {
 			inst["title"] = vopts.Title
 		}
 		instances[i] = inst
@@ -214,7 +222,7 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 	if vopts.TaskType != "" {
 		setConfig("taskType", vopts.TaskType)
 	}
-	if vopts.Title != "" {
+	if vopts.hasTitle() {
 		setConfig("title", vopts.Title)
 	}
 	if vopts.AutoTruncate != nil {
@@ -301,7 +309,7 @@ func vertexEmbeddingOptions(opts *provider.EmbedModelOptions) VertexEmbeddingPro
 					result.TaskType = t
 				}
 				if t, ok := m["title"].(string); ok {
-					result.Title = t
+					result.Title, result.titleSet = t, true
 				}
 				// CoerceInt (not a bare `.(int)` assertion) because
 				// ProviderOptions commonly arrives via encoding/json.Unmarshal,
@@ -380,6 +388,9 @@ func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
 		if !ok {
 			return bad("value", "an object")
 		}
+		// An explicit null is treated as absent, as v0.5.2 did (TS zod
+		// .optional() rejects it; known difference "Bedrock and Anthropic
+		// null option values").
 		if x, set := m["outputDimensionality"]; set && x != nil && !isNumber(x) {
 			return bad("outputDimensionality", "a number")
 		}

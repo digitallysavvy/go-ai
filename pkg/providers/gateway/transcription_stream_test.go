@@ -67,6 +67,7 @@ type gatewayTranscriptionTestServer struct {
 
 	mu             sync.Mutex
 	receivedFrames []map[string]interface{}
+	receivedText   []string // the JSON frames as sent
 	receivedAudio  [][]byte
 	protocolHeader string
 	requestHeaders stdhttp.Header
@@ -114,6 +115,7 @@ func newGatewayTranscriptionTestServer(t *testing.T) *gatewayTranscriptionTestSe
 			if err := json.Unmarshal(raw, &decoded); err == nil {
 				s.mu.Lock()
 				s.receivedFrames = append(s.receivedFrames, decoded)
+				s.receivedText = append(s.receivedText, string(raw))
 				s.mu.Unlock()
 				continue
 			}

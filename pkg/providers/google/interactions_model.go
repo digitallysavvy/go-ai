@@ -168,6 +168,9 @@ func (m *InteractionsLanguageModel) DoGenerate(ctx context.Context, opts *provid
 		}
 	}
 
+	if err := interactionsOutputsURLError(response.Steps); err != nil {
+		return nil, err // TS new URL(uri) TypeError
+	}
 	result := m.convertResponse(response, resp, args, warnings)
 	return result, nil
 }
@@ -305,13 +308,13 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 	if hasSystem {
 		systemInstructionField = &systemInstruction
 	}
-	if hasSystem && interactionsOpts.SystemInstruction != "" {
+	if hasSystem && interactionsOpts.hasSystemInstruction() {
 		warnings = append(warnings, types.Warning{
 			Type:    "other",
 			Message: "google.interactions: both AI SDK system message and providerOptions.google.systemInstruction were set; using the AI SDK system message.",
 			Details: "google.interactions: both AI SDK system message and providerOptions.google.systemInstruction were set; using the AI SDK system message.",
 		})
-	} else if !hasSystem && interactionsOpts.SystemInstruction != "" {
+	} else if !hasSystem && interactionsOpts.hasSystemInstruction() {
 		systemInstructionField = &interactionsOpts.SystemInstruction
 	}
 
@@ -423,7 +426,7 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		Tools:                 toolsForBody,
 		ResponseFormat:        responseFormatEntries,
 		ResponseModalities:    interactionsResponseModalities(interactionsOpts.ResponseModalities),
-		PreviousInteractionID: interactionsOpts.PreviousInteractionID,
+		PreviousInteractionID: interactionsPreviousID(interactionsOpts),
 		ServiceTier:           interactionsOpts.ServiceTier,
 		Store:                 interactionsOpts.Store,
 		GenerationConfig:      generationConfig,
@@ -454,6 +457,16 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		body.Model = m.modelID
 	}
 	return body, warnings, interactionsOpts, nil
+}
+
+// interactionsPreviousID is TS `previous_interaction_id:
+// googleOptions?.previousInteractionId ?? undefined` (a present "" is sent).
+func interactionsPreviousID(opts GoogleInteractionsProviderOptions) *string {
+	if !opts.hasPreviousInteractionID() {
+		return nil
+	}
+	id := opts.PreviousInteractionID
+	return &id
 }
 
 // interactionsAgentConfig mirrors TS getArgs: agent_config is built only when
@@ -646,9 +659,9 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 		if err := checkInteractionsOptionTypes(v); err != nil {
 			return out, err
 		}
-		out.PreviousInteractionID, _ = v["previousInteractionId"].(string)
+		out.PreviousInteractionID, out.previousInteractionIDSet = v["previousInteractionId"].(string)
 		out.MediaResolution, _ = v["mediaResolution"].(string)
-		out.SystemInstruction, _ = v["systemInstruction"].(string)
+		out.SystemInstruction, out.systemInstructionSet = v["systemInstruction"].(string)
 		out.ServiceTier, _ = v["serviceTier"].(string)
 		out.ThinkingLevel, _ = v["thinkingLevel"].(string)
 		out.ThinkingSummaries, _ = v["thinkingSummaries"].(string)
@@ -721,6 +734,12 @@ func checkInteractionsOptionTypes(v map[string]interface{}) error {
 			if _, isStr := x.(string); !isStr {
 				return fmt.Errorf("google.interactions: %s: expected string, received %T", k, x)
 			}
+		}
+	}
+	// TS z.enum: a present "" is not one of the values.
+	for _, k := range []string{"mediaResolution", "serviceTier", "thinkingLevel", "thinkingSummaries"} {
+		if x, ok := v[k].(string); ok && x == "" {
+			return fmt.Errorf("google.interactions: %s: invalid option \"\"", k)
 		}
 	}
 	for _, k := range []string{"background", "store"} {
@@ -1162,15 +1181,12 @@ func nonEmptyStrings(v []string) interface{} {
 }
 
 // interactionsServiceTier is TS `response.service_tier ?? headerServiceTier`:
-// a body value ("" included) wins, else the header's (nil when absent).
-func interactionsServiceTier(body *string, header string) *string {
+// a body value ("" included) wins, else the header's ("" included; nil when absent).
+func interactionsServiceTier(body *string, header *string) *string {
 	if body != nil {
 		return body
 	}
-	if header != "" {
-		return &header
-	}
-	return nil
+	return header
 }
 
 func emptyToNil(v string) interface{} {
@@ -1344,8 +1360,8 @@ func outputTokensByModalityMap(usage *interactionsUsage) map[string]interface{} 
 	}
 	out := map[string]interface{}{}
 	for _, entry := range usage.OutputTokensByModality {
-		if entry.Modality != "" && entry.Tokens != nil {
-			out[entry.Modality] = *entry.Tokens
+		if entry.Modality != nil && entry.Tokens != nil {
+			out[*entry.Modality] = *entry.Tokens
 		}
 	}
 	if len(out) == 0 {
@@ -1430,15 +1446,6 @@ func extractGoogleMetadata(raw json.RawMessage) map[string]interface{} {
 		return google
 	}
 	return nil
-}
-
-func googleInteractionID(raw json.RawMessage) string {
-	if google := extractGoogleMetadata(raw); google != nil {
-		if s, ok := google["interactionId"].(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 func encodeData(data []byte, dataString string) string {

@@ -162,11 +162,27 @@ func (r gatewayEmbeddingResponse) embeddingUsage() types.EmbeddingUsage {
 	return usage
 }
 
+// warningsOrEmpty is TS `responseBody.warnings ?? []` over the gateway
+// warning schema (gatewayEmbeddingWarningSchema and its decision, image,
+// reranking, speech, transcription and video twins): a discriminated union
+// whose zod objects drop the keys another member uses, so an unsupported or
+// compatibility warning keeps feature and details, a deprecated one setting
+// and message, and an other one message.
 func warningsOrEmpty(warnings []types.Warning) []types.Warning {
-	if warnings == nil {
-		return []types.Warning{}
+	out := make([]types.Warning, 0, len(warnings))
+	for _, w := range warnings {
+		switch w.Type {
+		case "unsupported", "compatibility":
+			out = append(out, types.Warning{Type: w.Type, Feature: w.Feature, Details: w.Details})
+		case "deprecated":
+			out = append(out, types.Warning{Type: w.Type, Setting: w.Setting, Message: w.Message})
+		case "other":
+			out = append(out, types.Warning{Type: w.Type, Message: w.Message})
+		default:
+			out = append(out, w)
+		}
 	}
-	return warnings
+	return out
 }
 
 func rawJSONBody(body []byte) interface{} {

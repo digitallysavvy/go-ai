@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strconv"
 	"sync"
 	"time"
@@ -39,10 +40,13 @@ type googleLiveSpeechTranslationStreamConfig struct {
 // run()/pumpAudio()/dial()/send() below are local to Google.
 type googleLiveSpeechTranslationStream struct {
 	*wsutil.Session[provider.SpeechTranslationStreamPart]
+	// abortCtx is the caller's context (TS abortSignal).
+	abortCtx context.Context
 }
 
 func newGoogleLiveSpeechTranslationStream(parentCtx context.Context, cfg googleLiveSpeechTranslationStreamConfig) *googleLiveSpeechTranslationStream {
 	s := &googleLiveSpeechTranslationStream{Session: wsutil.NewSession[provider.SpeechTranslationStreamPart](parentCtx)}
+	s.abortCtx = parentCtx
 	go s.run(cfg)
 	return s
 }
@@ -208,6 +212,7 @@ func absPCM16(v int16) int {
 // createGoogleLiveSpeechTranslationStream's ReadableStream `start`.
 func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationStreamConfig) {
 	defer s.CloseParts()
+	defer failOnAbort(s.SetErr, s.abortCtx)
 	// Release the session's resources as soon as run() returns for any
 	// reason instead of only on an explicit Close() call, which a consumer
 	// that only drains Next() to io.EOF may never make.
@@ -243,7 +248,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	payload, err := json.Marshal(map[string]interface{}{"setup": cfg.setup})
+	payload, err := jsonstr.Marshal(map[string]interface{}{"setup": cfg.setup})
 	if err != nil {
 		fail(err)
 		return

@@ -153,7 +153,7 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		// APICallError, or an abort) unchanged, with no prefix.
 		return nil, err
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, cloudTTSError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 

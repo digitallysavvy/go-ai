@@ -336,7 +336,7 @@ func convertWarningData(warnings []warningData) []types.Warning {
 			Message: w.Message,
 		})
 	}
-	return out
+	return warningsOrEmpty(out)
 }
 
 // SSEVideoEvent represents a result or error event in the gateway video SSE stream.
@@ -478,15 +478,7 @@ func (m *VideoModel) buildResponseFromSSEEvent(event *SSEVideoEvent) (*provider.
 		})
 	}
 
-	for _, warning := range event.Warnings {
-		result.Warnings = append(result.Warnings, types.Warning{
-			Type:    warning.Type,
-			Feature: warning.Feature,
-			Setting: warning.Setting,
-			Details: warning.Details,
-			Message: warning.Message,
-		})
-	}
+	result.Warnings = convertWarningData(event.Warnings)
 
 	return result, nil
 }

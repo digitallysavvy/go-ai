@@ -10,6 +10,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -411,7 +412,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}, nil
 	}
 
-	return m.buildCompletedResult(&operation, responseInfo)
+	return m.buildCompletedResult(&operation, httpResp.Body, responseInfo)
 }
 
 // buildCompletedResult converts a done operation's response into a
@@ -419,10 +420,16 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 // Each video is either inline base64 data (bytesBase64Encoded) or a GCS URI,
 // depending on whether providerOptions.googleVertex.gcsOutputDirectory was
 // set.
-func (m *VideoModel) buildCompletedResult(operation *vertexVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+func (m *VideoModel) buildCompletedResult(operation *vertexVideoOperationWire, body []byte, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
 	if operation.Response == nil || operation.Response.Videos == nil || len(*operation.Response.Videos) == 0 {
-		raw, _ := json.Marshal(operation)
-		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
+		// TS JSON.stringify(finalOperation): the googleVertexOperationSchema
+		// parse result (schema keys in schema order, nulls kept).
+		text, ok := zodStripText(body, vertexOperationShape)
+		if !ok {
+			raw, _ := json.Marshal(operation)
+			text = string(raw)
+		}
+		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, fmt.Sprintf("No videos in response. Response: %s", text), nil)
 	}
 
 	videos := []provider.VideoModelV3VideoData{}
@@ -606,9 +613,9 @@ type vertexVideoOperationWire struct {
 	Name  string `json:"name,omitempty"`
 	Done  bool   `json:"done"`
 	Error *struct {
-		Code    *int   `json:"code,omitempty"`
-		Message string `json:"message"`
-		Status  string `json:"status,omitempty"`
+		Code    *float64 `json:"code,omitempty"` // z.number(): a fraction decodes
+		Message string   `json:"message"`
+		Status  string   `json:"status,omitempty"`
 	} `json:"error,omitempty"`
 	Response *struct {
 		Videos *[]struct {
@@ -616,6 +623,65 @@ type vertexVideoOperationWire struct {
 			GcsURI             string `json:"gcsUri,omitempty"`
 			MimeType           string `json:"mimeType,omitempty"`
 		} `json:"videos,omitempty"`
-		RaiMediaFilteredCount *int `json:"raiMediaFilteredCount,omitempty"`
+		RaiMediaFilteredCount *float64 `json:"raiMediaFilteredCount,omitempty"` // z.number()
 	} `json:"response,omitempty"`
+}
+
+// vertexOperationShape is googleVertexOperationSchema.
+var vertexOperationShape = zodShape{
+	{key: "name"}, {key: "done"},
+	{key: "error", obj: zodShape{{key: "code"}, {key: "message"}, {key: "status"}}},
+	{key: "response", obj: zodShape{
+		{key: "videos", elem: zodShape{{key: "bytesBase64Encoded"}, {key: "gcsUri"}, {key: "mimeType"}}},
+		{key: "raiMediaFilteredCount"},
+	}},
+}
+
+// zodShape lists an object schema's keys in schema order; obj is a nested
+// object schema and elem an array's element object schema.
+type zodShape []zodShapeField
+
+type zodShapeField struct {
+	key  string
+	obj  zodShape
+	elem zodShape
+}
+
+// zodStripText is TS JSON.stringify of a z.object parse result: only the
+// schema's keys, in schema order, with present nulls kept. ok is false when
+// raw is not JSON.
+func zodStripText(raw []byte, shape zodShape) (string, bool) {
+	v, ok := jsonorder.Parse(raw)
+	if !ok {
+		return "", false
+	}
+	return jsonorder.Stringify(zodStrip(v, shape)), true
+}
+
+func zodStrip(v interface{}, shape zodShape) interface{} {
+	obj, ok := v.(*jsonorder.Object)
+	if !ok {
+		return v
+	}
+	out := jsonorder.New()
+	for _, f := range shape {
+		x, present := obj.Get(f.key)
+		if !present {
+			continue
+		}
+		switch {
+		case f.obj != nil:
+			x = zodStrip(x, f.obj)
+		case f.elem != nil:
+			if arr, isArr := x.([]interface{}); isArr {
+				items := make([]interface{}, len(arr))
+				for i, item := range arr {
+					items[i] = zodStrip(item, f.elem)
+				}
+				x = items
+			}
+		}
+		out.Set(f.key, x)
+	}
+	return out
 }

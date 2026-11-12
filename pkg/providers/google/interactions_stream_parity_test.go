@@ -357,7 +357,7 @@ func TestInteractionsThoughtTextKeepsEmptySummaryItems(t *testing.T) {
 // outputTokensByModality.
 func TestSynthesizedInteractionsStreamMatchesTSReplay(t *testing.T) {
 	model := &InteractionsLanguageModel{}
-	resp := interactionsResponse{Status: InteractionStatusCompleted, Usage: &interactionsUsage{OutputTokensByModality: []interactionsModalityTokens{{Modality: "text", Tokens: func() *int64 { n := int64(3); return &n }()}}}}
+	resp := interactionsResponse{Status: InteractionStatusCompleted, Usage: &interactionsUsage{OutputTokensByModality: []interactionsModalityTokens{{Modality: r94provgStr("text"), Tokens: func() *int64 { n := int64(3); return &n }()}}}}
 	resp.Steps = []interactionsContentBlock{
 		{Type: "function_call", ID: "c1", Name: "lookup", Arguments: []byte(`{"q":"x"}`)},
 		{Type: "model_output", ContentRaw: []byte(`[{"type":"text","text":"hi"}]`)},

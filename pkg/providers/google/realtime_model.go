@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
 	"net/url"
@@ -159,7 +160,7 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		"newSessionExpireTime":     googleRealtimeISOString(now.Add(time.Duration(seconds) * time.Second)),
 		"bidiGenerateContentSetup": m.BuildSessionConfig(valueOrZero(opts.SessionConfig)),
 	}
-	payload, err := json.Marshal(body)
+	payload, err := jsonstr.Marshal(body)
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
@@ -802,7 +803,7 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 	if out == nil {
 		return json.RawMessage("null"), nil
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 func googleAuthTokenURL(base, apiKey string) string {

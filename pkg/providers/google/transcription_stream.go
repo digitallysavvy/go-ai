@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strconv"
 	"strings"
 	"sync"
@@ -231,10 +232,13 @@ type googleLiveTranscriptionStreamConfig struct {
 // run()/pumpAudio()/dial()/send() below are local to Google.
 type googleLiveTranscriptionStream struct {
 	*wsutil.Session[provider.TranscriptionStreamPart]
+	// abortCtx is the caller's context (TS abortSignal).
+	abortCtx context.Context
 }
 
 func newGoogleLiveTranscriptionStream(parentCtx context.Context, cfg googleLiveTranscriptionStreamConfig) *googleLiveTranscriptionStream {
 	s := &googleLiveTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
+	s.abortCtx = parentCtx
 	go s.run(cfg)
 	return s
 }
@@ -308,6 +312,7 @@ type googleLiveTranscription struct {
 
 func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamConfig) {
 	defer s.CloseParts()
+	defer failOnAbort(s.SetErr, s.abortCtx)
 	// Release the session's resources as soon as run() returns for any
 	// reason instead of only on an explicit Close() call, which a consumer
 	// that only drains Next() to io.EOF may never make.
@@ -343,7 +348,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	payload, err := json.Marshal(map[string]interface{}{"setup": cfg.setup})
+	payload, err := jsonstr.Marshal(map[string]interface{}{"setup": cfg.setup})
 	if err != nil {
 		fail(err)
 		return
@@ -629,3 +634,13 @@ var (
 	_ provider.TranscriptionStreamer = (*TranscriptionModel)(nil)
 	_ provider.TranscriptionStream   = (*googleLiveTranscriptionStream)(nil)
 )
+
+// failOnAbort is TS connectToWebSocket onAbort(abortSignal.reason): when the
+// caller's context is cancelled the stream fails with its cancel cause, also
+// when run() returns from an emit the cancellation unblocked. An error set
+// earlier wins (SetErr keeps the first).
+func failOnAbort(setErr func(error), ctx context.Context) {
+	if ctx != nil && ctx.Err() != nil {
+		setErr(context.Cause(ctx))
+	}
+}

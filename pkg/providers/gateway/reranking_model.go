@@ -69,7 +69,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	}
 
 	return &types.RerankResult{
-		Ranking:          response.Ranking,
+		Ranking:          response.ranking(),
 		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: response.ProviderMetadata,
 		Response: types.RerankResponse{
@@ -92,9 +92,9 @@ func (m *RerankingModel) handleErrorWithContext(ctx context.Context, err error) 
 }
 
 type gatewayRerankResponse struct {
-	Ranking          []types.RerankItem `json:"ranking"`
-	Warnings         []types.Warning    `json:"warnings,omitempty"`
-	ProviderMetadata interface{}        `json:"providerMetadata,omitempty"`
+	Ranking          []gatewayRerankItem `json:"ranking"`
+	Warnings         []types.Warning     `json:"warnings,omitempty"`
+	ProviderMetadata interface{}         `json:"providerMetadata,omitempty"`
 }
 
 // gatewayRerankDocuments wraps documents in the V4 reranking documents union
@@ -113,4 +113,22 @@ func gatewayRerankDocuments(docs interface{}) interface{} {
 		}
 	}
 	return map[string]interface{}{"type": kind, "values": docs}
+}
+
+// gatewayRerankItem is one gatewayRerankingResponseSchema ranking entry
+// (index, relevanceScore); types.RerankItem has no json tags (v0.5.2).
+type gatewayRerankItem struct {
+	Index          int     `json:"index"`
+	RelevanceScore float64 `json:"relevanceScore"`
+}
+
+func (r gatewayRerankResponse) ranking() []types.RerankItem {
+	if r.Ranking == nil {
+		return nil
+	}
+	out := make([]types.RerankItem, len(r.Ranking))
+	for i, item := range r.Ranking {
+		out[i] = types.RerankItem{Index: item.Index, RelevanceScore: item.RelevanceScore}
+	}
+	return out
 }

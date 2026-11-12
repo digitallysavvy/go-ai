@@ -141,14 +141,14 @@ func TestR87eintegInteractionsStreamEmptyValues(t *testing.T) {
 // TS google-interactions-language-model.ts `response.service_tier ??
 // headerServiceTier`: a body "" wins over the header.
 func TestR87eintegInteractionsServiceTierPrecedence(t *testing.T) {
-	empty := ""
-	if got := interactionsServiceTier(&empty, "standard"); got == nil || *got != "" {
+	empty, standard := "", "standard"
+	if got := interactionsServiceTier(&empty, &standard); got == nil || *got != "" {
 		t.Fatalf("body \"\" = %v", got)
 	}
-	if got := interactionsServiceTier(nil, "standard"); got == nil || *got != "standard" {
+	if got := interactionsServiceTier(nil, &standard); got == nil || *got != "standard" {
 		t.Fatalf("header = %v", got)
 	}
-	if got := interactionsServiceTier(nil, ""); got != nil {
+	if got := interactionsServiceTier(nil, nil); got != nil {
 		t.Fatalf("none = %v", *got)
 	}
 }

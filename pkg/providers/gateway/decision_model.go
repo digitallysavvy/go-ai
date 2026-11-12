@@ -96,8 +96,9 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		return nil, m.handleError(ctx, err)
 	}
 
+	// TS `responseBody.model ?? this.modelId`: a present "" is kept.
 	modelID := m.modelID
-	if response.Model != nil && *response.Model != "" {
+	if response.Model != nil {
 		modelID = *response.Model
 	}
 
@@ -191,14 +192,19 @@ type gatewayDecisionResponse struct {
 
 func (r gatewayDecisionResponse) toAnswers() map[string]provider.DecisionAnswer {
 	out := make(map[string]provider.DecisionAnswer, len(r.Answers))
+	// gatewayDecisionAnswerSchema is a discriminated union: each member's
+	// zod object drops the keys the others use.
 	for id, a := range r.Answers {
-		out[id] = provider.DecisionAnswer{
-			Type:          a.Type,
-			Choice:        a.Choice,
-			Score:         a.Score,
-			Probability:   a.Probability,
-			Probabilities: a.Probabilities,
+		answer := provider.DecisionAnswer{Type: a.Type}
+		switch a.Type {
+		case "choice":
+			answer.Choice, answer.Probabilities = a.Choice, a.Probabilities
+		case "score":
+			answer.Score, answer.Probabilities = a.Score, a.Probabilities
+		case "boolean":
+			answer.Probability = a.Probability
 		}
+		out[id] = answer
 	}
 	return out
 }

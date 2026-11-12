@@ -42,6 +42,22 @@ type GoogleInteractionsProviderOptions struct {
 	// `labels` (TS providerOptions.google.labels, a210a29f9b). A non-nil
 	// empty map is sent as {}; nil sends none.
 	Labels map[string]string
+
+	// systemInstructionSet and previousInteractionIDSet record a present
+	// string option read from a providerOptions map, "" included (TS
+	// `?? undefined` keeps ""). A typed struct sets them by a non-empty value.
+	systemInstructionSet     bool
+	previousInteractionIDSet bool
+}
+
+// hasSystemInstruction is TS `googleOptions?.systemInstruction != null`.
+func (o GoogleInteractionsProviderOptions) hasSystemInstruction() bool {
+	return o.systemInstructionSet || o.SystemInstruction != ""
+}
+
+// hasPreviousInteractionID is TS `previousInteractionId != null`.
+func (o GoogleInteractionsProviderOptions) hasPreviousInteractionID() bool {
+	return o.previousInteractionIDSet || o.PreviousInteractionID != ""
 }
 
 type interactionsRequest struct {
@@ -58,7 +74,7 @@ type interactionsRequest struct {
 	// ResponseModalities is sent whenever the option is given, an empty
 	// list included (TS `responseModalities != null`).
 	ResponseModalities    *[]string              `json:"response_modalities,omitempty"`
-	PreviousInteractionID string                 `json:"previous_interaction_id,omitempty"`
+	PreviousInteractionID *string                `json:"previous_interaction_id,omitempty"`
 	ServiceTier           string                 `json:"service_tier,omitempty"`
 	Store                 *bool                  `json:"store,omitempty"`
 	GenerationConfig      map[string]interface{} `json:"generation_config,omitempty"`
@@ -258,8 +274,8 @@ func (u *interactionsUsage) afterLooseDecode(b []byte) {
 }
 
 type interactionsModalityTokens struct {
-	Modality string `json:"modality,omitempty"`
-	Tokens   *int64 `json:"tokens,omitempty"`
+	Modality *string `json:"modality,omitempty"` // nil when absent or null (TS != null keeps "")
+	Tokens   *int64  `json:"tokens,omitempty"`
 }
 
 type interactionsEvent struct {

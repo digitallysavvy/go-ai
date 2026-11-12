@@ -156,16 +156,20 @@ type gatewayTranscriptionStreamConfig struct {
 // cleanly, so it stays local.
 type gatewayTranscriptionStream struct {
 	*wsutil.Session[provider.TranscriptionStreamPart]
+	// abortCtx is the caller's context (TS abortSignal).
+	abortCtx context.Context
 }
 
 func newGatewayTranscriptionStream(parentCtx context.Context, cfg gatewayTranscriptionStreamConfig) *gatewayTranscriptionStream {
 	s := &gatewayTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
+	s.abortCtx = parentCtx
 	go s.run(cfg)
 	return s
 }
 
 func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	defer s.CloseParts()
+	defer failOnAbort(s.SetErr, s.abortCtx)
 	// Release the session's resources as soon as run() returns for any
 	// reason (finish, error, or cancellation) instead of only on an
 	// explicit Close() call, which a consumer that only drains Next() to
@@ -192,7 +196,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	startPayload, err := json.Marshal(cfg.startFrame)
+	startPayload, err := jsonstr.Marshal(cfg.startFrame)
 	if err != nil {
 		fail(err)
 		return
@@ -223,7 +227,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 			if finished {
 				return
 			}
-			fail(s.Context().Err())
+			fail(context.Cause(s.Context())) // TS onAbort(abortSignal.reason)
 			return
 
 		case audioErr := <-audioErrCh:
@@ -666,3 +670,13 @@ var (
 	_ provider.TranscriptionStreamer = (*TranscriptionModel)(nil)
 	_ provider.TranscriptionStream   = (*gatewayTranscriptionStream)(nil)
 )
+
+// failOnAbort is TS connectToWebSocket onAbort(abortSignal.reason): when the
+// caller's context is cancelled the stream fails with its cancel cause, also
+// when run() returns from an emit the cancellation unblocked. An error set
+// earlier wins (SetErr keeps the first).
+func failOnAbort(setErr func(error), ctx context.Context) {
+	if ctx != nil && ctx.Err() != nil {
+		setErr(context.Cause(ctx))
+	}
+}

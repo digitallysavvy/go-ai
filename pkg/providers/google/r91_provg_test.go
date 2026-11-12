@@ -285,14 +285,14 @@ func TestR91provgInteractionsIDEncodeURIComponent(t *testing.T) {
 // input token details.
 func TestR91provgInteractionsUsageNoModalityDetails(t *testing.T) {
 	five := int64(5)
-	u := convertInteractionsUsage(&interactionsUsage{TotalInputTokens: &five, InputTokensByModality: []interactionsModalityTokens{{Modality: "text", Tokens: &five}, {Modality: "image", Tokens: &five}}})
+	u := convertInteractionsUsage(&interactionsUsage{TotalInputTokens: &five, InputTokensByModality: []interactionsModalityTokens{{Modality: r94provgStr("text"), Tokens: &five}, {Modality: r94provgStr("image"), Tokens: &five}}})
 	if u.InputDetails == nil || u.InputDetails.TextTokens != nil || u.InputDetails.ImageTokens != nil {
 		t.Fatalf("input details = %+v", u.InputDetails)
 	}
 	if u.InputDetails.NoCacheTokens == nil || *u.InputDetails.NoCacheTokens != 5 {
 		t.Fatalf("noCache = %v", u.InputDetails.NoCacheTokens)
 	}
-	if u2 := convertInteractionsUsage(&interactionsUsage{InputTokensByModality: []interactionsModalityTokens{{Modality: "text", Tokens: &five}}}); u2.InputDetails != nil {
+	if u2 := convertInteractionsUsage(&interactionsUsage{InputTokensByModality: []interactionsModalityTokens{{Modality: r94provgStr("text"), Tokens: &five}}}); u2.InputDetails != nil {
 		t.Fatalf("modality-only input details = %+v", u2.InputDetails)
 	}
 }

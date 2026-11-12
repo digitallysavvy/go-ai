@@ -223,7 +223,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	}
 	authHeaders = internalhttp.MergeHeaders(authHeaders, headers)
 
-	initPayload, err := json.Marshal(map[string]interface{}{"file": map[string]interface{}{"display_name": displayName}})
+	initPayload, err := jsonstr.Marshal(map[string]interface{}{"file": map[string]interface{}{"display_name": displayName}})
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +247,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 		return nil, internalhttp.TransportErrorCtx(initReq.Context(), err)
 	}
 	defer initResp.Body.Close() //nolint:errcheck
-	if initResp.StatusCode >= 400 {
+	if initResp.StatusCode < 200 || initResp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(initResp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: initResp.StatusCode, Headers: initResp.Header, Body: body})
 	}
@@ -257,6 +257,12 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 		return nil, uploadURLErr
 	}
 	if uploadURL == "" {
+		// TS googleUploadUrlResponseHandler checks headers.get(...) == null:
+		// a present empty header is the URL "", which fetch fails to parse.
+		if len(initResp.Header.Values("x-goog-upload-url")) > 0 {
+			_, err := providerutils.FetchURL("")
+			return nil, err
+		}
 		return nil, providererrors.NewInvalidResponseDataError(nil, "Google did not return a resumable upload URL.")
 	}
 
@@ -276,7 +282,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 		return nil, internalhttp.TransportErrorCtx(uploadReq.Context(), err)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
-	if uploadResp.StatusCode >= 400 {
+	if uploadResp.StatusCode < 200 || uploadResp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: uploadResp.StatusCode, Headers: uploadResp.Header, Body: body})
 	}
@@ -470,7 +476,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		// "Cannot connect to API" APICallError (aborts unchanged).
 		return nil, internalhttp.TransportErrorCtx(req.Context(), err)
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: body})
