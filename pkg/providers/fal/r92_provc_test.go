@@ -49,3 +49,35 @@ func TestR92provcVideoDurationIsJSText(t *testing.T) {
 		t.Error("a NaN duration is falsy in TS and must be skipped")
 	}
 }
+
+// TestR92provcImageSizeIsJSNumber (r92 provc-14): TS size.split('x').map(Number)
+// keeps a fractional side and writes an unreadable one as null; Go's %dx%d
+// scan dropped image_size.
+func TestR92provcImageSizeIsJSNumber(t *testing.T) {
+	m := &ImageModel{modelID: "fal-ai/flux/dev"}
+	for size, want := range map[string]string{
+		"1024x768":   `{"width":1024,"height":768}`,
+		"1024.5x768": `{"width":1024.5,"height":768}`,
+		"1024":       `{"width":1024,"height":null}`,
+	} {
+		body, _, err := m.buildRequest(&provider.ImageGenerateOptions{Prompt: "p", Size: size})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, _ := body.Get("image_size")
+		if got, _ := json.Marshal(v); string(got) != want {
+			t.Errorf("%s: image_size = %s, want %s", size, got, want)
+		}
+	}
+}
+
+// TestR92provcAspectRatioSizeKeyOrder (r92 provc-14): the derived
+// {width, height} keeps the TS key order.
+func TestR92provcAspectRatioSizeKeyOrder(t *testing.T) {
+	m := &ImageModel{modelID: "fal-ai/flux/dev"}
+	body, _, _ := m.buildRequest(&provider.ImageGenerateOptions{Prompt: "p", AspectRatio: "21:9"})
+	v, _ := body.Get("image_size")
+	if got, _ := json.Marshal(v); string(got) != `{"width":2560,"height":1080}` {
+		t.Errorf("image_size = %s", got)
+	}
+}

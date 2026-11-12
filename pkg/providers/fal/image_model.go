@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -126,15 +127,23 @@ func falAspectRatioSize(aspectRatio string) interface{} {
 	case "3:4":
 		return "portrait_4_3"
 	case "16:10":
-		return map[string]interface{}{"width": 1280, "height": 800}
+		return falImageSize(1280, 800)
 	case "10:16":
-		return map[string]interface{}{"width": 800, "height": 1280}
+		return falImageSize(800, 1280)
 	case "21:9":
-		return map[string]interface{}{"width": 2560, "height": 1080}
+		return falImageSize(2560, 1080)
 	case "9:21":
-		return map[string]interface{}{"width": 1080, "height": 2560}
+		return falImageSize(1080, 2560)
 	}
 	return nil
+}
+
+// falImageSize is TS {width, height} in that key order.
+func falImageSize(width, height interface{}) *jsonorder.Object {
+	o := jsonorder.New()
+	o.Set("width", width)
+	o.Set("height", height)
+	return o
 }
 
 func falFileToDataURI(f provider.ImageFile) string {
@@ -355,10 +364,27 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (*jsonord
 	}
 	var imageSize interface{}
 	if opts.Size != "" {
-		var width, height int
-		if _, err := fmt.Sscanf(opts.Size, "%dx%d", &width, &height); err == nil {
-			imageSize = map[string]interface{}{"width": width, "height": height}
+		// TS size.split('x').map(Number): each side is JS Number() of its
+		// text (a missing side is undefined, an unreadable one NaN, both
+		// written as null; a fraction stays a fraction).
+		parts := strings.Split(opts.Size, "x")
+		side := func(i int) interface{} {
+			if i >= len(parts) {
+				return nil
+			}
+			f, ok := providerutils.JSNumber(parts[i])
+			if !ok || math.IsNaN(f) || math.IsInf(f, 0) {
+				return nil
+			}
+			if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+				if f >= math.MinInt && f <= math.MaxInt {
+					return int(f) // the v0.5.2 type
+				}
+				return int64(f)
+			}
+			return f
 		}
+		imageSize = falImageSize(side(0), side(1))
 	} else if opts.AspectRatio != "" {
 		if size := falAspectRatioSize(opts.AspectRatio); size != nil {
 			imageSize = size
