@@ -20,8 +20,12 @@ func Check(data []byte) error {
 		!bytes.Contains(data, []byte(`\u`)) {
 		return nil
 	}
+	// UseNumber: a number out of the double range (JS Infinity) must not
+	// skip the check, which would let such a body carry a forbidden key.
 	var v any
-	if json.Unmarshal(data, &v) != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if dec.Decode(&v) != nil {
 		return nil
 	}
 	if forbidden(v) {
