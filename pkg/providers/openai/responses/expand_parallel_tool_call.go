@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -57,7 +58,7 @@ func GetParallelToolCallMetadata(metadata map[string]interface{}, providerName s
 // reports whether `input` was present (TS `input?: string`, 22b8158276): an
 // absent input is accepted, a present non-string input is rejected.
 func getParallelToolCallMetadata(metadata map[string]interface{}, providerName string) (ParallelToolCallMetadata, bool, bool) {
-	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if !ok {
 		return ParallelToolCallMetadata{}, false, false
 	}
