@@ -1044,6 +1044,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// sawAbortPart: any part was.
 		lastPartAbort := false
 		sawAbortPart := false
+		// invalidToolCallIDs: client tool calls streamed as invalid. TS
+		// toUIMessageStream skips the tool-error StreamText injects after an
+		// invalid call, so onError runs once, with the call's own error
+		// (tool-input-error).
+		invalidToolCallIDs := map[string]bool{}
 		activeTextIDs := &orderedIDSet{}
 		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
@@ -1375,8 +1380,20 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			if !skipStepBoundaryDup {
 				// TS calls messageMetadata for the part before toUIMessageChunk
 				// (which calls onError for error and tool-error parts).
+				if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil && chunk.ToolCall.Invalid {
+					invalidToolCallIDs[chunk.ToolCall.ID] = true
+				}
+				isInvalidToolCallError := false
+				if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil && chunk.ToolResult.Error != nil &&
+					!chunk.ToolResult.ProviderExecuted && invalidToolCallIDs[chunk.ToolResult.ToolCallID] {
+					delete(invalidToolCallIDs, chunk.ToolResult.ToolCallID)
+					isInvalidToolCallError = true
+				}
 				metadataChunk := messageMetadataChunk(*chunk)
-				converted := toUIMessageChunks(chunkForConversion, options)
+				var converted []UIMessageChunk
+				if !isInvalidToolCallError {
+					converted = toUIMessageChunks(chunkForConversion, options)
+				}
 				if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
 					// Apply step metadata before the finish-step boundary, so
 					// the OnStepEnd snapshot includes it (TS #22268).

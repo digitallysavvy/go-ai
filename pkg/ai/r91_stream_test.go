@@ -392,3 +392,56 @@ func TestR91streamTelemetryPromptFields(t *testing.T) {
 		t.Fatalf("inputs recorded with RecordInputs false: %+v / %+v", rec.start[0].PromptString, rec.steps)
 	}
 }
+
+// TS 8585d7e56f (to-ui-message-stream.test.ts "routes an invalid tool call
+// through onError once" / "forwards tool errors for valid tool calls").
+func TestR91streamUIInvalidToolCallOnErrorOnce(t *testing.T) {
+	invalidErr := errors.New("invalid tool input")
+	run := func(parts []provider.StreamChunk) ([]UIMessageChunk, []error) {
+		src := testutil.NewMockTextStream(parts)
+		r := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+		var mu sync.Mutex
+		var seen []error
+		chunks, errs := r.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+			SendStart: r91streamFalse(), SendFinish: r91streamFalse(),
+			OnError: func(err error) string {
+				mu.Lock()
+				seen = append(seen, err)
+				mu.Unlock()
+				return "formatted tool error"
+			},
+		})
+		var out []UIMessageChunk
+		for c := range chunks {
+			if c["type"] != "start-step" && c["type"] != "finish-step" {
+				out = append(out, c)
+			}
+		}
+		for range errs {
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return out, seen
+	}
+	got, seen := run([]provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "test-tool", Arguments: map[string]interface{}{"value": "invalid"}, Invalid: true, Dynamic: true, Error: invalidErr}},
+		{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "test-tool", Input: map[string]interface{}{"value": "invalid"}, Error: errors.New("Error: invalid tool input"), Dynamic: true}},
+	})
+	r71streamAssertJSON(t, "invalid call", got, `[
+		{"dynamic":true,"errorText":"formatted tool error","input":{"value":"invalid"},"toolCallId":"call-1","toolName":"test-tool","type":"tool-input-error"}]`)
+	if len(seen) != 1 || !errors.Is(seen[0], invalidErr) {
+		t.Fatalf("onError calls = %v", seen)
+	}
+	got, seen = run([]provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "test-tool", Arguments: map[string]interface{}{"value": "valid"}, Dynamic: true}},
+		{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "test-tool", Input: map[string]interface{}{"value": "valid"}, Error: errors.New("execution failed"), Dynamic: true}},
+	})
+	r71streamAssertJSON(t, "valid call", got, `[
+		{"dynamic":true,"input":{"value":"valid"},"toolCallId":"call-1","toolName":"test-tool","type":"tool-input-available"},
+		{"dynamic":true,"errorText":"formatted tool error","toolCallId":"call-1","type":"tool-output-error"}]`)
+	if len(seen) != 1 {
+		t.Fatalf("onError calls = %v", seen)
+	}
+}
+
+func r91streamFalse() *bool { f := false; return &f }
