@@ -88,7 +88,7 @@ func JSKeyOrder(keys []string) []string {
 func Parse(raw []byte) (interface{}, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	v, ok := decode(dec)
+	v, ok := decode(dec, 0)
 	if !ok {
 		return nil, false
 	}
@@ -99,7 +99,12 @@ func Parse(raw []byte) (interface{}, bool) {
 	return v, true
 }
 
-func decode(dec *json.Decoder) (interface{}, bool) {
+// maxParseDepth is encoding/json's maxNestingDepth: deeper input fails to
+// parse instead of overflowing the goroutine stack (a fatal, unrecoverable
+// error; V8 throws a catchable RangeError for the same input).
+const maxParseDepth = 10000
+
+func decode(dec *json.Decoder, depth int) (interface{}, bool) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, false
@@ -107,6 +112,9 @@ func decode(dec *json.Decoder) (interface{}, bool) {
 	d, isDelim := tok.(json.Delim)
 	if !isDelim {
 		return tok, true
+	}
+	if depth >= maxParseDepth {
+		return nil, false
 	}
 	switch d {
 	case '{':
@@ -117,7 +125,7 @@ func decode(dec *json.Decoder) (interface{}, bool) {
 				return nil, false
 			}
 			key, _ := kt.(string)
-			v, ok := decode(dec)
+			v, ok := decode(dec, depth+1)
 			if !ok {
 				return nil, false
 			}
@@ -134,7 +142,7 @@ func decode(dec *json.Decoder) (interface{}, bool) {
 	case '[':
 		arr := []interface{}{}
 		for dec.More() {
-			v, ok := decode(dec)
+			v, ok := decode(dec, depth+1)
 			if !ok {
 				return nil, false
 			}
@@ -366,6 +374,12 @@ func ToJSONValue(value interface{}) interface{} {
 	if err != nil {
 		// JSON.stringify writes NaN and Infinity as null; encoding/json
 		// rejects the whole value. Retry with them replaced in plain trees.
+		if isCyclic(value) {
+			// JSON.stringify throws on a circular value; the result is the
+			// marshal-failure nil, without the NaN retries (which would
+			// recurse through the cycle).
+			return nil
+		}
 		data, err = json.Marshal(nullNonFinite(value))
 		if err != nil {
 			// A NaN in a struct field: marshal a copy holding a sentinel and
@@ -410,6 +424,21 @@ func Normalize(v interface{}) (interface{}, bool) {
 // with NaN and ±Inf numbers replaced by nil, as JSON.stringify writes them.
 // Other values are returned unchanged.
 func nullNonFinite(v interface{}) interface{} {
+	return nullNonFiniteDepth(v, 0)
+}
+
+// unencodable fails json.Marshal; nullNonFiniteDepth returns it past the
+// depth bound so the retry fails like the first marshal did.
+type unencodable struct{}
+
+func (unencodable) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("jsonorder: value nested too deeply")
+}
+
+func nullNonFiniteDepth(v interface{}, depth int) interface{} {
+	if depth > nonFiniteSentinelDepth {
+		return unencodable{}
+	}
 	switch x := v.(type) {
 	case float64:
 		if math.IsNaN(x) || math.IsInf(x, 0) {
@@ -422,23 +451,23 @@ func nullNonFinite(v interface{}) interface{} {
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(x))
 		for k, e := range x {
-			out[k] = nullNonFinite(e)
+			out[k] = nullNonFiniteDepth(e, depth+1)
 		}
 		return out
 	case []interface{}:
 		out := make([]interface{}, len(x))
 		for i, e := range x {
-			out[i] = nullNonFinite(e)
+			out[i] = nullNonFiniteDepth(e, depth+1)
 		}
 		return out
 	case []float64:
 		out := make([]interface{}, len(x))
 		for i, e := range x {
-			out[i] = nullNonFinite(e)
+			out[i] = nullNonFiniteDepth(e, depth+1)
 		}
 		return out
 	}
-	return nullNonFiniteReflect(reflect.ValueOf(v), v)
+	return nullNonFiniteReflect(reflect.ValueOf(v), v, depth)
 }
 
 // nullNonFiniteReflect covers the typed containers the switch above does not
@@ -447,7 +476,7 @@ func nullNonFinite(v interface{}) interface{} {
 // slices with their non-finite numbers set to nil. Byte slices, structs and
 // every other value are returned as orig (a struct holding NaN is handled by
 // nullNonFiniteViaSentinel).
-func nullNonFiniteReflect(rv reflect.Value, orig interface{}) interface{} {
+func nullNonFiniteReflect(rv reflect.Value, orig interface{}, depth int) interface{} {
 	switch rv.Kind() {
 	case reflect.Float32, reflect.Float64:
 		if f := rv.Float(); math.IsNaN(f) || math.IsInf(f, 0) {
@@ -457,7 +486,7 @@ func nullNonFiniteReflect(rv reflect.Value, orig interface{}) interface{} {
 		if rv.IsNil() {
 			return orig
 		}
-		return nullNonFinite(rv.Elem().Interface())
+		return nullNonFiniteDepth(rv.Elem().Interface(), depth+1)
 	case reflect.Map:
 		if rv.Type().Key().Kind() != reflect.String || rv.IsNil() {
 			return orig
@@ -465,7 +494,7 @@ func nullNonFiniteReflect(rv reflect.Value, orig interface{}) interface{} {
 		out := make(map[string]interface{}, rv.Len())
 		iter := rv.MapRange()
 		for iter.Next() {
-			out[iter.Key().String()] = nullNonFinite(iter.Value().Interface())
+			out[iter.Key().String()] = nullNonFiniteDepth(iter.Value().Interface(), depth+1)
 		}
 		return out
 	case reflect.Slice, reflect.Array:
@@ -474,9 +503,101 @@ func nullNonFiniteReflect(rv reflect.Value, orig interface{}) interface{} {
 		}
 		out := make([]interface{}, rv.Len())
 		for i := range out {
-			out[i] = nullNonFinite(rv.Index(i).Interface())
+			out[i] = nullNonFiniteDepth(rv.Index(i).Interface(), depth+1)
 		}
 		return out
 	}
 	return orig
+}
+
+// refKey identifies a map, slice or pointer target for cycle detection.
+type refKey struct {
+	ptr uintptr
+	typ reflect.Type
+}
+
+// isCyclic reports whether v reaches itself through maps, slices, pointers
+// or interfaces (a JS circular structure), or nests deeper than
+// maxParseDepth. Fully explored references are memoized, so shared
+// (acyclic) references are visited once.
+func isCyclic(v interface{}) bool {
+	onPath := map[refKey]bool{}
+	done := map[refKey]bool{}
+	var walk func(rv reflect.Value, depth int) bool
+	walk = func(rv reflect.Value, depth int) bool {
+		if depth > maxParseDepth {
+			return true
+		}
+		if !rv.IsValid() {
+			return false
+		}
+		var key refKey
+		switch rv.Kind() {
+		case reflect.Map, reflect.Pointer:
+			if rv.IsNil() {
+				return false
+			}
+			key = refKey{rv.Pointer(), rv.Type()}
+		case reflect.Slice:
+			if rv.IsNil() || rv.Len() == 0 {
+				return false
+			}
+			key = refKey{rv.Pointer(), rv.Type()}
+		case reflect.Interface:
+			if rv.IsNil() {
+				return false
+			}
+			return walk(rv.Elem(), depth+1)
+		case reflect.Struct:
+			for i := 0; i < rv.NumField(); i++ {
+				// encoding/json reaches exported fields only.
+				if !rv.Type().Field(i).IsExported() {
+					continue
+				}
+				if walk(rv.Field(i), depth+1) {
+					return true
+				}
+			}
+			return false
+		case reflect.Array:
+			for i := 0; i < rv.Len(); i++ {
+				if walk(rv.Index(i), depth+1) {
+					return true
+				}
+			}
+			return false
+		default:
+			return false
+		}
+		if onPath[key] {
+			return true
+		}
+		if done[key] {
+			return false
+		}
+		onPath[key] = true
+		defer func() { delete(onPath, key); done[key] = true }()
+		switch rv.Kind() {
+		case reflect.Map:
+			iter := rv.MapRange()
+			for iter.Next() {
+				if walk(iter.Value(), depth+1) {
+					return true
+				}
+			}
+		case reflect.Pointer:
+			return walk(rv.Elem(), depth+1)
+		case reflect.Slice:
+			if rv.Type().Elem().Kind() == reflect.Uint8 {
+				return false
+			}
+			for i := 0; i < rv.Len(); i++ {
+				if walk(rv.Index(i), depth+1) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(reflect.ValueOf(v), 0)
 }

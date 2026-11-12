@@ -100,6 +100,21 @@ func (b *r87carryBridge) finish(c *r87carryConn) {
 }
 
 func (b *r87carryBridge) handle(ws *websocket.Conn) {
+	// Public-key authentication first (r91, TS c849d37dac): challenge, then
+	// the host's proof, before bridge-hello.
+	pub, err := bridge.ParseBridgeAuthPublicKey(claudecode.R91carryTestKeys.PublicKey)
+	if err != nil {
+		return
+	}
+	challenge := bridge.NewBridgeAuthChallenge()
+	if websocket.Message.Send(ws, bridge.SerializeBridgeAuthChallengeFrame(challenge)) != nil {
+		return
+	}
+	var proof []byte
+	if websocket.Message.Receive(ws, &proof) != nil || !bridge.VerifyBridgeAuthProof(pub, challenge, proof, false) {
+		_ = ws.Close()
+		return
+	}
 	c := &r87carryConn{ws: ws}
 	b.mu.Lock()
 	b.legs++
@@ -222,7 +237,7 @@ func r87carryStartTurn(t *testing.T, opts r87carryTurnOpts) *r87carryTurn {
 	}
 	wireSpawn(sandbox)
 	h, err := claudecode.New(claudecode.Settings{
-		MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second,
+		StartupTimeout:   2 * time.Second,
 		TurnStartTimeout: 2 * time.Second,
 		Reconnect:        bridge.ReconnectOptions{InitialDelay: time.Millisecond, MaxDelay: 5 * time.Millisecond, MaxElapsed: 3 * time.Second},
 	})
@@ -475,7 +490,7 @@ func TestR87carryOlderWaitingBridgeFails(t *testing.T) {
 // TS claude-code-harness.test.ts (3bf70f83bc): the first-event deadline.
 func r87carrySilentHarness(t *testing.T, timeout time.Duration, frames chan<- string) (harness.Session, *bridgetest.Server) {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnFrame: func(typ string) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnFrame: func(typ string) {
 		select {
 		case frames <- typ:
 		default:
@@ -484,7 +499,7 @@ func r87carrySilentHarness(t *testing.T, timeout time.Duration, frames chan<- st
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h, err := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second, TurnStartTimeout: timeout})
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second, TurnStartTimeout: timeout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +547,7 @@ func TestR87carryFailsSilentTurnAfterDeadline(t *testing.T) {
 func TestR87carryDeadlineClearedByFirstEventOrAbort(t *testing.T) {
 	t.Run("first event", func(t *testing.T) {
 		frames := make(chan string, 16)
-		srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+		srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey,
 			OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
 				turn.Emit(map[string]any{"type": "text-delta", "id": "m", "delta": "Hello"})
 			},
@@ -547,7 +562,7 @@ func TestR87carryDeadlineClearedByFirstEventOrAbort(t *testing.T) {
 		wireSpawn(sandbox)
 		// The deadline leaves room for a loaded machine; the turn must still
 		// be open well after it.
-		h, _ := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second, TurnStartTimeout: 500 * time.Millisecond})
+		h, _ := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second, TurnStartTimeout: 500 * time.Millisecond})
 		sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir"})
 		if err != nil {
 			t.Fatal(err)

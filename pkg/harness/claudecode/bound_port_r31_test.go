@@ -15,12 +15,12 @@ import (
 // lifecycle bridge coordinates, not the requested one: the sandbox exposes
 // 4000 but the fake bridge reports 4319.
 func TestDetachPersistsBoundBridgePort(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	sandbox.ports = []int{4000}
 	wireSpawn(sandbox)
-	h, err := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

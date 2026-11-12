@@ -79,10 +79,13 @@ type wsConn struct {
 func (c *wsConn) isOpen() bool { return !c.closed.Load() }
 func (c *wsConn) markClosed()  { c.closed.Store(true) }
 
-// Receive reads one text or binary message.
+// Receive reads one whole text or binary message.
 func (c *wsConn) Receive() ([]byte, error) {
-	var msg []byte
-	if err := websocket.Message.Receive(c.ws, &msg); err != nil {
+	// One whole message: continuation frames are joined, as the TS `ws`
+	// message event delivers them (x/net Message.Receive returns a single
+	// frame).
+	msg, _, err := wsutil.ReceiveMessage(c.ws)
+	if err != nil {
 		c.closed.Store(true)
 		if isEOF(err) {
 			// x/net reports a received close frame (or an orderly TCP
@@ -266,8 +269,7 @@ func dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions, 
 		if isAborted {
 			return fail(abortError(ctx))
 		}
-		var msg []byte
-		err := websocket.Message.Receive(ws, &msg)
+		msg, _, err := wsutil.ReceiveMessage(ws)
 		if err != nil {
 			if ctx.Err() != nil {
 				return fail(abortError(ctx))

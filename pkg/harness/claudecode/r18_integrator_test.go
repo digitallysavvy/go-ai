@@ -26,8 +26,8 @@ func startHarnessWithServer(t *testing.T, srv *bridgetest.Server) harness.Sessio
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 	h, err := claudecode.New(claudecode.Settings{
-		MintBridgeToken: func(string) string { return "tok" },
-		StartupTimeout:  2 * time.Second,
+
+		StartupTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -69,7 +69,7 @@ func TestBridgeErrorFrameIsLogged(t *testing.T) {
 	}()
 
 	srv := bridgetest.NewServer(bridgetest.Options{
-		Token: "tok",
+		PublicKey: claudecode.R91carryTestKeys.PublicKey,
 		OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
 			turn.Emit(map[string]any{"type": "error", "error": map[string]any{"name": "Error", "message": "bridge exploded"}})
 			turn.Emit(finishFrame())

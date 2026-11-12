@@ -27,7 +27,7 @@ func TestNormalizeToolModelOutput(t *testing.T) {
 	if img, ok := out.Content[1].(types.ImageContentBlock); !ok || img.MediaType != "image/png" {
 		t.Fatalf("detected image = %+v", out.Content[1])
 	}
-	if img, ok := out.Content[2].(types.ImageContentBlock); !ok || img.MediaType != "image/png" {
+	if img, ok := out.Content[2].(types.FileContentBlock); !ok || img.MediaType != "image/png" {
 		t.Fatalf("file image = %+v", out.Content[2])
 	}
 

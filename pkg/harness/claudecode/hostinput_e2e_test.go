@@ -16,7 +16,7 @@ import (
 // and then goes quiet: no `finish`, no close. The host must pause there
 // instead of hanging until the context ends (TS #23260).
 func TestAgent_PausesAtHostInputFinishStep(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
 		turn.Emit(map[string]any{"type": "tool-call", "toolCallId": "c1", "toolName": "lookup", "input": `{}`})
 		turn.Emit(map[string]any{
 			"type": "finish-step", "finishReason": map[string]any{"unified": "tool-calls", "raw": "host-input"},
@@ -27,7 +27,7 @@ func TestAgent_PausesAtHostInputFinishStep(t *testing.T) {
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h, err := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

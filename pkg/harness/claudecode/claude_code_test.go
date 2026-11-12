@@ -93,13 +93,13 @@ func TestBuiltinTools_CompleteTable(t *testing.T) {
 // TS: "throws HarnessCapabilityUnsupportedError when the network sandbox
 // session exposes no ports"
 func TestDoStart_NoPortsUnsupportedError(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	sandbox.ports = nil
 	wireSpawn(sandbox)
 
-	h, err := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }})
+	h, err := claudecode.New(claudecode.Settings{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -134,12 +134,10 @@ func asCapabilityUnsupported(err error, target **harness.CapabilityUnsupportedEr
 // with a fixed token, ready for h.DoStart.
 func startedHarness(t *testing.T, settings claudecode.Settings, onStart func(turn *bridgetest.Turn, start map[string]any)) (*claudecode.Harness, harness.Session) {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: onStart})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: onStart})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-
-	settings.MintBridgeToken = func(string) string { return "tok" }
 	settings.StartupTimeout = 2 * time.Second
 	h, err := claudecode.New(settings)
 	if err != nil {
@@ -379,7 +377,7 @@ func TestDoPromptTurn_SubmitUserMessage(t *testing.T) {
 func TestDoCompact_SendsUserMessageFireAndForget(t *testing.T) {
 	var mu sync.Mutex
 	var received []map[string]any
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnUserMessage: func(messageID, text string) (bool, string) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnUserMessage: func(messageID, text string) (bool, string) {
 		mu.Lock()
 		received = append(received, map[string]any{"messageId": messageID, "text": text})
 		mu.Unlock()
@@ -389,8 +387,7 @@ func TestDoCompact_SendsUserMessageFireAndForget(t *testing.T) {
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
+		StartupTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -436,19 +433,12 @@ func TestDoCompact_SendsUserMessageFireAndForget(t *testing.T) {
 // DoStart with ResumeFrom reopens a socket to the same still-running bridge
 // instead of respawning it).
 func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
-	var mintCalls int32
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 
-	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout: 2 * time.Second,
-		MintBridgeToken: func(string) string {
-			atomic.AddInt32(&mintCalls, 1)
-			return "tok"
-		},
-	})
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -481,9 +471,6 @@ func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
 	if sandbox.SpawnCount() != 1 {
 		t.Fatalf("SpawnCount after attach = %d, want 1 (attach must not respawn)", sandbox.SpawnCount())
 	}
-	if atomic.LoadInt32(&mintCalls) != 1 {
-		t.Fatalf("mintBridgeToken called %d times, want 1 (attach reuses the persisted token)", mintCalls)
-	}
 	if !attached.IsResume() {
 		t.Error("attached session.IsResume() = false, want true")
 	}
@@ -515,7 +502,7 @@ func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
 func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	var starts int32
 	var lastStart map[string]any
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		atomic.AddInt32(&starts, 1)
 		lastStart = start
 		turn.Emit(map[string]any{
@@ -528,8 +515,7 @@ func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	wireSpawn(sandbox)
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
+		StartupTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -582,7 +568,7 @@ func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	var captured map[string]any
 	captureDone := make(chan struct{})
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		captured = start
 		close(captureDone)
 	}})
@@ -591,9 +577,9 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	wireSpawn(sandbox)
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
-		Auth:            harness.AuthEnvironment(map[string]string{"AI_GATEWAY_API_KEY": "gateway-key"}),
+		StartupTimeout: 2 * time.Second,
+
+		Auth: harness.AuthEnvironment(map[string]string{"AI_GATEWAY_API_KEY": "gateway-key"}),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -618,8 +604,8 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	}
 
 	env, _ := captured["env"].(map[string]any)
-	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk-harness-claude-code/1.0.182" {
-		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk-harness-claude-code/1.0.182", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
+	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk-harness-claude-code/1.0.185" {
+		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk-harness-claude-code/1.0.185", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
 	}
 }
 
@@ -628,7 +614,7 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 func TestDoStart_ClientAppNotSetForDirectAuth(t *testing.T) {
 	var captured map[string]any
 	captureDone := make(chan struct{})
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		captured = start
 		close(captureDone)
 	}})
@@ -637,9 +623,9 @@ func TestDoStart_ClientAppNotSetForDirectAuth(t *testing.T) {
 	wireSpawn(sandbox)
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
-		Auth:            harness.AuthEnvironment(map[string]string{"ANTHROPIC_API_KEY": "anthropic-key"}),
+		StartupTimeout: 2 * time.Second,
+
+		Auth: harness.AuthEnvironment(map[string]string{"ANTHROPIC_API_KEY": "anthropic-key"}),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -732,7 +718,7 @@ func TestDoStart_UsesNativeSubscriptionWhenNoExplicitCredential(t *testing.T) {
 // finished turn, the respawned bridge is asked to replay it from disk
 // (`BRIDGE_REPLAY_FROM_DISK=1`) and the channel opens with `resume: true`.
 func TestDoContinueTurn_ReplaysDiskLogOnRespawn(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 
@@ -764,8 +750,7 @@ func TestDoContinueTurn_ReplaysDiskLogOnRespawn(t *testing.T) {
 	}
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
+		StartupTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -815,7 +800,7 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 		reported <- struct{}{}
 	}
 
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		turn.Emit(map[string]any{"type": "sandbox-log", "source": "claude", "stream": "stderr", "line": "boom"})
 		turn.Emit(map[string]any{"type": "debug-event", "level": "warn", "subsystem": "claude-code.bridge", "message": "retrying"})
 		turn.Emit(map[string]any{
@@ -827,7 +812,7 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 
-	h, err := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -877,7 +862,7 @@ func resumedRerunSession(t *testing.T) (harness.Session, *int32, <-chan map[stri
 	t.Helper()
 	var starts int32
 	markers := make(chan map[string]any, 4)
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnToolResult: func(f map[string]any) { markers <- f },
 		OnFrame: func(ft string) {
 			if ft == bridge.TypeStart {
 				atomic.AddInt32(&starts, 1)
@@ -892,7 +877,7 @@ func resumedRerunSession(t *testing.T) (harness.Session, *int32, <-chan map[stri
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

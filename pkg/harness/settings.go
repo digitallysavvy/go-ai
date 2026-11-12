@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -167,6 +168,15 @@ type AgentSettings struct {
 	// "authorization", "x-api-key", "user-agent" and "x-client-app" are
 	// managed by the harness and must not be set here.
 	Headers map[string]string
+
+	// CallOptionsSchema validates the custom CallOptions of each prompt
+	// turn (TS `HarnessAgentSettings.callOptionsSchema`): when it is set and
+	// a call passes CallOptions, they are validated (schema defaults
+	// applied) before PrepareCall, and the validated value replaces them. A
+	// failure is a TypeValidationError (*ValidationError) with context field
+	// "options", and the turn does not start. Continuations are not
+	// validated (TS validates in _preparePromptTurnInput only).
+	CallOptionsSchema jsonschema.Schema
 
 	// PrepareCall derives the prompt and the settings that may vary between
 	// completed turns. See PrepareCallOptions/PrepareCallResult.

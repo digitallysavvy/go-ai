@@ -15,9 +15,10 @@ import (
 type basicSandbox struct{ providerutils.SandboxSession }
 
 // TS Claude Code harness tests: a basic (non-network) sandbox session needs an
-// explicit port and portEndpoint, and cannot mint a bridge token without an id.
+// explicit port and portEndpoint. The deprecated mintBridgeToken setting is
+// ignored (TS c849d37dac removed its sandbox-id check).
 func TestBasicSandboxSessionRequiresExplicitBridgeSettings(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	endpoint := &harness.PortEndpoint{URL: "ws://" + srv.Addr() + "/"}
 	for _, tc := range []struct {
@@ -27,10 +28,6 @@ func TestBasicSandboxSessionRequiresExplicitBridgeSettings(t *testing.T) {
 	}{
 		{"no port", func(s *claudecode.Settings) { s.PortEndpoint = endpoint }, "The harness requires an explicit `port` setting when using a basic sandbox session."},
 		{"no endpoint", func(s *claudecode.Settings) { s.Port = 4319 }, "The harness requires an explicit `portEndpoint` setting when using a basic sandbox session."},
-		{"mint without id", func(s *claudecode.Settings) {
-			s.Port, s.PortEndpoint = 4319, endpoint
-			s.MintBridgeToken = func(id string) string { return id }
-		}, "The harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var s claudecode.Settings

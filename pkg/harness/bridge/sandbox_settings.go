@@ -13,8 +13,9 @@ import (
 // `validateBridgeSandboxSettings`.
 //
 // Basic sandbox sessions cannot expose ports, so they need both an explicit
-// port and portEndpoint. A custom MintBridgeToken callback needs a sandbox id
-// to mint the token for. Errors are *harness.CapabilityUnsupportedError with
+// port and portEndpoint. A non-nil mint callback still needs a sandbox id;
+// adapters on public-key authentication pass nil (TS c849d37dac dropped the
+// mintBridgeToken check together with the setting). Errors are *harness.CapabilityUnsupportedError with
 // the harness-neutral TS wording; harnessID is only structured context.
 func ValidateBridgeSandboxSettings(sandbox providerutils.SandboxSession, sandboxID string, port int, portEndpoint *harness.PortEndpoint, mint harness.MintBridgeTokenCallback, harnessID string) error {
 	if _, isNetwork := harness.AsNetworkSandboxSession(sandbox); !isNetwork {
