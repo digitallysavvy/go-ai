@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for Black
@@ -74,13 +76,11 @@ func resolveTopLevelResolution(resolution string) (tier string, derived bool, ok
 	if match == nil {
 		return "", false, false
 	}
-	var w, h int
-	fmt.Sscanf(match[1], "%d", &w) //nolint:errcheck
-	fmt.Sscanf(match[2], "%d", &h) //nolint:errcheck
-	shorterSide := w
-	if h < w {
-		shorterSide = h
-	}
+	// TS Number(match[n]): a digit string of any length is a double, so an
+	// over-range side stays large instead of parsing as 0.
+	w, _ := strconv.ParseFloat(match[1], 64)
+	h, _ := strconv.ParseFloat(match[2], 64)
+	shorterSide := math.Min(w, h)
 	tier = "fhd"
 	if shorterSide <= 720 {
 		tier = "hd"
@@ -189,7 +189,8 @@ func getDraftEnhanceArgs(opts *provider.VideoModelV3CallOptions, bflOpts *VideoM
 }
 
 // buildVideoArgs builds the FLUX 3 video request body (TS
-// BlackForestLabsVideoModel#getArgs).
+// BlackForestLabsVideoModel#getArgs). DoStart sends it in the TS key order
+// (orderedVideoBody).
 func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	if err := validateBFLVideoOptions(opts.ProviderOptions); err != nil {
@@ -400,20 +401,20 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 			rounded := math.Floor(d + 0.5) // JS Math.round: halves round toward +Infinity
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "duration",
-				Details: fmt.Sprintf("FLUX 3 video requires a whole number of seconds. The requested duration of %v was rounded to %v.", d, rounded),
+				Details: fmt.Sprintf("FLUX 3 video requires a whole number of seconds. The requested duration of %s was rounded to %s.", providerutils.JSNumberString(d), providerutils.JSNumberString(rounded)),
 			})
 			d = rounded
 		}
 		if d > maxVideoDurationSeconds {
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "duration",
-				Details: fmt.Sprintf("FLUX 3 video supports at most %d seconds. The requested duration of %v was clamped to %d.", maxVideoDurationSeconds, origDuration, maxVideoDurationSeconds),
+				Details: fmt.Sprintf("FLUX 3 video supports at most %d seconds. The requested duration of %s was clamped to %d.", maxVideoDurationSeconds, providerutils.JSNumberString(origDuration), maxVideoDurationSeconds),
 			})
 			d = maxVideoDurationSeconds
 		} else if d < minVideoDurationSeconds {
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "duration",
-				Details: fmt.Sprintf("FLUX 3 video requires at least %d seconds. The requested duration of %v was clamped to %d.", minVideoDurationSeconds, origDuration, minVideoDurationSeconds),
+				Details: fmt.Sprintf("FLUX 3 video requires at least %d seconds. The requested duration of %s was clamped to %d.", minVideoDurationSeconds, providerutils.JSNumberString(origDuration), minVideoDurationSeconds),
 			})
 			d = minVideoDurationSeconds
 		}
@@ -483,7 +484,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 
-	resp, err := m.provider.client.Do(ctx, bflInternalRequest(http.MethodPost, "/"+m.modelID, body, opts.Headers))
+	resp, err := m.provider.client.Do(ctx, bflInternalRequest(http.MethodPost, "/"+m.modelID, orderedVideoBody(body), opts.Headers))
 	if err != nil {
 		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
@@ -514,7 +515,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Response: provider.VideoModelV3ResponseInfo{
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
-			Headers:   flattenHTTPHeader(resp.Headers),
+			Headers:   bflResponseHeaders(resp.Headers),
 		},
 	}, nil
 }
@@ -660,7 +661,10 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, fmt.Errorf("bfl: invalid polling_url: %w", err)
 	}
 
-	headers := mergeStringMaps(m.provider.config.Headers, opts.Headers)
+	headers, err := m.pollHeaders(opts.Headers)
+	if err != nil {
+		return nil, err
+	}
 
 	rawPollBody, respHeaders, err := m.fetchStatusJSON(ctx, pollURL, headers)
 	if err != nil {
@@ -679,7 +683,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	responseInfo := provider.VideoModelV3ResponseInfo{
 		Timestamp: currentDate,
 		ModelID:   m.modelID,
-		Headers:   flattenHeaderSlice(respHeaders),
+		Headers:   bflResponseHeaders(http.Header(respHeaders)),
 	}
 
 	// bflVideoPollSchema transform: status ?? state (an empty status is a
@@ -743,9 +747,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	if videoTerminalFailureStatuses[status] {
-		detail := describePollDetails(pollResp.Details)
 		errMsg := fmt.Sprintf("Black Forest Labs video generation failed with status \"%s\"", status)
-		if detail != "" {
+		// TS `detail != null`: an empty string detail still adds ": ".
+		if detail, ok := describePollDetails(pollResp.Details); ok {
 			errMsg += ": " + detail
 		}
 		errMsg += fmt.Sprintf(". Request id: %s", op.RequestID)
@@ -757,20 +761,22 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 // describePollDetails renders a failed poll's `details` payload, which is a
 // plain string for moderation refusals and an object for everything else.
-func describePollDetails(raw json.RawMessage) string {
+// ok is false only when details is absent or null (TS returns undefined), so
+// an empty string is a present detail.
+func describePollDetails(raw json.RawMessage) (string, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return ""
+		return "", false
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
+		return s, true
 	}
 	// TS JSON.stringify(details): numbers go through a double, strings are
 	// re-escaped and duplicate keys collapse.
 	if tree, ok := jsonorder.Parse(raw); ok {
-		return jsonorder.Stringify(tree)
+		return jsonorder.Stringify(tree), true
 	}
-	return string(raw)
+	return string(raw), true
 }
 
 // handleVideoPollError converts a fileutil poll error into a BFL API error
@@ -815,7 +821,9 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		}
 
 		if time.Since(startTime) > pollTimeout {
-			return nil, fmt.Errorf("Black Forest Labs video generation timed out after %dms. Request id: %s", pollTimeout.Milliseconds(), op.RequestID) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+			// TS AISDKError BLACK_FOREST_LABS_VIDEO_GENERATION_TIMEOUT.
+			return nil, providererrors.NewVideoGenerationError("bfl", m.modelID,
+				fmt.Sprintf("Black Forest Labs video generation timed out after %dms. Request id: %s", pollTimeout.Milliseconds(), op.RequestID), nil)
 		}
 
 		status, err := m.DoStatus(ctx, &provider.VideoModelV3StatusOptions{
@@ -842,24 +850,66 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}
 }
 
-func flattenHTTPHeader(h http.Header) map[string]string {
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
+// videoBodyKeyOrder is the TS key order of the getArgs body literal (mode,
+// prompt, aspect_ratio, duration, resolution, version, generate_audio,
+// safety_tolerance, draft, keyframes | start_video) and of the
+// getDraftEnhanceArgs literal (mode, draft_cache, safety_tolerance).
+var videoBodyKeyOrder = []string{"mode", "draft_cache", "prompt", "aspect_ratio", "duration", "resolution", "version", "generate_audio", "safety_tolerance", "draft", "keyframes", "start_video"}
+
+// orderedVideoBody sends body with JSON.stringify's key order instead of Go's
+// sorted map keys.
+func orderedVideoBody(body map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range videoBodyKeyOrder {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
 		}
 	}
 	return out
 }
 
-func flattenHeaderSlice(h map[string][]string) map[string]string {
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
+// bflResponseHeaders is TS extractResponseHeaders: repeated values are
+// joined with ", " (providerutils.ExtractHeaders). An empty header set is an
+// empty map, as before.
+func bflResponseHeaders(h http.Header) map[string]string {
+	if out := providerutils.ExtractHeaders(h); out != nil {
+		return out
+	}
+	return map[string]string{}
+}
+
+// pollHeaders is TS combineHeaders(await resolve(config.headers),
+// options.headers) for the status poll: the provider headers (the X-Key
+// credential loaded per request, the user's Config.Headers and the provider
+// user agent) with the call headers over them. A missing key is a
+// LoadAPIKeyError before any request, as TS loadApiKey throws while the
+// headers resolve.
+func (m *VideoModel) pollHeaders(callHeaders map[string]string) (map[string]string, error) {
+	cfg := m.provider.config
+	auth, err := providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "BFL_API_KEY", "Black Forest Labs", "X-Key", "")
+	if err != nil {
+		return nil, err
+	}
+	providerHeaders := version.WithUserAgentSuffix(foldMergeHeaders(auth, cfg.Headers), version.ProviderUserAgent("black-forest-labs"))
+	return foldMergeHeaders(providerHeaders, callHeaders), nil
+}
+
+// foldMergeHeaders merges header maps in order; a later name replaces an
+// earlier one that differs only in case, so a request never carries two
+// values for one header.
+func foldMergeHeaders(headers ...map[string]string) map[string]string {
+	merged := map[string]string{}
+	for _, h := range headers {
+		for k, v := range h {
+			for existing := range merged {
+				if existing != k && strings.EqualFold(existing, k) {
+					delete(merged, existing)
+				}
+			}
+			merged[k] = v
 		}
 	}
-	return out
+	return merged
 }
 
 // bflVideoSubmitResponse is the JSON body returned by POST /{modelId}.

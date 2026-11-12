@@ -114,7 +114,7 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 	}
 
 	if opts.ProviderOptions != nil {
-		if raw, ok := opts.ProviderOptions["replicate"]; ok {
+		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["replicate"]; ok {
 			repOpts, ok := raw.(map[string]interface{})
 			if !ok {
 				return nil, fmt.Errorf("replicate: invalid providerOptions.replicate: expected object")
@@ -350,7 +350,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 // pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
 // defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract).
 func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
-	opts, _ := providerOptions["replicate"].(map[string]interface{})
+	opts, _ := providerutils.NormalizeOptionsJSON(providerOptions)["replicate"].(map[string]interface{})
 	if v, ok := providerutils.CoerceInt(opts["pollIntervalMs"]); ok && v > 0 {
 		intervalMs = v
 	}
@@ -418,35 +418,21 @@ func (m *VideoModel) handlePollError(err error) error {
 	return err
 }
 
-// convertReplicateHeaders flattens net/http.Header into map[string]string,
-// taking the first value for each header key.
+// convertReplicateHeaders flattens net/http.Header into map[string]string
+// like TS extractResponseHeaders.
 func convertReplicateHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
+	// TS extractResponseHeaders: repeated values joined with ", ".
+	if out := providerutils.ExtractHeaders(h); out != nil {
+		return out
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	return map[string]string{}
 }
 
 // flattenReplicateHeaders flattens a fileutil.DownloadResult's headers
 // (map[string][]string) the same way convertReplicateHeaders does for
 // net/http.Header.
 func flattenReplicateHeaders(h map[string][]string) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
-	}
-	return out
+	return convertReplicateHeaders(http.Header(h))
 }
 
 // replicatePredictionWire mirrors TS replicatePredictionSchema.

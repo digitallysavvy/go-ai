@@ -553,7 +553,12 @@ func headerNumber(headers http.Header, name string) interface{} {
 		return nil
 	}
 	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
-		return int(f)
+		// int keeps the v0.5.2 type; outside the platform int range (32-bit
+		// builds) the value is an int64 instead of a corrupted int.
+		if f >= math.MinInt && f <= math.MaxInt {
+			return int(f)
+		}
+		return int64(f)
 	}
 	return f
 }

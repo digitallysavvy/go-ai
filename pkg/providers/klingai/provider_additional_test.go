@@ -66,7 +66,7 @@ func TestKlingAIVideoModelHelperBranches(t *testing.T) {
 		"X-Request-Id": {"req-1"},
 		"X-Multi":      {"a", "b"},
 	})
-	if headers["X-Request-Id"] != "req-1" || headers["X-Multi"] != "a" {
+	if headers["X-Request-Id"] != "req-1" || headers["X-Multi"] != "a, b" {
 		t.Fatalf("convertHTTPHeaders() = %#v", headers)
 	}
 	if empty := convertHTTPHeaders(nil); len(empty) != 0 {

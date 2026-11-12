@@ -423,9 +423,11 @@ func (c *xNetWebSocketConn) receiveFrame(ctx context.Context) (realtimeFrame, er
 		ch := make(chan realtimeFrameResult, 1)
 		c.pending = ch
 		go func() {
-			var frame realtimeFrame
-			err := realtimeFrameTypeCodec.Receive(c.conn, &frame)
-			ch <- realtimeFrameResult{frame: frame, err: err}
+			// One whole message: continuation frames are joined and the
+			// UTF-8 check runs on the whole text, as the TS WebSocket
+			// message event delivers it (core2-02).
+			data, binary, err := wsutil.ReceiveMessage(c.conn)
+			ch <- realtimeFrameResult{frame: realtimeFrame{data: data, binary: binary}, err: err}
 		}()
 	}
 	select {
@@ -468,8 +470,9 @@ func (c *xNetWebSocketConn) SendBinary(ctx context.Context, message []byte) erro
 // realtimeFrameTypeCodec mirrors websocket.Message but additionally reports
 // the frame's payload type. websocket.Message discards it: its Unmarshal
 // only inspects the target's Go type (*string/*[]byte), never the frame's
-// actual TextFrame/BinaryFrame opcode, so there is no way to learn whether a
-// received frame was binary through the public Codec API.
+// actual TextFrame/BinaryFrame opcode. It reads a single frame, so the
+// session receives with wsutil.ReceiveMessage; the codec remains for the
+// frame-level test servers.
 var realtimeFrameTypeCodec = websocket.Codec{
 	Marshal: func(v interface{}) (msg []byte, payloadType byte, err error) {
 		switch data := v.(type) {

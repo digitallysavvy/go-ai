@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -151,6 +154,16 @@ func toFalFloat64(v interface{}) (float64, bool) {
 		f, err := n.Float64()
 		return f, err == nil
 	}
+	// Every other Go integer and float kind (typed literals).
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	}
 	return 0, false
 }
 
@@ -215,6 +228,13 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		base64Audio = base64.StdEncoding.EncodeToString(opts.Audio)
 	}
 	body["audio_url"] = fmt.Sprintf("data:%s;base64,%s", opts.MimeType, base64Audio)
+	// TS getArgs insertion order, then `{...body, audio_url}`.
+	orderedBody := jsonorder.New()
+	for _, k := range []string{"task", "diarize", "chunk_level", "language", "version", "batch_size", "num_speakers", "audio_url"} {
+		if v, ok := body[k]; ok {
+			orderedBody.Set(k, v)
+		}
+	}
 
 	currentDate := time.Now()
 
@@ -225,7 +245,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFalJob),
 		Method:           http.MethodPost,
 		Path:             submitPath,
-		Body:             body,
+		Body:             orderedBody,
 		Headers:          opts.Headers,
 	}, &submitResp)
 	if err != nil {
@@ -317,6 +337,18 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 		}
 
 		if resp.StatusCode >= 400 {
+			// TS failedResponseHandler reads `(await clone.json()).detail`: a
+			// body that is not JSON (or is JSON null) throws, and getFromApi
+			// wraps that in the APICallError 'Failed to process error
+			// response' with the status code and headers
+			// (get-from-api.ts:104-122).
+			if trimmed := strings.TrimSpace(string(resp.Body)); !json.Valid(resp.Body) || trimmed == "null" {
+				return nil, nil, nil, providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", "Failed to process error response", &internalhttp.HTTPStatusError{
+					StatusCode: resp.StatusCode,
+					Headers:    resp.Headers,
+					Body:       resp.Body,
+				})
+			}
 			var detail struct {
 				Detail string `json:"detail"`
 			}

@@ -69,25 +69,41 @@ func New(cfg Config) (*Provider, error) {
 		headers[k] = v
 	}
 
-	client := internalhttp.NewClient(internalhttp.Config{
+	p := &Provider{
+		config:     cfg,
+		reqHeaders: headers,
+	}
+	p.client = internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: headers,
 		// TS loadApiKey runs per request (ARK_API_KEY): a missing key is a
 		// LoadAPIKeyError, not a constructor error.
-		HeadersFunc: func() (map[string]string, error) {
-			key := apiKey
-			if key == "" {
-				key = providerutils.APIKeyOrEnv("", "BYTEDANCE_API_KEY")
-			}
-			return providerutils.RequestAuthHeader(cfg.Headers, key, "ARK_API_KEY", "ByteDance ModelArk", "Authorization", "Bearer ")
-		},
+		HeadersFunc: p.authHeader,
 	})
+	return p, nil
+}
 
-	return &Provider{
-		config:     cfg,
-		client:     client,
-		reqHeaders: headers,
-	}, nil
+// authHeader resolves the Authorization header for one request (TS
+// getHeaders' loadApiKey, run per request): the configured key, else
+// BYTEDANCE_API_KEY, else ARK_API_KEY, read now. nil when Config.Headers
+// already carries Authorization.
+func (p *Provider) authHeader() (map[string]string, error) {
+	key := p.config.APIKey
+	if key == "" {
+		key = providerutils.APIKeyOrEnv("", "BYTEDANCE_API_KEY")
+	}
+	return providerutils.RequestAuthHeader(p.config.Headers, key, "ARK_API_KEY", "ByteDance ModelArk", "Authorization", "Bearer ")
+}
+
+// requestHeaders is TS getHeaders() for requests sent outside the client
+// (the status poll): {Authorization, Content-Type, ...Config.Headers}, with
+// the key loaded per request.
+func (p *Provider) requestHeaders() (map[string]string, error) {
+	auth, err := p.authHeader()
+	if err != nil {
+		return nil, err
+	}
+	return internalhttp.MergeHeaders(auth, map[string]string{"Content-Type": "application/json"}, p.config.Headers), nil
 }
 
 // Name returns the provider name

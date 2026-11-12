@@ -278,6 +278,26 @@ func (m *embeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return m.EmbeddingModel.DoEmbedMany(ctx, inputs, opts)
 }
 
+// ImageModel returns a NoSuchModelError, as TS createBaseten's imageModel
+// throws (baseten-provider.ts:355); the inherited OpenAI image model is not
+// exposed.
+func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
+	return nil, providerrors.NewNoSuchModelError(modelID, "imageModel")
+}
+
+// SpeechModel returns a NoSuchModelError: TS createBaseten has no speech
+// model factory, so the inherited OpenAI speech model is not exposed.
+func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+	return nil, providerrors.NewNoSuchModelError(modelID, "speechModel")
+}
+
+// TranscriptionModel returns a NoSuchModelError: TS createBaseten has no
+// transcription model factory, so the inherited OpenAI transcription model
+// is not exposed.
+func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
+	return nil, providerrors.NewNoSuchModelError(modelID, "transcriptionModel")
+}
+
 // Name returns the provider name.
 func (p *Provider) Name() string {
 	return "baseten"

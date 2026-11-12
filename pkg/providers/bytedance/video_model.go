@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	stdhttp "net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodjson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -233,7 +236,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Method:  "POST",
 		Path:    "/contents/generations/tasks",
 		Headers: opts.Headers,
-		Body:    body,
+		Body:    orderedVideoBody(body, provOpts.Additional),
 	})
 	if err != nil {
 		// TS postJsonToApi lets a transport failure (an abort, or the
@@ -283,8 +286,15 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, fmt.Errorf("bytedance: invalid operation reference: %w", err)
 	}
 
+	// TS combineHeaders(await resolve(config.headers), options.headers): the
+	// key is loaded per request, so a missing key is a LoadAPIKeyError
+	// before any request (bytedance-provider.ts:77).
+	providerHeaders, err := m.prov.requestHeaders()
+	if err != nil {
+		return nil, err
+	}
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, nil)
-	downloadOpts.Headers = internalhttp.MergeHeaders(m.prov.reqHeaders, opts.Headers)
+	downloadOpts.Headers = internalhttp.MergeHeaders(providerHeaders, opts.Headers)
 
 	pollURL := m.prov.config.BaseURL + "/contents/generations/tasks/" + providerutils.EncodePathSegment(operation.TaskID)
 
@@ -319,16 +329,12 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			return nil, newVideoGenerationErrorText("No video URL in response. Task ID: " + operation.TaskID)
 		}
 
-		// Assign through an interface{} local rather than the *taskUsageField
-		// directly: a nil *taskUsageField boxed straight into the map would
-		// compare non-nil (a typed nil), unlike TS's plain `undefined`.
-		var usage interface{}
-		if statusResp.Usage != nil {
-			usage = statusResp.Usage
-		}
-		meta := map[string]interface{}{
-			"taskId": operation.TaskID,
-			"usage":  usage,
+		// TS `usage: statusResponse.usage`: the zod-parsed usage object, an
+		// explicit null kept as null, and no key when the wire has none
+		// (JSON drops the undefined value).
+		meta := map[string]interface{}{"taskId": operation.TaskID}
+		if usage, present := bytedanceStatusUsage(statusResp.Usage); present {
+			meta["usage"] = usage
 		}
 		if lastFrameURL != nil {
 			meta["lastFrameUrl"] = *lastFrameURL
@@ -648,6 +654,25 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 		return nil, fmt.Errorf("failed to marshal bytedance provider options: %w", err)
 	}
 
+	// TS pollIntervalMs / pollTimeoutMs are numbers: a fractional value is
+	// valid there. Go keeps honoring them (whole milliseconds), so round a
+	// fraction up before the *int decode instead of failing it.
+	var pollFix map[string]interface{}
+	if json.Unmarshal(jsonData, &pollFix) == nil {
+		changed := false
+		for _, k := range []string{"pollIntervalMs", "pollTimeoutMs"} {
+			if f, ok := pollFix[k].(float64); ok && f != math.Trunc(f) {
+				pollFix[k] = math.Ceil(f)
+				changed = true
+			}
+		}
+		if changed {
+			if fixed, mErr := json.Marshal(pollFix); mErr == nil {
+				jsonData = fixed
+			}
+		}
+	}
+
 	var provOpts ProviderOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal bytedance provider options: %w", err)
@@ -693,6 +718,77 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 	return &provOpts, nil
 }
 
+// videoBodyKeyOrder is the TS buildRequestBody insertion order of the keys
+// it sets itself.
+var videoBodyKeyOrder = []string{"model", "content", "ratio", "duration", "seed", "resolution", "generate_audio", "watermark", "camera_fixed", "return_last_frame", "service_tier", "draft"}
+
+// orderedVideoBody sends body in the TS JSON.stringify order: the built keys
+// in buildRequestBody order, then the passthrough option keys (sorted: a Go
+// map has no caller order; a passthrough key that repeats a built key keeps
+// that key's position), then doStart's callback_url.
+func orderedVideoBody(body, passthrough map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range videoBodyKeyOrder {
+		if v, ok := body[k]; ok {
+			if k == "content" {
+				v = orderedContent(v)
+			}
+			out.Set(k, v)
+		}
+	}
+	extra := make([]string, 0, len(passthrough))
+	for k := range passthrough {
+		extra = append(extra, k)
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	rest := make([]string, 0)
+	for k := range body {
+		if _, done := out.Get(k); !done {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		out.Set(k, body[k])
+	}
+	return out
+}
+
+// orderedContent writes each content entry as TS builds it: type, then the
+// text or media member, then role.
+func orderedContent(v interface{}) interface{} {
+	entries, ok := v.([]map[string]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, len(entries))
+	for i, entry := range entries {
+		o := jsonorder.New()
+		for _, k := range []string{"type", "text", "image_url", "video_url", "audio_url", "role"} {
+			if val, ok := entry[k]; ok {
+				o.Set(k, val)
+			}
+		}
+		rest := make([]string, 0)
+		for k := range entry {
+			if _, done := o.Get(k); !done {
+				rest = append(rest, k)
+			}
+		}
+		sort.Strings(rest)
+		for _, k := range rest {
+			o.Set(k, entry[k])
+		}
+		out[i] = o
+	}
+	return out
+}
+
 // bytedanceStatusSpec is TS byteDanceStatusResponseSchema's shape.
 var bytedanceStatusSpec = zodjson.Obj([]string{"id", "model", "status", "content", "usage", "error"}, map[string]*zodjson.Node{
 	"content": zodjson.Obj([]string{"video_url", "last_frame_url"}, nil),
@@ -700,14 +796,45 @@ var bytedanceStatusSpec = zodjson.Obj([]string{"id", "model", "status", "content
 	"error":   zodjson.Obj([]string{"code", "message"}, nil),
 })
 
+// flattenHeaders is TS extractResponseHeaders: repeated values are joined
+// with ", " (providerutils.ExtractHeaders); an empty set is an empty map.
 func flattenHeaders(headers map[string][]string) map[string]string {
-	out := make(map[string]string, len(headers))
-	for k, vs := range headers {
-		if len(vs) > 0 {
-			out[k] = vs[0]
+	if out := providerutils.ExtractHeaders(stdhttp.Header(headers)); out != nil {
+		return out
+	}
+	return map[string]string{}
+}
+
+// bytedanceStatusUsage is the zod output of the status usage object
+// ({completion_tokens?: number | null}, undeclared keys stripped). present is
+// false when the wire has no usage key. A whole completion_tokens is an int
+// (the v0.5.2 type when it fits), a fractional one a float64.
+func bytedanceStatusUsage(raw json.RawMessage) (interface{}, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	if string(raw) == "null" {
+		return nil, true
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil, true
+	}
+	usage := map[string]interface{}{}
+	if tokens, ok := fields["completion_tokens"]; ok {
+		var f *float64
+		if json.Unmarshal(tokens, &f) == nil {
+			switch {
+			case f == nil:
+				usage["completion_tokens"] = nil
+			case *f == math.Trunc(*f) && *f >= math.MinInt && *f <= math.MaxInt && math.Abs(*f) < 1e15:
+				usage["completion_tokens"] = int(*f)
+			default:
+				usage["completion_tokens"] = *f
+			}
 		}
 	}
-	return out
+	return usage, true
 }
 
 func flattenHeaderSlice(headers map[string][]string) map[string]string {
@@ -733,7 +860,9 @@ type taskStatusResponse struct {
 	Model   string            `json:"model"`
 	Status  string            `json:"status"`
 	Content *taskContentField `json:"content"`
-	Usage   *taskUsageField   `json:"usage"`
+	// Usage is the raw usage member, read with bytedanceStatusUsage (a
+	// fractional completion_tokens must not fail the whole decode).
+	Usage json.RawMessage `json:"usage"`
 	// Error is present on failed tasks (the HTTP response itself is still 200).
 	Error *errorDetail `json:"error"`
 }
@@ -743,12 +872,6 @@ type taskContentField struct {
 	VideoURL string `json:"video_url"`
 	// LastFrameURL is a pointer: TS keeps `last_frame_url != null` even when "".
 	LastFrameURL *string `json:"last_frame_url"`
-}
-
-// taskUsageField holds token usage info
-type taskUsageField struct {
-	// CompletionTokens is omitted when the wire omits it (zod nullish).
-	CompletionTokens *int `json:"completion_tokens,omitempty"`
 }
 
 // errorDetail holds the error message and code

@@ -77,7 +77,7 @@ func (m *SpeechModel) buildOrderedRequestBody(opts *provider.SpeechGenerateOptio
 	// pronunciation_dict) are already snake_case on the wire, matching the
 	// TS SDK's `...falOptions` spread into the top-level request body.
 	if opts.ProviderOptions != nil {
-		if falOpts, ok := opts.ProviderOptions["fal"].(map[string]interface{}); ok {
+		if falOpts, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fal"].(map[string]interface{}); ok {
 			// zod looseObject output: the schema's keys in schema order, then
 			// the unknown keys.
 			known := []string{"voice_setting", "audio_setting", "language_boost", "pronunciation_dict"}

@@ -15,7 +15,7 @@ func TestImageModelBuildRequestBody(t *testing.T) {
 	m := NewImageModel(p, "fal-fast")
 	n := 3
 	seed := 9
-	body, warnings, err := m.buildRequest(&provider.ImageGenerateOptions{
+	ob, warnings, err := m.buildRequest(&provider.ImageGenerateOptions{
 		Prompt: "city skyline",
 		Size:   "800x600",
 		N:      &n,
@@ -32,6 +32,7 @@ func TestImageModelBuildRequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	body := ob.Map()
 	if body["prompt"] != "city skyline" || body["num_images"] != 3 || body["seed"] != 9 {
 		t.Fatalf("unexpected body: %+v", body)
 	}
@@ -52,15 +53,17 @@ func TestImageModelBuildRequestBody(t *testing.T) {
 		t.Fatalf("warnings = %+v", warnings)
 	}
 
-	ar, _, _ := m.buildRequest(&provider.ImageGenerateOptions{Prompt: "p", AspectRatio: "16:9"})
+	arObj, _, _ := m.buildRequest(&provider.ImageGenerateOptions{Prompt: "p", AspectRatio: "16:9"})
+	ar := arObj.Map()
 	if ar["image_size"] != "landscape_16_9" {
 		t.Fatalf("aspect ratio: %v", ar["image_size"])
 	}
-	multi, _, _ := m.buildRequest(&provider.ImageGenerateOptions{
+	multiObj, _, _ := m.buildRequest(&provider.ImageGenerateOptions{
 		Prompt:          "p",
 		Files:           []provider.ImageFile{{Type: "url", URL: "u1"}, {Type: "url", URL: "u2"}},
 		ProviderOptions: map[string]interface{}{"fal": map[string]interface{}{"useMultipleImages": true}},
 	})
+	multi := multiObj.Map()
 	if urls, _ := multi["image_urls"].([]string); len(urls) != 2 {
 		t.Fatalf("image_urls: %v", multi)
 	}

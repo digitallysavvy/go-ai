@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -478,7 +479,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaGladiaInit),
 		Method:           http.MethodPost,
 		Path:             "/pre-recorded",
-		Body:             body,
+		Body:             orderedGladiaBody(body),
 		Headers:          opts.Headers,
 	}, &initResult)
 	if err != nil {
@@ -497,8 +498,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	// TS AISDKError TranscriptionResultEmpty (cause: the result).
 	if result, ok := raw["result"].(map[string]interface{}); !ok || result == nil {
-		empty := providererrors.NewProviderError("gladia", 0, "", "Transcription result is empty", nil)
-		empty.Data = raw
+		empty := providererrors.NewProviderError("gladia", 0, "TranscriptionResultEmpty", "Transcription result is empty", nil)
+		empty.Data = gladiaSchemaResult(raw)
 		return nil, empty
 	}
 
@@ -559,7 +560,7 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 			timedOut := providererrors.NewProviderError("gladia", 0, "TranscriptionJobPollingTimedOut",
 				"Transcription job polling timed out after "+strconv.FormatInt(pollTimeout.Milliseconds(), 10)+" ms", nil)
 			if last != nil {
-				timedOut.Data = last
+				timedOut.Data = gladiaSchemaResult(last)
 			}
 			return nil, nil, timedOut
 		}
@@ -589,8 +590,8 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 			if code, ok := raw["error_code"].(float64); ok {
 				message += " with error code " + providerutils.JSNumberString(code)
 			}
-			failure := providererrors.NewProviderError("gladia", 0, "", message, nil)
-			failure.Data = raw
+			failure := providererrors.NewProviderError("gladia", 0, "TranscriptionJobFailed", message, nil)
+			failure.Data = gladiaSchemaResult(raw)
 			return nil, nil, failure
 		}
 
@@ -620,12 +621,79 @@ func (m *TranscriptionModel) pollHeaders(resultURL, trustedOrigin string, header
 // providerutils.ExtractHeaders's convention for other providers' response
 // metadata.
 func flattenHeaders(h map[string][]string) map[string]string {
-	if len(h) == 0 {
-		return nil
+	// TS extractResponseHeaders, IsomorphicDecode included.
+	return providerutils.ExtractHeaders(http.Header(h))
+}
+
+// gladiaBodyKeyOrder is the TS getArgs assignment order of the
+// /v2/pre-recorded body, then doGenerate's audio_url.
+var gladiaBodyKeyOrder = []string{
+	"model", "custom_vocabulary", "callback", "subtitles", "diarization", "translation",
+	"summarization", "named_entity_recognition", "custom_spelling", "sentiment_analysis",
+	"audio_to_llm", "pii_redaction", "custom_metadata", "sentences", "punctuation_enhanced",
+	"custom_vocabulary_config", "language_config", "callback_config", "subtitles_config",
+	"diarization_config", "translation_config", "summarization_config",
+	"custom_spelling_config", "audio_to_llm_config", "pii_redaction_config", "audio_url",
+}
+
+// gladiaNestedKeyOrder is the TS literal order of the nested config objects.
+var gladiaNestedKeyOrder = map[string][]string{
+	"custom_vocabulary_config": {"vocabulary", "default_intensity"},
+	"language_config":          {"languages", "code_switching"},
+	"callback_config":          {"url", "method"},
+	"subtitles_config":         {"formats", "minimum_duration", "maximum_duration", "maximum_characters_per_row", "maximum_rows_per_caption", "style"},
+	"diarization_config":       {"number_of_speakers", "min_speakers", "max_speakers"},
+	"translation_config":       {"target_languages", "model", "match_original_utterances", "lipsync", "context_adaptation", "context", "informal"},
+	"summarization_config":     {"type"},
+	"custom_spelling_config":   {"spelling_dictionary"},
+	"audio_to_llm_config":      {"prompts", "model"},
+	"pii_redaction_config":     {"entity_types", "processed_text_type"},
+}
+
+// gladiaOrdered copies the listed keys of m, in order, into an ordered
+// object.
+func gladiaOrdered(m map[string]interface{}, order []string) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range order {
+		if v, ok := m[k]; ok {
+			out.Set(k, v)
+		}
 	}
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		out[http.CanonicalHeaderKey(k)] = providerutils.FetchHeaderEntry(k, vs)
+	return out
+}
+
+// orderedGladiaBody sends the body in the TS JSON.stringify order instead
+// of Go's sorted map keys; vocabulary entries are {value, intensity,
+// pronunciations, language}.
+func orderedGladiaBody(body map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range gladiaBodyKeyOrder {
+		v, ok := body[k]
+		if !ok {
+			continue
+		}
+		if order, nested := gladiaNestedKeyOrder[k]; nested {
+			if m, isMap := v.(map[string]interface{}); isMap {
+				if items, isList := m["vocabulary"].([]interface{}); isList && k == "custom_vocabulary_config" {
+					entries := make([]interface{}, len(items))
+					for i, item := range items {
+						if entry, isObj := item.(map[string]interface{}); isObj {
+							entries[i] = gladiaOrdered(entry, []string{"value", "intensity", "pronunciations", "language"})
+						} else {
+							entries[i] = item
+						}
+					}
+					copied := make(map[string]interface{}, len(m))
+					for mk, mv := range m {
+						copied[mk] = mv
+					}
+					copied["vocabulary"] = entries
+					m = copied
+				}
+				v = gladiaOrdered(m, order)
+			}
+		}
+		out.Set(k, v)
 	}
 	return out
 }

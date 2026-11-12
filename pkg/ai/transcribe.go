@@ -129,17 +129,27 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	callID := newCallID()
+	// TS createStartEvent: maxRetries (the prepared value), providerOptions
+	// (default {}) and timestampGranularities (transcription-events.ts).
+	telemetryMaxRetries := preparedMaxRetries(opts.MaxRetries)
+	providerOptions := opts.ProviderOptions
+	if providerOptions == nil {
+		providerOptions = map[string]interface{}{}
+	}
 	// TS fires the start event (without audio size/media type) and then the
 	// error event when the audio cannot be prepared (download or decode
 	// failure), before rethrowing.
 	failPreparation := func(err error) (*TranscribeResult, error) {
 		prepCtx := telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-			CallID:        callID,
-			OperationType: "ai.transcribe",
-			ModelProvider: opts.Model.Provider(),
-			ModelID:       opts.Model.ModelID(),
-			Settings:      opts.ExperimentalTelemetry,
-			Headers:       opts.Headers,
+			CallID:                 callID,
+			OperationType:          "ai.transcribe",
+			ModelProvider:          opts.Model.Provider(),
+			ModelID:                opts.Model.ModelID(),
+			Settings:               opts.ExperimentalTelemetry,
+			Headers:                opts.Headers,
+			MaxRetries:             &telemetryMaxRetries,
+			ProviderOptions:        providerOptions,
+			TimestampGranularities: opts.TimestampGranularities,
 		})
 		telemetry.FireOnError(prepCtx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
@@ -187,19 +197,18 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		audioByteLength = &n
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:          callID,
-		OperationType:   "ai.transcribe",
-		ModelProvider:   opts.Model.Provider(),
-		ModelID:         opts.Model.ModelID(),
-		Settings:        opts.ExperimentalTelemetry,
-		AudioByteLength: audioByteLength,
-		AudioMediaType:  mediaType,
-		Headers:         opts.Headers,
+		CallID:                 callID,
+		OperationType:          "ai.transcribe",
+		ModelProvider:          opts.Model.Provider(),
+		ModelID:                opts.Model.ModelID(),
+		Settings:               opts.ExperimentalTelemetry,
+		AudioByteLength:        audioByteLength,
+		AudioMediaType:         mediaType,
+		Headers:                opts.Headers,
+		MaxRetries:             &telemetryMaxRetries,
+		ProviderOptions:        providerOptions,
+		TimestampGranularities: opts.TimestampGranularities,
 	})
-	providerOptions := opts.ProviderOptions
-	if providerOptions == nil {
-		providerOptions = map[string]interface{}{}
-	}
 	headers := transcribeHeadersWithUserAgent(opts.Headers)
 	callOptions := &provider.TranscriptionOptions{
 		Audio:                  audio,
@@ -283,17 +292,42 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		providerMetadata = map[string]interface{}{}
 	}
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
+	// TS TranscriptionEndEvent: segments, words, language,
+	// durationInSeconds, warnings and response beside the text.
+	telemetrySegments := make([]telemetry.TelemetryTranscriptTiming, len(segments))
+	for i, seg := range segments {
+		telemetrySegments[i] = telemetry.TelemetryTranscriptTiming{Text: seg.Text, StartSecond: seg.StartSecond, EndSecond: seg.EndSecond}
+	}
+	var telemetryWords []telemetry.TelemetryTranscriptTiming
+	if raw.Words != nil {
+		telemetryWords = make([]telemetry.TelemetryTranscriptTiming, len(raw.Words))
+		for i, w := range raw.Words {
+			telemetryWords[i] = telemetry.TelemetryTranscriptTiming{Text: w.Text, StartSecond: w.StartSecond, EndSecond: w.EndSecond}
+		}
+	}
+	responseMeta := responses[0]
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-		CallID:           callID,
-		OperationType:    "ai.transcribe",
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		Settings:         opts.ExperimentalTelemetry,
-		Text:             raw.Text,
-		AudioByteLength:  audioByteLength,
-		AudioMediaType:   mediaType,
-		ProviderMetadata: providerMetadata,
-		ProviderUsage:    raw.ProviderUsage,
+		CallID:            callID,
+		OperationType:     "ai.transcribe",
+		ModelProvider:     opts.Model.Provider(),
+		ModelID:           opts.Model.ModelID(),
+		Settings:          opts.ExperimentalTelemetry,
+		Text:              raw.Text,
+		AudioByteLength:   audioByteLength,
+		AudioMediaType:    mediaType,
+		ProviderMetadata:  providerMetadata,
+		ProviderUsage:     raw.ProviderUsage,
+		Segments:          telemetrySegments,
+		Words:             telemetryWords,
+		Language:          raw.Language,
+		DurationInSeconds: raw.DurationInSeconds,
+		Warnings:          warnings,
+		Response: &telemetry.TelemetryAudioResponse{
+			Timestamp: responseMeta.Timestamp,
+			ModelID:   responseMeta.ModelID,
+			Headers:   responseMeta.Headers,
+			Body:      responseMeta.Body,
+		},
 	})
 	return &TranscribeResult{
 		Text:              raw.Text,

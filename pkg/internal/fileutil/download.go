@@ -46,10 +46,13 @@ type DownloadOptions struct {
 	URLValidator func(string) error
 
 	// Transport performs the HTTP requests. DefaultDownloadOptions sets it to
-	// SafeTransport(), which validates and pins DNS results at connect time
-	// (TS safe-node-fetch). A nil Transport uses http.DefaultTransport and
-	// performs no connect-time validation; a custom Transport is responsible
-	// for equivalent validation (TS: an injected fetch).
+	// SafeTransport(), which validates and pins DNS results at connect time.
+	// TS removed its DNS-pinned default (2ebc78b654) and asks callers to
+	// inject guarded-fetch; Go keeps the protection on by default. A nil
+	// Transport uses http.DefaultTransport and performs no connect-time
+	// validation; a custom Transport is responsible for equivalent
+	// validation (TS: an injected fetch). URL validation, redirect checks
+	// and header isolation apply with any Transport.
 	Transport http.RoundTripper
 }
 

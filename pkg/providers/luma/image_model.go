@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	stdhttp "net/http"
+	"sort"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -105,19 +106,28 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 
-	body := map[string]interface{}{
-		"prompt": opts.Prompt,
-		"model":  m.modelID,
-	}
+	// TS body literal: prompt, aspect_ratio, model, ...editingOptions,
+	// ...providerRequestOptions (sorted: a Go map has no caller order; a
+	// repeated key keeps its first position, as a JS spread does).
+	body := jsonorder.New()
+	body.Set("prompt", opts.Prompt)
 	if opts.AspectRatio != "" {
-		body["aspect_ratio"] = opts.AspectRatio
+		body.Set("aspect_ratio", opts.AspectRatio)
 	}
-	for k, v := range editingOptions {
-		body[k] = v
+	body.Set("model", m.modelID)
+	for _, k := range []string{"image", "style", "character", "modify_image"} {
+		if v, ok := editingOptions[k]; ok {
+			body.Set(k, orderedEditingValue(k, v, opts.Files, lumaOpts))
+		}
 	}
 	if lumaOpts != nil {
-		for k, v := range lumaOpts.Additional {
-			body[k] = v
+		keys := make([]string, 0, len(lumaOpts.Additional))
+		for k := range lumaOpts.Additional {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			body.Set(k, lumaOpts.Additional[k])
 		}
 	}
 
@@ -428,14 +438,64 @@ func lumaErrorData(body []byte) interface{} {
 	return map[string]interface{}{"detail": detail}
 }
 
+// flattenHeaders is TS extractResponseHeaders: repeated values joined with
+// ", " (providerutils.ExtractHeaders); an empty set is an empty map.
 func flattenHeaders(headers map[string][]string) map[string]string {
-	out := make(map[string]string, len(headers))
-	for k, vs := range headers {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
+	if out := providerutils.ExtractHeaders(stdhttp.Header(headers)); out != nil {
+		return out
 	}
-	return out
+	return map[string]string{}
+}
+
+// orderedEditingValue writes an editing option the way TS builds it:
+// image / style entries and modify_image as {url, weight}, character
+// identities in Object.entries order.
+func orderedEditingValue(key string, v interface{}, files []provider.ImageFile, lumaOpts *ImageModelOptions) interface{} {
+	urlWeight := func(m map[string]interface{}) *jsonorder.Object {
+		o := jsonorder.New()
+		o.Set("url", m["url"])
+		o.Set("weight", m["weight"])
+		return o
+	}
+	switch key {
+	case "image", "style":
+		if entries, ok := v.([]map[string]interface{}); ok {
+			out := make([]interface{}, len(entries))
+			for i, e := range entries {
+				out[i] = urlWeight(e)
+			}
+			return out
+		}
+	case "modify_image":
+		if m, ok := v.(map[string]interface{}); ok {
+			return urlWeight(m)
+		}
+	case "character":
+		character, ok := v.(map[string]interface{})
+		if !ok {
+			return v
+		}
+		var order []string
+		seen := map[string]bool{}
+		for i := range files {
+			id := "identity0"
+			if cfg := lumaOpts.imageConfig(i); cfg.ID != nil {
+				id = *cfg.ID
+			}
+			if !seen[id] {
+				seen[id] = true
+				order = append(order, id)
+			}
+		}
+		o := jsonorder.New()
+		for _, id := range jsonorder.JSKeyOrder(order) {
+			if entry, ok := character[id]; ok {
+				o.Set(id, entry)
+			}
+		}
+		return o
+	}
+	return v
 }
 
 // lumaGenerationResponse is a limited version of Luma's generation response

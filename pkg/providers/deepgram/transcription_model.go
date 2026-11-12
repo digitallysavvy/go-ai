@@ -70,7 +70,7 @@ func extractTranscriptionOptions(providerOptions map[string]interface{}) *Transc
 func (m *TranscriptionModel) buildQueryParams(opts *provider.TranscriptionOptions) map[string]string {
 	query := map[string]string{"model": m.modelID}
 	dgOpts := extractTranscriptionOptions(opts.ProviderOptions)
-	rawOpts, _ := opts.ProviderOptions["deepgram"].(map[string]interface{})
+	rawOpts, _ := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["deepgram"].(map[string]interface{})
 
 	// Shared Language/Timestamps options (Go's provider-agnostic surface).
 	if opts.Language != "" {

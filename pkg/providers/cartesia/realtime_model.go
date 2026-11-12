@@ -2,7 +2,6 @@ package cartesia
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,8 +14,11 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const cartesiaDefaultRealtimeRequestID = "cartesia-realtime"
@@ -221,12 +223,11 @@ func (m *RealtimeModel) SerializeClientEventRaw(event provider.RealtimeClientEve
 	case "session-update", "input-audio-clear", "response-create":
 		return nil, false, true, nil
 	case "input-audio-append":
-		audio, err := base64.StdEncoding.DecodeString(event.Audio)
+		// TS convertBase64ToUint8Array maps base64url ('-', '_') to base64
+		// first (uint8-utils.ts:6).
+		audio, err := types.DecodeFileDataString(event.Audio)
 		if err != nil {
-			audio, err = base64.RawStdEncoding.DecodeString(event.Audio)
-			if err != nil {
-				return nil, false, true, err
-			}
+			return nil, false, true, err
 		}
 		return audio, true, true, nil
 	case "input-audio-commit":
@@ -341,13 +342,23 @@ func (m *RealtimeModel) finishManualTranscript(event cartesiaRealtimeWireEvent, 
 		itemID = *event.RequestID
 		completedID = *event.RequestID
 	}
-	transcriptEvents := make([]json.RawMessage, len(state.events))
-	copy(transcriptEvents, state.events)
-	combined, _ := json.Marshal(map[string]interface{}{
-		"event":            json.RawMessage(raw),
-		"transcriptEvents": transcriptEvents,
-		"duration":         state.duration,
-	})
+	// TS raw is {event, transcriptEvents, duration} (in that order), with
+	// the parsed events and a JS number.
+	parsed := func(r json.RawMessage) interface{} {
+		if tree, ok := jsonorder.Parse(r); ok {
+			return tree
+		}
+		return r
+	}
+	transcriptEvents := make([]interface{}, len(state.events))
+	for i, e := range state.events {
+		transcriptEvents[i] = parsed(e)
+	}
+	combinedObj := jsonorder.New()
+	combinedObj.Set("event", parsed(raw))
+	combinedObj.Set("transcriptEvents", transcriptEvents)
+	combinedObj.Set("duration", json.Number(providerutils.JSNumberString(state.duration)))
+	combined, _ := json.Marshal(combinedObj)
 	return []provider.RealtimeServerEvent{
 		{Type: "audio-committed", ItemID: itemID, Raw: raw},
 		{Type: "input-transcription-completed", ItemID: completedID, Transcript: state.text, Raw: combined},

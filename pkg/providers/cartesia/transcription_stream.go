@@ -374,19 +374,6 @@ func (s *cartesiaTranscriptionStream) pumpAudio(conn *websocket.Conn, cfg cartes
 	}
 }
 
-// cartesiaStreamingTranscriptionEvent is a server->client realtime
-// transcription event, mirroring TS CartesiaStreamingTranscriptionEvent.
-type cartesiaStreamingTranscriptionEvent struct {
-	Type       string   `json:"type,omitempty"`
-	RequestID  string   `json:"request_id,omitempty"`
-	Transcript string   `json:"transcript,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	IsFinal    *bool    `json:"is_final,omitempty"`
-	Duration   *float64 `json:"duration,omitempty"`
-	Message    string   `json:"message,omitempty"`
-	ErrorCode  string   `json:"error_code,omitempty"`
-}
-
 func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig) {
 	defer s.CloseParts()
 	// Release the session's resources as soon as run() returns for any
@@ -488,46 +475,57 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 				continue
 			}
 
-			var raw cartesiaStreamingTranscriptionEvent
-			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+			// TS safeParseJSON then a cast: any parsed JSON value is used as
+			// is, so a field of another type does not drop the event.
+			var parsed interface{}
+			if jsonErr := json.Unmarshal([]byte(res.Text), &parsed); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: parsed}) {
 					return
 				}
 			}
 
-			switch raw.Type {
+			if parsed == nil {
+				// TS reads raw.type of null: the TypeError fails the stream
+				// through onProcessingError.
+				fail(errors.New("Cannot read properties of null (reading 'type')")) //nolint:staticcheck // matches the TS runtime error text
+				return
+			}
+			raw, _ := parsed.(map[string]interface{})
+			eventType, _ := raw["type"].(string)
+			requestID := cartesiaJSString(raw["request_id"])
+
+			switch eventType {
 			case "turn.update", "turn.eager_end":
-				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: raw.RequestID, Text: raw.Transcript}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: requestID, Text: cartesiaJSString(raw["transcript"])}) {
 					return
 				}
 
 			case "turn.end":
-				text := raw.Transcript
+				text := cartesiaJSString(raw["transcript"])
 				finalTexts = append(finalTexts, text)
-				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: raw.RequestID, Text: text}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: requestID, Text: text}) {
 					return
 				}
 
 			case "transcript":
-				transcript := raw.Text
-				if raw.IsFinal != nil && *raw.IsFinal {
+				transcript := cartesiaJSString(raw["text"])
+				duration, hasDuration := raw["duration"].(float64)
+				if isFinal, _ := raw["is_final"].(bool); isFinal {
 					finalTexts = append(finalTexts, transcript)
-					if raw.Duration != nil {
-						durationSeconds += *raw.Duration
+					if hasDuration {
+						durationSeconds += duration
 					}
-					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: raw.RequestID, Text: transcript}) {
+					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: requestID, Text: transcript}) {
 						return
 					}
 				} else {
-					part := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: raw.RequestID, Text: transcript}
-					if raw.Duration != nil {
-						d := *raw.Duration
+					part := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: requestID, Text: transcript}
+					if hasDuration {
+						d := duration
 						part.DurationInSeconds = &d
 					}
 					if !s.Emit(part) {
@@ -543,18 +541,34 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 				return
 
 			case "error":
-				msg := raw.Message
-				if msg == "" {
-					msg = raw.ErrorCode
-				}
-				if msg == "" {
-					msg = "Cartesia streaming transcription error"
+				// TS `message ?? error_code ?? default`: a present message
+				// (even "") wins.
+				msg := "Cartesia streaming transcription error"
+				if v, ok := raw["message"]; ok && v != nil {
+					msg = cartesiaJSString(v)
+				} else if v, ok := raw["error_code"]; ok && v != nil {
+					msg = cartesiaJSString(v)
 				}
 				fail(errors.New(msg))
 				return
 			}
 		}
 	}
+}
+
+// cartesiaJSString reads a decoded JSON scalar as the string TS uses (a
+// string as is, a number as String(n), a boolean as "true"/"false"); null,
+// absent and other values are "" (the TS empty-string default).
+func cartesiaJSString(v interface{}) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return providerutils.JSNumberString(x)
+	case bool:
+		return strconv.FormatBool(x)
+	}
+	return ""
 }
 
 func (s *cartesiaTranscriptionStream) dial(wsURL *url.URL) (*websocket.Conn, error) {

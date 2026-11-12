@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -303,7 +304,12 @@ func bflJSONNumber(f float64) interface{} {
 // anything else (NaN, fractions) as a float the integer schema rejects.
 func sizeDimension(f float64) interface{} {
 	if f == math.Trunc(f) && !math.IsInf(f, 0) && math.Abs(f) < 1e15 {
-		return int(f)
+		// int keeps the v0.5.2 type; outside the platform int range (32-bit
+		// builds) the value is an int64 instead of a corrupted int.
+		if f >= math.MinInt && f <= math.MaxInt {
+			return int(f)
+		}
+		return int64(f)
 	}
 	return f
 }
@@ -361,7 +367,7 @@ func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions, api 
 
 	var raw map[string]interface{}
 	if opts.ProviderOptions != nil {
-		raw, _ = opts.ProviderOptions["blackForestLabs"].(map[string]interface{})
+		raw, _ = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["blackForestLabs"].(map[string]interface{})
 	}
 
 	finalAspectRatio := opts.AspectRatio
@@ -498,7 +504,7 @@ func extractBFLProviderOptions(providerOptions map[string]interface{}) map[strin
 	if providerOptions == nil {
 		return nil
 	}
-	raw, ok := providerOptions["blackForestLabs"].(map[string]interface{})
+	raw, ok := providerutils.NormalizeOptionsJSON(providerOptions)["blackForestLabs"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
@@ -532,7 +538,7 @@ type bflPollConfig struct {
 
 func bflPollOptions(providerOptions map[string]interface{}) bflPollConfig {
 	cfg := bflPollConfig{}
-	raw, _ := providerOptions["blackForestLabs"].(map[string]interface{})
+	raw, _ := providerutils.NormalizeOptionsJSON(providerOptions)["blackForestLabs"].(map[string]interface{})
 	if v, ok := intFromInterface(raw["pollIntervalMillis"]); ok && v > 0 {
 		cfg.Interval = time.Duration(v) * time.Millisecond
 	}
@@ -1007,6 +1013,16 @@ func intFromInterface(value interface{}) (int, bool) {
 		n, err := v.Int64()
 		return int(n), err == nil
 	default:
+		// Every other Go integer and float kind (typed literals).
+		rv := reflect.ValueOf(value)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return int(rv.Int()), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return int(rv.Uint()), true
+		case reflect.Float32, reflect.Float64:
+			return int(rv.Float()), true
+		}
 		return 0, false
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -117,7 +119,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	submitResp, err := m.prov.client.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Path:    endpointPath,
-		Body:    body,
+		Body:    orderedVideoBody(endpointPath, body, provOpts.Additional),
 		Headers: m.prov.requestHeaders(authToken, opts.Headers),
 	})
 	if err != nil {
@@ -1037,14 +1039,57 @@ func (m *VideoModel) getPollOptions(provOpts *ProviderOptions) polling.PollOptio
 // map[string]string expected by VideoModelV3ResponseInfo.Headers, taking the
 // first value for each header key (matching the TS SDK's single-value behavior).
 func convertHTTPHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
+	// TS extractResponseHeaders: repeated values joined with ", ".
+	if out := providerutils.ExtractHeaders(h); out != nil {
+		return out
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
+	return map[string]string{}
+}
+
+// videoBodyKeyOrder is the TS insertion order of each builder
+// (klingai-video-model.ts:461-786), keyed by endpoint path.
+var videoBodyKeyOrder = map[string][]string{
+	"/v1/videos/text2video": {"model_name", "prompt", "negative_prompt", "sound", "cfg_scale", "mode", "camera_control",
+		"aspect_ratio", "duration", "multi_shot", "shot_type", "multi_prompt", "voice_list", "watermark_info"},
+	"/v1/videos/image2video": {"model_name", "prompt", "image", "image_tail", "negative_prompt", "sound", "cfg_scale", "mode",
+		"camera_control", "static_mask", "dynamic_masks", "multi_shot", "shot_type", "multi_prompt", "element_list",
+		"voice_list", "watermark_info", "duration"},
+	"/v1/videos/multi-image2video": {"model_name", "image_list", "prompt", "negative_prompt", "cfg_scale", "mode",
+		"aspect_ratio", "duration", "watermark_info"},
+	"/v1/videos/motion-control": {"model_name", "video_url", "character_orientation", "mode", "prompt", "image_url",
+		"keep_original_sound", "watermark_info", "element_list"},
+}
+
+// orderedVideoBody sends body in the TS JSON.stringify order: the builder's
+// keys, then the passthrough option keys (sorted: a Go map has no caller
+// order; one that repeats a built key keeps that key's position), then
+// doStart's callback_url.
+func orderedVideoBody(endpoint string, body, passthrough map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range videoBodyKeyOrder[endpoint] {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
 		}
+	}
+	extra := make([]string, 0, len(passthrough))
+	for k := range passthrough {
+		extra = append(extra, k)
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	rest := make([]string, 0)
+	for k := range body {
+		if _, done := out.Get(k); !done {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		out.Set(k, body[k])
 	}
 	return out
 }
@@ -1053,13 +1098,7 @@ func convertHTTPHeaders(h http.Header) map[string]string {
 // (map[string][]string) the same way convertHTTPHeaders does for
 // net/http.Header.
 func flattenKlingAIHeaders(h map[string][]string) map[string]string {
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
-	}
-	return out
+	return convertHTTPHeaders(http.Header(h))
 }
 
 // requestHeaders builds the request headers for a KlingAI call like the TS

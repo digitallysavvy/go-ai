@@ -1,6 +1,10 @@
 package cartesia
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // TranscriptionModelOptions contains Cartesia-specific transcription
 // options, mirroring cartesiaTranscriptionModelOptionsSchema.
@@ -96,7 +100,7 @@ func transcriptionLanguageOption(providerOptions map[string]interface{}, parsed 
 	if parsed != nil && parsed.Language != "" {
 		return parsed.Language, true
 	}
-	m, ok := providerOptions["cartesia"].(map[string]interface{})
+	m, ok := providerutils.NormalizeOptionsJSON(providerOptions)["cartesia"].(map[string]interface{})
 	if !ok {
 		return "", false
 	}
