@@ -107,7 +107,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		// TS `processId == null`: an InvalidResponseDataError carrying the
 		// parsed response.
 		if raw, present := topazStringField(resp.Body, "process_id"); !present {
-			return nil, providererrors.NewInvalidResponseDataError(raw, "Topaz did not return a process_id for the enhance request.")
+			return nil, providererrors.NewInvalidResponseDataError(topazParsedData(raw, topazImageSubmitKeys), "Topaz did not return a process_id for the enhance request.")
 		}
 	}
 
@@ -500,7 +500,7 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		// TS `downloadUrl == null`: an InvalidResponseDataError carrying the
 		// parsed response.
 		if raw, present := topazStringField(resp.Body, "download_url"); !present {
-			return nil, nil, providererrors.NewInvalidResponseDataError(raw, "Topaz did not return a download URL for process "+processID+".")
+			return nil, nil, providererrors.NewInvalidResponseDataError(topazParsedData(raw, topazImageDownloadKeys), "Topaz did not return a download URL for process "+processID+".")
 		}
 	}
 

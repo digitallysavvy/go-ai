@@ -334,7 +334,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		parsedStatus, _ := topazStringField(resp.Body, "status")
 		downloadRaw, _ := parsedStatus.(map[string]interface{})["download"].(map[string]interface{})
 		if downloadRaw["url"] == nil {
-			return nil, providererrors.NewInvalidResponseDataError(parsedStatus, fmt.Sprintf("Topaz reported request %s complete but returned no download URL.", op.RequestID))
+			return nil, providererrors.NewInvalidResponseDataError(topazParsedData(parsedStatus, topazVideoStatusKeys), fmt.Sprintf("Topaz reported request %s complete but returned no download URL.", op.RequestID))
 		}
 
 		mediaType := containerMediaTypes[op.OutputContainer]

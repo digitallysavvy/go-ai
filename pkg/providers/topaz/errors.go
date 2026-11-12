@@ -171,3 +171,52 @@ func topazStringField(body []byte, key string) (parsed interface{}, present bool
 	v, ok := obj[key]
 	return parsed, ok && v != nil
 }
+
+// topazSchemaKeys lists the keys a zod object schema declares: "" is the
+// root, a dotted path a nested object (topazVideoStatusResponseSchema's
+// estimates and download).
+type topazSchemaKeys map[string][]string
+
+var (
+	// topazImageSubmitKeys is topazImageSubmitResponseSchema.
+	topazImageSubmitKeys = topazSchemaKeys{"": {"process_id"}}
+	// topazImageDownloadKeys is topazImageDownloadResponseSchema.
+	topazImageDownloadKeys = topazSchemaKeys{"": {"download_url"}}
+	// topazVideoStatusKeys is topazVideoStatusResponseSchema.
+	topazVideoStatusKeys = topazSchemaKeys{
+		"":          {"status", "message", "errorCode", "outputSize", "estimates", "download"},
+		"estimates": {"cost", "time"},
+		"download":  {"url", "expiresAt"},
+	}
+)
+
+// topazParsedData is the zod output of an already validated response (the
+// value TS passes as InvalidResponseDataError data): z.object strips the
+// undeclared keys at every level; present keys keep their values, null
+// included.
+func topazParsedData(v interface{}, keys topazSchemaKeys) interface{} {
+	return topazStrip(v, "", keys)
+}
+
+func topazStrip(v interface{}, path string, keys topazSchemaKeys) interface{} {
+	obj, ok := v.(map[string]interface{})
+	if !ok {
+		return v
+	}
+	out := map[string]interface{}{}
+	for _, key := range keys[path] {
+		value, present := obj[key]
+		if !present {
+			continue
+		}
+		child := key
+		if path != "" {
+			child = path + "." + key
+		}
+		if _, nested := keys[child]; nested {
+			value = topazStrip(value, child, keys)
+		}
+		out[key] = value
+	}
+	return out
+}
