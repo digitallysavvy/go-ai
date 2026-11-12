@@ -610,3 +610,24 @@ func TestR91provbDeepSeekResponsesWire(t *testing.T) {
 	}
 	tsfixture.RunWire(t, "testdata/tswire/deepseek-responses.jsonl.gz", suite)
 }
+
+// PB-01 probe (coordinator ruling): Go-typed namespace literals through the
+// remaining provb language models (xAI, Hugging Face, GMI Cloud, Ollama,
+// Open Responses typed struct) send what the map form sends.
+func TestR91provbTypedOptionLiteralsRest(t *testing.T) {
+	chatOpts := func(mk func(b string) (provider.LanguageModel, error), key string) func(string, interface{}) {
+		return func(base string, o interface{}) {
+			m, err := mk(base)
+			r91provbGenerate(m, err, &provider.GenerateOptions{Prompt: r91provbPrompt(), ProviderOptions: map[string]interface{}{key: o}})
+		}
+	}
+	models := r91provbChatModels()
+	r91provbRunTypedCases(t, []r91provbTypedCase{
+		{"xai map[string]string", map[string]string{"user": "u1"}, map[string]interface{}{"user": "u1"}, chatOpts(models["xai"], "xai")},
+		{"xai int64", map[string]interface{}{"maxToolCalls": int64(2)}, map[string]interface{}{"maxToolCalls": float64(2)}, chatOpts(models["xai"], "xai")},
+		{"huggingface map[string]string", map[string]string{"instructions": "be brief"}, map[string]interface{}{"instructions": "be brief"}, chatOpts(models["huggingface"], "huggingface")},
+		{"gmicloud map[string]string", map[string]string{"user": "u1"}, map[string]interface{}{"user": "u1"}, chatOpts(models["gmicloud"], "gmicloud")},
+		{"ollama map[string]string", map[string]string{"user": "u1"}, map[string]interface{}{"user": "u1"}, chatOpts(models["ollama"], "ollama")},
+		{"open responses typed struct", &openresponses.OpenResponsesProviderOptions{ReasoningEffort: "high"}, map[string]interface{}{"reasoningEffort": "high"}, chatOpts(models["open responses"], "acme")},
+	})
+}
