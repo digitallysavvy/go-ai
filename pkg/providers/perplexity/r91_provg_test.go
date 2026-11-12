@@ -2,7 +2,13 @@ package perplexity
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -28,5 +34,27 @@ func TestR91provgToolCallArgumentsKeyOrder(t *testing.T) {
 	}
 	if got := perplexityToolCallArguments(types.ToolCallContent{Input: `null`}); got != `{}` {
 		t.Fatalf("null input = %s", got)
+	}
+}
+
+// Typed-option ruling probe: Go-typed option literals (embedding dimensions
+// as a map[string]int, decision warnings from a map[string]string).
+func TestR91provgTypedOptionLiterals(t *testing.T) {
+	var got []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":"AQI="}],"usage":{"prompt_tokens":1}}`))
+	}))
+	defer srv.Close()
+	em, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("pplx-embed-v1-0.6b")
+	if _, err := em.DoEmbedMany(context.Background(), []string{"hi"}, &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"perplexity": map[string]int{"dimensions": 256}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `"dimensions":256`) {
+		t.Fatalf("embedding body = %s", got)
+	}
+	if _, ok := perplexityThoughtSignature(map[string]interface{}{"perplexity": map[string]string{"thoughtSignature": "s"}}); !ok {
+		t.Fatal("typed part thoughtSignature ignored")
 	}
 }

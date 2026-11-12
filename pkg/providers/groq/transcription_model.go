@@ -152,7 +152,9 @@ func groqTranscriptionURL(raw string) (string, error) {
 func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInput) (*types.TranscriptionResult, error) {
 	// TS reads currentDate at the start of doGenerate, before the request.
 	timestamp := time.Now()
-	// TS getArgs parses providerOptions.groq before the audio is read.
+	// Typed-option ruling: Go-typed option literals are read in their JSON
+	// form. TS getArgs parses providerOptions.groq before the audio is read.
+	in.providerOptions = providerutils.NormalizeOptionsJSON(in.providerOptions)
 	if err := validateGroqTranscriptionOptions(in.providerOptions); err != nil {
 		return nil, err
 	}

@@ -297,3 +297,34 @@ func TestR91provgGatewayModelIDAdditions(t *testing.T) {
 		t.Fatal("constants")
 	}
 }
+
+// Typed-option ruling probe: a GatewayProviderOptions value or map[string]string
+// under "gateway" merges with the config options, drives the batch
+// idempotency key and the xAI diarization check like its JSON form.
+func TestR91provgTypedOptionLiterals(t *testing.T) {
+	p, _ := New(Config{APIKey: "k", QuotaEntityID: "q1"})
+	lm := &LanguageModel{provider: p, modelID: "openai/gpt-5"}
+	po := lm.providerOptions(&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"gateway": GatewayProviderOptions{Order: []string{"bedrock"}}}})
+	b, _ := json.Marshal(po["gateway"])
+	if string(b) != `{"order":["bedrock"],"quotaEntityId":"q1"}` {
+		t.Fatalf("gateway options = %s", b)
+	}
+	if !requestsXaiDiarization(map[string]interface{}{"xai": map[string]bool{"diarize": true}}) {
+		t.Fatal("typed diarize ignored")
+	}
+	var header string
+	srv := r91provgBatchServer(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		header = r.Header.Get("idempotency-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"batchId":"job","status":"pending"}`))
+	})
+	if _, err := srv.ExperimentalBatch().DoStartBatch(context.Background(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{{Type: provider.BatchRequestTypeText, Text: &provider.TextBatchV4Request{ID: "r1", ModelID: "openai/gpt-5", Options: provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}}}},
+		ProviderOptions: map[string]interface{}{"gateway": map[string]string{"idempotencyKey": "k1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if header != "k1" {
+		t.Fatalf("idempotency-key = %q", header)
+	}
+}

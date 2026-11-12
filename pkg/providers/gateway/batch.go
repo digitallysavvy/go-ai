@@ -59,7 +59,8 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		return nil, err
 	}
 
-	idempotencyKey, forwardedProviderOptions := extractGatewayBatchIdempotencyKey(opts.ProviderOptions)
+	// Typed-option ruling: a Go-typed gateway entry is read in its JSON form.
+	idempotencyKey, forwardedProviderOptions := extractGatewayBatchIdempotencyKey(providerutils.NormalizeOptionsJSON(opts.ProviderOptions))
 
 	// TS combineHeaders(config, options.headers, {ai-model-id}, o11y, idempotency-key)
 	headers := gatewayRequestHeaders(ctx, opts.Headers, map[string]string{"ai-model-id": modelID})

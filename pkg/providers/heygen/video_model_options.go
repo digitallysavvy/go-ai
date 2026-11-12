@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Asset types accepted in HeyGen provider options.
@@ -105,7 +106,11 @@ func parseVideoModelOptions(providerOptions map[string]interface{}) (*VideoModel
 		if typed, isTyped := raw.(VideoModelOptions); isTyped {
 			return validateVideoModelOptions(&typed)
 		}
-		return nil, invalidOptions("expected an object")
+		// Typed-option ruling: another Go-typed object (map[string]string,
+		// a struct) is read in its JSON form.
+		if _, isObject := providerutils.NormalizeOptionsJSON(map[string]interface{}{"heygen": raw})["heygen"].(map[string]interface{}); !isObject {
+			return nil, invalidOptions("expected an object")
+		}
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {

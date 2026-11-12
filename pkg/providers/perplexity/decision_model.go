@@ -50,6 +50,8 @@ func (m *DecisionModel) SupportedQuestionTypes() []string {
 
 // DoDecide decides every question against the same state in one request.
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	opts.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
 	// Typed Go containers in Instructions / Criteria take their JSON form
 	// (TS providers always receive JSON).
 	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,4 +124,33 @@ func TestR91provgConversationObjectArgumentsStringify(t *testing.T) {
 		}
 	}
 	t.Fatalf("no tool call in %#v", res.Content)
+}
+
+// Typed-option ruling probe: Go-typed option literals reach the request like
+// their JSON form (chat, embedding, speech).
+func TestR91provgTypedOptionLiterals(t *testing.T) {
+	server, got := r91provgCapture(t, "application/json", `{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	m, _ := New(Config{APIKey: "k", BaseURL: server.URL}).LanguageModel("mistral-small-latest")
+	if _, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ProviderOptions: map[string]interface{}{"mistral": map[string]bool{"safePrompt": true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(*got), `"safe_prompt":true`) {
+		t.Fatalf("chat body = %s", *got)
+	}
+	server2, got2 := r91provgCapture(t, "application/json", `{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"model":"mistral-embed","usage":{"prompt_tokens":1,"total_tokens":1}}`)
+	em, _ := New(Config{APIKey: "k", BaseURL: server2.URL}).EmbeddingModel("codestral-embed")
+	if _, err := em.DoEmbed(context.Background(), "hi", &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{"outputDimension": int64(256), "outputDtype": "int8"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(*got2), `"output_dtype":"int8"`) || !strings.Contains(string(*got2), `"output_dimension":256`) {
+		t.Fatalf("embedding body = %s", *got2)
+	}
+	server3, got3 := r91provgCapture(t, "application/json", `{"audio_data":"AAEC"}`)
+	sm, _ := New(Config{APIKey: "k", BaseURL: server3.URL}).SpeechModel("voxtral-mini-tts-2603")
+	if _, err := sm.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi", ProviderOptions: map[string]interface{}{"mistral": map[string]string{"refAudio": "UklGRg=="}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(*got3), `"ref_audio":"UklGRg=="`) {
+		t.Fatalf("speech body = %s", *got3)
+	}
 }

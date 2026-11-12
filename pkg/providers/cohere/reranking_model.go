@@ -48,6 +48,12 @@ func (m *RerankingModel) ModelID() string {
 
 // DoRerank performs document reranking (TS CohereRerankingModel#doRerank).
 func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	if opts == nil {
 		opts = &provider.RerankOptions{}
 	}

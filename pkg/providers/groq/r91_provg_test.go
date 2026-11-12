@@ -59,3 +59,22 @@ func TestR91provgTranscriptionValidatesOptionsFirst(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+// Typed-option ruling probe: a Go-typed groq transcription namespace.
+func TestR91provgTranscriptionTypedOptions(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"text":"hi","x_groq":{"id":"x"}}`)
+	}))
+	defer server.Close()
+	tm, _ := New(Config{APIKey: "k", BaseURL: server.URL}).TranscriptionModel("whisper-large-v3")
+	if _, err := tm.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, ProviderOptions: map[string]interface{}{"groq": map[string]string{"language": "de"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "name=\"language\"\r\n\r\nde") {
+		t.Fatalf("multipart body = %q", body)
+	}
+}

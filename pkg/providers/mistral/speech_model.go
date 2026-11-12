@@ -42,6 +42,12 @@ func (m *SpeechModel) ModelID() string { return m.modelID }
 
 // DoGenerate performs non-streaming speech synthesis.
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	currentDate := time.Now()
 	// TS parseProviderOptions(mistralSpeechModelOptions): refAudio is a
 	// non-empty string.

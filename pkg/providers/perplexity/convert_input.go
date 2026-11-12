@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -323,7 +324,8 @@ func perplexityToolCallArguments(part types.ToolCallContent) string {
 // providerOptions.perplexity.thoughtSignature and reports whether it is a
 // string (TS `typeof thoughtSignature === 'string'`, so "" is sent too).
 func perplexityThoughtSignature(providerOptions map[string]interface{}) (string, bool) {
-	perp, ok := providerOptions["perplexity"].(map[string]interface{})
+	// Typed-option ruling: part options are read in their JSON form.
+	perp, ok := providerutils.NormalizeOptionsJSON(providerOptions)["perplexity"].(map[string]interface{})
 	if !ok {
 		return "", false
 	}
