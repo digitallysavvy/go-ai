@@ -275,15 +275,20 @@ func conditionsToWire(conditions []DecisionFallbackCondition) []interface{} {
 // gatewayDecisionProviderOptionsSchema (only the "models" key is
 // constrained; every other key passes through via the schema's
 // `.catchall(z.unknown())`). Returns nil when there is nothing to
-// validate (gatewayOptions is not an object, or has no "models" key).
+// validate (gatewayOptions is null, or has no "models" key); a namespace
+// that is not an object fails, as the TS schema does.
 func validateGatewayDecisionProviderOptions(gatewayOptions interface{}) error {
 	// TS validates the JSON value: Go-typed containers ([]string,
 	// []map[string]interface{}, a GatewayProviderOptions value, ...) are
 	// checked in their JSON form.
 	gatewayOptions = providerutils.NormalizeOptionsJSON(map[string]interface{}{"gateway": gatewayOptions})["gateway"]
+	if gatewayOptions == nil {
+		return nil // TS parseProviderOptions: a null namespace is no options
+	}
 	m, ok := gatewayOptions.(map[string]interface{})
 	if !ok {
-		return nil
+		// TS z.catchall(z.object(...)) rejects a non-object namespace.
+		return providererrors.NewArgumentError("providerOptions", "invalid gateway provider options", errors.New("expected an object"))
 	}
 	modelsRaw, ok := m["models"]
 	if !ok {

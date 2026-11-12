@@ -128,10 +128,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		})
 	}
 
-	warnings := response.Warnings
-	if warnings == nil {
-		warnings = []types.Warning{}
-	}
+	warnings := warningsOrEmpty(response.Warnings)
 	// TS 41465fd1b6: the adapter does not forward the shared
 	// timestampGranularities option and says so when one was requested.
 	if len(opts.TimestampGranularities) > 0 {

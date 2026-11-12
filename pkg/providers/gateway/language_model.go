@@ -849,8 +849,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 		body["includeRawChunks"] = true
 	}
 
-	// Add headers
-	if len(opts.Headers) > 0 {
+	// TS getArgs sends the call options as given (minus abortSignal): a
+	// caller's empty headers map is sent as {}.
+	if opts.Headers != nil {
 		body["headers"] = opts.Headers
 	}
 
