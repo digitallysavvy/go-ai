@@ -1,4 +1,4 @@
-package harnessutil
+package jsdate
 
 import (
 	"testing"
@@ -26,7 +26,7 @@ func TestR47ParseJSDateLocalTimeAtDSTTransitions(t *testing.T) {
 		if err != nil {
 			t.Skipf("no tzdata for %s: %v", tc.zone, err)
 		}
-		if got, ok := parseJSDateIn(tc.in, loc); !ok || got != tc.want {
+		if got, ok := parseIn(tc.in, loc); !ok || got != tc.want {
 			t.Errorf("%s %q = %d, %v; want %d", tc.zone, tc.in, got, ok, tc.want)
 		}
 	}

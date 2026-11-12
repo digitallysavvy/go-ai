@@ -1,6 +1,6 @@
 //go:build !unix
 
-package harnessutil
+package jsdate
 
 import "time"
 

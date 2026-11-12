@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
@@ -481,11 +482,12 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 			if !ok {
 				return nil, false
 			}
-			parsed, err := time.Parse(time.RFC3339Nano, tsStr)
-			if err != nil {
+			// TS new Date(timestamp); a NaN date makes the part invalid.
+			ms, ok := jsdate.Parse(tsStr)
+			if !ok {
 				return nil, false
 			}
-			part.Timestamp = parsed
+			part.Timestamp = time.UnixMilli(ms)
 		}
 
 	case provider.TranscriptionStreamPartTypeFinish:

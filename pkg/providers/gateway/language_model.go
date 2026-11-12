@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
@@ -452,8 +453,9 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			ModelID: chunk.ModelID,
 		}
 		if chunk.Timestamp != "" {
-			if parsed, err := time.Parse(time.RFC3339, chunk.Timestamp); err == nil {
-				metadata.Timestamp = parsed
+			// TS new Date(timestamp): Date.parse, millisecond precision.
+			if ms, ok := jsdate.Parse(chunk.Timestamp); ok {
+				metadata.Timestamp = time.UnixMilli(ms)
 			}
 		}
 		return &provider.StreamChunk{

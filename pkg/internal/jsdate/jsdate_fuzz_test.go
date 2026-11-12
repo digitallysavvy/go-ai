@@ -1,4 +1,4 @@
-package harnessutil
+package jsdate
 
 import (
 	"strings"
@@ -25,17 +25,17 @@ func FuzzParseJSDate(f *testing.F) {
 		ny = time.UTC
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		ms, ok := parseJSDateIn(s, time.UTC)
+		ms, ok := parseIn(s, time.UTC)
 		if !ok && ms != 0 {
 			t.Fatalf("%q: not ok but ms = %d", s, ms)
 		}
 		if ms < -8.64e15 || ms > 8.64e15 {
 			t.Fatalf("%q: %d is outside the ECMAScript time range", s, ms)
 		}
-		if ms2, ok2 := parseJSDateIn(s, time.UTC); ms2 != ms || ok2 != ok {
+		if ms2, ok2 := parseIn(s, time.UTC); ms2 != ms || ok2 != ok {
 			t.Fatalf("%q: not deterministic", s)
 		}
-		_, _ = parseJSDateIn(s, ny)
+		_, _ = parseIn(s, ny)
 	})
 }
 
@@ -73,7 +73,7 @@ func TestParseJSDateHostileInputIsLinear(t *testing.T) {
 				best *time.Duration
 			}{{small, &bestSmall}, {large, &bestLarge}} {
 				start, cpuStart := time.Now(), processCPUTime()
-				_, _ = ParseJSDate(c.src)
+				_, _ = Parse(c.src)
 				d := processCPUTime() - cpuStart
 				if wall := time.Since(start); wall > backstop {
 					t.Fatalf("%s: %d bytes took %v", name, len(c.src), wall)

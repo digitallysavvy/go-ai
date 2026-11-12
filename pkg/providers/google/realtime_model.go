@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -191,8 +192,13 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	}
 	var expiresAt *int64
 	if data.ExpireTime != "" {
-		if t, err := time.Parse(time.RFC3339Nano, data.ExpireTime); err == nil {
-			sec := t.Unix()
+		// TS Math.floor(new Date(expireTime).getTime() / 1000); a NaN date
+		// has no Go value and leaves expiresAt unset.
+		if ms, ok := jsdate.Parse(data.ExpireTime); ok {
+			sec := ms / 1000
+			if ms%1000 < 0 {
+				sec--
+			}
 			expiresAt = &sec
 		}
 	}

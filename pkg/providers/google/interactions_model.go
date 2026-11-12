@@ -485,7 +485,7 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 		googleMeta["serviceTier"] = *st
 	}
 	providerMeta := map[string]interface{}{"google": googleMeta}
-	created, _ := time.Parse(time.RFC3339, response.Created)
+	created := parseInteractionsCreated(response.Created) // TS new Date(response.created), NaN dropped
 	respMeta := &types.ResponseMetadata{
 		ID:        normalizedInteractionID(response.ID),
 		Timestamp: created,

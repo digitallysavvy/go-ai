@@ -1,4 +1,4 @@
-package harnessutil
+package jsdate
 
 import (
 	"testing"
@@ -24,7 +24,7 @@ func TestR48ParseJSDateNULLineSeparatorsAndOffsetLimit(t *testing.T) {
 		{"Jan Sept 1 2000", 946684800000},
 		{"Jan 1 2000\n10:00\r", 946720800000},
 	} {
-		got, ok := parseJSDateIn(tc.in, time.UTC)
+		got, ok := parseIn(tc.in, time.UTC)
 		if tc.want == nan {
 			if ok {
 				t.Errorf("%q = %d; want NaN", tc.in, got)

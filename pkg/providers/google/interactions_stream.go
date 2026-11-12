@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -166,17 +167,15 @@ func headerServiceTier(headers map[string]string) string {
 	return ""
 }
 
-// parseInteractionsCreated parses an Interactions `created` timestamp; the
-// zero time means absent or invalid (TS drops an unparsable date).
+// parseInteractionsCreated parses an Interactions `created` timestamp like
+// TS `new Date(created)` (Date.parse, millisecond precision); the zero time
+// means absent or invalid (TS drops an unparsable date).
 func parseInteractionsCreated(created string) time.Time {
-	if created == "" {
+	ms, ok := jsdate.Parse(created)
+	if !ok {
 		return time.Time{}
 	}
-	t, err := time.Parse(time.RFC3339Nano, created)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
+	return time.UnixMilli(ms)
 }
 
 func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response interactionsResponse, warnings []types.Warning, headers http.Header, includeRawChunks bool) provider.TextStream {

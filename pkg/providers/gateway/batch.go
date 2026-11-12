@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -455,8 +456,8 @@ func decodeGatewayBatchItemResult(raw json.RawMessage) *types.GenerateResult {
 		}
 		// TS: `typeof response.timestamp === 'string'` → new Date(timestamp).
 		if ts, ok := wire.Response.Timestamp.(string); ok {
-			if t, perr := time.Parse(time.RFC3339Nano, ts); perr == nil {
-				meta.Timestamp = t
+			if ms, ok := jsdate.Parse(ts); ok {
+				meta.Timestamp = time.UnixMilli(ms)
 			}
 		}
 		result.ResponseMetadata = meta

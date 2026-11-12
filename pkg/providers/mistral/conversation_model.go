@@ -10,8 +10,8 @@ import (
 
 	"context"
 
-	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -556,7 +556,7 @@ func (s *conversationStream) handle(data string) {
 		if ev.CreatedAt != nil {
 			// TS new Date(created_at): Date.parse semantics (zone-less
 			// local times, date-only UTC, ...).
-			if ms, ok := harnessutil.ParseJSDate(*ev.CreatedAt); ok {
+			if ms, ok := jsdate.Parse(*ev.CreatedAt); ok {
 				meta.Timestamp = time.UnixMilli(ms)
 			}
 		}

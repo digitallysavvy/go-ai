@@ -1,4 +1,4 @@
-package harnessutil
+package jsdate
 
 import (
 	"testing"
@@ -145,7 +145,7 @@ func TestParseJSDateMatchesNode(t *testing.T) {
 		{nyc, func(i int) int64 { return cases[i].nyc }},
 	} {
 		for i, c := range cases {
-			got, ok := parseJSDateIn(c.in, zone.loc)
+			got, ok := parseIn(c.in, zone.loc)
 			if !ok {
 				got = nan
 			}
