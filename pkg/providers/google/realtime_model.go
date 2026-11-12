@@ -232,8 +232,6 @@ func isThinkingLiveModel(modelID string) bool {
 	return thinkingLiveModelRe.MatchString(name)
 }
 
-// BuildSessionConfig ports TS buildGoogleSessionConfig
-// (realtime/google-realtime-event-mapper.ts).
 // redactURLErrorQuery drops the query (the API key) from a *url.Error's URL.
 func redactURLErrorQuery(err error) error {
 	ue, ok := err.(*url.Error)
@@ -251,6 +249,8 @@ func redactURLErrorQuery(err error) error {
 	return &redacted
 }
 
+// BuildSessionConfig ports TS buildGoogleSessionConfig
+// (realtime/google-realtime-event-mapper.ts).
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
 	// Typed-option ruling: Go-typed literals are read in their JSON form.

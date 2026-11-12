@@ -584,6 +584,10 @@ func (m *InteractionsLanguageModel) handleError(err error) error {
 	if noResp, ok := internalhttp.NoResponseError(err); ok {
 		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
 	}
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err // TS getHeaders/loadApiKey throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 

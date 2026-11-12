@@ -806,8 +806,6 @@ func builtinResultToolName(block interactionsContentBlock) string {
 	return strings.TrimSuffix(block.Type, "_result")
 }
 
-// annotationsToSources maps the annotations of one text block to sources,
-// de-duplicated by URL or document filename/title (TS annotationsToSources).
 // idOrGenerate is TS `id || generateId()`: the generator runs only when the
 // id is empty, so a custom GenerateID's later ids do not shift.
 func idOrGenerate(id string, gen func() string) string {
@@ -817,6 +815,8 @@ func idOrGenerate(id string, gen func() string) string {
 	return gen()
 }
 
+// annotationsToSources maps the annotations of one text block to sources,
+// de-duplicated by URL or document filename/title (TS annotationsToSources).
 func annotationsToSources(annotations []interactionsAnnotation, generateID func() string) []types.ContentPart {
 	out := make([]types.ContentPart, 0)
 	seen := map[string]bool{}
@@ -844,12 +844,17 @@ func annotationsToSources(annotations []interactionsAnnotation, generateID func(
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
 				src = types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: ann.FileName}
 			} else {
-				// TS file_name ?? basename(uri); title file_name ?? filename.
+				// TS file_name ?? basename(uri); title file_name ?? filename
+				// ?? uri (basename is undefined for a trailing "/").
 				filename := baseName(uri)
 				if ann.present.fileName || ann.FileName != "" {
 					filename = ann.FileName
 				}
-				src = types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: filename, Filename: filename}
+				title := filename
+				if filename == "" && !ann.present.fileName {
+					title = uri
+				}
+				src = types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: title, Filename: filename}
 			}
 		case "place_citation":
 			if ann.URL == "" {
@@ -927,12 +932,17 @@ func builtinToolResultSources(block interactionsContentBlock, generateID func() 
 				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: title})
 			} else {
 				// TS filename = file_name ?? basename(uri); title = title ??
-				// file_name ?? filename (presence, not emptiness).
+				// file_name ?? filename ?? uri (presence, not emptiness;
+				// basename is undefined for a trailing "/").
 				filename := baseName(uri)
+				fileNamePresent := false
 				if v, ok := entry["file_name"]; ok && v != nil {
-					filename = fileName
+					filename, fileNamePresent = fileName, true
 				}
 				docTitle := filename
+				if filename == "" && !fileNamePresent {
+					docTitle = uri
+				}
 				if v, ok := entry["title"]; ok && v != nil {
 					docTitle = title
 				}
@@ -969,9 +979,6 @@ func baseName(uriOrName string) string {
 	return parts[len(parts)-1]
 }
 
-// googleOptString reads providerOptions.google.<key> as a string (the TS
-// converter reads signatures, interaction ids and processing ids from the
-// prompt part's providerOptions).
 // inputSignature is the signature a converted step carries (TS
 // `...(signature != null ? { signature } : {})` over
 // providerOptions.google.signature): a string option, even "", wins; then the
@@ -992,6 +999,9 @@ func inputSignature(opts map[string]interface{}, field string, googleMeta map[st
 	return nil
 }
 
+// googleOptString reads providerOptions.google.<key> as a string (the TS
+// converter reads signatures, interaction ids and processing ids from the
+// prompt part's providerOptions).
 func googleOptString(opts map[string]interface{}, key string) string {
 	if google, ok := opts["google"].(map[string]interface{}); ok {
 		if v, ok := google[key].(string); ok {
