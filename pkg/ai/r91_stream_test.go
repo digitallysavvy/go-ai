@@ -2,11 +2,15 @@ package ai
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // Round 91 (stream).
@@ -63,5 +67,90 @@ func r91streamDrain(s provider.TextStream) []provider.StreamChunk {
 			return out
 		}
 		out = append(out, *c)
+	}
+}
+
+// r91streamMetaTypes runs ToUIMessageStream with a MessageMetadata that
+// returns {t: part type} and returns the part types it saw and the
+// message-metadata chunks' t values.
+func r91streamMetaTypes(t *testing.T, r *StreamTextResult) (seen, written []string) {
+	t.Helper()
+	var mu sync.Mutex
+	chunks, errs := r.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			mu.Lock()
+			defer mu.Unlock()
+			typ, _ := part["type"].(string)
+			seen = append(seen, typ)
+			return map[string]interface{}{"t": typ}
+		},
+		OnError: func(err error) string { return err.Error() },
+	})
+	for c := range chunks {
+		if c["type"] == "message-metadata" {
+			m, _ := c["messageMetadata"].(map[string]interface{})
+			tv, _ := m["t"].(string)
+			written = append(written, tv)
+		}
+	}
+	for range errs {
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return seen, written
+}
+
+// core1-B01 (TS to-ui-message-stream.ts:128 messageMetadata({part}) with
+// the TextStreamPart): a failed tool result is a tool-error part.
+func TestR91streamUIMessageMetadataToolError(t *testing.T) {
+	failing := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return nil, errors.New("boom")
+		}}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, RawFinishReason: "tool_calls", Usage: r71streamUsage},
+		}),
+		Prompt: "x", Tools: []types.Tool{failing},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen, written := r91streamMetaTypes(t, r)
+	got := strings.Join(seen, ",")
+	if !strings.Contains(got, "tool-call,tool-error") || strings.Contains(got, "tool-result") {
+		t.Fatalf("metadata part types = %s", got)
+	}
+	if !strings.Contains(strings.Join(written, ","), "tool-error") {
+		t.Fatalf("message-metadata chunks = %v", written)
+	}
+}
+
+// core1-B02 (TS harness-stream-text-result.ts:250 enqueues no
+// response-metadata part): the Go-only markers of an external parts stream
+// do not reach MessageMetadata.
+func TestR91streamUIMessageMetadataSkipsInternalMarkers(t *testing.T) {
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStart},
+		{Type: provider.ChunkTypeStartStep},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "hi"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "r1"}},
+		{Type: provider.ChunkTypeFirstChunk},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop, Usage: r71streamUsage},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r71streamUsage},
+	})
+	r := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{TerminalFinishClosesTurn: true})
+	seen, written := r91streamMetaTypes(t, r)
+	for _, typ := range append(seen, written...) {
+		if typ == string(provider.ChunkTypeResponseMetadata) || typ == string(provider.ChunkTypeFirstChunk) {
+			t.Fatalf("internal marker reached MessageMetadata: seen %v, written %v", seen, written)
+		}
+	}
+	if !strings.Contains(strings.Join(seen, ","), "text-end,finish-step") {
+		t.Fatalf("seen = %v", seen)
 	}
 }

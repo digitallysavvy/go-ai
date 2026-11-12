@@ -870,6 +870,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					partType = "text-delta"
 				case provider.ChunkTypeReasoning:
 					partType = "reasoning-delta"
+				case provider.ChunkTypeToolResult:
+					// A failed tool result is the TS tool-error part.
+					if part.ToolResult != nil && part.ToolResult.Error != nil {
+						partType = "tool-error"
+					}
 				}
 			}
 			metadataPart := part
@@ -886,6 +891,12 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// sent before the source is read: TS calls messageMetadata once per
 			// part, so the source's own start part does not call it again.
 			if options.MessageMetadata == nil || part.Type == provider.ChunkTypeStart {
+				return nil
+			}
+			// Go-only bookkeeping markers are not TS TextStreamParts, so
+			// TS messageMetadata never sees them (harness-stream-text-result.ts
+			// enqueues no such part).
+			if part.Type == provider.ChunkTypeResponseMetadata || part.Type == provider.ChunkTypeFirstChunk {
 				return nil
 			}
 			input := messageMetadataInput(part, "")
