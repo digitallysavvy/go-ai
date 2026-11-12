@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -343,10 +342,11 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 }
 
 // perplexityCreatedAt is TS `new Date(created_at * 1000)`; created_at is a
-// zod number, so a fractional second is valid.
+// zod number, so a fractional second is valid. A Date holds whole
+// milliseconds (TimeClip truncates toward zero), so sub-millisecond digits
+// are dropped.
 func perplexityCreatedAt(createdAt float64) time.Time {
-	sec := math.Floor(createdAt)
-	return time.Unix(int64(sec), int64((createdAt-sec)*1e9))
+	return time.UnixMilli(int64(createdAt * 1000))
 }
 
 // handleError converts an HTTP-level error into a ProviderError, resolving
