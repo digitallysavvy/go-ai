@@ -17,6 +17,9 @@ import (
 type RerankingModel struct {
 	provider *Provider
 	modelID  string
+	// region is the AWS region read when the model was created (TS
+	// createRerankingModel loadSetting); "" reads it per request.
+	region string
 }
 
 // RerankingOptions are Amazon Bedrock-specific reranking provider options.
@@ -28,7 +31,7 @@ type RerankingOptions struct {
 
 // NewRerankingModel creates a new Amazon Bedrock reranking model.
 func NewRerankingModel(provider *Provider, modelID string) *RerankingModel {
-	return &RerankingModel{provider: provider, modelID: modelID}
+	return &RerankingModel{provider: provider, modelID: modelID, region: provider.Region()}
 }
 
 func (m *RerankingModel) SpecificationVersion() string { return "v4" }
@@ -114,7 +117,10 @@ func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[str
 	if err != nil {
 		return nil, err
 	}
-	region := m.provider.Region()
+	region := m.region
+	if region == "" {
+		region = m.provider.Region()
+	}
 	if region == "" {
 		return nil, errRegionMissing()
 	}
