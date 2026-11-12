@@ -320,3 +320,37 @@ func TestR92provgInteractionsReconnectQueryOrder(t *testing.T) {
 		t.Fatalf("queries = %q", queries)
 	}
 }
+
+// TS buildGoogleSessionConfig: `defaultToolBehavior != null` and
+// `thinkingConfig ?? raw generationConfig.thinkingConfig` treat null as
+// absent.
+func TestR92provgRealtimeNullOptionsAreAbsent(t *testing.T) {
+	desc := "d"
+	rm := &GoogleRealtimeModel{modelID: "gemini-3.1-live-thinking"}
+	setup, _ := json.Marshal(rm.BuildSessionConfig(provider.RealtimeSessionConfig{
+		Tools: []provider.RealtimeToolDefinition{{Name: "t", Description: &desc}},
+		ProviderOptions: map[string]interface{}{
+			"google":           map[string]interface{}{"thinkingConfig": nil, "defaultToolBehavior": nil},
+			"generationConfig": map[string]interface{}{"thinkingConfig": map[string]interface{}{"thinkingLevel": "high"}},
+		},
+	}))
+	if strings.Contains(string(setup), `"behavior"`) || !strings.Contains(string(setup), `"thinkingLevel":"high"`) || strings.Contains(string(setup), `"low"`) {
+		t.Fatalf("setup = %s", setup)
+	}
+}
+
+// TS JSON.stringify(functionCall.args) and the toolResponse response keep
+// the wire key order (a Go map sorts them).
+func TestR92provgRealtimeArgsAndToolResponseKeyOrder(t *testing.T) {
+	parse := (&GoogleRealtimeModel{modelID: "gemini-live"}).NewServerEventParser()
+	events, _ := parse(json.RawMessage(`{"toolCall":{"functionCalls":[{"id":"c1","name":"f","args":{"zeta":1,"alpha":{"y":2,"b":3}}}]}}`))
+	if len(events) != 2 || events[0].Delta != `{"zeta":1,"alpha":{"y":2,"b":3}}` || events[1].Arguments != events[0].Delta {
+		t.Fatalf("events = %+v", events)
+	}
+	m := &GoogleRealtimeModel{modelID: "gemini-live"}
+	name := "f"
+	out, err := m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "conversation-item-create", Item: provider.RealtimeConversationItem{Type: "function-call-output", CallID: "c1", Name: &name, Output: `{"zeta":1,"alpha":2}`}})
+	if err != nil || !strings.Contains(string(out), `"response":{"zeta":1,"alpha":2}`) {
+		t.Fatalf("toolResponse = %s, %v", out, err)
+	}
+}
