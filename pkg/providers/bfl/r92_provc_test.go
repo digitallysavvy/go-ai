@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -113,5 +115,27 @@ func TestR92provcImageBodyKeyOrder(t *testing.T) {
 			t.Errorf("%s body = %s\nwant %s", tc.modelID, raw, tc.want)
 		}
 		mu.Unlock()
+	}
+}
+
+// TestR92provcVideoDurationNonFinite (r92 provc-12): TS rounds any
+// non-integer duration (NaN and Infinity included, with a warning); Infinity
+// is then clamped to 20 and NaN is sent as JSON null.
+func TestR92provcVideoDurationNonFinite(t *testing.T) {
+	m := NewVideoModel(New(Config{APIKey: "k"}), VideoModelFlux3Video)
+	inf, nan := math.Inf(1), math.NaN()
+	body, warnings, err := m.buildVideoArgs(&provider.VideoModelV3CallOptions{Prompt: "p", Duration: &inf})
+	if err != nil || body["duration"] != float64(20) || len(warnings) != 2 || warnings[0].Details != "FLUX 3 video requires a whole number of seconds. The requested duration of Infinity was rounded to Infinity." {
+		t.Errorf("infinity: body=%v warnings=%+v err=%v", body, warnings, err)
+	}
+	body, warnings, err = m.buildVideoArgs(&provider.VideoModelV3CallOptions{Prompt: "p", Duration: &nan})
+	if err != nil || len(warnings) != 1 {
+		t.Fatalf("nan: warnings=%+v err=%v", warnings, err)
+	}
+	if v, ok := body["duration"]; !ok || v != nil {
+		t.Errorf("nan duration = %#v (present %v), want JSON null", v, ok)
+	}
+	if got, err := json.Marshal(orderedVideoBody(body)); err != nil || !strings.Contains(string(got), `"duration":null`) {
+		t.Errorf("nan body = %s err=%v", got, err)
 	}
 }
