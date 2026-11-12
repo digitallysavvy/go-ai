@@ -30,6 +30,21 @@ type TimeoutError struct {
 	// a step, first-chunk or chunk timeout reads like the TS abort reason
 	// ("Chunk timeout of 50ms exceeded").
 	Timeout time.Duration
+
+	// timeoutSet reports that Timeout is the configured duration, even when
+	// it is zero or negative (TS setAbortTimeout / AbortSignal.timeout with
+	// 0 or a negative value still abort with the labeled reason). Set by
+	// NewToolTimeoutError and by the configured step, first-chunk, chunk and
+	// total timeouts.
+	timeoutSet bool
+}
+
+// NewToolTimeoutError is the error of a tool whose per-tool timeout d
+// fired: the TS mergeAbortSignals(abortSignal, toolMs) abort reason. err is
+// the underlying error (context.DeadlineExceeded for the context cause, or
+// the tool's own error).
+func NewToolTimeoutError(d time.Duration, err error) *TimeoutError {
+	return &TimeoutError{Reason: TimeoutReasonTool, Err: err, Timeout: d, timeoutSet: true}
 }
 
 // ErrorName is the TS error name (a DOMException named "TimeoutError"), so a
@@ -116,6 +131,7 @@ func (tc *TimeoutConfig) timeoutError(reason TimeoutReason, err error) error {
 		}
 		if d != nil {
 			timeoutErr.Timeout = *d
+			timeoutErr.timeoutSet = true
 		}
 	}
 	return timeoutErr
