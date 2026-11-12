@@ -783,11 +783,17 @@ func (c *Client) SetBaseURL(baseURL string) {
 	c.baseURL = baseURL
 }
 
-// transportError wraps a failure from http.Client.Do. Mirrors TS
+// transportError is TransportError (the name the client code uses).
+func transportError(err error) error { return TransportError(err) }
+
+// TransportError wraps a failure from an http.Client Do call. Mirrors TS
 // provider-utils handleFetchError: cancellation and timeouts (TS abort
-// errors) are returned unchanged, and other transport failures read
-// "Cannot connect to API: <cause>". The cause stays wrapped for errors.Is/As.
-func transportError(err error) error {
+// errors) are returned unchanged, a FetchRejection is returned as is, and
+// other transport failures become the retryable "Cannot connect to API:
+// <cause>" error (IsRetryable reports true). The cause stays wrapped for
+// errors.Is/As. Provider code that calls a raw http.Client uses it so its
+// transport failures read and retry like the internal client's.
+func TransportError(err error) error {
 	var rejection *FetchRejection
 	if errors.As(err, &rejection) {
 		return rejection
