@@ -313,10 +313,8 @@ func writeFormValue(w *multipart.Writer, key string, v interface{}) error {
 	case string:
 		return providerutils.WriteFormDataField(w, key, x)
 	case float64:
-		if x == float64(int64(x)) {
-			return providerutils.WriteFormDataField(w, key, fmt.Sprint(int64(x)))
-		}
-		return providerutils.WriteFormDataField(w, key, fmt.Sprint(x))
+		// FormData.append(key, number) is String(number): JS number text.
+		return providerutils.WriteFormDataField(w, key, providerutils.JSNumberString(x))
 	default:
 		return providerutils.WriteFormDataField(w, key, fmt.Sprint(x))
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -270,5 +271,22 @@ func TestR92provbBatchListQueryOrder(t *testing.T) {
 	_, err := NewBatch(New(Config{APIKey: "k", BaseURL: srv.URL})).DoListBatches(context.Background(), provider.BatchV4ListOptions{Limit: &limit, Cursor: "c"})
 	if err != nil || rawQuery != "limit=5&after=c" {
 		t.Fatalf("query = %q, err = %v", rawQuery, err)
+	}
+}
+
+// TS convertToFormData appends a number as String(number): a provider option
+// of 1e-7 is "1e-7" and 1e21 is "1e+21" (Go %v wrote 1e-07, and int64
+// overflowed for 1e21).
+func TestR92provbCompatFormDataNumberText(t *testing.T) {
+	for v, want := range map[float64]string{1e-7: "1e-7", 1e21: "1e+21", 3: "3", 0.5: "0.5"} {
+		var buf strings.Builder
+		w := multipart.NewWriter(&buf)
+		if err := writeFormValue(w, "x", v); err != nil {
+			t.Fatal(err)
+		}
+		_ = w.Close()
+		if !strings.Contains(buf.String(), "\r\n\r\n"+want+"\r\n") {
+			t.Fatalf("%v: body %q, want %s", v, buf.String(), want)
+		}
 	}
 }
