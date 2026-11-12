@@ -96,15 +96,19 @@ func New(cfg Config) (*Provider, error) {
 		"anthropic-workspace-id": workspaceID,
 	}, cfg.Headers)
 
-	// The API key is resolved per request (providerutils.APIKeyOrEnv, the
-	// lookup half of TS loadApiKey) so ANTHROPIC_AWS_API_KEY set or rotated
-	// after the provider was created is honored; with no key, requests are
-	// SigV4-signed.
+	// TS createAnthropicAws reads ANTHROPIC_AWS_API_KEY once, when the
+	// provider is created (loadOptionalSetting), and picks x-api-key or SigV4
+	// then; with no key, requests are SigV4-signed (credentials are loaded per
+	// request). An APIKeyFunc is resolved per request instead.
+	apiKey := cfg.APIKey
+	if cfg.APIKeyFunc == nil {
+		apiKey = providerutils.APIKeyOrEnv(cfg.APIKey, "ANTHROPIC_AWS_API_KEY")
+	}
 	httpClient := cloneHTTPClient(cfg.HTTPClient)
 	transport := &sigV4Transport{
 		base:               baseRoundTripper(cfg.HTTPClient),
 		region:             region,
-		apiKey:             cfg.APIKey,
+		apiKey:             apiKey,
 		apiKeyFunc:         cfg.APIKeyFunc,
 		accessKeyID:        cfg.AccessKeyID,
 		secretAccessKey:    cfg.SecretAccessKey,
@@ -241,9 +245,9 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 		req.Header.Set("x-api-key", key)
 		return t.base.RoundTrip(req)
 	}
-	if key := providerutils.APIKeyOrEnv(t.apiKey, "ANTHROPIC_AWS_API_KEY"); key != "" {
+	if t.apiKey != "" {
 		req = req.Clone(req.Context())
-		req.Header.Set("x-api-key", key)
+		req.Header.Set("x-api-key", t.apiKey)
 		return t.base.RoundTrip(req)
 	}
 	// A hop back to the API origin after a foreign hop (A -> B -> A) is not

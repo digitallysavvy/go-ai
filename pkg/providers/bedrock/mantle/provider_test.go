@@ -54,25 +54,37 @@ func TestBedrockMantleBearerTokenSkipsSigning(t *testing.T) {
 	}
 }
 
-// The bearer token is read at request time, not when the provider is created.
-func TestBedrockMantleBearerTokenFromEnvAtRequestTime(t *testing.T) {
+// The bearer token is read when the provider is created (TS
+// createBedrockMantle loadOptionalSetting): a token set later is not used, and
+// one set at creation is used even after the variable is cleared.
+func TestBedrockMantleBearerTokenFromEnvAtCreation(t *testing.T) {
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
-	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "akid")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
 	var got *http.Request
 	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		got = req
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
 	})
+	send := func(p *BedrockMantleProvider) string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", strings.NewReader("{}"))
+		resp, err := p.httpClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return got.Header.Get("Authorization")
+	}
 	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", HTTPClient: &http.Client{Transport: base}})
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "late-token")
-	req, _ := http.NewRequest(http.MethodPost, "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", strings.NewReader("{}"))
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	if auth := send(p); !strings.HasPrefix(auth, "AWS4-HMAC-SHA256") {
+		t.Fatalf("Authorization = %q, want SigV4 (token set after creation)", auth)
 	}
-	_ = resp.Body.Close()
-	if got.Header.Get("Authorization") != "Bearer late-token" {
-		t.Fatalf("Authorization = %q", got.Header.Get("Authorization"))
+	p = CreateBedrockMantle(ProviderSettings{Region: "us-east-1", HTTPClient: &http.Client{Transport: base}})
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	if auth := send(p); auth != "Bearer late-token" {
+		t.Fatalf("Authorization = %q, want the token read at creation", auth)
 	}
 }
 
