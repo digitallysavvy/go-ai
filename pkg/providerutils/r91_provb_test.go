@@ -12,7 +12,7 @@ import (
 // scanner buffer size (makeslice panic).
 func TestR91provbMaxLineBytesRange(t *testing.T) {
 	if math.MaxInt == math.MaxInt64 {
-		for _, v := range []int64{1<<53, math.MaxInt64} {
+		for _, v := range []int64{1 << 53, math.MaxInt64} {
 			if _, err := (BatchResultDownloads{MaxLineBytes: int(v)}).ResolveMaxLineBytes(); err == nil || !strings.Contains(err.Error(), "maxLineBytes must be a positive safe integer.") {
 				t.Fatalf("%d: err = %v", v, err)
 			}
