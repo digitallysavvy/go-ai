@@ -470,3 +470,90 @@ func TestR91provgGemini4CarbonID(t *testing.T) {
 		t.Fatal(ModelGemini4Carbon)
 	}
 }
+
+func r91provgStreamChunks(t *testing.T, header http.Header, sse string) []*provider.StreamChunk {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range header {
+			w.Header()[k] = v
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	}))
+	defer server.Close()
+	m, _ := New(Config{APIKey: "k", BaseURL: server.URL}).LanguageModel("gemini-2.5-flash")
+	st, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close() //nolint:errcheck
+	var out []*provider.StreamChunk
+	for {
+		c, err := st.Next()
+		if err != nil {
+			return out
+		}
+		out = append(out, c)
+	}
+}
+
+// TS 540509c068: File Search and gs:// RAG chunks stream as document sources,
+// each emitted once across chunks.
+func TestR91provgStreamDocumentSources(t *testing.T) {
+	cand := `{"candidates":[{"content":{"parts":[{"text":"The roof"}],"role":"model"},"index":0,"groundingMetadata":{"groundingChunks":[{"retrievedContext":{"fileSearchStore":"fileSearchStores/roof-reports","title":"roof-report.pdf","text":"x"}},{"retrievedContext":{"uri":"gs://bucket/reports/annual.pdf","title":"Annual report","text":"y"}},{"web":{"uri":"https://a.example","title":"A"}}]}}]}`
+	last := `{"candidates":[{"content":{"parts":[{"text":" area"}],"role":"model"},"finishReason":"STOP","index":0,"groundingMetadata":{"groundingChunks":[{"retrievedContext":{"fileSearchStore":"fileSearchStores/roof-reports","title":"roof-report.pdf"}},{"retrievedContext":{"uri":"gs://bucket/reports/annual.pdf","title":"Annual report"}}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+	chunks := r91provgStreamChunks(t, nil, "data: "+cand+"\n\ndata: "+last+"\n\n")
+	var got []string
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeSource {
+			got = append(got, c.SourceContent.SourceType+":"+c.SourceContent.Title+":"+c.SourceContent.Filename)
+		}
+	}
+	want := []string{"document:roof-report.pdf:roof-reports", "document:Annual report:annual.pdf", "url:A:"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("sources = %v, want %v", got, want)
+	}
+}
+
+// TS 45337f0e8d: the x-gemini-service-tier header fills in serviceTier when
+// usageMetadata has none; the body field wins.
+func TestR91provgServiceTierFromHeader(t *testing.T) {
+	tierOf := func(meta map[string]interface{}) string {
+		g, _ := meta["google"].(map[string]json.RawMessage)
+		return string(g["serviceTier"])
+	}
+	for _, tc := range []struct{ usage, want string }{
+		{`{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}`, `"priority"`},
+		{`{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2,"serviceTier":"flex"}`, `"flex"`},
+	} {
+		body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":` + tc.usage + `}`
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("x-gemini-service-tier", "priority")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, body)
+		}))
+		m, _ := New(Config{APIKey: "k", BaseURL: server.URL}).LanguageModel("gemini-2.5-flash")
+		res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		server.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := tierOf(res.ProviderMetadata); got != tc.want {
+			t.Fatalf("generate serviceTier = %s, want %s", got, tc.want)
+		}
+		chunks := r91provgStreamChunks(t, http.Header{"X-Gemini-Service-Tier": {"priority"}}, "data: "+body+"\n\n")
+		for _, c := range chunks {
+			if c.Type == provider.ChunkTypeFinish {
+				var fm struct {
+					Google struct {
+						ServiceTier json.RawMessage `json:"serviceTier"`
+					} `json:"google"`
+				}
+				_ = json.Unmarshal(c.ProviderMetadata, &fm)
+				if got := string(fm.Google.ServiceTier); got != tc.want {
+					t.Fatalf("stream serviceTier = %s, want %s", got, tc.want)
+				}
+			}
+		}
+	}
+}
