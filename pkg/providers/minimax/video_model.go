@@ -887,21 +887,78 @@ func minimaxEncodeFile(f *provider.VideoModelV3File) (string, error) {
 // minimaxVideoFailedResponseHandler / minimaxVideoErrorSchema).
 func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers map[string]string) error {
 	// TS createJsonErrorResponseHandler: the message is
-	// `error?.message ?? 'MiniMax video generation error'`; a body that is
-	// empty or not a JSON object gives the HTTP status text.
+	// `error?.message ?? 'MiniMax video generation error'` and the data the
+	// schema output; a body that is empty, not JSON or not matching the
+	// schema gives the HTTP status text and no data (tools-08).
 	message := stdhttp.StatusText(statusCode)
-	var errResp struct {
-		Error *struct {
-			Message *string `json:"message"`
-		} `json:"error"`
-	}
-	if securejson.Unmarshal(body, &errResp) == nil {
-		message = "MiniMax video generation error"
-		if errResp.Error != nil && errResp.Error.Message != nil {
-			message = *errResp.Error.Message
+	var data interface{}
+	var parsed interface{}
+	if strings.TrimSpace(string(body)) != "" && securejson.Unmarshal(body, &parsed) == nil {
+		if out, ok := minimaxVideoErrorSchemaOutput(parsed); ok {
+			data = out
+			message = "MiniMax video generation error"
+			if e, ok := out["error"].(map[string]interface{}); ok {
+				if msg, ok := e["message"].(string); ok {
+					message = msg
+				}
+			}
 		}
 	}
-	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body), ResponseHeaders: headers}
+	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body), ResponseHeaders: headers, Data: data}
+}
+
+// minimaxVideoErrorSchemaOutput validates minimaxVideoErrorSchema ({type?:
+// string|null, error?: {type?, message?: string|null, http_code?: string |
+// number | null} | null, request_id?: string|null}) and returns its zod
+// output: the declared keys that are present, null kept, others stripped.
+func minimaxVideoErrorSchemaOutput(v interface{}) (map[string]interface{}, bool) {
+	obj, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	nullishString := func(m map[string]interface{}, key string) bool {
+		value, present := m[key]
+		if !present || value == nil {
+			return true
+		}
+		_, isString := value.(string)
+		return isString
+	}
+	out := map[string]interface{}{}
+	for _, key := range []string{"type", "request_id"} {
+		if !nullishString(obj, key) {
+			return nil, false
+		}
+		if value, present := obj[key]; present {
+			out[key] = value
+		}
+	}
+	if raw, present := obj["error"]; present {
+		if raw == nil {
+			out["error"] = nil
+		} else {
+			e, ok := raw.(map[string]interface{})
+			if !ok || !nullishString(e, "type") || !nullishString(e, "message") {
+				return nil, false
+			}
+			errOut := map[string]interface{}{}
+			for _, key := range []string{"type", "message"} {
+				if value, present := e[key]; present {
+					errOut[key] = value
+				}
+			}
+			if code, present := e["http_code"]; present {
+				switch code.(type) {
+				case nil, string, float64:
+				default:
+					return nil, false
+				}
+				errOut["http_code"] = code
+			}
+			out["error"] = errOut
+		}
+	}
+	return out, true
 }
 
 // handlePollError converts a fileutil poll error for a non-2xx HTTP response

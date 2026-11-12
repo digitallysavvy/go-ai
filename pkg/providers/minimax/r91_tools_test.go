@@ -263,3 +263,31 @@ func TestR91toolsMiniMaxVideoSubmitNetworkErrorRetryable(t *testing.T) {
 		t.Fatalf("err = %v, want a retryable Cannot connect to API error", err)
 	}
 }
+
+// tools-08 (TS minimaxVideoErrorSchema): the API error carries the schema
+// output as Data (undeclared keys stripped); a non-matching body gives the
+// status text and no data.
+func TestR91toolsMiniMaxVideoErrorData(t *testing.T) {
+	m := &VideoModel{}
+	cases := []struct {
+		body    string
+		message string
+		data    interface{}
+	}{
+		{`{"error":{"message":"m","x":1},"request_id":"r"}`, "m", map[string]interface{}{"error": map[string]interface{}{"message": "m"}, "request_id": "r"}},
+		{`{"type":"t","error":{"http_code":400,"type":null},"extra":true}`, "MiniMax video generation error", map[string]interface{}{"type": "t", "error": map[string]interface{}{"http_code": float64(400), "type": nil}}},
+		{`{"type":5}`, "Bad Request", nil},
+		{`{"error":"x"}`, "Bad Request", nil},
+	}
+	for _, tc := range cases {
+		err := m.parseAPIError([]byte(tc.body), 400, nil)
+		var e *Error
+		if !errors.As(err, &e) || e.Message != tc.message || !reflect.DeepEqual(e.Data, tc.data) {
+			t.Fatalf("%s: %+v", tc.body, e)
+		}
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || !reflect.DeepEqual(pe.Data, tc.data) {
+			t.Fatalf("%s: unwrapped ProviderError data = %#v", tc.body, pe)
+		}
+	}
+}
