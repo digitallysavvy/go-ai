@@ -1130,7 +1130,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	liveResult = result
 
 	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
-	maxSteps := 1000 // safety ceiling only
 
 	// Current messages for conversation history
 	currentMessages := prompt.Messages
@@ -1193,7 +1192,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	var lastResponseHeaders map[string]string
 
 	// Execute generation loop (for tool calling)
-	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
+	// No step ceiling: TS loops while shouldStartNextStep() (the stop
+	// conditions and the natural end of the run decide).
+	for stepNum := 1; ; stepNum++ {
 		// TS `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`: a
 		// call aborted after a step ended (e.g. while a tool that ignores
 		// ctx ran) fails before the next step starts, so PrepareStep and the
@@ -2211,6 +2212,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 		parsed, parseErr := op.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
 			Text:         textForOutput,
+			Response:     outputParseResponse(result.FinalStep.Response),
 			FinishReason: result.FinalStep.FinishReason,
 			Usage:        &lastUsage,
 		})
@@ -3129,6 +3131,14 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		executed = append(executed, result)
 	}
 	return executed, nil
+}
+
+// outputParseResponse is the final step's response metadata handed to
+// parseCompleteOutput (TS generate-text.ts passes response: step.response),
+// so a NoObjectGeneratedError carries the response id, timestamp, model id,
+// headers and body.
+func outputParseResponse(r types.StepResponse) *types.ResponseMetadata {
+	return &types.ResponseMetadata{ID: r.ID, Timestamp: r.Timestamp, ModelID: r.ModelID, Headers: r.Headers, Body: r.Body}
 }
 
 // validateToolResults validates tool results, especially for provider-executed tools

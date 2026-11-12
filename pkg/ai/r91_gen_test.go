@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -91,3 +92,55 @@ func TestR91genProviderDynamicCallNotToolNotFound(t *testing.T) {
 		r91genNoToolError(t, steps[0].Content, res.ResponseMessages())
 	})
 }
+
+// core1-C02: generate-text.ts:1718 loops while shouldStartNextStep(), with
+// no step ceiling, so StopWhen decides past 1000 steps.
+func TestR91genGenerateNoStepCeiling(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{
+			Content:      []types.ContentPart{types.ToolCallContent{ToolCallID: "c", ToolName: "t", Input: `{}`}},
+			ToolCalls:    []types.ToolCall{{ID: "c", ToolName: "t", Arguments: map[string]interface{}{}, RawArguments: `{}`}},
+			FinishReason: types.FinishReasonToolCalls,
+		}, nil
+	}}
+	tool := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", Tools: []types.Tool{tool}, StopWhen: []StopCondition{IsStepCount(1005)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1005 {
+		t.Fatalf("steps = %d, want 1005", len(res.Steps))
+	}
+}
+
+// core1-D01 (gen half): generate-text.ts:1808 passes the final step's
+// response to parseCompleteOutput, so NoObjectGeneratedError.Response is the
+// model response (id, model id, headers).
+func TestR91genOutputParseErrorResponse(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{
+			Content:          []types.ContentPart{types.TextContent{Text: "not json"}},
+			FinishReason:     types.FinishReasonStop,
+			Usage:            types.Usage{InputTokens: r91genInt64(3)},
+			ResponseMetadata: &types.ResponseMetadata{ID: "resp-1", ModelID: "m-1"},
+		}, nil
+	}}
+	type obj struct {
+		Name string `json:"name"`
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", Output: ObjectOutput[obj](ObjectOutputOptions{Schema: SchemaFor[obj]()})})
+	var noObj *NoObjectGeneratedError
+	if !errors.As(err, &noObj) {
+		t.Fatalf("err = %v, want NoObjectGeneratedError", err)
+	}
+	if noObj.Response == nil || noObj.Response.ID != "resp-1" || noObj.Response.ModelID != "m-1" {
+		t.Fatalf("Response = %+v, want id resp-1 / model m-1", noObj.Response)
+	}
+	if noObj.Usage == nil || noObj.Usage.InputTokens == nil || *noObj.Usage.InputTokens != 3 {
+		t.Fatalf("Usage = %+v", noObj.Usage)
+	}
+}
+
+func r91genInt64(v int64) *int64 { return &v }

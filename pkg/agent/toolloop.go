@@ -2008,14 +2008,20 @@ func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResu
 		}
 	}
 	// TS parseCompleteOutput gets the last step's usage, not the total.
+	// TS passes the last step's response too (NoObjectGeneratedError
+	// response).
 	var lastUsage types.Usage
+	var lastResponse *types.ResponseMetadata
 	if n := len(result.Steps); n > 0 {
 		lastUsage = result.Steps[n-1].Usage
+		r := result.Steps[n-1].Response
+		lastResponse = &types.ResponseMetadata{ID: r.ID, Timestamp: r.Timestamp, ModelID: r.ModelID, Headers: r.Headers, Body: r.Body}
 	}
 	args := []reflect.Value{
 		reflect.ValueOf(ctx),
 		reflect.ValueOf(ai.ParseCompleteOutputOptions{
 			Text:         textForOutput,
+			Response:     lastResponse,
 			Usage:        &lastUsage,
 			FinishReason: result.FinishReason,
 		}),
