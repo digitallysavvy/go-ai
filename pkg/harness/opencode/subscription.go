@@ -363,7 +363,8 @@ func requestOpenCodeGitLabDirectAccessWith(ctx context.Context, httpClient *http
 	}
 	respBody = []byte(textdecode.UTF8(respBody)) // TS response.json() decodes the text first
 	var parsed map[string]any
-	if err := securejson.Unmarshal(respBody, &parsed); err != nil {
+	// TS !isRecord(parsed.value): JSON null is invalid JSON too (harness-04).
+	if err := securejson.Unmarshal(respBody, &parsed); err != nil || parsed == nil {
 		return nil, errors.New("OpenCode GitLab direct access returned invalid JSON.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	token, _ := parsed["token"].(string)

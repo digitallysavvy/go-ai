@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -98,5 +100,19 @@ func TestR91toolsOpenCodeMintBridgeTokenIgnored(t *testing.T) {
 	_ = sess.DoDestroy(context.Background())
 	if minted {
 		t.Error("mintBridgeToken was called")
+	}
+}
+
+// harness-04 (TS opencode-subscription.ts:374, !isRecord): a JSON null body
+// is invalid JSON, not invalid credentials.
+func TestR91toolsOpenCodeGitLabNullBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("null"))
+	}))
+	defer srv.Close()
+	_, err := requestOpenCodeGitLabDirectAccess(context.Background(), srv.Client(), "tok", srv.URL, "")
+	if err == nil || err.Error() != "OpenCode GitLab direct access returned invalid JSON." {
+		t.Fatalf("err = %v", err)
 	}
 }

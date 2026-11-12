@@ -152,7 +152,9 @@ func resolveCodexSubscription(ctx context.Context, storeMode string) (codexSubsc
 	if !hasExpiry {
 		return codexSubscription{}, false, nil
 	}
-	accountID, _ := tokens["account_id"].(string)
+	// TS typeof accountId === 'string': an empty string still sends the
+	// header (harness-05).
+	accountID, hasAccountID := tokens["account_id"].(string)
 
 	if harnessutil.IsAccessTokenExpiringSoon(expiresAt, time.Now().UnixMilli(), 0) {
 		refreshed, err := harnessutil.RefreshOAuthAccessToken(ctx, harnessutil.RefreshOAuthAccessTokenOptions{
@@ -177,7 +179,7 @@ func resolveCodexSubscription(ctx context.Context, storeMode string) (codexSubsc
 		"CODEX_API_KEY":   accessToken,
 		"OPENAI_BASE_URL": chatGPTCodexBaseURL,
 	}}
-	if accountID != "" {
+	if hasAccountID {
 		sub.RequestHeaders = map[string]string{"ChatGPT-Account-ID": accountID}
 	}
 	return sub, true, nil
