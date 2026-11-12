@@ -163,3 +163,101 @@ func TestR91provaStreamFractionalUsage(t *testing.T) {
 		t.Fatalf("usage = %d/%d, want 10/2", *finish.Usage.InputTokens, *finish.Usage.OutputTokens)
 	}
 }
+
+// r91provaBody sends one generate call and returns its request body.
+func r91provaBody(t *testing.T, opts *provider.GenerateOptions) string {
+	t.Helper()
+	s := r88provaNewServer(t, r88provaTextResponse, nil)
+	if opts.Prompt.Text == "" && len(opts.Prompt.Messages) == 0 {
+		opts.Prompt = types.Prompt{Text: "hi"}
+	}
+	if _, err := r88provaModel(t, s, "claude-sonnet-4-5").DoGenerate(t.Context(), opts); err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	return r88provaJSON(s.body(0))
+}
+
+// Typed-option ruling (probe): Go-typed literals in the call provider
+// options and the tool provider options send the same request as the
+// map[string]interface{} form.
+func TestR91provaTypedOptionLiterals(t *testing.T) {
+	fn := func(po interface{}) []types.Tool {
+		return []types.Tool{{Type: types.ToolTypeFunction, Name: "f", Parameters: map[string]interface{}{"type": "object"}, ProviderOptions: po}}
+	}
+	cases := []struct {
+		name         string
+		typed, plain *provider.GenerateOptions
+	}{
+		{
+			"map[string]string namespace",
+			&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": map[string]string{"effort": "low"}}},
+			&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"effort": "low"}}},
+		},
+		{
+			"int64 budget",
+			&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled", "budgetTokens": int64(2048)}}}},
+			&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled", "budgetTokens": float64(2048)}}}},
+		},
+		{
+			"typed option struct",
+			&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": &ModelOptions{Effort: "low"}}},
+			&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"effort": "low"}}},
+		},
+		{
+			"[]map[string]interface{} mcpServers",
+			&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"mcpServers": []map[string]interface{}{{"type": "url", "name": "s", "url": "https://example.com/mcp"}}}}},
+			&provider.GenerateOptions{ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"mcpServers": []interface{}{map[string]interface{}{"type": "url", "name": "s", "url": "https://example.com/mcp"}}}}},
+		},
+		{
+			"tool map[string]map[string]bool",
+			&provider.GenerateOptions{Tools: fn(map[string]map[string]bool{"anthropic": {"deferLoading": true}})},
+			&provider.GenerateOptions{Tools: fn(map[string]interface{}{"anthropic": map[string]interface{}{"deferLoading": true}})},
+		},
+		{
+			"tool nested map[string]bool",
+			&provider.GenerateOptions{Tools: fn(map[string]interface{}{"anthropic": map[string]bool{"eagerInputStreaming": true}})},
+			&provider.GenerateOptions{Tools: fn(map[string]interface{}{"anthropic": map[string]interface{}{"eagerInputStreaming": true}})},
+		},
+		{
+			"tool cacheControl map[string]string",
+			&provider.GenerateOptions{Tools: fn(map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]string{"type": "ephemeral"}}})},
+			&provider.GenerateOptions{Tools: fn(map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}})},
+		},
+	}
+	for _, c := range cases {
+		typed := r91provaBody(t, c.typed)
+		plain := r91provaBody(t, c.plain)
+		if typed != plain {
+			t.Errorf("%s:\n typed %s\n plain %s", c.name, typed, plain)
+		}
+		baseline := &provider.GenerateOptions{}
+		if c.plain.Tools != nil {
+			baseline.Tools = fn(nil)
+		}
+		if plain == r91provaBody(t, baseline) {
+			t.Errorf("%s: the option has no effect on the request", c.name)
+		}
+	}
+}
+
+// The caller's batch request options are not modified by normalization.
+func TestR91provaBatchTypedOptionsNotMutated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(r91provaBatchJSON))
+	}))
+	defer srv.Close()
+	req := textBatchRequest("req-1", ClaudeSonnet4_5, "Hello")
+	inner := map[string]string{"effort": "low"}
+	req.Text.Options.ProviderOptions = map[string]interface{}{"anthropic": inner}
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch().DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests:        []provider.BatchV4Request{req},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string][]string{"anthropicBeta": {"b1"}}},
+	})
+	if err != nil {
+		t.Fatalf("DoStartBatch: %v", err)
+	}
+	if _, ok := req.Text.Options.ProviderOptions["anthropic"].(map[string]string); !ok {
+		t.Fatal("caller options were modified")
+	}
+}

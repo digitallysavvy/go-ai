@@ -64,6 +64,8 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	providerName := b.provider.Name()
+	// Go-typed option literals are read through their JSON form.
+	opts.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
 	if err := validateAnthropicBatchProviderOptions(providerName, opts.ProviderOptions); err != nil {
 		return nil, err
 	}
@@ -86,11 +88,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	toolNames := newBatchToolNamesBuilder(len(opts.Requests))
 	for _, req := range opts.Requests {
 		textReq := req.Text
+		// The caller's request is not modified.
+		callOpts := normalizeCallOptions(&textReq.Options)
 
-		if err := validateAnthropicBatchProviderOptions(providerName, textReq.Options.ProviderOptions); err != nil {
+		if err := validateAnthropicBatchProviderOptions(providerName, callOpts.ProviderOptions); err != nil {
 			return nil, err
 		}
-		requestBetas := anthropicBatchProviderBetas(providerName, textReq.Options.ProviderOptions)
+		requestBetas := anthropicBatchProviderBetas(providerName, callOpts.ProviderOptions)
 		if len(requestBetas) > 0 {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: "per-request providerOptions.anthropic.anthropicBeta",
@@ -102,7 +106,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		}
 
 		lm := NewLanguageModel(b.provider, textReq.ModelID, nil)
-		prepared, err := lm.prepareRequestWithBetas(&textReq.Options, false, explicitBatchBetas)
+		prepared, err := lm.prepareRequestWithBetas(callOpts, false, explicitBatchBetas)
 		if err != nil {
 			return nil, err
 		}
@@ -121,7 +125,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 						"Use a model that supports native output_format structured outputs.", textReq.ID),
 			}
 		}
-		if aliased := findAliasedAnthropicProviderTool(textReq.Options.Tools, prepared.toolsetNames); aliased != "" {
+		if aliased := findAliasedAnthropicProviderTool(callOpts.Tools, prepared.toolsetNames); aliased != "" {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: "aliased provider tool names in batches",
 				Message: fmt.Sprintf(
@@ -131,7 +135,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			}
 		}
 
-		toolNames.add(textReq.ID, batchCustomToolNames(textReq.Options.Tools))
+		toolNames.add(textReq.ID, batchCustomToolNames(callOpts.Tools))
 
 		body := lm.transformRequestBody(prepared.body, prepared.betas, false)
 		if err := validateAnthropicBatchBody(body, textReq.ID); err != nil {
