@@ -1245,7 +1245,12 @@ func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Messag
 		for _, k := range []string{key, "google"} {
 			if m, ok := providerutils.NormalizeProviderOptionsObject(po[k]); ok {
 				if v, ok := m["thoughtSignature"]; ok && v != nil {
-					return fmt.Sprint(v), true
+					// TS `thoughtSignature ? String(thoughtSignature) : none`:
+					// a falsy value (false, 0, "") sends nothing.
+					if !providerutils.JSTruthy(v) {
+						return "", true
+					}
+					return providerutils.JSString(v), true
 				}
 			}
 		}
