@@ -81,3 +81,16 @@ func TestR92provcAspectRatioSizeKeyOrder(t *testing.T) {
 		t.Errorf("image_size = %s", got)
 	}
 }
+
+// TestR92provcTranscriptionTypedOptions (r92 provc-15, typed-option
+// ruling): a Go-typed providerOptions.fal literal reads like the decoded
+// JSON object instead of failing the call.
+func TestR92provcTranscriptionTypedOptions(t *testing.T) {
+	m := &TranscriptionModel{modelID: "whisper"}
+	body, err := m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
+		"fal": map[string]string{"language": "fr", "chunkLevel": "segment"},
+	}})
+	if err != nil || body["language"] != "fr" || body["chunk_level"] != "segment" {
+		t.Fatalf("body = %v err = %v", body, err)
+	}
+}
