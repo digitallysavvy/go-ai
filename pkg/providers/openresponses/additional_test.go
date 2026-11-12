@@ -51,7 +51,9 @@ func TestProviderBasicsAndOptionsExtractors(t *testing.T) {
 		"openai":         map[string]interface{}{"reasoningSummary": "detailed"},
 		"open-responses": map[string]interface{}{"reasoningSummary": "legacy"},
 	}, "open-responses")
-	if opts.ReasoningSummary != "detailed" {
+	// The provider's own key wins over the openai alias (TS reads
+	// providerOptions[providerOptionsName]; r91 PB-07).
+	if opts.ReasoningSummary != "legacy" {
 		t.Fatalf("provider options parse failed: %+v", opts)
 	}
 }

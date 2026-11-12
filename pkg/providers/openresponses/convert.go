@@ -50,6 +50,7 @@ func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, syst
 		extensionOptions = extOpts[0]
 	}
 	extensionOptions.Warnings = &warnings
+	extensionOptions.replayedExtensionItems = map[string]bool{}
 
 	// Collect system messages
 	if system != "" {
@@ -335,6 +336,11 @@ type openResponsesExtensionOptions struct {
 	// function_call/function_call_output.
 	CustomToolID string
 
+	// replayedExtensionItems is TS replayedExtensionItems: the
+	// "<type>:<id>" keys of extension items already pushed, shared by every
+	// message of one conversion.
+	replayedExtensionItems map[string]bool
+
 	// Warnings, when set, collects the "provider-defined tool ... history"
 	// warnings emitted when an extension cannot encode a replayed part.
 	Warnings *[]types.Warning
@@ -352,6 +358,9 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 	// included (TS assistantMessageId is undefined otherwise).
 	var assistantHasMessageID bool
 	handledExtensionItemIDs := map[string]bool{}
+	if opts.replayedExtensionItems == nil {
+		opts.replayedExtensionItems = map[string]bool{}
+	}
 
 	flush := func() {
 		if len(assistantContent) == 0 {
@@ -399,6 +408,15 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 	}
 
 	for _, part := range content {
+		// TS getExtensionReplay runs first for every assistant part
+		// (convert-to-open-responses-input.ts:175-191): a registered
+		// extension's preserved item is pushed once; a part that only
+		// references one (itemId) is skipped.
+		if item, ok := extensionReplay(part, providerName, opts); ok {
+			flush()
+			appendExtensionReplayItem(&items, item, opts)
+			continue
+		}
 		switch p := part.(type) {
 		case types.ReasoningContent:
 			// Always emit reasoning as a top-level reasoning input item (OR-CORE
@@ -897,6 +915,12 @@ func convertToolResults(content []types.ContentPart, warnings *[]types.Warning, 
 	for _, part := range content {
 		if part.ContentType() == "tool-result" {
 			if toolResult, ok := part.(types.ToolResultContent); ok {
+				// TS getExtensionReplay runs first for a tool message's
+				// tool-result (convert-to-open-responses-input.ts:350-365).
+				if item, ok := extensionReplay(toolResult, providerName, opts); ok {
+					appendExtensionReplayItem(&results, item, opts)
+					continue
+				}
 				if encoded, ok := encodeProviderToolHistory(toolResult, toolResult.ToolName, "tool-result", opts); ok {
 					results = append(results, encoded...)
 					continue
@@ -1113,4 +1137,89 @@ func normalizeFileContentBlockData(block types.FileContentBlock, providerName st
 		block.MediaType = block.FileData.MediaType
 	}
 	return block, nil
+}
+
+// extensionReplay is TS getExtensionReplay: the part's provider data
+// (providerOptions, then providerMetadata) carries openResponsesExtension
+// {id, item?, itemId?} of a registered extension. ok reports a replay; item
+// is the preserved extension item to push (nil when only an itemId string
+// references it, so the part is skipped).
+func extensionReplay(part types.ContentPart, providerName string, opts openResponsesExtensionOptions) (map[string]interface{}, bool) {
+	if opts.Registry == nil {
+		return nil, false
+	}
+	po, pm := contentPartProviderData(part)
+	if po == nil && len(pm) == 0 {
+		return nil, false
+	}
+	var data map[string]interface{}
+	if nested, ok := asStringMap(po[providerName]); ok {
+		data = nested
+	} else if len(pm) > 0 {
+		var meta map[string]json.RawMessage
+		if json.Unmarshal(pm, &meta) == nil {
+			_ = json.Unmarshal(meta[providerName], &data)
+		}
+	}
+	ext, ok := asStringMap(data["openResponsesExtension"])
+	if !ok {
+		return nil, false
+	}
+	id, ok := ext["id"].(string)
+	if !ok {
+		return nil, false
+	}
+	extension := opts.Registry.ByExtensionID[id]
+	if extension == nil {
+		return nil, false
+	}
+	if item, isMap := ext["item"].(map[string]interface{}); isMap && IsExtensionItem(item) && containsString(ExtensionItemTypes(extension), ExtensionRecord(item).Type()) {
+		return item, true
+	}
+	if _, isString := ext["itemId"].(string); isString {
+		return nil, true
+	}
+	return nil, false
+}
+
+// appendExtensionReplayItem pushes a replayed extension item once per
+// "<type>:<id>" (TS replayedExtensionItems).
+func appendExtensionReplayItem(items *[]interface{}, item map[string]interface{}, opts openResponsesExtensionOptions) {
+	if item == nil {
+		return
+	}
+	key := ExtensionRecord(item).Type() + ":" + ExtensionRecord(item).ID()
+	if opts.replayedExtensionItems != nil {
+		if opts.replayedExtensionItems[key] {
+			return
+		}
+		opts.replayedExtensionItems[key] = true
+	}
+	*items = append(*items, item)
+}
+
+// contentPartProviderData returns a content part's ProviderOptions and
+// ProviderMetadata.
+func contentPartProviderData(part types.ContentPart) (map[string]interface{}, json.RawMessage) {
+	switch p := part.(type) {
+	case types.TextContent:
+		return p.ProviderOptions, p.ProviderMetadata
+	case types.ReasoningContent:
+		return p.ProviderOptions, p.ProviderMetadata
+	case types.ToolCallContent:
+		return p.ProviderOptions, p.ProviderMetadata
+	case types.ToolResultContent:
+		return p.ProviderOptions, p.ProviderMetadata
+	case types.CustomContent:
+		return p.ProviderOptions, p.ProviderMetadata
+	case types.GeneratedFileContent:
+		return p.ProviderOptions, p.ProviderMetadata
+	case types.ReasoningFileContent:
+		return p.ProviderOptions, p.ProviderMetadata
+	case types.SourceContent:
+		return nil, p.ProviderMetadata
+	case types.FileContent:
+		return p.ProviderOptions, p.ProviderMetadata
+	}
+	return nil, nil
 }

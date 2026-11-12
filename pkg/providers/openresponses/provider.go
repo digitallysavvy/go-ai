@@ -104,9 +104,9 @@ type Config struct {
 	StructuredOutputs *bool
 
 	// UserAgentSuffix overrides the User-Agent suffix appended to requests.
-	// Defaults to "ai-sdk-<Name>/<version>", mirroring the TS SDK's
-	// `userAgentSuffix` provider setting (default
-	// `ai-sdk-open-responses/${VERSION}`). A wrapper provider built on this
+	// Defaults to "ai-sdk-open-responses/<version>" whatever the Name, like
+	// the TS SDK's `userAgentSuffix` provider setting
+	// (open-responses-provider.ts:139). A wrapper provider built on this
 	// package (e.g. QuiverAI) sets this to identify itself instead of the
 	// generic "open-responses" name.
 	UserAgentSuffix string
@@ -146,7 +146,7 @@ func New(cfg Config) *Provider {
 	}
 	userAgentSuffix := cfg.UserAgentSuffix
 	if userAgentSuffix == "" {
-		userAgentSuffix = version.ProviderUserAgent(cfg.Name)
+		userAgentSuffix = version.ProviderUserAgent("open-responses")
 	}
 	headers = version.WithUserAgentSuffix(headers, userAgentSuffix)
 

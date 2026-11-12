@@ -435,8 +435,9 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 	if providerOptions == nil {
 		return OpenResponsesProviderOptions{}
 	}
-	keys := []string{"openai", providerName, "openResponses", "open-responses"}
-	for _, key := range keys {
+	// TS reads providerOptions[providerOptionsName]; the v0.5 aliases follow,
+	// so the TS key wins when both are given (open-responses-language-model.ts:333).
+	for _, key := range openResponsesProviderKeys(providerName) {
 		raw, ok := providerOptions[key]
 		if !ok {
 			continue
@@ -1679,7 +1680,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			}
 			if err != nil {
 				// Mirrors TS's try/catch around decodeExtensionItem: a
-				// decode failure doesn't abort the whole stream.
+				// decode failure doesn't abort the whole stream, and the
+				// finish reason is error (open-responses-language-model.ts:876).
+				s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 			}
 			for _, part := range decoded {
@@ -1822,7 +1825,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		}
 		if err != nil {
 			// Mirrors TS's try/catch around extension.decodeEvent: a decode
-			// failure doesn't abort the whole stream.
+			// failure doesn't abort the whole stream, and the finish reason
+			// is error (open-responses-language-model.ts:716).
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 		}
 		for _, chunk := range decoded {
@@ -1863,7 +1868,9 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 	if id, ok := item.idValue(); ok {
 		payload["itemId"] = id
 	}
-	if item.EncryptedContent != "" {
+	// TS encrypted_content != null: an empty string is kept
+	// (open-responses-language-model.ts:1012).
+	if _, ok := item.rawField("encrypted_content", item.EncryptedContent); ok {
 		payload["reasoningEncryptedContent"] = item.EncryptedContent
 	}
 	raw, err := json.Marshal(map[string]interface{}{providerName: payload})
