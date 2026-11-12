@@ -361,13 +361,33 @@ func (m *CompletionModel) convertCompletionResponse(response openAICompletionRes
 	result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
 	result.RawFinishReason = choice.FinishReason
 	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
-		result.ProviderMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
+		result.ProviderMetadata["openai"].(map[string]interface{})["logprobs"] = completionLogprobs(choice.Logprobs)
 	}
 	if m.provider.config.OpenAICompatible {
 		// TS OpenAICompatibleCompletionLanguageModel returns no providerMetadata.
 		result.ProviderMetadata = nil
 	}
 	return result
+}
+
+// completionLogprobs is the TS openaiCompletion{Response,Chunk}Schema
+// logprobs output: the zod object keeps tokens, token_logprobs and
+// top_logprobs (null kept, absent left out) and drops the other wire keys,
+// such as the text_offset the Completions API returns.
+func completionLogprobs(raw json.RawMessage) json.RawMessage {
+	var picked struct {
+		Tokens        json.RawMessage `json:"tokens"`
+		TokenLogprobs json.RawMessage `json:"token_logprobs"`
+		TopLogprobs   json.RawMessage `json:"top_logprobs,omitempty"`
+	}
+	if json.Unmarshal(raw, &picked) != nil || len(picked.Tokens) == 0 || len(picked.TokenLogprobs) == 0 {
+		return raw // the response schema check rejects this shape first
+	}
+	out, err := json.Marshal(picked)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 func convertOpenAICompletionUsage(usage *openAICompletionUsage) types.Usage {
@@ -615,7 +635,7 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 				s.rawFinishReason = *choice.FinishReason
 			}
 			if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
-				s.providerMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
+				s.providerMetadata["openai"].(map[string]interface{})["logprobs"] = completionLogprobs(choice.Logprobs)
 			}
 			// TS openai: `text.length > 0`; openai-compatible: `text != null`
 			// (the schema requires the string, so an empty one is a delta).
