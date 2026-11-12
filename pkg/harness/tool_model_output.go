@@ -80,13 +80,24 @@ func NormalizeToolModelOutput(output types.ToolResultOutput) (types.ToolResultOu
 				ProviderOptions: b.ProviderOptions,
 			})
 		case types.FileContentBlock:
+			// TS names the part by its own type: a legacy "file-data" /
+			// "image-data" part becomes an inline file part, and any other
+			// legacy part ("image-url", "file-id", ...) fails without the
+			// media type and data type a "file" part reports.
+			partType := "file"
+			if legacy := b.LegacyContentType(); legacy != "" {
+				partType = legacy
+				if legacy != "file-data" && legacy != "image-data" {
+					return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content '%s'.", legacy))
+				}
+			}
 			// TS: a file whose data is not inline fails with its data type,
 			// "Unsupported content 'file' (<mediaType>, <data.type>).".
 			if dataType := fileBlockDataType(b); dataType != types.FileDataTypeData {
-				return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content 'file' (%s, %s).", b.MediaType, dataType))
+				return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content '%s' (%s, %s).", partType, b.MediaType, dataType))
 			}
 			data, mediaType := fileBlockInline(b)
-			img, err := normalizeInlineImage(data, mediaType, b.ProviderOptions, "file")
+			img, err := normalizeInlineImage(data, mediaType, b.ProviderOptions, partType)
 			if err != nil {
 				return types.ToolResultOutput{}, err
 			}
@@ -218,6 +229,11 @@ func ConvertToolModelOutput(output types.ToolResultOutput) ([]ToolModelOutputCon
 			case types.FileContentBlock:
 				// TS accepts a normalized `file` part: inline data with a full
 				// image/* media type.
+				// TS getNormalizedInlineImage requires `part.type === 'file'`:
+				// a legacy part is reported by its own type.
+				if legacy := b.LegacyContentType(); legacy != "" {
+					return nil, false, unsupportedConvertContent(legacy)
+				}
 				data, mediaType := fileBlockInline(b)
 				if fileBlockDataType(b) != types.FileDataTypeData || !isNormalizedImageMediaType(mediaType) {
 					return nil, false, unsupportedConvertContent(block.ToolResultContentType())

@@ -590,7 +590,12 @@ func parseIn(s string, loc *time.Location) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	// MakeDate(MakeDay(year, month, day), MakeTime(h, m, s, ms)).
+	// MakeDate(MakeDay(year, month, day), MakeTime(h, m, s, ms)). V8's
+	// MakeDay is NaN outside kMinYear..kMaxYear (+-1,000,000), which also
+	// keeps the millisecond arithmetic below within int64.
+	if year < -1_000_000 || year > 1_000_000 {
+		return 0, false
+	}
 	days := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC).Unix()/86400 + int64(dd) - 1
 	date := days*86400000 + int64(h)*3600000 + int64(m)*60000 + int64(sec)*1000 + int64(ms)
 	const maxTime = 8_640_000_000_000_000

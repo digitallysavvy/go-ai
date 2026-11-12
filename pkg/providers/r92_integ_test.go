@@ -13,9 +13,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/azure"
-	"github.com/digitallysavvy/go-ai/pkg/providers/google"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -56,26 +54,9 @@ func TestR92integRawDoDialTimeoutIsConnectError(t *testing.T) {
 	hc := r92integDialTimeoutClient()
 	ctx := context.Background()
 	cases := map[string]func() error{
-		"google files upload": func() error {
-			p := google.New(google.Config{APIKey: "k", BaseURL: "http://127.0.0.1:1/v1beta", HTTPClient: hc})
-			_, err := p.Files().UploadFile(ctx, types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "text/plain"})
-			return err
-		},
-		"google realtime client secret": func() error {
-			p := google.New(google.Config{APIKey: "k", BaseURL: "http://127.0.0.1:1/v1beta", HTTPClient: hc})
-			m, err := p.RealtimeModel("gemini-live-2.5-flash-preview")
-			if err != nil {
-				return err
-			}
-			cs, ok := m.(interface {
-				DoCreateClientSecret(context.Context, provider.ClientSecretOptions) (provider.ClientSecretResult, error)
-			})
-			if !ok {
-				t.Fatalf("google realtime model has no DoCreateClientSecret")
-			}
-			_, err = cs.DoCreateClientSecret(ctx, provider.ClientSecretOptions{})
-			return err
-		},
+		// The Google files upload and realtime client secret sites call TS
+		// fetchFn directly (no handleFetchError), so their transport failure
+		// propagates as is (cr-r93-provg-to-carry).
 		"azure speech": func() error {
 			p, err := azure.New(azure.Config{APIKey: "k", ResourceName: "r", SpeechBaseURL: "http://127.0.0.1:1", HTTPClient: hc})
 			if err != nil {
