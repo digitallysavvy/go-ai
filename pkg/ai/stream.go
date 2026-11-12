@@ -599,8 +599,8 @@ type StreamTextResult struct {
 	hasPublishedPartialLegacy bool
 
 	// partials logs the published partial outputs for element streams of
-	// the call's own Output (partialsOutput), nil without an Output or for
-	// a single-consumer run. Set before StreamText returns.
+	// the call's own built-in ArrayOutput (partialsOutput); nil for any other
+	// Output and for a single-consumer run. Set before StreamText returns.
 	partials       *partialLog
 	partialsOutput any
 
@@ -912,7 +912,7 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 		result.skipTextAccumulation = !opts.collectContent
 	}
 	result.processingDone = make(chan struct{})
-	if opts.Output != nil && !opts.lowMemory {
+	if !opts.lowMemory && isBuiltinArrayOutput(opts.Output) {
 		result.partials = newPartialLog()
 		result.partialsOutput = opts.Output
 	}

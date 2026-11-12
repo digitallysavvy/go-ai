@@ -119,11 +119,16 @@ type arrayOutputStreamParser struct {
 	published      bool
 }
 
+// isBuiltinArrayOutput reports whether v is an ArrayOutput of this package.
+func isBuiltinArrayOutput(v any) bool {
+	t := reflect.TypeOf(v)
+	return t != nil && t.Kind() == reflect.Pointer && t.Elem().PkgPath() == arrayOutputPkgPath && strings.HasPrefix(t.Elem().Name(), "arrayOutput[")
+}
+
 // newArrayOutputStreamParser returns the incremental parser for a built-in
 // ArrayOutput, or nil for any other output.
 func newArrayOutputStreamParser(ctx context.Context, spec outputProcessor) *arrayOutputStreamParser {
-	t := reflect.TypeOf(spec)
-	if t == nil || t.Kind() != reflect.Pointer || t.Elem().PkgPath() != arrayOutputPkgPath || !strings.HasPrefix(t.Elem().Name(), "arrayOutput[") {
+	if !isBuiltinArrayOutput(spec) {
 		return nil
 	}
 	empty, ok, err := spec.parsePartialOutput(ctx, ParsePartialOutputOptions{Text: `{"elements":[]}`})
