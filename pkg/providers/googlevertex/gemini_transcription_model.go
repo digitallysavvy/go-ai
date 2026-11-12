@@ -286,9 +286,9 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		ValidateResponse: vertexValidator(m.Provider(), zVertexGeminiTranscription),
 		Method:           http.MethodPost,
 		// TS `${baseURL}/models/${modelId}:generateContent` (no getModelPath).
-		Path:             "/models/" + m.modelID + ":generateContent",
-		Body:             reqBody,
-		Headers:          opts.Headers,
+		Path:    "/models/" + m.modelID + ":generateContent",
+		Body:    reqBody,
+		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
