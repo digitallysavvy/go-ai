@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
 )
 
 // core3-08 (undici fetch httpRedirectFetch): a cross-origin redirect hop
@@ -59,5 +61,24 @@ func TestR91toolsVercelGitSource(t *testing.T) {
 	tarball, _ := json.Marshal(SnapshotSource{Type: "git", URL: "u", Username: "x", Password: "p", Depth: &depth})
 	if string(tarball) != `{"type":"git","url":"u","username":"x","password":"p","depth":1}` {
 		t.Fatalf("private git source = %s", tarball)
+	}
+}
+
+// Step-5 extra (3.9.0 CommandStdinResponse bytesWritten:
+// z.number().int().nonnegative().optional()): null and integers above
+// 2^53-1 fail like the zod schema.
+func TestR91toolsVercelStdinBytesWrittenSchema(t *testing.T) {
+	for body, wantErr := range map[string]bool{
+		`{"bytesWritten":5}`:                false,
+		`{}`:                                false,
+		`{"bytesWritten":null}`:             true,
+		`{"bytesWritten":9007199254740992}`: true,
+		`{"bytesWritten":-1}`:               true,
+		`{"bytesWritten":1.5}`:              true,
+	} {
+		_, err := parseStdinResponse(&httpinternal.Response{StatusCode: 200, Body: []byte(body)}, false)
+		if (err != nil) != wantErr {
+			t.Errorf("%s: err = %v", body, err)
+		}
 	}
 }

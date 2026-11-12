@@ -154,7 +154,7 @@ func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64,
 		return nil, &stdinWriteError{err: err, maybeApplied: maybeApplied}
 	}
 	var out struct {
-		BytesWritten *float64 `json:"bytesWritten"`
+		BytesWritten json.RawMessage `json:"bytesWritten"`
 	}
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, &stdinWriteError{err: err, maybeApplied: maybeApplied}
@@ -162,8 +162,10 @@ func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64,
 	if out.BytesWritten == nil {
 		return nil, nil
 	}
-	v := *out.BytesWritten
-	if v < 0 || v != math.Trunc(v) || v > float64(math.MaxInt64) {
+	// zod number().int().nonnegative().optional(): null is not a number,
+	// and int() means a safe integer (at most 2^53-1).
+	var v float64
+	if json.Unmarshal(out.BytesWritten, &v) != nil || string(out.BytesWritten) == "null" || v < 0 || v != math.Trunc(v) || v > 9007199254740991 {
 		return nil, &stdinWriteError{err: errors.New("Response JSON is not valid: bytesWritten must be a non-negative integer"), maybeApplied: maybeApplied} //nolint:staticcheck // TS parse error text prefix
 	}
 	n := int64(v)
