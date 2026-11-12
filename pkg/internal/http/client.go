@@ -197,7 +197,7 @@ type Response struct {
 	Body       []byte
 }
 
-// HTTPStatusError preserves non-2xx/3xx response metadata for provider error
+// HTTPStatusError preserves non-2xx response metadata for provider error
 // adapters while keeping the historical error string stable.
 type HTTPStatusError struct {
 	StatusCode int
@@ -469,7 +469,7 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 	resp.Body = responseText(resp.Body)
 
 	// Check for error status codes
-	if resp.StatusCode >= 400 {
+	if !statusOK(resp.StatusCode) {
 		return &HTTPStatusError{
 			StatusCode: resp.StatusCode,
 			Headers:    resp.Headers,
@@ -501,7 +501,7 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 		return nil, err
 	}
 	resp.Body = responseText(resp.Body)
-	if resp.StatusCode >= 400 {
+	if !statusOK(resp.StatusCode) {
 		return nil, &HTTPStatusError{
 			StatusCode: resp.StatusCode,
 			Headers:    resp.Headers,
@@ -579,8 +579,15 @@ func (c *Client) streamClient() *http.Client {
 	return c.client
 }
 
+// statusOK is fetch's response.ok: a 2xx status. TS postToApi / getFromApi
+// run the failed-response handler for anything else, including an
+// unfollowed 3xx (post-to-api.ts 111, get-from-api.ts 99).
+func statusOK(code int) bool {
+	return code >= 200 && code < 300
+}
+
 // WithFetchRedirects returns a shallow copy of client whose redirect policy
-// drops Authorization once the redirect chain crosses an origin (scheme,
+// drops Authorization, Proxy-Authorization and Cookie once the redirect chain crosses an origin (scheme,
 // host and port), as fetch does (HTTP-redirect fetch: "if request's current
 // URL's origin is not same origin with locationURL's origin, remove
 // Authorization"). net/http alone compares only the host, so a redirect to
@@ -593,7 +600,13 @@ func WithFetchRedirects(client *http.Client) *http.Client {
 	next := client.CheckRedirect
 	cp.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if redirectChainCrossesOrigin(req, via) {
+			// undici httpRedirectFetch (fetch/index.js 1351-1360) deletes
+			// authorization, proxy-authorization and cookie on a
+			// cross-origin hop; net/http keeps Proxy-Authorization always
+			// and Cookie for the same host on another port or scheme.
 			req.Header.Del("Authorization")
+			req.Header.Del("Proxy-Authorization")
+			req.Header.Del("Cookie")
 		}
 		if next != nil {
 			return next(req, via)
@@ -685,7 +698,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	}
 
 	// Check for error status codes
-	if httpResp.StatusCode >= 400 {
+	if !statusOK(httpResp.StatusCode) {
 		defer httpResp.Body.Close() //nolint:errcheck
 		errBody, _ := fileutil.ReadResponseWithSizeLimit(httpResp, url, c.maxResponseBytes())
 		return nil, &HTTPStatusError{
