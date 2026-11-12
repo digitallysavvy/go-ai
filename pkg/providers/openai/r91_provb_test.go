@@ -1,7 +1,9 @@
 package openai
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -104,5 +106,14 @@ func TestR91provbDecisionFileDataStringVerbatim(t *testing.T) {
 	}})
 	if err != nil || img["image_url"] != "data:image/png;base64,iVBORw0KGgo" {
 		t.Fatalf("got %v, %v", img, err)
+	}
+}
+
+// OVC-02 (openai model_catalog.go site): a transport failure is the
+// retryable "Cannot connect to API" error (TS handleFetchError).
+func TestR91provbModelCatalogTransportError(t *testing.T) {
+	_, err := ModelCatalogRefresher{APIKey: "k", Endpoint: "http://127.0.0.1:1/v1/models"}.Fetch(context.Background())
+	if err == nil || !strings.HasPrefix(err.Error(), "Cannot connect to API: ") {
+		t.Fatalf("err = %v", err)
 	}
 }
