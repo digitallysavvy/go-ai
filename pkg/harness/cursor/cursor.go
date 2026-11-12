@@ -32,7 +32,7 @@ import (
 // (9f7a842ae1); bump it with the harness bridges.
 const (
 	ClientAppName    = "ai-sdk-harness-cursor"
-	ClientAppVersion = "1.0.93"
+	ClientAppVersion = "1.0.96"
 	HarnessID        = "cursor"
 )
 

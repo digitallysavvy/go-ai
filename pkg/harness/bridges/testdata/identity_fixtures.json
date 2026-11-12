@@ -16,7 +16,7 @@
         "command": "./node_modules/.bin/claude --version"
       }
     ],
-    "identity": "fab1c87a49e88e53"
+    "identity": "0683a14142b44ad6"
   },
   "codex": {
     "harnessId": "codex",
@@ -31,7 +31,7 @@
         "command": "pnpm install --frozen-lockfile --store-dir .pnpm-store"
       }
     ],
-    "identity": "bbf476a72bb7ea89"
+    "identity": "68bff4147ee50527"
   },
   "opencode": {
     "harnessId": "opencode",
@@ -51,7 +51,7 @@
         "command": "./node_modules/.bin/opencode --version"
       }
     ],
-    "identity": "b84574ffc5ab4d60"
+    "identity": "1b316de5a24c70ca"
   },
   "deepagents": {
     "harnessId": "deepagents",
@@ -66,6 +66,6 @@
         "command": "pnpm install --frozen-lockfile --store-dir .pnpm-store"
       }
     ],
-    "identity": "06887ddc6592cf54"
+    "identity": "280d989c06444a65"
   }
 }
