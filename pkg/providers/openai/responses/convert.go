@@ -1075,7 +1075,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 	if opts.CustomToolNames[tc.ToolName] || opts.CustomToolNames[toolName] {
 		input := customToolCallInputText(tc)
 		var async *bool
-		if openaiMeta, ok := tc.ProviderMetadata[openAIProviderOptionsName(opts)].(map[string]interface{}); ok {
+		if openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(tc.ProviderMetadata[openAIProviderOptionsName(opts)]); ok {
 			if rawAsync, ok := openaiMeta["async"].(bool); ok {
 				async = &rawAsync
 			}

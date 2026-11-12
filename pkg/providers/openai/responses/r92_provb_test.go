@@ -48,3 +48,19 @@ func TestR92provbXAIToolCallItemIDTypedLiteral(t *testing.T) {
 		t.Fatalf("input %s lacks the item id", b)
 	}
 }
+
+// A replayed custom tool call reads its async flag through the JSON form.
+func TestR92provbCustomToolCallAsyncTypedLiteral(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{Role: types.RoleAssistant,
+		ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "grammar", RawArguments: `"text"`,
+			ProviderMetadata: map[string]interface{}{"openai": map[string]bool{"async": true}}}},
+	}}}
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{CustomToolNames: map[string]bool{"grammar": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(input)
+	if !strings.Contains(string(b), `"type":"custom_tool_call"`) || !strings.Contains(string(b), `"async":true`) {
+		t.Fatalf("input %s", b)
+	}
+}
