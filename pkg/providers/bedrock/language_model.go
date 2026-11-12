@@ -1041,6 +1041,9 @@ func providerErrorFromTransport(err error) error {
 	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 		return cause
 	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
 	mapped := internalhttp.TransportError(err)
 	if mapped == err {
 		return err

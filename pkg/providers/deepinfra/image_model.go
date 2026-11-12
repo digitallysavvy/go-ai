@@ -144,6 +144,9 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("deepinfra", 0, "", err.Error(), err)
 	}
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
@@ -230,6 +233,9 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	if err != nil {
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
 		}
 		return nil, providererrors.NewProviderError("deepinfra", 0, "", err.Error(), err)
 	}

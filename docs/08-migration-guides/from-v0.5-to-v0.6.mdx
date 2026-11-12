@@ -7908,9 +7908,9 @@ compile-time changes.
 
 ### xAI API errors keep the response and use the TS message {#xai-api-errors}
 
-- **What changed:** In v0.5, xAI image, transcription, speech, files, batch and video-status errors had no `ResponseHeaders`, `ResponseBody` or `Data`; a non-JSON error body became the message; the speech error ended with `(trace: <id>)`. In v0.6 these errors carry the response headers, body and parsed data (retries honor `retry-after` / `retry-after-ms`); a body that matches no xAI error shape gives the HTTP status text; `{code, error}` bodies give `<code>: <error>` (Responses model and video start too); the trace id is only in `ResponseHeaders["x-trace-id"]` (TS xaiFailedResponseHandler) (review round 89).
+- **What changed:** In v0.5, xAI image, transcription, speech, files, batch and video-status errors had no `ResponseHeaders`, `ResponseBody` or `Data`; a non-JSON error body became the message; the speech error ended with `(trace: <id>)`. In v0.6 these errors carry the response headers, body and parsed data (retries honor `retry-after` / `retry-after-ms`); a body that matches no xAI error shape gives the HTTP status text; `{code, error}` bodies give `<code>: <error>` (Responses model and video start too); the trace id is only in the response headers (`pe.ResponseHeader("x-trace-id")`; TS xaiFailedResponseHandler) (review round 89).
 - **Am I affected?** Code that matches `ProviderError.Message` from `xai` models, parses `(trace:` out of speech errors, or relies on the raw body in `Message`.
-- **What to do:** Read `pe.ResponseHeaders["x-trace-id"]` and `pe.ResponseBody` instead.
+- **What to do:** Read `pe.ResponseHeader("x-trace-id")` (case-insensitive) and `pe.ResponseBody` instead.
 - **Kind:** error text only
 
 ### More provider API errors keep response headers, body and data {#provider-error-response-metadata}

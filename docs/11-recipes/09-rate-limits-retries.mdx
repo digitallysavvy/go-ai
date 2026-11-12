@@ -50,7 +50,7 @@ func main() {
 		}
 		var perr *providererrors.ProviderError
 		if errors.As(err, &perr) && perr.StatusCode == 429 {
-			fmt.Println("rate limited; retry-after:", perr.ResponseHeaders["retry-after"])
+			fmt.Println("rate limited; retry-after:", perr.ResponseHeader("retry-after"))
 		}
 		log.Fatal(err)
 	}

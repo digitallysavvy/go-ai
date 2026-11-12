@@ -111,6 +111,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
 		// TS OpenAICompatibleEmbeddingModel with fireworksErrorStructure: a
 		// body outside the schema gives the status text and no data.
 		if parsed := parseFireworksProviderError(err); parsed != nil {

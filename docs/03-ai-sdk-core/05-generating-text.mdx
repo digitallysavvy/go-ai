@@ -133,7 +133,7 @@ fmt.Printf("Raw request: %+v\n", result.RawRequest)
 fmt.Printf("Raw response: %+v\n", result.RawResponse)
 ```
 
-Response header keys use Go canonical casing (for example `Content-Type`, `X-Request-Id`), whereas the TypeScript SDK exposes them lower-cased. Look headers up with `http.Header.Get`, or canonicalize the key before indexing a map.
+Response header keys use Go canonical casing (for example `Content-Type`, `X-Request-Id`), whereas the TypeScript SDK exposes them lower-cased. Look headers up with `http.Header.Get`, or canonicalize the key before indexing a map. On a `*providererrors.ProviderError`, the `ResponseHeaders` keys are lower case for most providers and canonical for some, so read a header with `perr.ResponseHeader("retry-after")`, which ignores case.
 
 ### OnFinish Callback
 

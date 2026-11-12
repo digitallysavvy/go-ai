@@ -71,6 +71,9 @@ func (r *RealtimeSessions) CreateSession(ctx context.Context, opts RealtimeCreat
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
@@ -108,6 +111,9 @@ func (r *RealtimeSessions) CloseSession(ctx context.Context, sessionID string) e
 	if err != nil {
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return noResp // TS handleFetchError: an abort or timeout is returned unchanged
 		}
 		return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}

@@ -366,6 +366,9 @@ func (m *ResponsesLanguageModel) handleError(err error) error {
 	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 		return cause
 	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
 	if providererrors.IsLoadAPIKeyError(err) || providerutils.IsInvalidJSONResponse(err) {
 		return err
 	}

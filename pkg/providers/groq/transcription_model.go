@@ -196,6 +196,9 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("groq", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
