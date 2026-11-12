@@ -2,9 +2,13 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -57,5 +61,46 @@ func TestR91toolsOAuthEndpointsTrustedOrigin(t *testing.T) {
 		if err := op("https://other.example.com"); err == nil {
 			t.Errorf("%s with another trustedOrigin: want the SSRF guard", name)
 		}
+	}
+}
+
+type r91toolsRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f r91toolsRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TS 6141e6fefb mcp-http-transport.test.ts "should reject with a network
+// error from protocol discovery without falling back to initialize".
+func TestR91toolsDiscoveryNetworkErrorDoesNotFallBack(t *testing.T) {
+	networkErr := errors.New("fetch failed")
+	var mu sync.Mutex
+	var methods []string
+	httpClient := &http.Client{Transport: r91toolsRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			return &http.Response{StatusCode: http.StatusMethodNotAllowed, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: r}, nil
+		}
+		body, _ := io.ReadAll(r.Body)
+		var msg struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &msg)
+		mu.Lock()
+		methods = append(methods, msg.Method)
+		mu.Unlock()
+		return nil, networkErr
+	})}
+	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:4000/mcp", HTTPClient: httpClient})
+	client := NewMCPClient(transport, MCPClientConfig{})
+	err := client.Connect(context.Background())
+	if err == nil || !errors.Is(err, networkErr) {
+		t.Fatalf("Connect err = %v, want the network error", err)
+	}
+	var mcpErr *MCPClientError
+	if errors.As(err, &mcpErr) {
+		t.Fatalf("err = %v is an MCPClientError", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(methods) != 1 || methods[0] != "server/discover" {
+		t.Fatalf("methods = %v, want only server/discover", methods)
 	}
 }

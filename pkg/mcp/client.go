@@ -397,7 +397,9 @@ func (c *MCPClient) supportsProtocolVersionDiscovery() bool {
 // which case the caller should fall back to the legacy initialize
 // handshake); and (false, err) when the server reported a hard
 // modern-protocol error (a JSON-RPC error whose code is in
-// ModernProtocolErrorCodes).
+// ModernProtocolErrorCodes) or, on a transport that waits for discovery,
+// the request failed without an MCPClientError (a network error or an
+// abort; TS 6141e6fefb).
 func (c *MCPClient) tryProtocolDiscovery(ctx context.Context) (bool, error) {
 	c.protocolEra = "modern"
 	c.protocolVersion = LatestProtocolVersion
@@ -408,7 +410,9 @@ func (c *MCPClient) tryProtocolDiscovery(ctx context.Context) (bool, error) {
 	// Transports that always answer (Streamable HTTP) are waited on: a slow
 	// modern server is not a legacy signal (TS #22042).
 	discoverCtx := ctx
-	if waiter, ok := c.transport.(ProtocolVersionDiscoveryWaiter); !ok || !waiter.WaitsForProtocolVersionDiscovery() {
+	waiter, ok := c.transport.(ProtocolVersionDiscoveryWaiter)
+	waits := ok && waiter.WaitsForProtocolVersionDiscovery()
+	if !waits {
 		var cancel context.CancelFunc
 		discoverCtx, cancel = context.WithTimeout(ctx, time.Duration(DefaultProtocolDiscoveryTimeoutMS)*time.Millisecond)
 		defer cancel()
@@ -421,6 +425,12 @@ func (c *MCPClient) tryProtocolDiscovery(ctx context.Context) (bool, error) {
 			if guided := c.legacyVersionGuidanceError(mcpErr); guided != nil {
 				return false, guided
 			}
+			return false, err
+		}
+		// A request that never got a response (a network error, an abort)
+		// says nothing about the server's protocol version: a waited-on
+		// transport does not fall back to initialize (TS 6141e6fefb).
+		if waits && !errors.As(err, &mcpErr) {
 			return false, err
 		}
 		return false, nil
