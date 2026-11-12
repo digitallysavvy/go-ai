@@ -47,11 +47,14 @@ func StatusCodeDownloadError(provider string, err error) error {
 		statusText = http.StatusText(dl.StatusCode)
 	}
 	cause := &downloadStatusCause{status: dl.StatusCode, statusText: statusText, headers: headers, body: dl.Body}
-	pe := providererrors.NewProviderErrorFromResponse(provider, 0, "", statusText, cause)
+	// NewProviderError gives ResponseHeaders the TS lower-case keys
+	// (extractResponseHeaders); NewProviderErrorFromResponse would keep the
+	// v0.5.2 Go canonical keys, which this v0.6 function never had.
+	pe := providererrors.NewProviderError(provider, 0, "", statusText, cause)
 	// TS createStatusCodeErrorResponseHandler builds the APICallError
 	// without data, and its message is the status text even when the body
 	// is JSON with an error message (the cause's text equals the message,
-	// which NewProviderErrorFromResponse would replace from the body).
+	// which NewProviderError replaces from the body).
 	pe.Data = nil
 	pe.Message = statusText
 	return pe
