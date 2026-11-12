@@ -82,3 +82,35 @@ func TestR92toolsOAuthDiscoveryTrustedOrigins(t *testing.T) {
 		t.Fatalf("injected transport (221): %+v, %v, %d calls", as, err, custom.Load())
 	}
 }
+
+// TS mcp-events.ts subscribe walks the catalog with events.list({params:
+// {cursor: pageCursor}}): every page sends a params object, {} on the first
+// (cursor undefined). A plain events.list() sends no params.
+func TestR92toolsEventsSubscribeFirstPageParams(t *testing.T) {
+	tr := newEventsTransport()
+	client := connectEventsClient(t, tr, &MCPEventsConfig{Store: newMemEventStore()})
+	ev := client.ExperimentalEvents()
+	if _, err := ev.Subscribe(context.Background(), subOpts); err != nil {
+		t.Fatal(err)
+	}
+	tr.mu.Lock()
+	var raw []string
+	for _, r := range tr.requests {
+		if r.Method == "events/list" {
+			raw = append(raw, string(r.Params))
+		}
+	}
+	tr.mu.Unlock()
+	if len(raw) != 1 || raw[0] != "{}" {
+		t.Fatalf("subscribe events/list params = %q, want [{}]", raw)
+	}
+	if _, err := ev.List(context.Background(), ListEventsOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	tr.mu.Lock()
+	last := tr.requests[len(tr.requests)-1]
+	tr.mu.Unlock()
+	if last.Method != "events/list" || len(last.Params) != 0 {
+		t.Fatalf("List params = %q, want none", last.Params)
+	}
+}
