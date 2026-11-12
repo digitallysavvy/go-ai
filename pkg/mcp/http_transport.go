@@ -322,7 +322,7 @@ type OAuthConfig struct {
 
 // mcpFetchRedirectPolicy is net/http's default redirect policy (at most 10
 // hops) plus fetch's rule that a redirect to another origin drops the
-// Authorization header for the rest of the chain. net/http alone forwards
+// Authorization, Proxy-Authorization and Cookie headers for the rest of the chain. net/http alone forwards
 // it to the same host on another port and to subdomains. Used for
 // MCPRedirectFollow when the caller's client has no redirect policy.
 func mcpFetchRedirectPolicy(req *http.Request, via []*http.Request) error {
@@ -333,7 +333,13 @@ func mcpFetchRedirectPolicy(req *http.Request, via []*http.Request) error {
 	for _, hop := range append(via[1:len(via):len(via)], req) {
 		next := hop.URL.String()
 		if !fileutil.IsSameOrigin(next, prev) {
+			// fetch httpRedirectFetch drops authorization,
+			// proxy-authorization and cookie on a cross-origin hop
+			// (core3-08); net/http keeps Proxy-Authorization always and
+			// Cookie for the same host on another port or scheme.
 			req.Header.Del("Authorization")
+			req.Header.Del("Proxy-Authorization")
+			req.Header.Del("Cookie")
 			return nil
 		}
 		prev = next

@@ -123,3 +123,38 @@ func TestR91toolsMCPAppBaseURIDomains(t *testing.T) {
 		t.Fatalf("baseUriDomains = %#v", csp["baseUriDomains"])
 	}
 }
+
+// core3-08 (undici fetch httpRedirectFetch deletes authorization,
+// proxy-authorization and cookie on a cross-origin hop): a redirect from
+// 127.0.0.1:A to 127.0.0.1:B (same host, other port: another origin) must
+// carry none of them.
+func TestR91toolsMCPRedirectDropsCredentialHeaders(t *testing.T) {
+	var got http.Header
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+	}))
+	t.Cleanup(target.Close)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/next", http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+	client := &http.Client{CheckRedirect: mcpFetchRedirectPolicy}
+	req, _ := http.NewRequest(http.MethodGet, origin.URL, nil)
+	req.Header.Set("Authorization", "Bearer x")
+	req.Header.Set("Proxy-Authorization", "Basic x")
+	req.Header.Set("Cookie", "s=1")
+	req.Header.Set("X-Other", "kept")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	for _, h := range []string{"Authorization", "Proxy-Authorization", "Cookie"} {
+		if got.Get(h) != "" {
+			t.Errorf("%s reached the other origin", h)
+		}
+	}
+	if got.Get("X-Other") != "kept" {
+		t.Error("other headers must be kept")
+	}
+}
