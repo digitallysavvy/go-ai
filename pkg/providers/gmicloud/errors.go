@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -117,7 +116,7 @@ func gmicloudErrorCode(raw json.RawMessage) string {
 	}
 	var n float64
 	if json.Unmarshal(raw, &n) == nil && len(bytes.TrimSpace(raw)) > 0 && string(bytes.TrimSpace(raw)) != "null" {
-		return strconv.FormatFloat(n, 'f', -1, 64)
+		return providerutils.JSNumberString(n)
 	}
 	return ""
 }

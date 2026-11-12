@@ -694,7 +694,7 @@ func convertXAIBatchError(errorMessage string, errWire *xaiBatchErrorWire) *prov
 	if errWire != nil && errWire.Code != nil && !isZeroXAIBatchErrorCode(errWire.Code) {
 		switch v := errWire.Code.(type) {
 		case float64:
-			result.Code = strconv.FormatFloat(v, 'f', -1, 64)
+			result.Code = providerutils.JSNumberString(v)
 		case string:
 			result.Code = v
 		default:

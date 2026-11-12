@@ -199,7 +199,7 @@ func openAIStreamErrorCodeString(code interface{}) string {
 		if float64(int(v)) == v {
 			return strconv.Itoa(int(v))
 		}
-		return strconv.FormatFloat(v, 'f', -1, 64)
+		return providerutils.JSNumberString(v)
 	case int:
 		return strconv.Itoa(v)
 	case json.Number:

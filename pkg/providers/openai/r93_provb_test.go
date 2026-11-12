@@ -312,3 +312,10 @@ func TestR93provbBatchExpiresAfterNull(t *testing.T) {
 		t.Fatalf("default: %d, %v", n, err)
 	}
 }
+
+// JS String(number) text for a numeric stream error code.
+func TestR93provbStreamErrorCodeNumberText(t *testing.T) {
+	if got := openAIStreamErrorCodeString(1e21); got != "1e+21" {
+		t.Fatalf("code = %q", got)
+	}
+}

@@ -133,3 +133,10 @@ func TestR93provbBatchExpiresAfterNull(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TS String(error.code): JS number text (1e21 -> "1e+21").
+func TestR93provbBatchErrorCodeNumberText(t *testing.T) {
+	if got := convertXAIBatchError("", &xaiBatchErrorWire{Code: 1e21}).Code; got != "1e+21" {
+		t.Fatalf("code = %q", got)
+	}
+}
