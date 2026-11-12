@@ -2,7 +2,11 @@ package azure
 
 import (
 	"context"
+	"errors"
 	"io"
+	stdhttp "net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,4 +111,41 @@ func TestR92provbMaiTranscriptionRawAnyJSON(t *testing.T) {
 	if len(raws) != 5 || raws[2] != "x" {
 		t.Fatalf("raw parts = %v, want 5 with \"x\" third", raws)
 	}
+}
+
+// MAI image n > 1: TS Promise.all rejects with the first request to fail;
+// the requests cancelled after it must not replace that error.
+func TestR92provbMaiImageFirstFailureWins(t *testing.T) {
+	const n = 8
+	var count int32
+	ts := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if atomic.AddInt32(&count, 1) == n {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":{"message":"bad prompt"}}`))
+			return
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer ts.Close()
+	headers := func(context.Context) (map[string]string, error) { return map[string]string{}, nil }
+	mai := &azureMaiImageModel{modelID: "m", url: func(string) (string, error) { return ts.URL, nil }, headers: headers, httpClient: ts.Client()}
+	count8 := n
+	_, err := mai.doGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p", N: &count8}, AzureImageModelOptions{})
+	if err == nil || errors.Is(err, context.Canceled) || err.Error() == "" || !containsStr(err.Error(), "bad prompt") {
+		t.Fatalf("err = %v, want the 400 error", err)
+	}
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

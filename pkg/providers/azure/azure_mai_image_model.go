@@ -244,23 +244,26 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make([]azureMaiImageCallResult, n)
-	errs := make([]error, n)
+	// TS Promise.all rejects with the first request to fail; the others are
+	// cancelled here, so their context errors must not replace it.
+	var firstErr error
+	var errOnce sync.Once
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = m.call(callCtx, opts.Headers, jsonBody, fields, images)
-			if errs[i] != nil {
+			var err error
+			results[i], err = m.call(callCtx, opts.Headers, jsonBody, fields, images)
+			if err != nil {
+				errOnce.Do(func() { firstErr = err })
 				cancel()
 			}
 		}(i)
 	}
 	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
 	var (
