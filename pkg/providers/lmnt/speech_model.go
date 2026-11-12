@@ -50,6 +50,9 @@ type SpeechModelOptions struct {
 
 // DoGenerate synthesizes speech from text
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+	if opts == nil {
+		opts = &provider.SpeechGenerateOptions{}
+	}
 	reqBody, warnings := m.buildRequestBody(opts)
 
 	jsonData, err := json.Marshal(reqBody)
@@ -80,7 +83,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		// Like every raw-client site: the caller's abort stays as is, a
+		// network failure is the retryable "Cannot connect to API" error.
+		return nil, internalhttp.TransportErrorCtx(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
