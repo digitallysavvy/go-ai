@@ -13,10 +13,12 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -212,18 +214,7 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 	if t.stream != nil {
 		return t.stream(ctx, messages)
 	}
-	body, err := json.Marshal(map[string]interface{}{
-		"input": map[string]interface{}{"messages": messages},
-		"config": map[string]interface{}{
-			"tags":         []interface{}{},
-			"metadata":     map[string]interface{}{},
-			"configurable": map[string]interface{}{},
-		},
-		"stream_mode":      []string{"values", "messages-tuple", "updates"},
-		"stream_subgraphs": false,
-		"assistant_id":     t.graphID,
-		"if_not_exists":    "create",
-	})
+	body, err := langGraphRunStreamBody(messages, t.graphID)
 	if err != nil {
 		return nil, err
 	}
@@ -244,11 +235,14 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 		if err != nil {
 			return nil, err
 		}
+		// langgraph-sdk sets no Accept header, so a configured one is sent
+		// as given; content-type and x-api-key win over configured headers
+		// (prepareFetchOptions / BaseClient mergeHeaders).
+		req.Header.Set("Accept", "text/event-stream")
 		for name, value := range t.headers {
 			req.Header.Set(name, value)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "text/event-stream")
 		if t.apiKey != "" {
 			req.Header.Set("x-api-key", t.apiKey)
 		}
@@ -279,6 +273,12 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 			}
 			return nil, &LangGraphHTTPError{Status: resp.StatusCode, Text: text}
 		}
+		// streamWithRetry makeRequest: a response without a body (fetch gives
+		// a null body for 204 and 205) fails before the content type check.
+		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusResetContent {
+			_ = resp.Body.Close()
+			return nil, errors.New("Expected response body from stream endpoint") //nolint:staticcheck // exact TS text
+		}
 		// streamWithRetry: a response that is not an event stream fails.
 		if contentType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";"); contentType != "" && !strings.Contains(contentType, "text/event-stream") {
 			_ = resp.Body.Close()
@@ -286,6 +286,125 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 		}
 		return readRemoteGraphEvents(ctx, resp.Body), nil
 	}
+}
+
+// langGraphDefaultRecursionLimit is @langchain/core ensureConfig's
+// recursionLimit, which Runnable.stream sets before RemoteGraph sends it as
+// config.recursion_limit.
+const langGraphDefaultRecursionLimit = 25
+
+// langGraphRunConfig is RemoteGraph._sanitizeConfig's result for the
+// transport's call (no configured tags, metadata or configurable).
+type langGraphRunConfig struct {
+	Tags           []interface{}          `json:"tags"`
+	Metadata       map[string]interface{} `json:"metadata"`
+	Configurable   map[string]interface{} `json:"configurable"`
+	RecursionLimit int                    `json:"recursion_limit"`
+}
+
+// langGraphRunStreamRequest is the langgraph-sdk RunsClient.stream JSON body
+// in its key order (undefined fields dropped).
+type langGraphRunStreamRequest struct {
+	Input struct {
+		Messages []*jsonorder.Object `json:"messages"`
+	} `json:"input"`
+	Config          langGraphRunConfig `json:"config"`
+	StreamMode      []string           `json:"stream_mode"`
+	StreamSubgraphs bool               `json:"stream_subgraphs"`
+	AssistantID     string             `json:"assistant_id"`
+	IfNotExists     string             `json:"if_not_exists"`
+}
+
+// langGraphRunStreamBody builds the run stream body TS RemoteGraph sends for
+// LangSmithDeploymentTransport.sendMessages: streamMode ["values",
+// "messages"] becomes ["values", "messages-tuple", "updates"], and each
+// message is RemoteGraph's _serializeInputs form.
+func langGraphRunStreamBody(messages []LangChainMessage, graphID string) ([]byte, error) {
+	var req langGraphRunStreamRequest
+	req.Input.Messages = make([]*jsonorder.Object, 0, len(messages))
+	for _, msg := range messages {
+		req.Input.Messages = append(req.Input.Messages, langGraphWireMessage(msg))
+	}
+	req.Config = langGraphRunConfig{
+		Tags:           []interface{}{},
+		Metadata:       map[string]interface{}{},
+		Configurable:   map[string]interface{}{},
+		RecursionLimit: langGraphDefaultRecursionLimit,
+	}
+	req.StreamMode = []string{"values", "messages-tuple", "updates"}
+	req.AssistantID = graphID
+	req.IfNotExists = "create"
+	return jsonstr.Marshal(req)
+}
+
+// langGraphWireMessage is RemoteGraph _serializeInputs for a message:
+// {...message.toDict().data, role: message.getType()}. toDict().data has no
+// "type" key (the message type travels as role), and its keys follow the
+// message constructor: tool_call_id first for a tool message, then content,
+// the AI message's tool_calls and invalid_tool_calls, additional_kwargs and
+// response_metadata, then role.
+func langGraphWireMessage(msg LangChainMessage) *jsonorder.Object {
+	lead := []string{"tool_call_id", "content", "tool_calls", "invalid_tool_calls"}
+	tail := []string{"additional_kwargs", "response_metadata", "role"}
+	out := langGraphOrdered(msg, lead, tail, "type")
+	if _, ok := msg["role"]; !ok {
+		out.Set("role", msg["type"])
+	}
+	if content, ok := msg["content"].([]interface{}); ok {
+		out.Set("content", langGraphOrderedList(content, []string{"type", "text", "url", "data", "mimeType", "filename"}))
+	}
+	if calls, ok := msg["tool_calls"].([]interface{}); ok {
+		out.Set("tool_calls", langGraphOrderedList(calls, []string{"id", "name", "args"}))
+	}
+	return out
+}
+
+// langGraphOrdered copies m in key order: lead keys, the other keys sorted,
+// then tail keys; drop is left out.
+func langGraphOrdered(m map[string]interface{}, lead, tail []string, drop string) *jsonorder.Object {
+	out := jsonorder.New()
+	placed := map[string]bool{}
+	if drop != "" {
+		placed[drop] = true
+	}
+	for _, k := range append(append([]string(nil), lead...), tail...) {
+		placed[k] = true
+	}
+	for _, k := range lead {
+		if v, ok := m[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	rest := make([]string, 0, len(m))
+	for k := range m {
+		if !placed[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		out.Set(k, m[k])
+	}
+	for _, k := range tail {
+		if v, ok := m[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	return out
+}
+
+// langGraphOrderedList orders the object entries of a list (content blocks,
+// tool calls) by the TS literal key order.
+func langGraphOrderedList(list []interface{}, lead []string) []interface{} {
+	out := make([]interface{}, len(list))
+	for i, item := range list {
+		if m, ok := item.(map[string]interface{}); ok {
+			out[i] = langGraphOrdered(m, lead, nil, "")
+			continue
+		}
+		out[i] = item
+	}
+	return out
 }
 
 // maxRemoteGraphLine bounds one SSE line (a "values" event carries the whole
@@ -333,16 +452,29 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 				// (`data?.__interrupt__ !== undefined`, remote.js:356).
 				if m, ok := payload.(map[string]interface{}); ok {
 					if interrupts, found := m["__interrupt__"]; found {
-						sendStreamEvent(ctx, out, StreamEvent{Err: newGraphInterrupt(interrupts)})
+						interrupt := newGraphInterrupt(interrupts)
+						// The message keeps the wire key order, as
+						// JSON.stringify of the parsed data does.
+						if tree, ok := jsonorder.Parse([]byte(strings.Join(data, "\n"))); ok {
+							if ordered, ok := jsonorder.Get(tree, "__interrupt__"); ok {
+								interrupt.message = langGraphIndent(jsonorder.Stringify(ordered))
+							}
+						}
+						sendStreamEvent(ctx, out, StreamEvent{Err: interrupt})
 						return false
 					}
 				}
 				return true
 			case strings.HasPrefix(event, "error"):
+				// RemoteException: the string data, else JSON.stringify of
+				// the parsed data (wire key order kept).
 				text, ok := payload.(string)
 				if !ok {
 					encoded, _ := jsonstr.Marshal(payload)
 					text = string(encoded)
+					if tree, parsed := jsonorder.Parse([]byte(strings.Join(data, "\n"))); parsed {
+						text = jsonorder.Stringify(tree)
+					}
 				}
 				sendStreamEvent(ctx, out, StreamEvent{Err: errors.New(text)})
 				return false
@@ -451,6 +583,15 @@ func newGraphInterrupt(interrupts interface{}) *GraphInterruptError {
 		message = strings.TrimSuffix(buf.String(), "\n")
 	}
 	return &GraphInterruptError{Interrupts: interrupts, message: message}
+}
+
+// langGraphIndent is JSON.stringify(value, null, 2) for compact JSON text.
+func langGraphIndent(compact string) string {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, []byte(compact), "", "  "); err != nil {
+		return compact
+	}
+	return buf.String()
 }
 
 // Error returns JSON.stringify(interrupts, null, 2), as the TS message.
