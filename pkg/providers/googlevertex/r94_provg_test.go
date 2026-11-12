@@ -2,6 +2,7 @@ package googlevertex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -127,5 +128,52 @@ func TestR94provgAbortCause(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// googleVertexEmbeddingModelOptions is a z.object of .optional() fields: a
+// null value fails parseProviderOptions, and a present empty title is sent.
+func TestR94provgEmbeddingOptionNullAndEmptyTitle(t *testing.T) {
+	var bodies []map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, ":embedContent") {
+			_, _ = w.Write([]byte(`{"embedding":{"values":[1]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"predictions":[{"embeddings":{"values":[1],"statistics":{"token_count":1}}}]}`))
+	}))
+	defer srv.Close()
+	p := newVertexTestProvider(t, srv.URL)
+	for _, key := range []string{"outputDimensionality", "taskType", "title", "autoTruncate"} {
+		_, err := NewEmbeddingModel(p, "text-embedding-005").DoEmbed(context.Background(), "x", &provider.EmbedModelOptions{
+			ProviderOptions: map[string]interface{}{"googleVertex": map[string]interface{}{key: nil}},
+		})
+		var argErr *providererrors.InvalidArgumentError
+		if !errors.As(err, &argErr) {
+			t.Errorf("%s: null accepted: %v", key, err)
+		}
+	}
+	bodies = nil
+	for _, model := range []string{"text-embedding-005", EmbeddingModelGeminiEmbedding2} {
+		if _, err := NewEmbeddingModel(p, model).DoEmbed(context.Background(), "x", &provider.EmbedModelOptions{
+			ProviderOptions: map[string]interface{}{"googleVertex": map[string]interface{}{"title": ""}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("bodies = %v", bodies)
+	}
+	inst := bodies[0]["instances"].([]interface{})[0].(map[string]interface{})
+	cfg := bodies[1]["embedContentConfig"].(map[string]interface{})
+	if v, ok := inst["title"]; !ok || v != "" {
+		t.Errorf("predict title = %#v (present %v)", v, ok)
+	}
+	if v, ok := cfg["title"]; !ok || v != "" {
+		t.Errorf("embedContent title = %#v (present %v)", v, ok)
 	}
 }
