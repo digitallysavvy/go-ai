@@ -129,7 +129,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 			Headers: opts.Headers,
 		})
 		if err != nil {
-			return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
+			// TS postJsonToApi lets a transport failure propagate unchanged;
+			// a rejected headers() resolution (the APIKeyFunc error) is
+			// thrown as is, without the client's FetchRejection marker.
+			return nil, internalhttp.UnwrapFetchRejection(err)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, tokenHubFailedResponse(resp.StatusCode, resp.Headers, resp.Body)
@@ -195,7 +198,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			Headers: opts.Headers,
 		})
 		if err != nil {
-			return nil, err
+			return nil, internalhttp.UnwrapFetchRejection(err)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, tokenHubFailedResponse(resp.StatusCode, resp.Headers, resp.Body)

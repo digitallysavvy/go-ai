@@ -231,7 +231,7 @@ func (p *Provider) postTencentCloudAPI(ctx context.Context, service, action, api
 		Headers: requestHeaders,
 	})
 	if err != nil {
-		return nil, err // TS postToApi lets a transport failure propagate unchanged
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged
 	}
 	responseHeaders := providerutils.ExtractHeaders(resp.Headers)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
