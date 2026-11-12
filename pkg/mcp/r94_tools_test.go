@@ -41,3 +41,17 @@ func TestR94toolsInputRequiredAbortCauseIsReason(t *testing.T) {
 		t.Fatalf("err = %#v, want Request was aborted caused by the reason", err)
 	}
 }
+
+// TS init(): an aborted initialization is "MCP client initialization was
+// aborted" with externalSignal.reason as its cause.
+func TestR94toolsConnectAbortCauseIsReason(t *testing.T) {
+	reason := errors.New("stop")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(reason)
+	tr := &r85toolsMRTRTransport{messages: make(chan *MCPMessage, 64)}
+	err := NewMCPClient(tr, MCPClientConfig{}).Connect(ctx)
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || mcpErr.Message != "MCP client initialization was aborted" || mcpErr.Cause != reason {
+		t.Fatalf("err = %#v", err)
+	}
+}
