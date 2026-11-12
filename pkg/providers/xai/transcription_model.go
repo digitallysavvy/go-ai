@@ -9,7 +9,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -370,7 +369,7 @@ func floatPtrValue(v *float64) string {
 	if v == nil {
 		return ""
 	}
-	return strconv.FormatFloat(*v, 'f', -1, 64)
+	return providerutils.JSNumberString(*v) // TS String(number), as the stream query does
 }
 
 func boolPtrValue(v *bool) string {
