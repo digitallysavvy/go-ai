@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -171,9 +170,10 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := m.provider.client.HTTPClient().Do(req)
 	if err != nil {
-		// The URL carries ?key=<API key>; a TS fetch rejection never names
-		// the URL, so strip the query before the error leaves the SDK.
-		return provider.ClientSecretResult{}, internalhttp.TransportErrorCtx(req.Context(), redactURLErrorQuery(err))
+		// TS calls fetchFn directly (no handleFetchError), so the rejection
+		// is returned as is. The URL carries ?key=<API key>; a TS fetch
+		// rejection never names the URL, so strip the query first.
+		return provider.ClientSecretResult{}, googleRawFetchError(redactURLErrorQuery(err))
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))

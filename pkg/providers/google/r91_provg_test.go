@@ -323,7 +323,8 @@ func TestR91provgRealtimeClientSecretRedactsKey(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "SECRET-KEY-123") {
 		t.Fatalf("error = %v", err)
 	}
-	r91provgWantConnectError(t, "realtime", err)
+	// TS fetchFn rejects directly: the raw (redacted) transport error
+	// (TestR93provgRealtimeClientSecretRawFetchError).
 }
 
 // provg1-07: raw Do sites return the TS handleFetchError APICallError.
@@ -347,8 +348,7 @@ func TestR91provgRawDoTransportErrors(t *testing.T) {
 	b2 := &Batch{provider: New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"})}
 	_, err = b2.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batches/x"})
 	r91provgWantConnectError(t, "batch download", err)
-	_, err = p.Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "application/pdf"})
-	r91provgWantConnectError(t, "files upload", err)
+	// The Files upload is a raw fetch in TS (TestR93provgFilesRawFetchError).
 }
 
 // provg1-06: the batch JSONL input file is JSON.stringify'd per line, with no
