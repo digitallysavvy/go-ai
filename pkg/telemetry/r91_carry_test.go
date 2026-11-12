@@ -306,3 +306,31 @@ func languageModelToolDefinitionUnredacted(tool types.Tool) *jsonorder.Object {
 	def.Set("args", tool.ProviderArgs)
 	return def
 }
+
+// cr-r91-provc-to-carry: TS onAudioOperationStart records no ai.settings.*,
+// so a speech or transcription start event's MaxRetries stays off the span.
+func TestR91carryLegacyAudioSpanNoSettings(t *testing.T) {
+	rec, tp := r91carryTracer(t)
+	lot := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	retries := 2
+	temp := 0.5
+	for i, op := range []string{"ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe"} {
+		id := fmt.Sprint("a", i)
+		ctx := lot.OnStart(context.Background(), TelemetryStartEvent{CallID: id, OperationType: op, Settings: settings, ModelProvider: "p", ModelID: "m", MaxRetries: &retries, Temperature: &temp})
+		lot.OnEnd(ctx, TelemetryFinishEvent{CallID: id, OperationType: op, Settings: settings})
+	}
+	for _, s := range rec.Ended() {
+		for _, kv := range s.Attributes() {
+			if strings.HasPrefix(string(kv.Key), "ai.settings.") {
+				t.Fatalf("span %s has %s", s.Name(), kv.Key)
+			}
+		}
+		if v, _ := attrValue(s, "ai.model.id"); v != "m" {
+			t.Fatalf("span %s lost ai.model.id", s.Name())
+		}
+	}
+	if len(rec.Ended()) != 3 {
+		t.Fatalf("spans = %d", len(rec.Ended()))
+	}
+}

@@ -1652,6 +1652,13 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	if legacyGenerateStartOperation(e.OperationType) {
 		settings.StopSequences = e.StopSequences
 	}
+	switch e.OperationType {
+	case "ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
+		// TS onAudioOperationStart (legacy-open-telemetry.ts 280-317)
+		// records no ai.settings.*, even with the event's maxRetries
+		// (cr-r91-provc-to-carry).
+		settings = legacySettings{}
+	}
 	baseAttrs := legacyBaseAttrs(e.ModelProvider, e.ModelID, settings, e.Headers)
 	span.SetAttributes(baseAttrs...)
 	// Stashed so the nested doGenerate/doStream step span can reuse the same
