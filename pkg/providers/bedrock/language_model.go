@@ -13,6 +13,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -1023,8 +1024,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.ResponseMetadata.ModelID = m.modelID
 	result.ResponseMetadata.Headers = result.ResponseHeaders
 	if dateHeader := providerutils.FetchHeaderText(resp.Header, "date"); dateHeader != "" {
-		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {
-			result.ResponseMetadata.Timestamp = ts
+		// TS new Date(responseHeaders['date']): Date.parse.
+		if ms, ok := jsdate.Parse(dateHeader); ok {
+			result.ResponseMetadata.Timestamp = time.UnixMilli(ms)
 		}
 	}
 	result.Warnings = args.Warnings
@@ -1435,7 +1437,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		toolNames:            args.ToolNames,
 	}
 	if dateHeader := providerutils.FetchHeaderText(resp.Header, "date"); dateHeader != "" {
-		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {
+		if ms, ok := jsdate.Parse(dateHeader); ok {
+			ts := time.UnixMilli(ms)
 			stream.responseTimestamp = &ts
 		}
 	}
