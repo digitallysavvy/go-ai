@@ -131,8 +131,8 @@ func TestR94provgAbortCause(t *testing.T) {
 	}
 }
 
-// googleVertexEmbeddingModelOptions is a z.object of .optional() fields: a
-// null value fails parseProviderOptions, and a present empty title is sent.
+// A present empty title is sent (TS title !== undefined); an explicit null
+// option is treated as absent, as in v0.5.2 (known difference).
 func TestR94provgEmbeddingOptionNullAndEmptyTitle(t *testing.T) {
 	var bodies []map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,12 +149,10 @@ func TestR94provgEmbeddingOptionNullAndEmptyTitle(t *testing.T) {
 	defer srv.Close()
 	p := newVertexTestProvider(t, srv.URL)
 	for _, key := range []string{"outputDimensionality", "taskType", "title", "autoTruncate"} {
-		_, err := NewEmbeddingModel(p, "text-embedding-005").DoEmbed(context.Background(), "x", &provider.EmbedModelOptions{
+		if _, err := NewEmbeddingModel(p, "text-embedding-005").DoEmbed(context.Background(), "x", &provider.EmbedModelOptions{
 			ProviderOptions: map[string]interface{}{"googleVertex": map[string]interface{}{key: nil}},
-		})
-		var argErr *providererrors.InvalidArgumentError
-		if !errors.As(err, &argErr) {
-			t.Errorf("%s: null accepted: %v", key, err)
+		}); err != nil {
+			t.Errorf("%s: null rejected: %v", key, err)
 		}
 	}
 	bodies = nil

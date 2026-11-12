@@ -388,15 +388,9 @@ func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
 		if !ok {
 			return bad("value", "an object")
 		}
-		// z.object with .optional() fields: a null value is not undefined and
-		// fails the schema.
-		for _, field := range []struct{ key, want string }{
-			{"outputDimensionality", "a number"}, {"taskType", "a string"}, {"title", "a string"}, {"autoTruncate", "a boolean"},
-		} {
-			if x, set := m[field.key]; set && x == nil {
-				return bad(field.key, field.want)
-			}
-		}
+		// An explicit null is treated as absent, as v0.5.2 did (TS zod
+		// .optional() rejects it; known difference "Bedrock and Anthropic
+		// null option values").
 		if x, set := m["outputDimensionality"]; set && x != nil && !isNumber(x) {
 			return bad("outputDimensionality", "a number")
 		}
