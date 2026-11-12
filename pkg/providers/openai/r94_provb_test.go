@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,5 +141,38 @@ func TestR94provbSkillStreamFileUnsupported(t *testing.T) {
 	var ufe *providererrors.UnsupportedFunctionalityError
 	if !errors.As(err, &ufe) || ufe.Functionality != "streaming file upload" || !stream.closed {
 		t.Fatalf("err = %T %v, closed %v", err, err, stream.closed)
+	}
+}
+
+// TestR94provbFilesUploadOptionEdges: TS `purpose ?? 'assistants'` sends a
+// present "" purpose, z.number() rejects a NaN expiresAfter, and the headers
+// (API key) are resolved before the file data is converted.
+func TestR94provbFilesUploadOptionEdges(t *testing.T) {
+	var gotPurpose = "unset"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err == nil {
+			if v, ok := r.MultipartForm.Value["purpose"]; ok {
+				gotPurpose = v[0]
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"file-1"}`))
+	}))
+	defer srv.Close()
+	files := New(Config{APIKey: "k", BaseURL: srv.URL}).Files()
+	data := types.FileData{Type: types.FileDataTypeData, Data: []byte("x")}
+	if _, err := files.UploadFile(context.Background(), types.UploadFileOptions{Data: data, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"purpose": ""}}}); err != nil {
+		t.Fatal(err)
+	}
+	if gotPurpose != "" {
+		t.Errorf("purpose = %q, want \"\"", gotPurpose)
+	}
+	if _, err := files.UploadFile(context.Background(), types.UploadFileOptions{Data: data, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"expiresAfter": math.NaN()}}}); err == nil {
+		t.Error("NaN expiresAfter accepted")
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	_, err := New(Config{BaseURL: srv.URL}).Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, DataString: "!!not base64!!"}})
+	if !providererrors.IsLoadAPIKeyError(err) {
+		t.Errorf("err = %T %v, want LoadAPIKeyError", err, err)
 	}
 }

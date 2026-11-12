@@ -121,9 +121,15 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
+	// TS `purpose ?? 'assistants'`: a present "" is sent as given.
 	purpose := "assistants"
-	if filesOpts.purpose != "" {
+	if filesOpts.hasPurpose {
 		purpose = filesOpts.purpose
+	}
+	// TS resolves the headers (the API key) before it converts the file data.
+	client, err := f.provider.resolvedClient(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	fields := []internalhttp.MultipartStreamPart{
@@ -173,7 +179,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	headers := internalhttp.MergeHeaders(map[string]string{"Content-Type": contentType}, opts.Headers)
 
-	resp, err := f.provider.client.Do(ctx, internalhttp.Request{
+	resp, err := client.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Path:    "/files",
 		Body:    body,
@@ -343,6 +349,7 @@ func openAIFileID(file types.ProviderReference) (string, error) {
 // UploadFile (TS OpenAIFilesOptions: purpose?: string, expiresAfter?: number).
 type openAIFilesUploadOptions struct {
 	purpose      string
+	hasPurpose   bool
 	expiresAfter *float64
 }
 
@@ -365,11 +372,11 @@ func parseOpenAIFilesOptions(providerOptions map[string]interface{}) (openAIFile
 		if !ok {
 			return out, invalid("Invalid input: expected string at purpose")
 		}
-		out.purpose = s
+		out.purpose, out.hasPurpose = s, true
 	}
 	if v, ok := openaiOpts["expiresAfter"]; ok {
 		n, ok := numericValue(v)
-		if !ok {
+		if !ok || math.IsNaN(n) { // z.number() rejects NaN
 			return out, invalid("Invalid input: expected number at expiresAfter")
 		}
 		out.expiresAfter = &n
