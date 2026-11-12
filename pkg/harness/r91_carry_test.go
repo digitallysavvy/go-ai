@@ -7,10 +7,12 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func r91carryFinishScript(func(string, interface{})) []StreamPart {
@@ -131,5 +133,58 @@ func TestR91carrySessionDataDirectoryContainment(t *testing.T) {
 	}
 	if EncodePathSegment("a/b") == EncodePathSegment("a-b") || EncodePathSegment(".") == EncodePathSegment("%2E") {
 		t.Error("distinct values must give distinct segments")
+	}
+}
+
+// TS 8585d7e56f (run-prompt.test.ts "runPrompt host tool input
+// validation"): an invalid host tool call is reported in the UI stream once,
+// as a tool-input-error with the onError text, and not again as a
+// tool-output-error.
+func TestR91carryInvalidHostToolInputUIStreamReportsOnce(t *testing.T) {
+	restricted := types.Tool{
+		Name:       "restricted",
+		Parameters: restrictedSchema(),
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "not reached", nil
+		},
+	}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "restricted", Input: `{"city":42}`},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	tools := map[string]types.Tool{"restricted": restricted}
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(),
+	})
+	chunks := drainRunPrompt(t, out)
+	onErrorCalls := 0
+	uiCh, errCh := ai.ToUIMessageStream(context.Background(), testutil.NewMockTextStream(chunks), ai.UIMessageStreamResultOptions{
+		OnError: func(error) string { onErrorCalls++; return "Tool failed" },
+	})
+	var inputErrors, outputErrors int
+	for c := range uiCh {
+		switch c["type"] {
+		case "tool-input-error":
+			inputErrors++
+			if c["toolCallId"] != "c1" || c["errorText"] != "Tool failed" {
+				t.Errorf("tool-input-error = %v", c)
+			}
+		case "tool-output-error":
+			outputErrors++
+		case "tool-output-available":
+			t.Errorf("unexpected %v", c)
+		}
+	}
+	<-errCh
+	if inputErrors != 1 || outputErrors != 0 || onErrorCalls != 1 {
+		t.Fatalf("tool-input-error %d, tool-output-error %d, onError calls %d; want 1, 0, 1", inputErrors, outputErrors, onErrorCalls)
 	}
 }
