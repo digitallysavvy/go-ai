@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -190,4 +191,56 @@ func TestR92provaCitationUndeclaredKeysStripped(t *testing.T) {
 			t.Fatalf("citation %d source metadata = %s\nwant %s", i, got, wantSource[i])
 		}
 	}
+}
+
+// TS anthropicInputTransformationSchema and anthropicSafeguardResultSchema are
+// z.object schemas: undeclared keys are stripped from
+// providerMetadata.anthropic.inputTransformations / safeguardResults (recorded
+// with node on @ai-sdk/anthropic 2ebc78b654).
+func TestR92provaInputTransformationsSafeguardResultsStripped(t *testing.T) {
+	const wantIT = `[{"path":"p","reason":"r","type":"t"}]`
+	const wantSG = `[{"status":{"tool_uses":{"tu_1":{"explanation":null,"outcome":"o","type":"x"}},"type":"ok"},"type":"s"}]`
+	check := func(name string, meta map[string]interface{}) {
+		t.Helper()
+		anth, _ := meta["anthropic"].(map[string]interface{})
+		if got := r88provaJSON(anth["inputTransformations"]); got != wantIT {
+			t.Errorf("%s inputTransformations = %s, want %s", name, got, wantIT)
+		}
+		if got := r88provaJSON(anth["safeguardResults"]); got != wantSG {
+			t.Errorf("%s safeguardResults = %s, want %s", name, got, wantSG)
+		}
+	}
+	const it = `[{"type":"t","path":"p","reason":"r","extra":1}]`
+	const sg = `[{"type":"s","extra":2,"status":{"type":"ok","more":3,"tool_uses":{"tu_1":{"type":"x","outcome":"o","explanation":null,"z":4}}}}]`
+
+	var response anthropicResponse
+	if err := json.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"m","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"a"}],"input_transformations":`+it+`,"safeguard_results":`+sg+`}`), &response); err != nil {
+		t.Fatal(err)
+	}
+	lm := &LanguageModel{provider: New(Config{APIKey: "k"})}
+	check("generate", lm.convertResponseWithOptions(response, convertOptions{}).ProviderMetadata)
+
+	var sse strings.Builder
+	for _, e := range []string{
+		`{"type":"message_start","message":{"id":"msg_1","model":"m","usage":{"input_tokens":1},"input_transformations":` + it + `}}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn","safeguard_results":` + sg + `},"usage":{"output_tokens":2}}`,
+		`{"type":"message_stop"}`,
+	} {
+		sse.WriteString("data: " + e + "\n\n")
+	}
+	parts, err := r88provaDrain(newAnthropicStream(io.NopCloser(strings.NewReader(sse.String())), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeFinish {
+			var meta map[string]interface{}
+			if err := json.Unmarshal(p.ProviderMetadata, &meta); err != nil {
+				t.Fatal(err)
+			}
+			check("stream", meta)
+			return
+		}
+	}
+	t.Fatal("no finish chunk")
 }

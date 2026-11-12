@@ -213,6 +213,70 @@ func rawJSONValue(raw json.RawMessage) interface{} {
 	return v
 }
 
+// pickKeys returns the keys of m that a TS z.object schema declares (zod
+// strips the others); a value that is not an object is returned as is.
+func pickKeys(v interface{}, keys ...string) interface{} {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return v
+	}
+	out := make(map[string]interface{}, len(keys))
+	for _, k := range keys {
+		if val, present := m[k]; present {
+			out[k] = val
+		}
+	}
+	return out
+}
+
+// inputTransformationsValue decodes input_transformations as TS
+// anthropicInputTransformationSchema parses it: each entry keeps type, path
+// and reason. nil for absent or null.
+func inputTransformationsValue(raw json.RawMessage) interface{} {
+	v := rawJSONValue(raw)
+	list, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, len(list))
+	for i, item := range list {
+		out[i] = pickKeys(item, "type", "path", "reason")
+	}
+	return out
+}
+
+// safeguardResultsValue decodes safeguard_results as TS
+// anthropicSafeguardResultSchema parses it: {type, status: {type,
+// tool_uses?: {[id]: {type, outcome?, explanation?}}}}. nil for absent or
+// null.
+func safeguardResultsValue(raw json.RawMessage) interface{} {
+	v := rawJSONValue(raw)
+	list, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, len(list))
+	for i, item := range list {
+		result, ok := pickKeys(item, "type", "status").(map[string]interface{})
+		if !ok {
+			out[i] = item
+			continue
+		}
+		if status, ok := pickKeys(result["status"], "type", "tool_uses").(map[string]interface{}); ok {
+			if uses, ok := status["tool_uses"].(map[string]interface{}); ok {
+				stripped := make(map[string]interface{}, len(uses))
+				for id, use := range uses {
+					stripped[id] = pickKeys(use, "type", "outcome", "explanation")
+				}
+				status["tool_uses"] = stripped
+			}
+			result["status"] = status
+		}
+		out[i] = result
+	}
+	return out
+}
+
 // toolCallContentOf is the ordered-content form of a ToolCall (what the core
 // derives from result.ToolCalls when a provider leaves Content to it).
 func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {

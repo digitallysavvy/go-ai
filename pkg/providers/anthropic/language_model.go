@@ -894,8 +894,8 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		result.ContextManagement = response.Usage.ContextManagement
 	}
 	result.ProviderMetadata = withCustomProviderKeyMetadata(anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
-		inputTransformations: rawJSONValue(response.InputTransformations),
-		safeguardResults:     rawJSONValue(response.SafeguardResults),
+		inputTransformations: inputTransformationsValue(response.InputTransformations),
+		safeguardResults:     safeguardResultsValue(response.SafeguardResults),
 		serviceTier:          firstServiceTier(response.Usage.Raw, response.ServiceTier),
 	}), co.providerOptionsName, co.usedCustomProviderKey)
 
@@ -2511,7 +2511,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					},
 				})
 				s.pending = append(s.pending, messageStartChunk(event.Data))
-				if v := rawJSONValue(msg.Message.InputTransformations); v != nil {
+				if v := inputTransformationsValue(msg.Message.InputTransformations); v != nil {
 					s.inputTransformations = v
 				}
 				s.inputTokens = int64(msg.Message.Usage.InputTokens)
@@ -2933,12 +2933,12 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			if delta.Usage.ServiceTier != nil {
 				s.serviceTier = delta.Usage.ServiceTier
 			}
-			if v := rawJSONValue(delta.InputTransformations); v != nil {
+			if v := inputTransformationsValue(delta.InputTransformations); v != nil {
 				s.inputTransformations = v
 			}
 			// Earlier deltas may carry null while the classifier is still running;
 			// the last non-null value is the final verdict.
-			if v := rawJSONValue(delta.Delta.SafeguardResults); v != nil {
+			if v := safeguardResultsValue(delta.Delta.SafeguardResults); v != nil {
 				s.safeguardResults = v
 			}
 			if delta.Usage.OutputTokensDetails != nil {
