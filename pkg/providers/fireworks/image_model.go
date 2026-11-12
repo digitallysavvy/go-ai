@@ -205,10 +205,8 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 		return "", fireworksAsyncCallError(err)
 	}
 
-	if submitResp.RequestID == "" {
-		return "", fmt.Errorf("Fireworks async submit returned empty request_id") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-	}
-
+	// TS asyncSubmitResponseSchema is z.string(): an empty request_id is
+	// accepted and polled like any other.
 	return submitResp.RequestID, nil
 }
 
@@ -461,6 +459,8 @@ func (m *ImageModel) buildAsyncRequestBody(opts *provider.ImageGenerateOptions) 
 	}
 
 	// Handle input image for image editing
+	// (TS `...(inputImage && { input_image })`: an empty URL is left out,
+	// but an empty inline file is still a non-empty data URI.)
 	if len(opts.Files) > 0 {
 		if img := m.encodeImageFile(&opts.Files[0]); img != "" {
 			body["input_image"] = img
@@ -485,14 +485,13 @@ func (m *ImageModel) encodeImageFile(file *provider.ImageFile) string {
 	if file.Type == "url" {
 		return file.URL
 	}
-	if len(file.Data) > 0 {
-		mediaType := file.MediaType
-		if mediaType == "" {
-			mediaType = "image/png"
-		}
-		return fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data))
+	// TS convertImageModelFileToDataUri: any non-URL file is a data URI,
+	// even with no bytes.
+	mediaType := file.MediaType
+	if mediaType == "" {
+		mediaType = "image/png"
 	}
-	return ""
+	return fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data))
 }
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
