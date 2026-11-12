@@ -1,10 +1,13 @@
 package mantle
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 )
 
 // prova-05: the missing-credentials text is the TS text
@@ -26,5 +29,24 @@ func TestR91provaMissingCredentialsText(t *testing.T) {
 		"Original error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable."
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Extra fix (prova-05 class): aws4fetch's AwsV4Signer TypeError text for an
+// incomplete credential provider result.
+func TestR91provaIncompleteProviderCredentials(t *testing.T) {
+	for creds, want := range map[bedrock.Credentials]string{
+		{SecretAccessKey: "s"}: "accessKeyId is a required option",
+		{AccessKeyID: "a"}:     "secretAccessKey is a required option",
+	} {
+		c := creds
+		tr := &sigV4Transport{region: "us-east-1", baseURL: func() (string, error) { return "https://example.com", nil },
+			credentialProvider: func(context.Context) (bedrock.Credentials, error) { return c, nil },
+			base:               roundTripperFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("unexpected send") })}
+		req, _ := http.NewRequest("POST", "https://example.com", strings.NewReader("{}"))
+		_, err := tr.RoundTrip(req)
+		if err == nil || err.Error() != want {
+			t.Errorf("%+v: err = %v, want %q", creds, err, want)
+		}
 	}
 }

@@ -268,3 +268,21 @@ func TestR91provaTypedEmbeddingImageRerankOptions(t *testing.T) {
 		t.Errorf("rerank bodies:\n typed %s\n plain %s", typedR, plainR)
 	}
 }
+
+// Extra fix (prova-05 class): a credential provider returning an incomplete
+// key fails with aws4fetch's AwsV4Signer TypeError text, which TS throws
+// when it signs with the returned credentials.
+func TestR91provaIncompleteProviderCredentials(t *testing.T) {
+	for creds, want := range map[Credentials]string{
+		{SecretAccessKey: "s"}: "accessKeyId is a required option",
+		{AccessKeyID: "a"}:     "secretAccessKey is a required option",
+	} {
+		c := creds
+		p := New(Config{Region: "us-east-1", BaseURL: r91provaDeadURL(t), CredentialProvider: func(context.Context) (Credentials, error) { return c, nil }})
+		lm, _ := p.LanguageModel("anthropic.claude-3-haiku-20240307-v1:0")
+		_, err := lm.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		if err == nil || err.Error() != want {
+			t.Errorf("%+v: err = %v, want %q", creds, err, want)
+		}
+	}
+}

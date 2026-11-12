@@ -3,6 +3,7 @@ package anthropicaws
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -286,8 +287,13 @@ func (t *sigV4Transport) credentials(ctx context.Context) (Credentials, error) {
 		if err != nil {
 			return Credentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err) //nolint:staticcheck // message text matches TS
 		}
-		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-			return Credentials{}, fmt.Errorf("AWS credential provider failed: missing accessKeyId or secretAccessKey. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties")
+		// TS signs with the provider's credentials as returned; aws4fetch's
+		// AwsV4Signer then throws its TypeError for a missing key.
+		if creds.AccessKeyID == "" {
+			return Credentials{}, errors.New("accessKeyId is a required option")
+		}
+		if creds.SecretAccessKey == "" {
+			return Credentials{}, errors.New("secretAccessKey is a required option")
 		}
 		return creds, nil
 	}

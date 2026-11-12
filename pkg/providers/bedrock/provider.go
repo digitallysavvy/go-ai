@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	stdhttp "net/http"
 	"os"
@@ -316,8 +317,13 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 		if err != nil {
 			return awsCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err) //nolint:staticcheck // message text matches TS
 		}
-		if !creds.valid() {
-			return awsCredentials{}, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")
+		// TS signs with the provider's credentials as returned; aws4fetch's
+		// AwsV4Signer then throws its TypeError for a missing key.
+		if creds.AccessKeyID == "" {
+			return awsCredentials{}, errors.New("accessKeyId is a required option")
+		}
+		if creds.SecretAccessKey == "" {
+			return awsCredentials{}, errors.New("secretAccessKey is a required option")
 		}
 		p.credsFrom = "credential-provider"
 		return creds, nil

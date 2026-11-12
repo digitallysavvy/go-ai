@@ -17,6 +17,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -334,8 +335,13 @@ func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSC
 		if err != nil {
 			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err) //nolint:staticcheck // message text matches TS
 		}
-		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")
+		// TS signs with the provider's credentials as returned; aws4fetch's
+		// AwsV4Signer then throws its TypeError for a missing key.
+		if creds.AccessKeyID == "" {
+			return AWSCredentials{}, errors.New("accessKeyId is a required option")
+		}
+		if creds.SecretAccessKey == "" {
+			return AWSCredentials{}, errors.New("secretAccessKey is a required option")
 		}
 		return AWSCredentials{AccessKeyID: creds.AccessKeyID, SecretAccessKey: creds.SecretAccessKey, SessionToken: creds.SessionToken}, nil
 	}

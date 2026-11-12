@@ -74,3 +74,27 @@ func TestR91provaMissingCredentialsText(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Extra fix (prova-05 class): aws4fetch's AwsV4Signer TypeError text for an
+// incomplete credential provider result.
+func TestR91provaIncompleteProviderCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	t.Setenv("ANTHROPIC_AWS_API_KEY", "")
+	for creds, want := range map[Credentials]string{
+		{SecretAccessKey: "s"}: "accessKeyId is a required option",
+		{AccessKeyID: "a"}:     "secretAccessKey is a required option",
+	} {
+		c := creds
+		p, err := New(Config{Region: "us-east-1", WorkspaceID: "w", BaseURL: srv.URL, HTTPClient: srv.Client(),
+			CredentialProvider: func(context.Context) (Credentials, error) { return c, nil }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _ := p.LanguageModel("claude-sonnet-4-6")
+		_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%+v: err = %v, want %q", creds, err, want)
+		}
+	}
+}

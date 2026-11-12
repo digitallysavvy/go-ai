@@ -2,6 +2,7 @@ package mantle
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
@@ -86,8 +87,13 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err)) //nolint:staticcheck // message text matches TS
 		}
-		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields"))
+		// TS signs with the provider's credentials as returned; aws4fetch's
+		// AwsV4Signer then throws its TypeError for a missing key.
+		if creds.AccessKeyID == "" {
+			return nil, internalhttp.RejectFetch(errors.New("accessKeyId is a required option"))
+		}
+		if creds.SecretAccessKey == "" {
+			return nil, internalhttp.RejectFetch(errors.New("secretAccessKey is a required option"))
 		}
 		signer = bedrock.NewAWSSignerForService(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region, mantleSigningService)
 	} else {

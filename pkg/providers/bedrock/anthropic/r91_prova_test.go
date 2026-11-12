@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 )
 
 // prova-05: the missing-credentials text is the TS text
@@ -68,5 +69,27 @@ func TestR91provaTypedOptionLiterals(t *testing.T) {
 	}})
 	if err != nil {
 		t.Fatalf("map[string]string options: %v", err)
+	}
+}
+
+// Extra fix (prova-05 class): aws4fetch's AwsV4Signer TypeError text for an
+// incomplete credential provider result.
+func TestR91provaIncompleteProviderCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	for creds, want := range map[bedrock.Credentials]string{
+		{SecretAccessKey: "s"}: "accessKeyId is a required option",
+		{AccessKeyID: "a"}:     "secretAccessKey is a required option",
+	} {
+		c := creds
+		model, err := New(Config{Region: "us-east-1", BaseURL: srv.URL, HTTPClient: srv.Client(),
+			CredentialProvider: func(context.Context) (bedrock.Credentials, error) { return c, nil }}).LanguageModel("test-model-id")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%+v: err = %v, want %q", creds, err, want)
+		}
 	}
 }
