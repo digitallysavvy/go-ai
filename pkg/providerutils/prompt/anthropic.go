@@ -2858,7 +2858,12 @@ func anthropicWebFetchResultContent(value interface{}) map[string]interface{} {
 	content, _ := m["content"].(map[string]interface{})
 	doc := map[string]interface{}{"type": "document"}
 	copyIfPresent(doc, "title", content, "title")
-	copyIfPresent(doc, "citations", content, "citations")
+	// citations is a z.object({enabled}): other keys are stripped.
+	if citations, ok := content["citations"].(map[string]interface{}); ok {
+		doc["citations"] = pickKeys(citations, "enabled")
+	} else {
+		copyIfPresent(doc, "citations", content, "citations")
+	}
 	source, _ := content["source"].(map[string]interface{})
 	src := map[string]interface{}{}
 	copyIfPresent(src, "type", source, "type")
