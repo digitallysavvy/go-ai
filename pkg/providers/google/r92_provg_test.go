@@ -1,8 +1,11 @@
 package google
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -62,5 +65,24 @@ func TestR92provgInteractionsDocumentSourceTrailingSlashTitle(t *testing.T) {
 		if src := res[i].(types.SourceContent); src.Title != w || src.Filename != "" {
 			t.Fatalf("source %d = %#v, want title %q", i, src, w)
 		}
+	}
+}
+
+// TS googleDecisionResponseSchema parses usage.input_tokens_by_modality as
+// z.array(z.object({modality, tokens})): undeclared keys of an entry are
+// stripped from providerMetadata.google.usage.
+func TestR92provgDecisionUsageModalityEntriesStripped(t *testing.T) {
+	body := strings.Replace(r91provgDecisionFixture, `"modality":"text"`, `"modality":"text","extra":1`, 1)
+	if body == r91provgDecisionFixture {
+		t.Fatal("fixture shape changed")
+	}
+	m, _, _ := r91provgDecisionSetup(t, body, 200)
+	res, err := m.DoDecide(context.Background(), r91provgDecisionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, _ := json.Marshal(res.ProviderMetadata["google"].(map[string]interface{})["usage"])
+	if want := `{"input_tokens_by_modality":[{"modality":"text","tokens":193}],"total_input_tokens":193,"total_output_tokens":0,"total_tokens":193}`; string(usage) != want {
+		t.Fatalf("usage = %s", usage)
 	}
 }
