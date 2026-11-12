@@ -201,11 +201,14 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	var response decisionResponseWire
 	var rawBody interface{}
 	_ = json.Unmarshal(raw, &rawBody)
+	// TS createJsonResponseHandler(openaiDecisionResponseSchema): a body
+	// that fails the schema is the "Invalid JSON response" APICallError with
+	// the status, headers and body (response-handler.ts:259-271).
 	if err := providerutils.UnmarshalChunk(raw, &response); err != nil {
-		return nil, providererrors.NewInvalidResponseDataError(rawBody, "Invalid response from the OpenAI Decisions API: "+err.Error())
+		return nil, providerutils.InvalidJSONResponseError(m.Provider(), httpResp.StatusCode, httpResp.Headers, raw, &providerutils.ChunkSchemaError{Code: "custom", Message: err.Error()})
 	}
 	if err := response.validate(); err != nil {
-		return nil, providererrors.NewInvalidResponseDataError(rawBody, "Invalid response from the OpenAI Decisions API: "+err.Error())
+		return nil, providerutils.InvalidJSONResponseError(m.Provider(), httpResp.StatusCode, httpResp.Headers, raw, &providerutils.ChunkSchemaError{Code: "custom", Message: err.Error()})
 	}
 
 	answers := make(map[string]provider.DecisionAnswer, len(response.Answers))

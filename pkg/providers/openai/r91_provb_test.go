@@ -330,3 +330,20 @@ func TestR91provbBatchToolCallMetadata(t *testing.T) {
 		}
 	}
 }
+
+// PB-13 (provb1-06): a Decisions body that fails the response schema is
+// TS createJsonResponseHandler's "Invalid JSON response" APICallError with
+// the status (response-handler.ts:259-271).
+func TestR91provbDecisionInvalidResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"d","answers":[{"type":"predicate","name":"q","probability":2}]}`))
+	}))
+	defer srv.Close()
+	m, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).DecisionModel("gpt-5-decide")
+	_, err := m.DoDecide(context.Background(), provider.DecisionCallOptions{State: "s", Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "is it?"}}})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "Invalid JSON response" || pe.StatusCode != 200 {
+		t.Fatalf("err = %#v", err)
+	}
+}
