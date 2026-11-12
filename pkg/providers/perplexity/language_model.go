@@ -460,9 +460,10 @@ func (m *LanguageModel) convertResponse(response *perplexityAgentResponse, rawBo
 	if response.IncompleteDetails != nil {
 		incompleteReason = response.IncompleteDetails.Reason
 	}
-	rawFinishReason := incompleteReason
-	if rawFinishReason == "" {
-		rawFinishReason = response.Status
+	// TS incomplete_details?.reason ?? status: a present reason ("" too) wins.
+	rawFinishReason := response.Status
+	if response.IncompleteDetails != nil {
+		rawFinishReason = incompleteReason
 	}
 
 	result := &types.GenerateResult{
@@ -807,9 +808,10 @@ func (s *perplexityAgentStream) processEvent(data string) {
 			if chunk.Response.IncompleteDetails != nil {
 				incompleteReason = chunk.Response.IncompleteDetails.Reason
 			}
-			raw := incompleteReason
-			if raw == "" {
-				raw = chunk.Response.Status
+			// TS incomplete_details?.reason ?? status.
+			raw := chunk.Response.Status
+			if chunk.Response.IncompleteDetails != nil {
+				raw = incompleteReason
 			}
 			s.finishReason = mapPerplexityFinishReason(chunk.Response.Status, incompleteReason, s.hasFunctionCall)
 			s.rawFinishReason = raw
