@@ -252,3 +252,16 @@ func TestR91provgFlattenHeadersJoinsValues(t *testing.T) {
 		t.Fatalf("headers = %v", got)
 	}
 }
+
+// core2-18 (gateway part): a base64 DataString (unpadded here) is sent as
+// given (TS gateway-decision-model.ts:222).
+func TestR91provgDecisionFileDataStringVerbatim(t *testing.T) {
+	out, err := encodeGatewayDecisionState([]provider.DecisionStatePart{{Type: "file", File: &types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "iVBORw0KGgo"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	if !strings.Contains(string(b), `"data":{"data":"iVBORw0KGgo","type":"data"}`) {
+		t.Fatalf("state = %s", b)
+	}
+}
