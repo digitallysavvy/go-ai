@@ -306,6 +306,9 @@ type RealtimeClientEvent struct {
 // input buckets include cached tokens, and the cached portions are also
 // reported in the CachedInput* fields.
 //
+// Token counts are *float64, the JS number TS reports (a fractional wire
+// value is kept, as TS does).
+//
 // Seconds stays a plain float64 for v0.5.2 compatibility (OpenAI Live
 // session.usage.updated / session.closed set it). JSON output always
 // includes "seconds" unless the usage is token-only: at least one token
@@ -315,24 +318,24 @@ type RealtimeClientEvent struct {
 type RealtimeUsage struct {
 	// InputTokens is the gross input tokens across all reported
 	// modalities; includes cached tokens.
-	InputTokens *int `json:"inputTokens,omitempty"`
+	InputTokens *float64 `json:"inputTokens,omitempty"`
 	// OutputTokens is the gross output tokens across all reported
 	// modalities.
-	OutputTokens *int `json:"outputTokens,omitempty"`
+	OutputTokens *float64 `json:"outputTokens,omitempty"`
 	// CachedInputTokens is the cached portion of InputTokens.
-	CachedInputTokens *int `json:"cachedInputTokens,omitempty"`
+	CachedInputTokens *float64 `json:"cachedInputTokens,omitempty"`
 	// InputTextTokens is the input text tokens (includes cached text).
-	InputTextTokens *int `json:"inputTextTokens,omitempty"`
+	InputTextTokens *float64 `json:"inputTextTokens,omitempty"`
 	// InputAudioTokens is the input audio tokens (includes cached audio).
-	InputAudioTokens *int `json:"inputAudioTokens,omitempty"`
+	InputAudioTokens *float64 `json:"inputAudioTokens,omitempty"`
 	// OutputTextTokens is the output text tokens.
-	OutputTextTokens *int `json:"outputTextTokens,omitempty"`
+	OutputTextTokens *float64 `json:"outputTextTokens,omitempty"`
 	// OutputAudioTokens is the output audio tokens.
-	OutputAudioTokens *int `json:"outputAudioTokens,omitempty"`
+	OutputAudioTokens *float64 `json:"outputAudioTokens,omitempty"`
 	// CachedInputTextTokens is the cached portion of InputTextTokens.
-	CachedInputTextTokens *int `json:"cachedInputTextTokens,omitempty"`
+	CachedInputTextTokens *float64 `json:"cachedInputTextTokens,omitempty"`
 	// CachedInputAudioTokens is the cached portion of InputAudioTokens.
-	CachedInputAudioTokens *int `json:"cachedInputAudioTokens,omitempty"`
+	CachedInputAudioTokens *float64 `json:"cachedInputAudioTokens,omitempty"`
 
 	// Seconds is the audio duration in seconds (duration-billed sessions
 	// and transcription).
@@ -366,15 +369,15 @@ func (u RealtimeUsage) hasTokens() bool {
 
 // realtimeUsageTokens is RealtimeUsage without Seconds or methods.
 type realtimeUsageTokens struct {
-	InputTokens            *int `json:"inputTokens,omitempty"`
-	OutputTokens           *int `json:"outputTokens,omitempty"`
-	CachedInputTokens      *int `json:"cachedInputTokens,omitempty"`
-	InputTextTokens        *int `json:"inputTextTokens,omitempty"`
-	InputAudioTokens       *int `json:"inputAudioTokens,omitempty"`
-	OutputTextTokens       *int `json:"outputTextTokens,omitempty"`
-	OutputAudioTokens      *int `json:"outputAudioTokens,omitempty"`
-	CachedInputTextTokens  *int `json:"cachedInputTextTokens,omitempty"`
-	CachedInputAudioTokens *int `json:"cachedInputAudioTokens,omitempty"`
+	InputTokens            *float64 `json:"inputTokens,omitempty"`
+	OutputTokens           *float64 `json:"outputTokens,omitempty"`
+	CachedInputTokens      *float64 `json:"cachedInputTokens,omitempty"`
+	InputTextTokens        *float64 `json:"inputTextTokens,omitempty"`
+	InputAudioTokens       *float64 `json:"inputAudioTokens,omitempty"`
+	OutputTextTokens       *float64 `json:"outputTextTokens,omitempty"`
+	OutputAudioTokens      *float64 `json:"outputAudioTokens,omitempty"`
+	CachedInputTextTokens  *float64 `json:"cachedInputTextTokens,omitempty"`
+	CachedInputAudioTokens *float64 `json:"cachedInputAudioTokens,omitempty"`
 }
 
 func (u RealtimeUsage) tokens() realtimeUsageTokens {

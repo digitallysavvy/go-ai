@@ -9,7 +9,7 @@ import (
 )
 
 func TestRealtimeUsageJSON(t *testing.T) {
-	intp := func(v int) *int { return &v }
+	intp := func(v float64) *float64 { return &v }
 	withZeroSeconds := RealtimeUsage{InputTokens: intp(3)}
 	withZeroSeconds.SetSeconds(0)
 

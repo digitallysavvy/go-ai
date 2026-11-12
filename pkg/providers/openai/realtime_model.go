@@ -696,10 +696,9 @@ func nestedStringField(m map[string]interface{}, key, nested string) (string, bo
 
 // openAIRealtimeUsageNumber reads a token count (TS numbers; nil when absent
 // or not a number).
-func openAIRealtimeUsageNumber(m map[string]interface{}, key string) *int {
+func openAIRealtimeUsageNumber(m map[string]interface{}, key string) *float64 {
 	if f, ok := m[key].(float64); ok {
-		n := int(f)
-		return &n
+		return &f // TS keeps the JS number
 	}
 	return nil
 }

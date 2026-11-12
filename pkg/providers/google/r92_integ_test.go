@@ -86,3 +86,12 @@ func TestR92integRealtimeExpireTimeIsJSDate(t *testing.T) {
 		}
 	}
 }
+
+// TS mapGoogleUsage keeps the JS number of each token count.
+func TestR92integRealtimeUsageKeepsFractionalTokens(t *testing.T) {
+	in, out := 10.5, 2.0
+	u := mapGoogleRealtimeUsage(&googleRealtimeUsageMetadata{PromptTokenCount: &in, ResponseTokenCount: &out})
+	if u == nil || u.InputTokens == nil || *u.InputTokens != 10.5 || *u.OutputTokens != 2 {
+		t.Fatalf("usage = %+v", u)
+	}
+}

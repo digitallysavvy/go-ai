@@ -551,7 +551,7 @@ func mapGoogleRealtimeUsage(u *googleRealtimeUsageMetadata) *provider.RealtimeUs
 	if u == nil {
 		return nil
 	}
-	count := func(v float64) *int { n := int(v); return &n }
+	count := func(v float64) *float64 { return &v } // TS keeps the JS number
 	usage := &provider.RealtimeUsage{}
 	seen := false
 	if u.PromptTokenCount != nil {
@@ -571,7 +571,7 @@ func mapGoogleRealtimeUsage(u *googleRealtimeUsageMetadata) *provider.RealtimeUs
 	if u.CachedContentTokenCount != nil {
 		usage.CachedInputTokens, seen = count(*u.CachedContentTokenCount), true
 	}
-	sum := func(details []googleRealtimeTokenDetail) (text, audio *int) {
+	sum := func(details []googleRealtimeTokenDetail) (text, audio *float64) {
 		var t, a float64
 		hasT, hasA := false, false
 		for _, d := range details {

@@ -515,10 +515,9 @@ func xaiNestedStringField(m map[string]interface{}, key, nested string) (string,
 	return xaiStringFieldPresent(child, nested)
 }
 
-func xaiRealtimeUsageNumber(m map[string]interface{}, key string) *int {
+func xaiRealtimeUsageNumber(m map[string]interface{}, key string) *float64 {
 	if f, ok := m[key].(float64); ok {
-		n := int(f)
-		return &n
+		return &f // TS keeps the JS number
 	}
 	return nil
 }
