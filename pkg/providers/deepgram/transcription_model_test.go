@@ -37,7 +37,7 @@ func TestDeepgramTranscriptionModelMetadata(t *testing.T) {
 func TestDeepgramConvertResponseHandlesEmptyAndWords(t *testing.T) {
 	m := NewTranscriptionModel(New(Config{APIKey: "k"}), "nova-2")
 
-	empty := m.convertResponse(deepgramTranscriptionResponse{
+	empty, _ := m.convertResponse(deepgramTranscriptionResponse{
 		Metadata: &struct {
 			TransactionKey string  `json:"transaction_key"`
 			RequestID      string  `json:"request_id"`
@@ -99,7 +99,7 @@ func TestDeepgramConvertResponseHandlesEmptyAndWords(t *testing.T) {
 			},
 		},
 	}
-	converted := m.convertResponse(resp, &internalhttp.Response{}, time.Now())
+	converted, _ := m.convertResponse(resp, &internalhttp.Response{}, time.Now())
 	if converted.Text != "hello world" || len(converted.Timestamps) != 2 || converted.Usage.DurationSeconds != 5.5 {
 		t.Fatalf("converted mismatch: %#v", converted)
 	}

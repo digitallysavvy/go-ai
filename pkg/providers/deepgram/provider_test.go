@@ -150,7 +150,7 @@ func TestDoTranscribe_ProviderOptions(t *testing.T) {
 		seenQuery = r.URL.RawQuery
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"metadata": map[string]interface{}{"duration": 1.0},
-			"results":  map[string]interface{}{"channels": []map[string]interface{}{}},
+			"results":  nil, // a present results needs a channel (TS channels[0].alternatives[0])
 		})
 	}))
 	defer srv.Close()

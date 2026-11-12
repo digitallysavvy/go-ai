@@ -3,6 +3,7 @@ package deepgram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -213,7 +215,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, handleError("deepgram", err)
 	}
 
-	result := m.convertResponse(response, httpResp, currentDate)
+	result, err := m.convertResponse(response, httpResp, currentDate)
+	if err != nil {
+		return nil, err
+	}
 	// TS 5b89b2560c: batch transcription ignores the streaming options.
 	if streaming, present := rawTranscriptionOptions(opts.ProviderOptions)["streaming"]; present && streaming != nil {
 		result.Warnings = append(result.Warnings, types.Warning{
@@ -225,7 +230,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	return result, nil
 }
 
-func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionResponse, httpResp *internalhttp.Response, currentDate time.Time) *types.TranscriptionResult {
+func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionResponse, httpResp *internalhttp.Response, currentDate time.Time) (*types.TranscriptionResult, error) {
+	if err := deepgramSegmentsAccessError(httpResp.Body); err != nil {
+		return nil, err
+	}
 	var (
 		text     string
 		segments []types.TranscriptionTimestamp
@@ -277,7 +285,32 @@ func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionRespo
 	if durationInSeconds != nil {
 		result.ProviderUsage = map[string]interface{}{"seconds": *durationInSeconds}
 	}
-	return result
+	return result, nil
+}
+
+// deepgramSegmentsAccessError is the TypeError TS doGenerate throws when it
+// maps the segments: `response.results?.channels[0].alternatives[0].words`
+// reads past an empty channels or alternatives array when results is
+// present, so the call fails. Results that are null or absent give no
+// segments.
+func deepgramSegmentsAccessError(body []byte) error {
+	var raw struct {
+		Results *struct {
+			Channels []struct {
+				Alternatives []json.RawMessage `json:"alternatives"`
+			} `json:"channels"`
+		} `json:"results"`
+	}
+	if len(body) == 0 || json.Unmarshal([]byte(textdecode.UTF8(body)), &raw) != nil || raw.Results == nil {
+		return nil
+	}
+	if len(raw.Results.Channels) == 0 {
+		return errors.New("Cannot read properties of undefined (reading 'alternatives')") //nolint:staticcheck // TS V8 TypeError text
+	}
+	if len(raw.Results.Channels[0].Alternatives) == 0 {
+		return errors.New("Cannot read properties of undefined (reading 'words')") //nolint:staticcheck // TS V8 TypeError text
+	}
+	return nil
 }
 
 func durationValue(duration *float64) float64 {
