@@ -55,3 +55,22 @@ func TestR94toolsConnectAbortCauseIsReason(t *testing.T) {
 		t.Fatalf("err = %#v", err)
 	}
 }
+
+// TS CallToolResultSchema's third arm (ResultSchema.extend({toolResult}))
+// is loose: content that is not an array passes with a toolResult.
+func TestR94toolsCallToolResultNonArrayContentWithToolResult(t *testing.T) {
+	for _, tc := range []struct {
+		result string
+		ok     bool
+	}{
+		{`{"resultType":"complete","content":null,"toolResult":{"v":1}}`, true},
+		{`{"resultType":"complete","content":"x","toolResult":1}`, true},
+		{`{"resultType":"complete","content":null,"structuredContent":{}}`, false},
+	} {
+		c, _ := r85toolsSetup(t, tc.result)
+		_, err := c.CallTool(context.Background(), "deploy", nil)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok %v", tc.result, err, tc.ok)
+		}
+	}
+}

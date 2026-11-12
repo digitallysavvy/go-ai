@@ -423,7 +423,19 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	}
 	var out callToolResultJSON
 	if err := json.Unmarshal(data, &out); err != nil {
-		return err
+		if _, hasToolResult := raw["toolResult"]; !hasToolResult {
+			return err
+		}
+		// TS CallToolResultSchema's toolResult arm is a loose object: content
+		// and isError of any type pass through unvalidated.
+		var loose struct {
+			ToolResult interface{}            `json:"toolResult"`
+			Metadata   map[string]interface{} `json:"_meta,omitempty"`
+		}
+		if looseErr := json.Unmarshal(data, &loose); looseErr != nil {
+			return err
+		}
+		out = callToolResultJSON{ToolResult: loose.ToolResult, Metadata: loose.Metadata}
 	}
 	*r = CallToolResult{
 		Content:           out.Content,
@@ -1181,6 +1193,10 @@ func validateCallToolResult(r *CallToolResult) error {
 	}
 	var blocks []map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &blocks); err != nil || blocks == nil {
+		if r.toolResultPresent {
+			// TS: the loose toolResult arm accepts any content.
+			return nil
+		}
 		return errors.New("tool result content must be an array of objects")
 	}
 	for i, block := range blocks {
