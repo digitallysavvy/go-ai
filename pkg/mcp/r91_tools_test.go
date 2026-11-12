@@ -104,3 +104,22 @@ func TestR91toolsDiscoveryNetworkErrorDoesNotFallBack(t *testing.T) {
 		t.Fatalf("methods = %v, want only server/discover", methods)
 	}
 }
+
+// TS 6309382f0e mcp-apps.test.ts: csp.baseUriDomains keeps its string
+// elements (non-strings dropped), like the other domain lists.
+func TestR91toolsMCPAppBaseURIDomains(t *testing.T) {
+	res, err := GetMCPAppResourceFromReadResult("ui://app", ReadResourceResult{Contents: []ResourceContent{{
+		URI: "ui://app", MimeType: MCPAppMimeType, Text: "<html></html>",
+		Meta: map[string]interface{}{"ui": map[string]interface{}{"csp": map[string]interface{}{
+			"baseUriDomains": []interface{}{"https://base.example", false},
+		}}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	csp, _ := res.Meta["csp"].(map[string]interface{})
+	got, _ := csp["baseUriDomains"].([]string)
+	if len(got) != 1 || got[0] != "https://base.example" {
+		t.Fatalf("baseUriDomains = %#v", csp["baseUriDomains"])
+	}
+}

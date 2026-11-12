@@ -232,14 +232,15 @@ func ReadMCPAppResource(ctx context.Context, client *MCPClient, uri string) (MCP
 }
 
 // validateMCPAppResourceCSP mirrors TS MCPAppResourceCSPSchema (a loose
-// zod object, mcp-apps.ts, hash 48e7e78): connectDomains/resourceDomains/
-// frameDomains are each filtered to their string elements when present as an
+// zod object, mcp-apps.ts, hash 48e7e78; baseUriDomains since 6309382f0e):
+// connectDomains/resourceDomains/frameDomains/baseUriDomains
+// are each filtered to their string elements when present as an
 // array, and dropped entirely when the field is present but not an array.
 // Unknown keys pass through unchanged (forward-compat).
 func validateMCPAppResourceCSP(raw map[string]interface{}) (map[string]interface{}, []string) {
 	out := copyMap(raw)
 	var dropped []string
-	for _, key := range []string{"connectDomains", "resourceDomains", "frameDomains"} {
+	for _, key := range []string{"connectDomains", "resourceDomains", "frameDomains", "baseUriDomains"} {
 		value, ok := out[key]
 		if !ok {
 			continue
