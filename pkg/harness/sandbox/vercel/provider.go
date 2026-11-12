@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,9 +68,9 @@ func withDefaultSandboxSettings(p CreateParams) CreateParams {
 // withAuthError wraps err as a harness.SandboxAuthenticationError when it is
 // a credential-resolution failure or a 401/403 API response. Other errors
 // pass through unchanged. Mirrors TS `withVercelSandboxAuthenticationError`,
-// simplified: this port does not reproduce the @vercel/oidc error-name/opaque
-// message heuristics, since it never delegates to that library (see package
-// doc).
+// including its message test over the cause chain; the @vercel/oidc error
+// names and the Node.js ERR_INVALID_ARG_TYPE case have no Go counterpart,
+// since this port never delegates to those libraries (see package doc).
 func withAuthError(err error) error {
 	if err == nil {
 		return nil
@@ -82,8 +83,24 @@ func withAuthError(err error) error {
 	if errors.As(err, &apiErr) && isAuthErrorStatus(apiErr.StatusCode) {
 		return harness.NewSandboxAuthenticationError(vercelAuthMessage, vercelProviderID, err)
 	}
+	// TS isVercelSandboxAuthenticationFailure also tests the message of every
+	// error in the cause chain against VERCEL_AUTHENTICATION_ERROR_MESSAGE,
+	// so a matching template preparation or API error message is an
+	// authentication failure too.
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if vercelAuthErrorMessagePattern.MatchString(e.Error()) {
+			return harness.NewSandboxAuthenticationError(vercelAuthMessage, vercelProviderID, err)
+		}
+	}
 	return err
 }
+
+// vercelAuthErrorMessagePattern is TS VERCEL_AUTHENTICATION_ERROR_MESSAGE. A
+// JS /i regexp without the u flag never folds s to U+017F or k to U+212A (Go
+// (?i) does), so those letters match only their ASCII cases.
+var vercelAuthErrorMessagePattern = regexp.MustCompile("(?i)" + strings.NewReplacer(
+	"s", "(?-i:[sS])", "S", "(?-i:[sS])", "k", "(?-i:[kK])", "K", "(?-i:[kK])",
+).Replace(`Could not get credentials from OIDC context|No authentication found|Failed to (?:retrieve|refresh) authentication token|Missing credentials parameters to access the Vercel API|Authentication failed`))
 
 // Template describes a one-time sandbox preparation recipe: `Identity`
 // selects a stable, cached snapshot; `Prepare` runs against a fresh sandbox
@@ -130,6 +147,10 @@ type CreateSessionOptions struct {
 // template snapshot) and returns it as a harness.NetworkSandboxSession.
 // Mirrors TS `createVercelNetworkSandboxSession`.
 func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions) (harness.NetworkSandboxSession, error) {
+	// TS effectiveSignal?.throwIfAborted() comes first.
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
 	if opts.SandboxID != "" && opts.Name != "" && opts.SandboxID != opts.Name {
 		return nil, errors.New("createVercelNetworkSandboxSession: sandboxId and name must match when both are provided.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
@@ -203,6 +224,10 @@ type ResumeSessionOptions struct {
 // ResumeNetworkSandboxSession resumes an existing named sandbox. Mirrors TS
 // `resumeVercelNetworkSandboxSession`.
 func ResumeNetworkSandboxSession(ctx context.Context, opts ResumeSessionOptions) (harness.NetworkSandboxSession, error) {
+	// TS effectiveSignal?.throwIfAborted() comes first.
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
 	creds, err := resolveCredentialsWithRefresh(ctx, opts.Credentials, opts.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
