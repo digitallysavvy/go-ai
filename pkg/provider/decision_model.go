@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -43,8 +44,11 @@ type DecisionQuestion struct {
 	Criteria interface{}
 }
 
-// OrderedKeys returns the keys of m in order: the entries of order that are
-// keys of m (first occurrence only), then the remaining keys sorted.
+// OrderedKeys returns the keys of m in the order a JS object built in that
+// order enumerates them (TS Object.keys / Object.entries, ECMAScript
+// OrdinaryOwnPropertyKeys): canonical array-index keys ("0", "1", "10")
+// first in ascending numeric order, then the entries of order that are keys
+// of m (first occurrence only), then the remaining keys sorted.
 func OrderedKeys[V any](m map[string]V, order []string) []string {
 	out := make([]string, 0, len(m))
 	seen := make(map[string]struct{}, len(m))
@@ -65,7 +69,7 @@ func OrderedKeys[V any](m map[string]V, order []string) []string {
 		}
 	}
 	sort.Strings(rest)
-	return append(out, rest...)
+	return jsonorder.JSKeyOrder(append(out, rest...))
 }
 
 // QuestionIDs returns the question IDs of the call in QuestionOrder, then
@@ -109,11 +113,14 @@ func (p DecisionStatePart) MarshalJSON() ([]byte, error) {
 			Value interface{} `json:"value"`
 		}{"json", p.Value})
 	case "file":
+		// TS stringifies the converted file part in the order type,
+		// mediaType, filename, data, providerOptions
+		// (convert-to-language-model-prompt.ts:637-643).
 		out := struct {
 			Type            string                 `json:"type"`
-			Data            interface{}            `json:"data,omitempty"`
 			MediaType       string                 `json:"mediaType,omitempty"`
 			Filename        string                 `json:"filename,omitempty"`
+			Data            interface{}            `json:"data,omitempty"`
 			ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 		}{Type: "file"}
 		if p.File != nil {
@@ -210,7 +217,9 @@ func (p DecisionStatePart) InlineData() (mediaType string, data []byte, err erro
 			return mediaType, f.FileData.Data, nil
 		}
 		if f.FileData.DataString != "" {
-			decoded, derr := base64.StdEncoding.DecodeString(f.FileData.DataString)
+			// Lenient like TS convertBase64ToUint8Array: base64url and
+			// unpadded data decode (core2-18).
+			decoded, derr := types.DecodeFileDataString(f.FileData.DataString)
 			if derr != nil {
 				return mediaType, nil, fmt.Errorf("decision file data is not valid base64: %w", derr)
 			}
