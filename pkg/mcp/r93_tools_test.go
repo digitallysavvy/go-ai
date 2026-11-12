@@ -30,3 +30,27 @@ func TestR93toolsModernResultTypeNotString(t *testing.T) {
 		}
 	}
 }
+
+// TS events.subscribe: `!Number.isSafeInteger(ttlMs) || ttlMs <= 0` and the
+// same for maxAgeMs, so a lifetime past 2^53 - 1 is rejected before any
+// request.
+func TestR93toolsEventsSubscribeSafeIntegerLifetime(t *testing.T) {
+	tr := newEventsTransport()
+	client := connectEventsClient(t, tr, &MCPEventsConfig{Store: newMemEventStore()})
+	ev := client.ExperimentalEvents()
+	big := int64(1 << 53)
+	for _, opts := range []SubscribeEventOptions{
+		{Name: subOpts.Name, Delivery: subOpts.Delivery, TTLMs: NullableOf(big)},
+		{Name: subOpts.Name, Delivery: subOpts.Delivery, MaxAgeMs: &big},
+	} {
+		_, err := ev.Subscribe(context.Background(), opts)
+		var mcpErr *MCPClientError
+		if !errors.As(err, &mcpErr) || mcpErr.Message != "Invalid MCP event subscription lifetime or replay age" {
+			t.Fatalf("err = %v", err)
+		}
+	}
+	ok := int64(1<<53 - 1)
+	if _, err := ev.Subscribe(context.Background(), SubscribeEventOptions{Name: subOpts.Name, Delivery: subOpts.Delivery, TTLMs: NullableOf(ok)}); err != nil {
+		t.Fatalf("max safe ttl: %v", err)
+	}
+}
