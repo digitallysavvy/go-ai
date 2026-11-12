@@ -21,11 +21,17 @@ type r92carryEventRecorder struct {
 	events []string
 }
 
-func (r *r92carryEventRecorder) add(e string) { r.mu.Lock(); r.events = append(r.events, e); r.mu.Unlock() }
+func (r *r92carryEventRecorder) add(e string) {
+	r.mu.Lock()
+	r.events = append(r.events, e)
+	r.mu.Unlock()
+}
 func (r *r92carryEventRecorder) OnStepEnd(context.Context, telemetry.TelemetryStepEndEvent) {
 	r.add("onStepEnd")
 }
-func (r *r92carryEventRecorder) OnEnd(context.Context, telemetry.TelemetryFinishEvent) { r.add("onEnd") }
+func (r *r92carryEventRecorder) OnEnd(context.Context, telemetry.TelemetryFinishEvent) {
+	r.add("onEnd")
+}
 
 // TS workflow-agent-telemetry.integration.test.ts (2ebc78b654) "%s: ends
 // every step span when stopping on a client-side tool": two steps, the
