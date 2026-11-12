@@ -1663,7 +1663,7 @@ func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessag
 	if string(bytes.TrimSpace(rawResult)) == "null" {
 		// TS reads response.result.resultType inside the parse try: a null
 		// result throws a TypeError there.
-		return &MCPClientError{Message: "Failed to parse server response", Cause: errors.New("Cannot read properties of null (reading 'resultType')")}
+		return &MCPClientError{Message: "Failed to parse server response", Cause: errors.New("Cannot read properties of null (reading 'resultType')")} //nolint:staticcheck // matches the TS TypeError text
 	}
 	var probe struct {
 		ResultType json.RawMessage `json:"resultType"`
