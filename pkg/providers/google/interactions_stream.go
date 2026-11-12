@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"io"
 	"net/http"
@@ -365,7 +366,7 @@ restart:
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 		var payload interactionsEvent
-		err = json.Unmarshal([]byte(event.Data), &payload)
+		err = jsonexact.Unmarshal([]byte(event.Data), &payload)
 		if err == nil && !hasStringEventType(event.Data) {
 			// Every member of TS googleInteractionsEventSchema (including the
 			// unknownEvent fallback) requires a string event_type, so null,
@@ -437,7 +438,7 @@ func hasStringEventType(data string) bool {
 	var probe struct {
 		EventType *json.RawMessage `json:"event_type"`
 	}
-	if json.Unmarshal([]byte(data), &probe) != nil || probe.EventType == nil {
+	if jsonexact.Unmarshal([]byte(data), &probe) != nil || probe.EventType == nil {
 		return false
 	}
 	var eventType string
@@ -624,7 +625,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 					Summary []summaryTextItem `json:"summary"`
 				} `json:"step"`
 			}
-			_ = json.Unmarshal([]byte(s.currentEventData), &start)
+			_ = jsonexact.Unmarshal([]byte(s.currentEventData), &start)
 			for _, item := range start.Step.Summary {
 				if text, ok := item.text(); ok {
 					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: id, Reasoning: text})
@@ -729,7 +730,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		case open.kind == "thought":
 			if delta.Type == "thought_summary" && len(delta.ContentRaw) > 0 {
 				var item summaryTextItem
-				if json.Unmarshal(delta.ContentRaw, &item) == nil {
+				if jsonexact.Unmarshal(delta.ContentRaw, &item) == nil {
 					if text, ok := item.text(); ok {
 						s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: open.id, Reasoning: text})
 					}

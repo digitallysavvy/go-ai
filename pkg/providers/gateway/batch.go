@@ -13,6 +13,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -446,7 +447,7 @@ func decodeGatewayBatchItemResult(raw json.RawMessage) *types.GenerateResult {
 	var wire struct {
 		Response *gatewayBatchItemResultResponse `json:"response"`
 	}
-	if json.Unmarshal(raw, &wire) == nil && wire.Response != nil {
+	if jsonexact.Unmarshal(raw, &wire) == nil && wire.Response != nil {
 		meta := &types.ResponseMetadata{Headers: wire.Response.Headers, Body: wire.Response.Body}
 		if wire.Response.ID != nil {
 			meta.ID = *wire.Response.ID
@@ -512,7 +513,7 @@ func (s *gatewayBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) 
 			return nil, err
 		}
 		var wire gatewayBatchItemResultLine
-		if err := json.Unmarshal(line, &wire); err != nil {
+		if err := jsonexact.Unmarshal(line, &wire); err != nil {
 			s.err = err
 			_ = s.body.Close()
 			return nil, err

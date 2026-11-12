@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -41,7 +42,7 @@ func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *pr
 	// TS: error.type == null ? error.message : `${error.type}: ${error.message}`;
 	// an empty string is a valid message or type.
 	var data interface{}
-	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != nil && secureJSON(body) {
+	if err := jsonexact.Unmarshal(body, &parsed); err == nil && parsed.Message != nil && secureJSON(body) {
 		if parsed.Type != nil {
 			message = *parsed.Type + ": " + *parsed.Message
 		} else {
@@ -82,7 +83,7 @@ func bedrockErrorData(body []byte, parsed bedrockErrorBody) map[string]interface
 func bedrockConverseGenerateAPIError(statusCode int, body []byte, headers map[string]string) *providererrors.ProviderError {
 	body = []byte(textdecode.UTF8(body))
 	var parsed bedrockErrorBody
-	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Message == nil || !secureJSON(body) {
+	if err := jsonexact.Unmarshal(body, &parsed); err != nil || parsed.Message == nil || !secureJSON(body) {
 		return bedrockAPIError(statusCode, body, headers)
 	}
 	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", *parsed.Message, nil)

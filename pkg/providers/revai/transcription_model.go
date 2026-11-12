@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"mime/multipart"
 	"net/http"
@@ -212,7 +213,7 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, submission revai
 			return nil, err
 		}
 		var status revaiJobResponse
-		if err := json.Unmarshal(download.Data, &status); err != nil {
+		if err := jsonexact.Unmarshal(download.Data, &status); err != nil {
 			return nil, fmt.Errorf("revai: failed to decode job status: %w", err)
 		}
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -718,7 +719,7 @@ func convertOpenAIBatchErrorResponse(body json.RawMessage, statusCode int) *prov
 		} `json:"error"`
 	}
 	code, codeOK := "", true
-	if err := json.Unmarshal(body, &envelope); err != nil {
+	if err := jsonexact.Unmarshal(body, &envelope); err != nil {
 		codeOK = false
 	} else {
 		switch c := envelope.Error.Code.(type) {
@@ -885,7 +886,7 @@ func firstUnsupportedOpenAIBatchOutputItemType(output []json.RawMessage) (string
 		var peek struct {
 			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(raw, &peek); err != nil {
+		if err := jsonexact.Unmarshal(raw, &peek); err != nil {
 			continue
 		}
 		if !openaiBatchKnownOutputItemTypes[peek.Type] {

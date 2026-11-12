@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
@@ -34,7 +35,7 @@ func (c *anthropicContent) UnmarshalJSON(b []byte) error {
 	}
 	p.plain = (*plain)(c)
 	*c = anthropicContent{}
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
 		return err
 	}
 	c.Signature = ""

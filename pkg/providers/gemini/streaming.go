@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -237,7 +238,7 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 		}
 
 		var chunkData Response
-		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+		if err := jsonexact.Unmarshal([]byte(event.Data), &chunkData); err != nil {
 			// TS google-language-model.ts: `if (!chunk.success) { controller
 			// .enqueue({type:'error', error: chunk.error}); return; }` — a
 			// malformed chunk (schema/JSON failure) is surfaced as an error

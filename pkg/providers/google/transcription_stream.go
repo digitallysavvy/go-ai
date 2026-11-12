@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strconv"
 	"strings"
@@ -548,7 +549,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			}
 
 			var message googleLiveServerMessage
-			if jsonErr := json.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
 				continue
 			}
 

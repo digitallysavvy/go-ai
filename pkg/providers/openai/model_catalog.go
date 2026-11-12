@@ -2,11 +2,12 @@ package openai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"io"
 	"net/http"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/modelcatalog"
 )
 
@@ -53,7 +54,11 @@ func (r ModelCatalogRefresher) Fetch(ctx context.Context) ([]modelcatalog.ModelI
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := jsonexact.Unmarshal(raw, &body); err != nil {
 		return nil, err
 	}
 	models := make([]modelcatalog.ModelID, 0, len(body.Data))

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -464,7 +465,7 @@ func (m *TranscriptionModel) convertResponse(raw map[string]interface{}, current
 			End   float64 `json:"end"`
 		} `json:"words"`
 	}
-	_ = json.Unmarshal(b, &transcript)
+	_ = jsonexact.Unmarshal(b, &transcript)
 
 	segments := make([]types.TranscriptionTimestamp, 0, len(transcript.Words))
 	for _, word := range transcript.Words {

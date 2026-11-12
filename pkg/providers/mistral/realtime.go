@@ -2,13 +2,13 @@ package mistral
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -88,7 +88,7 @@ func (r *RealtimeSessions) CreateSession(ctx context.Context, opts RealtimeCreat
 		ParticipantToken interface{} `json:"participant_token"`
 		ServerURL        interface{} `json:"server_url"`
 	}
-	if err := json.Unmarshal(text, &value); err != nil {
+	if err := jsonexact.Unmarshal(text, &value); err != nil {
 		return nil, providerutils.InvalidJSONResponseError("mistral", resp.StatusCode, resp.Headers, text, err)
 	}
 	id, ok1 := value.ID.(string)

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -1358,7 +1359,7 @@ func (m *LanguageModel) handleError(err error) error {
 	if idx := strings.Index(msg, ": {"); idx != -1 {
 		jsonPart := msg[idx+2:]
 		var body anthropicErrorBody
-		if jsonErr := json.Unmarshal([]byte(jsonPart), &body); jsonErr == nil && body.Error.Type != "" {
+		if jsonErr := jsonexact.Unmarshal([]byte(jsonPart), &body); jsonErr == nil && body.Error.Type != "" {
 			return providererrors.NewProviderError(m.errorProviderName(), 0, body.Error.Type, body.Error.Message, err)
 		}
 	}
@@ -1443,7 +1444,7 @@ type anthropicStopDetails struct {
 func (d *anthropicStopDetails) UnmarshalJSON(data []byte) error {
 	type plain anthropicStopDetails
 	var p plain
-	if err := json.Unmarshal(data, &p); err != nil {
+	if err := jsonexact.Unmarshal(data, &p); err != nil {
 		return err
 	}
 	*d = anthropicStopDetails(p)
@@ -1508,7 +1509,7 @@ type anthropicUsage struct {
 func (u *anthropicUsage) UnmarshalJSON(data []byte) error {
 	type plain anthropicUsage
 	var p plain
-	if err := json.Unmarshal(data, &p); err != nil {
+	if err := jsonexact.Unmarshal(data, &p); err != nil {
 		return err
 	}
 	*u = anthropicUsage(p)
@@ -2045,7 +2046,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					To   map[string]interface{} `json:"to"`
 				} `json:"content_block"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &start); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &start); err != nil {
 				// Malformed start event: skip gracefully
 				continue
 			}
@@ -2561,7 +2562,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					} `json:"message"`
 				}
 				s.usage.Raw = nil
-				if json.Unmarshal([]byte(event.Data), &startRaw) == nil && startRaw.Message.Usage != nil {
+				if jsonexact.Unmarshal([]byte(event.Data), &startRaw) == nil && startRaw.Message.Usage != nil {
 					s.usage.Raw = startRaw.Message.Usage
 				}
 				s.usage.InputTokens = msg.Message.Usage.InputTokens
@@ -2634,7 +2635,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Citation    map[string]interface{} `json:"citation"`     // in citations_delta
 				} `json:"delta"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &delta); err != nil {
 				return nil, fmt.Errorf("failed to parse content delta: %w", err)
 			}
 
@@ -2783,7 +2784,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			var stop struct {
 				Index int `json:"index"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &stop); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &stop); err != nil {
 				continue
 			}
 			block := s.contentBlocks[stop.Index]
@@ -2985,7 +2986,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			var deltaRaw struct {
 				Usage map[string]interface{} `json:"usage"`
 			}
-			if json.Unmarshal([]byte(event.Data), &deltaRaw) == nil && len(deltaRaw.Usage) > 0 {
+			if jsonexact.Unmarshal([]byte(event.Data), &deltaRaw) == nil && len(deltaRaw.Usage) > 0 {
 				// The delta usage is a loose object, but its iterations and
 				// output_tokens_details are plain z.object schemas (stripped).
 				stripUsageRawToSchema(deltaRaw.Usage)
@@ -3054,7 +3055,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Data        json.RawMessage `json:"data"`
 				} `json:"error"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &errEvent); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &errEvent); err != nil {
 				continue
 			}
 			// anthropicStreamErrorMetadata returns (0, false) for an
@@ -3086,7 +3087,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				_ = json.Unmarshal(errEvent.Error.Data, &data)
 			} else {
 				var present map[string]json.RawMessage
-				_ = json.Unmarshal([]byte(event.Data), &struct {
+				_ = jsonexact.Unmarshal([]byte(event.Data), &struct {
 					Error *map[string]json.RawMessage `json:"error"`
 				}{Error: &present})
 				data = anthropicStreamErrorData(present)
@@ -3267,7 +3268,7 @@ func parseAnthropicWebToolResultError(raw json.RawMessage, expectedType string, 
 		ErrorCode string `json:"error_code"`
 	}
 	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &wire); err != nil && !force {
+		if err := jsonexact.Unmarshal(raw, &wire); err != nil && !force {
 			return nil, false
 		}
 	}
@@ -3292,7 +3293,7 @@ func parseAnthropicWebToolResultError(raw json.RawMessage, expectedType string, 
 // Mirrors TS SDK anthropic-messages-language-model.ts lines 1055-1093.
 func convertWebSearchToolResult(raw json.RawMessage, generateID func() string) (interface{}, []types.SourceContent) {
 	var wireResults []webSearchResultWire
-	if err := json.Unmarshal(raw, &wireResults); err != nil {
+	if err := jsonexact.Unmarshal(raw, &wireResults); err != nil {
 		// Fallback: return raw data as-is.
 		var fallback interface{}
 		json.Unmarshal(raw, &fallback) //nolint:errcheck
@@ -3364,7 +3365,7 @@ type webFetchResultWire struct {
 // Mirrors TS SDK anthropic-messages-language-model.ts lines 1015-1053.
 func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 	var wire webFetchResultWire
-	if err := json.Unmarshal(raw, &wire); err != nil {
+	if err := jsonexact.Unmarshal(raw, &wire); err != nil {
 		var fallback interface{}
 		json.Unmarshal(raw, &fallback) //nolint:errcheck
 		return fallback
@@ -3417,7 +3418,7 @@ func messageStartChunk(data string) *provider.StreamChunk {
 			Usage map[string]interface{} `json:"usage"`
 		} `json:"message"`
 	}
-	_ = json.Unmarshal([]byte(data), &raw)
+	_ = jsonexact.Unmarshal([]byte(data), &raw)
 	var usage interface{}
 	if raw.Message.Usage != nil {
 		usage = raw.Message.Usage
@@ -3458,7 +3459,7 @@ func anthropicHTTPError(providerName string, status int, headers http.Header, bo
 		} `json:"error"`
 	}
 	_, secure := prompt.SecureJSONParse(string(body)) // TS safeParseJSON uses secureJsonParse
-	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && secure && parsed.Type != nil && *parsed.Type == "error" &&
+	if jsonErr := jsonexact.Unmarshal(body, &parsed); jsonErr == nil && secure && parsed.Type != nil && *parsed.Type == "error" &&
 		parsed.Error != nil && parsed.Error.Type != nil && parsed.Error.Message != nil {
 		perr = providererrors.NewProviderError(providerName, status, *parsed.Error.Type, *parsed.Error.Message, cause)
 		// TS APICallError.data is the parsed error object (zod strips
@@ -3491,7 +3492,7 @@ func sseEventTypeFromPayload(data string) string {
 	var probe struct {
 		Type string `json:"type"`
 	}
-	if json.Unmarshal([]byte(data), &probe) != nil {
+	if jsonexact.Unmarshal([]byte(data), &probe) != nil {
 		return ""
 	}
 	return probe.Type

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"net/url"
 	"strconv"
@@ -393,7 +394,7 @@ func (s *mistralRealtimeTranscriptionStream) run(cfg mistralRealtimeTranscriptio
 				continue
 			}
 			var event mistralRealtimeEvent
-			_ = json.Unmarshal([]byte(res.Text), &event)
+			_ = jsonexact.Unmarshal([]byte(res.Text), &event)
 			if err := event.validate(raw); err != nil {
 				fail(err)
 				return

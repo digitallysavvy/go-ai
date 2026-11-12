@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"math"
 	"net/http"
 	"strings"
@@ -296,7 +297,7 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 		Details map[string]interface{} `json:"details"`
 	}
 
-	if err := json.Unmarshal(body, &response); err != nil {
+	if err := jsonexact.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 

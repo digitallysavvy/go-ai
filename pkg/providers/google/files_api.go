@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"math"
@@ -164,7 +165,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if err := googleFilesUploadResultShape(uploadText); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(uploadText, &uploadResult); err != nil {
+	if err := jsonexact.Unmarshal(uploadText, &uploadResult); err != nil {
 		return nil, err
 	}
 	file := uploadResult.File
@@ -332,7 +333,7 @@ type googleFileResource struct {
 func (r *googleFileResource) UnmarshalJSON(b []byte) error {
 	type plain googleFileResource
 	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
 		return err
 	}
 	*r = googleFileResource(p)

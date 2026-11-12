@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -335,7 +336,7 @@ func falImageErrorMessage(status int, body []byte) string {
 				Msg  *string   `json:"msg"`
 				Type *string   `json:"type"`
 			}
-			if json.Unmarshal(raw, &d) != nil || d.Loc == nil || d.Msg == nil || d.Type == nil {
+			if jsonexact.Unmarshal(raw, &d) != nil || d.Loc == nil || d.Msg == nil || d.Type == nil {
 				valid = false
 				break
 			}

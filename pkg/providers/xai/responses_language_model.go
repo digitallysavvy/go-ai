@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"io"
@@ -211,7 +212,7 @@ func xaiResponseEchoes(data []byte, event bool) map[string]string {
 		echoes
 		Response echoes `json:"response"`
 	}
-	if json.Unmarshal(data, &v) != nil {
+	if jsonexact.Unmarshal(data, &v) != nil {
 		return nil
 	}
 	e := v.echoes
@@ -279,7 +280,7 @@ func xaiResponsesCreatedAt(data []byte, event bool) (time.Time, bool) {
 			CreatedAt *float64 `json:"created_at"`
 		} `json:"response"`
 	}
-	if json.Unmarshal(data, &v) != nil {
+	if jsonexact.Unmarshal(data, &v) != nil {
 		return time.Time{}, false
 	}
 	c := v.CreatedAt
@@ -650,7 +651,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		var peek struct {
 			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(rawItem, &peek); err != nil {
+		if err := jsonexact.Unmarshal(rawItem, &peek); err != nil {
 			continue
 		}
 
@@ -664,7 +665,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Annotations []json.RawMessage `json:"annotations,omitempty"`
 				} `json:"content"`
 			}
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			// TS emits, per content part, its text and then its url_citation
@@ -683,7 +684,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "function_call":
 			var item responses.FunctionCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			var args map[string]interface{}
@@ -712,7 +713,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Text string `json:"text"`
 				} `json:"content,omitempty"`
 			}
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			var reasoningText string
@@ -759,7 +760,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Arguments string          `json:"arguments,omitempty"`
 				Input     string          `json:"input,omitempty"`
 			}
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			toolName := bareXAIToolName(peek.Type, item.Name, toolNames)
@@ -799,7 +800,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Text     string  `json:"text"`
 				} `json:"results,omitempty"`
 			}
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			toolName := toolNames["xai.file_search"]
@@ -849,7 +850,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Prompt *string `json:"prompt,omitempty"`
 				Result *string `json:"result,omitempty"`
 			}
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			toolName := toolNames["xai.image_generation"]
@@ -1025,7 +1026,7 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 	var head struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(raw, &head); err != nil {
+	if err := jsonexact.Unmarshal(raw, &head); err != nil {
 		return result
 	}
 	var action struct {
@@ -1045,14 +1046,14 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 			Queries []string          `json:"queries"`
 			Sources []json.RawMessage `json:"sources"`
 		}
-		branchErr = json.Unmarshal(raw, &b)
+		branchErr = jsonexact.Unmarshal(raw, &b)
 		action.Query, action.Queries, action.Sources = b.Query, b.Queries, b.Sources
 	case "open_page":
 		var b struct {
 			URL     *string           `json:"url"`
 			Sources []json.RawMessage `json:"sources"`
 		}
-		branchErr = json.Unmarshal(raw, &b)
+		branchErr = jsonexact.Unmarshal(raw, &b)
 		action.URL, action.Sources = b.URL, b.Sources
 	case "find_in_page":
 		var b struct {
@@ -1060,7 +1061,7 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 			Pattern *string           `json:"pattern"`
 			Sources []json.RawMessage `json:"sources"`
 		}
-		branchErr = json.Unmarshal(raw, &b)
+		branchErr = jsonexact.Unmarshal(raw, &b)
 		action.URL, action.Pattern, action.Sources = b.URL, b.Pattern, b.Sources
 	}
 	if branchErr != nil {
@@ -1111,7 +1112,7 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 			Type string  `json:"type"`
 			URL  *string `json:"url"`
 		}
-		if json.Unmarshal(rawSource, &source) != nil || source.Type != "url" || source.URL == nil {
+		if jsonexact.Unmarshal(rawSource, &source) != nil || source.Type != "url" || source.URL == nil {
 			continue
 		}
 		sources = append(sources, map[string]interface{}{"type": "url", "url": *source.URL})
@@ -1371,7 +1372,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		var peek responses.ResponsesStreamEvent
-		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+		if err := jsonexact.Unmarshal([]byte(event.Data), &peek); err != nil {
 			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -1404,7 +1405,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		switch peek.Type {
 		case "response.created", "response.in_progress":
 			var e xaiCreatedEventWire
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			if s.responseMetadataEmitted {
@@ -1430,7 +1431,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.output_item.added":
 			var e responses.OutputItemAddedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			s.itemTypes[e.OutputIndex] = e.Item.Type
@@ -1438,7 +1439,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				var added struct {
 					Item json.RawMessage `json:"item"`
 				}
-				if json.Unmarshal([]byte(event.Data), &added) == nil {
+				if jsonexact.Unmarshal([]byte(event.Data), &added) == nil {
 					s.queueMessageItem(added.Item)
 				}
 			}
@@ -1458,7 +1459,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				var added struct {
 					Item json.RawMessage `json:"item"`
 				}
-				if json.Unmarshal([]byte(event.Data), &added) == nil {
+				if jsonexact.Unmarshal([]byte(event.Data), &added) == nil {
 					s.queueProviderExecutedItem(e.Item.Type, added.Item, false)
 				}
 			}
@@ -1469,7 +1470,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				ItemID string `json:"item_id"`
 				Delta  string `json:"delta"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			// TS: text-start once per `text-<item_id>` block, then a
@@ -1485,7 +1486,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.function_call_arguments.delta":
 			var e responses.FunctionCallArgumentsDeltaEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			if accum, ok := s.toolAccum[e.OutputIndex]; ok {
@@ -1502,7 +1503,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		// Emit reasoning-start with providerMetadata so consumers know the item ID.
 		case "response.reasoning_summary_part.added":
 			var e responses.ReasoningSummaryPartAddedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			blockID := "reasoning-" + e.ItemID
@@ -1523,7 +1524,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.reasoning_summary_text.delta":
 			var e responses.ReasoningSummaryTextDeltaEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			blockID := "reasoning-" + e.ItemID
@@ -1546,7 +1547,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				ItemID string `json:"item_id"`
 				Delta  string `json:"delta"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			blockID := "reasoning-" + e.ItemID
@@ -1582,7 +1583,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			var e struct {
 				Annotations []json.RawMessage `json:"annotations,omitempty"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			for _, ann := range e.Annotations {
@@ -1597,7 +1598,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			var e struct {
 				Annotation json.RawMessage `json:"annotation"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			if source := xaiURLCitationSource(e.Annotation); source != nil {
@@ -1618,7 +1619,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			var e struct {
 				ItemID string `json:"item_id"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			if s.seenToolCalls == nil {
@@ -1644,7 +1645,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.output_item.done":
 			var e responses.OutputItemDoneEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			chunk, ok := s.handleOutputItemDone(e)
@@ -1658,7 +1659,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		// enqueued by flush() at the end of the stream.
 		case "response.completed", "response.done":
 			var e responses.ResponseCompletedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			s.recordUsage(e.Response.Usage)
@@ -1691,7 +1692,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 					SafetyIdentifier  string                       `json:"safety_identifier,omitempty"`
 				} `json:"response"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			s.recordUsage(e.Response.Usage)
@@ -1705,7 +1706,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.failed":
 			var e responses.ResponseFailedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			s.finishReason = types.FinishReasonError
@@ -1732,7 +1733,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "error":
 			var e responses.ResponsesStreamErrorEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			streamErr := &XAIStreamError{Code: e.Code, Message: e.Message}
@@ -1776,7 +1777,7 @@ func xaiURLCitationSource(raw json.RawMessage) *types.SourceContent {
 		URL   *string `json:"url"`
 		Title *string `json:"title"`
 	}
-	if json.Unmarshal(raw, &ann) != nil || ann.Type != "url_citation" || ann.URL == nil {
+	if jsonexact.Unmarshal(raw, &ann) != nil || ann.Type != "url_citation" || ann.URL == nil {
 		return nil
 	}
 	var fields map[string]json.RawMessage
@@ -1813,7 +1814,7 @@ func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
 			Annotations []json.RawMessage `json:"annotations"`
 		} `json:"content"`
 	}
-	if json.Unmarshal(raw, &item) != nil {
+	if jsonexact.Unmarshal(raw, &item) != nil {
 		return
 	}
 	blockID := "text-" + item.ID
@@ -1903,7 +1904,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 	var doneType struct {
 		Type string `json:"type"`
 	}
-	if json.Unmarshal(e.Item, &doneType) == nil && doneType.Type == "message" {
+	if jsonexact.Unmarshal(e.Item, &doneType) == nil && doneType.Type == "message" {
 		delete(s.itemTypes, e.OutputIndex)
 		s.queueMessageItem(e.Item)
 		return nil, false
@@ -1931,7 +1932,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		}
-		if json.Unmarshal(e.Item, &doneItem) == nil {
+		if jsonexact.Unmarshal(e.Item, &doneItem) == nil {
 			if doneItem.CallID != "" {
 				callID = doneItem.CallID
 			}
@@ -1977,7 +1978,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			ID               string `json:"id,omitempty"`
 			EncryptedContent string `json:"encrypted_content,omitempty"`
 		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		// TS emits reasoning-start/-end for every done reasoning item, even
@@ -2056,7 +2057,7 @@ func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json
 			Text     string  `json:"text"`
 		} `json:"results,omitempty"`
 	}
-	if json.Unmarshal(raw, &item) != nil {
+	if jsonexact.Unmarshal(raw, &item) != nil {
 		return
 	}
 	if s.seenToolCalls == nil {

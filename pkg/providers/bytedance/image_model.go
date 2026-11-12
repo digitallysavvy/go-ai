@@ -2,8 +2,8 @@ package bytedance
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	stdhttp "net/http"
 	"time"
@@ -144,7 +144,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	var imgResp byteDanceImageResponse
-	if err := json.Unmarshal(respBody, &imgResp); err != nil {
+	if err := jsonexact.Unmarshal(respBody, &imgResp); err != nil {
 		return nil, fmt.Errorf("bytedance: failed to parse image response: %w", err)
 	}
 

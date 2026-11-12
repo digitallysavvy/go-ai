@@ -13,6 +13,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -103,7 +104,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	var response openaiTranscriptionResponse
-	if err := json.Unmarshal(resp.Body, &response); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode transcription response: %w", err)
 	}
 	var rawResponse interface{}

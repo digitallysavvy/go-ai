@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -134,7 +135,7 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	var data struct {
 		Token interface{} `json:"token"`
 	}
-	_ = json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &data)
+	_ = jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &data)
 	token, _ := data.Token.(string)
 	if token == "" {
 		return provider.ClientSecretResult{}, fmt.Errorf("Cartesia realtime client secret response did not include a token.") //nolint:staticcheck // matches TS SDK's exact error text
@@ -257,7 +258,7 @@ func (m *RealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent)
 // session-created event when the server did not send "connected".
 func (m *RealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
 	var event cartesiaRealtimeWireEvent
-	_ = json.Unmarshal(raw, &event)
+	_ = jsonexact.Unmarshal(raw, &event)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

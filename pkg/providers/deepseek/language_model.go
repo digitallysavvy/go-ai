@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -989,7 +990,7 @@ func deepseekStreamErrorText(raw json.RawMessage) string {
 	var withMessage struct {
 		Message *string `json:"message"`
 	}
-	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != nil {
+	if err := jsonexact.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != nil {
 		return *withMessage.Message
 	}
 	var text string

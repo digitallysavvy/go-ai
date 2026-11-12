@@ -15,6 +15,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -189,7 +190,7 @@ func responsesEchoes(data []byte, event bool) (serviceTier, reasoningContext *st
 		echoes
 		Response echoes `json:"response"`
 	}
-	if json.Unmarshal(data, &v) != nil {
+	if jsonexact.Unmarshal(data, &v) != nil {
 		return nil, nil
 	}
 	e := v.echoes
@@ -249,7 +250,7 @@ func responsesCreatedAt(data []byte, event bool) (time.Time, bool) {
 			CreatedAt *float64 `json:"created_at"`
 		} `json:"response"`
 	}
-	if json.Unmarshal(data, &v) != nil {
+	if jsonexact.Unmarshal(data, &v) != nil {
 		return time.Time{}, false
 	}
 	c := v.CreatedAt
@@ -1569,11 +1570,11 @@ func responsesStructuredOutputText(output []json.RawMessage) *string {
 		var peek struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(rawItem, &peek) != nil || peek.Type != "message" {
+		if jsonexact.Unmarshal(rawItem, &peek) != nil || peek.Type != "message" {
 			continue
 		}
 		var item responses.AssistantMessageItem
-		if json.Unmarshal(rawItem, &item) != nil || item.Phase == nil || *item.Phase != "final_answer" {
+		if jsonexact.Unmarshal(rawItem, &item) != nil || item.Phase == nil || *item.Phase != "final_answer" {
 			continue
 		}
 		var text strings.Builder
@@ -1628,7 +1629,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		var peek struct {
 			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(rawItem, &peek); err != nil {
+		if err := jsonexact.Unmarshal(rawItem, &peek); err != nil {
 			continue
 		}
 		if responsesItemIsFunctionCall(peek.Type, rawItem, false) {
@@ -1638,7 +1639,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		switch peek.Type {
 		case "message":
 			var item responses.AssistantMessageItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			for _, part := range item.Content {
@@ -1682,7 +1683,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "function_call":
 			var item responses.FunctionCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			// Row 6be0f51: expand an internal "parallel" wrapper call into
@@ -1709,7 +1710,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			// Row 45f2b6a: decode into a tool call ({callId, operation}) and
 			// drive a tool-calls finish reason like any other tool call.
 			var item responses.ApplyPatchCall
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			rawArgs := marshalNoEscape(map[string]interface{}{
@@ -1733,7 +1734,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		case "computer_call":
 			// Row 0063c2d: decode a batch of UI actions into a tool call.
 			var item responses.ComputerCall
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			computerItemID := ""
@@ -1790,7 +1791,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Text string `json:"text"`
 				} `json:"summary,omitempty"`
 			}
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			// TS pushes one `reasoning` content entry per summary array
@@ -1816,7 +1817,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "custom_tool_call":
 			var item responses.CustomToolCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			// TS: input: JSON.stringify(part.input) -- the JSON string literal
@@ -1835,7 +1836,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			// generated and is executing this JavaScript program; the result
 			// arrives as a separate "program_output" item below.
 			var item responses.ProgramItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			args, rawArgs := programCallArguments(item)
@@ -1861,7 +1862,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		case "program_output":
 			// Row 1f6dd3a: the result of a "program" item's hosted execution.
 			var item responses.ProgramOutputItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
@@ -1875,7 +1876,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "web_search_call":
 			var item WebSearchCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			toolName := webSearchToolName
@@ -1946,7 +1947,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "compaction":
 			var item responses.CompactionEvent
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			chunk := responses.CompactionEventToChunkForProvider(item, providerName)
@@ -1956,7 +1957,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "image_generation_call":
 			var item responses.ImageGenerationCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			imageGenToolName := openAIProviderToolDisplayName(tools, "openai.image_generation", "image_generation")
@@ -1985,7 +1986,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "tool_search_call":
 			var item responses.ToolSearchCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			toolName := openAIToolSearchDisplayName(tools)
@@ -2015,7 +2016,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "tool_search_output":
 			var item responses.ToolSearchOutputItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			toolCallID := item.ID
@@ -2040,7 +2041,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "file_search_call":
 			var item responses.FileSearchCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			fileSearchToolName := openAIProviderToolDisplayName(tools, "openai.file_search", "file_search")
@@ -2088,7 +2089,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "code_interpreter_call":
 			var item responses.CodeInterpreterCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			// TS's schema is `code: z.string().nullable()`, always present
@@ -2141,7 +2142,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "mcp_call":
 			var item responses.McpCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			toolCallID := item.ID
@@ -2205,7 +2206,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "mcp_approval_request":
 			var item responses.McpApprovalRequestItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
+			if err := jsonexact.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
 			approvalRequestID := item.ID
@@ -2294,7 +2295,7 @@ func normalizeResponsesLogprobs(raw json.RawMessage) json.RawMessage {
 			Logprob float64 `json:"logprob"`
 		} `json:"top_logprobs"`
 	}
-	if err := json.Unmarshal(raw, &items); err != nil {
+	if err := jsonexact.Unmarshal(raw, &items); err != nil {
 		return raw
 	}
 	out, err := json.Marshal(items)
@@ -2310,7 +2311,7 @@ func responsesOutputLogprobs(output []json.RawMessage) []json.RawMessage {
 	var out []json.RawMessage
 	for _, raw := range output {
 		var item responses.AssistantMessageItem
-		if json.Unmarshal(raw, &item) != nil || item.Type != "message" {
+		if jsonexact.Unmarshal(raw, &item) != nil || item.Type != "message" {
 			continue
 		}
 		for _, part := range item.Content {
@@ -2363,7 +2364,7 @@ func computerCallArguments(item responses.ComputerCall, raw []byte) (map[string]
 			Message *string `json:"message"`
 		} `json:"pending_safety_checks"`
 	}
-	_ = json.Unmarshal(raw, &present) // raw already decoded into item
+	_ = jsonexact.Unmarshal(raw, &present) // raw already decoded into item
 	checks := make([]interface{}, 0, len(item.PendingSafetyChecks))
 	for i, c := range item.PendingSafetyChecks {
 		hasCode, hasMessage := c.Code != "", c.Message != ""
@@ -2627,7 +2628,7 @@ func openAIResponseRetrievalFlags(output []json.RawMessage) (webSearchSources, f
 			Action  *WebSearchAction  `json:"action"`
 			Results []json.RawMessage `json:"results"`
 		}
-		if json.Unmarshal(raw, &peek) != nil {
+		if jsonexact.Unmarshal(raw, &peek) != nil {
 			continue
 		}
 		switch peek.Type {
@@ -2787,7 +2788,7 @@ func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming
 		var item struct {
 			CallID *string `json:"call_id"`
 		}
-		return json.Unmarshal(raw, &item) == nil && item.CallID != nil
+		return jsonexact.Unmarshal(raw, &item) == nil && item.CallID != nil
 	case "apply_patch_call":
 		// Streaming: decided by the output_item.done handler, which counts
 		// only a completed call announced by output_item.added (TS sets
@@ -3147,7 +3148,7 @@ func (s *responsesStream) resolveEventItemID(outputIndex int, itemID string) str
 	var peek struct {
 		OutputIndex *int `json:"output_index"`
 	}
-	if json.Unmarshal([]byte(s.curEventData), &peek) != nil || peek.OutputIndex == nil {
+	if jsonexact.Unmarshal([]byte(s.curEventData), &peek) != nil || peek.OutputIndex == nil {
 		return itemID
 	}
 	return s.resolveOutputItemID(outputIndex, itemID)
@@ -3397,7 +3398,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		// Parse the "type" discriminator.
 		s.curEventData = event.Data
 		var peek responses.ResponsesStreamEvent
-		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+		if err := jsonexact.Unmarshal([]byte(event.Data), &peek); err != nil {
 			s.markOutputStarted() // TS hands the stream out on a chunk that fails to parse
 			s.queueRawChunk(event.Data)
 			s.markStreamError("")
@@ -3487,7 +3488,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.created":
 			var e responsesCreatedEventWire
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -3518,7 +3519,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.output_item.added":
 			var e responses.OutputItemAddedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -3783,7 +3784,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.output_text.delta":
 			var e responses.OutputTextDeltaEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -3814,7 +3815,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				OutputIndex int    `json:"output_index"`
 				Delta       string `json:"delta"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -3840,7 +3841,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.function_call_arguments.delta":
 			var e responses.FunctionCallArgumentsDeltaEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -3864,7 +3865,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.reasoning_summary_text.delta":
 			var e responses.ReasoningSummaryTextDeltaEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -3889,7 +3890,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.reasoning_summary_part.added":
 			var e responses.ReasoningSummaryPartAddedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -3942,7 +3943,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.reasoning_summary_part.done":
 			var e responses.ReasoningSummaryPartDoneEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -3975,7 +3976,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.output_text.annotation.added":
 			var e responses.OutputTextAnnotationAddedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4006,7 +4007,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.custom_tool_call_input.delta":
 			var e responses.CustomToolCallInputDeltaEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4029,7 +4030,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.apply_patch_call_operation_diff.delta":
 			var e responses.ApplyPatchCallOperationDiffDeltaEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4053,7 +4054,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.apply_patch_call_operation_diff.done":
 			var e responses.ApplyPatchCallOperationDiffDoneEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4080,7 +4081,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.image_generation_call.partial_image":
 			var e responses.ImageGenerationPartialImageEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4104,7 +4105,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.code_interpreter_call_code.delta":
 			var e responses.CodeInterpreterCallCodeDeltaEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4127,7 +4128,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.code_interpreter_call_code.done":
 			var e responses.CodeInterpreterCallCodeDoneEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4160,7 +4161,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.output_item.done":
 			var e responses.OutputItemDoneEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4171,7 +4172,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			var doneItem struct {
 				Type string `json:"type"`
 			}
-			_ = json.Unmarshal(e.Item, &doneItem) //nolint:errcheck // schema-checked above
+			_ = jsonexact.Unmarshal(e.Item, &doneItem) //nolint:errcheck // schema-checked above
 			if providerutils.IsModeledResponsesItemType(doneItem.Type) {
 				s.markOutputStarted()
 			}
@@ -4183,7 +4184,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.completed", "response.incomplete":
 			var e responses.ResponseCompletedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {
 					return chunk, nil
@@ -4217,7 +4218,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "response.failed":
 			var e responses.ResponseFailedEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				// TS: a chunk that fails its schema is an error part, and
 				// flush() still enqueues the finish part.
 				chunk, ok := s.emitDecodeError(peek.Type, err)
@@ -4267,7 +4268,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		case "error":
 			var e responses.ResponsesStreamErrorEvent
-			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			if !s.outputStarted {
@@ -4344,7 +4345,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	var doneType struct {
 		Type string `json:"type"`
 	}
-	if json.Unmarshal(e.Item, &doneType) == nil && doneType.Type != "" {
+	if jsonexact.Unmarshal(e.Item, &doneType) == nil && doneType.Type != "" {
 		itemType = doneType.Type
 	}
 	if responsesItemIsFunctionCall(itemType, e.Item, true) {
@@ -4359,7 +4360,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			// added item had another type, or none arrived): TS still emits
 			// the call from the done item alone.
 			var seed responses.FunctionCallItem
-			if err := json.Unmarshal(e.Item, &seed); err != nil {
+			if err := jsonexact.Unmarshal(e.Item, &seed); err != nil {
 				return nil, false
 			}
 			accum = &responsesToolAccum{
@@ -4378,7 +4379,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// (call_id, name, arguments), not from the accumulated deltas.
 		callID, name, rawArguments := accum.id, accum.name, accum.arguments
 		var item responses.FunctionCallItem
-		if err := json.Unmarshal(e.Item, &item); err == nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err == nil {
 			if item.ID != "" {
 				accum.itemID = item.ID
 			}
@@ -4485,7 +4486,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 
 	case "compaction":
 		var item responses.CompactionEvent
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		chunk := responses.CompactionEventToChunkForProvider(item, s.providerName)
@@ -4500,7 +4501,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			ID    string  `json:"id,omitempty"`
 			Phase *string `json:"phase,omitempty"`
 		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		itemID := s.firstItemIDByOutputIndex[e.OutputIndex]
@@ -4543,7 +4544,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			ID               string `json:"id,omitempty"`
 			EncryptedContent string `json:"encrypted_content,omitempty"`
 		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		// TS resolves the id from the output_index first, so a done item that
@@ -4598,7 +4599,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// already do so) before emitting the final tool-call.
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ApplyPatchCall
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return s.emitDecodeError("apply_patch_call", err)
 		}
 		toolCall := s.ongoingToolCalls[e.OutputIndex]
@@ -4649,7 +4650,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// Row 0063c2d.
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ComputerCall
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return s.emitDecodeError("computer_call", err)
 		}
 		computerItemID := ""
@@ -4713,7 +4714,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		ongoingCustom := s.ongoingToolCalls[e.OutputIndex]
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CustomToolCallItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		if item.Async == nil && ongoingCustom != nil {
@@ -4739,7 +4740,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "web_search_call":
 		delete(s.itemTypes, e.OutputIndex)
 		var item WebSearchCallItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		webSearchResult := &types.ToolResult{
@@ -4770,7 +4771,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// separate "program_output" item's own output_item.done event.
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ProgramItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		args, rawArgs := programCallArguments(item)
@@ -4790,7 +4791,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// Row 1f6dd3a: the result of a "program" item's hosted execution.
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ProgramOutputItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
@@ -4806,7 +4807,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "image_generation_call":
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ImageGenerationCallItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
@@ -4821,7 +4822,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "file_search_call":
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.FileSearchCallItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		var results interface{}
@@ -4869,7 +4870,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		}
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CodeInterpreterCallItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		outputs := make([]map[string]interface{}, 0, len(item.Outputs))
@@ -4899,7 +4900,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		toolCall := s.ongoingToolCalls[e.OutputIndex]
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.ToolSearchCallItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		if toolCall == nil {
@@ -4944,7 +4945,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "tool_search_output":
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ToolSearchOutputItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		toolCallID := item.ID
@@ -4973,7 +4974,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "mcp_call":
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.McpCallItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		toolCallID := item.ID
@@ -5032,7 +5033,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "mcp_approval_request":
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.McpApprovalRequestItem
-		if err := json.Unmarshal(e.Item, &item); err != nil {
+		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
 		approvalRequestID := item.ID
@@ -5157,7 +5158,7 @@ func responsesFailedErrorFrame(data string) json.RawMessage {
 			ServiceTier       json.RawMessage `json:"service_tier"`
 		} `json:"response"`
 	}
-	if json.Unmarshal([]byte(data), &frame) != nil {
+	if jsonexact.Unmarshal([]byte(data), &frame) != nil {
 		return json.RawMessage(data)
 	}
 	out := jsonorder.New()

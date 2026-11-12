@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -348,7 +349,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 			VideoID string `json:"video_id"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Body, &created); err != nil || created.Data == nil || created.Data.VideoID == "" {
+	if err := jsonexact.Unmarshal(resp.Body, &created); err != nil || created.Data == nil || created.Data.VideoID == "" {
 		return nil, providererrors.NewProviderError("heygen", resp.StatusCode, "", "Invalid JSON response", err)
 	}
 
@@ -440,7 +441,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	var envelope struct {
 		Data *heygenStatusData `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Body, &envelope); err != nil || envelope.Data == nil {
+	if err := jsonexact.Unmarshal(resp.Body, &envelope); err != nil || envelope.Data == nil {
 		return nil, providererrors.NewProviderError("heygen", resp.StatusCode, "", "Invalid JSON response", err)
 	}
 	data := envelope.Data

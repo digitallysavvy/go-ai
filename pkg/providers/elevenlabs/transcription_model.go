@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -260,7 +261,7 @@ type elevenlabsWord struct {
 func (w *elevenlabsWord) UnmarshalJSON(data []byte) error {
 	type plain elevenlabsWord
 	var p plain
-	if err := json.Unmarshal(data, &p); err != nil {
+	if err := jsonexact.Unmarshal(data, &p); err != nil {
 		return err
 	}
 	*w = elevenlabsWord(p)

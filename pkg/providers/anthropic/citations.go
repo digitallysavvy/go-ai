@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -232,7 +233,7 @@ func anthropicGenerateID() string {
 // extractCitationDocuments, a web-fetched document has no filename.
 func extractWebFetchCitationDocument(raw json.RawMessage) (citationDocument, bool) {
 	var wire webFetchResultWire
-	if err := json.Unmarshal(raw, &wire); err != nil {
+	if err := jsonexact.Unmarshal(raw, &wire); err != nil {
 		return citationDocument{}, false
 	}
 	if wire.Type != "web_fetch_result" {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"io"
@@ -1397,7 +1398,7 @@ func openResponsesConcatDelta(event *StreamEvent) string {
 	var w struct {
 		Delta json.RawMessage `json:"delta"`
 	}
-	if json.Unmarshal(event.Raw, &w) != nil {
+	if jsonexact.Unmarshal(event.Raw, &w) != nil {
 		return ""
 	}
 	switch string(w.Delta) {
@@ -1940,7 +1941,7 @@ func openResponsesOutputTextAnnotations(rawItem json.RawMessage, content []Conte
 				Annotations json.RawMessage `json:"annotations"`
 			} `json:"content"`
 		}
-		if json.Unmarshal(rawItem, &item) == nil {
+		if jsonexact.Unmarshal(rawItem, &item) == nil {
 			rawParts = item.Content
 		}
 	}
@@ -2092,7 +2093,7 @@ func openResponsesHasIncompleteReason(body []byte) bool {
 			Reason json.RawMessage `json:"reason"`
 		} `json:"incomplete_details"`
 	}
-	if json.Unmarshal(body, &w) != nil {
+	if jsonexact.Unmarshal(body, &w) != nil {
 		return false
 	}
 	return len(w.IncompleteDetails.Reason) > 0 && string(w.IncompleteDetails.Reason) != "null"
@@ -2108,7 +2109,7 @@ func responseFailedHasCode(raw json.RawMessage) bool {
 			} `json:"error"`
 		} `json:"response"`
 	}
-	if json.Unmarshal(raw, &w) != nil {
+	if jsonexact.Unmarshal(raw, &w) != nil {
 		return false
 	}
 	return len(w.Response.Error.Code) > 0 && string(w.Response.Error.Code) != "null"
@@ -2121,7 +2122,7 @@ func (s *openResponsesStream) responseCreatedMetadata(event *StreamEvent) (*prov
 	var wire struct {
 		Response json.RawMessage `json:"response"`
 	}
-	_ = json.Unmarshal(event.Raw, &wire)
+	_ = jsonexact.Unmarshal(event.Raw, &wire)
 	if event.Response == nil {
 		what := "undefined"
 		if string(wire.Response) == "null" {
@@ -2151,7 +2152,7 @@ func openResponsesCreatedAt(body []byte) (time.Time, bool) {
 	var v struct {
 		CreatedAt json.RawMessage `json:"created_at"`
 	}
-	if len(body) == 0 || json.Unmarshal(body, &v) != nil || len(v.CreatedAt) == 0 {
+	if len(body) == 0 || jsonexact.Unmarshal(body, &v) != nil || len(v.CreatedAt) == 0 {
 		return time.Time{}, false
 	}
 	var f *float64

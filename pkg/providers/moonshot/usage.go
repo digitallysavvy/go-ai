@@ -3,6 +3,7 @@ package moonshot
 import (
 	"encoding/json"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -85,7 +86,7 @@ func ConvertMoonshotUsageRaw(raw json.RawMessage) (types.Usage, error) {
 	}
 
 	var known moonshotUsageKnownFields
-	if err := json.Unmarshal(raw, &known); err != nil {
+	if err := jsonexact.Unmarshal(raw, &known); err != nil {
 		return types.Usage{}, err
 	}
 

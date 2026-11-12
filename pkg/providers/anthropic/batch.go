@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -864,7 +865,7 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 			return nil, err
 		}
 		var wire anthropicBatchResultLineWire
-		if err := json.Unmarshal(line, &wire); err != nil {
+		if err := jsonexact.Unmarshal(line, &wire); err != nil {
 			s.err = err
 			return nil, err
 		}
@@ -887,7 +888,7 @@ func anthropicBatchLineError(line []byte) error {
 
 func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLineWire) *provider.BatchV4ItemResult {
 	var result anthropicBatchResultWire
-	if err := json.Unmarshal(wire.Result, &result); err != nil {
+	if err := jsonexact.Unmarshal(wire.Result, &result); err != nil {
 		return invalidAnthropicBatchResult(wire.CustomID)
 	}
 
@@ -898,7 +899,7 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.CustomID, Status: provider.BatchItemExpired}
 	case "errored":
 		var errWire anthropicBatchResultErrorWire
-		if err := json.Unmarshal(result.Error, &errWire); err != nil {
+		if err := jsonexact.Unmarshal(result.Error, &errWire); err != nil {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		// Mirrors TS anthropicBatchResultSchema's discriminated-union member for
@@ -924,7 +925,7 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		var response anthropicResponse
-		if err := json.Unmarshal(validated, &response); err != nil {
+		if err := jsonexact.Unmarshal(validated, &response); err != nil {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		lm := &LanguageModel{provider: s.provider}

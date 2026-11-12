@@ -401,17 +401,9 @@ func TestStream_GroundingMetadataAccumulatedOnFinish(t *testing.T) {
 func TestStream_ToolInputDeltaCarriesID(t *testing.T) {
 	// Verify that tool-input-delta carries the same ID as tool-input-start/end,
 	// matching the TS SDK's `id: toolCall.toolCallId` on tool-input-delta.
-	event := mustMarshal(Response{
-		Candidates: []Candidate{{
-			Content: struct {
-				Parts []Part `json:"parts"`
-				Role  string `json:"role"`
-			}{Parts: []Part{
-				{FunctionCall: &FunctionCall{Name: "my_tool", Args: map[string]interface{}{"key": "val"}, ArgsSet: true}},
-			}},
-			FinishReason: "STOP",
-		}},
-	})
+	// Wire JSON: functionCall keys are matched exactly (zod), so the Go
+	// struct's untagged Args field cannot stand in for "args".
+	event := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"my_tool","args":{"key":"val"}}}],"role":""},"finishReason":"STOP"}]}`
 
 	s := newTestStream(sseStream(event))
 	defer s.Close() //nolint:errcheck
@@ -503,27 +495,9 @@ func TestStream_FunctionCallWithoutArgsEmitsEmptyObject(t *testing.T) {
 }
 
 func TestStream_FunctionCallArgumentsAreAccumulatedAcrossChunks(t *testing.T) {
-	chunk1 := mustMarshal(Response{
-		Candidates: []Candidate{{
-			Content: struct {
-				Parts []Part `json:"parts"`
-				Role  string `json:"role"`
-			}{Parts: []Part{
-				{FunctionCall: &FunctionCall{Name: "tool", Args: map[string]interface{}{"a": "hel"}, ArgsSet: true}},
-			}},
-		}},
-	})
-	chunk2 := mustMarshal(Response{
-		Candidates: []Candidate{{
-			Content: struct {
-				Parts []Part `json:"parts"`
-				Role  string `json:"role"`
-			}{Parts: []Part{
-				{FunctionCall: &FunctionCall{Name: "tool", Args: map[string]interface{}{"a": "hello"}, ArgsSet: true}},
-			}},
-			FinishReason: "STOP",
-		}},
-	})
+	// Wire JSON (exact "args" key, as zod matches it).
+	chunk1 := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool","args":{"a":"hel"}}}],"role":""}}]}`
+	chunk2 := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool","args":{"a":"hello"}}}],"role":""},"finishReason":"STOP"}]}`
 	s := newTestStream(sseStream(chunk1, chunk2))
 
 	var deltas []string

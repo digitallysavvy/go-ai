@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -147,7 +148,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, submitBody, err)
 	}
 	var createResp bflCreateResponse
-	if err := json.Unmarshal(submitBody, &createResp); err != nil {
+	if err := jsonexact.Unmarshal(submitBody, &createResp); err != nil {
 		return nil, fmt.Errorf("failed to decode create response: %w", err)
 	}
 
@@ -711,7 +712,7 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 			return bflResult{}, providerutils.InvalidJSONResponseError("bfl", http.StatusOK, nil, body, err)
 		}
 		var result bflResult
-		if err := json.Unmarshal(body, &result); err != nil {
+		if err := jsonexact.Unmarshal(body, &result); err != nil {
 			return bflResult{}, fmt.Errorf("failed to decode result: %w", err)
 		}
 		if result.Status == "" {

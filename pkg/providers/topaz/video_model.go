@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -244,7 +245,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	var created topazVideoExpressResponse
-	if err := json.Unmarshal(resp.Body, &created); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &created); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode video express response: %w", err)
 	}
 
@@ -323,7 +324,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, err
 	}
 	var status topazVideoStatusResponse
-	if err := json.Unmarshal(resp.Body, &status); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &status); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode video status response: %w", err)
 	}
 

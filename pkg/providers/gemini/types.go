@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -38,14 +39,14 @@ type candidateFields Candidate
 // the API sent.
 func (c *Candidate) UnmarshalJSON(data []byte) error {
 	var fields candidateFields
-	if err := json.Unmarshal(data, &fields); err != nil {
+	if err := jsonexact.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	var present struct {
 		FinishMessage     *string `json:"finishMessage"`
 		ContinuationToken *string `json:"continuationToken"`
 	}
-	_ = json.Unmarshal(data, &present)
+	_ = jsonexact.Unmarshal(data, &present)
 	*c = Candidate(fields)
 	c.finishMessageSet = present.FinishMessage != nil
 	c.continuationTokenSet = present.ContinuationToken != nil
@@ -139,7 +140,7 @@ func (u *UsageMetadata) UnmarshalJSON(data []byte) error {
 	}
 	// TS counts are z.number(), so a fractional count is a valid frame; Go's
 	// typed fields are ints, so decode from an integer-coerced copy.
-	if err := json.Unmarshal(coerceUsageCounts(data), &fields.usageMetadataFields); err != nil {
+	if err := jsonexact.Unmarshal(coerceUsageCounts(data), &fields.usageMetadataFields); err != nil {
 		return err
 	}
 	*u = UsageMetadata(fields.usageMetadataFields)
@@ -201,7 +202,7 @@ func promptFeedbackBlockReason(raw json.RawMessage) string {
 	var pf struct {
 		BlockReason string `json:"blockReason"`
 	}
-	if err := json.Unmarshal(raw, &pf); err != nil {
+	if err := jsonexact.Unmarshal(raw, &pf); err != nil {
 		return ""
 	}
 	return pf.BlockReason
@@ -276,7 +277,7 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 		PartialArgs  json.RawMessage `json:"partialArgs"`
 		WillContinue *bool           `json:"willContinue"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := jsonexact.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	f.ID = raw.ID
@@ -320,7 +321,7 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 func (p *Part) UnmarshalJSON(b []byte) error {
 	type plain Part
 	var v plain
-	if err := json.Unmarshal(lenientPart(b), &v); err != nil {
+	if err := jsonexact.Unmarshal(lenientPart(b), &v); err != nil {
 		return err
 	}
 	*p = Part(v)
@@ -330,7 +331,7 @@ func (p *Part) UnmarshalJSON(b []byte) error {
 			Args json.RawMessage `json:"args"`
 		} `json:"toolCall"`
 	}
-	auxErr := json.Unmarshal(b, &aux)
+	auxErr := jsonexact.Unmarshal(b, &aux)
 	// TS checks `'text' in part && part.text != null`: a part decoded without
 	// a text value takes no part in the empty-text/thoughtSignature handling.
 	p.textAbsent = auxErr == nil && (len(aux.Text) == 0 || string(aux.Text) == "null")

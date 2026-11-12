@@ -2,8 +2,8 @@ package mistral
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"time"
@@ -86,7 +86,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, err
 	}
 	var response mistralSpeechResponse
-	if err := json.Unmarshal(resp.Body, &response); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode speech response: %w", err)
 	}
 	// TS returns audio_data as the base64 string, which generateSpeech

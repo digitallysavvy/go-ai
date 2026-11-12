@@ -3,6 +3,7 @@ package alibaba
 import (
 	"encoding/json"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -45,7 +46,7 @@ type AlibabaCompletionTokensDetails struct {
 func (u *AlibabaUsage) UnmarshalJSON(data []byte) error {
 	type alias AlibabaUsage
 	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.Unmarshal(data, &a); err != nil {
 		return err
 	}
 	*u = AlibabaUsage(a)

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -41,7 +42,7 @@ type prodiaJobResponse struct {
 func (j *prodiaJobResponse) UnmarshalJSON(data []byte) error {
 	type plain prodiaJobResponse
 	var p plain
-	if err := json.Unmarshal(data, &p); err != nil {
+	if err := jsonexact.Unmarshal(data, &p); err != nil {
 		return err
 	}
 	var keys map[string]json.RawMessage

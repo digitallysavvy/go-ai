@@ -3,7 +3,6 @@ package topaz
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -101,7 +101,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	var submit topazImageSubmitResponse
-	if err := json.Unmarshal(resp.Body, &submit); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &submit); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode enhance response: %w", err)
 	}
 	if submit.ProcessID == "" {
@@ -454,7 +454,7 @@ func (m *ImageModel) getStatus(ctx context.Context, processID string, headers ma
 		return nil, err
 	}
 	var status topazImageStatusResponse
-	if err := json.Unmarshal(resp.Body, &status); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &status); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode status response: %w", err)
 	}
 	return &status, nil
@@ -496,7 +496,7 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		return nil, nil, err
 	}
 	var downloadResp topazImageDownloadResponse
-	if err := json.Unmarshal(resp.Body, &downloadResp); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &downloadResp); err != nil {
 		return nil, nil, fmt.Errorf("topaz: failed to decode download response: %w", err)
 	}
 	if downloadResp.DownloadURL == "" {

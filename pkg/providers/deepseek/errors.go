@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -95,7 +96,7 @@ func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.Raw
 		Type    string          `json:"type"`
 		Code    json.RawMessage `json:"code"`
 	}
-	_ = json.Unmarshal(raw, &payload)
+	_ = jsonexact.Unmarshal(raw, &payload)
 	message := deepseekStreamErrorText(raw)
 	var code interface{}
 	if len(payload.Code) > 0 {

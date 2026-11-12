@@ -3,6 +3,8 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // MarshalJSON implements custom JSON marshaling for ContextManagement
@@ -221,7 +223,7 @@ func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 		AppliedEdits []json.RawMessage `json:"applied_edits"`
 	}
 
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := jsonexact.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
@@ -232,7 +234,7 @@ func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 		var typeCheck struct {
 			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(rawEdit, &typeCheck); err != nil {
+		if err := jsonexact.Unmarshal(rawEdit, &typeCheck); err != nil {
 			return err
 		}
 
@@ -241,21 +243,21 @@ func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 		switch typeCheck.Type {
 		case "clear_tool_uses_20250919":
 			var e AppliedClearToolUsesEdit
-			if err := json.Unmarshal(rawEdit, &e); err != nil {
+			if err := jsonexact.Unmarshal(rawEdit, &e); err != nil {
 				return err
 			}
 			edit = &e
 
 		case "clear_thinking_20251015":
 			var e AppliedClearThinkingEdit
-			if err := json.Unmarshal(rawEdit, &e); err != nil {
+			if err := jsonexact.Unmarshal(rawEdit, &e); err != nil {
 				return err
 			}
 			edit = &e
 
 		case "compact_20260112":
 			var e AppliedCompactEdit
-			if err := json.Unmarshal(rawEdit, &e); err != nil {
+			if err := jsonexact.Unmarshal(rawEdit, &e); err != nil {
 				return err
 			}
 			edit = &e

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1137,7 +1138,7 @@ func (m *LanguageModel) applyChatLogprobs(result *types.GenerateResult, body []b
 			} `json:"logprobs"`
 		} `json:"choices"`
 	}
-	if json.Unmarshal(body, &wire) != nil || len(wire.Choices) == 0 || wire.Choices[0].Logprobs == nil {
+	if jsonexact.Unmarshal(body, &wire) != nil || len(wire.Choices) == 0 || wire.Choices[0].Logprobs == nil {
 		return
 	}
 	lp := wire.Choices[0].Logprobs
@@ -1387,7 +1388,7 @@ type openAIUsage struct {
 func (u *openAIUsage) UnmarshalJSON(b []byte) error {
 	type plain openAIUsage
 	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
 		return err
 	}
 	*u = openAIUsage(p)
@@ -2077,7 +2078,7 @@ func openAIStreamErrorText(raw json.RawMessage) string {
 	var withMessage struct {
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
+	if err := jsonexact.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
 		return withMessage.Message
 	}
 	var text string
@@ -2242,7 +2243,7 @@ func (m *openAIMessage) UnmarshalJSON(b []byte) error {
 		*plain
 		Content json.RawMessage `json:"content"`
 	}{plain: (*plain)(m)}
-	if err := json.Unmarshal(b, &aux); err != nil {
+	if err := jsonexact.Unmarshal(b, &aux); err != nil {
 		return err
 	}
 	m.Content, m.ContentThinking = "", ""
@@ -2259,7 +2260,7 @@ func (m *openAIMessage) UnmarshalJSON(b []byte) error {
 		Text     json.RawMessage `json:"text"`
 		Thinking json.RawMessage `json:"thinking"`
 	}
-	if err := json.Unmarshal(aux.Content, &parts); err != nil {
+	if err := jsonexact.Unmarshal(aux.Content, &parts); err != nil {
 		return err
 	}
 	var text, thinking strings.Builder
@@ -2280,7 +2281,7 @@ func (m *openAIMessage) UnmarshalJSON(b []byte) error {
 					Type string `json:"type"`
 					Text string `json:"text"`
 				}
-				if json.Unmarshal(raw, &chunk) == nil && chunk.Type == "text" {
+				if jsonexact.Unmarshal(raw, &chunk) == nil && chunk.Type == "text" {
 					thinking.WriteString(chunk.Text)
 				}
 			}

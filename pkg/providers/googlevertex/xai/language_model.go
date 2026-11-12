@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -451,7 +452,7 @@ func newVertexXaiStream(reader io.ReadCloser) *vertexXaiStream {
 			return nil
 		}
 		var u vertexXaiUsage
-		if json.Unmarshal(b, &u) != nil {
+		if jsonexact.Unmarshal(b, &u) != nil {
 			return nil
 		}
 		converted := convertVertexXaiUsage(&u)

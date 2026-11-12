@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -101,7 +102,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	var parsed xaiTranscriptionResponse
-	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode xAI transcription response: %w", err)
 	}
 
@@ -125,7 +126,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		var rawWords struct {
 			Words []map[string]json.RawMessage `json:"words"`
 		}
-		_ = json.Unmarshal(resp.Body, &rawWords)
+		_ = jsonexact.Unmarshal(resp.Body, &rawWords)
 		words := make([]map[string]interface{}, 0, len(parsed.Words))
 		for i, w := range parsed.Words {
 			entry := map[string]interface{}{"text": w.Text, "start": w.Start, "end": w.End}

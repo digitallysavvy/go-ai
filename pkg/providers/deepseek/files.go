@@ -3,7 +3,6 @@ package deepseek
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -144,7 +144,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Purpose   string   `json:"purpose"`
 		ExpiresAt *float64 `json:"expires_at"`
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 	if out.Object != "" && out.Object != "file" {

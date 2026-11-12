@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -164,7 +165,7 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 	}
 
 	var event hfStreamEvent
-	if err := json.Unmarshal([]byte(data), &event); err != nil {
+	if err := jsonexact.Unmarshal([]byte(data), &event); err != nil {
 		return nil, nil //nolint:nilerr // malformed known-shape event: skip, matching TS's silent fallthrough
 	}
 

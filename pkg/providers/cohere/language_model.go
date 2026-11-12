@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
@@ -495,7 +496,7 @@ func convertCohereUsage(raw json.RawMessage) types.Usage {
 		} `json:"tokens"`
 		CachedTokens *float64 `json:"cached_tokens"`
 	}
-	if err := json.Unmarshal(raw, &usage); err != nil {
+	if err := jsonexact.Unmarshal(raw, &usage); err != nil {
 		return types.Usage{}
 	}
 
@@ -809,12 +810,12 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			Type  string          `json:"type"`
 			Delta json.RawMessage `json:"delta"`
 		}
-		_ = json.Unmarshal([]byte(event.Data), &ev) //nolint:errcheck // validated above
+		_ = jsonexact.Unmarshal([]byte(event.Data), &ev) //nolint:errcheck // validated above
 		var indexed struct {
 			Index float64 `json:"index"`
 		}
 		// A number on every member that reads it (validated above).
-		_ = json.Unmarshal([]byte(event.Data), &indexed) //nolint:errcheck // see above
+		_ = jsonexact.Unmarshal([]byte(event.Data), &indexed) //nolint:errcheck // see above
 		index := indexed.Index
 
 		switch ev.Type {
@@ -825,7 +826,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			// TS: response-metadata { id: value.id ?? undefined } on every
 			// message-start, with or without an id.
 			meta := &provider.ResponseMetadata{}
-			if json.Unmarshal([]byte(event.Data), &start) == nil && start.ID != nil {
+			if jsonexact.Unmarshal([]byte(event.Data), &start) == nil && start.ID != nil {
 				meta.ID = *start.ID
 			}
 			return &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta}, nil
@@ -838,7 +839,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					} `json:"content"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err != nil {
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err != nil {
 				continue
 			}
 			// TS: ids are String(value.index) for text and reasoning blocks.
@@ -859,7 +860,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					Content map[string]json.RawMessage `json:"content"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err != nil {
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err != nil {
 				continue
 			}
 			// The content is z.union([{text}, {thinking}]): the first member
@@ -904,7 +905,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					} `json:"tool_calls"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err == nil {
 				id := delta.Message.ToolCalls.ID
 				s.pendingTool = &cohereV2PendingTool{
 					id:        id,
@@ -931,7 +932,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					} `json:"tool_calls"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err == nil {
 				// TS keeps a single pendingToolCall (the latest start).
 				if tc := s.pendingTool; tc != nil && !tc.finished {
 					tc.arguments += delta.Message.ToolCalls.Function.Arguments
@@ -981,7 +982,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				FinishReason string          `json:"finish_reason"`
 				Usage        json.RawMessage `json:"usage"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
+			if err := jsonexact.Unmarshal(ev.Delta, &delta); err == nil {
 				s.finishSeen = true
 				s.finishRaw = delta.FinishReason
 				s.finishUsage = delta.Usage
@@ -997,7 +998,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					Citations json.RawMessage `json:"citations"`
 				} `json:"message"`
 			}
-			if json.Unmarshal(ev.Delta, &delta) != nil || delta.Message == nil {
+			if jsonexact.Unmarshal(ev.Delta, &delta) != nil || delta.Message == nil {
 				continue
 			}
 			raw := delta.Message.Citations

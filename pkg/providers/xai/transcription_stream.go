@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -425,7 +426,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 				}
 			}
 			var raw xaiStreamingTranscriptionEvent
-			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
 				continue
 			}
 

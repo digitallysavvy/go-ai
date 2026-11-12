@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -769,7 +770,7 @@ type xaiBatchTextUsageWire struct {
 func (u *xaiBatchTextUsageWire) UnmarshalJSON(data []byte) error {
 	type alias xaiBatchTextUsageWire
 	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.Unmarshal(data, &a); err != nil {
 		return err
 	}
 	*u = xaiBatchTextUsageWire(a)

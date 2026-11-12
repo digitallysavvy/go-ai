@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
@@ -188,7 +189,7 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		Name       string `json:"name"`
 		ExpireTime string `json:"expireTime"`
 	}
-	if err := json.Unmarshal([]byte(textdecode.UTF8(respBody)), &data); err != nil {
+	if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(respBody)), &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	var expiresAt *int64
@@ -498,7 +499,7 @@ func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []prov
 	var data struct {
 		UsageMetadata *googleRealtimeUsageMetadata `json:"usageMetadata"`
 	}
-	_ = json.Unmarshal(raw, &data)
+	_ = jsonexact.Unmarshal(raw, &data)
 	usage := mapGoogleRealtimeUsage(data.UsageMetadata)
 	if usage == nil {
 		return events
@@ -628,7 +629,7 @@ func (m *googleRealtimeEventMapper) parseEvent(raw json.RawMessage) []provider.R
 				} `json:"functionCalls"`
 			} `json:"toolCall"`
 		}
-		_ = json.Unmarshal(raw, &ordered)
+		_ = jsonexact.Unmarshal(raw, &ordered)
 		events := make([]provider.RealtimeServerEvent, 0, len(calls)*2)
 		for i, rawCall := range calls {
 			call, _ := rawCall.(map[string]interface{})

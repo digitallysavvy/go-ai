@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -109,7 +110,7 @@ func newGroqStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.RawMess
 		Message *string `json:"message"`
 		Type    string  `json:"type"`
 	}
-	_ = json.Unmarshal(raw, &payload)
+	_ = jsonexact.Unmarshal(raw, &payload)
 	// TS createGroqStreamError uses error.message as is: a present "" is the
 	// message; only a frame without a string message falls back.
 	var message string

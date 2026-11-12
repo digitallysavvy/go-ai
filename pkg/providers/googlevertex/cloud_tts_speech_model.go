@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"strings"
@@ -165,7 +166,7 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 	var parsed struct {
 		AudioContent string `json:"audioContent"`
 	}
-	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &parsed); err != nil {
 		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to parse response: "+err.Error(), err)
 	}
 

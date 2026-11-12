@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -94,7 +95,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	var parsed struct {
 		Results []bedrockRerankWireItem `json:"results"`
 	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	if err := jsonexact.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode rerank response: %w", err)
 	}
 	ranking := make([]types.RerankItem, len(parsed.Results))

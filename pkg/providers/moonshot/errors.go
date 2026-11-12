@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -32,13 +33,13 @@ type moonshotErrorPayload struct {
 func (p *moonshotErrorPayload) UnmarshalJSON(b []byte) error {
 	type plain moonshotErrorPayload
 	var v plain
-	if err := json.Unmarshal(b, &v); err != nil {
+	if err := jsonexact.Unmarshal(b, &v); err != nil {
 		return err
 	}
 	var w struct {
 		Code json.RawMessage `json:"code"`
 	}
-	_ = json.Unmarshal(b, &w)
+	_ = jsonexact.Unmarshal(b, &w)
 	v.hasCode = len(w.Code) > 0 && string(w.Code) != "null"
 	*p = moonshotErrorPayload(v)
 	return nil

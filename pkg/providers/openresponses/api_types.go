@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
@@ -506,7 +507,7 @@ func (o *OutputItem) UnmarshalJSON(data []byte) error {
 		Input            json.RawMessage `json:"input"`
 		EncryptedContent json.RawMessage `json:"encrypted_content"`
 	}
-	if json.Unmarshal(data, &w) == nil {
+	if jsonexact.Unmarshal(data, &w) == nil {
 		alias.Type = openResponsesWireType(w.Type)
 		alias.ID = openResponsesWireString(w.ID)
 		alias.Role = openResponsesWireString(w.Role)
@@ -639,7 +640,7 @@ func (e *ResponseError) UnmarshalJSON(data []byte) error {
 		Message    json.RawMessage `json:"message"`
 		StatusCode json.RawMessage `json:"status_code"`
 	}
-	if err := json.Unmarshal(data, &w); err != nil {
+	if err := jsonexact.Unmarshal(data, &w); err != nil {
 		return err
 	}
 	*e = ResponseError{Code: responseErrorText(w.Code), Message: responseErrorText(w.Message)}
@@ -773,7 +774,7 @@ func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 		Input          json.RawMessage `json:"input"`
 		Error          json.RawMessage `json:"error"`
 	}
-	if err := json.Unmarshal(data, &w); err != nil {
+	if err := jsonexact.Unmarshal(data, &w); err != nil {
 		return err
 	}
 	ev := StreamEvent{

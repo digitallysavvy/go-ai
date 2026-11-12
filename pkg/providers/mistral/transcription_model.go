@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -102,7 +103,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	var response mistralTranscriptionResponse
-	if err := json.Unmarshal(resp.Body, &response); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode transcription response: %w", err)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"reflect"
@@ -495,7 +496,7 @@ func (m *ImageModel) pollImagePredictionOnce(ctx context.Context, current replic
 		return replicateImagePrediction{}, err
 	}
 	var next replicateImagePrediction
-	if err := json.Unmarshal(polled.Data, &next); err != nil {
+	if err := jsonexact.Unmarshal(polled.Data, &next); err != nil {
 		return replicateImagePrediction{}, fmt.Errorf("failed to decode status response: %w", err)
 	}
 	if wait {

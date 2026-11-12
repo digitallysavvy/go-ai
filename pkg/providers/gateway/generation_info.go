@@ -2,10 +2,10 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -86,7 +86,7 @@ func (p *Provider) GetGenerationInfo(ctx context.Context, params GenerationInfoP
 		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	var envelope generationInfoEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
+	if err := jsonexact.Unmarshal(body, &envelope); err != nil {
 		return nil, p.handleErrorWithContext(ctx, fmt.Errorf("failed to decode generation info response: %w", err))
 	}
 

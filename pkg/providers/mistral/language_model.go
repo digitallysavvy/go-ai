@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -660,7 +661,7 @@ func parseMistralMessageContent(raw json.RawMessage) (text string, parts []types
 		return text, parts
 	case '[':
 		var wire []mistralContentPart
-		if err := json.Unmarshal(raw, &wire); err != nil {
+		if err := jsonexact.Unmarshal(raw, &wire); err != nil {
 			return "", nil
 		}
 		var textBuilder strings.Builder
@@ -891,7 +892,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 					Text string `json:"text"`
 				} `json:"thinking"`
 			}
-			if err := json.Unmarshal(contentRaw, &parts); err == nil {
+			if err := jsonexact.Unmarshal(contentRaw, &parts); err == nil {
 				// Mirrors TS mistral-chat-language-model.ts: every thinking
 				// part in the delta is emitted as reasoning first, then all
 				// text parts are joined into one text delta (ending any

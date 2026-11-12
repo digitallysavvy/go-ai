@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
@@ -262,7 +263,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	var response perplexityAgentResponse
-	if err := json.Unmarshal(resp.Body, &response); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &response); err != nil {
 		return nil, &providererrors.ProviderError{
 			Provider:        "perplexity",
 			StatusCode:      200,
@@ -493,7 +494,7 @@ func perplexityRawUsageBytes(rawBody []byte) []byte {
 	var probe struct {
 		Usage json.RawMessage `json:"usage"`
 	}
-	if err := json.Unmarshal(rawBody, &probe); err != nil {
+	if err := jsonexact.Unmarshal(rawBody, &probe); err != nil {
 		return nil
 	}
 	return probe.Usage
@@ -834,7 +835,7 @@ func (s *perplexityAgentStream) processEvent(data string) {
 			var probe struct {
 				Error map[string]interface{} `json:"error"`
 			}
-			if json.Unmarshal([]byte(data), &probe) == nil && probe.Error != nil {
+			if jsonexact.Unmarshal([]byte(data), &probe) == nil && probe.Error != nil {
 				errorObject = probe.Error
 			}
 		}
@@ -1041,7 +1042,7 @@ func perplexityExtractNestedUsageBytes(raw []byte) []byte {
 			Usage json.RawMessage `json:"usage"`
 		} `json:"response"`
 	}
-	if err := json.Unmarshal(raw, &probe); err != nil {
+	if err := jsonexact.Unmarshal(raw, &probe); err != nil {
 		return nil
 	}
 	return probe.Response.Usage

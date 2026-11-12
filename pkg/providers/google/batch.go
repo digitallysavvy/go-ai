@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/geminischema"
@@ -302,7 +303,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	if err := googleValidator(zGoogleBatchFileUpload)(uploadResp.StatusCode, uploadResp.Header, uploadBody); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(uploadBody, &result); err != nil {
+	if err := jsonexact.Unmarshal(uploadBody, &result); err != nil {
 		return nil, err
 	}
 	return &googleBatchUploadedFile{Name: result.File.Name, ExpirationTime: result.File.ExpirationTime}, nil
@@ -797,7 +798,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 			BlockReason *string `json:"blockReason"`
 		} `json:"promptFeedback"`
 	}
-	if err := json.Unmarshal(response, &preview); err == nil && len(preview.Candidates) == 0 {
+	if err := jsonexact.Unmarshal(response, &preview); err == nil && len(preview.Candidates) == 0 {
 		message := "Google returned a batch response without any candidates."
 		code := "invalid_response"
 		errType := ""
@@ -832,7 +833,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	// TS safeValidateTypes(responseSchema): a result that does not match the
 	// schema fails that item.
 	var decoded gemini.GenerateResponse
-	if geminischema.GenerateValidationMessage(string(response)) != "" || json.Unmarshal(response, &decoded) != nil {
+	if geminischema.GenerateValidationMessage(string(response)) != "" || jsonexact.Unmarshal(response, &decoded) != nil {
 		return &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     key,
@@ -1018,7 +1019,7 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 			return nil, err
 		}
 		var wire googleBatchResultLineWire
-		if err := json.Unmarshal(line, &wire); err != nil {
+		if err := jsonexact.Unmarshal(line, &wire); err != nil {
 			s.err = err
 			return nil, err
 		}

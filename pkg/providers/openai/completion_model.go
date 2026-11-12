@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -380,7 +381,7 @@ func completionLogprobs(raw json.RawMessage) json.RawMessage {
 		TokenLogprobs json.RawMessage `json:"token_logprobs"`
 		TopLogprobs   json.RawMessage `json:"top_logprobs,omitempty"`
 	}
-	if json.Unmarshal(raw, &picked) != nil || len(picked.Tokens) == 0 || len(picked.TokenLogprobs) == 0 {
+	if jsonexact.Unmarshal(raw, &picked) != nil || len(picked.Tokens) == 0 || len(picked.TokenLogprobs) == 0 {
 		return raw // the response schema check rejects this shape first
 	}
 	out, err := json.Marshal(picked)
@@ -783,7 +784,7 @@ func (c *openAICompletionChunkChoice) UnmarshalJSON(b []byte) error {
 		plain
 		Text *string `json:"text"`
 	}
-	if err := json.Unmarshal(b, &aux); err != nil {
+	if err := jsonexact.Unmarshal(b, &aux); err != nil {
 		return err
 	}
 	*c = openAICompletionChunkChoice(aux.plain)

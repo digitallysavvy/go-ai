@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -121,7 +122,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 			OpeningAnimationMs json.RawMessage `json:"opening_animation_ms"`
 		} `json:"data"`
 	}
-	_ = json.Unmarshal(resp.Body, &rawResponse)
+	_ = jsonexact.Unmarshal(resp.Body, &rawResponse)
 	nullable := func(raw json.RawMessage, v *int) (interface{}, bool) {
 		if raw == nil {
 			return nil, false

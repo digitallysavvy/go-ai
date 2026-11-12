@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -49,7 +50,7 @@ func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
 		var present struct {
 			Error map[string]json.RawMessage `json:"error"`
 		}
-		_ = json.Unmarshal(body, &present)
+		_ = jsonexact.Unmarshal(body, &present)
 		for _, key := range []string{"code", "param"} {
 			if raw, ok := present.Error[key]; ok {
 				var v interface{}

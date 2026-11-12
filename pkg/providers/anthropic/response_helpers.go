@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -182,7 +183,7 @@ func convertAdvisorResult(raw json.RawMessage) (map[string]interface{}, bool) {
 		StopReason       *string `json:"stop_reason"`
 		ErrorCode        string  `json:"error_code"`
 	}
-	_ = json.Unmarshal(raw, &wire)
+	_ = jsonexact.Unmarshal(raw, &wire)
 	switch wire.Type {
 	case "advisor_result":
 		out := map[string]interface{}{"type": wire.Type, "text": wire.Text}

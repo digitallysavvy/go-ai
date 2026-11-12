@@ -10,6 +10,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -535,7 +536,7 @@ type groqUsage struct {
 func (u *groqUsage) UnmarshalJSON(b []byte) error {
 	type plain groqUsage
 	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
 		return err
 	}
 	*u = groqUsage(p)
@@ -808,7 +809,7 @@ func groqStreamErrorText(raw json.RawMessage) string {
 	var withMessage struct {
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
+	if err := jsonexact.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
 		return withMessage.Message
 	}
 	var text string

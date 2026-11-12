@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -110,7 +111,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			return nil, err
 		}
 		var parsed xaiSpeechTimestampsResponse
-		if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		if err := jsonexact.Unmarshal(resp.Body, &parsed); err != nil {
 			return nil, providererrors.NewProviderError(m.Provider(), 0, "",
 				fmt.Sprintf("failed to decode speech timestamps envelope: %v", err), err)
 		}

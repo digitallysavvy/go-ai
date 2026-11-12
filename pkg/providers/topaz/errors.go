@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -58,7 +59,7 @@ func parseTopazErrorData(body []byte) (data topazErrorData, ok bool) {
 // validTopazIssues reports whether raw is an array of objects (z.object
 // rejects null and non-objects), filling issues.
 func validTopazIssues(raw json.RawMessage, issues *[]*topazIssue) bool {
-	if json.Unmarshal(raw, issues) != nil {
+	if jsonexact.Unmarshal(raw, issues) != nil {
 		return false
 	}
 	for _, issue := range *issues {
@@ -100,7 +101,7 @@ func topazBaseErrorMessage(data topazErrorData) string {
 		}
 
 		var asIssues []*topazIssue
-		if err := json.Unmarshal(data.Detail, &asIssues); err == nil {
+		if err := jsonexact.Unmarshal(data.Detail, &asIssues); err == nil {
 			var messages []string
 			for _, issue := range asIssues {
 				if issue != nil && issue.Msg != nil {

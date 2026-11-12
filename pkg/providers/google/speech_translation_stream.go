@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strconv"
 	"sync"
@@ -443,7 +444,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			}
 
 			var message googleLiveSpeechTranslationServerMessage
-			if jsonErr := json.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
 				continue
 			}
 

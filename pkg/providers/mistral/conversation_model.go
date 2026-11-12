@@ -12,6 +12,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -198,11 +199,11 @@ func parseConversationContent(raw json.RawMessage) []conversationContent {
 		return []conversationContent{{Type: "text", Text: s}}
 	case '[':
 		var list []conversationContent
-		_ = json.Unmarshal(raw, &list)
+		_ = jsonexact.Unmarshal(raw, &list)
 		return list
 	default:
 		var one conversationContent
-		_ = json.Unmarshal(raw, &one)
+		_ = jsonexact.Unmarshal(raw, &one)
 		return []conversationContent{one}
 	}
 }
@@ -331,7 +332,7 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 		return nil, (&LanguageModel{provider: m.provider, modelID: m.modelID}).handleError(err)
 	}
 	var response conversationResponse
-	if err := json.Unmarshal(raw, &response); err != nil {
+	if err := jsonexact.Unmarshal(raw, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode conversation response: %w", err)
 	}
 	converter := m.newConverter(opts.Tools)
@@ -538,7 +539,7 @@ func (s *conversationStream) handle(data string) {
 		Function       *string                `json:"function"`
 		Info           map[string]interface{} `json:"info"`
 	}
-	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+	if err := jsonexact.Unmarshal([]byte(data), &ev); err != nil {
 		s.hasError = true
 		msg, perr := providerutils.ChunkParseFailure(data, err)
 		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})

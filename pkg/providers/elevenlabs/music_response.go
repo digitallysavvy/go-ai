@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -132,7 +133,7 @@ func parseMusicMetadata(text string) (*musicTimestampsResponse, error) {
 			EndMs   float64 `json:"end_ms"`
 		} `json:"words_timestamps"`
 	}
-	_ = json.Unmarshal([]byte(text), &decoded)
+	_ = jsonexact.Unmarshal([]byte(text), &decoded)
 	out := &musicTimestampsResponse{raw: raw}
 	if m, ok := raw.(map[string]interface{}); ok && m["words_timestamps"] != nil {
 		out.hasWords = true

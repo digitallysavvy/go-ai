@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/verceloidc"
@@ -714,7 +715,7 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 	// JSON response" with the response status, which asGatewayError turns
 	// into a GatewayResponseError (gateway-fetch-metadata.ts:37).
 	var wire metadataResponseWire
-	if err := json.Unmarshal(resp.Body, &wire); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &wire); err != nil {
 		return nil, p.handleErrorWithContext(ctx, providerutils.InvalidJSONResponseError("gateway", resp.StatusCode, resp.Headers, resp.Body, nil))
 	}
 	if err := validateMetadataResponse(resp.Body); err != nil {
@@ -787,7 +788,7 @@ func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
 		Balance   string `json:"balance"`
 		TotalUsed string `json:"total_used"`
 	}
-	if err := json.Unmarshal(body, &wire); err != nil {
+	if err := jsonexact.Unmarshal(body, &wire); err != nil {
 		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	return &CreditsInfo{
@@ -1191,7 +1192,7 @@ func validateMetadataResponse(body []byte) error {
 			} `json:"specification"`
 		} `json:"models"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return err
 	}
 	if raw.Models == nil {

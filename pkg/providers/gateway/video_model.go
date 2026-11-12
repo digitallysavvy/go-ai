@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -404,7 +405,7 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, "", bad)
 		}
 		var event SSEVideoEvent
-		if err := json.Unmarshal([]byte(data), &event); err != nil {
+		if err := jsonexact.Unmarshal([]byte(data), &event); err != nil {
 			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, "", err)
 		}
 

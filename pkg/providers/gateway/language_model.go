@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
@@ -129,7 +130,7 @@ func parseGatewayWarnings(raw json.RawMessage) []types.Warning {
 		return []types.Warning{}
 	}
 	var warnings []types.Warning
-	if err := json.Unmarshal(raw, &warnings); err != nil || warnings == nil {
+	if err := jsonexact.Unmarshal(raw, &warnings); err != nil || warnings == nil {
 		return []types.Warning{}
 	}
 	return warnings
@@ -211,7 +212,7 @@ func (p *gatewayStreamErrorPayload) UnmarshalJSON(b []byte) error {
 	if strings.HasPrefix(trimmed, "{") {
 		type plain gatewayStreamErrorPayload
 		var v plain
-		if err := json.Unmarshal(b, &v); err == nil {
+		if err := jsonexact.Unmarshal(b, &v); err == nil {
 			*p = gatewayStreamErrorPayload(v)
 			return nil
 		}
@@ -310,7 +311,7 @@ func decodeGatewayStreamChunk(data []byte, chunk *gatewayStreamChunk) error {
 		return err
 	}
 	_ = json.Unmarshal(data, &chunk.raw)
-	_ = json.Unmarshal(data, &chunk.part)
+	_ = jsonexact.Unmarshal(data, &chunk.part)
 	if chunk.raw == nil {
 		return nil
 	}
@@ -640,7 +641,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 				file.FileData = types.FileData{Type: types.FileDataTypeData, DataString: dataString, MediaType: chunk.MediaType}
 			} else {
 				var fileData types.FileData
-				if json.Unmarshal(chunk.Data, &fileData) == nil {
+				if jsonexact.Unmarshal(chunk.Data, &fileData) == nil {
 					file.FileData = fileData
 					file.URL = fileData.URL
 				}

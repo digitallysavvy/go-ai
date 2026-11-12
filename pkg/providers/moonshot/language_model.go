@@ -13,6 +13,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -749,7 +750,7 @@ func moonshotLogprobEntry(raw json.RawMessage) json.RawMessage {
 		Bytes       json.RawMessage `json:"bytes"`
 		TopLogprobs []top           `json:"top_logprobs"`
 	}
-	if json.Unmarshal(raw, &entry) != nil || len(entry.Token) == 0 || len(entry.Logprob) == 0 || len(entry.Bytes) == 0 || entry.TopLogprobs == nil {
+	if jsonexact.Unmarshal(raw, &entry) != nil || len(entry.Token) == 0 || len(entry.Logprob) == 0 || len(entry.Bytes) == 0 || entry.TopLogprobs == nil {
 		return raw // the response schema check rejects this shape first
 	}
 	for _, t := range entry.TopLogprobs {
@@ -966,7 +967,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		}
 		if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 			var lp moonshotLogprobsContent
-			if err := json.Unmarshal(choice.Logprobs, &lp); err == nil {
+			if err := jsonexact.Unmarshal(choice.Logprobs, &lp); err == nil {
 				for _, item := range lp.Content {
 					s.contentLogprobs = append(s.contentLogprobs, moonshotLogprobEntry(item))
 				}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -79,7 +80,7 @@ func validateSpendReportRows(body []byte) error {
 	var raw struct {
 		Results []map[string]json.RawMessage `json:"results"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return nil // reported by the typed decode
 	}
 	for i, row := range raw.Results {
@@ -148,7 +149,7 @@ func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams)
 		return p.handleErrorWithContext(ctx, providerutils.InvalidJSONResponseError("gateway", http.StatusOK, http.Header{}, body, nil))
 	}
 	var wire spendReportResponseWire
-	if err := json.Unmarshal(body, &wire); err != nil {
+	if err := jsonexact.Unmarshal(body, &wire); err != nil {
 		return nil, invalid()
 	}
 	// TS schema: `results` must be an array.

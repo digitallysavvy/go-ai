@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -139,7 +140,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	var createResp createTaskResponse
-	if err := json.Unmarshal(submitBody, &createResp); err != nil {
+	if err := jsonexact.Unmarshal(submitBody, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse response: %v", err))
 	}
 	// TS has no `code != 0` check on a 2xx response; a missing task_id is
@@ -199,7 +200,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, err
 	}
 	var statusResp taskStatusResponse
-	if err := json.Unmarshal(statusBody, &statusResp); err != nil {
+	if err := jsonexact.Unmarshal(statusBody, &statusResp); err != nil {
 		return nil, fmt.Errorf("klingai: failed to decode status response: %w", err)
 	}
 	result := downloaded

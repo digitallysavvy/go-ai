@@ -3,6 +3,8 @@ package responses
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -820,7 +822,7 @@ type ResponsesAPIUsage struct {
 func (u *ResponsesAPIUsage) UnmarshalJSON(data []byte) error {
 	type responsesAPIUsageAlias ResponsesAPIUsage
 	var alias responsesAPIUsageAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
+	if err := jsonexact.Unmarshal(data, &alias); err != nil {
 		var typeErr *json.UnmarshalTypeError
 		if !errors.As(err, &typeErr) {
 			return err
@@ -1137,7 +1139,7 @@ func decodeFractionalUsage(data []byte) (ResponsesAPIUsage, error) {
 			ReasoningTokens float64 `json:"reasoning_tokens"`
 		} `json:"output_tokens_details"`
 	}
-	if err := json.Unmarshal(data, &w); err != nil {
+	if err := jsonexact.Unmarshal(data, &w); err != nil {
 		return ResponsesAPIUsage{}, err
 	}
 	u := ResponsesAPIUsage{

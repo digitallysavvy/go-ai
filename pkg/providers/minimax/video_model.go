@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -123,7 +124,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	var createResp struct {
 		TaskID string `json:"task_id"`
 	}
-	if err := json.Unmarshal(submitResp.Body, &createResp); err != nil {
+	if err := jsonexact.Unmarshal(submitResp.Body, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse creation response: %v", err))
 	}
 	if createResp.TaskID == "" {
@@ -207,7 +208,7 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 		return nil, nil, err
 	}
 	var statusResp minimaxStatusResponse
-	if err := json.Unmarshal(result.Data, &statusResp); err != nil {
+	if err := jsonexact.Unmarshal(result.Data, &statusResp); err != nil {
 		return nil, nil, fmt.Errorf("minimax: failed to decode status response: %w", err)
 	}
 
@@ -254,7 +255,7 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 					Usage map[string]json.RawMessage `json:"usage"`
 				} `json:"task"`
 			}
-			_ = json.Unmarshal(result.Data, &rawTask)
+			_ = jsonexact.Unmarshal(result.Data, &rawTask)
 			usage := map[string]interface{}{}
 			for _, kv := range []struct {
 				wire, key string

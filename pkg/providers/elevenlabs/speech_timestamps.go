@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -111,7 +112,7 @@ func parseSpeechTimestampsResponse(statusCode int, headers http.Header, body []b
 			DialogueInputIndex  float64 `json:"dialogue_input_index"`
 		} `json:"voice_segments"`
 	}
-	if err := json.Unmarshal([]byte(text), &wire); err != nil {
+	if err := jsonexact.Unmarshal([]byte(text), &wire); err != nil {
 		return nil, invalid(&providererrors.JSONParseError{Text: text, Cause: err})
 	}
 	// TS convertBase64ToUint8Array (atob throws on invalid input).

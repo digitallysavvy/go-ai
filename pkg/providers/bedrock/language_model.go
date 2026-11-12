@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -1110,7 +1111,7 @@ type bedrockAdditionalRespFields struct {
 
 func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction, usesJSONResponseTool bool) (*types.GenerateResult, error) {
 	var resp bedrockConverseResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := jsonexact.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to decode Bedrock Converse response: %w", err)
 	}
 	result := &types.GenerateResult{RawResponse: json.RawMessage(body)}

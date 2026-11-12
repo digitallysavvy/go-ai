@@ -3,8 +3,8 @@ package anthropic
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"mime/multipart"
@@ -76,7 +76,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		CreatedAt     string  `json:"created_at"`
 		UpdatedAt     string  `json:"updated_at"`
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
@@ -141,7 +141,7 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 		return nil, err
 	}
 	var out skillVersionMetadata
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

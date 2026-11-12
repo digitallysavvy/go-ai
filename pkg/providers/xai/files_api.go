@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -302,7 +303,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		ID      string `json:"id"`
 		Deleted bool   `json:"deleted"`
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 

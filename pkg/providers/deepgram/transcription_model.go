@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -301,7 +302,7 @@ func deepgramSegmentsAccessError(body []byte) error {
 			} `json:"channels"`
 		} `json:"results"`
 	}
-	if len(body) == 0 || json.Unmarshal([]byte(textdecode.UTF8(body)), &raw) != nil || raw.Results == nil {
+	if len(body) == 0 || jsonexact.Unmarshal([]byte(textdecode.UTF8(body)), &raw) != nil || raw.Results == nil {
 		return nil
 	}
 	if len(raw.Results.Channels) == 0 {

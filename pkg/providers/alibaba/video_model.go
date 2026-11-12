@@ -14,6 +14,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodjson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -672,7 +673,7 @@ func (m *VideoModel) buildCompletedResult(statusResp *alibabaVideoStatusResponse
 			var top struct {
 				Usage map[string]interface{} `json:"usage"`
 			}
-			_ = json.Unmarshal(rawBody, &top)
+			_ = jsonexact.Unmarshal(rawBody, &top)
 			rawUsage = top.Usage
 		}
 		usage := map[string]interface{}{}

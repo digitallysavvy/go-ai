@@ -3,7 +3,6 @@ package bedrock
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	stdhttp "net/http"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -589,7 +589,7 @@ func instanceRoleCredentials(ctx context.Context) (awsCredentials, error) {
 		Token           string `json:"Token"`
 		Expiration      string `json:"Expiration"`
 	}
-	if err := json.Unmarshal(credBytes, &payload); err != nil {
+	if err := jsonexact.Unmarshal(credBytes, &payload); err != nil {
 		return awsCredentials{}, err
 	}
 	exp, _ := time.Parse(time.RFC3339, payload.Expiration)

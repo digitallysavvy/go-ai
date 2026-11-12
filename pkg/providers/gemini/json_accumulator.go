@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // PartialArg mirrors TS `PartialArg` (google-json-accumulator.ts): one
@@ -33,7 +35,7 @@ func (p *PartialArg) UnmarshalJSON(data []byte) error {
 		BoolValue    *bool    `json:"boolValue"`
 		WillContinue *bool    `json:"willContinue"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := jsonexact.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	p.JSONPath = raw.JSONPath

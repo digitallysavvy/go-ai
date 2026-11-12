@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -53,7 +54,7 @@ func parseFireworksProviderError(err error) error {
 	// {"error": {"object","type","code","message"}}
 	var obj fireworksErrorObject
 	// TS fireworksErrorSchema: message is a required string ("" is valid).
-	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil || !fireworksValidCode(obj.Code) {
+	if jsonErr := jsonexact.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil || !fireworksValidCode(obj.Code) {
 		return nil
 	}
 	pe := providererrors.NewProviderErrorFromResponse("fireworks", 0, fireworksErrorCode(obj.Code), *obj.Message, err)

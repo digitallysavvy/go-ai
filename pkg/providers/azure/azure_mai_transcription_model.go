@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -323,7 +324,7 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				}
 			}
 			var event azureMaiRealtimeEvent
-			if jsonErr := json.Unmarshal([]byte(res.Text), &event); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &event); jsonErr != nil {
 				continue
 			}
 

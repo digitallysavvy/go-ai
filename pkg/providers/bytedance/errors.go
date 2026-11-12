@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 
@@ -120,7 +121,7 @@ func byteDanceErrorParse(statusCode int, body []byte) (string, bool) {
 			Message *string         `json:"message"`
 			Code    json.RawMessage `json:"code"`
 		}
-		if json.Unmarshal(raw.Error, &e) != nil || e.Message == nil {
+		if jsonexact.Unmarshal(raw.Error, &e) != nil || e.Message == nil {
 			return statusText, false
 		}
 		if isJSONPresent(e.Code) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"math"
@@ -507,7 +508,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, submitBody, err)
 	}
 	var submit bflVideoSubmitResponse
-	if err := json.Unmarshal(submitBody, &submit); err != nil {
+	if err := jsonexact.Unmarshal(submitBody, &submit); err != nil {
 		return nil, fmt.Errorf("failed to decode submit response: %w", err)
 	}
 
@@ -692,7 +693,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, providerutils.InvalidJSONResponseError("bfl", http.StatusOK, http.Header(respHeaders), pollBody, err)
 	}
 	var pollResp bflVideoPollResponse
-	if err := json.Unmarshal(pollBody, &pollResp); err != nil {
+	if err := jsonexact.Unmarshal(pollBody, &pollResp); err != nil {
 		return nil, fmt.Errorf("failed to decode poll response: %w", err)
 	}
 
@@ -721,7 +722,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			return nil, providererrors.NewVideoGenerationError("bfl", m.modelID,
 				fmt.Sprintf("Black Forest Labs reported the video as Ready but returned no result.sample URL. Request id: %s", op.RequestID), nil)
 		}
-		if err := json.Unmarshal(pollResp.Result, &result); err != nil || bflURLNode(result.Sample, result.Sample != "", nil) != nil {
+		if err := jsonexact.Unmarshal(pollResp.Result, &result); err != nil || bflURLNode(result.Sample, result.Sample != "", nil) != nil {
 			return nil, providererrors.NewVideoGenerationError("bfl", m.modelID,
 				fmt.Sprintf("Black Forest Labs reported the video as Ready but returned no result.sample URL. Request id: %s", op.RequestID), nil)
 		}

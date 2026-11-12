@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
@@ -284,7 +285,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			}
 			return nil, verr
 		}
-		if uerr := json.Unmarshal(result.Data, &statusResp); uerr != nil {
+		if uerr := jsonexact.Unmarshal(result.Data, &statusResp); uerr != nil {
 			return nil, fmt.Errorf("fal: failed to decode status response: %w", uerr)
 		}
 	}
@@ -313,7 +314,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			var detail struct {
 				Detail string `json:"detail"`
 			}
-			if jsonErr := json.Unmarshal(errBody, &detail); jsonErr == nil && detail.Detail == falStillInProgressDetail {
+			if jsonErr := jsonexact.Unmarshal(errBody, &detail); jsonErr == nil && detail.Detail == falStillInProgressDetail {
 				return &provider.VideoModelV3OperationStatusResult{
 					Status: provider.VideoOperationStatusPending,
 					Response: provider.VideoModelV3ResponseInfo{

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"math"
 	"net/http"
 	"reflect"
@@ -298,7 +299,7 @@ func parseBedrockEmbeddingResponse(body []byte, header http.Header) ([][]float64
 		InputTokenCount     *float64        `json:"inputTokenCount"`
 		Embeddings          json.RawMessage `json:"embeddings"`
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := jsonexact.Unmarshal(body, &parsed); err != nil {
 		return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
 	}
 	if parsed.Embedding != nil && parsed.InputTextTokenCount != nil {
@@ -317,7 +318,7 @@ func parseBedrockEmbeddingResponse(body []byte, header http.Header) ([][]float64
 				var first struct {
 					Embedding []float64 `json:"embedding"`
 				}
-				if err := json.Unmarshal(items[0], &first); err != nil {
+				if err := jsonexact.Unmarshal(items[0], &first); err != nil {
 					return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
 				}
 				embeddings = [][]float64{first.Embedding}
@@ -336,7 +337,7 @@ func parseBedrockEmbeddingResponse(body []byte, header http.Header) ([][]float64
 	var cohereV4 struct {
 		Float [][]float64 `json:"float"`
 	}
-	if err := json.Unmarshal(raw, &cohereV4); err != nil {
+	if err := jsonexact.Unmarshal(raw, &cohereV4); err != nil {
 		return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
 	}
 	embeddings := cohereV4.Float

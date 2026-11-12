@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"reflect"
 	"strings"
@@ -82,7 +83,7 @@ func (m *RealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSock
 // entire received frame.
 func (m *RealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
 	var event provider.RealtimeServerEvent
-	if err := json.Unmarshal(raw, &event); err != nil {
+	if err := jsonexact.Unmarshal(raw, &event); err != nil {
 		return nil, err
 	}
 	event.Raw = raw

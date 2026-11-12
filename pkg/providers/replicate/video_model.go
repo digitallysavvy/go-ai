@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
@@ -290,7 +291,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, err
 	}
 	var prediction replicatePredictionWire
-	if err := json.Unmarshal(result.Data, &prediction); err != nil {
+	if err := jsonexact.Unmarshal(result.Data, &prediction); err != nil {
 		return nil, fmt.Errorf("failed to decode status response: %w", err)
 	}
 

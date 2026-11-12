@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -16,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -165,7 +165,7 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 	var decoded struct {
 		Images []string `json:"images"`
 	}
-	if err := json.Unmarshal(resp.Body, &decoded); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &decoded); err != nil {
 		return nil, fmt.Errorf("deepinfra: failed to decode image response: %w", err)
 	}
 
@@ -265,7 +265,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 			B64JSON string `json:"b64_json"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Body, &decoded); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &decoded); err != nil {
 		return nil, fmt.Errorf("deepinfra: failed to decode image edit response: %w", err)
 	}
 

@@ -3,7 +3,6 @@ package anthropic
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -13,6 +12,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -75,7 +75,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 
 	var out anthropicFileResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
@@ -207,7 +207,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, err
 	}
 	var out anthropicFileResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 	result := &provider.FileMetadataResult{
@@ -278,7 +278,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 	return &provider.DeleteFileResult{

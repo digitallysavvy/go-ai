@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -61,7 +62,7 @@ type openAIShellCallOutputItem struct {
 // openAIShellToolCall builds the tool call for a shell_call item.
 func openAIShellToolCall(providerName string, tools []types.Tool, raw json.RawMessage) (types.ToolCall, bool) {
 	var item openAIShellCallItem
-	if err := json.Unmarshal(raw, &item); err != nil {
+	if err := jsonexact.Unmarshal(raw, &item); err != nil {
 		return types.ToolCall{}, false
 	}
 	commands := item.Action.Commands
@@ -100,7 +101,7 @@ func openAIShellToolCall(providerName string, tools []types.Tool, raw json.RawMe
 // openAIShellToolResult builds the tool result for a shell_call_output item.
 func openAIShellToolResult(tools []types.Tool, raw json.RawMessage) (types.ToolResultContent, bool) {
 	var item openAIShellCallOutputItem
-	if err := json.Unmarshal(raw, &item); err != nil {
+	if err := jsonexact.Unmarshal(raw, &item); err != nil {
 		return types.ToolResultContent{}, false
 	}
 	output := make([]interface{}, 0, len(item.Output))
@@ -127,7 +128,7 @@ func openAIShellToolResult(tools []types.Tool, raw json.RawMessage) (types.ToolR
 // doGenerate shape (the wire action verbatim).
 func openAILocalShellToolCall(providerName string, tools []types.Tool, raw json.RawMessage, stream bool) (types.ToolCall, bool) {
 	var item responses.LocalShellCall
-	if err := json.Unmarshal(raw, &item); err != nil {
+	if err := jsonexact.Unmarshal(raw, &item); err != nil {
 		return types.ToolCall{}, false
 	}
 	// env is kept when the wire sent it, even as {}.

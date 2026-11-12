@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -65,7 +66,7 @@ func extractSourcesDedup(groundingMetadata json.RawMessage, generateID func() st
 	var meta struct {
 		GroundingChunks []groundingChunk `json:"groundingChunks"`
 	}
-	if err := json.Unmarshal(groundingMetadata, &meta); err != nil {
+	if err := jsonexact.Unmarshal(groundingMetadata, &meta); err != nil {
 		return nil
 	}
 	var sources []types.SourceContent

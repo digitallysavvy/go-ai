@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"reflect"
@@ -357,7 +358,7 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			var detail struct {
 				Detail string `json:"detail"`
 			}
-			_ = json.Unmarshal(resp.Body, &detail)
+			_ = jsonexact.Unmarshal(resp.Body, &detail)
 			if detail.Detail == falTranscriptionStillInProgress {
 				if time.Now().After(deadline) {
 					return nil, nil, nil, providererrors.NewProviderError(
@@ -382,7 +383,7 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			return nil, nil, nil, err
 		}
 		var result falTranscriptionResultResponse
-		if err := json.Unmarshal(resp.Body, &result); err != nil {
+		if err := jsonexact.Unmarshal(resp.Body, &result); err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to decode fal transcription response: %w", err)
 		}
 		return &result, providerutils.ExtractHeaders(resp.Headers), resp.Body, nil

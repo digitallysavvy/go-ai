@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -218,7 +219,7 @@ func (m *ImageModel) doStreamingImageRequest(ctx context.Context, request intern
 	if err := request.ValidateResponse(httpResp.StatusCode, httpResp.Header, skeleton); err != nil {
 		return response, nil, nil, err
 	}
-	if err := json.Unmarshal(skeleton, &response); err != nil {
+	if err := jsonexact.Unmarshal(skeleton, &response); err != nil {
 		// Like internalhttp's decodeJSONBody: a z.number() count sent as
 		// 1.0 or 1e3 is truncated instead of failing the Go int field.
 		var typeErr *json.UnmarshalTypeError

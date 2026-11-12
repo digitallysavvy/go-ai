@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"mime/multipart"
@@ -729,7 +730,7 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 			} `json:"transcription"`
 		} `json:"result"`
 	}
-	_ = json.Unmarshal(b, &typed)
+	_ = jsonexact.Unmarshal(b, &typed)
 
 	if typed.Result == nil {
 		return &types.TranscriptionResult{

@@ -3,8 +3,8 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
@@ -99,7 +99,7 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 		ExpiresAt *float64 `json:"expiresAt"`
 	}
 	decodedBody := []byte(textdecode.UTF8(response.Body))
-	if err := json.Unmarshal(decodedBody, &parsed); err != nil || parsed.Token == nil {
+	if err := jsonexact.Unmarshal(decodedBody, &parsed); err != nil || parsed.Token == nil {
 		// TS createJsonResponseHandler(gatewayClientSecretResponseSchema):
 		// the APICallError "Invalid JSON response" with the response status,
 		// turned into a GatewayResponseError by asGatewayError.

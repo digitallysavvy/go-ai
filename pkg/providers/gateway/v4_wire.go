@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -29,7 +30,7 @@ func (f *v4FinishReason) UnmarshalJSON(b []byte) error {
 		Unified string  `json:"unified"`
 		Raw     *string `json:"raw"`
 	}
-	if err := json.Unmarshal(b, &o); err != nil {
+	if err := jsonexact.Unmarshal(b, &o); err != nil {
 		return err
 	}
 	f.Unified = o.Unified
@@ -65,7 +66,7 @@ func (u *v4Usage) UnmarshalJSON(b []byte) error {
 		CompletionTokens *int64 `json:"completionTokens"`
 		TotalTokens      *int64 `json:"totalTokens"`
 	}
-	if err := json.Unmarshal(b, &o); err != nil {
+	if err := jsonexact.Unmarshal(b, &o); err != nil {
 		return err
 	}
 	u.set = true
@@ -81,8 +82,8 @@ func (u *v4Usage) UnmarshalJSON(b []byte) error {
 		Text      *int64 `json:"text"`
 		Reasoning *int64 `json:"reasoning"`
 	}
-	inObj := len(o.InputTokens) > 0 && o.InputTokens[0] == '{' && json.Unmarshal(o.InputTokens, &in) == nil
-	outObj := len(o.OutputTokens) > 0 && o.OutputTokens[0] == '{' && json.Unmarshal(o.OutputTokens, &outTok) == nil
+	inObj := len(o.InputTokens) > 0 && o.InputTokens[0] == '{' && jsonexact.Unmarshal(o.InputTokens, &in) == nil
+	outObj := len(o.OutputTokens) > 0 && o.OutputTokens[0] == '{' && jsonexact.Unmarshal(o.OutputTokens, &outTok) == nil
 	if inObj {
 		out.InputTokens = in.Total
 		out.InputDetails = &types.InputTokenDetails{NoCacheTokens: in.NoCache, CacheReadTokens: in.CacheRead, CacheWriteTokens: in.CacheWrite}
@@ -174,7 +175,7 @@ func (p v4Part) citations() []types.Citation {
 	var out []types.Citation
 	for _, c := range p.Citations {
 		var src v4Part
-		if json.Unmarshal(c.Source, &src) != nil {
+		if jsonexact.Unmarshal(c.Source, &src) != nil {
 			continue
 		}
 		out = append(out, types.Citation{Source: src.sourceContent(), StartIndex: c.StartIndex, EndIndex: c.EndIndex, CitedText: c.CitedText})
@@ -194,7 +195,7 @@ func decodeV4FileData(raw json.RawMessage, mediaType string) types.FileData {
 		Data string `json:"data"`
 		URL  string `json:"url"`
 	}
-	if json.Unmarshal(raw, &fd) != nil {
+	if jsonexact.Unmarshal(raw, &fd) != nil {
 		return types.FileData{}
 	}
 	if fd.Type == "url" {
@@ -350,7 +351,7 @@ func decodeV4GenerateResult(body []byte) (*types.GenerateResult, error) {
 		if json.Unmarshal(raw, &fields) != nil {
 			continue
 		}
-		_ = json.Unmarshal(raw, &p)
+		_ = jsonexact.Unmarshal(raw, &p)
 		p.jsStrings(fields)
 		part, tc := decodeV4Content(p)
 		if part == nil {

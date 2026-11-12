@@ -19,6 +19,7 @@ import (
 	"golang.org/x/net/websocket"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -469,7 +470,7 @@ func (s *deepgramTranscriptionStream) handleEvent(text string, cfg deepgramStrea
 			return false, err
 		}
 		var result deepgramStreamingResult
-		_ = json.Unmarshal([]byte(text), &result)
+		_ = jsonexact.Unmarshal([]byte(text), &result)
 		if result.Channel == nil || len(result.Channel.Alternatives) == 0 {
 			return false, errors.New("Deepgram Results event is missing a transcript alternative.") //nolint:staticcheck // TS error text
 		}

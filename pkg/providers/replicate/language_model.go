@@ -2,9 +2,9 @@ package replicate
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"time"
@@ -77,7 +77,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	var prediction replicatePrediction
-	if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &prediction); err != nil {
+	if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &prediction); err != nil {
 		return nil, fmt.Errorf("failed to decode prediction response: %w", err)
 	}
 
@@ -181,7 +181,7 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string,
 		}
 
 		var prediction replicatePrediction
-		if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &prediction); err != nil {
+		if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &prediction); err != nil {
 			return replicatePrediction{}, fmt.Errorf("failed to decode prediction: %w", err)
 		}
 

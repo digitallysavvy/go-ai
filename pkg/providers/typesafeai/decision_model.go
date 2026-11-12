@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -479,7 +480,7 @@ func typesafeErrorMessageMatched(statusCode int, body []byte) (string, bool) {
 				Message json.RawMessage `json:"message"`
 			}
 			trimmed := bytes.TrimSpace(raw.Error)
-			if trimmed[0] != '{' || json.Unmarshal(raw.Error, &obj) != nil {
+			if trimmed[0] != '{' || jsonexact.Unmarshal(raw.Error, &obj) != nil {
 				return statusText, false
 			}
 			var present bool

@@ -2,12 +2,12 @@ package zai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	stdhttp "net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -457,7 +457,7 @@ func newZaiStream(reader io.ReadCloser) *zaiStream {
 				} `json:"delta"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal(eventBytes, &chunk); err != nil || len(chunk.Choices) == 0 {
+		if err := jsonexact.Unmarshal(eventBytes, &chunk); err != nil || len(chunk.Choices) == 0 {
 			return "", false
 		}
 		rc := chunk.Choices[0].Delta.ReasoningContent

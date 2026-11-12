@@ -1,9 +1,9 @@
 package anthropic
 
 import (
-	"encoding/json"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -294,7 +294,7 @@ func anthropicChunkType(data string) string {
 	var head struct {
 		Type string `json:"type"`
 	}
-	_ = json.Unmarshal([]byte(data), &head)
+	_ = jsonexact.Unmarshal([]byte(data), &head)
 	return head.Type
 }
 

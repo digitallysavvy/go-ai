@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	stdhttp "net/http"
@@ -254,7 +255,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	var createResp taskCreateResponse
-	if err := json.Unmarshal(submitBody, &createResp); err != nil {
+	if err := jsonexact.Unmarshal(submitBody, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse creation response: %v", err))
 	}
 	if createResp.ID == "" {
@@ -312,7 +313,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, err
 	}
 	var statusResp taskStatusResponse
-	if err := json.Unmarshal(result.Data, &statusResp); err != nil {
+	if err := jsonexact.Unmarshal(result.Data, &statusResp); err != nil {
 		return nil, fmt.Errorf("bytedance: failed to decode status response: %w", err)
 	}
 

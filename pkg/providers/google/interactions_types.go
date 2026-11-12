@@ -1,6 +1,10 @@
 package google
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+)
 
 const (
 	InteractionStatusInProgress     = "in_progress"
@@ -138,7 +142,7 @@ type interactionsContentBlock struct {
 func (b *interactionsContentBlock) UnmarshalJSON(data []byte) error {
 	type plain interactionsContentBlock
 	var p plain
-	if err := json.Unmarshal(data, &p); err != nil {
+	if err := jsonexact.Unmarshal(data, &p); err != nil {
 		return err
 	}
 	*b = interactionsContentBlock(p)
@@ -153,7 +157,7 @@ func (b *interactionsContentBlock) afterLooseDecode(data []byte) {
 		MimeType *string         `json:"mime_type"`
 		Result   json.RawMessage `json:"result"`
 	}
-	ok := json.Unmarshal(data, &probe) == nil
+	ok := jsonexact.Unmarshal(data, &probe) == nil
 	b.nameSet = ok && probe.Name != nil
 	b.mimeTypeSet = ok && probe.MimeType != nil
 	b.resultSet = ok && len(probe.Result) > 0
@@ -161,7 +165,7 @@ func (b *interactionsContentBlock) afterLooseDecode(data []byte) {
 		Text json.RawMessage `json:"text"`
 	}
 	var text string
-	b.textAbsent = json.Unmarshal(data, &textProbe) != nil || len(textProbe.Text) == 0 || string(textProbe.Text) == "null" || json.Unmarshal(textProbe.Text, &text) != nil
+	b.textAbsent = jsonexact.Unmarshal(data, &textProbe) != nil || len(textProbe.Text) == 0 || string(textProbe.Text) == "null" || json.Unmarshal(textProbe.Text, &text) != nil
 }
 
 // mimeTypeOr is TS `mime_type ?? fallback`: a present "" is kept.
@@ -215,7 +219,7 @@ type interactionsAnnotationPresence struct {
 func (a *interactionsAnnotation) UnmarshalJSON(b []byte) error {
 	type plain interactionsAnnotation
 	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
 		return err
 	}
 	*a = interactionsAnnotation(p)
@@ -252,7 +256,7 @@ type interactionsUsage struct {
 func (u *interactionsUsage) UnmarshalJSON(b []byte) error {
 	type plain interactionsUsage
 	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
 		return err
 	}
 	*u = interactionsUsage(p)

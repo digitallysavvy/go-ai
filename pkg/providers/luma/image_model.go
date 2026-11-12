@@ -2,12 +2,12 @@ package luma
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	stdhttp "net/http"
 	"sort"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -152,7 +152,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	var genResp lumaGenerationResponse
-	if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &genResp); err != nil {
+	if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &genResp); err != nil {
 		return nil, fmt.Errorf("luma: failed to decode generation response: %w", err)
 	}
 
@@ -243,7 +243,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			return "", err
 		}
 		var status lumaGenerationResponse
-		if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &status); err != nil {
+		if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &status); err != nil {
 			return "", fmt.Errorf("luma: failed to parse status response: %w", err)
 		}
 

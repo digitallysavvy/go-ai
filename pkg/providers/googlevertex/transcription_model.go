@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -137,7 +138,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 	var parsed vertexTranscriptionResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	if err := jsonexact.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode vertex transcription response: %w", err)
 	}
 	result := convertVertexTranscriptionResponse(parsed, m.modelID, resp.Header, respBody)

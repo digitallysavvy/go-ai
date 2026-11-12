@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -148,7 +149,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	legend := map[string]interface{}{}
 	for _, id := range ids {
 		var fields perplexityDecisionAnswer
-		if err := json.Unmarshal(response.Answers[id], &fields); err != nil {
+		if err := jsonexact.Unmarshal(response.Answers[id], &fields); err != nil {
 			return nil, providererrors.NewInvalidResponseDataError(rawBody, "Perplexity Decisions returned a malformed answer.")
 		}
 		switch fields.Type {

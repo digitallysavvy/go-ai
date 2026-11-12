@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/pplxschema"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
@@ -197,7 +198,7 @@ func perplexityErrorToMessage(data perplexityErrorEnvelope) string {
 			Message *string `json:"message"`
 			Type    *string `json:"type"`
 		}
-		if err := json.Unmarshal(data.Error, &asObject); err == nil {
+		if err := jsonexact.Unmarshal(data.Error, &asObject); err == nil {
 			if asObject.Message != nil {
 				return *asObject.Message
 			}
@@ -215,7 +216,7 @@ func perplexityErrorToMessage(data perplexityErrorEnvelope) string {
 		var asArray []struct {
 			Msg string `json:"msg"`
 		}
-		if err := json.Unmarshal(data.Detail, &asArray); err == nil {
+		if err := jsonexact.Unmarshal(data.Detail, &asArray); err == nil {
 			msgs := make([]string, 0, len(asArray))
 			for _, d := range asArray {
 				msgs = append(msgs, d.Msg)
@@ -286,7 +287,7 @@ func validatePerplexityOutputItem(raw json.RawMessage) error {
 	var envelope struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
+	if err := jsonexact.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("perplexity: invalid output item: %w", err)
 	}
 	switch envelope.Type {
@@ -294,7 +295,7 @@ func validatePerplexityOutputItem(raw json.RawMessage) error {
 		var withResults struct {
 			Results []map[string]json.RawMessage `json:"results"`
 		}
-		if err := json.Unmarshal(raw, &withResults); err != nil {
+		if err := jsonexact.Unmarshal(raw, &withResults); err != nil {
 			return fmt.Errorf("perplexity: invalid search_results item: %w", err)
 		}
 		for _, result := range withResults.Results {
@@ -306,7 +307,7 @@ func validatePerplexityOutputItem(raw json.RawMessage) error {
 		var withContents struct {
 			Contents []map[string]json.RawMessage `json:"contents"`
 		}
-		if err := json.Unmarshal(raw, &withContents); err != nil {
+		if err := jsonexact.Unmarshal(raw, &withContents); err != nil {
 			return fmt.Errorf("perplexity: invalid fetch_url_results item: %w", err)
 		}
 		for _, content := range withContents.Contents {

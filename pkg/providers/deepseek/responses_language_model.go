@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -258,7 +259,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 	for _, rawItem := range response.Output {
 		var item deepseekResponsesOutputItem
-		if json.Unmarshal(rawItem, &item) != nil {
+		if jsonexact.Unmarshal(rawItem, &item) != nil {
 			continue
 		}
 		switch item.Type {
@@ -602,7 +603,7 @@ func deepseekResponsesLogprobs(items []json.RawMessage) []json.RawMessage {
 		out[i] = raw
 		var e entry
 		var probe map[string]json.RawMessage
-		if json.Unmarshal(raw, &probe) != nil || json.Unmarshal(raw, &e) != nil || len(e.Token) == 0 || len(e.Logprob) == 0 {
+		if json.Unmarshal(raw, &probe) != nil || jsonexact.Unmarshal(raw, &e) != nil || len(e.Token) == 0 || len(e.Logprob) == 0 {
 			continue // the response schema check rejects this shape first
 		}
 		if tl, ok := probe["top_logprobs"]; ok && string(tl) == "null" {
@@ -762,7 +763,7 @@ func (s *deepseekResponsesStream) transform(data string) {
 		Code     *string                    `json:"code"`
 		Message  *string                    `json:"message"`
 	}
-	_ = json.Unmarshal([]byte(data), &ev)
+	_ = jsonexact.Unmarshal([]byte(data), &ev)
 
 	switch ev.Type {
 	case "response.created":
@@ -784,7 +785,7 @@ func (s *deepseekResponsesStream) transform(data string) {
 
 	case "response.output_item.added":
 		var item deepseekResponsesOutputItem
-		if json.Unmarshal(ev.Item, &item) != nil {
+		if jsonexact.Unmarshal(ev.Item, &item) != nil {
 			return
 		}
 		switch {
@@ -824,7 +825,7 @@ func (s *deepseekResponsesStream) transform(data string) {
 
 	case "response.output_item.done":
 		var item deepseekResponsesOutputItem
-		if json.Unmarshal(ev.Item, &item) != nil {
+		if jsonexact.Unmarshal(ev.Item, &item) != nil {
 			return
 		}
 		switch {

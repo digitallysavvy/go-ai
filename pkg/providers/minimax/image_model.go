@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -215,13 +216,13 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	var decoded minimaxImageResponse
-	if err := json.Unmarshal(resp.Body, &decoded); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &decoded); err != nil {
 		return nil, fmt.Errorf("minimax: failed to decode image response: %w", err)
 	}
 	var raw struct {
 		Usage json.RawMessage `json:"usage"`
 	}
-	_ = json.Unmarshal(resp.Body, &raw)
+	_ = jsonexact.Unmarshal(resp.Body, &raw)
 
 	type kept struct {
 		url, size, revisedPrompt *string
