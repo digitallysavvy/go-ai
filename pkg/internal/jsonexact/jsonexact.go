@@ -344,3 +344,53 @@ func filterObject(data []byte, depth int, field func(string) (reflect.Type, bool
 func Unmarshal(data []byte, v interface{}) error {
 	return json.Unmarshal(Filter(data, v), v)
 }
+
+// UntaggedFields lists, as "Type.Field", every exported struct field reachable
+// from the targets' types (through pointers, slices, arrays, maps and nested
+// structs, not into types with their own UnmarshalJSON / UnmarshalText) that
+// has no json tag name and is not an untagged embedded struct. Under Filter
+// such a field matches only a wire key spelled exactly like the Go field
+// name, so a response type that relied on case-insensitive matching loses
+// it. Guard tests call this over the response types decoded with Filter.
+func UntaggedFields(targets ...interface{}) []string {
+	var out []string
+	seen := map[reflect.Type]bool{}
+	for _, target := range targets {
+		if t := reflect.TypeOf(target); t != nil {
+			untagged(t, seen, &out)
+		}
+	}
+	return out
+}
+
+func untagged(t reflect.Type, seen map[reflect.Type]bool, out *[]string) {
+	t = deref(t)
+	if seen[t] || custom(t) {
+		return
+	}
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			sf := t.Field(i)
+			tag := sf.Tag.Get("json")
+			if tag == "-" {
+				continue
+			}
+			name, _, _ := strings.Cut(tag, ",")
+			if sf.Anonymous && name == "" && deref(sf.Type).Kind() == reflect.Struct {
+				untagged(sf.Type, seen, out)
+				continue
+			}
+			if !sf.IsExported() {
+				continue
+			}
+			if name == "" {
+				*out = append(*out, t.String()+"."+sf.Name)
+			}
+			untagged(sf.Type, seen, out)
+		}
+	case reflect.Slice, reflect.Array, reflect.Map:
+		untagged(t.Elem(), seen, out)
+	}
+}

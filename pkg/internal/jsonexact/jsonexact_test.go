@@ -92,3 +92,28 @@ func TestR94carryUnmarshal(t *testing.T) {
 		t.Errorf("syntax error text = %v", err)
 	}
 }
+
+func TestR94carryUntaggedFields(t *testing.T) {
+	type leaf struct {
+		Index int
+		Score float64 `json:"score"`
+		Skip  int     `json:"-"`
+		Opt   int     `json:",omitempty"`
+	}
+	type root struct {
+		r94carryEmbedded
+		Items []leaf          `json:"items"`
+		Raw   json.RawMessage `json:"raw"`
+		Map   map[string]*leaf
+	}
+	got := UntaggedFields(&root{})
+	want := []string{"jsonexact.leaf.Index", "jsonexact.leaf.Opt", "jsonexact.root.Map"}
+	if len(got) != len(want) {
+		t.Fatalf("UntaggedFields = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("UntaggedFields = %v, want %v", got, want)
+		}
+	}
+}
