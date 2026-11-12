@@ -161,7 +161,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	if httpResp.StatusCode >= 400 {
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 { // TS !response.ok
 		return nil, newXAIProviderError("xai.image", httpResp.StatusCode, httpResp.Headers, httpResp.Body)
 	}
 	if err := providerutils.MediaResponseValidator("xai.image", providerutils.SchemaXAIImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {

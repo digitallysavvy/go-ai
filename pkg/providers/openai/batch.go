@@ -203,7 +203,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, expire
 	if err != nil {
 		return nil, b.handleError(err)
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
 	}
 

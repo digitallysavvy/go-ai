@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 const r94provbErrorFrame = `{"error":{"code":"insufficient_quota","message":"quota exceeded","type":"insufficient_quota","param":null,"extra":1},"other":2}`
@@ -96,4 +99,28 @@ func TestR94provbEditResolvesKeyBeforeDownload(t *testing.T) {
 	if !errors.Is(err, keyErr) || calls != 1 {
 		t.Fatalf("compat: err = %T %v (calls %d), want the key function error", err, err, calls)
 	}
+}
+
+// TestR94provbUnfollowed3xxIsError (cr-r94-provg-to-provb): TS
+// postFormDataToApi checks response.ok, so a 300 (no Location, not followed)
+// runs the failed-response handler instead of parsing a success.
+func TestR94provbUnfollowed3xxIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMultipleChoices)
+		_, _ = w.Write([]byte(`{"id":"file-1","object":"file","bytes":1,"created_at":1,"filename":"a.txt","purpose":"user_data","name":"s","latest_version":"1"}`))
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	check := func(name string, err error) {
+		t.Helper()
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.StatusCode != http.StatusMultipleChoices {
+			t.Errorf("%s: err = %T %v, want the 300 API error", name, err, err)
+		}
+	}
+	_, err := p.Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte("x")}, MediaType: "text/plain", Filename: "a.txt"})
+	check("files", err)
+	_, err = p.Skills().UploadSkill(context.Background(), types.UploadSkillOptions{Files: []types.UploadSkillFile{{Path: "SKILL.md", Data: types.FileData{Type: types.FileDataTypeData, Data: []byte("x")}}}})
+	check("skills", err)
 }

@@ -62,7 +62,7 @@ func newXAIProviderError(provider string, statusCode int, headers http.Header, b
 // newXAIProviderError; ok is false for any other error.
 func xaiStatusError(provider string, err error) (*providererrors.ProviderError, bool) {
 	var statusErr *internalhttp.HTTPStatusError
-	if !errors.As(err, &statusErr) || statusErr.StatusCode < 400 {
+	if !errors.As(err, &statusErr) || (statusErr.StatusCode >= 200 && statusErr.StatusCode < 300) {
 		return nil, false
 	}
 	return newXAIProviderError(provider, statusErr.StatusCode, statusErr.Headers, statusErr.Body), true

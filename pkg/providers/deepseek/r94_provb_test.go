@@ -117,3 +117,20 @@ func TestR94provbResponsesFailedBodyAndEmptyReason(t *testing.T) {
 		}
 	}
 }
+
+// TestR94provbFilesUnfollowed3xxIsError (cr-r94-provg-to-provb): TS
+// postFormDataToApi checks response.ok, so a 300 is the API error.
+func TestR94provbFilesUnfollowed3xxIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMultipleChoices)
+		_, _ = io.WriteString(w, `{"id":"file-1"}`)
+	}))
+	defer srv.Close()
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).Files().UploadFile(context.Background(), types.UploadFileOptions{
+		Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}}, MediaType: "image/png", Filename: "a.png"})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.StatusCode != http.StatusMultipleChoices {
+		t.Fatalf("err = %T %v, want the 300 API error", err, err)
+	}
+}

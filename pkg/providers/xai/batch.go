@@ -193,7 +193,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	if err != nil {
 		return nil, b.handleError(err)
 	}
-	if uploadResp.StatusCode >= 400 {
+	if uploadResp.StatusCode < 200 || uploadResp.StatusCode >= 300 { // TS !response.ok
 		return nil, newXAIProviderError(b.Provider(), uploadResp.StatusCode, uploadResp.Headers, uploadResp.Body)
 	}
 	uploadResp.Body = []byte(textdecode.UTF8(uploadResp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
