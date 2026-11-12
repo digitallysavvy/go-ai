@@ -337,3 +337,10 @@ func filterObject(data []byte, depth int, field func(string) (reflect.Type, bool
 	}
 	return buf.Bytes(), true, true
 }
+
+// Unmarshal is json.Unmarshal with case-exact keys (Filter first). Use it for
+// provider response bodies and frames; user-supplied input (provider
+// options) keeps json.Unmarshal's case-insensitive matching (v0.5.2).
+func Unmarshal(data []byte, v interface{}) error {
+	return json.Unmarshal(Filter(data, v), v)
+}

@@ -82,3 +82,13 @@ func TestR94carryFilterUnicodeFold(t *testing.T) {
 		t.Errorf("Kelvin key filled k: %+v %v", out, err)
 	}
 }
+
+func TestR94carryUnmarshal(t *testing.T) {
+	var out r94carryBody
+	if err := Unmarshal([]byte(`{"Error":{"message":"m"}}`), &out); err != nil || out.Error != nil {
+		t.Errorf("Unmarshal = %+v, %v", out, err)
+	}
+	if err := Unmarshal([]byte(`{"error":`), &out); err == nil || err.Error() != "unexpected end of JSON input" {
+		t.Errorf("syntax error text = %v", err)
+	}
+}
