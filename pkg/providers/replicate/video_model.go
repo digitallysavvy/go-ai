@@ -118,7 +118,8 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 	}
 
 	if opts.ProviderOptions != nil {
-		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["replicate"]; ok {
+		// TS parseProviderOptions: a null providerOptions.replicate is absent.
+		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["replicate"]; ok && raw != nil {
 			repOpts, ok := raw.(map[string]interface{})
 			if !ok {
 				return nil, fmt.Errorf("replicate: invalid providerOptions.replicate: expected object")
@@ -184,6 +185,17 @@ func orderedVideoBody(body map[string]interface{}) *jsonorder.Object {
 	return out
 }
 
+// splitReplicateModelID is TS `const [modelId, version] =
+// this.modelId.split(':')`: the text before the first colon and the text
+// between the first and second colon (a third part is dropped).
+func splitReplicateModelID(id string) (modelID, version string, hasVersion bool) {
+	parts := strings.Split(id, ":")
+	if len(parts) < 2 {
+		return id, "", false
+	}
+	return parts[0], parts[1], true
+}
+
 // replicateVideoOperation is the opaque operation reference returned by
 // DoStart and passed back into DoStatus.
 type replicateVideoOperation struct {
@@ -205,7 +217,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 
-	modelID, version, hasVersion := strings.Cut(m.modelID, ":")
+	modelID, version, hasVersion := splitReplicateModelID(m.modelID)
 
 	predictionPath := fmt.Sprintf("/models/%s/predictions", modelID)
 	if hasVersion {

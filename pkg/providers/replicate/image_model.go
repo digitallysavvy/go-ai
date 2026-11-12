@@ -178,7 +178,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	pollOpts := extractImagePollOptions(opts)
 	currentDate := time.Now()
 
-	modelID, _, hasVersion := strings.Cut(m.modelID, ":")
+	modelID, _, hasVersion := splitReplicateModelID(m.modelID)
 	path := "/models/" + modelID + "/predictions"
 	if hasVersion {
 		path = "/predictions"
@@ -381,7 +381,7 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 	}
 
 	body := map[string]interface{}{"input": input}
-	if _, version, ok := strings.Cut(m.modelID, ":"); ok {
+	if _, version, ok := splitReplicateModelID(m.modelID); ok {
 		body["version"] = version
 	}
 	return body, warnings, prefer, nil

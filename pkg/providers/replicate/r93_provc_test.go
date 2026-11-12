@@ -68,3 +68,31 @@ func TestR93provcImageDownloadStatusIsAPIError(t *testing.T) {
 		t.Errorf("err = %T %v, want the Replicate API error", err, err)
 	}
 }
+
+// TestR93provcModelVersionSplit: TS `const [modelId, version] =
+// this.modelId.split(':')` keeps only the second part as the version.
+func TestR93provcModelVersionSplit(t *testing.T) {
+	cases := map[string][3]string{
+		"owner/model":          {"owner/model", "", "false"},
+		"owner/model:v1":       {"owner/model", "v1", "true"},
+		"owner/model:v1:extra": {"owner/model", "v1", "true"},
+		"owner/model:":         {"owner/model", "", "true"},
+	}
+	for in, want := range cases {
+		m, v, ok := splitReplicateModelID(in)
+		if m != want[0] || v != want[1] || (ok && want[2] != "true") || (!ok && want[2] != "false") {
+			t.Errorf("splitReplicateModelID(%q) = %q, %q, %v", in, m, v, ok)
+		}
+	}
+}
+
+// TestR93provcVideoNullOptionsAreAbsent: TS parseProviderOptions returns
+// undefined for a null providerOptions.replicate; Go failed with "expected
+// object".
+func TestR93provcVideoNullOptionsAreAbsent(t *testing.T) {
+	m := NewVideoModel(New(Config{APIKey: "k"}), "owner/model")
+	input, err := m.buildInput(&provider.VideoModelV3CallOptions{Prompt: "x", ProviderOptions: map[string]interface{}{"replicate": nil}})
+	if err != nil || len(input) != 1 || input["prompt"] != "x" {
+		t.Errorf("input = %v, err = %v", input, err)
+	}
+}
