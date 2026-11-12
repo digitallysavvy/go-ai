@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -14,6 +15,9 @@ import (
 // result downloads: 64 MiB of UTF-8 bytes, excluding the line feed (TS
 // DEFAULT_MAX_JSON_LINE_BYTES).
 const DefaultMaxJSONLineBytes = 64 * 1024 * 1024
+
+// maxSafeInteger is JS Number.MAX_SAFE_INTEGER (2^53-1).
+const maxSafeInteger = 1<<53 - 1
 
 // BatchResultDownloads configures how JSON Lines batch results are
 // downloaded (TS provider settings `batchResultDownloads`).
@@ -30,7 +34,9 @@ func (b BatchResultDownloads) ResolveMaxLineBytes() (int, error) {
 	if b.MaxLineBytes == 0 {
 		return DefaultMaxJSONLineBytes, nil
 	}
-	if b.MaxLineBytes < 0 {
+	// TS Number.isSafeInteger(maxLineBytes) && maxLineBytes > 0: a value
+	// above 2^53-1 is rejected too (response-handler.ts:290).
+	if b.MaxLineBytes < 0 || int64(b.MaxLineBytes) > maxSafeInteger {
 		return 0, providererrors.NewArgumentError("maxLineBytes", "maxLineBytes must be a positive safe integer.", nil)
 	}
 	return b.MaxLineBytes, nil
@@ -42,8 +48,12 @@ func (b BatchResultDownloads) ResolveMaxLineBytes() (int, error) {
 // JSONLinesScanError.
 func NewJSONLinesScanner(r io.Reader, maxLineBytes int) *bufio.Scanner {
 	scanner := bufio.NewScanner(r)
-	// The buffer must hold the row plus its line feed.
-	limit := maxLineBytes + 1
+	// The buffer must hold the row plus its line feed; math.MaxInt (MaxInt32
+	// on 32-bit, a safe integer TS accepts) must not wrap negative.
+	limit := maxLineBytes
+	if limit < math.MaxInt {
+		limit++
+	}
 	initial := 64 * 1024
 	if initial > limit {
 		initial = limit
