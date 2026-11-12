@@ -221,12 +221,17 @@ func deepInfraGenerateErrorSchema(body interface{}) (string, interface{}, bool) 
 // /images/edits multipart endpoint (baseURL with /inference replaced by
 // /openai, mirroring TS getEditUrl).
 func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	// TS resolves config.headers (loadApiKey, an apiKey function) before it
+	// downloads the input files, and throws that error as is.
+	client, err := m.provider.resolvedImageClient(ctx, m.editBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	body, contentType, err := m.buildEditMultipartBody(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	client := m.provider.imageClient(m.editBaseURL)
 	resp, err := client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/images/edits",

@@ -147,12 +147,31 @@ func (p *Provider) imageClient(baseURL string) *internalhttp.Client {
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(p.requestHeaders(), version.ProviderUserAgent("deepinfra")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
-			return providerutils.RequestAuthHeaderFunc(ctx, p.headers, providerutils.ResolveAPIKeyOptions{
-				APIKey: p.apiKey, APIKeyFunc: p.apiKeyFunc, EnvVar: "DEEPINFRA_API_KEY", Description: "DeepInfra's API key",
-			}, "Authorization", "Bearer ")
-		},
+		HeadersFuncCtx: p.imageAuthHeader,
 	})
+}
+
+// resolvedImageClient resolves the credential now and returns an
+// imageClient that sends it without resolving it again: the TS edit request
+// resolves config.headers before it downloads the input files.
+func (p *Provider) resolvedImageClient(ctx context.Context, baseURL string) (*internalhttp.Client, error) {
+	auth, err := p.imageAuthHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return internalhttp.NewClient(internalhttp.Config{
+		BaseURL: baseURL,
+		Headers: version.WithUserAgentSuffix(p.requestHeaders(), version.ProviderUserAgent("deepinfra")),
+		HeadersFuncCtx: func(context.Context) (map[string]string, error) {
+			return auth, nil
+		},
+	}), nil
+}
+
+func (p *Provider) imageAuthHeader(ctx context.Context) (map[string]string, error) {
+	return providerutils.RequestAuthHeaderFunc(ctx, p.headers, providerutils.ResolveAPIKeyOptions{
+		APIKey: p.apiKey, APIKeyFunc: p.apiKeyFunc, EnvVar: "DEEPINFRA_API_KEY", Description: "DeepInfra's API key",
+	}, "Authorization", "Bearer ")
 }
 
 // SpeechModel returns a NoSuchModelError: TS createDeepInfra has no speech

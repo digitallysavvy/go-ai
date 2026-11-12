@@ -126,7 +126,13 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	)
 
 	if opts.Image != nil {
-		// img2vid: multipart/form-data request.
+		// img2vid: multipart/form-data request. TS resolves config.headers
+		// (loadApiKey, an apiKey function) before it downloads the image,
+		// and throws that error as is.
+		client, err := m.prov.resolvedClient(ctx)
+		if err != nil {
+			return nil, err
+		}
 		imageData, imageMIME, err := resolveVideoImage(ctx, opts.Image)
 		if err != nil {
 			return nil, err // TS: downloadBlob's DownloadError propagates unchanged
@@ -137,7 +143,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			return nil, fmt.Errorf("prodia: failed to build multipart request: %w", err)
 		}
 
-		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, m.prov.client, buf, contentType, "multipart/form-data; video/mp4", opts.Headers)
+		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, client, buf, contentType, "multipart/form-data; video/mp4", opts.Headers)
 	} else {
 		// txt2vid: JSON request.
 		resp, err := m.prov.client.Do(ctx, internalhttp.Request{

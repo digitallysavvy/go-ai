@@ -44,3 +44,45 @@ func TestR94toolsDeepInfraEditDownloadFailsBeforeRequest(t *testing.T) {
 		})
 	}
 }
+
+// TS resolves config.headers (loadApiKey) before fileToBlob: a missing key
+// is the LoadAPIKeyError even when an edit file cannot be downloaded, and
+// an apiKey function runs once per edit call.
+func TestR94toolsDeepInfraEditKeyResolvedBeforeDownload(t *testing.T) {
+	t.Setenv("DEEPINFRA_API_KEY", "")
+	model, _ := New(Config{BaseURL: "http://127.0.0.1:1/openai"}).ImageModel("stabilityai/sd3.5")
+	n := 1
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "a cat", N: &n, Files: []provider.ImageFile{{Type: "url", URL: "https://127.0.0.1:1/x.png"}},
+	})
+	if !providererrors.IsLoadAPIKeyError(err) {
+		t.Fatalf("err = %T %v, want a LoadAPIKeyError", err, err)
+	}
+}
+
+func TestR94toolsDeepInfraEditAPIKeyFuncCalledOnce(t *testing.T) {
+	var calls atomic.Int32
+	var auth atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth.Store(r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"AQID"}]}`))
+	}))
+	defer server.Close()
+	model, _ := New(Config{BaseURL: server.URL + "/openai", APIKeyFunc: func(context.Context) (string, error) {
+		calls.Add(1)
+		return "fn-key", nil
+	}}).ImageModel("stabilityai/sd3.5")
+	n := 1
+	res, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "a cat", N: &n, Files: []provider.ImageFile{{Type: "file", MediaType: "image/png", Data: []byte{1}}},
+	})
+	if err != nil || len(res.Images) != 1 {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("APIKeyFunc calls = %d, want 1", got)
+	}
+	if got := auth.Load(); got != "Bearer fn-key" {
+		t.Fatalf("Authorization = %v", got)
+	}
+}

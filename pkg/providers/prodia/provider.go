@@ -16,6 +16,10 @@ import (
 type Provider struct {
 	config Config
 	client *internalhttp.Client
+	// baseURL and staticHeaders are the client's own settings, kept for
+	// resolvedClient.
+	baseURL       string
+	staticHeaders map[string]string
 }
 
 // Config contains configuration for the Prodia provider
@@ -62,9 +66,10 @@ func New(cfg Config) *Provider {
 		headers[k] = v
 	}
 
+	staticHeaders := version.WithUserAgentSuffix(headers, version.ProviderUserAgent("prodia"))
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(headers, version.ProviderUserAgent("prodia")),
+		Headers: staticHeaders,
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
 			return prodiaAuthHeader(ctx, cfg)
@@ -72,9 +77,28 @@ func New(cfg Config) *Provider {
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:        cfg,
+		client:        client,
+		baseURL:       baseURL,
+		staticHeaders: staticHeaders,
 	}
+}
+
+// resolvedClient resolves the credential now and returns a client that
+// sends it without resolving it again: the TS video model resolves
+// config.headers (loadApiKey) before it downloads an input image.
+func (p *Provider) resolvedClient(ctx context.Context) (*internalhttp.Client, error) {
+	auth, err := prodiaAuthHeader(ctx, p.config)
+	if err != nil {
+		return nil, err
+	}
+	return internalhttp.NewClient(internalhttp.Config{
+		BaseURL: p.baseURL,
+		Headers: p.staticHeaders,
+		HeadersFuncCtx: func(context.Context) (map[string]string, error) {
+			return auth, nil
+		},
+	}), nil
 }
 
 // Name returns the provider name
