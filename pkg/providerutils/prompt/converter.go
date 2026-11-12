@@ -929,7 +929,11 @@ func openAIToolResultContentParts(p types.ToolResultContent, refs *providerRefRe
 func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *providerRefResolver) (map[string]interface{}, bool) {
 	switch b := block.(type) {
 	case types.TextContentBlock:
-		return map[string]interface{}{"type": "text", "text": b.Text}, true
+		// TS convertToOpenAICompatibleContentPart spreads each part's
+		// providerOptions.openaiCompatible metadata.
+		part := map[string]interface{}{"type": "text", "text": b.Text}
+		spreadCompatMetadata(part, b.ProviderOptions, true)
+		return part, true
 	case types.FileContentBlock:
 		fc := types.FileContent{
 			MediaType:       firstNonEmpty(b.MediaType, b.FileData.MediaType),
@@ -948,6 +952,7 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *
 			part = openAIFileContentPartResolving(fc, true, refs)
 		}
 		withDefaultPDFFilename(part, "document.pdf")
+		spreadCompatMetadata(part, b.ProviderOptions, true)
 		return part, true
 	case types.ImageContentBlock:
 		img := types.FileContent{
@@ -955,10 +960,12 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *
 			Data:            b.Data,
 			ProviderOptions: b.ProviderOptions,
 		}
-		if part := strictToolFilePart(img, refs); part != nil {
-			return part, true
+		part := strictToolFilePart(img, refs)
+		if part == nil {
+			part = openAIFileContentPartResolving(img, true, refs)
 		}
-		return openAIFileContentPartResolving(img, true, refs), true
+		spreadCompatMetadata(part, b.ProviderOptions, true)
+		return part, true
 	default:
 		if refs != nil && refs.strict && block != nil && block.ToolResultContentType() == "custom" {
 			refs.fail(&providererrors.UnsupportedFunctionalityError{Functionality: "custom tool content parts"})
