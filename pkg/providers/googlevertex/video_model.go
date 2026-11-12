@@ -584,7 +584,8 @@ func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]int
 }
 
 func (m *VideoModel) handleError(err error) error {
-	return NewLanguageModel(m.prov, "").HandleError(err)
+	// TS google-vertex-video-model.ts: googleVertexFailedResponseHandler.
+	return vertexHandleError(NewLanguageModel(m.prov, "").Provider(), err)
 }
 
 // convertVertexVideoHeaders flattens net/http.Header into map[string]string,

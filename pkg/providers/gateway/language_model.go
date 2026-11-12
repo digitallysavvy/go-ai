@@ -854,7 +854,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 		body["headers"] = opts.Headers
 	}
 
-	if providerOptions := m.providerOptions(opts); len(providerOptions) > 0 {
+	// TS forwards the call's providerOptions as given: a caller's empty map
+	// is sent as {}; only an omitted map (with no config gateway options) is
+	// left out.
+	if providerOptions := m.providerOptions(opts); providerOptions != nil {
 		body["providerOptions"] = providerOptions
 	}
 
@@ -867,17 +870,22 @@ func (m *LanguageModel) providerOptions(opts *provider.GenerateOptions) map[stri
 	}
 	// Typed-option ruling: Go-typed option literals (a GatewayProviderOptions
 	// value, map[string]string, ...) are read in their JSON form, so they merge
-	// with the config options and the serviceTier rule like TS values.
+	// with the config options like TS values. The options are forwarded as
+	// given (TS getArgs): a gateway.serviceTier does not remove another
+	// provider's tier option; the Gateway applies the override server-side.
 	callerOptions := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
-	providerOptions := cloneProviderOptions(callerOptions)
 	configGatewayOptions := m.provider.configGatewayProviderOptions()
+	if callerOptions == nil && configGatewayOptions == nil {
+		return nil
+	}
+	providerOptions := cloneProviderOptions(callerOptions)
 	if len(configGatewayOptions) > 0 {
 		providerOptions["gateway"] = configGatewayOptions
 	}
 	if gatewayOptions, ok := callerOptions["gateway"]; ok {
 		if configGatewayOptions == nil {
 			providerOptions["gateway"] = gatewayOptions
-			return enforceGatewayServiceTier(providerOptions)
+			return providerOptions
 		}
 		if callerGatewayOptions, ok := gatewayOptions.(map[string]interface{}); ok {
 			merged := cloneMapStringInterface(configGatewayOptions)
@@ -889,7 +897,7 @@ func (m *LanguageModel) providerOptions(opts *provider.GenerateOptions) map[stri
 			providerOptions["gateway"] = gatewayOptions
 		}
 	}
-	return enforceGatewayServiceTier(providerOptions)
+	return providerOptions
 }
 
 func (p *Provider) configGatewayProviderOptions() map[string]interface{} {
@@ -904,27 +912,6 @@ func (p *Provider) configGatewayProviderOptions() map[string]interface{} {
 		return nil
 	}
 	return out
-}
-
-func enforceGatewayServiceTier(providerOptions map[string]interface{}) map[string]interface{} {
-	gatewayOptions, ok := providerOptions["gateway"].(map[string]interface{})
-	if !ok {
-		return providerOptions
-	}
-	serviceTier, ok := gatewayOptions["serviceTier"].(string)
-	if !ok || serviceTier == "" {
-		return providerOptions
-	}
-	for providerName, raw := range providerOptions {
-		if providerName == "gateway" {
-			continue
-		}
-		if opts, ok := raw.(map[string]interface{}); ok {
-			delete(opts, "serviceTier")
-			delete(opts, "service_tier")
-		}
-	}
-	return providerOptions
 }
 
 func cloneProviderOptions(in map[string]interface{}) map[string]interface{} {

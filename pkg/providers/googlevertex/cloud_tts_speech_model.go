@@ -14,7 +14,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -213,5 +212,5 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 // response, mirroring TS googleVertexFailedResponseHandler: error.message of a
 // Google error body, else the HTTP status text.
 func cloudTTSError(statusCode int, body []byte, headers http.Header) error {
-	return gemini.GoogleHTTPError("google-vertex", statusCode, headers, body, nil)
+	return vertexHTTPError("google-vertex", statusCode, headers, body, nil)
 }

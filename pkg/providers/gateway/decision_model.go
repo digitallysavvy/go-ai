@@ -76,7 +76,9 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	if opts.Reasoning != nil {
 		body["reasoning"] = string(*opts.Reasoning)
 	}
-	if len(opts.ProviderOptions) > 0 {
+	// TS `...(validatedProviderOptions ? {providerOptions} : {})`: a
+	// caller's empty map is truthy and is sent as {}.
+	if opts.ProviderOptions != nil {
 		body["providerOptions"] = opts.ProviderOptions
 	}
 

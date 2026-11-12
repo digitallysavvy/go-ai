@@ -105,9 +105,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	initReq.Header.Set("Content-Type", "application/json")
 	resp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(initReq)
 	if err != nil {
-		// TS postToApi/getFromApi handleFetchError: the retryable
-		// "Cannot connect to API" APICallError (aborts unchanged).
-		return nil, internalhttp.TransportErrorCtx(initReq.Context(), err)
+		// TS google-files.ts calls fetchFn directly (no handleFetchError):
+		// the fetch rejection is returned unchanged.
+		return nil, googleRawFetchError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 400 {
@@ -132,9 +132,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	uploadReq.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 	uploadResp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(uploadReq)
 	if err != nil {
-		// TS postToApi/getFromApi handleFetchError: the retryable
-		// "Cannot connect to API" APICallError (aborts unchanged).
-		return nil, internalhttp.TransportErrorCtx(uploadReq.Context(), err)
+		// TS google-files.ts calls fetchFn directly (no handleFetchError):
+		// the fetch rejection is returned unchanged.
+		return nil, googleRawFetchError(err)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
@@ -247,6 +247,17 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		ProviderMetadata:  map[string]interface{}{"google": meta},
 		Warnings:          warnings,
 	}, nil
+}
+
+// googleRawFetchError is a failed raw fetch (TS google-files.ts and the
+// realtime client secret call fetchFn directly, and the rejection propagates
+// as is): a rejected custom fetch keeps its own error, any
+// other transport failure is the net/http error.
+func googleRawFetchError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause
+	}
+	return err
 }
 
 // googleFilesError is the AISDKError TS throws for a failed upload; Name is

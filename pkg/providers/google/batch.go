@@ -686,8 +686,11 @@ func mapGoogleBatchStatus(rawStatus string, hasRawStatus bool, done bool, hasErr
 		}
 		return provider.BatchStatusPending
 	}
-	normalized := strings.TrimPrefix(rawStatus, "BATCH_STATE_")
-	normalized = strings.TrimPrefix(normalized, "JOB_STATE_")
+	// TS rawStatus.replace(/^(?:BATCH|JOB)_STATE_/, ''): one prefix, once.
+	normalized, ok := strings.CutPrefix(rawStatus, "BATCH_STATE_")
+	if !ok {
+		normalized = strings.TrimPrefix(rawStatus, "JOB_STATE_")
+	}
 	switch normalized {
 	case "SUCCEEDED":
 		return provider.BatchStatusCompleted
@@ -872,8 +875,10 @@ func convertGoogleBatchImageResult(genResult *types.GenerateResult) *types.Image
 	var images [][]byte
 	var base64Images []string
 	for _, part := range genResult.Content {
+		// TS: part.type === 'file' && image/ && part.data.type === 'data'
+		// (an empty inline payload included).
 		file, ok := part.(types.GeneratedFileContent)
-		if !ok || !strings.HasPrefix(file.MediaType, "image/") || len(file.Data) == 0 {
+		if !ok || !strings.HasPrefix(file.MediaType, "image/") || file.URL != "" || file.FileData.Type == types.FileDataTypeURL {
 			continue
 		}
 		images = append(images, file.Data)
