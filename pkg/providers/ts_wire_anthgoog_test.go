@@ -68,6 +68,7 @@ func init() {
 			"~uses a resumable file upload when the creation body reaches 20 MB":                                                       "the TS test mocks generateId (batch display name) and sets provider-level headers the recording does not carry",
 			"~GoogleBatch > surfaces Google HTTP errors from starting a batch":                                                         "the TS test mocks generateId (batch display name)",
 			"~tool-call + tool-result message pair through the request body (step 2)":                                                  "tool result JSON arrives as a Go map, which has no key order",
+			"~warns about generation settings instead of sending them to Decisions":                                                    "the providerOptions.google warnings follow Go map key order, not TS insertion order (known difference: Go map key order)",
 			"~completed function call and text stream order > google.generative-ai > preserves a completed call without a provider ID": "the TS test injects generateId () => 'generated-call-id' into the model config, which the recording does not carry (the stream order cases are replayed with that id normalized by TestR87provaStreamOrderMatchesTS in pkg/providers/google)",
 		},
 		Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
@@ -132,11 +133,13 @@ func init() {
 		LanguageResults: true,
 		ProviderTool:    anthropicWireTool,
 		Skip: map[string]string{
-			"~Vertex Anthropic labels >":                                     "provider-level headers are not captured in the recording config, and the labels JSON keeps the TS object key order, which a Go map cannot",
-			"~tools and thinking config for":                                 "the TS test sets Authorization as a provider-level header, which the recording does not carry",
-			"~should pass headers and user agent":                            "provider-level headers are not captured in the recording config",
-			"~GoogleVertexEmbeddingModel > should pass headers correctly":    "provider-level headers are not captured in the recording config",
-			"~should preserve local JSON Schema references in tool requests": "the TS test creates the provider with apiKey (express mode), which the recording does not carry",
+			"~Vertex Anthropic labels >":                                             "provider-level headers are not captured in the recording config, and the labels JSON keeps the TS object key order, which a Go map cannot",
+			"~tools and thinking config for":                                         "the TS test sets Authorization as a provider-level header, which the recording does not carry",
+			"~should pass headers and user agent":                                    "provider-level headers are not captured in the recording config",
+			"~GoogleVertexEmbeddingModel > should pass headers correctly":            "provider-level headers are not captured in the recording config",
+			"~should preserve local JSON Schema references in tool requests":         "the TS test creates the provider with apiKey (express mode), which the recording does not carry",
+			"~image download transport > downloads images and redirect hops through": "TS 2ebc78b654 sends image downloads through the caller fetch; Go keeps the validated, DNS-pinned download transport (known difference: DNS protection on by default, S2), so the downloads do not reach the replay server",
+			"~keeps the Express Mode API key off tool-result downloads during":       "TS 2ebc78b654 sends tool-result downloads through the caller fetch; Go keeps the validated, DNS-pinned download transport (known difference: DNS protection on by default, S2)",
 		},
 		Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 			u, err := url.Parse(b)
