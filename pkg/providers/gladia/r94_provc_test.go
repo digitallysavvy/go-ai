@@ -1,8 +1,15 @@
 package gladia
 
 import (
+	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -27,5 +34,29 @@ func TestR94provcPollErrorBodyIsText(t *testing.T) {
 	var perr *providererrors.ProviderError
 	if !errors.As(handleError(dl), &perr) || perr.Message != "bad thing" {
 		t.Fatalf("err = %v, want message bad thing", perr)
+	}
+}
+
+// TS polls with abortSignal.throwIfAborted() (before a poll and after the
+// interval), which throws the abort reason: a cancel cause is the error.
+func TestR94provcPollAbortCause(t *testing.T) {
+	reason := errors.New("r94provc user stop")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/upload":
+			_, _ = io.WriteString(w, `{"audio_url":"u"}`)
+		case "/v2/pre-recorded":
+			_, _ = io.WriteString(w, `{"result_url":"http://`+r.Host+`/v2/job"}`)
+		default:
+			_, _ = io.WriteString(w, `{"status":"processing"}`)
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	time.AfterFunc(50*time.Millisecond, func() { cancel(reason) })
+	model, _ := New(Config{APIKey: "k", BaseURL: srv.URL + "/v2"}).TranscriptionModel("default")
+	_, err := model.DoTranscribe(ctx, &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"})
+	if err != reason {
+		t.Fatalf("err = %v, want the cancel cause", err)
 	}
 }

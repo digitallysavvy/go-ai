@@ -552,7 +552,7 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, context.Cause(ctx) // TS abortSignal.throwIfAborted(): the abort reason
 		default:
 		}
 		if time.Since(start) > pollTimeout {
@@ -605,7 +605,7 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, context.Cause(ctx) // TS abortSignal.throwIfAborted(): the abort reason
 		case <-time.After(pollInterval):
 		}
 	}

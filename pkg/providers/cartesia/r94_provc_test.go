@@ -56,3 +56,27 @@ func TestR94provcSpeechErrorBodyIsText(t *testing.T) {
 		t.Fatalf("err = %T %v, want message %q", err, err, "T: bad thing")
 	}
 }
+
+// TS connectToWebSocket onAbort(abortSignal.reason): a cancel cause is the
+// stream error.
+func TestR94provcTranscriptionAbortCause(t *testing.T) {
+	server := newCartesiaRealtimeTestServer(t)
+	defer server.close()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	result, err := newCartesiaRealtimeTestModel(server.ts.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio:            newBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	reason := errors.New("r94provc user stop")
+	cancel(reason)
+	if _, err := drainUntilFinishOrError(t, result.Stream); err != reason {
+		t.Fatalf("err = %v, want the cancel cause", err)
+	}
+}
