@@ -293,14 +293,26 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		return interactionsRequest{}, nil, GoogleInteractionsProviderOptions{}, err
 	}
 	warnings = append(warnings, convWarnings...)
-	if systemInstruction != "" && interactionsOpts.SystemInstruction != "" {
+	// TS systemInstruction is defined whenever the prompt has a system
+	// message (its text may be ""), so then the option is not used.
+	hasSystem := normalizedOpts.Prompt.System != ""
+	for _, msg := range normalizedOpts.Prompt.Messages {
+		if msg.Role == types.RoleSystem {
+			hasSystem = true
+		}
+	}
+	var systemInstructionField *string
+	if hasSystem {
+		systemInstructionField = &systemInstruction
+	}
+	if hasSystem && interactionsOpts.SystemInstruction != "" {
 		warnings = append(warnings, types.Warning{
 			Type:    "other",
 			Message: "google.interactions: both AI SDK system message and providerOptions.google.systemInstruction were set; using the AI SDK system message.",
 			Details: "google.interactions: both AI SDK system message and providerOptions.google.systemInstruction were set; using the AI SDK system message.",
 		})
-	} else if systemInstruction == "" {
-		systemInstruction = interactionsOpts.SystemInstruction
+	} else if !hasSystem && interactionsOpts.SystemInstruction != "" {
+		systemInstructionField = &interactionsOpts.SystemInstruction
 	}
 
 	/*
@@ -407,7 +419,7 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 
 	body := interactionsRequest{
 		Input:                 input,
-		SystemInstruction:     systemInstruction,
+		SystemInstruction:     systemInstructionField,
 		Tools:                 toolsForBody,
 		ResponseFormat:        responseFormatEntries,
 		ResponseModalities:    interactionsResponseModalities(interactionsOpts.ResponseModalities),

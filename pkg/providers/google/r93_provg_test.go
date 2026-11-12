@@ -100,3 +100,43 @@ func TestR93provgRealtimeClientSecretRawFetchError(t *testing.T) {
 		t.Fatalf("error = %T %v", err, err)
 	}
 }
+
+// TS convertToGoogleInteractionsInput returns systemInstruction whenever the
+// prompt has a system message, its text "" included: the body sends
+// system_instruction: "" and providerOptions.google.systemInstruction is
+// ignored with the warning.
+func TestR93provgInteractionsEmptySystemMessageWins(t *testing.T) {
+	m := NewInteractionsLanguageModel(New(Config{APIKey: "k"}), "gemini-3-flash-preview")
+	args, warnings, _, err := m.buildArgs(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: ""}}},
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		AllowSystemInMessages: true,
+		ProviderOptions:       map[string]interface{}{"google": map[string]interface{}{"systemInstruction": "opt"}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(args)
+	var body map[string]interface{}
+	_ = json.Unmarshal(b, &body)
+	if v, ok := body["system_instruction"]; !ok || v != "" {
+		t.Fatalf("system_instruction = %#v (present %v)", v, ok)
+	}
+	found := false
+	for _, w := range warnings {
+		found = found || strings.Contains(w.Message, "both AI SDK system message")
+	}
+	if !found {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+	// Without a system message the option is used.
+	args, _, _, _ = m.buildArgs(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"systemInstruction": "opt"}},
+	}, false)
+	if args.SystemInstruction == nil || *args.SystemInstruction != "opt" {
+		t.Fatalf("option system instruction = %v", args.SystemInstruction)
+	}
+}

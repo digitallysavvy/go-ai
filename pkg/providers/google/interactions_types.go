@@ -49,7 +49,7 @@ type interactionsRequest struct {
 	Agent             string                   `json:"agent,omitempty"`
 	Input             interface{}              `json:"input"`
 	Labels            *map[string]string       `json:"labels,omitempty"`
-	SystemInstruction string                   `json:"system_instruction,omitempty"`
+	SystemInstruction *string                  `json:"system_instruction,omitempty"`
 	Tools             []map[string]interface{} `json:"tools,omitempty"`
 	// ResponseFormat is a polymorphic array of entries (TS
 	// `GoogleInteractionsResponseFormatEntry`: text/image/audio/video), not a
