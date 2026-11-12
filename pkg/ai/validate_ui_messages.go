@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -333,12 +334,25 @@ func uiMessagesToJSONValue(messages interface{}) (interface{}, error) {
 	default:
 		encoded, err := json.Marshal(v)
 		if err != nil {
+			// TS reports a non-finite number in metadata as one issue
+			// (11323f9894); a Go value cannot reach JSON with one, so the
+			// whole value fails with that issue.
+			var unsupported *json.UnsupportedValueError
+			if errors.As(err, &unsupported) {
+				return nil, providererrors.NewValidationErrorWithContext(nil, uiInvalidJSONValueMessage, err, &providererrors.ValidationContext{})
+			}
 			return nil, &providererrors.InvalidArgumentError{Field: "messages", Message: err.Error(), Cause: err}
 		}
 		data = encoded
 	}
 	var out interface{}
 	if err := json.Unmarshal(data, &out); err != nil {
+		// A JSON number out of float64 range (1e999) is TS Infinity, an
+		// invalid JSON value.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && strings.HasPrefix(typeErr.Value, "number") {
+			return nil, providererrors.NewValidationErrorWithContext(nil, uiInvalidJSONValueMessage, err, &providererrors.ValidationContext{})
+		}
 		return nil, &providererrors.InvalidArgumentError{Field: "messages", Message: err.Error(), Cause: err}
 	}
 	return out, nil
@@ -444,6 +458,13 @@ func uiMessagesStructureIssue(raw interface{}) *uiSchemaIssue {
 			return &uiSchemaIssue{path: path + ".parts", message: "Invalid input: expected array"}
 		}
 		for j, rawPart := range parts {
+			// TS validates a part only against the schema its type (and,
+			// for tool parts, its state) selects (11323f9894): a missing or
+			// unknown type, or an unknown tool state, is the selector's
+			// issue on that key.
+			if key, msg := uiPartSelectorIssue(rawPart); msg != "" {
+				return &uiSchemaIssue{path: fmt.Sprintf("%s.parts[%d].%s", path, j, key), message: msg}
+			}
 			if msg := uiPartIssue(rawPart); msg != "" {
 				return &uiSchemaIssue{path: fmt.Sprintf("%s.parts[%d]", path, j), message: msg}
 			}
@@ -453,6 +474,44 @@ func uiMessagesStructureIssue(raw interface{}) *uiSchemaIssue {
 		}
 	}
 	return nil
+}
+
+// uiInvalidJSONValueMessage is the TS issue for an invalid JSON value in
+// provider or tool metadata (11323f9894).
+const uiInvalidJSONValueMessage = "Invalid JSON value. Expected null, a string, a finite number, a boolean, an array, or an object."
+
+// uiPartTypeMessage and uiToolStateMessage are the TS selector issue texts
+// (validate-ui-messages.ts, 11323f9894).
+const (
+	uiPartTypeMessage  = `Invalid UI message part type. Expected a known part type (for example "text" or "dynamic-tool") or a type starting with "data-" or "tool-".`
+	uiToolStateMessage = `Invalid discriminator value. Expected 'input-streaming' | 'input-available' | 'approval-requested' | 'approval-responded' | 'output-available' | 'output-error' | 'output-denied'`
+)
+
+// uiPartSelectorIssue reports the key and TS issue text when an object part
+// has no known type, or a tool / dynamic-tool part no known state.
+func uiPartSelectorIssue(raw interface{}) (string, string) {
+	part, ok := raw.(map[string]interface{})
+	if !ok {
+		return "", ""
+	}
+	partType, _ := part["type"].(string)
+	switch partType {
+	case "text", "reasoning", "custom", "source-url", "source-document", "file", "reasoning-file", "steering-message", "step-start":
+		return "", ""
+	}
+	if strings.HasPrefix(partType, "data-") {
+		return "", ""
+	}
+	if partType != "dynamic-tool" && !strings.HasPrefix(partType, "tool-") {
+		return "type", uiPartTypeMessage
+	}
+	state, _ := part["state"].(string)
+	switch ToolUIPartState(state) {
+	case ToolStateInputStreaming, ToolStateInputAvailable, ToolStateApprovalRequested, ToolStateApprovalResponded,
+		ToolStateOutputAvailable, ToolStateOutputError, ToolStateOutputDenied:
+		return "", ""
+	}
+	return "state", uiToolStateMessage
 }
 
 // uiPartIssue returns an empty string when the part matches one of the TS

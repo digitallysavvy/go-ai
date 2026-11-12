@@ -3,12 +3,14 @@ package ai
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -445,3 +447,58 @@ func TestR91streamUIInvalidToolCallOnErrorOnce(t *testing.T) {
 }
 
 func r91streamFalse() *bool { f := false; return &f }
+
+// TS 11323f9894 (validate-ui-messages.test.ts "invalid messages and parts",
+// "invalid JSON values in metadata"): a part is checked only against the
+// schema its type / state selects, validation stops at the first invalid
+// element, and the error stays bounded.
+func TestR91streamValidateUIMessagesBounded(t *testing.T) {
+	validate := func(raw string) error {
+		res := SafeValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: raw})
+		if res.Success {
+			return nil
+		}
+		return res.Error
+	}
+	for name, tc := range map[string]struct{ raw, want string }{
+		"unknown type": {`[{"id":"1","role":"user","parts":[{"type":"unknown"}]}]`, "[0].parts[0].type: " + uiPartTypeMessage},
+		"missing type": {`[{"id":"1","role":"user","parts":[{"type":"text","text":"valid"},{},{}]}]`, "[0].parts[1].type: " + uiPartTypeMessage},
+		"tool state":   {`[{"id":"1","role":"assistant","parts":[{"type":"tool-foo","toolCallId":"1","state":"unknown"}]}]`, "[0].parts[0].state: " + uiToolStateMessage},
+		"text field":   {`[{"id":"1","role":"user","parts":[{"type":"text"}]}]`, "[0].parts[0]: Invalid input: expected string for text"},
+		"first msg":    {`[{"id":"1","role":"user","parts":[{"type":"text","text":"valid"}]},{},{}]`, "[1].id: Invalid input: expected string for id"},
+		"non-finite":   {`[{"id":"1","role":"user","parts":[{"type":"text","text":"Hello","providerMetadata":{"provider":{"key":[1e999]}}}]}]`, uiInvalidJSONValueMessage},
+	} {
+		err := validate(tc.raw)
+		var verr *providererrors.ValidationError
+		if !errors.As(err, &verr) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v (%T), want %q", name, err, err, tc.want)
+		}
+	}
+
+	parts := make([]string, 2500)
+	for i := range parts {
+		parts[i] = "{}"
+	}
+	raw := `[{"id":"1","role":"user","parts":[` + strings.Join(parts, ",") + `]}]`
+	err := validate(raw)
+	if err == nil || len(err.Error()) > len(raw)+1000 {
+		t.Fatalf("2500 malformed parts: error length %d", len(err.Error()))
+	}
+
+	// A Go value with a non-finite number fails validation with that issue.
+	msgs := []UIMessage{{ID: "1", Role: "user", Parts: []UIMessagePart{&TextUIPart{Text: "Hello",
+		ProviderMetadata: map[string]interface{}{"provider": map[string]interface{}{"key": []interface{}{math.Inf(1)}}}}}}}
+	err = r91streamValidate(msgs)
+	var verr *providererrors.ValidationError
+	if !errors.As(err, &verr) || !strings.Contains(err.Error(), uiInvalidJSONValueMessage) {
+		t.Fatalf("Go Inf: err = %v (%T)", err, err)
+	}
+}
+
+func r91streamValidate(msgs []UIMessage) error {
+	res := SafeValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: msgs})
+	if res.Success {
+		return nil
+	}
+	return res.Error
+}
