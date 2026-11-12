@@ -429,7 +429,7 @@ func getAudioMediaType(contentType string) string {
 		return ""
 	}
 	mediaType, _, _ := strings.Cut(contentType, ";")
-	mediaType = strings.ToLower(providerutils.JSTrim(mediaType))
+	mediaType = providerutils.JSToLower(providerutils.JSTrim(mediaType))
 	if fileutil.TopLevelMediaType(mediaType) == "audio" && fileutil.IsFullMediaType(mediaType) {
 		return mediaType
 	}
