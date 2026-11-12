@@ -9,6 +9,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -121,5 +122,58 @@ func TestR91integToolCallersUnsetEntryAndTypedOptions(t *testing.T) {
 	anth, _ := seen["anthropic"].(map[string]interface{})
 	if cc, _ := anth["cacheControl"].(map[string]interface{}); cc["type"] != "ephemeral" {
 		t.Fatalf("PrepareProviderOptions got %#v", seen)
+	}
+}
+
+type r91integSpeechRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	start []telemetry.TelemetryStartEvent
+	end   []telemetry.TelemetryFinishEvent
+}
+
+func (r *r91integSpeechRecorder) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	r.start = append(r.start, e)
+	return ctx
+}
+
+func (r *r91integSpeechRecorder) OnEnd(ctx context.Context, e telemetry.TelemetryFinishEvent) {
+	r.end = append(r.end, e)
+}
+
+// core1-05 speech site (TS speech-events.ts): the ai.generateSpeech start
+// event carries the speech settings, maxRetries and providerOptions; the end
+// event the warnings and the response metadata.
+func TestR91integSpeechTelemetryEventFields(t *testing.T) {
+	model := &testutil.MockSpeechModel{
+		ModelName: "tts-1",
+		DoGenerateFunc: func(context.Context, *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+			return &types.SpeechResult{
+				Audio:    []byte("RIFF....WAVEfmt "),
+				Warnings: []types.Warning{{Type: "other", Message: "w"}},
+				Response: &types.ResponseMetadata{ModelID: "tts-1-resp", Headers: map[string]string{"x": "y"}},
+			}, nil
+		},
+	}
+	rec := &r91integSpeechRecorder{}
+	speed := 1.25
+	_, err := GenerateSpeech(context.Background(), GenerateSpeechOptions{
+		Model: model, Text: "Hello", Voice: "alloy", OutputFormat: "mp3", Instructions: "calm", Speed: &speed, Language: "en",
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"x": 1}},
+		Telemetry:       &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.start) != 1 || len(rec.end) != 1 {
+		t.Fatalf("events = %d start, %d end", len(rec.start), len(rec.end))
+	}
+	s := rec.start[0]
+	if s.Voice != "alloy" || s.OutputFormat != "mp3" || s.Instructions != "calm" || s.Speed == nil || *s.Speed != 1.25 || s.Language != "en" ||
+		s.MaxRetries == nil || *s.MaxRetries != 2 || s.ProviderOptions["openai"] == nil {
+		t.Fatalf("start = %+v", s)
+	}
+	e := rec.end[0]
+	if len(e.Warnings) != 1 || e.Response == nil || e.Response.ModelID != "tts-1-resp" || e.Response.Headers["x"] != "y" {
+		t.Fatalf("end warnings = %+v, response = %+v", e.Warnings, e.Response)
 	}
 }

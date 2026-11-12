@@ -123,20 +123,31 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	callID := newCallID()
-	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:        callID,
-		OperationType: "ai.generateSpeech",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Settings:      opts.ExperimentalTelemetry,
-		Text:          telemetryInputValue(opts.ExperimentalTelemetry, opts.Text),
-		Headers:       opts.Headers,
-	})
-
 	providerOptions := opts.ProviderOptions
 	if providerOptions == nil {
 		providerOptions = map[string]interface{}{}
 	}
+	// TS GenerateSpeechStartEvent: voice, outputFormat, instructions, speed,
+	// language, maxRetries (the prepared value) and providerOptions
+	// (speech-events.ts, r91 core1-05 speech site).
+	telemetryMaxRetries := preparedMaxRetries(opts.MaxRetries)
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:          callID,
+		OperationType:   "ai.generateSpeech",
+		ModelProvider:   opts.Model.Provider(),
+		ModelID:         opts.Model.ModelID(),
+		Settings:        opts.ExperimentalTelemetry,
+		Text:            telemetryInputValue(opts.ExperimentalTelemetry, opts.Text),
+		Headers:         opts.Headers,
+		Voice:           opts.Voice,
+		OutputFormat:    opts.OutputFormat,
+		Instructions:    opts.Instructions,
+		Speed:           opts.Speed,
+		Language:        opts.Language,
+		MaxRetries:      &telemetryMaxRetries,
+		ProviderOptions: providerOptions,
+	})
+
 	callOptions := &provider.SpeechGenerateOptions{
 		Text:            opts.Text,
 		Voice:           opts.Voice,
@@ -209,6 +220,13 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		AudioFormat:      format,
 		ProviderMetadata: providerMetadata,
 		ProviderUsage:    raw.Usage,
+		Warnings:         warnings,
+		Response: &telemetry.TelemetryAudioResponse{
+			Timestamp: responses[0].Timestamp,
+			ModelID:   responses[0].ModelID,
+			Headers:   responses[0].Headers,
+			Body:      responses[0].Body,
+		},
 	})
 	return &GenerateSpeechResult{
 		Audio: GeneratedAudioFile{
