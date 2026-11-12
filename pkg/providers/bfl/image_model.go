@@ -13,10 +13,12 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -129,7 +131,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	// Create request
 	endpoint := m.getEndpoint()
-	resp, err := m.provider.client.Do(ctx, bflInternalRequest(http.MethodPost, endpoint, reqBody, opts.Headers))
+	resp, err := m.provider.client.Do(ctx, bflInternalRequest(http.MethodPost, endpoint, bflOrderedImageBody(reqBody, api), opts.Headers))
 	if err != nil {
 		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
@@ -216,6 +218,50 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	}
 
 	return reqBody
+}
+
+// bflOrderedImageBody sends the submit body in the TS getArgs literal order
+// instead of Go's sorted map keys: the legacy body (prompt, seed,
+// aspect_ratio, width, height, steps, guidance, image_prompt_strength,
+// image_prompt, the input images, mask, output_format, prompt_upsampling,
+// raw, safety_tolerance, webhook_secret, webhook_url) or the FLUX 3 body
+// (prompt, aspect_ratio, images, resolution, safety_tolerance, then width,
+// height, seed, steps, output_format on the latest API or grounding, version
+// on flux-3-image). A key outside those lists follows in sorted order.
+func bflOrderedImageBody(body map[string]interface{}, api bflModelAPI) *jsonorder.Object {
+	var order []string
+	switch api {
+	case bflAPILegacy:
+		order = []string{"prompt", "seed", "aspect_ratio", "width", "height", "steps", "guidance", "image_prompt_strength", "image_prompt"}
+		for _, field := range []string{"input_image", "image"} {
+			order = append(order, field)
+			for i := 2; i <= 10; i++ {
+				order = append(order, fmt.Sprintf("%s_%d", field, i))
+			}
+		}
+		order = append(order, "mask", "output_format", "prompt_upsampling", "raw", "safety_tolerance", "webhook_secret", "webhook_url")
+	case bflAPILatest:
+		order = []string{"prompt", "aspect_ratio", "images", "resolution", "safety_tolerance", "width", "height", "seed", "steps", "output_format"}
+	default:
+		order = []string{"prompt", "aspect_ratio", "images", "resolution", "safety_tolerance", "grounding", "version"}
+	}
+	out := jsonorder.New()
+	for _, k := range order {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	rest := make([]string, 0)
+	for k := range body {
+		if _, done := out.Get(k); !done {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		out.Set(k, body[k])
+	}
+	return out
 }
 
 // flux3ImageModelID is the FLUX 3 image model, which uses a stricter request

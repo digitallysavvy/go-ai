@@ -72,3 +72,46 @@ func TestR92provcSizeAspectRatioJSText(t *testing.T) {
 		t.Errorf("aspect ratio = %q", got)
 	}
 }
+
+// TestR92provcImageBodyKeyOrder (r92 provc-11): the submit body follows the
+// TS getArgs literal order (JSON.stringify), not Go's sorted map keys.
+func TestR92provcImageBodyKeyOrder(t *testing.T) {
+	for _, tc := range []struct {
+		modelID string
+		opts    *provider.ImageGenerateOptions
+		want    string
+	}{
+		{"flux-pro-1.1", &provider.ImageGenerateOptions{Prompt: "p", Size: "1024x768", ProviderOptions: map[string]interface{}{
+			"blackForestLabs": map[string]interface{}{"steps": 20, "outputFormat": "png", "guidance": 3},
+		}}, `{"prompt":"p","aspect_ratio":"4:3","width":1024,"height":768,"steps":20,"guidance":3,"output_format":"png"}`},
+		{"flux-3-image-klein", &provider.ImageGenerateOptions{Prompt: "p", ProviderOptions: map[string]interface{}{
+			"blackForestLabs": map[string]interface{}{"steps": 4, "outputFormat": "png", "safetyTolerance": 2},
+		}}, `{"prompt":"p","safety_tolerance":2,"steps":4,"output_format":"png"}`},
+	} {
+		var mu sync.Mutex
+		var raw string
+		var serverURL string
+		mux := http.NewServeMux()
+		mux.HandleFunc("/"+tc.modelID, func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			raw = string(b)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "req-1", "polling_url": serverURL + "/get_result"})
+		})
+		mux.HandleFunc("/get_result", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"status":"Error"}`)
+		})
+		server := httptest.NewServer(mux)
+		serverURL = server.URL
+		_, _ = NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), tc.modelID).DoGenerate(context.Background(), tc.opts)
+		server.Close()
+		mu.Lock()
+		if raw != tc.want {
+			t.Errorf("%s body = %s\nwant %s", tc.modelID, raw, tc.want)
+		}
+		mu.Unlock()
+	}
+}
