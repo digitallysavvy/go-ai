@@ -174,3 +174,20 @@ func TestR91provcTranscriptionAndImageBodyOrder(t *testing.T) {
 		t.Errorf("image body = %s\nwant %s", ob.String(), want)
 	}
 }
+
+// TestR91provcTypedOptionLiterals (typed-option ruling).
+func TestR91provcTypedOptionLiterals(t *testing.T) {
+	interval, timeout := (&VideoModel{}).VideoStartStatusPollDefaults(map[string]interface{}{"fal": map[string]int32{"pollIntervalMs": 50, "pollTimeoutMs": 900}})
+	if interval != 50 || timeout != 900 {
+		t.Errorf("poll defaults = %d %d", interval, timeout)
+	}
+	parsed, err := parseFalTranscriptionOptions(map[string]interface{}{"numSpeakers": int8(2), "language": "en"})
+	if err != nil || parsed.NumSpeakers == nil || *parsed.NumSpeakers != 2 {
+		t.Errorf("transcription options = %+v %v", parsed, err)
+	}
+	m := NewVideoModel(New(Config{APIKey: "k"}), "m")
+	body, err := m.buildStartRequestBody(&provider.VideoModelV3CallOptions{ProviderOptions: map[string]interface{}{"fal": map[string]string{"negativePrompt": "dogs"}}})
+	if err != nil || body.String() != `{"negative_prompt":"dogs"}` {
+		t.Errorf("video body = %v %v", body, err)
+	}
+}

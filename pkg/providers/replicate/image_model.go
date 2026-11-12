@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -76,7 +77,7 @@ func extractImagePollOptions(opts *provider.ImageGenerateOptions) ReplicateImage
 	if opts == nil || opts.ProviderOptions == nil {
 		return result
 	}
-	raw, ok := opts.ProviderOptions["replicate"].(map[string]interface{})
+	raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["replicate"].(map[string]interface{})
 	if !ok {
 		return result
 	}
@@ -98,6 +99,16 @@ func numberOption(v interface{}) (int, bool) {
 	case float64:
 		return int(n), true
 	default:
+		// Every other Go integer and float kind (typed literals).
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return int(rv.Int()), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return int(rv.Uint()), true
+		case reflect.Float32, reflect.Float64:
+			return int(rv.Float()), true
+		}
 		return 0, false
 	}
 }

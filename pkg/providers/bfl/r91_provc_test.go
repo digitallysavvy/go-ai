@@ -215,3 +215,20 @@ func TestR91provcSizeDimensionKeepsLargeValues(t *testing.T) {
 		t.Error("an in-range value must stay an int (v0.5.2 type)")
 	}
 }
+
+// TestR91provcTypedOptionLiterals (typed-option ruling): typed literals
+// (a typed nested map, int64 / int32 values) read like decoded JSON.
+func TestR91provcTypedOptionLiterals(t *testing.T) {
+	type typedOpts map[string]interface{}
+	opts := parseVideoModelOptions(map[string]interface{}{"blackForestLabs": typedOpts{"safetyTolerance": int64(3), "keyframes": []string{"https://example.com/a.png"}}})
+	if opts == nil || opts.SafetyTolerance == nil || *opts.SafetyTolerance != 3 || len(opts.Keyframes) != 1 {
+		t.Fatalf("video options = %+v", opts)
+	}
+	cfg := bflPollOptions(map[string]interface{}{"blackForestLabs": map[string]interface{}{"pollIntervalMillis": int32(250)}})
+	if cfg.Interval.Milliseconds() != 250 {
+		t.Errorf("poll interval = %v", cfg.Interval)
+	}
+	if v, ok := intFromInterface(uint16(7)); !ok || v != 7 {
+		t.Errorf("intFromInterface(uint16) = %v %v", v, ok)
+	}
+}

@@ -79,3 +79,10 @@ func r91provcTypes(parts []*provider.TranscriptionStreamPart) string {
 	}
 	return strings.Join(out, ",")
 }
+
+// TestR91provcTypedOptionLiterals (typed-option ruling).
+func TestR91provcTypedOptionLiterals(t *testing.T) {
+	if lang, ok := transcriptionLanguageOption(map[string]interface{}{"cartesia": map[string]string{"language": "fr"}}, nil); !ok || lang != "fr" {
+		t.Errorf("language = %q %v", lang, ok)
+	}
+}

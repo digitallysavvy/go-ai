@@ -92,7 +92,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 
 	var warnings []types.Warning
-	if typesafeOpts, ok := opts.ProviderOptions["typesafe"].(map[string]interface{}); ok {
+	if typesafeOpts, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["typesafe"].(map[string]interface{}); ok {
 		optionKeys := make([]string, 0, len(typesafeOpts))
 		for k := range typesafeOpts {
 			optionKeys = append(optionKeys, k)

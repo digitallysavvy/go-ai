@@ -454,7 +454,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 // pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
 // defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract).
 func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
-	opts, _ := providerOptions["fal"].(map[string]interface{})
+	opts, _ := providerutils.NormalizeOptionsJSON(providerOptions)["fal"].(map[string]interface{})
 	if v, ok := providerutils.CoerceInt(opts["pollIntervalMs"]); ok && v > 0 {
 		intervalMs = v
 	}

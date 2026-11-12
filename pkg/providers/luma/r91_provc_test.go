@@ -50,3 +50,14 @@ func TestR91provcHeadersJoin(t *testing.T) {
 		t.Errorf("X-Test = %q", h["X-Test"])
 	}
 }
+
+// TestR91provcTypedOptionLiterals (typed-option ruling).
+func TestR91provcTypedOptionLiterals(t *testing.T) {
+	opts := parseImageModelOptions(map[string]interface{}{"luma": map[string]interface{}{
+		"images":             []map[string]interface{}{{"weight": float32(0.5), "id": "a"}},
+		"pollIntervalMillis": int64(100),
+	}})
+	if opts == nil || len(opts.Images) != 1 || opts.Images[0].Weight == nil || *opts.Images[0].Weight != 0.5 || opts.PollIntervalMillis == nil || *opts.PollIntervalMillis != 100 {
+		t.Fatalf("options = %+v", opts)
+	}
+}

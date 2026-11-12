@@ -47,3 +47,17 @@ func TestR91provcHeadersJoin(t *testing.T) {
 		t.Errorf("X-Test = %q", h["X-Test"])
 	}
 }
+
+// TestR91provcTypedOptionLiterals (typed-option ruling).
+func TestR91provcTypedOptionLiterals(t *testing.T) {
+	poll := extractImagePollOptions(&provider.ImageGenerateOptions{ProviderOptions: map[string]interface{}{
+		"replicate": map[string]int64{"maxPollAttempts": 3, "pollIntervalMillis": 20},
+	}})
+	if poll.MaxPollAttempts == nil || *poll.MaxPollAttempts != 3 || poll.PollIntervalMillis == nil || *poll.PollIntervalMillis != 20 {
+		t.Fatalf("poll = %+v", poll)
+	}
+	interval, timeout := (&VideoModel{}).VideoStartStatusPollDefaults(map[string]interface{}{"replicate": map[string]uint32{"pollIntervalMs": 50, "pollTimeoutMs": 900}})
+	if interval != 50 || timeout != 900 {
+		t.Errorf("video poll defaults = %d %d", interval, timeout)
+	}
+}

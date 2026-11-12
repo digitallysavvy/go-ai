@@ -1,6 +1,10 @@
 package luma
 
-import "github.com/digitallysavvy/go-ai/pkg/providerutils"
+import (
+	"reflect"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // ImageConfig is per-image configuration for a Luma image reference (TS
 // LumaImageConfig). Each entry corresponds to an image in Files, in order.
@@ -57,7 +61,7 @@ func parseImageModelOptions(providerOptions map[string]interface{}) *ImageModelO
 	if providerOptions == nil {
 		return nil
 	}
-	raw, ok := providerOptions["luma"].(map[string]interface{})
+	raw, ok := providerutils.NormalizeOptionsJSON(providerOptions)["luma"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
@@ -128,6 +132,16 @@ func floatFromInterface(v interface{}) (float64, bool) {
 	case int64:
 		return float64(vv), true
 	default:
+		// Every other Go integer and float kind (typed literals).
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return float64(rv.Int()), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return float64(rv.Uint()), true
+		case reflect.Float32, reflect.Float64:
+			return rv.Float(), true
+		}
 		return 0, false
 	}
 }
@@ -141,6 +155,16 @@ func intFromInterface(v interface{}) (int, bool) {
 	case float64:
 		return int(vv), true
 	default:
+		// Every other Go integer and float kind (typed literals).
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return int(rv.Int()), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return int(rv.Uint()), true
+		case reflect.Float32, reflect.Float64:
+			return int(rv.Float()), true
+		}
 		return 0, false
 	}
 }

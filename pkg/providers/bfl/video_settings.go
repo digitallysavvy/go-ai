@@ -68,7 +68,7 @@ func parseVideoModelOptions(providerOptions map[string]interface{}) *VideoModelO
 	if providerOptions == nil {
 		return nil
 	}
-	raw, ok := providerOptions["blackForestLabs"].(map[string]interface{})
+	raw, ok := providerutils.NormalizeOptionsJSON(providerOptions)["blackForestLabs"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
