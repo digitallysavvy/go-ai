@@ -521,10 +521,9 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 					}
 					continue
 				}
+				// TS converts the bytes as given: an empty file is an empty
+				// base64 payload, not a dropped part.
 				data := openAIFileDataBase64(p)
-				if data == "" {
-					continue
-				}
 				resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, data)
 				if resolveErr != nil {
 					return UserMessage{}, resolveErr
@@ -2554,10 +2553,7 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 							})
 						}
 					case types.FileDataTypeData:
-						data := fileContentBlockDataBase64(b)
-						if data == "" {
-							continue
-						}
+						data := fileContentBlockDataBase64(b) // "" for an empty file, sent like TS
 						resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, data)
 						if resolveErr != nil {
 							// This path cannot return an error; keep the declared type.
