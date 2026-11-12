@@ -117,13 +117,9 @@ func toFloat64(value interface{}) (float64, bool) {
 		return v, true
 	case float32:
 		return float64(v), true
-	case int:
-		return float64(v), true
-	case int32:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case uint, uint32, uint64:
+	case int, int8, int16, int32, int64:
+		return float64(reflect.ValueOf(v).Int()), true
+	case uint, uint8, uint16, uint32, uint64:
 		return float64(reflect.ValueOf(v).Uint()), true
 	case json.Number:
 		f, err := v.Float64()

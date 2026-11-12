@@ -143,10 +143,12 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 		opts = &provider.ImageGenerateOptions{}
 	}
 	warnings := []types.Warning{}
-	if err := validateImageProviderOptions(opts.ProviderOptions); err != nil {
+	// Go-typed option literals are read through their JSON form.
+	providerOptions := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	if err := validateImageProviderOptions(providerOptions); err != nil {
 		return nil, nil, err
 	}
-	options, err := parseBedrockImageOptions(opts.ProviderOptions)
+	options, err := parseBedrockImageOptions(providerOptions)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -381,7 +383,7 @@ func stringOption(value interface{}) string {
 
 func numberOption(value interface{}) (interface{}, bool) {
 	switch v := value.(type) {
-	case int, int32, int64, uint, uint32, uint64, float32, float64, json.Number:
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
 		return v, true
 	default:
 		return nil, false

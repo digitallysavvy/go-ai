@@ -104,10 +104,12 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 }
 
 func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[string]interface{}, error) {
-	if err := validateRerankProviderOptions(opts.ProviderOptions); err != nil {
+	// Go-typed option literals are read through their JSON form.
+	providerOptions := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	if err := validateRerankProviderOptions(providerOptions); err != nil {
 		return nil, err
 	}
-	options := bedrockRerankingOptions(opts.ProviderOptions)
+	options := bedrockRerankingOptions(providerOptions)
 	sources, err := bedrockRerankSources(opts.Documents)
 	if err != nil {
 		return nil, err

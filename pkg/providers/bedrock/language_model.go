@@ -80,6 +80,9 @@ var legacyClaudeThinkingPattern = regexp.MustCompile(`claude-(?:instant|v?2|3-(?
 // getArgs ports TS amazon-bedrock-chat-language-model.ts#getArgs.
 func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, error) {
 	warnings := []types.Warning{}
+	// Go-typed option literals are read through their JSON form, once,
+	// before any validation or type assertion.
+	opts = normalizeCallOptions(opts)
 
 	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
