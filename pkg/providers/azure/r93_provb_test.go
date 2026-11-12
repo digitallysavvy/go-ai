@@ -128,3 +128,21 @@ func TestR93provbMediaTypeExtension(t *testing.T) {
 		}
 	}
 }
+
+// TS AzureSpeechSpeechModel posts with createBinaryResponseHandler, which
+// returns no rawValue: response.body is undefined.
+func TestR93provbSpeechNoResponseBody(t *testing.T) {
+	ts := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = w.Write([]byte("audio"))
+	}))
+	defer ts.Close()
+	headers := func(context.Context) (map[string]string, error) { return map[string]string{}, nil }
+	m := newAzureSpeechSpeechModel("mai-voice-2", func() (string, error) { return ts.URL, nil }, headers, ts.Client())
+	res, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"}, AzureSpeechModelSpeechOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(res.Audio) != "audio" || res.Response.Body != nil {
+		t.Fatalf("audio = %q, body = %#v", res.Audio, res.Response.Body)
+	}
+}

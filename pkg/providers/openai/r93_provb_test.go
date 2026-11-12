@@ -321,8 +321,8 @@ func TestR93provbStreamErrorCodeNumberText(t *testing.T) {
 	}
 }
 
-// TS speech: z.number() rejects a NaN speed, and response.body is the raw
-// audio (createBinaryResponseHandler rawValue).
+// TS speech: z.number() rejects a NaN speed; createBinaryResponseHandler
+// has no rawValue, so response.body stays unset.
 func TestR93provbSpeechNaNAndBody(t *testing.T) {
 	if err := validateSpeechProviderOptions(map[string]interface{}{"openai": map[string]interface{}{"speed": math.NaN()}}); err == nil {
 		t.Fatal("NaN speed accepted")
@@ -335,8 +335,8 @@ func TestR93provbSpeechNaNAndBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := res.Response.Body.([]byte); string(b) != "audio" {
-		t.Fatalf("response body = %#v", res.Response.Body)
+	if res.Response.Body != nil {
+		t.Fatalf("response body = %#v, want none (binary handler)", res.Response.Body)
 	}
 }
 

@@ -199,7 +199,8 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Header),
-			Body:      respBody,
+			// TS createBinaryResponseHandler returns no rawValue, so
+			// response.body is undefined.
 		},
 	}, nil
 }
