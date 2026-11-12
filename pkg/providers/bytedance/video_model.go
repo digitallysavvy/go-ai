@@ -555,7 +555,8 @@ func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3Cal
 		body["ratio"] = opts.AspectRatio
 	}
 
-	if opts.Duration != nil && *opts.Duration != 0 {
+	// TS `if (options.duration)`: 0 and NaN are falsy.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
 		body["duration"] = *opts.Duration
 	}
 

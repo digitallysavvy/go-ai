@@ -177,7 +177,9 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 // empty-string members are kept, and a voice with an id drops its name (the
 // {id, provider?} branch of the union matches first and strips the rest).
 func humeContextFromRaw(providerOptions map[string]interface{}) (map[string]interface{}, bool) {
-	hume, _ := providerOptions["hume"].(map[string]interface{})
+	// Typed options (SpeechModelOptions, typed maps) read through their JSON
+	// form, so they parse like the zod value too (typed-option ruling).
+	hume, _ := providerutils.NormalizeOptionsJSON(providerOptions)["hume"].(map[string]interface{})
 	ctx, _ := hume["context"].(map[string]interface{})
 	if ctx == nil {
 		return nil, false

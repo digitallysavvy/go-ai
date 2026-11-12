@@ -34,7 +34,9 @@ func handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
-		return providererrors.NewProviderErrorFromResponse("revai", 0, code, message, err)
+		perr := providererrors.NewProviderErrorFromResponse("revai", 0, code, message, err)
+		perr.Data = revaiErrorData(statusErr.Body)
+		return perr
 	}
 
 	var downloadErr *providererrors.DownloadError
@@ -46,6 +48,7 @@ func handleError(err error) error {
 		providerErr := providererrors.NewProviderError("revai", downloadErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
 		providerErr.ResponseBody = string(downloadErr.Body)
+		providerErr.Data = revaiErrorData(downloadErr.Body)
 		return providerErr
 	}
 
@@ -72,4 +75,16 @@ func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
 		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
 	}
 	return http.StatusText(statusCode), ""
+}
+
+// revaiErrorData is TS APICallError.data: the revaiErrorDataSchema output
+// ({error: {message, code}}, other keys stripped) for a matching body, else
+// nil.
+func revaiErrorData(body []byte) interface{} {
+	var payload revaiErrorPayload
+	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+		payload.Error.Message != nil && payload.Error.Code != nil {
+		return map[string]interface{}{"error": map[string]interface{}{"message": *payload.Error.Message, "code": *payload.Error.Code}}
+	}
+	return nil
 }

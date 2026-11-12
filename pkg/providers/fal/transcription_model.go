@@ -178,7 +178,9 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 
 	if opts.ProviderOptions != nil {
 		// TS parseProviderOptions: a null providerOptions.fal is absent.
-		if raw, ok := opts.ProviderOptions["fal"]; ok && raw != nil {
+		// Go-typed option literals read through their JSON form (typed-option
+		// ruling).
+		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fal"]; ok && raw != nil {
 			parsed, err := parseFalTranscriptionOptions(raw)
 			if err != nil {
 				return nil, err

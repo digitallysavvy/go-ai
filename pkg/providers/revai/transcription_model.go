@@ -20,8 +20,8 @@ import (
 )
 
 // pollTimeout and pollInterval mirror RevaiTranscriptionModel.doGenerate's
-// polling loop in the TypeScript SDK.
-const (
+// polling loop in the TypeScript SDK (variables so tests can shorten them).
+var (
 	pollTimeout  = 60 * time.Second
 	pollInterval = 1 * time.Second
 )
@@ -132,7 +132,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	// TS polls only while the job is not yet "transcribed".
 	if submission.Status != "transcribed" {
-		if _, err := m.pollJobStatus(ctx, submission.ID, opts.Headers); err != nil {
+		if _, err := m.pollJobStatus(ctx, submission, opts.Headers); err != nil {
 			return nil, err
 		}
 	}
@@ -174,7 +174,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 // template (not taken verbatim from a provider response), but polling
 // through fileutil.PollJSON with a trusted-origin validator still guards
 // against a compromised or misbehaving redirect hop.
-func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, headers map[string]string) (*revaiJobResponse, error) {
+func (m *TranscriptionModel) pollJobStatus(ctx context.Context, submission revaiJobResponse, headers map[string]string) (*revaiJobResponse, error) {
+	jobID := submission.ID
 	pollOpts := fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport)
 	pollOpts.Headers = version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + providerutils.APIKeyOrEnv(m.provider.config.APIKey, "REVAI_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("revai"))
 
@@ -187,8 +188,11 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, he
 		default:
 		}
 		if time.Since(start) > pollTimeout {
-			// TS AISDKError TranscriptionJobPollingTimedOut.
-			return nil, providererrors.NewProviderError("revai", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
+			// TS AISDKError TranscriptionJobPollingTimedOut (cause: the
+			// submission response).
+			timedOut := providererrors.NewProviderError("revai", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
+			timedOut.Data = submission
+			return nil, timedOut
 		}
 
 		download, err := fileutil.DownloadWithMetadata(ctx, pollURL, pollOpts)
@@ -227,7 +231,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
+		decoded, err := fileutil.ConvertBase64ToBytes(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("revai: failed to decode base64 audio: %w", err)
 		}

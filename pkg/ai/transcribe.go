@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -432,12 +431,11 @@ func transcribeHeadersWithUserAgent(headers map[string]string) map[string]string
 	return version.WithUserAgentSuffix(headers, version.UserAgent())
 }
 
+// decodeTranscriptionAudioBase64 is TS convertDataContentToUint8Array for a
+// string: convertBase64ToUint8Array (base64url mapped, then atob's forgiving
+// decode: ASCII whitespace ignored, padding optional).
 func decodeTranscriptionAudioBase64(content string) ([]byte, error) {
-	normalized := strings.NewReplacer("-", "+", "_", "/").Replace(content)
-	if decoded, err := base64.StdEncoding.DecodeString(normalized); err == nil {
-		return decoded, nil
-	}
-	if decoded, err := base64.RawStdEncoding.DecodeString(normalized); err == nil {
+	if decoded, err := fileutil.ConvertBase64ToBytes(content); err == nil {
 		return decoded, nil
 	}
 	return nil, &providererrors.InvalidArgumentError{

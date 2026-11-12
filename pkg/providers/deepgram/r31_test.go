@@ -24,13 +24,13 @@ func TestSpeechRequestBodyKeepsHTMLCharacters(t *testing.T) {
 
 // TS `if (deepgramOptions.tag)`: an empty string is falsy, an empty array is not.
 func TestSpeechEmptyStringTagIsSkipped(t *testing.T) {
-	query := map[string]string{}
+	query := newDGQuery()
 	applyDeepgramSpeechOptions(query, &SpeechModelOptions{Tag: ""}, new([]types.Warning))
-	if _, ok := query["tag"]; ok {
+	if _, ok := query.vals["tag"]; ok {
 		t.Fatalf("query = %v", query)
 	}
 	applyDeepgramSpeechOptions(query, &SpeechModelOptions{Tag: []interface{}{}}, new([]types.Warning))
-	if v, ok := query["tag"]; !ok || v != "" {
+	if v, ok := query.vals["tag"]; !ok || v != "" {
 		t.Fatalf("query = %v", query)
 	}
 }

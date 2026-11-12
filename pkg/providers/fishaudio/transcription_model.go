@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -118,7 +119,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
+		decoded, err := fileutil.ConvertBase64ToBytes(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("fish-audio: failed to decode base64 audio: %w", err)
 		}

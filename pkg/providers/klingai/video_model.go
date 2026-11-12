@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -639,7 +639,7 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	// v3.0 multi-shot
@@ -740,7 +740,7 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	// v3.0 multi-shot
@@ -830,7 +830,7 @@ func (m *VideoModel) buildMultiImageBody(opts *provider.VideoModelV3CallOptions,
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	if provOpts.WatermarkEnabled != nil {
@@ -923,7 +923,8 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 		})
 	}
 
-	if opts.Duration != nil && *opts.Duration != 0 {
+	// TS `if (options.duration)`: 0 and NaN are falsy.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "duration",

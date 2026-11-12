@@ -200,3 +200,12 @@ func newOrderedBody(pairs ...interface{}) *jsonorder.Object {
 
 // jsNumberString is JS String(number).
 func jsNumberString(f float64) string { return providerutils.JSNumberString(f) }
+
+// jsonNumberOrNull is a JS number as JSON.stringify writes it: NaN and
+// ±Infinity become null.
+func jsonNumberOrNull(f float64) interface{} {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return nil
+	}
+	return f
+}

@@ -205,10 +205,11 @@ func extractSpeechModelOptions(providerOptions map[string]interface{}) (SpeechMo
 			return SpeechModelOptions{}, true
 		}
 		return *value, true
-	case map[string]interface{}:
-		return parseSpeechModelOptionsMap(value), true
 	default:
-		return SpeechModelOptions{}, true
+		// Maps, typed maps and other literals read through their JSON form,
+		// so every integer and float kind parses (typed-option ruling).
+		m, _ := providerutils.NormalizeOptionsJSON(map[string]interface{}{"lmnt": value})["lmnt"].(map[string]interface{})
+		return parseSpeechModelOptionsMap(m), true
 	}
 }
 

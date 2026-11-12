@@ -397,7 +397,9 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 	if opts.Duration != nil {
 		origDuration := *opts.Duration
 		d := origDuration
-		if d != math.Trunc(d) {
+		// TS !Number.isInteger: NaN and ±Infinity are rounded (and warned
+		// about) too.
+		if math.IsNaN(d) || math.IsInf(d, 0) || d != math.Trunc(d) {
 			rounded := math.Floor(d + 0.5) // JS Math.round: halves round toward +Infinity
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "duration",
@@ -447,7 +449,12 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 		body["aspect_ratio"] = aspectRatio
 	}
 	if duration != nil {
-		body["duration"] = *duration
+		// JSON.stringify writes a NaN duration as null.
+		if math.IsNaN(*duration) {
+			body["duration"] = nil
+		} else {
+			body["duration"] = *duration
+		}
 	}
 	if resolutionSet {
 		body["resolution"] = resolution

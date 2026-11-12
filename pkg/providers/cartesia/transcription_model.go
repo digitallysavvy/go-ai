@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -134,7 +135,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
+		decoded, err := fileutil.ConvertBase64ToBytes(opts.AudioBase64)
 		if err != nil {
 			return nil, "", nil, fmt.Errorf("cartesia: failed to decode base64 audio: %w", err)
 		}

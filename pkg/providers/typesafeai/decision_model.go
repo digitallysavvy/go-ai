@@ -572,7 +572,9 @@ var typesafeFilePartSchema = providerutils.OptionSchema{
 		if err := providerutils.OptString(path, v); err != nil {
 			return err
 		}
-		if s, _ := v.(string); strings.TrimSpace(s) == "" {
+		// TS refine(value => value.trim().length > 0): JS trim (U+FEFF is
+		// whitespace, U+0085 is not).
+		if s, _ := v.(string); providerutils.JSTrim(s) == "" {
 			return fmt.Errorf("invalid input (at %s)", path)
 		}
 		return nil

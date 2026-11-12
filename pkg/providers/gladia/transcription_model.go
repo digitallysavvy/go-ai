@@ -512,7 +512,7 @@ func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, s
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
+		decoded, err := fileutil.ConvertBase64ToBytes(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("gladia: failed to decode base64 audio: %w", err)
 		}

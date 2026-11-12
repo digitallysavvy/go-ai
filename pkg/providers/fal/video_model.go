@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -121,9 +120,10 @@ func (m *VideoModel) buildStartRequestBody(opts *provider.VideoModelV3CallOption
 		body.Set("aspect_ratio", opts.AspectRatio)
 	}
 
-	// TS: `if (options.duration)` -- falsy (including 0) is skipped.
-	if opts.Duration != nil && *opts.Duration != 0 {
-		body.Set("duration", strconv.FormatFloat(*opts.Duration, 'f', -1, 64)+"s")
+	// TS: `if (options.duration)` -- falsy (0 and NaN) is skipped; the
+	// template literal writes the JS number text.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
+		body.Set("duration", providerutils.JSNumberString(*opts.Duration)+"s")
 	}
 
 	// TS: `if (options.seed != null)`.
@@ -262,7 +262,22 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	result, err := fileutil.PollJSON(ctx, op.ResponseURL, downloadOpts, nil)
 	if err == nil {
 		// TS createJsonResponseHandler(falVideoResponseSchema).
+		// The schema failure is an APICallError ('Invalid JSON response'),
+		// which TS doStatus reports as an error status with the response
+		// headers instead of throwing.
 		if verr := validateVideoStatus(http.StatusOK, headersOf(result.Headers), result.Data); verr != nil {
+			var perr *providererrors.ProviderError
+			if errors.As(verr, &perr) {
+				return &provider.VideoModelV3OperationStatusResult{
+					Status: provider.VideoOperationStatusError,
+					Error:  perr.Message,
+					Response: provider.VideoModelV3ResponseInfo{
+						Timestamp: currentDate,
+						ModelID:   m.modelID,
+						Headers:   flattenFalHeaders(result.Headers),
+					},
+				}, nil
+			}
 			return nil, verr
 		}
 		if uerr := json.Unmarshal(result.Data, &statusResp); uerr != nil {

@@ -170,7 +170,7 @@ func TestR91provcTranscriptionAndImageBodyOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"prompt":"p","seed":5,"image_size":{"height":20,"width":10},"num_images":2,"mask_url":"https://example.com/m.png","image_url":"https://example.com/i.png","guidance_scale":3,"strength":0.5,"zeta":1}`; ob.String() != want {
+	if want := `{"prompt":"p","seed":5,"image_size":{"width":10,"height":20},"num_images":2,"mask_url":"https://example.com/m.png","image_url":"https://example.com/i.png","guidance_scale":3,"strength":0.5,"zeta":1}`; ob.String() != want {
 		t.Errorf("image body = %s\nwant %s", ob.String(), want)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +113,37 @@ func (m *TranscriptionModel) buildQueryParams(opts *provider.TranscriptionOption
 	return query
 }
 
+// transcriptionQueryOrder is the TS getArgs body key order.
+var transcriptionQueryOrder = []string{
+	"model", "detect_entities", "detect_language", "diarize", "filler_words", "intents",
+	"keyterm", "language", "paragraphs", "punctuate", "redact", "replace", "search",
+	"sentiment", "smart_format", "summarize", "topics", "utterances", "utt_split",
+}
+
+// transcriptionSearchParams orders the /v1/listen query like TS; a key
+// outside the TS body (none today) follows in sorted order.
+func transcriptionSearchParams(query map[string]string) *internalhttp.SearchParams {
+	p := internalhttp.NewSearchParams()
+	seen := make(map[string]bool, len(query))
+	for _, k := range transcriptionQueryOrder {
+		if v, ok := query[k]; ok {
+			p.Append(k, v)
+			seen[k] = true
+		}
+	}
+	rest := make([]string, 0)
+	for k := range query {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		p.Append(k, query[k])
+	}
+	return p
+}
+
 // setQueryString sets query[key] to the string option when it is present in
 // the raw provider options, including "" (TS keeps any non-undefined value).
 func setQueryString(query map[string]string, raw map[string]interface{}, key, option, typed string) {
@@ -168,7 +200,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{
 			"Content-Type": opts.MimeType,
 		}),
-		Query: query,
+		// TS URLSearchParams over Object.entries(body): the getArgs key
+		// order, not Go's sorted map keys.
+		SearchParams: transcriptionSearchParams(query),
 		// TS createJsonResponseHandler(deepgramTranscriptionResponseSchema).
 		ValidateResponse: validateTranscriptionResponse,
 	}
