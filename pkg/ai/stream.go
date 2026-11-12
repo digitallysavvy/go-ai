@@ -1655,6 +1655,13 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if !isInternalStreamMarker(c.Type) {
 			r.chunkBuf.push(c)
 		}
+		// The orphan block error part is enqueued after TS's event processor
+		// (stream-text.ts 1739-1820): it reaches the full stream only, not
+		// onChunk or onError.
+		var orphanErr *orphanBlockPartError
+		if c.Type == provider.ChunkTypeError && errors.As(c.Err, &orphanErr) {
+			return
+		}
 		// TS's event processor skips onChunk and onError only for the error
 		// value the model stream reader already reported
 		// (errorsHandledForStreamRetry); every other error part leaving the
@@ -2100,6 +2107,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	var transformFailErr error
 	var outputTracker partialOutputTracker
 	var outputText outputTextStage
+	// sinkBlocks tracks the text / reasoning blocks of the parts leaving the
+	// transform chain (TS eventProcessor activeTextContent /
+	// activeReasoningContent).
+	var sinkBlocks orphanBlockTracker
 	var sinkPartialErr error
 	var preliminaryMu sync.Mutex
 	stopTransformStream := StreamTransformStopper(func() { transformStopped = true })
@@ -2141,11 +2152,25 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					staged = outputText.stage(c, publish)
 				}
 				for _, out := range staged {
-					if rec != nil {
+					// TS eventProcessor forwards a delta or end of a block
+					// that is no longer open, then an error part
+					// "<text|reasoning> part <id> not found", and does not
+					// record it.
+					// Reset per step: a later step's blocks are remapped to
+					// fresh IDs, and a step that streams deltas without
+					// block parts stays accepted.
+					if out.Type == provider.ChunkTypeStartStep {
+						sinkBlocks.reset()
+					}
+					orphanErr := sinkBlocks.observe(out)
+					if rec != nil && orphanErr == nil {
 						rec.record(out)
 					}
 					if onChunk != nil {
 						onChunk(out)
+						if orphanErr != nil {
+							onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: orphanErr, Text: orphanErr.Error()})
+						}
 					}
 				}
 			}
@@ -2338,6 +2363,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var pendingInvalidToolErrors []provider.StreamChunk
 		var stepContent []types.ContentPart
 		var stepBlocks blockContent
+		// rawBlocks: the step's open text / reasoning blocks of the raw
+		// chunks, so a delta or end of an ended block is not recorded (TS
+		// eventProcessor; see sinkBlocks).
+		var rawBlocks orphanBlockTracker
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
 		// modelCallPerformance is the model call's performance at its finish
@@ -2650,18 +2679,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// immediately following another one (e.g. an Anthropic compaction
 			// block followed by plain text) doesn't merge into the previous
 			// block's part and inherit its providerMetadata.
+			rawOrphan := rawBlocks.observe(*chunk) != nil
 			if chunk.Type == provider.ChunkTypeTextStart && !r.skipTextAccumulation {
 				stepContent = stepBlocks.openText(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
 			// A text-end boundary: attach its providerMetadata and citations to the text part.
-			if chunk.Type == provider.ChunkTypeTextEnd && !r.skipTextAccumulation {
+			if chunk.Type == provider.ChunkTypeTextEnd && !r.skipTextAccumulation && !rawOrphan {
 				stepContent = stepBlocks.closeText(stepContent, chunk.ID, chunk.ProviderMetadata, chunk.Citations)
 			}
 
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
-				if !r.skipTextAccumulation {
+				if !r.skipTextAccumulation && !rawOrphan {
 					stepTextParts = append(stepTextParts, chunk.Text)
 					accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
 					stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
@@ -2678,7 +2708,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeReasoningStart {
 				stepContent = stepBlocks.openReasoning(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
-			if chunk.Type == provider.ChunkTypeReasoningEnd {
+			if chunk.Type == provider.ChunkTypeReasoningEnd && !rawOrphan {
 				stepContent = stepBlocks.closeReasoning(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
@@ -2687,7 +2717,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// signature_delta) still carries signature metadata that must
 			// be merged onto the accumulated part so it can be replayed in
 			// the next request's history.
-			if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "" || len(chunk.ProviderMetadata) > 0) {
+			if chunk.Type == provider.ChunkTypeReasoning && !rawOrphan && (chunk.Text != "" || chunk.Reasoning != "" || len(chunk.ProviderMetadata) > 0) {
 				reasoningText := chunk.Reasoning
 				if reasoningText == "" {
 					reasoningText = chunk.Text
@@ -3137,6 +3167,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					pendingInvalidToolErrors = nil
 					stepContent = nil
 					stepBlocks.reset()
+					rawBlocks.reset()
+					sinkBlocks.reset()
 					stepReasoningBuilder.Reset()
 					modelCallEndFired = false
 					modelCallPerformance = nil
@@ -6654,4 +6686,56 @@ func orderToolResultsByContent(results []types.ToolResult, content []types.Conte
 		return okA && pa < pb
 	})
 	return ordered
+}
+
+// orphanBlockPartError is the error part TS streamText's event processor
+// enqueues for a text / reasoning delta or end whose block is not open:
+// "text part <id> not found" (stream-text.ts 1739-1820).
+type orphanBlockPartError struct{ message string }
+
+func (e *orphanBlockPartError) Error() string { return e.message }
+
+// orphanBlockTracker tracks open text and reasoning block IDs. A block that
+// was started and then ended is closed; a delta or end for it returns the TS
+// error. Deltas of a block that was never started stay accepted (v0.5
+// providers stream text without block parts; known difference, S6).
+type orphanBlockTracker struct {
+	text, reasoning map[string]bool
+}
+
+func (t *orphanBlockTracker) reset() { t.text, t.reasoning = nil, nil }
+
+func (t *orphanBlockTracker) observe(c provider.StreamChunk) error {
+	var blocks *map[string]bool
+	var label string
+	var start bool
+	switch c.Type {
+	case provider.ChunkTypeTextStart:
+		blocks, start = &t.text, true
+	case provider.ChunkTypeText, provider.ChunkTypeTextEnd:
+		blocks, label = &t.text, "text"
+	case provider.ChunkTypeReasoningStart:
+		blocks, start = &t.reasoning, true
+	case provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd:
+		blocks, label = &t.reasoning, "reasoning"
+	default:
+		return nil
+	}
+	if *blocks == nil {
+		*blocks = map[string]bool{}
+	}
+	if start {
+		(*blocks)[c.ID] = true
+		return nil
+	}
+	open, seen := (*blocks)[c.ID]
+	if seen && !open {
+		return &orphanBlockPartError{message: label + " part " + c.ID + " not found"}
+	}
+	if c.Type == provider.ChunkTypeTextEnd || c.Type == provider.ChunkTypeReasoningEnd {
+		if seen {
+			(*blocks)[c.ID] = false
+		}
+	}
+	return nil
 }

@@ -170,7 +170,9 @@ func TestR91streamToolInputStartToolFields(t *testing.T) {
 		}
 	}
 	tool := types.Tool{Name: "weather", Title: "Weather", Metadata: map[string]interface{}{"k": "v"}, Parameters: map[string]interface{}{"type": "object"},
-		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "sunny", nil }}
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "sunny", nil
+		}}
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, steps()), Prompt: "x", Tools: []types.Tool{tool}})
 	if err != nil {
 		t.Fatal(err)
@@ -201,5 +203,80 @@ func TestR91streamToolInputStartToolFields(t *testing.T) {
 	meta, _ := ui["toolMetadata"].(map[string]interface{})
 	if ui["title"] != "Weather" || meta["k"] != "v" {
 		t.Fatalf("UI tool-input-start = %v", ui)
+	}
+}
+
+// core1-A03 (TS stream-text.ts 1739-1820): a delta or end of an ended
+// block is forwarded, followed by an error part "<kind> part <id> not
+// found", and not recorded. TS (node at 9f7a842ae1): text "ab".
+func TestR91streamOrphanBlockDelta(t *testing.T) {
+	var mu sync.Mutex
+	var onChunkErrs, onErrs int
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeTextStart, ID: "0"},
+			{Type: provider.ChunkTypeText, ID: "0", Text: "a"},
+			{Type: provider.ChunkTypeTextEnd, ID: "0"},
+			{Type: provider.ChunkTypeText, ID: "0", Text: "late"},
+			{Type: provider.ChunkTypeTextStart, ID: "0"},
+			{Type: provider.ChunkTypeText, ID: "0", Text: "b"},
+			{Type: provider.ChunkTypeTextEnd, ID: "0"},
+			{Type: provider.ChunkTypeReasoningStart, ID: "r"},
+			{Type: provider.ChunkTypeReasoningEnd, ID: "r"},
+			{Type: provider.ChunkTypeReasoning, ID: "r", Text: "x"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage},
+		}),
+		Prompt: "x",
+		OnChunk: func(c provider.StreamChunk) {
+			if c.Type == provider.ChunkTypeError {
+				mu.Lock()
+				onChunkErrs++
+				mu.Unlock()
+			}
+		},
+		OnError: func(context.Context, error) { mu.Lock(); onErrs++; mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	for _, c := range r91streamDrain(r.FullStream()) {
+		switch c.Type {
+		case provider.ChunkTypeText:
+			seq = append(seq, "delta:"+c.Text)
+		case provider.ChunkTypeReasoning:
+			seq = append(seq, "reasoning:"+c.Text)
+		case provider.ChunkTypeError:
+			seq = append(seq, "error:"+c.Err.Error())
+		}
+	}
+	want := "delta:a,delta:late,error:text part 0 not found,delta:b,reasoning:x,error:reasoning part r not found"
+	if got := strings.Join(seq, ","); got != want {
+		t.Fatalf("parts\n got %s\nwant %s", got, want)
+	}
+	text, err := r.ReadAll()
+	if err != nil || text != "ab" {
+		t.Fatalf("text = %q, %v", text, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if onChunkErrs != 0 || onErrs != 0 {
+		t.Fatalf("orphan error reached OnChunk %d / OnError %d times", onChunkErrs, onErrs)
+	}
+	// A delta of a block that was never started stays accepted.
+	r, err = StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeText, ID: "", Text: "plain"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage},
+		}),
+		Prompt: "x",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text, err := r.ReadAll(); err != nil || text != "plain" {
+		t.Fatalf("never-started text = %q, %v", text, err)
 	}
 }
