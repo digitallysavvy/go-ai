@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -194,8 +195,9 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				// missing (or null) message falls back; an empty one stays.
 				message := "OpenAI realtime error"
 				if errObj, ok := raw["error"].(map[string]interface{}); ok {
-					if m, ok := errObj["message"].(string); ok {
-						message = m
+					// new Error(x) takes String() of any non-null message.
+					if m := errObj["message"]; m != nil {
+						message = providerutils.JSString(m)
 					}
 				}
 				// Recoverable server errors are streamed as `error` parts

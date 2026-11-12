@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -90,5 +91,35 @@ func TestR93provbHeaderErrorAsIs(t *testing.T) {
 	}
 	if _, _, err := vm.(*VideoModel).checkVideoStatus(context.Background(), "req-1", nil); err != sentinel {
 		t.Errorf("checkVideoStatus err = %#v", err)
+	}
+}
+
+// TS new Error(raw.message ?? 'xAI STT error'): a numeric message is
+// String()ed, and still fails the stream.
+func TestR93provbTranscriptionStreamNumericErrorMessage(t *testing.T) {
+	server := newXAISTTTestServer(t)
+	defer server.close()
+	model := newTestXAITranscriptionModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newXAIChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := drainXAIStream(result.Stream)
+		errCh <- err
+	}()
+	server.send(map[string]interface{}{"type": "error", "message": 42.0})
+	select {
+	case err = <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out")
+	}
+	if err == nil || err.Error() != "42" {
+		t.Fatalf("err = %v, want 42", err)
 	}
 }

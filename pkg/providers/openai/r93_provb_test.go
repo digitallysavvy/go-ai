@@ -232,3 +232,55 @@ func TestR93provbBatchResultErrorSchema(t *testing.T) {
 		}
 	}
 }
+
+// TS new Error(raw.error?.message ?? 'OpenAI realtime error'): a non-string
+// message is String()ed (transcription and speech translation).
+func TestR93provbRealtimeNumericErrorMessage(t *testing.T) {
+	server := newRealtimeTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestTranscriptionModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForReceived(t, "session.update", time.Second)
+	server.toSend <- map[string]interface{}{"type": "error", "error": map[string]interface{}{"message": 42.0}}
+	for {
+		if _, err = result.Stream.Next(); err != nil {
+			break
+		}
+	}
+	if err.Error() != "42" {
+		t.Fatalf("transcription err = %v, want 42", err)
+	}
+
+	server2 := newRealtimeTranscriptionTestServer(t)
+	defer server2.close()
+	rate := 24000
+	tr, err := newTestSpeechTranslationModel(server2.ts.URL).DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+		TargetLanguage:   "es",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Stream.Close() //nolint:errcheck
+	server2.waitForReceived(t, "session.update", time.Second)
+	server2.toSend <- map[string]interface{}{"type": "error", "error": map[string]interface{}{"message": true}}
+	server2.toSend <- map[string]interface{}{"type": "session.closed"}
+	parts, _ := drainUntilTranslationFinishOrError(t, tr.Stream)
+	var msgs []string
+	for _, p := range parts {
+		if p.Type == provider.SpeechTranslationStreamPartTypeError {
+			msgs = append(msgs, p.Err.(error).Error())
+		}
+	}
+	if len(msgs) != 1 || msgs[0] != "true" {
+		t.Fatalf("translation error parts = %q, want [true]", msgs)
+	}
+}
