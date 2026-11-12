@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -491,6 +492,9 @@ func CheckTypedFrame(data string) (string, error) {
 // exact value, so a frame TS accepts is never rejected for its number
 // spelling and no float is altered.
 func UnmarshalChunk(data []byte, v interface{}) error {
+	// zod matches object keys exactly; drop the ones encoding/json would
+	// fill a field with only case-insensitively.
+	data = jsonexact.Filter(data, v)
 	err := json.Unmarshal(data, v)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
