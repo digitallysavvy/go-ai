@@ -67,6 +67,39 @@ type MCPMessage struct {
 	Error   *MCPError       `json:"error,omitempty"`
 }
 
+// MarshalJSON writes the TS key order (tools-04): a request or notification
+// is {method, params, jsonrpc, id} ({...request, jsonrpc, id}), a response
+// {jsonrpc, id, result | error}. Absent members are left out as before.
+func (m MCPMessage) MarshalJSON() ([]byte, error) {
+	obj := jsonorder.New()
+	set := func(key string, value interface{}) { obj.Set(key, value) }
+	if m.Method != "" {
+		set("method", m.Method)
+		if len(m.Params) > 0 {
+			set("params", m.Params)
+		}
+		set("jsonrpc", m.JSONRpc)
+		if m.ID != nil {
+			set("id", m.ID)
+		}
+	} else {
+		set("jsonrpc", m.JSONRpc)
+		if m.ID != nil {
+			set("id", m.ID)
+		}
+		if len(m.Params) > 0 {
+			set("params", m.Params)
+		}
+		if len(m.Result) > 0 {
+			set("result", m.Result)
+		}
+		if m.Error != nil {
+			set("error", m.Error)
+		}
+	}
+	return obj.MarshalJSON()
+}
+
 // MCPError represents an error in the MCP protocol
 type MCPError struct {
 	Code    int         `json:"code"`

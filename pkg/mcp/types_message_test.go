@@ -18,7 +18,8 @@ func TestMCPMessageJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal request error = %v", err)
 	}
-	if string(data) != `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"cursor":"abc"}}` {
+	// TS {...request, jsonrpc, id} key order (tools-04).
+	if string(data) != `{"method":"tools/list","params":{"cursor":"abc"},"jsonrpc":"2.0","id":1}` {
 		t.Fatalf("request JSON = %s", string(data))
 	}
 

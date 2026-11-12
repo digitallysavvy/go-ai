@@ -106,9 +106,10 @@ func (e *MCPEvents) List(ctx context.Context, options ListEventsOptions) (*ListE
 // listPage lists one page; a non-nil cursor, even "", is sent (TS
 // params: { cursor: pageCursor } with pageCursor !== undefined).
 func (e *MCPEvents) listPage(ctx context.Context, cursor *string) (*ListEventsResult, error) {
-	params := map[string]interface{}{}
+	// No params key for the first page (TS params undefined, tools-04).
+	var params interface{}
 	if cursor != nil {
-		params["cursor"] = *cursor
+		params = map[string]interface{}{"cursor": *cursor}
 	}
 	var result ListEventsResult
 	if err := e.call(ctx, "events/list", params, &result); err != nil {

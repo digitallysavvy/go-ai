@@ -208,3 +208,33 @@ func TestR91toolsMCPSendErrors(t *testing.T) {
 		t.Fatalf("abort err = %v (%T)", err, err)
 	}
 }
+
+// tools-04 (TS mcp-client.ts:1075): the wire of a legacy cursor-less
+// tools/list and of a modern tools/call follows the TS key order: no params
+// key for the first page, {method, params, jsonrpc, id}, and the original
+// params keys before _meta, whose three keys follow the caller's.
+func TestR91toolsMCPWireKeyOrder(t *testing.T) {
+	c := &MCPClient{protocolEra: "legacy"}
+	params, _ := c.prepareRequestParams("tools/list", nil)
+	msg, err := CreateRequest(1, "tools/list", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := json.Marshal(msg); string(data) != `{"method":"tools/list","jsonrpc":"2.0","id":1}` {
+		t.Errorf("legacy tools/list = %s", data)
+	}
+	c = &MCPClient{protocolEra: "modern", protocolVersion: "v"}
+	params, _ = c.prepareRequestParams("tools/call", map[string]interface{}{"name": "t", "arguments": map[string]interface{}{}, "_meta": map[string]interface{}{"x": 1}})
+	msg, _ = CreateRequest(2, "tools/call", params)
+	data, _ := json.Marshal(msg)
+	want := `{"method":"tools/call","params":{"_meta":{"x":1,"io.modelcontextprotocol/protocolVersion":"v","io.modelcontextprotocol/clientCapabilities":`
+	if !strings.HasPrefix(string(data), want) || !strings.HasSuffix(string(data), `},"jsonrpc":"2.0","id":2}`) {
+		t.Errorf("modern tools/call = %s", data)
+	}
+	params, _ = c.prepareRequestParams("tools/call", json.RawMessage(`{"name":"t","arguments":{}}`))
+	msg, _ = CreateRequest(3, "tools/call", params)
+	data, _ = json.Marshal(msg)
+	if !strings.HasPrefix(string(data), `{"method":"tools/call","params":{"name":"t","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"v",`) {
+		t.Errorf("modern tools/call order = %s", data)
+	}
+}

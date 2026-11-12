@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -611,7 +612,12 @@ func (c *MCPClient) ListToolsWithCursor(ctx context.Context, cursor string) (*Li
 		return nil, errClosedClient()
 	}
 
-	params := ListToolsParams{Cursor: cursor}
+	// TS listTools({params}) sends no params key for the first page
+	// (tools-04).
+	var params interface{}
+	if cursor != "" {
+		params = ListToolsParams{Cursor: cursor}
+	}
 	var result ListToolsResult
 	if err := c.call(ctx, "tools/list", params, &result); err != nil {
 		return nil, err
@@ -722,7 +728,7 @@ func (c *MCPClient) listToolsPage(ctx context.Context, cursor *string) (*ListToo
 	if !c.initialized {
 		return nil, nil, errClosedClient()
 	}
-	var params interface{} = ListToolsParams{}
+	var params interface{}
 	if cursor != nil {
 		params = struct {
 			Cursor string `json:"cursor"`
@@ -758,10 +764,9 @@ func (c *MCPClient) GetSerializableTools(ctx context.Context) (*ListToolsResult,
 		return nil, errClosedClient()
 	}
 
-	params := ListToolsParams{}
 	var result ListToolsResult
 
-	if err := c.call(ctx, "tools/list", params, &result); err != nil {
+	if err := c.call(ctx, "tools/list", nil, &result); err != nil {
 		return nil, err
 	}
 	c.prepareToolDefinitions(&result, true)
@@ -890,7 +895,10 @@ func (c *MCPClient) ListResourcesWithCursor(ctx context.Context, cursor string) 
 		return nil, errClosedClient()
 	}
 
-	params := ListResourcesParams{Cursor: cursor}
+	var params interface{}
+	if cursor != "" {
+		params = ListResourcesParams{Cursor: cursor}
+	}
 	var result ListResourcesResult
 
 	if err := c.call(ctx, "resources/list", params, &result); err != nil {
@@ -953,7 +961,10 @@ func (c *MCPClient) ListPromptsWithCursor(ctx context.Context, cursor string) (*
 		return nil, errClosedClient()
 	}
 
-	params := ListPromptsParams{Cursor: cursor}
+	var params interface{}
+	if cursor != "" {
+		params = ListPromptsParams{Cursor: cursor}
+	}
 	var result ListPromptsResult
 
 	if err := c.call(ctx, "prompts/list", params, &result); err != nil {
@@ -1493,31 +1504,39 @@ func (c *MCPClient) prepareRequestParams(method string, params interface{}) (int
 		return params, nil
 	}
 
-	paramMap := map[string]interface{}{}
+	// TS {...request.params, _meta: {...request.params?._meta, pv, caps,
+	// info}}: the original keys keep their order, _meta follows them (or
+	// keeps its place), and the three _meta keys follow the caller's ones
+	// (tools-04).
+	paramObj := jsonorder.New()
 	if params != nil {
 		data, err := json.Marshal(params)
 		if err != nil {
 			return nil, err
 		}
 		if len(data) > 0 && string(data) != "null" {
-			if err := json.Unmarshal(data, &paramMap); err != nil {
+			parsed, ok := jsonorder.Parse(data)
+			obj, isObj := parsed.(*jsonorder.Object)
+			if !ok || !isObj {
 				// params did not marshal to a JSON object (e.g. a bare
 				// array/string); there is nowhere to attach _meta, so send
 				// it unmodified rather than losing the original params.
 				return params, nil
 			}
+			paramObj = obj
 		}
 	}
 
-	meta, _ := paramMap["_meta"].(map[string]interface{})
+	existing, _ := paramObj.Get("_meta")
+	meta, _ := existing.(*jsonorder.Object)
 	if meta == nil {
-		meta = map[string]interface{}{}
+		meta = jsonorder.New()
 	}
-	meta["io.modelcontextprotocol/protocolVersion"] = c.protocolVersion
-	meta["io.modelcontextprotocol/clientCapabilities"] = c.config.Capabilities
-	meta["io.modelcontextprotocol/clientInfo"] = c.clientInfo
-	paramMap["_meta"] = meta
-	return paramMap, nil
+	meta.Set("io.modelcontextprotocol/protocolVersion", c.protocolVersion)
+	meta.Set("io.modelcontextprotocol/clientCapabilities", c.config.Capabilities)
+	meta.Set("io.modelcontextprotocol/clientInfo", c.clientInfo)
+	paramObj.Set("_meta", meta)
+	return paramObj, nil
 }
 
 // validateModernResult enforces the modern-era result invariant: every
