@@ -107,7 +107,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if err != nil {
 		// TS postToApi/getFromApi handleFetchError: the retryable
 		// "Cannot connect to API" APICallError (aborts unchanged).
-		return nil, internalhttp.TransportError(err)
+		return nil, internalhttp.TransportErrorCtx(initReq.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 400 {
@@ -134,7 +134,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if err != nil {
 		// TS postToApi/getFromApi handleFetchError: the retryable
 		// "Cannot connect to API" APICallError (aborts unchanged).
-		return nil, internalhttp.TransportError(err)
+		return nil, internalhttp.TransportErrorCtx(uploadReq.Context(), err)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
@@ -179,7 +179,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		if err != nil {
 			// TS postToApi/getFromApi handleFetchError: the retryable
 			// "Cannot connect to API" APICallError (aborts unchanged).
-			return nil, internalhttp.TransportError(err)
+			return nil, internalhttp.TransportErrorCtx(pollReq.Context(), err)
 		}
 		if pollResp.StatusCode >= 400 {
 			b, _ := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))

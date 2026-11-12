@@ -983,7 +983,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	httpClient := m.provider.Client().HTTPClient()
 	resp, err := internalhttp.WithFetchRedirects(httpClient).Do(req)
 	if err != nil {
-		return nil, providerErrorFromTransport(err)
+		return nil, providerErrorFromTransport(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -1037,16 +1037,16 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 // failure of the provider's transport) is returned unchanged, cancellation
 // and timeouts stay as they are, and a network failure is the retryable
 // "Cannot connect to API: <cause>" APICallError, here a ProviderError.
-func providerErrorFromTransport(err error) error {
+// ctx is the request's context: TransportErrorCtx classifies first, so a
+// dial or response-header timeout while ctx is live is the retryable connect
+// error (TS RETRYABLE_NETWORK_ERROR_CODES), not an abort.
+func providerErrorFromTransport(ctx context.Context, err error) error {
 	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 		return cause
 	}
-	if noResp, ok := internalhttp.NoResponseError(err); ok {
-		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
-	}
-	mapped := internalhttp.TransportError(err)
+	mapped := internalhttp.TransportErrorCtx(ctx, err)
 	if mapped == err {
-		return err
+		return err // TS handleFetchError: an abort or timeout is returned unchanged
 	}
 	return providererrors.NewProviderError("amazon-bedrock", 0, "", mapped.Error(), mapped)
 }
@@ -1411,7 +1411,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	httpClient := m.provider.Client().HTTPClient()
 	resp, err := internalhttp.WithFetchRedirects(httpClient).Do(req)
 	if err != nil {
-		return nil, providerErrorFromTransport(err)
+		return nil, providerErrorFromTransport(req.Context(), err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := readResponseBody(resp.Body)

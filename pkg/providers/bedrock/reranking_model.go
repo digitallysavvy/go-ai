@@ -72,7 +72,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if err != nil {
 		// TS handleFetchError: a rejected fetch is returned unchanged, a
 		// network failure is the retryable "Cannot connect to API" error.
-		return nil, providerErrorFromTransport(err)
+		return nil, providerErrorFromTransport(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	respBody, err := readJSONResponseBody(resp.Body)

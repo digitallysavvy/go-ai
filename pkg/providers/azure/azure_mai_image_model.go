@@ -463,7 +463,7 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 	if err != nil {
 		// TS handleFetchError: abort and timeout unchanged, a rejected fetch
 		// wrapper unchanged, else the retryable "Cannot connect to API" error.
-		return azureMaiImageCallResult{}, internalhttp.TransportError(err)
+		return azureMaiImageCallResult{}, internalhttp.TransportErrorCtx(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	respBody, err := fileutil.ReadResponseWithSizeLimit(resp, urlStr, fileutil.DefaultMaxDownloadSize)

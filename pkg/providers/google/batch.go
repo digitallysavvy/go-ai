@@ -244,7 +244,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	if err != nil {
 		// TS postToApi/getFromApi handleFetchError: the retryable
 		// "Cannot connect to API" APICallError (aborts unchanged).
-		return nil, internalhttp.TransportError(err)
+		return nil, internalhttp.TransportErrorCtx(initReq.Context(), err)
 	}
 	defer initResp.Body.Close() //nolint:errcheck
 	if initResp.StatusCode >= 400 {
@@ -273,7 +273,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	if err != nil {
 		// TS postToApi/getFromApi handleFetchError: the retryable
 		// "Cannot connect to API" APICallError (aborts unchanged).
-		return nil, internalhttp.TransportError(err)
+		return nil, internalhttp.TransportErrorCtx(uploadReq.Context(), err)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
@@ -468,7 +468,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if err != nil {
 		// TS postToApi/getFromApi handleFetchError: the retryable
 		// "Cannot connect to API" APICallError (aborts unchanged).
-		return nil, internalhttp.TransportError(err)
+		return nil, internalhttp.TransportErrorCtx(req.Context(), err)
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close() //nolint:errcheck

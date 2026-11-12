@@ -173,7 +173,7 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 	if err != nil {
 		// TS handleFetchError: abort and timeout unchanged, a rejected fetch
 		// wrapper unchanged, else the retryable "Cannot connect to API" error.
-		return nil, internalhttp.TransportError(err)
+		return nil, internalhttp.TransportErrorCtx(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 

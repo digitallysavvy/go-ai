@@ -308,7 +308,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if err != nil {
 		// TS getFromApi → handleFetchError: a network failure is the
 		// retryable "Cannot connect to API: ..." APICallError.
-		return nil, b.handleError(internalhttp.TransportError(err))
+		return nil, b.handleError(internalhttp.TransportErrorCtx(httpReq.Context(), err))
 	}
 	if httpResp.StatusCode >= 400 {
 		defer httpResp.Body.Close() //nolint:errcheck

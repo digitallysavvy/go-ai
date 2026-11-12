@@ -172,7 +172,7 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	if err != nil {
 		// The URL carries ?key=<API key>; a TS fetch rejection never names
 		// the URL, so strip the query before the error leaves the SDK.
-		return provider.ClientSecretResult{}, internalhttp.TransportError(redactURLErrorQuery(err))
+		return provider.ClientSecretResult{}, internalhttp.TransportErrorCtx(req.Context(), redactURLErrorQuery(err))
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
