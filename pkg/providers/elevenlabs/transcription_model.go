@@ -56,6 +56,12 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	if opts.ProviderOptions != nil {
+		// Go-typed option literals are read through their JSON form.
+		normalized := *opts
+		normalized.ProviderOptions = normalizeProviderOptions(opts.ProviderOptions)
+		opts = &normalized
+	}
 
 	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
 		return nil, err
