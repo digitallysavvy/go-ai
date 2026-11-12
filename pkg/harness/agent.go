@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
@@ -632,6 +634,17 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	skills := a.settings.Skills
 	tools := a.tools
 
+	// TS _preparePromptTurnInput: the custom options are validated (and
+	// replaced by the validated value) before anything else of a prompt
+	// turn is prepared.
+	callOptions := opts.CallOptions
+	if mode != "continue" {
+		var err error
+		if callOptions, err = validateHarnessCallOptions(a.settings.CallOptionsSchema, callOptions); err != nil {
+			return nil, err
+		}
+	}
+
 	var prompt Prompt
 	if mode != "continue" {
 		var err error
@@ -653,7 +666,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// TS `_prepareContinueTurnInput`.
 	if a.settings.PrepareCall != nil && mode != "continue" {
 		prepared, err := a.settings.PrepareCall(ctx, PrepareCallOptions{
-			CallOptions: opts.CallOptions, Prompt: prompt, Model: model,
+			CallOptions: callOptions, Prompt: prompt, Model: model,
 			Skills: skills, Instructions: instructionsRaw, Tools: tools, ToolsContext: toolsContext,
 			RuntimeContext: runtimeContext,
 		})
@@ -1018,4 +1031,30 @@ func toolSpecInputSchema(t types.Tool) any {
 		return m
 	}
 	return nil
+}
+
+// validateHarnessCallOptions is TS validateTypes({value: options.options,
+// schema: callOptionsSchema, context: {field: 'options'}}) for a prompt
+// turn: nil options (TS undefined) or no schema pass through; otherwise the
+// schema's defaults are applied and the result validated. A failure is a
+// *ValidationError with context field "options".
+func validateHarnessCallOptions(callOptionsSchema jsonschema.Schema, callOptions interface{}) (interface{}, error) {
+	if callOptionsSchema == nil || callOptions == nil {
+		return callOptions, nil
+	}
+	// Go-typed values (a struct, map[string]string, int64) are validated as
+	// the plain JSON object TS validates.
+	value := callOptions
+	if b, err := json.Marshal(callOptions); err == nil {
+		var plain interface{}
+		if json.Unmarshal(b, &plain) == nil {
+			value = plain
+		}
+	}
+	defaulted := jsonschema.ApplyDefaults(value, callOptionsSchema)
+	if err := callOptionsSchema.Validator().Validate(defaulted); err != nil {
+		return nil, providererrors.NewValidationErrorWithContext(callOptions, err.Error(), err,
+			&providererrors.ValidationContext{Field: "options"})
+	}
+	return defaulted, nil
 }
