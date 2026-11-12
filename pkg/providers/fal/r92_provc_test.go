@@ -1,8 +1,11 @@
 package fal
 
 import (
+	"context"
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -92,5 +95,22 @@ func TestR92provcTranscriptionTypedOptions(t *testing.T) {
 	}})
 	if err != nil || body["language"] != "fr" || body["chunk_level"] != "segment" {
 		t.Fatalf("body = %v err = %v", body, err)
+	}
+}
+
+// TestR92provcVideoStatusInvalidResponseIsErrorStatus (r92 provc-16): TS
+// doStatus catches the APICallError 'Invalid JSON response' of an
+// off-schema status body and reports an error status.
+func TestR92provcVideoStatusInvalidResponseIsErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"video":{"url":42}}`))
+	}))
+	defer srv.Close()
+	m := NewVideoModel(New(Config{APIKey: "k"}), "fal-ai/luma-dream-machine")
+	op, _ := json.Marshal(falVideoOperation{ResponseURL: srv.URL + "/requests/1", SubmitURL: srv.URL + "/fal-ai/luma-dream-machine"})
+	res, err := m.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil || res.Status != provider.VideoOperationStatusError || res.Error != "Invalid JSON response" {
+		t.Fatalf("res = %+v err = %v", res, err)
 	}
 }

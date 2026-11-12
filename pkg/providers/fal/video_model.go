@@ -262,7 +262,22 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	result, err := fileutil.PollJSON(ctx, op.ResponseURL, downloadOpts, nil)
 	if err == nil {
 		// TS createJsonResponseHandler(falVideoResponseSchema).
+		// The schema failure is an APICallError ('Invalid JSON response'),
+		// which TS doStatus reports as an error status with the response
+		// headers instead of throwing.
 		if verr := validateVideoStatus(http.StatusOK, headersOf(result.Headers), result.Data); verr != nil {
+			var perr *providererrors.ProviderError
+			if errors.As(verr, &perr) {
+				return &provider.VideoModelV3OperationStatusResult{
+					Status: provider.VideoOperationStatusError,
+					Error:  perr.Message,
+					Response: provider.VideoModelV3ResponseInfo{
+						Timestamp: currentDate,
+						ModelID:   m.modelID,
+						Headers:   flattenFalHeaders(result.Headers),
+					},
+				}, nil
+			}
 			return nil, verr
 		}
 		if uerr := json.Unmarshal(result.Data, &statusResp); uerr != nil {
