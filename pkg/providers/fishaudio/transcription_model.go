@@ -143,8 +143,14 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		return nil, "", err
 	}
 
-	if fishOpts != nil && fishOpts.Language != "" {
-		if err := providerutils.WriteFormDataField(writer, "language", fishOpts.Language); err != nil {
+	// TS `language != null`: an empty string is sent too (a typed options
+	// struct cannot tell "" from unset).
+	rawOpts, _ := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fishAudio"].(map[string]interface{})
+	if language, isString := rawOpts["language"].(string); isString || (fishOpts != nil && fishOpts.Language != "") {
+		if !isString {
+			language = fishOpts.Language
+		}
+		if err := providerutils.WriteFormDataField(writer, "language", language); err != nil {
 			return nil, "", err
 		}
 	}
