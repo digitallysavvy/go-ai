@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -477,6 +478,56 @@ func TestR91genStreamObjectArrayIncremental(t *testing.T) {
 		// 50 incremental validations plus the final result's validation.
 		if calls > 120 {
 			t.Fatalf("validations = %d, want about one per element", calls)
+		}
+	})
+}
+
+// TS 2ebc78b654 (generated-file data, ruling 1): experimental_download also
+// handles the generated file URLs a model returns, called with
+// isUrlSupportedByModel false; a null result is a DownloadError. Without it
+// the default validated downloader is used (protection stays on).
+func TestR91genGeneratedFileUsesExperimentalDownload(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{
+			Content:      []types.ContentPart{types.GeneratedFileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://files.example.com/a b.png"}}},
+			FinishReason: types.FinishReasonStop,
+		}, nil
+	}}
+	t.Run("custom download", func(t *testing.T) {
+		var got []promptutils.DownloadRequest
+		res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi",
+			ExperimentalDownload: func(_ context.Context, reqs []promptutils.DownloadRequest) ([]*promptutils.DownloadResult, error) {
+				got = append(got, reqs...)
+				return []*promptutils.DownloadResult{{Data: []byte("png"), MediaType: "image/png"}}, nil
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].URL != "https://files.example.com/a b.png" || got[0].IsURLSupportedByModel {
+			t.Fatalf("download requests = %+v", got)
+		}
+		if len(res.Files) != 1 || string(res.Files[0].Data) != "png" {
+			t.Fatalf("files = %+v", res.Files)
+		}
+	})
+	t.Run("nil result", func(t *testing.T) {
+		_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi",
+			ExperimentalDownload: func(context.Context, []promptutils.DownloadRequest) ([]*promptutils.DownloadResult, error) {
+				return []*promptutils.DownloadResult{nil}, nil
+			}})
+		var dlErr *providererrors.DownloadError
+		if !errors.As(err, &dlErr) || err.Error() != "Generated file URL https://files.example.com/a%20b.png must be downloaded, but the download function returned null" || dlErr.URL != "https://files.example.com/a%20b.png" {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("custom error is returned as is", func(t *testing.T) {
+		boom := errors.New("boom")
+		_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi",
+			ExperimentalDownload: func(context.Context, []promptutils.DownloadRequest) ([]*promptutils.DownloadResult, error) {
+				return nil, boom
+			}})
+		if !errors.Is(err, boom) || providererrors.IsDownloadError(err) {
+			t.Fatalf("err = %v", err)
 		}
 	})
 }

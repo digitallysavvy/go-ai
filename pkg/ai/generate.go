@@ -456,9 +456,12 @@ type GenerateTextOptions struct {
 	// approval, callbacks, telemetry, execution, and response messages.
 	ExperimentalRefineToolInput map[string]ToolInputRefiner
 
-	// ExperimentalDownload downloads remote file URLs that need inline data
-	// before sending tool-result messages back to the model. Defaults to
-	// DefaultDownload, matching the TypeScript SDK's default download behavior.
+	// ExperimentalDownload downloads URLs in the prompt and the generated
+	// file URLs the model returns. By default (DefaultDownload, validated and
+	// DNS-pinned), prompt files are downloaded when the model does not
+	// support the URL for the media type. Generated file URLs are always
+	// downloaded (IsURLSupportedByModel false); a nil result for one is a
+	// DownloadError.
 	ExperimentalDownload DownloadFunction
 
 	// ========================================================================
@@ -1620,7 +1623,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// URL-backed generated files are downloaded once, before anything
 		// observes the content (TS convertLanguageModelContent).
-		if resolvedContent, resolveErr := resolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+		if resolvedContent, resolveErr := resolveContentFilesWith(stepCtx, genResult.Content, opts.ExperimentalDownload); resolveErr != nil {
 			return nil, resolveErr
 		} else if len(resolvedContent) > 0 {
 			resolvedResult := *genResult
