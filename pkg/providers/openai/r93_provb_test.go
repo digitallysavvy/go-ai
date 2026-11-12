@@ -208,3 +208,27 @@ func TestR93provbHeaderErrorAsIs(t *testing.T) {
 		t.Errorf("DoCreateClientSecret err = %#v", err)
 	}
 }
+
+// TS openaiResponsesResponseSchema error: {message, type, param?, code}
+// strings; anything else fails the body ("invalid Responses batch result").
+func TestR93provbBatchResultErrorSchema(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"message":"m","type":"t","code":"c"}}`:              "m|t|c",
+		`{"error":{"message":"m","type":"t","code":7}}`:                "OpenAI returned an invalid Responses batch result.|",
+		`{"error":{"message":"m","code":"c"}}`:                         "OpenAI returned an invalid Responses batch result.|",
+		`{"error":{"message":"m","type":"t","code":"c","param":1}}`:    "OpenAI returned an invalid Responses batch result.|",
+		`{"error":{"message":"m","type":"t","code":"c","param":null}}`: "m|t|c",
+	} {
+		_, be := convertOpenAIBatchResponseBodyBytes(json.RawMessage(body))
+		if be == nil {
+			t.Fatalf("%s: no error", body)
+		}
+		got := be.Message + "|" + be.Type
+		if be.Type != "" || be.Code == "c" {
+			got += "|" + be.Code
+		}
+		if got != want {
+			t.Errorf("%s: got %q, want %q", body, got, want)
+		}
+	}
+}
