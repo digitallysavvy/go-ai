@@ -61,3 +61,14 @@ func TestR92provcLatestSizeWithTypedOptions(t *testing.T) {
 		}
 	}
 }
+
+// TestR92provcSizeAspectRatioJSText (r92 provc-10): the derived aspect
+// ratio is a template literal of Math.round results (JS number text).
+func TestR92provcSizeAspectRatioJSText(t *testing.T) {
+	if got := bflSizeAspectRatio("1e21x1"); got != "1e+21:1" {
+		t.Errorf("aspect ratio = %q", got)
+	}
+	if got := bflSizeAspectRatio("1920x1080"); got != "16:9" {
+		t.Errorf("aspect ratio = %q", got)
+	}
+}

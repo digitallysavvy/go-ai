@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -121,9 +120,10 @@ func (m *VideoModel) buildStartRequestBody(opts *provider.VideoModelV3CallOption
 		body.Set("aspect_ratio", opts.AspectRatio)
 	}
 
-	// TS: `if (options.duration)` -- falsy (including 0) is skipped.
-	if opts.Duration != nil && *opts.Duration != 0 {
-		body.Set("duration", strconv.FormatFloat(*opts.Duration, 'f', -1, 64)+"s")
+	// TS: `if (options.duration)` -- falsy (0 and NaN) is skipped; the
+	// template literal writes the JS number text.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
+		body.Set("duration", providerutils.JSNumberString(*opts.Duration)+"s")
 	}
 
 	// TS: `if (options.seed != null)`.

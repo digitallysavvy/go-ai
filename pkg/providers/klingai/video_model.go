@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -639,7 +638,7 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	// v3.0 multi-shot
@@ -740,7 +739,7 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	// v3.0 multi-shot
@@ -830,7 +829,7 @@ func (m *VideoModel) buildMultiImageBody(opts *provider.VideoModelV3CallOptions,
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	if provOpts.WatermarkEnabled != nil {

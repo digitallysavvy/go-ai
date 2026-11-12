@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -494,7 +493,7 @@ func bflSizeAspectRatio(size string) string {
 
 // jsRound is Math.round formatted as a JS number string.
 func jsRound(f float64) string {
-	return strconv.FormatFloat(math.Floor(f+0.5), 'f', -1, 64)
+	return providerutils.JSNumberString(math.Floor(f + 0.5))
 }
 
 func bflImageValue(file provider.ImageFile) string {
