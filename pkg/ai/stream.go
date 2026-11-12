@@ -2562,7 +2562,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// forwarded or recorded (TS stream-language-model-call
 			// resolveGeneratedFileData); a failed download ends the stream.
 			if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
-				resolved, resolveErr := resolveGeneratedFile(stepCtx, *chunk.GeneratedFileContent)
+				resolved, resolveErr := resolveGeneratedFileWith(stepCtx, *chunk.GeneratedFileContent, opts.ExperimentalDownload)
 				if resolveErr != nil {
 					resolveErr = r.classifyStepTimeout(stepCtx, ctx, resolveErr)
 					r.err = resolveErr
@@ -2574,7 +2574,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				chunk.GeneratedFileContent = &resolved
 			}
 			if chunk.Type == provider.ChunkTypeReasoningFile && chunk.ReasoningFileContent != nil {
-				resolved, resolveErr := resolveReasoningFile(stepCtx, *chunk.ReasoningFileContent)
+				resolved, resolveErr := resolveReasoningFileWith(stepCtx, *chunk.ReasoningFileContent, opts.ExperimentalDownload)
 				if resolveErr != nil {
 					resolveErr = r.classifyStepTimeout(stepCtx, ctx, resolveErr)
 					r.err = resolveErr

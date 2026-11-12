@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
-	"regexp"
 	"strings"
-	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -102,46 +100,18 @@ func (t *partialOutputTracker) observe(ctx context.Context, spec outputProcessor
 // ArrayOutput type.
 var arrayOutputPkgPath = reflect.TypeOf(partialOutputTracker{}).PkgPath()
 
-type arrayStreamPhase int
-
-const (
-	arrayStreamPrefix arrayStreamPhase = iota
-	arrayStreamElements
-	arrayStreamSuffix
-	arrayStreamDone
-)
-
-// jsWhitespace is the JS RegExp \s class.
-const jsWhitespace = `\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
-
-var arrayStreamPrefixPattern = regexp.MustCompile(`^[` + jsWhitespace + `]*\{[` + jsWhitespace + `]*"elements"[` + jsWhitespace + `]*:[` + jsWhitespace + `]*\[$`)
-
-func isJSWhitespace(r rune) bool {
-	switch r {
-	case '\t', '\n', '\v', '\f', '\r', ' ', 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
-		return true
-	}
-	return r >= 0x2000 && r <= 0x200a
-}
-
-// arrayOutputStreamParser is the TS createArrayOutputStreamParser
-// (util/array-output-stream.ts): it scans only new text and parses and
+// arrayOutputStreamParser is StreamText's ArrayOutput stage of TS
+// createArrayOutputStreamParser (util/array-output-stream.ts): it parses and
 // validates each delimited element once, keeping the last element pending
 // until another starts or the enclosing object closes (as the partial JSON
 // parser drops an incomplete last element). A nonstandard envelope or
 // malformed JSON falls back to the output's own partial parser. Invalid
 // elements are skipped, as ArrayOutput's partial parser does.
 type arrayOutputStreamParser struct {
+	scanner        arrayElementScanner
+	ctx            context.Context
 	spec           outputProcessor
 	sliceType      reflect.Type
-	phase          arrayStreamPhase
-	prefix         strings.Builder
-	prefixUnits    int
-	elementText    strings.Builder
-	depth          int
-	inString       bool
-	escaped        bool
-	afterComma     bool
 	pending        []reflect.Value
 	elements       reflect.Value
 	publishedCount int
@@ -163,16 +133,18 @@ func newArrayOutputStreamParser(ctx context.Context, spec outputProcessor) *arra
 	return &arrayOutputStreamParser{spec: spec, sliceType: sliceType, elements: reflect.MakeSlice(sliceType, 0, 0)}
 }
 
-// finishElement parses and validates the element text once: false means
+func (p *arrayOutputStreamParser) elementStart() { p.publishPending() }
+func (p *arrayOutputStreamParser) closed()       { p.publishPending() }
+
+// elementDone parses and validates the element text once: false means
 // malformed JSON (fall back). A schema failure skips the element.
-func (p *arrayOutputStreamParser) finishElement(ctx context.Context) bool {
-	text := p.elementText.String()
+func (p *arrayOutputStreamParser) elementDone(text string) bool {
 	if !json.Valid([]byte(text)) {
 		return false
 	}
 	// The output's own partial parser validates (with defaults) and types a
 	// one-element array: the element's schema check and conversion, once.
-	parsed, ok, err := p.spec.parsePartialOutput(ctx, ParsePartialOutputOptions{Text: `{"elements":[` + text + `]}`})
+	parsed, ok, err := p.spec.parsePartialOutput(p.ctx, ParsePartialOutputOptions{Text: `{"elements":[` + text + `]}`})
 	if err != nil {
 		return false
 	}
@@ -181,7 +153,6 @@ func (p *arrayOutputStreamParser) finishElement(ctx context.Context) bool {
 			p.pending = []reflect.Value{v.Index(0)}
 		}
 	}
-	p.elementText.Reset()
 	return true
 }
 
@@ -195,78 +166,13 @@ func (p *arrayOutputStreamParser) publishPending() {
 // feed scans textDelta and returns a snapshot to publish when the element
 // count changed, or fallback for a nonstandard envelope or malformed JSON.
 func (p *arrayOutputStreamParser) feed(ctx context.Context, textDelta string) (partial any, publish bool, fallback bool) {
-	for _, char := range textDelta {
-		if p.phase == arrayStreamPrefix {
-			p.prefix.WriteRune(char)
-			p.prefixUnits += len(utf16.Encode([]rune{char}))
-			if char == '[' {
-				// Bound prefix scanning; other object shapes keep the
-				// output's own partial parser.
-				if !arrayStreamPrefixPattern.MatchString(p.prefix.String()) {
-					return nil, false, true
-				}
-				p.phase = arrayStreamElements
-			} else if p.prefixUnits > 256 {
-				return nil, false, true
-			}
-			continue
-		}
-
-		if p.phase == arrayStreamSuffix || p.phase == arrayStreamDone {
-			if isJSWhitespace(char) {
-				continue
-			}
-			if p.phase == arrayStreamSuffix && char == '}' {
-				p.publishPending()
-				p.phase = arrayStreamDone
-				continue
-			}
-			return nil, false, true
-		}
-
-		if !p.inString && p.depth == 0 && (char == ',' || char == ']') {
-			if p.elementText.Len() > 0 {
-				if !p.finishElement(ctx) {
-					return nil, false, true
-				}
-			} else if char == ',' || p.afterComma {
-				return nil, false, true
-			}
-			p.afterComma = char == ','
-			if char == ']' {
-				p.phase = arrayStreamSuffix
-			}
-			continue
-		}
-
-		if p.elementText.Len() == 0 {
-			if isJSWhitespace(char) {
-				continue
-			}
-			p.publishPending()
-			p.afterComma = false
-		}
-		p.elementText.WriteRune(char)
-
-		switch {
-		case p.inString:
-			if p.escaped {
-				p.escaped = false
-			} else if char == '\\' {
-				p.escaped = true
-			} else if char == '"' {
-				p.inString = false
-			}
-		case char == '"':
-			p.inString = true
-		case char == '{' || char == '[':
-			p.depth++
-		case char == '}' || char == ']':
-			p.depth--
-		}
+	p.ctx = ctx
+	fallback = p.scanner.scan(textDelta, p)
+	p.ctx = nil
+	if fallback {
+		return nil, false, true
 	}
-
-	if p.phase == arrayStreamPrefix || (p.published && p.publishedCount == p.elements.Len()) {
+	if p.scanner.inPrefix() || (p.published && p.publishedCount == p.elements.Len()) {
 		return nil, false, false
 	}
 	p.published = true

@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 var (
@@ -38,6 +39,12 @@ var (
 	// part of a model response (TS convertLanguageModelContent
 	// resolveGeneratedFileData). The input slice is not modified.
 	ResolveContentFiles func(ctx context.Context, content []types.ContentPart) ([]types.ContentPart, error)
+
+	// ResolveContentFilesWith is ResolveContentFiles with the call's
+	// experimental download function (nil: the default validated
+	// downloader). TS 2ebc78b654 passes the call's download to
+	// resolveGeneratedFileData.
+	ResolveContentFilesWith func(ctx context.Context, content []types.ContentPart, download promptutils.DownloadFunction) ([]types.ContentPart, error)
 
 	// CheckToolChoiceViolation returns a *ai.ToolChoiceViolationError when
 	// choice requires a tool call that toolCalls lacks.

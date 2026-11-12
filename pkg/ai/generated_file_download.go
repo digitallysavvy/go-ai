@@ -77,15 +77,9 @@ func downloadGeneratedFileWith(ctx context.Context, url string, download Downloa
 	return results[0].Data, nil
 }
 
-// resolveGeneratedFile returns file with its URL replaced by the bytes the
-// default downloader returns. Files that already carry data are returned
-// unchanged.
-func resolveGeneratedFile(ctx context.Context, file types.GeneratedFileContent) (types.GeneratedFileContent, error) {
-	return resolveGeneratedFileWith(ctx, file, nil)
-}
-
-// resolveGeneratedFileWith is resolveGeneratedFile with the call's
-// ExperimentalDownload (nil: the default downloader).
+// resolveGeneratedFileWith returns file with its URL replaced by the bytes
+// the call's ExperimentalDownload returns (nil: the default downloader).
+// Files that already carry data are returned unchanged.
 func resolveGeneratedFileWith(ctx context.Context, file types.GeneratedFileContent, download DownloadFunction) (types.GeneratedFileContent, error) {
 	url, ok := generatedFileURL(file)
 	if !ok {
@@ -101,12 +95,7 @@ func resolveGeneratedFileWith(ctx context.Context, file types.GeneratedFileConte
 	return file, nil
 }
 
-func resolveReasoningFile(ctx context.Context, file types.ReasoningFileContent) (types.ReasoningFileContent, error) {
-	return resolveReasoningFileWith(ctx, file, nil)
-}
-
-// resolveReasoningFileWith is resolveReasoningFile with the call's
-// ExperimentalDownload (nil: the default downloader).
+// resolveReasoningFileWith is resolveGeneratedFileWith for a reasoning file.
 func resolveReasoningFileWith(ctx context.Context, file types.ReasoningFileContent, download DownloadFunction) (types.ReasoningFileContent, error) {
 	url, ok := reasoningFileURL(file)
 	if !ok {

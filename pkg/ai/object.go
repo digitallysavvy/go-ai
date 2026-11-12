@@ -2090,9 +2090,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	// Array output scans each new text delta once (TS 91a67c2f56
 	// createArrayStreamParser); nil after a fallback to reparsing.
-	var arrayParser *arrayOutputStreamParser
+	var arrayParser *objectArrayStreamParser
 	if opts.OutputMode == ObjectModeArray {
-		arrayParser = newArrayOutputStreamParser(opts.Schema)
+		arrayParser = newObjectArrayStreamParser(opts.Schema)
 	}
 
 	// Process stream chunks. A provider error part does not end the stream

@@ -2132,7 +2132,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 		Messages: aibridge.MessagesForModel(callConfig.Messages),
 		System:   promptSystem,
-	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
+	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(nil), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
 		return nil, false, callConfig.CustomData, nil, err
 	}
@@ -2279,7 +2279,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
 	// URL-backed generated files are downloaded once, before anything observes
 	// the content (TS convertLanguageModelContent).
-	if resolvedContent, resolveErr := aibridge.ResolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+	if resolvedContent, resolveErr := aibridge.ResolveContentFilesWith(stepCtx, genResult.Content, callConfig.ExperimentalDownload); resolveErr != nil {
 		return nil, false, callConfig.CustomData, nil, resolveErr
 	} else if len(resolvedContent) > 0 {
 		resolvedResult := *genResult

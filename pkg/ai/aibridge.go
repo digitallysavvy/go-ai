@@ -17,6 +17,7 @@ func init() {
 	aibridge.MessagesForModel = messagesForModel
 	aibridge.ValidateToolResultParts = validateToolResultPartsOf
 	aibridge.ResolveContentFiles = resolveContentFiles
+	aibridge.ResolveContentFilesWith = resolveContentFilesWith
 	aibridge.CheckToolChoiceViolation = checkToolChoiceViolation
 	aibridge.EmptyProviderResults = emptyProviderResults
 	aibridge.WorkflowBlockedToolStep = func(continueOnMissingProviderResult bool, reason types.FinishReason, content []types.ContentPart) bool {
