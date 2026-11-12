@@ -372,8 +372,8 @@ var (
 func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, name string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if err := ctx.Err(); err != nil {
-			return "", err
+		if ctx.Err() != nil { // TS abortSignal?.throwIfAborted(): the abort reason
+			return "", context.Cause(ctx)
 		}
 		// Only completed manual snapshots count: automatic snapshots can be
 		// taken of a half-prepared builder. Like TS, the listing stops at
@@ -393,7 +393,7 @@ func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, 
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", context.Cause(ctx)
 		case <-time.After(snapshotPollInterval):
 		}
 	}

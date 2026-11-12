@@ -111,8 +111,8 @@ func (p *LegacyProvider) ProviderID() string { return vercelProviderID }
 // snapshot) a network sandbox session. Mirrors TS
 // `VercelSandboxProvider.createSession`.
 func (p *LegacyProvider) CreateSession(ctx context.Context, opts harness.CreateSandboxSessionOptions) (harness.NetworkSandboxSession, error) {
-	if err := ctx.Err(); err != nil { // TS abortSignal?.throwIfAborted()
-		return nil, err
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted(): the abort reason
+		return nil, context.Cause(ctx)
 	}
 	if p.settings.Sandbox != nil {
 		return NewNetworkSession(p.settings.Sandbox, false), nil
@@ -169,8 +169,8 @@ func (p *LegacyProvider) CreateSession(ctx context.Context, opts harness.CreateS
 // ResumeSession reattaches to the named session sandbox. Mirrors TS
 // `VercelSandboxProvider.resumeSession`.
 func (p *LegacyProvider) ResumeSession(ctx context.Context, sessionID string) (harness.NetworkSandboxSession, error) {
-	if err := ctx.Err(); err != nil { // TS abortSignal?.throwIfAborted()
-		return nil, err
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted(): the abort reason
+		return nil, context.Cause(ctx)
 	}
 	if p.settings.Sandbox != nil {
 		return NewNetworkSession(p.settings.Sandbox, false), nil
