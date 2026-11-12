@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -288,6 +289,51 @@ func TestR91toolsMiniMaxVideoErrorData(t *testing.T) {
 		var pe *providererrors.ProviderError
 		if !errors.As(err, &pe) || !reflect.DeepEqual(pe.Data, tc.data) {
 			t.Fatalf("%s: unwrapped ProviderError data = %#v", tc.body, pe)
+		}
+	}
+}
+
+// tools-09 (TS minimax-video-model.ts:524): !Number.isInteger(Infinity) and
+// (NaN) is true, so both warn "rounded to Infinity / NaN"; Infinity is then
+// clamped to 15 and NaN is sent as null (JSON.stringify(NaN)).
+func TestR91toolsMiniMaxVideoDurationNonFinite(t *testing.T) {
+	for _, tc := range []struct {
+		duration float64
+		warnings []string
+		wire     string
+	}{
+		{math.Inf(1), []string{"rounded to Infinity", "clamped to 15"}, `"duration":15`},
+		{math.NaN(), []string{"rounded to NaN"}, `"duration":null`},
+	} {
+		var body string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			body = string(b)
+			_, _ = w.Write([]byte(`{"task_id":"t1"}`))
+		}))
+		model := newVideoModel(New(Config{APIKey: "k", VideoBaseURL: srv.URL}), ModelH3)
+		d := tc.duration
+		res, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "a cat", PromptSet: true, N: 1, Duration: &d}})
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, w := range res.Warnings {
+			if w.Feature == "duration" {
+				got = append(got, w.Details)
+			}
+		}
+		if len(got) != len(tc.warnings) {
+			t.Fatalf("%v: warnings %q", tc.duration, got)
+		}
+		for i, want := range tc.warnings {
+			if !strings.Contains(got[i], want) {
+				t.Errorf("%v: warning %q lacks %q", tc.duration, got[i], want)
+			}
+		}
+		if !strings.Contains(body, tc.wire) {
+			t.Errorf("%v: body %s lacks %s", tc.duration, body, tc.wire)
 		}
 	}
 }

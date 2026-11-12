@@ -751,22 +751,21 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	if m.modelID == ModelH3 {
 		minDurationSeconds = 4
 	}
-	duration := minimaxDefaultDuration
+	var duration interface{} = minimaxDefaultDuration
 	if opts.Duration != nil {
 		raw := *opts.Duration
-		// JS Math.round rounds half toward +Infinity.
+		// JS Math.round rounds half toward +Infinity (and keeps NaN and
+		// ±Infinity); !Number.isInteger is true for NaN and ±Infinity too
+		// (tools-09).
 		rounded := math.Floor(raw + 0.5)
-		if math.IsNaN(raw) || math.IsInf(raw, 0) {
-			rounded = raw
-		}
-		if rounded != raw {
+		if math.IsNaN(raw) || math.IsInf(raw, 0) || math.Trunc(raw) != raw {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
 				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %s was rounded to %s.", m.modelID, providerutils.JSNumberString(raw), providerutils.JSNumberString(rounded)),
 			})
 		}
-		var d int
+		var d interface{}
 		switch {
 		case rounded > minimaxMaxDuration:
 			warnings = append(warnings, types.Warning{
@@ -782,6 +781,8 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				Details: fmt.Sprintf("%s requires at least %d seconds. The requested duration of %s was clamped to %d.", m.modelID, minDurationSeconds, providerutils.JSNumberString(raw), minDurationSeconds),
 			})
 			d = minDurationSeconds
+		case math.IsNaN(rounded):
+			d = nil // JSON.stringify(NaN) is null
 		default:
 			d = int(rounded)
 		}
