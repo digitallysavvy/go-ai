@@ -204,10 +204,15 @@ func parseProdiaSize(size string) (width, height float64, ok bool) {
 }
 
 // prodiaNumber keeps a whole number an int (the wire and callers' view of
-// 1024), and a fractional one a float64.
+// 1024), and a fractional one a float64. A whole number that does not fit
+// in int (above 2^31-1 where int is 32 bits) is an int64 instead of being
+// corrupted by int(f) (provc-03).
 func prodiaNumber(f float64) interface{} {
 	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
-		return int(f)
+		if f >= math.MinInt && f <= math.MaxInt {
+			return int(f)
+		}
+		return int64(f)
 	}
 	return f
 }
