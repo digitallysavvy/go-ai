@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -95,61 +97,70 @@ var falVideoHandledOptionKeys = map[string]bool{
 }
 
 // buildStartRequestBody builds the queue submission body (TS
-// FalVideoModel#buildRequestBody).
-func (m *VideoModel) buildStartRequestBody(opts *provider.VideoModelV3CallOptions) (map[string]interface{}, error) {
-	body := map[string]interface{}{}
+// FalVideoModel#buildRequestBody) in the TS insertion order: prompt,
+// image_url, aspect_ratio, duration, seed, the mapped options, then the
+// passthrough option keys (sorted: a Go map has no caller order). A
+// passthrough key that repeats an earlier key keeps that key's position, as
+// a JS property assignment does.
+func (m *VideoModel) buildStartRequestBody(opts *provider.VideoModelV3CallOptions) (*jsonorder.Object, error) {
+	body := jsonorder.New()
 
 	if opts.PromptSet || opts.Prompt != "" {
-		body["prompt"] = opts.Prompt
+		body.Set("prompt", opts.Prompt)
 	}
 
 	if opts.Image != nil {
 		if opts.Image.Type == "url" {
-			body["image_url"] = opts.Image.URL
+			body.Set("image_url", opts.Image.URL)
 		} else {
-			body["image_url"] = imageutil.ConvertToDataURI(opts.Image.Data, opts.Image.MediaType)
+			body.Set("image_url", imageutil.ConvertToDataURI(opts.Image.Data, opts.Image.MediaType))
 		}
 	}
 
 	if opts.AspectRatio != "" {
-		body["aspect_ratio"] = opts.AspectRatio
+		body.Set("aspect_ratio", opts.AspectRatio)
 	}
 
 	// TS: `if (options.duration)` -- falsy (including 0) is skipped.
 	if opts.Duration != nil && *opts.Duration != 0 {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64) + "s"
+		body.Set("duration", strconv.FormatFloat(*opts.Duration, 'f', -1, 64)+"s")
 	}
 
-	// TS: `if (options.seed)` -- falsy (including 0) is skipped.
+	// TS: `if (options.seed != null)`.
 	if opts.Seed != nil {
-		body["seed"] = *opts.Seed
+		body.Set("seed", *opts.Seed)
 	}
 
 	if opts.ProviderOptions != nil {
-		if raw, ok := opts.ProviderOptions["fal"]; ok {
+		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fal"]; ok {
 			falOpts, ok := raw.(map[string]interface{})
 			if !ok {
 				return nil, fmt.Errorf("fal: invalid providerOptions.fal: expected object")
 			}
 			if v, ok := falOpts["loop"]; ok && v != nil {
-				body["loop"] = v
+				body.Set("loop", v)
 			}
 			if v, ok := falOpts["motionStrength"]; ok && v != nil {
-				body["motion_strength"] = v
+				body.Set("motion_strength", v)
 			}
 			if v, ok := falOpts["resolution"]; ok && v != nil {
-				body["resolution"] = v
+				body.Set("resolution", v)
 			}
 			if v, ok := falOpts["negativePrompt"]; ok && v != nil {
-				body["negative_prompt"] = v
+				body.Set("negative_prompt", v)
 			}
 			if v, ok := falOpts["promptOptimizer"]; ok && v != nil {
-				body["prompt_optimizer"] = v
+				body.Set("prompt_optimizer", v)
 			}
-			for k, v := range falOpts {
+			keys := make([]string, 0, len(falOpts))
+			for k := range falOpts {
 				if !falVideoHandledOptionKeys[k] {
-					body[k] = v
+					keys = append(keys, k)
 				}
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				body.Set(k, falOpts[k])
 			}
 		}
 	}
@@ -263,10 +274,20 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if errors.As(err, &dlErr) && dlErr.Body != nil {
 			// TS reads the failed body with `await response.clone().json()`
 			// and then `body.detail`: a body that is not JSON (or is the
-			// JSON null) makes that throw, which is not an APICallError, so
-			// doStatus rejects instead of reporting an error status.
+			// JSON null) makes that throw, and getFromApi wraps it in the
+			// APICallError 'Failed to process error response'
+			// (get-from-api.ts:104-122), which doStatus reports as an error
+			// status with the response headers.
 			if trimmed := strings.TrimSpace(string(dlErr.Body)); !json.Valid(dlErr.Body) || trimmed == "null" {
-				return nil, fmt.Errorf("fal: status response (HTTP %d) body is not a JSON object: %w", dlErr.StatusCode, err)
+				return &provider.VideoModelV3OperationStatusResult{
+					Status: provider.VideoOperationStatusError,
+					Error:  "Failed to process error response",
+					Response: provider.VideoModelV3ResponseInfo{
+						Timestamp: currentDate,
+						ModelID:   m.modelID,
+						Headers:   flattenFalHeaders(dlErr.Headers),
+					},
+				}, nil
 			}
 			var detail struct {
 				Detail string `json:"detail"`
@@ -489,16 +510,11 @@ func (m *VideoModel) handleError(err error) error {
 }
 
 func flattenFalHTTPHeaders(h map[string][]string) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
+	// TS extractResponseHeaders: repeated values joined with ", ".
+	if out := providerutils.ExtractHeaders(http.Header(h)); out != nil {
+		return out
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	return map[string]string{}
 }
 
 // flattenFalHeaders flattens a fileutil.DownloadResult's headers

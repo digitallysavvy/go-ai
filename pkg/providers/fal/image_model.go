@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -173,7 +175,17 @@ var falSnakeRe = regexp.MustCompile(`_([a-z])`)
 // transform: snake_case keys win over camelCase and are reported as
 // deprecated.
 func normalizeFalImageOptions(raw map[string]interface{}) (map[string]interface{}, []string) {
+	result, _, deprecated := normalizeFalImageOptionsOrdered(raw)
+	return result, deprecated
+}
+
+// normalizeFalImageOptionsOrdered is normalizeFalImageOptions plus the key
+// order of the TS transform result: the mapped keys in mapKey order, then
+// strength, acceleration and useMultipleImages, then the passthrough keys
+// (sorted: a Go map has no input order).
+func normalizeFalImageOptionsOrdered(raw map[string]interface{}) (map[string]interface{}, []string, []string) {
 	result := map[string]interface{}{}
+	var order []string
 	var deprecated []string
 	known := map[string]bool{
 		"strength": true, "acceleration": true, "useMultipleImages": true,
@@ -184,21 +196,28 @@ func normalizeFalImageOptions(raw map[string]interface{}) (map[string]interface{
 		if v := raw[snake]; v != nil {
 			deprecated = append(deprecated, snake)
 			result[camel] = v
+			order = append(order, camel)
 		} else if v := raw[camel]; v != nil {
 			result[camel] = v
+			order = append(order, camel)
 		}
 	}
 	for _, k := range []string{"strength", "acceleration", "useMultipleImages"} {
 		if v := raw[k]; v != nil {
 			result[k] = v
+			order = append(order, k)
 		}
 	}
+	var passthrough []string
 	for k, v := range raw {
 		if !known[k] {
 			result[k] = v
+			passthrough = append(passthrough, k)
 		}
 	}
-	return result, deprecated
+	sort.Strings(passthrough)
+	order = append(order, passthrough...)
+	return result, order, deprecated
 }
 
 // DoGenerate performs image generation (TS FalImageModel#doGenerate).
@@ -330,35 +349,43 @@ func falImageErrorMessage(status int, body []byte) string {
 	return http.StatusText(status)
 }
 
-// buildRequest builds the request body and warnings (TS getArgs).
-func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[string]interface{}, []types.Warning, error) {
+// buildRequest builds the request body and warnings (TS getArgs), in the
+// TS requestBody insertion order: prompt, seed, image_size, num_images, the
+// file inputs, then the options in transform order.
+func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (*jsonorder.Object, []types.Warning, error) {
 	warnings := []types.Warning{}
-	body := map[string]interface{}{"prompt": opts.Prompt}
+	body := jsonorder.New()
+	body.Set("prompt", opts.Prompt)
 	if opts.Seed != nil {
-		body["seed"] = *opts.Seed
+		body.Set("seed", *opts.Seed)
 	}
-	if opts.N != nil {
-		body["num_images"] = *opts.N
-	}
+	var imageSize interface{}
 	if opts.Size != "" {
 		var width, height int
 		if _, err := fmt.Sscanf(opts.Size, "%dx%d", &width, &height); err == nil {
-			body["image_size"] = map[string]interface{}{"width": width, "height": height}
+			imageSize = map[string]interface{}{"width": width, "height": height}
 		}
 	} else if opts.AspectRatio != "" {
 		if size := falAspectRatioSize(opts.AspectRatio); size != nil {
-			body["image_size"] = size
+			imageSize = size
 		}
+	}
+	if imageSize != nil {
+		body.Set("image_size", imageSize)
+	}
+	if opts.N != nil {
+		body.Set("num_images", *opts.N)
 	}
 
 	var falOpts map[string]interface{}
+	var falOrder []string
 	var deprecated []string
-	if raw, ok := opts.ProviderOptions["fal"]; ok && raw != nil {
+	if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fal"]; ok && raw != nil {
 		rawMap, ok := raw.(map[string]interface{})
 		if !ok {
 			return nil, nil, fmt.Errorf("fal: invalid providerOptions.fal: expected object")
 		}
-		falOpts, deprecated = normalizeFalImageOptions(rawMap)
+		falOpts, falOrder, deprecated = normalizeFalImageOptionsOrdered(rawMap)
 	}
 
 	if len(opts.Files) > 0 {
@@ -367,9 +394,9 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 			for i, f := range opts.Files {
 				urls[i] = falFileToDataURI(f)
 			}
-			body["image_urls"] = urls
+			body.Set("image_urls", urls)
 		} else {
-			body["image_url"] = falFileToDataURI(opts.Files[0])
+			body.Set("image_url", falFileToDataURI(opts.Files[0]))
 			if len(opts.Files) > 1 {
 				warnings = append(warnings, types.Warning{
 					Type: "other",
@@ -382,7 +409,7 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 	}
 
 	if opts.Mask != nil {
-		body["mask_url"] = falFileToDataURI(*opts.Mask)
+		body.Set("mask_url", falFileToDataURI(*opts.Mask))
 	}
 
 	if len(deprecated) > 0 {
@@ -397,7 +424,7 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 		})
 	}
 
-	for key, value := range falOpts {
+	for _, key := range falOrder {
 		if key == "useMultipleImages" {
 			continue
 		}
@@ -405,7 +432,7 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 		if mapped, ok := falCamelToAPI[key]; ok {
 			apiKey = mapped
 		}
-		body[apiKey] = value
+		body.Set(apiKey, falOpts[key])
 	}
 
 	return body, warnings, nil

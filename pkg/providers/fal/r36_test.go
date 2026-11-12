@@ -11,8 +11,9 @@ import (
 )
 
 // TS doStatus reads a failed status body with response.json(); a non-JSON
-// body throws a SyntaxError (not an APICallError), so doStatus rejects rather
-// than reporting an error status.
+// body (or JSON null) throws, getFromApi wraps that in the APICallError
+// 'Failed to process error response' (get-from-api.ts:104-122), and doStatus
+// reports it as an error status with the response headers (r91 provc-16).
 func TestR36_VideoStatusNonJSONFailureBodyRejects(t *testing.T) {
 	for name, body := range map[string]string{"html": "<html>502</html>", "empty": "", "null": "null"} {
 		mux := http.NewServeMux()
@@ -27,8 +28,14 @@ func TestR36_VideoStatusNonJSONFailureBodyRejects(t *testing.T) {
 			t.Fatal(err)
 		}
 		status, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: start.Operation})
-		if err == nil {
-			t.Errorf("%s: DoStatus = %+v, want an error", name, status)
+		if err != nil {
+			t.Fatalf("%s: DoStatus error %v, want an error status", name, err)
+		}
+		if status.Status != provider.VideoOperationStatusError || status.Error != "Failed to process error response" {
+			t.Errorf("%s: DoStatus = %+v", name, status)
+		}
+		if status.Response.Headers["Content-Length"] == "" {
+			t.Errorf("%s: response headers missing: %v", name, status.Response.Headers)
 		}
 	}
 }
