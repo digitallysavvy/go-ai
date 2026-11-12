@@ -277,6 +277,11 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) ([]byte
 	opts := fileutil.TrustedOriginDownloadOptions(m.prov.baseURL(), nil)
 	result, err := fileutil.DownloadWithMetadata(ctx, imageURL, opts)
 	if err != nil {
+		// TS getFromApi handleFetchError: a network failure is the retryable
+		// "Cannot connect to API" error, an abort stays as is.
+		if cause, ok := fileutil.TransportFailure(err); ok {
+			return nil, "", internalhttp.TransportErrorCtx(ctx, cause)
+		}
 		return nil, "", err
 	}
 	return result.Data, result.ContentType, nil

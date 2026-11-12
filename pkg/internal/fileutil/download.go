@@ -540,6 +540,34 @@ func responseContentLength(resp *http.Response) (int64, bool) {
 	return sign * value, true
 }
 
+// TransportFailure reports the http.Client failure behind a DownloadError
+// that never reached an HTTP response: a refused, reset or unresolvable
+// connection, a dial, TLS or response-header timeout, or the caller's abort.
+// A provider porting TS getFromApi classifies it with
+// internalhttp.TransportErrorCtx, as TS handleFetchError turns a failed fetch
+// into the retryable "Cannot connect to API" APICallError (an abort stays
+// as is). A rejected URL or redirect hop, a blocked address, a non-2xx
+// status or a size limit is no transport failure and keeps its
+// DownloadError, like the DownloadError TS fetchWithValidatedRedirects
+// throws.
+func TransportFailure(err error) (error, bool) {
+	var downloadErr *providererrors.DownloadError
+	if !errors.As(err, &downloadErr) || downloadErr.StatusCode != 0 || downloadErr.Body != nil ||
+		downloadErr.Message != "" || downloadErr.Cause == nil {
+		return nil, false
+	}
+	var urlErr *neturl.Error
+	if !errors.As(downloadErr.Cause, &urlErr) || urlErr.Op == "parse" {
+		return nil, false
+	}
+	var inner *providererrors.DownloadError
+	var ssrf *providererrors.SSRFError
+	if errors.As(downloadErr.Cause, &inner) || errors.As(downloadErr.Cause, &ssrf) {
+		return nil, false
+	}
+	return downloadErr.Cause, true
+}
+
 func downloadRequestError(raw string, err error) *providererrors.DownloadError {
 	var downloadErr *providererrors.DownloadError
 	if errors.As(err, &downloadErr) {

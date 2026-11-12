@@ -593,7 +593,13 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, err
 	}
 	opts := fileutil.TrustedOriginDownloadOptions(baseURL, m.provider.client.HTTPClient().Transport)
 	opts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
-	return fileutil.Download(ctx, url, opts)
+	data, err := fileutil.Download(ctx, url, opts)
+	// TS getFromApi handleFetchError: a network failure is the retryable
+	// "Cannot connect to API" error, an abort stays as is.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return nil, internalhttp.TransportErrorCtx(ctx, cause)
+	}
+	return data, err
 }
 
 // falNestedKeys are the keys the TS falImageResponseSchema declares for its

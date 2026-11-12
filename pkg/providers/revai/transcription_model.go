@@ -197,6 +197,11 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, submission revai
 
 		download, err := fileutil.DownloadWithMetadata(ctx, pollURL, pollOpts)
 		if err != nil {
+			// TS getFromApi handleFetchError: a network failure is the
+			// retryable "Cannot connect to API" error, an abort stays as is.
+			if cause, ok := fileutil.TransportFailure(err); ok {
+				err = internalhttp.TransportErrorCtx(ctx, cause)
+			}
 			return nil, handleError(err)
 		}
 		// TS createJsonResponseHandler(revaiTranscriptionJobResponseSchema).

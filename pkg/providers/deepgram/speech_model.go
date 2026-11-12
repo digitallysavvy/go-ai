@@ -307,7 +307,7 @@ func applyOutputFormat(query *dgQuery, outputFormat string) {
 // large values become the nearest double, as in JS), an error (NaN) when s does
 // not start with one.
 func jsParseInt(s string) (float64, error) {
-	s = strings.TrimLeft(s, " \t\n\r\v\f")
+	s = providerutils.JSTrimStart(s) // JS StrWhiteSpaceChar (NBSP, BOM, ... included)
 	end := 0
 	if end < len(s) && (s[end] == '+' || s[end] == '-') {
 		end++

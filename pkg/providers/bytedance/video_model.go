@@ -300,7 +300,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	result, err := fileutil.DownloadWithMetadata(ctx, pollURL, downloadOpts)
 	if err != nil {
-		return nil, m.handlePollError(err)
+		return nil, m.handlePollError(ctx, err)
 	}
 	// TS createJsonResponseHandler(byteDanceStatusResponseSchema).
 	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceStatus)(200, stdhttp.Header(result.Headers), result.Data); err != nil {
@@ -613,13 +613,17 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers stdhttp.
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
 // for a non-2xx HTTP response, or a validation/network error) into a
 // ByteDance API error where possible.
-func (m *VideoModel) handlePollError(err error) error {
+func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, stdhttp.Header(dlErr.Headers))
 	}
-	// TS getFromApi lets any other failure (an abort, "Cannot connect to
-	// API", a URL rejected by validateUrl) propagate unchanged.
+	// TS getFromApi handleFetchError: a network failure is the retryable
+	// "Cannot connect to API" error and an abort stays as is; a URL or
+	// redirect rejected by validateUrl keeps its DownloadError.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return internalhttp.TransportErrorCtx(ctx, cause)
+	}
 	return err
 }
 

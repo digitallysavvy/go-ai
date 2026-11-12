@@ -165,6 +165,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	// used in tests); every other origin is still fully validated.
 	audioData, err := fileutil.Download(ctx, jsonResp.Audio.URL, fileutil.TrustedOriginDownloadOptions(requestPath, nil))
 	if err != nil {
+		// TS getFromApi handleFetchError: a network failure is the retryable
+		// "Cannot connect to API" error, an abort stays as is.
+		if cause, ok := fileutil.TransportFailure(err); ok {
+			return nil, internalhttp.TransportErrorCtx(ctx, cause)
+		}
 		// TS getFromApi with createStatusCodeErrorResponseHandler.
 		return nil, providerutils.StatusCodeDownloadError("fal", err)
 	}

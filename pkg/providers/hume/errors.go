@@ -2,8 +2,8 @@ package hume
 
 import (
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"net/http"
-	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -50,7 +50,7 @@ func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
 	var payload humeErrorPayload
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
 		payload.Error.Message != nil && payload.Error.Code != nil {
-		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
+		return *payload.Error.Message, providerutils.JSNumberString(*payload.Error.Code)
 	}
 	return http.StatusText(statusCode), ""
 }

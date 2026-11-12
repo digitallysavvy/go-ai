@@ -178,7 +178,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	pollOpts := extractImagePollOptions(opts)
 	currentDate := time.Now()
 
-	modelID, _, hasVersion := strings.Cut(m.modelID, ":")
+	modelID, _, hasVersion := splitReplicateModelID(m.modelID)
 	path := "/models/" + modelID + "/predictions"
 	if hasVersion {
 		path = "/predictions"
@@ -381,7 +381,7 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 	}
 
 	body := map[string]interface{}{"input": input}
-	if _, version, ok := strings.Cut(m.modelID, ":"); ok {
+	if _, version, ok := splitReplicateModelID(m.modelID); ok {
 		body["version"] = version
 	}
 	return body, warnings, prefer, nil
@@ -485,7 +485,7 @@ func (m *ImageModel) pollImagePredictionOnce(ctx context.Context, current replic
 	dl.Headers = m.provider.credentialedHeaders(pollURL, callHeaders)
 	polled, err := fileutil.PollJSON(ctx, pollURL, dl, nil)
 	if err != nil {
-		return replicateImagePrediction{}, m.handlePollError(err)
+		return replicateImagePrediction{}, m.handlePollError(ctx, err)
 	}
 	// TS createJsonResponseHandler(replicateImageResponseSchema).
 	if err := validateImagePrediction(http.StatusOK, headersOf(polled.Headers), polled.Data); err != nil {
@@ -530,13 +530,17 @@ func (m *ImageModel) cancelPrediction(ctx context.Context, predictionID string) 
 	}()
 }
 
-func (m *ImageModel) handlePollError(err error) error {
+func (m *ImageModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 	}
-	// TS getFromApi lets any other failure (an abort, "Cannot connect to
-	// API", a URL rejected by validateUrl) propagate unchanged.
+	// TS getFromApi handleFetchError: a network failure is the retryable
+	// "Cannot connect to API" error and an abort stays as is; a URL or
+	// redirect rejected by validateUrl keeps its DownloadError.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return internalhttp.TransportErrorCtx(ctx, cause)
+	}
 	return err
 }
 
@@ -611,7 +615,10 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, str
 	opts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
 	res, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 	if err != nil {
-		return nil, "", err
+		// TS getFromApi with replicateFailedResponseHandler: a non-2xx
+		// download is the Replicate API error, a network failure the
+		// retryable connect error.
+		return nil, "", m.handlePollError(ctx, err)
 	}
 	ct := res.ContentType
 	if i := strings.Index(ct, ";"); i >= 0 {

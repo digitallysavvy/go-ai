@@ -132,7 +132,8 @@ func (m *VideoModel) buildStartRequestBody(opts *provider.VideoModelV3CallOption
 	}
 
 	if opts.ProviderOptions != nil {
-		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fal"]; ok {
+		// TS parseProviderOptions: a null providerOptions.fal is absent.
+		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fal"]; ok && raw != nil {
 			falOpts, ok := raw.(map[string]interface{})
 			if !ok {
 				return nil, fmt.Errorf("fal: invalid providerOptions.fal: expected object")
@@ -325,6 +326,20 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 					ModelID:   m.modelID,
 					Headers:   flattenFalHeaders(dlErr.Headers),
 				},
+			}, nil
+		}
+		// TS getFromApi handleFetchError turns a network failure into the
+		// "Cannot connect to API" APICallError, which doStatus reports as an
+		// error status (headers undefined); an abort is rethrown.
+		if cause, ok := fileutil.TransportFailure(err); ok {
+			mapped := internalhttp.TransportErrorCtx(ctx, cause)
+			if _, aborted := internalhttp.NoResponseError(mapped); aborted {
+				return nil, mapped
+			}
+			return &provider.VideoModelV3OperationStatusResult{
+				Status:   provider.VideoOperationStatusError,
+				Error:    mapped.Error(),
+				Response: provider.VideoModelV3ResponseInfo{Timestamp: currentDate, ModelID: m.modelID},
 			}, nil
 		}
 		return nil, err

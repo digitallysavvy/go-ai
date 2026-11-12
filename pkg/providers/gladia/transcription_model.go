@@ -567,6 +567,11 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 
 		result, err := fileutil.DownloadWithMetadata(ctx, resultURL, pollOpts)
 		if err != nil {
+			// TS getFromApi handleFetchError: a network failure is the
+			// retryable "Cannot connect to API" error, an abort stays as is.
+			if cause, ok := fileutil.TransportFailure(err); ok {
+				err = internalhttp.TransportErrorCtx(ctx, cause)
+			}
 			return nil, nil, handleError(err)
 		}
 		// TS createJsonResponseHandler(gladiaTranscriptionResultResponseSchema).
@@ -846,7 +851,7 @@ func parseGladiaErrorBody(statusCode int, body []byte) (message string, code str
 	}
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
 		payload.Error.Message != nil && payload.Error.Code != nil {
-		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
+		return *payload.Error.Message, providerutils.JSNumberString(*payload.Error.Code)
 	}
 	return http.StatusText(statusCode), ""
 }

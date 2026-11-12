@@ -10,14 +10,15 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"math"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -534,11 +535,16 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // "%20" becomes "+", "a" becomes "a=", ...), but only when it actually runs;
 // a URL that already has `id` (even an empty `id=`) is left untouched.
 func ensurePollingURLHasID(pollingURL, requestID string) (string, error) {
-	u, err := url.Parse(pollingURL)
+	// TS new URL(pollingUrl) and url.toString(): the WHATWG parser and href.
+	u, err := urlnorm.Parse(pollingURL)
 	if err != nil {
 		return "", err
 	}
-	pairs := parseFormURLEncoded(u.RawQuery)
+	query := ""
+	if u.Query != nil {
+		query = *u.Query
+	}
+	pairs := parseFormURLEncoded(query)
 	for _, p := range pairs {
 		if p[0] == "id" {
 			return u.String(), nil
@@ -554,7 +560,8 @@ func ensurePollingURLHasID(pollingURL, requestID string) (string, error) {
 		sb.WriteByte('=')
 		sb.WriteString(formURLEncode(p[1]))
 	}
-	u.RawQuery = sb.String()
+	serialized := sb.String()
+	u.Query = &serialized
 	return u.String(), nil
 }
 
@@ -675,7 +682,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	rawPollBody, respHeaders, err := m.fetchStatusJSON(ctx, pollURL, headers)
 	if err != nil {
-		return nil, m.handleVideoPollError(err)
+		return nil, m.handleVideoPollError(ctx, err)
 	}
 	pollBody := []byte(textdecode.UTF8(rawPollBody))
 	// TS createJsonResponseHandler(bflVideoPollSchema).
@@ -717,6 +724,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 				fmt.Sprintf("Black Forest Labs reported the video as Ready but returned no result.sample URL. Request id: %s", op.RequestID), nil)
 		}
 
+		// bflVideoResultSchema sample is z.url(): the zod output is the URL.
+		result.Sample = providerutils.ZodURLValue(result.Sample)
 		video := map[string]interface{}{"id": op.RequestID, "videoUrl": result.Sample}
 		if result.Seed != nil {
 			video["seed"] = *result.Seed
@@ -788,12 +797,17 @@ func describePollDetails(raw json.RawMessage) (string, bool) {
 
 // handleVideoPollError converts a fileutil poll error into a BFL API error
 // where the response carries a structured {message, detail} envelope.
-func (m *VideoModel) handleVideoPollError(err error) error {
+func (m *VideoModel) handleVideoPollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return bflStatusError(dlErr.StatusCode, dlErr.Headers, dlErr.Body)
 	}
-	// TS getFromApi lets a transport failure propagate unchanged.
+	// TS getFromApi handleFetchError: a network failure is the retryable
+	// "Cannot connect to API" error and an abort stays as is; a rejected URL
+	// or redirect keeps its DownloadError.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return internalhttp.TransportErrorCtx(ctx, cause)
+	}
 	return err
 }
 

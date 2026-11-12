@@ -118,7 +118,8 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 	}
 
 	if opts.ProviderOptions != nil {
-		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["replicate"]; ok {
+		// TS parseProviderOptions: a null providerOptions.replicate is absent.
+		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["replicate"]; ok && raw != nil {
 			repOpts, ok := raw.(map[string]interface{})
 			if !ok {
 				return nil, fmt.Errorf("replicate: invalid providerOptions.replicate: expected object")
@@ -184,6 +185,17 @@ func orderedVideoBody(body map[string]interface{}) *jsonorder.Object {
 	return out
 }
 
+// splitReplicateModelID is TS `const [modelId, version] =
+// this.modelId.split(':')`: the text before the first colon and the text
+// between the first and second colon (a third part is dropped).
+func splitReplicateModelID(id string) (modelID, version string, hasVersion bool) {
+	parts := strings.Split(id, ":")
+	if len(parts) < 2 {
+		return id, "", false
+	}
+	return parts[0], parts[1], true
+}
+
 // replicateVideoOperation is the opaque operation reference returned by
 // DoStart and passed back into DoStatus.
 type replicateVideoOperation struct {
@@ -205,7 +217,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 
-	modelID, version, hasVersion := strings.Cut(m.modelID, ":")
+	modelID, version, hasVersion := splitReplicateModelID(m.modelID)
 
 	predictionPath := fmt.Sprintf("/models/%s/predictions", modelID)
 	if hasVersion {
@@ -268,7 +280,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	result, err := fileutil.PollJSON(ctx, op.GetURL, downloadOpts, nil)
 	if err != nil {
-		return nil, m.handlePollError(err)
+		return nil, m.handlePollError(ctx, err)
 	}
 	// TS createJsonResponseHandler(replicatePredictionSchema).
 	if err := validateVideoPrediction(http.StatusOK, headersOf(result.Headers), result.Data); err != nil {
@@ -456,13 +468,17 @@ func (m *VideoModel) handleError(err error) error {
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
 // for a non-2xx HTTP response, or a validation/network error) into a
 // Replicate API error where possible.
-func (m *VideoModel) handlePollError(err error) error {
+func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 	}
-	// TS getFromApi lets any other failure (an abort, "Cannot connect to
-	// API", a URL rejected by validateUrl) propagate unchanged.
+	// TS getFromApi handleFetchError: a network failure is the retryable
+	// "Cannot connect to API" error and an abort stays as is; a URL or
+	// redirect rejected by validateUrl keeps its DownloadError.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return internalhttp.TransportErrorCtx(ctx, cause)
+	}
 	return err
 }
 
