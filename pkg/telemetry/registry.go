@@ -55,6 +55,14 @@ type TelemetryStartEvent struct {
 	// streamText/generateObject/streamObject), used to build
 	// gen_ai.input.messages on the root span (fc15550, 12cfe40).
 	Messages []types.Message
+	// PromptString is the caller's string prompt (TS `prompt: string`) for
+	// generateText / streamText when Messages was normalized from it, or nil
+	// when the caller gave messages. TS standardizePrompt keeps the string
+	// as the user message content ({"role":"user","content":"hi"}), which
+	// the legacy root ai.prompt records as is. Only populated when inputs
+	// are recorded. Not used by object, embed or rerank operations, which
+	// use Prompt.
+	PromptString *string
 	// InstructionMessages are the call's instructions given as system
 	// messages (TS instructions: SystemModelMessage[]), only populated when
 	// inputs are recorded. The GenAI integration records one
@@ -130,10 +138,57 @@ type TelemetryStartEvent struct {
 	// ai.request.audio.media_type (OpenTelemetry), input-gated.
 	AudioMediaType string
 
+	// Voice, OutputFormat, Instructions, Speed and Language are the speech
+	// request settings for "ai.generateSpeech" ("" / nil when not given),
+	// mirroring TS GenerateSpeechStartEvent voice / outputFormat /
+	// instructions / speed / language (speech-events.ts). The detected
+	// transcription language is TelemetryFinishEvent.Language.
+	Voice        string
+	OutputFormat string
+	Instructions string
+	Speed        *float64
+	Language     string
+	// ProviderOptions are the caller's provider-specific options for
+	// "ai.generateSpeech", "ai.transcribe" and "ai.streamTranscribe" (TS
+	// providerOptions on the speech and transcription start events).
+	ProviderOptions map[string]interface{}
+	// InputAudioFormat is the raw input format for "ai.streamTranscribe"
+	// (TS StreamTranscriptionStartEvent.inputAudioFormat), nil otherwise.
+	InputAudioFormat *TelemetryAudioFormat
+	// TimestampGranularities are the requested shared timing granularities
+	// for "ai.transcribe" ("word" / "segment"), nil when not specified (TS
+	// TranscriptionStartEvent.timestampGranularities).
+	TimestampGranularities []string
+
 	// AIVersion is the version of the Go AI SDK that emitted the event. The
 	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
 	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
 	AIVersion string
+}
+
+// TelemetryAudioFormat is a raw audio format (TS SharedV4AudioFormat): the
+// encoding, e.g. "audio/pcm", and the sample rate in Hz when applicable.
+type TelemetryAudioFormat struct {
+	Type string `json:"type"`
+	Rate *int   `json:"rate,omitempty"`
+}
+
+// TelemetryAudioResponse is the response metadata of a speech or
+// transcription model call (TS SpeechModelResponseMetadata /
+// TranscriptionModelResponseMetadata).
+type TelemetryAudioResponse struct {
+	Timestamp time.Time         `json:"timestamp"`
+	ModelID   string            `json:"modelId"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      interface{}       `json:"body,omitempty"`
+}
+
+// TelemetryTranscriptTiming is one transcript segment or word with its
+// timing (TS {text, startSecond, endSecond}).
+type TelemetryTranscriptTiming struct {
+	Text        string  `json:"text"`
+	StartSecond float64 `json:"startSecond"`
+	EndSecond   float64 `json:"endSecond"`
 }
 
 // TelemetryStepStartEvent is passed to TelemetryIntegration.OnStepStart.
@@ -163,6 +218,15 @@ type TelemetryStepStartEvent struct {
 	// message into the message array); this is an accepted Go-runtime
 	// divergence, same as legacyPromptJSON elsewhere in this file.
 	PromptMessages []types.Message
+	// System is the step's system / instructions text, which TS folds into
+	// the LanguageModelV4Prompt as the leading system message
+	// (convertToLanguageModelPrompt), so ai.prompt.messages starts with it.
+	// InstructionMessages are the instructions given as system messages (TS
+	// instructions: SystemModelMessage[]), one system message each; System
+	// is used when it is empty. Both are only populated when inputs are
+	// recorded.
+	System              string
+	InstructionMessages []types.Message
 	// StepTools carries the tool definitions available for this step,
 	// emitted as ai.prompt.tools (input-gated, one JSON string per tool)
 	// mirroring TS's `'ai.prompt.tools': {input: () =>
@@ -573,6 +637,18 @@ type TelemetryFinishEvent struct {
 	// as a raw JSON string on ai.response.usage, mirroring TS's
 	// onAudioOperationEnd.
 	ProviderUsage map[string]interface{}
+	// Warnings, Response, Segments, Words, Language and DurationInSeconds
+	// are the speech / transcription end-event fields (TS
+	// GenerateSpeechEndEvent warnings / response; TranscriptionEndEvent and
+	// StreamTranscriptionEndEvent warnings / response / segments / words /
+	// language / durationInSeconds). Words is for "ai.transcribe" only.
+	// Text carries the speech input text or the transcript.
+	Warnings          []types.Warning
+	Response          *TelemetryAudioResponse
+	Segments          []TelemetryTranscriptTiming
+	Words             []TelemetryTranscriptTiming
+	Language          string
+	DurationInSeconds *float64
 
 	// AIVersion is the version of the Go AI SDK that emitted the event. The
 	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
