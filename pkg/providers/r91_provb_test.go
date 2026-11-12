@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/moonshot"
+	"github.com/digitallysavvy/go-ai/pkg/providers/ollama"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
@@ -310,4 +311,35 @@ func r91provbAzure(base string) *azure.Provider {
 		panic(err)
 	}
 	return p
+}
+
+// PB-02 (provg2-01 provb sites): a System-only prompt panicked on the
+// unchecked body["messages"] assertion; TS sends [{role: system}]
+// (convert-to-openai-compatible-chat-messages.ts:227).
+func TestR91provbSystemOnlyPrompt(t *testing.T) {
+	models := map[string]func(base string) (provider.LanguageModel, error){
+		"together": func(base string) (provider.LanguageModel, error) {
+			return together.New(together.Config{APIKey: "k", BaseURL: base}).LanguageModel("m")
+		},
+		"fireworks": func(base string) (provider.LanguageModel, error) {
+			return fireworks.New(fireworks.Config{APIKey: "k", BaseURL: base}).LanguageModel("m")
+		},
+		"ollama": func(base string) (provider.LanguageModel, error) {
+			return ollama.New(ollama.Config{BaseURL: base}).LanguageModel("m")
+		},
+	}
+	for name, mk := range models {
+		mk := mk
+		t.Run(name, func(t *testing.T) {
+			body := r91provbCapture(t, func(base string) {
+				m, err := mk(base)
+				r91provbGenerate(m, err, &provider.GenerateOptions{Prompt: types.Prompt{System: "be brief"}})
+			})
+			msgs, _ := body.(map[string]interface{})["messages"].([]interface{})
+			want := []interface{}{map[string]interface{}{"role": "system", "content": "be brief"}}
+			if !reflect.DeepEqual(msgs, want) {
+				t.Fatalf("messages = %#v, want %#v", msgs, want)
+			}
+		})
+	}
 }
