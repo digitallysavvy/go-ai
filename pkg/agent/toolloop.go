@@ -2132,7 +2132,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 		Messages: aibridge.MessagesForModel(callConfig.Messages),
 		System:   promptSystem,
-	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(nil), ai.SupportedURLCheckerForModel(stepModel))
+	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
 		return nil, false, callConfig.CustomData, nil, err
 	}
