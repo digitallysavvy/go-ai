@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -63,20 +63,34 @@ func invalidOptions(msg string) error {
 	return providererrors.NewArgumentError("providerOptions", "invalid heygen provider options", errors.New(msg))
 }
 
-func isHTTPSURL(raw string) bool {
-	if !strings.HasPrefix(raw, "https://") {
-		return false
+// zodHTTPSURL is TS z.url().startsWith('https://'): zod 4 $ZodURL accepts
+// the value when the WHATWG URL parser parses its JS-trimmed form
+// (URL.canParse), and then replaces it with that form minus every ASCII tab,
+// LF and CR (ZodURLValue), which the startsWith check reads. It returns the
+// parsed value and whether both checks pass.
+func zodHTTPSURL(raw string) (string, bool) {
+	if _, err := urlnorm.Parse(providerutils.JSTrim(raw)); err != nil {
+		return raw, false
 	}
-	u, err := url.Parse(raw)
-	return err == nil && u.Host != ""
+	value := providerutils.ZodURLValue(raw)
+	return value, strings.HasPrefix(value, "https://")
 }
 
-func validateAssetShape(a VideoAsset, field string) error {
+func isHTTPSURL(raw string) bool {
+	_, ok := zodHTTPSURL(raw)
+	return ok
+}
+
+// validateAssetShape checks one heygenVideoAssetSchema member. A url asset's
+// URL becomes the z.url() output, as TS parseProviderOptions returns it.
+func validateAssetShape(a *VideoAsset, field string) error {
 	switch a.Type {
 	case AssetTypeURL:
-		if !isHTTPSURL(a.URL) {
+		value, ok := zodHTTPSURL(a.URL)
+		if !ok {
 			return invalidOptions(field + ".url must be an absolute HTTPS URL")
 		}
+		a.URL = value
 	case AssetTypeAssetID:
 		if a.AssetID == "" {
 			return invalidOptions(field + ".assetId must not be empty")
@@ -123,7 +137,14 @@ func parseVideoModelOptions(providerOptions map[string]interface{}) (*VideoModel
 	return validateVideoModelOptions(&opts)
 }
 
-func validateVideoModelOptions(opts *VideoModelOptions) (*VideoModelOptions, error) {
+func validateVideoModelOptions(in *VideoModelOptions) (*VideoModelOptions, error) {
+	// Work on a copy: the parsed url values must not write into a caller's
+	// typed options.
+	copied := *in
+	opts := &copied
+	opts.ReferenceImages = append([]VideoAsset(nil), in.ReferenceImages...)
+	opts.ReferenceVideos = append([]VideoAsset(nil), in.ReferenceVideos...)
+	opts.ReferenceAudio = append([]VideoAsset(nil), in.ReferenceAudio...)
 	switch opts.Mode {
 	case "", "text_to_video", "image_to_video", "reference_to_video":
 	default:
@@ -140,9 +161,11 @@ func validateVideoModelOptions(opts *VideoModelOptions) (*VideoModelOptions, err
 		return nil, invalidOptions(fmt.Sprintf("promptEnhancement %q is not one of turbo, quality, ultraquality, disabled", opts.PromptEnhancement))
 	}
 	if opts.Image != nil {
-		if err := validateAssetShape(*opts.Image, "image"); err != nil {
+		image := *opts.Image
+		if err := validateAssetShape(&image, "image"); err != nil {
 			return nil, err
 		}
+		opts.Image = &image
 	}
 	for _, group := range []struct {
 		name   string
@@ -156,8 +179,8 @@ func validateVideoModelOptions(opts *VideoModelOptions) (*VideoModelOptions, err
 		if len(group.assets) > group.max {
 			return nil, invalidOptions(fmt.Sprintf("%s accepts at most %d assets", group.name, group.max))
 		}
-		for _, a := range group.assets {
-			if err := validateAssetShape(a, group.name); err != nil {
+		for i := range group.assets {
+			if err := validateAssetShape(&group.assets[i], group.name); err != nil {
 				return nil, err
 			}
 		}

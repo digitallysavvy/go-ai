@@ -440,7 +440,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	var envelope struct {
 		Data *heygenStatusData `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Body, &envelope); err != nil || envelope.Data == nil || envelope.Data.Status == "" {
+	if err := json.Unmarshal(resp.Body, &envelope); err != nil || envelope.Data == nil {
 		return nil, providererrors.NewProviderError("heygen", resp.StatusCode, "", "Invalid JSON response", err)
 	}
 	data := envelope.Data
