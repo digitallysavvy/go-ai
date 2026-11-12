@@ -2779,6 +2779,16 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			}
 		}
 
+		if tool == nil && call.ProviderExecuted {
+			// A provider-executed (dynamic) call of a tool not in the set,
+			// e.g. an OpenAI mcp.* or Anthropic MCP connector call, is the
+			// provider's: TS runs only the client calls (generate-text.ts
+			// clientToolCalls = !providerExecuted) and a non-executable call
+			// has no output (execute-tool-call.ts), so it gets no "tool not
+			// found" error and no role:tool message.
+			continue
+		}
+
 		if tool == nil {
 			toolErr := fmt.Errorf("tool not found: %s", call.ToolName)
 			// No Title: TS builds a client tool's tool-result and tool-error without it.
