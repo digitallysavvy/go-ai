@@ -185,6 +185,33 @@ type interactionsAnnotation struct {
 	CustomMetadata map[string]interface{} `json:"custom_metadata,omitempty"`
 	Name           string                 `json:"name,omitempty"`
 	PlaceID        string                 `json:"place_id,omitempty"`
+
+	// present records which of url, document_uri and file_name the wire
+	// annotation carried as non-null (TS `??` keeps a present empty string).
+	present interactionsAnnotationPresence
+}
+
+type interactionsAnnotationPresence struct {
+	url, documentURI, fileName bool
+}
+
+// UnmarshalJSON decodes the annotation and records field presence.
+func (a *interactionsAnnotation) UnmarshalJSON(b []byte) error {
+	type plain interactionsAnnotation
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*a = interactionsAnnotation(p)
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(b, &keys) == nil {
+		set := func(k string) bool {
+			v, ok := keys[k]
+			return ok && string(v) != "null"
+		}
+		a.present = interactionsAnnotationPresence{url: set("url"), documentURI: set("document_uri"), fileName: set("file_name")}
+	}
+	return nil
 }
 
 type interactionsUsage struct {

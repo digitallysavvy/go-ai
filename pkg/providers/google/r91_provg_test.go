@@ -383,3 +383,40 @@ func TestR91provgBatchJSONLNoHTMLEscape(t *testing.T) {
 		t.Fatalf("uploaded JSONL head = %q", uploaded[:200])
 	}
 }
+
+// provg1-05: TS `call.id || generateId()` runs the generator only for a
+// missing id (parse-google-interactions-outputs.ts:209).
+func TestR91provgInteractionsLazyGenerateID(t *testing.T) {
+	n := 0
+	gen := func() string { id := "id-" + string(rune('0'+n)); n++; return id }
+	m := &InteractionsLanguageModel{cfg: InteractionsConfig{GenerateID: gen}}
+	var steps []interactionsContentBlock
+	if err := json.Unmarshal([]byte(`[{"type":"processing_call","id":"p1"},{"type":"url_context_result","call_id":"c1","result":[{"url":"https://a.example"}]}]`), &steps); err != nil {
+		t.Fatal(err)
+	}
+	content, _, _ := m.parseOutputs(steps, "i1")
+	for _, part := range content {
+		if src, ok := part.(types.SourceContent); ok {
+			if src.ID != "id-0" {
+				t.Fatalf("source id = %q, want id-0", src.ID)
+			}
+			return
+		}
+	}
+	t.Fatalf("no source in %#v", content)
+}
+
+// provg1-10: TS `url ?? document_uri ?? file_name` keeps a present empty
+// url, so no source is emitted (extract-google-interactions-sources.ts:69,220).
+func TestR91provgInteractionsNullishCitationURL(t *testing.T) {
+	var anns []interactionsAnnotation
+	_ = json.Unmarshal([]byte(`[{"type":"file_citation","url":"","document_uri":"doc.pdf"},{"type":"file_citation","url":null,"document_uri":"doc.pdf","file_name":""}]`), &anns)
+	srcs := annotationsToSources(anns, func() string { return "s" })
+	if len(srcs) != 1 {
+		t.Fatalf("sources = %#v", srcs)
+	}
+	// file_name "" is present: filename and title are "" (TS ??).
+	if src := srcs[0].(types.SourceContent); src.SourceType != "document" || src.Filename != "" || src.Title != "" {
+		t.Fatalf("source = %#v", src)
+	}
+}

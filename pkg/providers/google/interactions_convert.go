@@ -549,13 +549,13 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			meta := providerMetaRaw(block.Signature, interactionID)
 			content = append(content, types.ReasoningContent{Text: thoughtText(block.Summary), Signature: signatureText(block.Signature), ProviderMetadata: meta})
 		case "processing_call":
-			processingID := firstNonEmpty(block.ID, gen())
+			processingID := idOrGenerate(block.ID, gen)
 			content = append(content, types.CustomContent{
 				Kind:             "google.processing_call",
 				ProviderMetadata: processingMeta(block.Signature, interactionID, processingID, ""),
 			})
 		case "processing_result":
-			processingCallID := firstNonEmpty(block.CallID, gen())
+			processingCallID := idOrGenerate(block.CallID, gen)
 			content = append(content, types.CustomContent{
 				Kind:             "google.processing_result",
 				ProviderMetadata: processingMeta(block.Signature, interactionID, "", processingCallID),
@@ -599,7 +599,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				if args == nil {
 					args = map[string]interface{}{}
 				}
-				id := firstNonEmpty(block.ID, gen())
+				id := idOrGenerate(block.ID, gen)
 				argsJSON := jsonorder.Text(block.Arguments, args)
 				content = append(content, types.ToolCallContent{
 					ToolCallID:       id,
@@ -619,7 +619,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			}
 			if isBuiltinInteractionsToolResult(block.Type) {
 				content = append(content, types.ToolResultContent{
-					ToolCallID: firstNonEmpty(block.CallID, gen()),
+					ToolCallID: idOrGenerate(block.CallID, gen),
 					ToolName:   builtinResultToolName(block),
 					Result:     block.Result,
 				})
@@ -808,6 +808,15 @@ func builtinResultToolName(block interactionsContentBlock) string {
 
 // annotationsToSources maps the annotations of one text block to sources,
 // de-duplicated by URL or document filename/title (TS annotationsToSources).
+// idOrGenerate is TS `id || generateId()`: the generator runs only when the
+// id is empty, so a custom GenerateID's later ids do not shift.
+func idOrGenerate(id string, gen func() string) string {
+	if id != "" {
+		return id
+	}
+	return gen()
+}
+
 func annotationsToSources(annotations []interactionsAnnotation, generateID func() string) []types.ContentPart {
 	out := make([]types.ContentPart, 0)
 	seen := map[string]bool{}
@@ -820,16 +829,27 @@ func annotationsToSources(annotations []interactionsAnnotation, generateID func(
 			}
 			src = types.SourceContent{SourceType: "url", ID: generateID(), URL: ann.URL, Title: ann.Title}
 		case "file_citation":
-			// TS: url ?? document_uri ?? file_name
-			uri := firstNonEmpty(ann.URL, ann.DocumentURI, ann.FileName)
+			// TS: url ?? document_uri ?? file_name. `??` keeps a present
+			// empty string, which then yields no source.
+			uri := ann.FileName
+			switch {
+			case ann.present.url || ann.URL != "":
+				uri = ann.URL
+			case ann.present.documentURI || ann.DocumentURI != "":
+				uri = ann.DocumentURI
+			}
 			if uri == "" {
 				continue
 			}
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
 				src = types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: ann.FileName}
 			} else {
-				filename := firstNonEmpty(ann.FileName, baseName(uri))
-				src = types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(ann.FileName, filename, uri), Filename: filename}
+				// TS file_name ?? basename(uri); title file_name ?? filename.
+				filename := baseName(uri)
+				if ann.present.fileName || ann.FileName != "" {
+					filename = ann.FileName
+				}
+				src = types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: filename, Filename: filename}
 			}
 		case "place_citation":
 			if ann.URL == "" {
@@ -890,15 +910,15 @@ func builtinToolResultSources(block interactionsContentBlock, generateID func() 
 				}
 			}
 		case "file_search_result":
-			// TS: url ?? document_uri ?? file_name
-			uri, _ := entry["url"].(string)
-			if uri == "" {
-				uri, _ = entry["document_uri"].(string)
-			}
+			// TS: url ?? document_uri ?? file_name. `??` keeps a present
+			// empty string, which then yields no source.
 			fileName, _ := entry["file_name"].(string)
 			title, _ := entry["title"].(string)
-			if uri == "" {
-				uri = fileName
+			uri := fileName
+			if v, ok := entry["url"]; ok && v != nil {
+				uri, _ = v.(string)
+			} else if v, ok := entry["document_uri"]; ok && v != nil {
+				uri, _ = v.(string)
 			}
 			if uri == "" {
 				continue
@@ -906,7 +926,17 @@ func builtinToolResultSources(block interactionsContentBlock, generateID func() 
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
 				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: title})
 			} else {
-				out = append(out, types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(title, fileName, baseName(uri), uri), Filename: firstNonEmpty(fileName, baseName(uri))})
+				// TS filename = file_name ?? basename(uri); title = title ??
+				// file_name ?? filename (presence, not emptiness).
+				filename := baseName(uri)
+				if v, ok := entry["file_name"]; ok && v != nil {
+					filename = fileName
+				}
+				docTitle := filename
+				if v, ok := entry["title"]; ok && v != nil {
+					docTitle = title
+				}
+				out = append(out, types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: docTitle, Filename: filename})
 			}
 		}
 	}
