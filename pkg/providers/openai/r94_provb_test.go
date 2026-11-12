@@ -130,7 +130,7 @@ func TestR94provbUnfollowed3xxIsError(t *testing.T) {
 type r94provbClosingReader struct{ closed bool }
 
 func (r *r94provbClosingReader) Read([]byte) (int, error) { return 0, io.EOF }
-func (r *r94provbClosingReader) Close() error           { r.closed = true; return nil }
+func (r *r94provbClosingReader) Close() error             { r.closed = true; return nil }
 
 // TestR94provbSkillStreamFileUnsupported (cr-r94-prova-to-provb sweep): TS
 // uploadSkill converts each file with convertInlineFileDataToUint8Array,

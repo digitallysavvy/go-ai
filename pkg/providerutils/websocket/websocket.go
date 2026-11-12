@@ -22,11 +22,11 @@
 package websocket
 
 import (
-	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"io"
 	"net"
 	"net/http"

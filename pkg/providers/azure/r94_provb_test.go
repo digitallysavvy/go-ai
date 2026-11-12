@@ -51,7 +51,10 @@ func TestR94provbMaiImageHeadersBeforeDownloadOnce(t *testing.T) {
 	defer srv.Close()
 	var calls atomic.Int32
 	mai = &azureMaiImageModel{modelID: "mai-image-2.5", url: func(path string) (string, error) { return srv.URL + path, nil },
-		headers: func(context.Context) (map[string]string, error) { calls.Add(1); return map[string]string{"api-key": "k"}, nil }, httpClient: srv.Client()}
+		headers: func(context.Context) (map[string]string, error) {
+			calls.Add(1)
+			return map[string]string{"api-key": "k"}, nil
+		}, httpClient: srv.Client()}
 	n := 2
 	res, err := mai.doGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x", N: &n}, AzureImageModelOptions{})
 	if err != nil || len(res.Images) != 2 || calls.Load() != 1 {
@@ -75,7 +78,7 @@ func TestR94provbMaiTranscriptionAbortCause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Stream.Close() //nolint:errcheck
+	defer res.Stream.Close()                     //nolint:errcheck
 	if _, err := res.Stream.Next(); err != nil { // stream-start
 		t.Fatal(err)
 	}
