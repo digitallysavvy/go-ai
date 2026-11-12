@@ -3,7 +3,6 @@ package speechstream
 import (
 	"encoding/json"
 	"errors"
-	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -145,10 +144,11 @@ func TestSerializeAndParsePart(t *testing.T) {
 
 func TestSerializeErrorPayloads(t *testing.T) {
 	text, ok := SerializePart(&provider.SpeechStreamPart{Type: "error", Err: errors.New("boom")})
-	if !ok || text != `{"type":"error","error":{"message":"boom","name":"Error"}}` {
+	if !ok || text != `{"type":"error","error":{"name":"Error","message":"boom"}}` {
 		t.Fatalf("text = %s", text)
 	}
-	if _, ok := SerializePart(&provider.SpeechStreamPart{Type: "raw", RawValue: math.Inf(1)}); ok {
+	// TS: BigInt; the Go value JSON cannot encode is a channel.
+	if _, ok := SerializePart(&provider.SpeechStreamPart{Type: "raw", RawValue: make(chan int)}); ok {
 		t.Fatal("non-serializable payloads must be dropped")
 	}
 }
