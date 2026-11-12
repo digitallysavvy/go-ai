@@ -49,7 +49,7 @@ func TestR89carryNormalizeToolModelOutputErrors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if img, ok := out.Content[0].(types.ImageContentBlock); !ok || img.MediaType != "image/png" {
+		if img, ok := out.Content[0].(types.FileContentBlock); !ok || img.MediaType != "image/png" {
 			t.Fatalf("got %#v", out.Content[0])
 		}
 	})

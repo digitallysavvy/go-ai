@@ -2,11 +2,13 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -69,5 +71,29 @@ func TestR91carryHarnessCallOptionsSchema(t *testing.T) {
 	got, _ := prepared[0].(map[string]interface{})
 	if got["tenant"] != "acme" || got["tier"] != "free" {
 		t.Fatalf("PrepareCall CallOptions = %#v, want the validated value with defaults", prepared[0])
+	}
+}
+
+// harness-03: an inline image file part keeps its filename (TS
+// normalize-harness-tool-model-output.ts 52: `{...file, mediaType, data}`),
+// and ConvertToolModelOutput still accepts the normalized part.
+func TestR91carryNormalizeToolModelOutputKeepsFilename(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	out, err := NormalizeToolModelOutput(types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+		types.FileContentBlock{Data: png, MediaType: "image", Filename: "a.png", ProviderOptions: map[string]interface{}{"p": map[string]interface{}{"k": 1}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"type":"content","value":[{"type":"file","data":{"type":"data","data":"iVBORw0KGgo="},"mediaType":"image/png","filename":"a.png","providerOptions":{"p":{"k":1}}}]}`; string(b) != want {
+		t.Fatalf("normalized = %s\nwant %s", b, want)
+	}
+	parts, isErr, err := ConvertToolModelOutput(out)
+	if err != nil || isErr || len(parts) != 1 || parts[0].Type != ToolModelOutputContentImage || parts[0].MediaType != "image/png" {
+		t.Fatalf("convert = %+v %v %v", parts, isErr, err)
 	}
 }
