@@ -338,16 +338,20 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				continue
 			}
 
-			var event azureMaiRealtimeEvent
-			if jsonErr := json.Unmarshal([]byte(res.Text), &event); jsonErr != nil {
+			// TS safeParseJSON: any JSON value is a message and is reported
+			// as a raw part; only an object with known fields is an event.
+			var rawValue interface{}
+			if jsonErr := json.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
+			}
+			var event azureMaiRealtimeEvent
+			if jsonErr := json.Unmarshal([]byte(res.Text), &event); jsonErr != nil {
+				continue
 			}
 
 			switch event.Type {

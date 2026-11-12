@@ -416,3 +416,35 @@ func TestR92provbRealtimeTranscriptionRawNonObject(t *testing.T) {
 		t.Fatalf("raw parts = %v, want [5 {...}]", raws)
 	}
 }
+
+// Speech translation: TS safeParseJSON also reports a non-object message as
+// a raw part.
+func TestR92provbSpeechTranslationRawNonObject(t *testing.T) {
+	server := newRealtimeTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestSpeechTranslationModel(server.ts.URL)
+	rate := 24000
+	result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+		TargetLanguage:   "es",
+		IncludeRawChunks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForReceived(t, "session.update", time.Second)
+	server.toSend <- "text"
+	server.toSend <- map[string]interface{}{"type": "session.closed"}
+	parts, _ := drainUntilTranslationFinishOrError(t, result.Stream)
+	var raws []interface{}
+	for _, p := range parts {
+		if p.Type == provider.SpeechTranslationStreamPartTypeRaw {
+			raws = append(raws, p.RawValue)
+		}
+	}
+	if len(raws) != 2 || raws[0] != "text" {
+		t.Fatalf("raw parts = %v, want [text {...}]", raws)
+	}
+}
