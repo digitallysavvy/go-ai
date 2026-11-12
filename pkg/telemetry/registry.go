@@ -2506,7 +2506,7 @@ func legacyToolCallsJSON(toolCalls []types.ToolCall) (string, bool) {
 	}
 	entries := make([]toolCallEntry, len(toolCalls))
 	for i, tc := range toolCalls {
-		entries[i] = toolCallEntry{ToolCallID: tc.ID, ToolName: tc.ToolName, Input: tc.Arguments}
+		entries[i] = toolCallEntry{ToolCallID: tc.ID, ToolName: tc.ToolName, Input: orderedToolInput(tc.Arguments, tc.RawArguments)}
 	}
 	b, err := jsonstr.Marshal(entries)
 	if err != nil {

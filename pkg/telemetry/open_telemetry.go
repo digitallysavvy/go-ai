@@ -1,9 +1,7 @@
 package telemetry
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"math"
 	"strings"
 	"sync"
@@ -1472,20 +1470,11 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 // toolCallArgumentsJSON returns the JSON text TS records as
 // gen_ai.tool.call.arguments (JSON.stringify of the parsed tool input).
 func toolCallArgumentsJSON(tc types.ToolCallContent) (string, bool) {
-	if tc.Arguments != nil {
-		b, err := jsonstr.Marshal(tc.Arguments)
-		return string(b), err == nil
-	}
-	if tc.Input == "" {
+	v := orderedToolInput(tc.Arguments, tc.Input)
+	if v == nil {
 		return "", false
 	}
-	if json.Valid([]byte(tc.Input)) {
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, []byte(tc.Input)); err == nil {
-			return compact.String(), true
-		}
-	}
-	b, err := jsonstr.Marshal(tc.Input)
+	b, err := jsonstr.Marshal(v)
 	return string(b), err == nil
 }
 
