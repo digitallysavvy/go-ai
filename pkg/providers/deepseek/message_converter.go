@@ -65,8 +65,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 		prefix, _ := msgOpts["prefix"].(bool)
 
 		if prefix && msg.Role != types.RoleAssistant {
-			return nil, nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+			return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "DeepSeek assistant prefix completion requires `prefix: true` on an assistant message.",
 			}
 		}
@@ -93,8 +92,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 		case types.RoleAssistant:
 			if prefix {
 				if index != len(messages)-1 {
-					return nil, nil, &providererrors.InvalidArgumentError{
-						Field:   "prompt",
+					return nil, nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 						Message: "DeepSeek assistant prefix completion requires the prefixed assistant message to be the final message.",
 					}
 				}
@@ -316,14 +314,12 @@ func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName strin
 
 	if url := deepseekFileURL(f); url != "" {
 		if len(url) > deepseekMaxImageURLLength {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+			return nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "DeepSeek image URLs must not exceed 8192 characters.",
 			}
 		}
 		if fileData {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+			return nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "DeepSeek `fileData` image parts require inline data, not a URL.",
 			}
 		}
@@ -338,8 +334,7 @@ func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName strin
 
 	if fileData {
 		if imageDetail != "" {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+			return nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "DeepSeek `imageDetail` cannot be combined with `fileData`.",
 			}
 		}
@@ -382,8 +377,7 @@ func deepseekResolveToolResultImagePart(f types.FileContent, providerOptionsName
 	var url string
 	if u := deepseekFileURL(f); u != "" {
 		if len(u) > deepseekMaxImageURLLength {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "prompt",
+			return nil, &providererrors.InvalidPromptError{ // TS InvalidPromptError
 				Message: "DeepSeek image URLs must not exceed 8192 characters.",
 			}
 		}
