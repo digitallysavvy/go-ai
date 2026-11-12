@@ -192,8 +192,8 @@ func TestCreatesVideoModels(t *testing.T) {
 		t.Error(err)
 	}
 	var nsm *providererrors.NoSuchModelError
-	if _, err := p.VideoModel("not-a-model"); !errors.As(err, &nsm) {
-		t.Errorf("err = %v", err)
+	if m, err := p.VideoModel("not-a-model"); !errors.As(err, &nsm) || m != nil {
+		t.Errorf("model %v err = %v", m, err)
 	}
 }
 

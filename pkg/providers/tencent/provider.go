@@ -193,7 +193,11 @@ func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 // AIGC models use "vod/<ModelName>/<ModelVersion>" (e.g. "vod/VS/2.0"). Any
 // other ID is a NoSuchModelError.
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
-	return NewVideoModel(p, modelID)
+	m, err := NewVideoModel(p, modelID)
+	if err != nil {
+		return nil, err // no typed-nil interface
+	}
+	return m, nil
 }
 
 // EmbeddingModel returns a NoSuchModelError: Tencent has no embedding model
