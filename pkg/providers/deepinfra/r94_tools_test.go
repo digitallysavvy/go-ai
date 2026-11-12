@@ -2,6 +2,7 @@ package deepinfra
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -84,5 +85,27 @@ func TestR94toolsDeepInfraEditAPIKeyFuncCalledOnce(t *testing.T) {
 	}
 	if got := auth.Load(); got != "Bearer fn-key" {
 		t.Fatalf("Authorization = %v", got)
+	}
+}
+
+// TS postJsonToApi / postFormDataToApi fail on !response.ok: an unfollowed
+// 3xx is the DeepInfra API error, not a success body.
+func TestR94toolsDeepInfraNon2xxIsAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusMultipleChoices)
+		_, _ = w.Write([]byte(`{"images":["AQID"],"data":[{"b64_json":"AQID"}]}`))
+	}))
+	defer server.Close()
+	model, _ := New(Config{APIKey: "k", BaseURL: server.URL + "/openai"}).ImageModel("stabilityai/sd3.5")
+	n := 1
+	for name, files := range map[string][]provider.ImageFile{
+		"generate": nil,
+		"edit":     {{Type: "file", MediaType: "image/png", Data: []byte{1}}},
+	} {
+		_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "a cat", N: &n, Files: files})
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.StatusCode != http.StatusMultipleChoices {
+			t.Fatalf("%s: err = %T %v, want the status 300 API error", name, err, err)
+		}
 	}
 }

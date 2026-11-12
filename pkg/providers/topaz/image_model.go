@@ -93,7 +93,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazSubmit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -447,7 +447,7 @@ func (m *ImageModel) getStatus(ctx context.Context, processID string, headers ma
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -488,7 +488,7 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 

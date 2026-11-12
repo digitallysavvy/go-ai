@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -46,5 +47,15 @@ func TestR94toolsVercelThrowIfAbortedReason(t *testing.T) {
 	client := NewAPIClient(f.URL(), Credentials{Token: "tok", TeamID: "team", ProjectID: "proj"})
 	if _, err := pollForTemplateSnapshotWithTimeout(ctx, client, "tpl", time.Second); err != reason {
 		t.Fatalf("poll err = %v", err)
+	}
+}
+
+// @vercel/sandbox parseOrThrow fails on !response.ok: an unfollowed 3xx
+// stdin response is an APIError, not a success body.
+func TestR94toolsVercelStdinNon2xxIsAPIError(t *testing.T) {
+	_, err := parseStdinResponse(&httpinternal.Response{StatusCode: 300, Body: []byte(`{"bytesWritten":1}`)}, false)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 300 {
+		t.Fatalf("err = %T %v, want a status 300 APIError", err, err)
 	}
 }

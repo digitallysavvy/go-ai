@@ -236,7 +236,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
@@ -315,7 +315,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 

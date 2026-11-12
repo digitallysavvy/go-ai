@@ -155,7 +155,7 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, m.parseGenerateError(resp)
 	}
 	if err := providerutils.MediaResponseValidator("deepinfra", providerutils.SchemaDeepInfraImage)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -253,7 +253,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, m.parseEditError(resp)
 	}
 	if err := providerutils.MediaResponseValidator("deepinfra", providerutils.SchemaDeepInfraEdit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {

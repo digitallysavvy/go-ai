@@ -113,7 +113,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	// TS response.text(): a BOM is dropped and invalid UTF-8 replaced
 	// (WHATWG TextDecoder) before the body is parsed.
 	submitResp.Body = []byte(textdecode.UTF8(submitResp.Body))
-	if submitResp.StatusCode >= 400 {
+	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 { // TS !response.ok
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, providerutils.ExtractHeaders(submitResp.Headers))
 	}
 
