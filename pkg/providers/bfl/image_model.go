@@ -829,7 +829,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, bflFetchError(req, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	limit := opts.MaxSize
@@ -941,6 +941,20 @@ func bflProviderMetadata(createResp bflCreateResponse, result bflResult) map[str
 // foreign download URLs. Tests replace it to intercept those downloads.
 var downloadTransport = fileutil.SafeTransport
 
+// bflFetchError maps a failed poll or image download Do call like TS
+// getFromApi / handleFetchError: a blocked URL or redirect (the
+// DownloadError fetchWithValidatedRedirects throws) is returned as is, the
+// caller's abort or deadline unchanged, and a network failure, a dial or
+// response-header timeout included, is the retryable "Cannot connect to
+// API" error.
+func bflFetchError(req *http.Request, err error) error {
+	var downloadErr *providererrors.DownloadError
+	if errors.As(err, &downloadErr) {
+		return downloadErr
+	}
+	return internalhttp.TransportErrorCtx(req.Context(), err)
+}
+
 func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[string]string) ([]byte, map[string]string, error) {
 	if strings.HasPrefix(strings.ToLower(url), "data:") {
 		data, err := fileutil.Download(ctx, url, fileutil.DefaultDownloadOptions())
@@ -991,7 +1005,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, bflFetchError(req, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
