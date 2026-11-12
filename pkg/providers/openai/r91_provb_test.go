@@ -94,3 +94,15 @@ func TestR91provbCompatEmbeddingByteBudget(t *testing.T) {
 		t.Fatalf("compat = %d, want 0", got)
 	}
 }
+
+// core2-18 (openai part): a decision file part with string data is sent
+// verbatim like TS (openai-decision-model.ts:192); unpadded base64 failed the
+// strict decode.
+func TestR91provbDecisionFileDataStringVerbatim(t *testing.T) {
+	img, err := decisionImageContent(provider.DecisionStatePart{Type: "file", File: &types.FileContent{
+		MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "iVBORw0KGgo"},
+	}})
+	if err != nil || img["image_url"] != "data:image/png;base64,iVBORw0KGgo" {
+		t.Fatalf("got %v, %v", img, err)
+	}
+}
