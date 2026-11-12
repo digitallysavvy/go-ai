@@ -24,6 +24,10 @@ import (
 type Provider struct {
 	config Config
 	client *internalhttp.Client
+	// bearerToken is the trimmed bearer API key (Config.APIKey, else
+	// AWS_BEARER_TOKEN_BEDROCK), read once when the provider is created like
+	// TS createAmazonBedrock (loadOptionalSetting); "" selects SigV4.
+	bearerToken string
 
 	credMu    sync.Mutex
 	creds     awsCredentials
@@ -128,10 +132,14 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("amazon-bedrock")),
 	})
 
-	return &Provider{
+	p := &Provider{
 		config: cfg,
 		client: client,
 	}
+	if cfg.APIKeyFunc == nil {
+		p.bearerToken = providerutils.JSTrim(firstNonEmpty(cfg.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
+	}
+	return p
 }
 
 // CreateAmazonBedrock creates a new AWS Bedrock provider.
@@ -279,9 +287,8 @@ func (p *Provider) authenticateRequest(ctx context.Context, req *stdhttp.Request
 		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
 		return nil
 	}
-	apiKey := providerutils.JSTrim(firstNonEmpty(p.config.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	if p.bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+p.bearerToken)
 		return nil
 	}
 
