@@ -783,7 +783,9 @@ func TestR91provgDecisionRejectsInvalidAnswers(t *testing.T) {
 		}
 	}
 	for _, noul := range []string{"-0.1", "1.1"} {
-		m, _, _ := r91provgDecisionSetup(t, with(func(a map[string]json.RawMessage) { a["requestsRefund"] = json.RawMessage(`{"type":"noul","noul":` + noul + `}`) }), 200)
+		m, _, _ := r91provgDecisionSetup(t, with(func(a map[string]json.RawMessage) {
+			a["requestsRefund"] = json.RawMessage(`{"type":"noul","noul":` + noul + `}`)
+		}), 200)
 		_, err := m.DoDecide(context.Background(), r91provgDecisionOptions())
 		var pe *providererrors.ProviderError
 		if !errors.As(err, &pe) || pe.Message != "Invalid JSON response" {
@@ -891,5 +893,14 @@ func TestR91provgDecisionDeprecatedFactoryAndNames(t *testing.T) {
 	cm, _ := custom.DecisionModel("custom-model")
 	if cm.Provider() != "custom.decision" || cm.ModelID() != "custom-model" {
 		t.Fatalf("custom = %s %s", cm.Provider(), cm.ModelID())
+	}
+}
+
+// Typed-option ruling: numeric helpers accept every Go integer and float kind.
+func TestR91provgNumberToIntKinds(t *testing.T) {
+	for _, v := range []interface{}{int8(5), uint16(5), int32(5), uint64(5), float32(5)} {
+		if n, ok := numberToInt(v); !ok || n != 5 {
+			t.Fatalf("%T: %d %v", v, n, ok)
+		}
 	}
 }

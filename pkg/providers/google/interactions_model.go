@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -1188,16 +1189,16 @@ func pruneMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
+// numberToInt reads a number of any Go integer or float kind (typed-option
+// ruling: numeric helpers accept every kind).
 func numberToInt(v interface{}) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	case float64:
-		return int(n), true
-	case float32:
-		return int(n), true
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return int(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return int(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return int(rv.Float()), true
 	default:
 		return 0, false
 	}
