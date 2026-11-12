@@ -4646,11 +4646,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// Output spec throws NoObjectGeneratedError from output.parseCompleteOutput
 	// itself (e.g. on empty text) rather than being silently skipped here.
 	if r.outputSpec != nil {
-		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         lastStepText,
-			FinishReason: r.finishReason,
-			Usage:        &r.usage,
-		})
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, finalStepOutputOptions(lastStepText, allSteps, r.finishReason, r.usage))
 		r.mu.Lock()
 		// Only publish a result on success: the generic outputProcessor
 		// interface returns the parse method's zero value (e.g. a
@@ -5825,11 +5821,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	// eed7950/9de0baf / WG4). Unconditional, matching TS StreamText's
 	// getOutputPromise() — see the comment at the other call site above.
 	if r.outputSpec != nil {
-		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         r.text,
-			FinishReason: r.finishReason,
-			Usage:        &r.usage,
-		})
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, finalStepOutputOptions(r.text, []types.StepResult{step}, r.finishReason, r.usage))
 		r.mu.Lock()
 		if parseErr == nil {
 			r.outputResult = parsed
@@ -6738,4 +6730,29 @@ func (t *orphanBlockTracker) observe(c provider.StreamChunk) error {
 		}
 	}
 	return nil
+}
+
+// finalStepOutputOptions are the parseCompleteOutput options of the final
+// step (TS stream-text.ts parseOutput: response: step.response, usage:
+// step.usage, finishReason: step.finishReason), so a NoObjectGeneratedError
+// carries the final step's response and usage, not the multi-step total.
+// Without a recorded step the call-level finish reason and usage are used.
+func finalStepOutputOptions(text string, steps []types.StepResult, finishReason types.FinishReason, usage types.Usage) ParseCompleteOutputOptions {
+	if len(steps) == 0 {
+		return ParseCompleteOutputOptions{Text: text, FinishReason: finishReason, Usage: &usage}
+	}
+	step := steps[len(steps)-1]
+	stepUsage := step.Usage
+	return ParseCompleteOutputOptions{
+		Text:         text,
+		FinishReason: step.FinishReason,
+		Usage:        &stepUsage,
+		Response: &types.ResponseMetadata{
+			ID:        step.Response.ID,
+			Timestamp: step.Response.Timestamp,
+			ModelID:   step.Response.ModelID,
+			Headers:   step.Response.Headers,
+			Body:      step.Response.Body,
+		},
+	}
 }

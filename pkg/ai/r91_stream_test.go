@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -278,5 +279,45 @@ func TestR91streamOrphanBlockDelta(t *testing.T) {
 	}
 	if text, err := r.ReadAll(); err != nil || text != "plain" {
 		t.Fatalf("never-started text = %q, %v", text, err)
+	}
+}
+
+// core1-D01 (TS stream-text.ts:3854-3866 parseOutput passes step.response
+// and step.usage of the final step): a failed output parse reports the final
+// step's usage and response, not the multi-step total.
+func TestR91streamOutputParseFinalStepContext(t *testing.T) {
+	big := &types.Usage{InputTokens: r71streamInt64(100), OutputTokens: r71streamInt64(1), TotalTokens: r71streamInt64(101)}
+	model := r71streamModel(nil,
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, RawFinishReason: "tool_calls", Usage: big},
+		},
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "final-id", ModelID: "m"}},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "not json"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage},
+		})
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "x", Tools: r90streamTools,
+		StopWhen: []StopCondition{StepCountIs(2)},
+		Output:   ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r91streamDrain(r.FullStream())
+	var noObj *NoObjectGeneratedError
+	if !errors.As(r.OutputErr(), &noObj) {
+		t.Fatalf("OutputErr = %v", r.OutputErr())
+	}
+	if noObj.Usage == nil || noObj.Usage.InputTokens == nil || *noObj.Usage.InputTokens != 1 {
+		t.Fatalf("usage = %+v", noObj.Usage)
+	}
+	if noObj.Response == nil || noObj.Response.ID != "final-id" || noObj.FinishReason != types.FinishReasonStop {
+		t.Fatalf("response = %+v, finish %q", noObj.Response, noObj.FinishReason)
 	}
 }
