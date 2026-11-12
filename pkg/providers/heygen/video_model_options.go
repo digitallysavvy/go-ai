@@ -126,6 +126,15 @@ func parseVideoModelOptions(providerOptions map[string]interface{}) (*VideoModel
 			return nil, invalidOptions("expected an object")
 		}
 	}
+	// heygenVideoOptions fields are .optional(): an explicit null fails
+	// (zod accepts undefined, not null).
+	if m, ok := providerutils.NormalizeOptionsJSON(map[string]interface{}{"heygen": raw})["heygen"].(map[string]interface{}); ok {
+		for _, key := range []string{"mode", "resolution", "promptEnhancement", "image", "referenceImages", "referenceVideos", "referenceAudio"} {
+			if v, present := m[key]; present && v == nil {
+				return nil, invalidOptions(key + ": invalid input, received null")
+			}
+		}
+	}
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return nil, invalidOptions(err.Error())

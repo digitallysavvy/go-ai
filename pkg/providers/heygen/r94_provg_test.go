@@ -126,3 +126,13 @@ func TestR94provgNon2xxIsAPIError(t *testing.T) {
 		t.Errorf("status: err = %T %v, want the 300 API error", err, err)
 	}
 }
+
+// heygenVideoModelOptions fields are .optional(): TS rejects an explicit
+// null.
+func TestR94provgOptionNullRejected(t *testing.T) {
+	for _, key := range []string{"mode", "resolution", "promptEnhancement", "image", "referenceImages", "referenceVideos", "referenceAudio"} {
+		if _, err := parseVideoModelOptions(map[string]interface{}{"heygen": map[string]interface{}{key: nil}}); err == nil {
+			t.Errorf("%s: null accepted", key)
+		}
+	}
+}
