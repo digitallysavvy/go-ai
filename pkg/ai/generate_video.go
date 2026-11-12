@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -73,6 +74,7 @@ func singleGenerate(ctx context.Context, opts GenerateVideoOptions) (*GenerateVi
 		return nil, err
 	}
 
+	warnVideoPollWithoutStartStatus(opts)
 	response, err := runVideoCall(ctx, opts, normalized, opts.N)
 	if err != nil {
 		return nil, err
@@ -88,6 +90,8 @@ func parallelGenerate(ctx context.Context, opts GenerateVideoOptions, maxPerCall
 	if err != nil {
 		return nil, err
 	}
+
+	warnVideoPollWithoutStartStatus(opts)
 
 	type callResult struct {
 		index    int
@@ -241,13 +245,6 @@ func runVideoCall(ctx context.Context, opts GenerateVideoOptions, normalized *no
 	startStatusOnly, isStartStatusOnly := opts.Model.(videoStartStatusOnlyModel)
 	useStartStatus := hasStartStatus && (opts.Poll != nil || opts.Webhook != nil || isStartStatusOnly)
 
-	if (opts.Poll != nil || opts.Webhook != nil) && !hasStartStatus {
-		logModelWarnings([]types.Warning{{
-			Type:    "other",
-			Message: "poll/webhook options were provided but the model does not support doStart/doStatus. Falling back to doGenerate.",
-		}}, opts.Model.Provider(), opts.Model.ModelID())
-	}
-
 	if useStartStatus {
 		flow := startStatusFlowOptions{
 			model:      opts.Model,
@@ -274,6 +271,24 @@ func runVideoCall(ctx context.Context, opts GenerateVideoOptions, normalized *no
 	}
 
 	return doGenerateVideoWithRetry(ctx, opts.Model, callOpts, opts.MaxRetries)
+}
+
+// warnVideoPollWithoutStartStatus logs, once per GenerateVideo call (TS logs
+// it before the calls are parallelized), that Poll / Webhook cannot be used
+// because the model has no start/status flow.
+func warnVideoPollWithoutStartStatus(opts GenerateVideoOptions) {
+	if opts.Poll == nil && opts.Webhook == nil {
+		return
+	}
+	_, hasStarter := opts.Model.(provider.VideoModelStarter)
+	_, hasChecker := opts.Model.(provider.VideoModelStatusChecker)
+	if hasStarter && hasChecker {
+		return
+	}
+	logModelWarnings([]types.Warning{{
+		Type:    "other",
+		Message: "poll/webhook options were provided but the model does not support doStart/doStatus. Falling back to doGenerate.",
+	}}, opts.Model.Provider(), opts.Model.ModelID())
 }
 
 func doGenerateVideoWithRetry(ctx context.Context, model provider.VideoModelV3, opts *provider.VideoModelV3CallOptions, maxRetries *int) (*provider.VideoModelV3Response, error) {
@@ -465,22 +480,27 @@ func executeStartStatusFlow(ctx context.Context, opts startStatusFlowOptions) (*
 				outcomeCh <- statusOutcome{result: r, err: e}
 			}()
 
+			// Only the poll deadline is the polling timeout (TS
+			// statusTimeoutController.signal.aborted); the caller's own
+			// cancellation or deadline ends the call with its error.
+			pollDeadline := func() bool { return ctx.Err() == nil && statusCtx.Err() == context.DeadlineExceeded }
 			select {
 			case outcome := <-outcomeCh:
 				cancel()
 				if outcome.err != nil {
-					if statusCtx.Err() == context.DeadlineExceeded {
+					if pollDeadline() {
 						return nil, timeoutErr
 					}
 					return nil, outcome.err
 				}
 				statusResult = outcome.result
 			case <-statusCtx.Done():
+				timedOut := pollDeadline()
 				cancel()
-				if statusCtx.Err() == context.DeadlineExceeded {
+				if timedOut {
 					return nil, timeoutErr
 				}
-				return nil, statusCtx.Err()
+				return nil, ctx.Err()
 			}
 		}
 
@@ -673,7 +693,9 @@ func convertPromptImage(img *VideoPromptImage) (*provider.VideoModelV3File, erro
 // the second comma-separated part only.
 func splitVideoDataURL(value string) (mediaType, content string) {
 	header, rest, _ := strings.Cut(value, ",")
-	mediaType = strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
+	if parts := strings.Split(strings.SplitN(header, ";", 2)[0], ":"); len(parts) > 1 {
+		mediaType = parts[1]
+	}
 	content, _, _ = strings.Cut(rest, ",")
 	return mediaType, content
 }
@@ -945,6 +967,11 @@ func convertToGenerateVideoResult(ctx context.Context, response *provider.VideoM
 }
 
 func downloadVideoURL(ctx context.Context, url string, download URLDownloadFunction, downloadWithMetadata URLDownloadWithMetadataFunction) ([]byte, string, error) {
+	// TS downloads new URL(videoData.url): the WHATWG serialization (a URL
+	// that does not parse is used as given, like downloadGeneratedFileURL).
+	if href, err := urlnorm.Href(url); err == nil {
+		url = href
+	}
 	if downloadWithMetadata != nil {
 		result, err := downloadWithMetadata(ctx, url)
 		if err != nil {
