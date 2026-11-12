@@ -20,3 +20,15 @@ func TestR94carryForbiddenKeyNextToHugeNumber(t *testing.T) {
 		t.Errorf("Check = %v, want nil", err)
 	}
 }
+
+// Unmarshal matches keys exactly (zod after secureJsonParse).
+func TestR94carryUnmarshalMatchesKeysExactly(t *testing.T) {
+	var v struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := Unmarshal([]byte(`{"error":{"Message":"m"}}`), &v); err != nil || v.Error == nil || v.Error.Message != "" {
+		t.Errorf("Unmarshal = %+v, %v", v.Error, err)
+	}
+}

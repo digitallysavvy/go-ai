@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // ErrForbiddenPrototype is secure-json-parse's SyntaxError text.
@@ -60,10 +62,13 @@ func forbidden(v any) bool {
 	return false
 }
 
-// Unmarshal is json.Unmarshal that first rejects forbidden prototype keys.
+// Unmarshal is json.Unmarshal that first rejects forbidden prototype keys,
+// with object keys matched to struct fields exactly (jsonexact), as the zod
+// schema that follows every TS safeParseJSON / secureJsonParse does: a
+// differently cased key fills no field.
 func Unmarshal(data []byte, v any) error {
 	if err := Check(data); err != nil {
 		return err
 	}
-	return json.Unmarshal(data, v)
+	return json.Unmarshal(jsonexact.Filter(data, v), v)
 }
