@@ -3,6 +3,7 @@ package codemode
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -190,5 +191,44 @@ func TestR91streamGetCodeModeInterruptGoResults(t *testing.T) {
 	}
 	if got := GetCodeModeInterrupt(&r91streamGenResult{ToolResults: []types.ToolResult{{Result: "done"}}}); got != nil {
 		t.Fatalf("completed result read as interrupt: %#v", got)
+	}
+}
+
+// core3-16 (TS run-code-mode.ts:620-690 toCodeModeRuntimeError maps only
+// RUN_TIMEOUT / RUN_ABORTED): a script error whose text contains "context
+// canceled" keeps its own error.
+func TestR91streamCodeModeErrorTextNotTimeout(t *testing.T) {
+	for _, text := range []string{"upstream: context canceled", "x context deadline exceeded", "module closed"} {
+		_, err := RunCodeMode(context.Background(), RunInput{JS: `throw new Error(` + strconv.Quote(text) + `);`, Tools: ToolSet{}})
+		var timeoutErr *TimeoutError
+		var abortedErr *AbortedError
+		if err == nil || errors.As(err, &timeoutErr) || errors.As(err, &abortedErr) || !strings.Contains(err.Error(), text) {
+			t.Errorf("%q: err = %v (%T)", text, err, err)
+		}
+	}
+}
+
+// core3-17 (TS run-code-mode.ts:201 createCodeModeSource tail
+// JSON.parse(JSON.stringify(result))): a function or symbol result fails
+// with the guest's SyntaxError, not a host protocol error.
+func TestR91streamCodeModeUnserializableResult(t *testing.T) {
+	for _, js := range []string{"return () => 1;", "return Symbol('x');"} {
+		_, err := RunCodeMode(context.Background(), RunInput{JS: js, Tools: ToolSet{}})
+		if err == nil || !strings.Contains(err.Error(), "SyntaxError") || strings.Contains(err.Error(), "invalid JSON payload") {
+			t.Errorf("%s: err = %v (%T)", js, err, err)
+		}
+	}
+	// Ordinary results are unchanged; toJSON applies in the sandbox.
+	got, err := RunCodeMode(context.Background(), RunInput{JS: "return {a: 1, d: {toJSON() { return 'j'; }}, u: undefined};", Tools: ToolSet{}})
+	m, _ := got.(map[string]interface{})
+	if err != nil || m["a"] != float64(1) || m["d"] != "j" {
+		t.Fatalf("got %#v, %v", got, err)
+	}
+	if _, has := m["u"]; has {
+		t.Fatalf("undefined property kept: %#v", m)
+	}
+	got, err = RunCodeMode(context.Background(), RunInput{JS: "const tools = 1; return tools;", Tools: ToolSet{}})
+	if err != nil || got != float64(1) {
+		t.Fatalf("shadowed tools: %#v, %v", got, err)
 	}
 }
