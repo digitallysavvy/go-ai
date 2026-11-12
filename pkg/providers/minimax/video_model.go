@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -109,6 +110,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		// "Cannot connect to API" (tools-02), returned unchanged.
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
+	// TS response.text(): a BOM is dropped and invalid UTF-8 replaced
+	// (WHATWG TextDecoder) before the body is parsed.
+	submitResp.Body = []byte(textdecode.UTF8(submitResp.Body))
 	if submitResp.StatusCode >= 400 {
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, providerutils.ExtractHeaders(submitResp.Headers))
 	}
@@ -196,6 +200,8 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 	if err != nil {
 		return nil, nil, m.handlePollError(err)
 	}
+	// TS response.text(): a BOM is dropped and invalid UTF-8 replaced.
+	result.Data = []byte(textdecode.UTF8(result.Data))
 	// TS createJsonResponseHandler(minimaxVideoStatusResponseSchema).
 	if err := providerutils.MediaResponseValidator("minimax", providerutils.SchemaMiniMaxStatus)(stdhttp.StatusOK, stdhttp.Header(result.Headers), result.Data); err != nil {
 		return nil, nil, err
@@ -908,7 +914,7 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers map[stri
 	message := stdhttp.StatusText(statusCode)
 	var data interface{}
 	var parsed interface{}
-	if strings.TrimSpace(string(body)) != "" && securejson.Unmarshal(body, &parsed) == nil {
+	if providerutils.JSTrim(string(body)) != "" && securejson.Unmarshal(body, &parsed) == nil {
 		if out, ok := minimaxVideoErrorSchemaOutput(parsed); ok {
 			data = out
 			message = "MiniMax video generation error"
@@ -983,7 +989,7 @@ func minimaxVideoErrorSchemaOutput(v interface{}) (map[string]interface{}, bool)
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
+		return m.parseAPIError([]byte(textdecode.UTF8(dlErr.Body)), dlErr.StatusCode, providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
 	}
 	return err
 }

@@ -152,8 +152,10 @@ func (e *MCPEvents) Subscribe(ctx context.Context, options SubscribeEventOptions
 	if options.Delivery.Mode != "" && options.Delivery.Mode != MCPEventDeliveryWebhook {
 		return nil, NewMCPClientError(0, "Only webhook event delivery is supported", nil)
 	}
-	if (options.TTLMs.Value != nil && *options.TTLMs.Value <= 0) ||
-		(options.MaxAgeMs != nil && *options.MaxAgeMs < 0) {
+	// TS !Number.isSafeInteger(v): a value past 2^53 - 1 is invalid too.
+	const maxSafeInteger = 1<<53 - 1
+	if (options.TTLMs.Value != nil && (*options.TTLMs.Value <= 0 || *options.TTLMs.Value > maxSafeInteger)) ||
+		(options.MaxAgeMs != nil && (*options.MaxAgeMs < 0 || *options.MaxAgeMs > maxSafeInteger)) {
 		return nil, NewMCPClientError(0, "Invalid MCP event subscription lifetime or replay age", nil)
 	}
 
