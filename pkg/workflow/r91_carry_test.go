@@ -8,7 +8,10 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // r91carryLoopModel calls the tool on each of the first n calls, then
@@ -77,5 +80,97 @@ func TestR91carryLiteralWorkflowAgentStopDefaults(t *testing.T) {
 	}
 	if got := gcalls(); got != 20 {
 		t.Fatalf("generate model calls = %d, want 20", got)
+	}
+}
+
+type r91carryStepRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu           sync.Mutex
+	starts, ends int
+}
+
+func (r *r91carryStepRecorder) OnStepStart(ctx context.Context, _ telemetry.TelemetryStepStartEvent) context.Context {
+	r.mu.Lock()
+	r.starts++
+	r.mu.Unlock()
+	return ctx
+}
+
+func (r *r91carryStepRecorder) OnStepEnd(_ context.Context, _ telemetry.TelemetryStepEndEvent) {
+	r.mu.Lock()
+	r.ends++
+	r.mu.Unlock()
+}
+
+// TS efd2905173 (workflow-agent.ts 2977-2985): when a run stops on a
+// client-side tool (no execute), the final step's telemetry step end is
+// dispatched in both modes, so no step or model-call span is left open;
+// the public OnStepEnd callback count is unchanged.
+func TestR91carryWorkflowClientToolFinalStepTelemetry(t *testing.T) {
+	for _, mode := range []string{"generate", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			next := func() int { mu.Lock(); defer mu.Unlock(); calls++; return calls }
+			call := func(n int) types.ToolCall {
+				if n == 1 {
+					return types.ToolCall{ID: "c1", ToolName: "addNumbers", Arguments: map[string]interface{}{"a": 2, "b": 3}}
+				}
+				return types.ToolCall{ID: "c2", ToolName: "askUser", Arguments: map[string]interface{}{"question": "Continue?"}}
+			}
+			model := &testutil.MockLanguageModel{ProviderName: "mock", ModelName: "m", ToolSupport: true,
+				DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+					return &types.GenerateResult{ToolCalls: []types.ToolCall{call(next())}, FinishReason: types.FinishReasonToolCalls}, nil
+				},
+				DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+					tc := call(next())
+					return testutil.NewMockTextStream([]provider.StreamChunk{
+						{Type: provider.ChunkTypeToolCall, ToolCall: &tc},
+						{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+					}), nil
+				},
+			}
+			rec := &r91carryStepRecorder{}
+			spans := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+			defer func() { _ = tp.Shutdown(context.Background()) }()
+			a := &WorkflowAgent{
+				Model: model,
+				Tools: []types.Tool{
+					{Name: "addNumbers", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+						return 5, nil
+					}},
+					{Name: "askUser"},
+				},
+				Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{
+					rec, telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("w")}),
+				}},
+			}
+			if mode == "generate" {
+				if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "go"}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "go"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.ReadAll(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if n := next() - 1; n != 2 {
+				t.Fatalf("model calls = %d, want 2 (stop on the client tool)", n)
+			}
+			rec.mu.Lock()
+			starts, ends := rec.starts, rec.ends
+			rec.mu.Unlock()
+			if starts != 2 || ends != 2 {
+				t.Fatalf("telemetry step starts/ends = %d/%d, want 2/2", starts, ends)
+			}
+			if s, e := len(spans.Started()), len(spans.Ended()); s != e {
+				t.Fatalf("spans started %d, ended %d", s, e)
+			}
+		})
 	}
 }
