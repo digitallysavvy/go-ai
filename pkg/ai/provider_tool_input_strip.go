@@ -11,11 +11,12 @@ import (
 // Go Parameters schema was checked to declare exactly the TS keys, with no
 // nested object schema, so stripping to the declared properties is TS's
 // result (round 87e audit, coordinator ruling "Undeclared tool input keys").
-// Tools left out keep undeclared keys (S7): discriminated unions
+// anthropic.advisor_20260301 is z.object({}).strict() in TS: an extra key is
+// an invalid input, which its Go schema (additionalProperties false) already
+// gives (r91 core1-01). Tools left out keep undeclared keys (S7): discriminated unions
 // (anthropic.memory_20250818, anthropic.code_execution_20250825 /
 // _20260120), nested object schemas, and schemas not audited key by key.
 var providerToolsStrippingInput = map[string]bool{
-	"anthropic.advisor_20260301":           true, // z.object({})
 	"anthropic.bash_20241022":              true,
 	"anthropic.bash_20250124":              true,
 	"anthropic.code_execution_20250522":    true,

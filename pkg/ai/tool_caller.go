@@ -5,6 +5,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // DirectToolCall is the sentinel caller name permitting the model to call a
@@ -27,7 +28,9 @@ type ResolvedToolCallers map[string][]string
 // configuration against the available tools. It mirrors the TypeScript SDK's
 // resolveToolCallerConfiguration.
 func ResolveToolCallerConfiguration(tools []types.Tool, toolCallers ExperimentalToolCallers) (ResolvedToolCallers, error) {
-	if len(tools) == 0 || toolCallers == nil {
+	// TS: only an undefined tool set or configuration short-circuits; an
+	// empty tool set with a configured tool name is an unknown tool.
+	if tools == nil || toolCallers == nil {
 		return nil, nil
 	}
 
@@ -46,6 +49,11 @@ func ResolveToolCallerConfiguration(tools []types.Tool, toolCallers Experimental
 			}
 		}
 
+		// TS `if (callers != null)`: an unset entry leaves the tool
+		// unaffected (it is not hidden from the model).
+		if callers == nil {
+			continue
+		}
 		out := make([]string, len(callers))
 		for i, caller := range callers {
 			if caller == DirectToolCall {
@@ -136,10 +144,7 @@ func PrepareToolsForToolCallers(tools []types.Tool, toolCallers ResolvedToolCall
 
 			if caller.Type == types.ToolCallerTypeProvider {
 				availableToProvider = true
-				var providerOpts map[string]interface{}
-				if m, ok := prepared.ProviderOptions.(map[string]interface{}); ok {
-					providerOpts = m
-				}
+				providerOpts := toolProviderOptionsObject(prepared.ProviderOptions)
 				if caller.PrepareProviderOptions != nil {
 					prepared.ProviderOptions = caller.PrepareProviderOptions(providerOpts)
 				}
@@ -264,4 +269,20 @@ func singleTextContent(msg types.Message) (string, bool) {
 		return tc.Text, true
 	}
 	return "", false
+}
+
+// toolProviderOptionsObject returns a tool's ProviderOptions as the JSON
+// object TS hands to prepareProviderOptions: a map[string]interface{} as is,
+// and a Go-typed value (map[string]map[string]interface{}, a typed options
+// struct) through its JSON form (typed-option ruling, OVC-01). nil and
+// non-object values give nil.
+func toolProviderOptionsObject(v interface{}) map[string]interface{} {
+	if v == nil {
+		return nil
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	m, _ := providerutils.NormalizeOptionsJSON(map[string]interface{}{"v": v})["v"].(map[string]interface{})
+	return m
 }
