@@ -677,3 +677,36 @@ func TestR91streamArrayOutputStreamText(t *testing.T) {
 		t.Fatalf("fallback partial = %s", last)
 	}
 }
+
+// cr-r91-gen-to-stream 1: instructions given as system messages are the
+// leading messages of the step's PromptMessages, so the step start event
+// leaves InstructionMessages empty (carry's serializer writes
+// InstructionMessages and then PromptMessages).
+func TestR91streamTelemetryInstructionMessagesNotDuplicated(t *testing.T) {
+	rec := &r91streamTelRecorder{}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:               r71streamModel(nil, r71streamHelloWorld),
+		Prompt:              "hi",
+		InstructionMessages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "be nice"}}}},
+		Telemetry:           &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r91streamDrain(r.FullStream())
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.steps) != 1 {
+		t.Fatalf("step starts = %d", len(rec.steps))
+	}
+	e := rec.steps[0]
+	systems := 0
+	for _, m := range e.PromptMessages {
+		if m.Role == types.RoleSystem {
+			systems++
+		}
+	}
+	if len(e.InstructionMessages) != 0 || systems != 1 {
+		t.Fatalf("InstructionMessages = %v, system messages in PromptMessages = %d", e.InstructionMessages, systems)
+	}
+}

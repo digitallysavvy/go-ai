@@ -388,7 +388,10 @@ func TestGenerateTextStepTimeMsIsPopulatedForToolStep(t *testing.T) {
 	}
 }
 
-func TestStreamTextSandboxDescriptionAppliedOnEveryStep(t *testing.T) {
+// TS never adds experimental_sandbox.description to the model prompt
+// (docs 03-agents/02-building-agents.mdx: "not added to the model prompt
+// automatically").
+func TestStreamTextSandboxDescriptionNotAddedToSystem(t *testing.T) {
 	call := 0
 	var seenSystems []string
 	model := &testutil.MockLanguageModel{
@@ -439,8 +442,8 @@ func TestStreamTextSandboxDescriptionAppliedOnEveryStep(t *testing.T) {
 		t.Fatalf("stream calls = %d, want 2", got)
 	}
 	for i, system := range seenSystems {
-		if !containsSubstring(system, "Ubuntu 22.04, root: /workspace") {
-			t.Fatalf("call %d system missing sandbox description: %q", i+1, system)
+		if system != "You are helpful." {
+			t.Fatalf("call %d system = %q, want the instructions only", i+1, system)
 		}
 	}
 }

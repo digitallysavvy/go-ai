@@ -1364,7 +1364,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	}
 
 	logPromptDeprecations(r.promptDeprecations.forStep(stepMessages))
-	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: stepSystem, Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
 			stepCancel()
@@ -1459,11 +1459,13 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		PromptMessages: genOpts.Prompt.Messages,
 		// TS folds the instructions into the step prompt as its leading
 		// system message (ai.prompt.messages).
-		System:              telemetryInput(telemetrySettings, stepSystem),
-		InstructionMessages: telemetryInputMessages(telemetrySettings, stepInstructionMessages),
-		StepTools:           stepTools,
-		RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
+		// Instructions given as system messages are already the leading
+		// messages of PromptMessages (prependInstructionMessages), so
+		// InstructionMessages stays empty and they are not written twice.
+		System:         telemetryInput(telemetrySettings, stepSystem),
+		StepTools:      stepTools,
+		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 	}))
 	r.stepReopenTelemetryStepCtx = telemetryStepCtx
 
@@ -4327,7 +4329,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		logPromptDeprecations(r.promptDeprecations.forStep(nextMessages))
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
-			System:   appendSandboxDescription(nextSystem, nextSandbox),
+			System:   nextSystem,
 		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
 			nextStepCancel()
@@ -4395,19 +4397,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// loop iteration — which processes the stream DoStream returns here —
 		// reads it back instead of firing FireOnStepStart again.
 		nextTelemetryStepCtx := telemetry.FireOnStepStart(nextStepCtx, stepStartTelemetryPrompt(opts.Internal, telemetry.TelemetryStepStartEvent{
-			CallID:              r.cbCallID,
-			OperationType:       "ai.streamText",
-			Settings:            r.telemetrySettings,
-			StepNumber:          stepNum,
-			ModelProvider:       nextModel.Provider(),
-			ModelID:             nextModel.ModelID(),
-			ToolChoice:          preparedToolChoice(nextToolChoice),
-			PromptMessages:      nextGenOpts.Prompt.Messages,
-			System:              telemetryInput(r.telemetrySettings, nextSystem),
-			InstructionMessages: telemetryInputMessages(r.telemetrySettings, nextInstructionMessages),
-			StepTools:           nextTools,
-			RuntimeContext:      telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-			ToolsContext:        telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+			CallID:         r.cbCallID,
+			OperationType:  "ai.streamText",
+			Settings:       r.telemetrySettings,
+			StepNumber:     stepNum,
+			ModelProvider:  nextModel.Provider(),
+			ModelID:        nextModel.ModelID(),
+			ToolChoice:     preparedToolChoice(nextToolChoice),
+			PromptMessages: nextGenOpts.Prompt.Messages,
+			System:         telemetryInput(r.telemetrySettings, nextSystem),
+			StepTools:      nextTools,
+			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
+			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		}))
 		r.stepReopenTelemetryStepCtx = nextTelemetryStepCtx
 		// As for the first step: a retried DoStream open is a new model call.
@@ -6267,15 +6268,6 @@ func telemetryInput(settings *telemetry.Options, v string) string {
 		return ""
 	}
 	return v
-}
-
-// telemetryInputMessages is messages when the telemetry settings record
-// inputs, else nil.
-func telemetryInputMessages(settings *telemetry.Options, messages []types.Message) []types.Message {
-	if !settings.ShouldRecordInputs() || len(messages) == 0 {
-		return nil
-	}
-	return messages
 }
 
 // readChunk reads the next chunk, returning ctx's error once ctx is done.
