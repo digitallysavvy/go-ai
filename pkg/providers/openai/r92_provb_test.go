@@ -34,8 +34,8 @@ func r92provbUpdate(options map[string]interface{}, content string) types.Messag
 }
 
 // r92provbFormatRequest is the TS request helper: it returns the call error
-// and the number of requests the server saw.
-func r92provbFormatRequest(t *testing.T, method string, msgs []types.Message, openaiOpts map[string]interface{}, modelID string) (error, int32) {
+// and the number of requests the server saw (count first, error last).
+func r92provbFormatRequest(t *testing.T, method string, msgs []types.Message, openaiOpts map[string]interface{}, modelID string) (int32, error) {
 	t.Helper()
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +61,7 @@ func r92provbFormatRequest(t *testing.T, method string, msgs []types.Message, op
 			_ = s.Close()
 		}
 	}
-	return err, atomic.LoadInt32(&calls)
+	return atomic.LoadInt32(&calls), err
 }
 
 func r92provbWantUnsupported(t *testing.T, err error, calls int32, functionality, message string) {
@@ -89,7 +89,7 @@ func TestR92provbResponsesFormatUpdateRejections(t *testing.T) {
 			{`{"truncation":"auto"}`, map[string]interface{}{"truncation": "auto"}},
 		} {
 			t.Run(prefix+"rejects incompatible settings "+c.title, func(t *testing.T) {
-				err, calls := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, ""), r92provbUser}, c.opts, "gpt-6-sol")
+				calls, err := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, ""), r92provbUser}, c.opts, "gpt-6-sol")
 				r92provbWantUnsupported(t, err, calls, "Message-level textFormatUpdate",
 					"Configuration updates require standard reasoning mode without automatic compaction or automatic truncation")
 			})
@@ -97,19 +97,19 @@ func TestR92provbResponsesFormatUpdateRejections(t *testing.T) {
 
 		// TS 201.
 		t.Run(prefix+"rejects unsupported models instead of silently losing historical updates", func(t *testing.T) {
-			err, calls := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, ""), r92provbUser}, nil, "gpt-5.4")
+			calls, err := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, ""), r92provbUser}, nil, "gpt-5.4")
 			r92provbWantUnsupported(t, err, calls, "Message-level textFormatUpdate", "Configuration updates are only supported by GPT-6 and later models")
 		})
 
 		// TS 216.
 		t.Run(prefix+"requires an empty control message", func(t *testing.T) {
-			err, calls := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, "Instructions"), r92provbUser}, nil, "gpt-6-sol")
+			calls, err := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, "Instructions"), r92provbUser}, nil, "gpt-6-sol")
 			r92provbWantUnsupported(t, err, calls, "Message-level textFormatUpdate", "Message-level textFormatUpdate requires empty system message content.")
 		})
 
 		// TS 226.
 		t.Run(prefix+"rejects adjacent reasoning and format updates", func(t *testing.T) {
-			err, calls := r92provbFormatRequest(t, method, []types.Message{
+			calls, err := r92provbFormatRequest(t, method, []types.Message{
 				r92provbUpdate(map[string]interface{}{"reasoningEffortUpdate": "low"}, ""),
 				r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, ""),
 				r92provbUser,
@@ -127,7 +127,7 @@ func TestR92provbResponsesFormatUpdateRejections(t *testing.T) {
 				opts["previousResponseId"] = prev
 			}
 			t.Run(prefix+"rejects request-level effort with a leading format update (previousResponseId: "+title+")", func(t *testing.T) {
-				err, calls := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, ""), r92provbUser}, opts, "gpt-6-sol")
+				calls, err := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": r92provbFormat}, ""), r92provbUser}, opts, "gpt-6-sol")
 				r92provbWantUnsupported(t, err, calls, "Adjacent configuration updates",
 					"Configuration updates cannot be consecutive. Set reasoningEffortUpdate and textFormatUpdate in the same empty system message, and omit request-level reasoningEffortUpdate when using message-level updates.")
 			})
@@ -135,7 +135,7 @@ func TestR92provbResponsesFormatUpdateRejections(t *testing.T) {
 
 		// TS 280.
 		t.Run(prefix+"rejects json_object as an update format", func(t *testing.T) {
-			err, calls := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": map[string]interface{}{"type": "json_object"}}, ""), r92provbUser}, nil, "gpt-6-sol")
+			calls, err := r92provbFormatRequest(t, method, []types.Message{r92provbUpdate(map[string]interface{}{"textFormatUpdate": map[string]interface{}{"type": "json_object"}}, ""), r92provbUser}, nil, "gpt-6-sol")
 			var ia *providererrors.InvalidArgumentError
 			if !errors.As(err, &ia) || calls != 0 {
 				t.Fatalf("err = %#v, calls = %d", err, calls)
