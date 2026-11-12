@@ -450,15 +450,18 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			telemetrySettled = true
 			finalAudioByteLength := atomic.LoadInt64(&audioByteLength)
 			telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-				CallID:           callID,
-				OperationType:    "ai.streamTranscribe",
-				ModelProvider:    opts.Model.Provider(),
-				ModelID:          opts.Model.ModelID(),
-				Settings:         opts.ExperimentalTelemetry,
-				Text:             part.FinishText,
-				AudioByteLength:  &finalAudioByteLength,
-				AudioMediaType:   opts.InputAudioFormat.Type,
-				ProviderMetadata: providerMetadata,
+				CallID:          callID,
+				OperationType:   "ai.streamTranscribe",
+				ModelProvider:   opts.Model.Provider(),
+				ModelID:         opts.Model.ModelID(),
+				Settings:        opts.ExperimentalTelemetry,
+				Text:            part.FinishText,
+				AudioByteLength: &finalAudioByteLength,
+				AudioMediaType:  opts.InputAudioFormat.Type,
+				// TS end event: value.providerMetadata as reported (no
+				// ai.response.providerMetadata when the model sent none);
+				// only the result resolves `?? {}`.
+				ProviderMetadata: part.ProviderMetadata,
 				ProviderUsage:    part.Usage,
 			})
 

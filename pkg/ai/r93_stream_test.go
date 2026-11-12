@@ -4,9 +4,14 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 var r93streamNumberArray = ArrayOutput[float64](ArrayOutputOptions[float64]{ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "number"})})
@@ -86,5 +91,69 @@ func TestR93streamElementStreamOwnCursor(t *testing.T) {
 	}
 	if r92streamJSON(got) != `[1,2,3]` {
 		t.Fatalf("elements after the full stream was read = %v", got)
+	}
+}
+
+// TS stream-transcribe.ts: the end event carries `providerMetadata:
+// value.providerMetadata`, undefined when the model reported none, so the
+// OTel integrations record no ai.response.providerMetadata; only the result
+// resolves `value.providerMetadata ?? {}` (cr-r93-carry-to-stream).
+func TestR93streamTranscribeEndEventProviderMetadataAsReported(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]interface{}
+		wantAttr string
+	}{
+		{name: "none", metadata: nil, wantAttr: ""},
+		{name: "reported", metadata: map[string]interface{}{"p": map[string]interface{}{"k": "v"}}, wantAttr: `{"p":{"k":"v"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &mockTranscriptionStreamerModel{
+				doStreamFn: func(ctx context.Context, opts *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
+					for {
+						if _, err := opts.Audio.Next(ctx); err != nil {
+							break
+						}
+					}
+					return sliceStreamResult(
+						provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart},
+						provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: "hello", ProviderMetadata: tc.metadata},
+					), nil
+				},
+			}
+			rec := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+			defer func() { _ = tp.Shutdown(context.Background()) }()
+			legacy := telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("ai")})
+			genAI := telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tp.Tracer("gen_ai"), ProviderMetadata: true})
+			result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+				Model:            model,
+				Audio:            newMockChanAudioStream([]byte("abc")),
+				InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+				Telemetry:        &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{legacy, genAI}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			md, err := result.ProviderMetadata()
+			if err != nil || md == nil {
+				t.Fatalf("ProviderMetadata() = %#v, %v; want non-nil", md, err)
+			}
+			spans := rec.Ended()
+			if len(spans) == 0 {
+				t.Fatal("no spans")
+			}
+			for _, s := range spans {
+				got := ""
+				for _, kv := range s.Attributes() {
+					if kv.Key == attribute.Key("ai.response.providerMetadata") {
+						got = kv.Value.AsString()
+					}
+				}
+				if got != tc.wantAttr {
+					t.Errorf("span %q ai.response.providerMetadata = %q, want %q", s.Name(), got, tc.wantAttr)
+				}
+			}
+		})
 	}
 }
