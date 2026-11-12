@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"mime/multipart"
 	"strings"
@@ -24,6 +25,14 @@ type FilesAPI struct {
 }
 
 func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions) (*types.UploadFileResult, error) {
+	if opts.Data.Type == types.FileDataTypeStream {
+		// TS convertInlineFileDataToUint8Array: streaming upload is not
+		// supported; the stream is released and never read.
+		if closer, ok := opts.Data.Stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming file upload"}
+	}
 	content, err := inlineFileBytes(opts.Data)
 	if err != nil {
 		return nil, err
@@ -55,7 +64,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if err != nil {
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, anthropicHTTPError(f.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 
@@ -190,7 +199,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 	if err != nil {
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, anthropicHTTPError(f.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
@@ -259,7 +268,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 	if err != nil {
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, anthropicHTTPError(f.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body))

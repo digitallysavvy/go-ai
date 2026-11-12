@@ -514,29 +514,39 @@ func withoutForeignEmptyText(parts []types.ContentPart) []types.ContentPart {
 	return out
 }
 
-func bedrockReasoningMetadata(part types.ReasoningContent) (signature string, hasSignature bool, redactedData string, hasRedactedData bool, redactedContent string, hasRedactedContent bool) {
+// bedrockReasoningMetadata reads the reasoning part's metadata with TS
+// parseProviderOptions(amazonBedrockReasoningMetadataSchema) on amazonBedrock,
+// then bedrock: a non-object namespace, or a signature / redactedData /
+// redactedContent that is not a string, is an InvalidArgumentError (an
+// explicit null is absent, the Bedrock null option known difference).
+func bedrockReasoningMetadata(part types.ReasoningContent) (signature string, hasSignature bool, redactedData string, hasRedactedData bool, redactedContent string, hasRedactedContent bool, err error) {
 	signature = part.Signature
 	hasSignature = part.Signature != ""
 	redactedData = part.RedactedData
 	hasRedactedData = part.RedactedData != ""
-	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw := bedrockProviderOptionMap(part.ProviderOptions, providerName)
-		if raw == nil {
-			continue
+	raw, providerName, err := bedrockPartOptions(part.ProviderOptions)
+	if raw == nil || err != nil {
+		return
+	}
+	for _, key := range []string{"signature", "redactedData", "redactedContent"} {
+		if v, ok := raw[key]; ok && v != nil {
+			if _, isString := v.(string); !isString {
+				err = invalidProviderOptions(providerName, fmt.Errorf("%s: expected string, received %T", key, v))
+				return
+			}
 		}
-		if value, ok := raw["signature"].(string); ok {
-			signature = value
-			hasSignature = true
-		}
-		if value, ok := raw["redactedData"].(string); ok {
-			redactedData = value
-			hasRedactedData = true
-		}
-		if value, ok := raw["redactedContent"].(string); ok {
-			redactedContent = value
-			hasRedactedContent = true
-		}
-		break
+	}
+	if value, ok := raw["signature"].(string); ok {
+		signature = value
+		hasSignature = true
+	}
+	if value, ok := raw["redactedData"].(string); ok {
+		redactedData = value
+		hasRedactedData = true
+	}
+	if value, ok := raw["redactedContent"].(string); ok {
+		redactedContent = value
+		hasRedactedContent = true
 	}
 	return
 }
@@ -854,7 +864,10 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 						}
 						assistantContent = append(assistantContent, map[string]interface{}{"text": text})
 					case types.ReasoningContent:
-						signature, hasSignature, redactedData, hasRedactedData, redactedContent, hasRedactedContent := bedrockReasoningMetadata(p)
+						signature, hasSignature, redactedData, hasRedactedData, redactedContent, hasRedactedContent, err := bedrockReasoningMetadata(p)
+						if err != nil {
+							return nil, nil, err
+						}
 						switch {
 						case hasSignature:
 							assistantContent = append(assistantContent, map[string]interface{}{

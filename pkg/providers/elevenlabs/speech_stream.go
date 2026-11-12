@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -336,15 +337,28 @@ func (s *elevenLabsSpeechStream) run(cfg speechStreamConfig) {
 // handleMessage processes one server message. It reports done after emitting
 // the finish part.
 func (s *elevenLabsSpeechStream) handleMessage(cfg speechStreamConfig, text string) (done bool, err error) {
-	var raw map[string]interface{}
-	if json.Unmarshal([]byte(text), &raw) != nil || raw == nil {
-		return false, nil // not a JSON object: ignored
+	// TS safeParseJSON (secure-json-parse): text that does not parse, or
+	// holds a __proto__ / constructor.prototype key, is ignored; any other
+	// JSON value is used as is.
+	var parsed interface{}
+	if securejson.Unmarshal([]byte(text), &parsed) != nil {
+		return false, nil
 	}
 
 	if cfg.includeRawChunks {
-		if !s.Emit(provider.SpeechStreamPart{Type: provider.SpeechStreamPartTypeRaw, RawValue: raw}) {
+		if !s.Emit(provider.SpeechStreamPart{Type: provider.SpeechStreamPartTypeRaw, RawValue: parsed}) {
 			return false, context.Cause(s.Context())
 		}
+	}
+	if parsed == nil {
+		// TS decodeEvent reads raw.error of null: the TypeError fails the
+		// stream through onProcessingError.
+		return false, errors.New("Cannot read properties of null (reading 'error')") //nolint:staticcheck // matches the TS runtime error text
+	}
+	// A primitive or array frame has none of the fields decodeEvent reads.
+	raw, _ := parsed.(map[string]interface{})
+	if raw == nil {
+		raw = map[string]interface{}{}
 	}
 
 	event := cfg.protocol.decodeEvent(raw)

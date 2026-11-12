@@ -13,6 +13,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -394,29 +395,41 @@ type elevenLabsRealtimeWord struct {
 // elevenLabsRealtimeEvent is a server->client realtime transcription event,
 // mirroring TS ElevenLabsRealtimeTranscriptionEvent.
 type elevenLabsRealtimeEvent struct {
-	MessageType  string                   `json:"message_type,omitempty"`
-	SessionID    string                   `json:"session_id,omitempty"`
+	MessageType string `json:"message_type,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	// HasSessionID reports a present, non-null session_id (TS `sessionId
+	// ?? 'session'` keeps an empty one); SessionID is then String(value).
+	HasSessionID bool                     `json:"-"`
 	Text         string                   `json:"text,omitempty"`
 	LanguageCode *string                  `json:"language_code,omitempty"`
 	Words        []elevenLabsRealtimeWord `json:"words,omitempty"`
 	Error        string                   `json:"error,omitempty"`
 	// HasError reports a present, non-null error (TS raw.error ?? fallback).
 	HasError bool `json:"-"`
+	// Null reports a JSON null message (TS reads raw.message_type of it).
+	Null bool `json:"-"`
 }
 
 // decodeElevenLabsRealtimeEvent reads a server message the way TS does: any
 // JSON value is accepted (safeParseJSON without a schema) and each field is
 // read loosely, so a field of an unexpected type does not drop the message.
-// ok is false only for text that is not JSON.
+// ok is false only for text that safeParseJSON rejects: not JSON, or a
+// __proto__ / constructor.prototype key (secure-json-parse).
 func decodeElevenLabsRealtimeEvent(text string) (elevenLabsRealtimeEvent, bool) {
 	var value interface{}
-	if json.Unmarshal([]byte(text), &value) != nil {
+	if securejson.Unmarshal([]byte(text), &value) != nil {
 		return elevenLabsRealtimeEvent{}, false
+	}
+	if value == nil {
+		return elevenLabsRealtimeEvent{Null: true}, true
 	}
 	m, _ := value.(map[string]interface{})
 	var ev elevenLabsRealtimeEvent
 	ev.MessageType, _ = m["message_type"].(string)
-	ev.SessionID, _ = m["session_id"].(string)
+	if sid, present := m["session_id"]; present && sid != nil {
+		ev.SessionID = jsErrorMessage(sid)
+		ev.HasSessionID = true
+	}
 	ev.Text, _ = m["text"].(string)
 	if lc, ok := m["language_code"].(string); ok {
 		ev.LanguageCode = &lc
@@ -561,7 +574,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 		endOfInput                  bool
 		receivedPostInputCommit     bool
 		segmentIndex                int
-		sessionID                   string
+		sessionID                   *string
 		committedEventCount         int
 		committedEventsAtEndOfInput int
 		finalCommitEventCount       *int
@@ -578,9 +591,9 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 	}
 
 	segID := func() string {
-		sid := sessionID
-		if sid == "" {
-			sid = "session"
+		sid := "session" // TS sessionId ?? 'session'
+		if sessionID != nil {
+			sid = *sessionID
 		}
 		return fmt.Sprintf("%s:%d", sid, segmentIndex)
 	}
@@ -614,7 +627,8 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 	for {
 		select {
 		case <-s.Context().Done():
-			fail(s.Context().Err())
+			// TS onAbort(abortSignal.reason): the caller's cancel cause.
+			fail(context.Cause(s.Context()))
 			return
 
 		case <-finishTimerC:
@@ -677,6 +691,12 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 					return
 				}
 			}
+			if raw.Null {
+				// TS reads raw.message_type of null: the TypeError fails the
+				// stream through onProcessingError.
+				fail(errors.New("Cannot read properties of null (reading 'message_type')")) //nolint:staticcheck // matches the TS runtime error text
+				return
+			}
 
 			if raw.MessageType != "" && elevenLabsRealtimeErrorTypes[raw.MessageType] {
 				if endOfInput && (committedEventCount > 0 || timestampedCommitCount > 0) && elevenLabsLateFinalizationErrorTypes[raw.MessageType] {
@@ -696,7 +716,12 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 
 			switch raw.MessageType {
 			case "session_started":
-				sessionID = raw.SessionID
+				// TS sessionId = raw.session_id (absent or null: undefined).
+				sessionID = nil
+				if raw.HasSessionID {
+					sid := raw.SessionID
+					sessionID = &sid
+				}
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 					return
 				}
