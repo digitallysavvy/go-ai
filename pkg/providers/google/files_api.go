@@ -211,35 +211,33 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "filename"})
 	}
 
-	// TS reads displayName and sizeBytes as optional: absent ones are left
-	// out of the metadata rather than sent as empty strings.
+	// TS copies displayName and sizeBytes as they are (an absent key stays
+	// absent, null stays null) and the time / hash fields when != null (an
+	// empty string included).
 	meta := map[string]interface{}{
 		"name":     file.Name,
 		"mimeType": file.MimeType,
 		"state":    file.State,
 		"uri":      file.URI,
 	}
-	if file.DisplayName != "" {
-		meta["displayName"] = file.DisplayName
+	for key, v := range map[string]string{"displayName": file.DisplayName, "sizeBytes": file.SizeBytes} {
+		if raw, present := file.wire[key]; present || v != "" {
+			if string(raw) == "null" {
+				meta[key] = nil
+			} else {
+				meta[key] = v
+			}
+		}
 	}
-	if file.SizeBytes != "" {
-		meta["sizeBytes"] = file.SizeBytes
-	}
-	if file.CreateTime != "" {
-		meta["createTime"] = file.CreateTime
-	}
-	if file.UpdateTime != "" {
-		meta["updateTime"] = file.UpdateTime
-	}
-	if file.ExpirationTime != "" {
-		meta["expirationTime"] = file.ExpirationTime
-	}
-	if file.SHA256Hash != "" {
-		meta["sha256Hash"] = file.SHA256Hash
+	for key, v := range map[string]string{"createTime": file.CreateTime, "updateTime": file.UpdateTime, "expirationTime": file.ExpirationTime, "sha256Hash": file.SHA256Hash} {
+		if file.nonNull(key) || v != "" {
+			meta[key] = v
+		}
 	}
 
+	// TS file.mimeType ?? options.mediaType: a present "" is kept.
 	mediaType := file.MimeType
-	if mediaType == "" {
+	if !file.nonNull("mimeType") && mediaType == "" {
 		mediaType = opts.MediaType
 	}
 
@@ -268,6 +266,27 @@ type googleFileResource struct {
 	SHA256Hash     string `json:"sha256Hash"`
 	URI            string `json:"uri"`
 	State          string `json:"state"`
+
+	// wire holds the keys the API sent (presence and null checks).
+	wire map[string]json.RawMessage
+}
+
+// UnmarshalJSON decodes the resource and records which keys were sent.
+func (r *googleFileResource) UnmarshalJSON(b []byte) error {
+	type plain googleFileResource
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*r = googleFileResource(p)
+	_ = json.Unmarshal(b, &r.wire)
+	return nil
+}
+
+// nonNull reports TS `field != null` for a key the API sent.
+func (r *googleFileResource) nonNull(key string) bool {
+	raw, ok := r.wire[key]
+	return ok && string(raw) != "null"
 }
 
 func inlineFileBytes(data types.FileData) ([]byte, error) {

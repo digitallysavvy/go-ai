@@ -195,8 +195,8 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	status := operation.toStatus()
 	metadata := map[string]interface{}{"inputFileId": uploadedFile.Name}
-	if uploadedFile.ExpirationTime != "" {
-		metadata["inputFileExpiresAt"] = uploadedFile.ExpirationTime
+	if uploadedFile.ExpirationTime != nil {
+		metadata["inputFileExpiresAt"] = *uploadedFile.ExpirationTime
 	}
 	status.ProviderMetadata = map[string]interface{}{"google": metadata}
 
@@ -206,8 +206,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 // googleBatchUploadedFile is the result of uploading a batch input JSONL
 // file via Google's resumable upload protocol.
 type googleBatchUploadedFile struct {
-	Name           string
-	ExpirationTime string
+	Name string
+	// ExpirationTime is nil when absent or null (TS `!= null` keeps "").
+	ExpirationTime *string
 }
 
 // uploadBatchInputFile uploads content as a resumable file upload (the same
@@ -282,8 +283,8 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 
 	var result struct {
 		File struct {
-			Name           string `json:"name"`
-			ExpirationTime string `json:"expirationTime"`
+			Name           string  `json:"name"`
+			ExpirationTime *string `json:"expirationTime"`
 		} `json:"file"`
 	}
 	uploadBody, err := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
@@ -1036,12 +1037,8 @@ func (s *googleBatchFileResultsStream) Close() error { return s.body.Close() }
 // displayName and webhookConfig, with an empty request list) and adds each
 // inlined request's bytes plus one per separator, which is exactly the byte
 // length of the complete creation body. JSON.stringify leaves <, > and &
-// unescaped, so HTML escaping is off; the encoder's trailing newline is not
-// counted.
+// unescaped and writes U+2028 / U+2029 as is (jsonstr).
 func googleBatchInlineInputBytes(requestBody map[string]interface{}) int {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(requestBody)
-	return max(buf.Len()-1, 0)
+	b, _ := jsonstr.Marshal(requestBody)
+	return len(b)
 }

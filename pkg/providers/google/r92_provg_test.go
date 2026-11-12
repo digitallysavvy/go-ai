@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -84,5 +85,77 @@ func TestR92provgDecisionUsageModalityEntriesStripped(t *testing.T) {
 	usage, _ := json.Marshal(res.ProviderMetadata["google"].(map[string]interface{})["usage"])
 	if want := `{"input_tokens_by_modality":[{"modality":"text","tokens":193}],"total_input_tokens":193,"total_output_tokens":0,"total_tokens":193}`; string(usage) != want {
 		t.Fatalf("usage = %s", usage)
+	}
+}
+
+// TS inlineInputBytes measures JSON.stringify output, which writes U+2028 /
+// U+2029 as one 3-byte character (Go's encoder writes a 6-byte escape).
+func TestR92provgBatchInlineInputBytesLineSeparator(t *testing.T) {
+	if got := googleBatchInlineInputBytes(map[string]interface{}{"a": " <"}); got != len(`{"a":"`+" "+`<"}`) {
+		t.Fatalf("bytes = %d", got)
+	}
+}
+
+// TS google-files.ts copies displayName / sizeBytes as sent (null kept,
+// absent left out), the time and hash fields when != null ("" kept), and
+// mediaType is file.mimeType ?? options.mediaType.
+func TestR92provgFilesMetadataPresence(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/upload/v1beta/files":
+			w.Header().Set("x-goog-upload-url", srv.URL+"/upload-session")
+		case "/upload-session":
+			_, _ = w.Write([]byte(`{"file":{"name":"files/a","mimeType":"","uri":"u","state":"ACTIVE","displayName":null,"createTime":"","sha256Hash":null}}`))
+		}
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	res, err := p.Files().UploadFile(context.Background(), types.UploadFileOptions{
+		Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "application/pdf",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := json.Marshal(res.ProviderMetadata)
+	if want := `{"google":{"createTime":"","displayName":null,"mimeType":"","name":"files/a","state":"ACTIVE","uri":"u"}}`; string(meta) != want {
+		t.Fatalf("metadata = %s", meta)
+	}
+	if res.MediaType != "" {
+		t.Fatalf("mediaType = %q", res.MediaType)
+	}
+}
+
+// TS `uploadedFile.file.expirationTime != null`: an empty expirationTime is
+// reported, a null one is not.
+func TestR92provgBatchInputFileExpiresAtPresence(t *testing.T) {
+	for _, tc := range []struct {
+		expiration string
+		want       interface{}
+		present    bool
+	}{{`""`, "", true}, {`null`, nil, false}} {
+		mux := http.NewServeMux()
+		srv := httptest.NewServer(mux)
+		mux.HandleFunc("/upload/v1beta/files", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("x-goog-upload-url", srv.URL+"/upload/v1beta/files/session")
+		})
+		mux.HandleFunc("/upload/v1beta/files/session", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"file":{"name":"files/in","expirationTime":` + tc.expiration + `}}`))
+		})
+		mux.HandleFunc("/v1beta/models/gemini-2.5-flash:batchGenerateContent", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(googleBatchOperationJSON))
+		})
+		p := New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"})
+		res, err := p.ExperimentalBatch().DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+			Requests: []provider.BatchV4Request{googleTextBatchRequest("big", "gemini-2.5-flash", strings.Repeat("a", googleBatchInlineCreationMaxBytes+10))},
+		})
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := res.ProviderMetadata["google"].(map[string]interface{})
+		if v, ok := meta["inputFileExpiresAt"]; ok != tc.present || v != tc.want {
+			t.Fatalf("%s: inputFileExpiresAt = %v (%v)", tc.expiration, v, ok)
+		}
 	}
 }
