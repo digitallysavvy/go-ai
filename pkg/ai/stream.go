@@ -2542,13 +2542,24 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				chunk.ReasoningFileContent = &resolved
 			}
-			// A tool-input-start for a dynamic tool carries dynamic: true (TS).
-			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil && !chunk.ToolCall.Dynamic {
-				if t := toolsByName[chunk.ToolCall.ToolName]; t != nil && t.Type == types.ToolTypeDynamic {
-					startCall := *chunk.ToolCall
+			// A tool-input-start carries the tool's dynamic flag, title and
+			// metadata (TS stream-language-model-call.ts 866-873: dynamic:
+			// chunk.dynamic ?? tool?.type === 'dynamic', title: tool?.title,
+			// toolMetadata: tool.metadata when set).
+			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil {
+				t := toolsByName[chunk.ToolCall.ToolName]
+				startCall := *chunk.ToolCall
+				if t != nil && t.Type == types.ToolTypeDynamic {
 					startCall.Dynamic = true
-					chunk.ToolCall = &startCall
 				}
+				startCall.Title = ""
+				if t != nil {
+					startCall.Title = t.Title
+					if t.Metadata != nil {
+						startCall.ToolMetadata = cloneStringAnyMap(t.Metadata)
+					}
+				}
+				chunk.ToolCall = &startCall
 			}
 			forwardChunk := !suppressReasoningBoundaries || !isReasoningBoundaryChunk(chunk.Type)
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {

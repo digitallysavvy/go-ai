@@ -154,3 +154,52 @@ func TestR91streamUIMessageMetadataSkipsInternalMarkers(t *testing.T) {
 		t.Fatalf("seen = %v", seen)
 	}
 }
+
+// core1-S01 (TS stream-language-model-call.ts:866-873): a forwarded
+// tool-input-start carries the tool's title and metadata, and so does the
+// UI tool-input-start chunk.
+func TestR91streamToolInputStartToolFields(t *testing.T) {
+	steps := func() []provider.StreamChunk {
+		return []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "c1", ToolName: "weather", Title: "provider title"}},
+			{Type: provider.ChunkTypeToolInputDelta, ID: "c1", Text: "{}"},
+			{Type: provider.ChunkTypeToolInputEnd, ID: "c1"},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "weather", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, RawFinishReason: "tool_calls", Usage: r71streamUsage},
+		}
+	}
+	tool := types.Tool{Name: "weather", Title: "Weather", Metadata: map[string]interface{}{"k": "v"}, Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "sunny", nil }}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, steps()), Prompt: "x", Tools: []types.Tool{tool}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var start *types.ToolCall
+	for _, c := range r91streamDrain(r.FullStream()) {
+		if c.Type == provider.ChunkTypeToolInputStart {
+			start = c.ToolCall
+		}
+	}
+	if start == nil || start.Title != "Weather" || start.ToolMetadata["k"] != "v" {
+		t.Fatalf("tool-input-start = %+v", start)
+	}
+
+	r, err = StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, steps()), Prompt: "x", Tools: []types.Tool{tool}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, errs := r.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{})
+	var ui UIMessageChunk
+	for c := range chunks {
+		if c["type"] == "tool-input-start" {
+			ui = c
+		}
+	}
+	for range errs {
+	}
+	meta, _ := ui["toolMetadata"].(map[string]interface{})
+	if ui["title"] != "Weather" || meta["k"] != "v" {
+		t.Fatalf("UI tool-input-start = %v", ui)
+	}
+}
