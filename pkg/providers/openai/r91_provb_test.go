@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -275,5 +277,56 @@ func TestR91provbCompletionRawChunkOrder(t *testing.T) {
 	want := []provider.ChunkType{provider.ChunkTypeRaw, provider.ChunkTypeResponseMetadata, provider.ChunkTypeTextStart, provider.ChunkTypeRaw, provider.ChunkTypeText}
 	if len(kinds) < len(want) || !reflect.DeepEqual(kinds[:len(want)], want) {
 		t.Fatalf("order = %v, want prefix %v", kinds, want)
+	}
+}
+
+// PB-11 (provb1-04): the batch input upload sends the file part first, then
+// purpose and expires_after (TS openai-batch.ts:261-270).
+func TestR91provbBatchUploadPartOrder(t *testing.T) {
+	var names []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mr, err := r.MultipartReader()
+		if err == nil {
+			for {
+				p, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				names = append(names, p.FormName())
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"file-1","object":"file","bytes":1,"created_at":1,"filename":"batch.jsonl","purpose":"batch"}`))
+	}))
+	defer srv.Close()
+	b := NewBatch(New(Config{APIKey: "k", BaseURL: srv.URL}))
+	_, _ = b.uploadBatchInputFile(context.Background(), []byte("{}\n"), 3600, nil)
+	want := []string{"file", "purpose", "expires_after[anchor]", "expires_after[seconds]"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("parts = %v, want %v", names, want)
+	}
+}
+
+// PB-12 (provb1-05): batch function / custom tool calls carry only itemId
+// (plus namespace / caller) in providerMetadata.openai, no async
+// (openai-batch.ts:792-822).
+func TestR91provbBatchToolCallMetadata(t *testing.T) {
+	body := json.RawMessage(`{"id":"resp_1","object":"response","created_at":1,"model":"gpt-5","status":"completed","output":[` +
+		`{"type":"function_call","id":"fc_1","call_id":"c1","name":"f","arguments":"{}","async":true},` +
+		`{"type":"custom_tool_call","id":"ct_1","call_id":"c2","name":"g","input":"x","async":true}],` +
+		`"usage":{"input_tokens":1,"output_tokens":1}}`)
+	res, berr := convertOpenAIBatchResponseBodyBytes(body)
+	if berr != nil {
+		t.Fatal(berr)
+	}
+	for _, tc := range res.ToolCalls {
+		if _, has := tc.ProviderMetadata["openai"].(map[string]interface{})["async"]; has {
+			t.Fatalf("tool call %s metadata = %v", tc.ID, tc.ProviderMetadata)
+		}
+	}
+	for _, p := range res.Content {
+		if c, ok := p.(types.ToolCallContent); ok && strings.Contains(string(c.ProviderMetadata), "async") {
+			t.Fatalf("content %s metadata = %s", c.ToolCallID, c.ProviderMetadata)
+		}
 	}
 }
