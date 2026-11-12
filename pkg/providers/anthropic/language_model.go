@@ -2467,7 +2467,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				Message struct {
 					ID                   string          `json:"id"`
 					Model                string          `json:"model"`
-					StopReason           string          `json:"stop_reason"`
+					StopReason           *string         `json:"stop_reason"`
 					InputTransformations json.RawMessage `json:"input_transformations"`
 					ServiceTier          *string         `json:"service_tier"`
 					Usage                struct {
@@ -2522,11 +2522,12 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// Block indexes restart with each message (TS e10aebbad6); a
 				// repeated message_start of the open message returned above.
 				s.heldBackTextByIndex = nil
-				if msg.Message.StopReason != "" {
-					// TS: a message_start that already carries a stop_reason
-					// sets the stream-wide finish reason.
-					s.curFinishReason = mapStopReason(msg.Message.StopReason, s.isJsonResponseFromTool)
-					s.curRawFinishReason = msg.Message.StopReason
+				if msg.Message.StopReason != nil {
+					// TS `stop_reason != null`: a message_start that already
+					// carries a stop_reason (an empty one included) sets the
+					// stream-wide finish reason.
+					s.curFinishReason = mapStopReason(*msg.Message.StopReason, s.isJsonResponseFromTool)
+					s.curRawFinishReason = *msg.Message.StopReason
 				}
 				// Expose the initial message accounting as an
 				// anthropic.message_start custom chunk (TS #21979). The raw
