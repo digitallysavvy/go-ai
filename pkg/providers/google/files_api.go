@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"math"
 	"net/http"
@@ -91,7 +92,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if displayName != nil {
 		initBody["file"] = map[string]interface{}{"display_name": *displayName}
 	}
-	payload, _ := json.Marshal(initBody)
+	payload, _ := jsonstr.Marshal(initBody)
 	initReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseOrigin+"/upload/v1beta/files", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err

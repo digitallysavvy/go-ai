@@ -3,10 +3,14 @@ package google
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/net/websocket"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -119,5 +123,127 @@ func TestR94provgBatchNon2xxFails(t *testing.T) {
 		if !errors.As(err, &pe) || pe.StatusCode != 300 || pe.Message != "moved" {
 			t.Errorf("%s: err = %T %v, want the 300 API error", step, err, err)
 		}
+	}
+}
+
+// r94provgFirstFrame serves one WebSocket and returns the first text frame
+// the client sends, as sent.
+func r94provgFirstFrame(t *testing.T) (*httptest.Server, <-chan string) {
+	t.Helper()
+	got := make(chan string, 1)
+	srv := httptest.NewServer(websocket.Server{
+		Handler: func(conn *websocket.Conn) {
+			var raw string
+			if websocket.Message.Receive(conn, &raw) == nil {
+				got <- raw
+			}
+			_ = websocket.Message.Receive(conn, &raw)
+		},
+		Handshake: func(*websocket.Config, *http.Request) error { return nil },
+	})
+	t.Cleanup(srv.Close)
+	return srv, got
+}
+
+func r94provgWait(t *testing.T, got <-chan string) string {
+	t.Helper()
+	select {
+	case s := <-got:
+		return s
+	case <-time.After(5 * time.Second):
+		t.Fatal("no frame")
+		return ""
+	}
+}
+
+// cr-r94-carry-to-provg class 1 sweep: TS sends the Live setup frames, the
+// client secret and Files / batch upload bodies, and the realtime client
+// events with JSON.stringify, so <, > and & stay literal.
+func TestR94provgJSONStringifyText(t *testing.T) {
+	srv, got := r94provgFirstFrame(t)
+	tm := newLiveTestModel(t, srv.URL)
+	res, err := tm.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		ProviderOptions:  map[string]interface{}{"google": map[string]interface{}{"customVocabulary": []interface{}{"a<b&c"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := r94provgWait(t, got); !strings.Contains(f, `"a<b&c"`) {
+		t.Errorf("transcription setup = %s", f)
+	}
+	_ = res.Stream.Close()
+
+	srv2, got2 := r94provgFirstFrame(t)
+	st := NewSpeechTranslationModel(New(Config{APIKey: "k", BaseURL: srv2.URL}), "x<y")
+	res2, err := st.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "fr",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := r94provgWait(t, got2); !strings.Contains(f, `x<y`) {
+		t.Errorf("speech translation setup = %s", f)
+	}
+	_ = res2.Stream.Close()
+
+	// Realtime client event.
+	rmAny, err := New(Config{APIKey: "k"}).RealtimeModel("gemini-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm := rmAny.(*GoogleRealtimeModel)
+	instr := "a<b&c"
+	raw, err := rm.SerializeClientEvent(provider.RealtimeClientEvent{Type: "session-update", Config: provider.RealtimeSessionConfig{Instructions: &instr}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "a<b&c") {
+		t.Errorf("realtime event = %s", raw)
+	}
+
+	// Realtime client secret body.
+	var secretBody string
+	ssrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		secretBody = string(b)
+		_, _ = w.Write([]byte(`{"name":"auth_tokens/t","expireTime":"2030-01-01T00:00:00Z"}`))
+	}))
+	defer ssrv.Close()
+	srmAny, err := New(Config{APIKey: "k", BaseURL: ssrv.URL + "/v1beta"}).RealtimeModel("gemini-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = srmAny.(*GoogleRealtimeModel).DoCreateClientSecret(t.Context(), provider.ClientSecretOptions{SessionConfig: &provider.RealtimeSessionConfig{Instructions: &instr}})
+	if !strings.Contains(secretBody, "a<b&c") {
+		t.Errorf("client secret body = %s", secretBody)
+	}
+
+	// Files upload start body and batch upload start body.
+	var bodies []string
+	var bsrv *httptest.Server
+	bsrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/upload/v1beta/files" {
+			bodies = append(bodies, string(b))
+			w.Header().Set("x-goog-upload-url", bsrv.URL+"/session")
+			return
+		}
+		_, _ = w.Write([]byte(`{"file":{"name":"files/a","mimeType":"m","uri":"u","state":"ACTIVE"}}`))
+	}))
+	defer bsrv.Close()
+	p := New(Config{APIKey: "k", BaseURL: bsrv.URL + "/v1beta"})
+	if _, err := p.Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "m",
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"displayName": "a<b"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewBatch(p).uploadBatchInputFile(t.Context(), []byte("{}"), "a<b", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || !strings.Contains(bodies[0], `"a<b"`) || !strings.Contains(bodies[1], `"a<b"`) {
+		t.Errorf("upload start bodies = %q", bodies)
 	}
 }

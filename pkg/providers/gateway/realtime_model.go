@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"reflect"
 	"strings"
 
@@ -180,7 +181,7 @@ func (m *RealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent)
 	if event.EventID != "" {
 		out["eventId"] = event.EventID
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // gatewayRealtimeConversationItem builds the wire object for one

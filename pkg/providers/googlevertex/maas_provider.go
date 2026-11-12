@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	stdhttp "net/http"
 	"os"
@@ -47,7 +48,7 @@ func applyMaasMaxTokensDefault(body []byte) []byte {
 		return body
 	}
 	m["max_tokens"] = maxTokens
-	out, err := json.Marshal(m)
+	out, err := jsonstr.Marshal(m)
 	if err != nil {
 		return body
 	}

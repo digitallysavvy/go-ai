@@ -192,7 +192,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	startPayload, err := json.Marshal(cfg.startFrame)
+	startPayload, err := jsonstr.Marshal(cfg.startFrame)
 	if err != nil {
 		fail(err)
 		return

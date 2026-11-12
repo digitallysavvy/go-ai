@@ -5,7 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/net/websocket"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -45,3 +49,47 @@ func TestR94provgNon2xxFails(t *testing.T) {
 	_, err = sm.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi", Voice: "v"})
 	check("speech", err)
 }
+
+// cr-r94-carry-to-provg class 1 sweep: TS sends the session.update frame
+// with JSON.stringify, so <, > and & stay literal.
+func TestR94provgSessionUpdateIsJSONStringifyText(t *testing.T) {
+	got := make(chan string, 4)
+	srv := httptest.NewServer(websocket.Server{Handler: func(conn *websocket.Conn) {
+		_ = websocket.Message.Send(conn, `{"type":"session.created"}`)
+		for {
+			var text string
+			if err := websocket.Message.Receive(conn, &text); err != nil {
+				return
+			}
+			got <- text
+		}
+	}})
+	defer srv.Close()
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL + "/v1"}), ModelVoxtralMiniTranscribeRealtime3)
+	res, err := m.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            &r87provaAudio{block: make(chan struct{})},
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: r94provgIntPtr(16000)},
+		ProviderOptions:  map[string]interface{}{"mistral": map[string]interface{}{"contextBias": []interface{}{"a<b&c"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Stream.Close() //nolint:errcheck
+	go func() {
+		for {
+			if _, err := res.Stream.Next(); err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case f := <-got:
+		if !strings.Contains(f, `"a<b&c"`) {
+			t.Fatalf("session.update = %s", f)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no session.update")
+	}
+}
+
+func r94provgIntPtr(v int) *int { return &v }

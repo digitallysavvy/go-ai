@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
 	"net/url"
@@ -42,7 +43,7 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	if params.ExpiresAfterSeconds != nil {
 		body["expiresIn"] = *params.ExpiresAfterSeconds
 	}
-	data, err := json.Marshal(body)
+	data, err := jsonstr.Marshal(body)
 	if err != nil {
 		return nil, err
 	}

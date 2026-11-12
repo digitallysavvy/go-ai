@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strconv"
 	"sync"
 	"time"
@@ -302,7 +303,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	payload, err := json.Marshal(map[string]interface{}{"setup": cfg.setup})
+	payload, err := jsonstr.Marshal(map[string]interface{}{"setup": cfg.setup})
 	if err != nil {
 		fail(err)
 		return

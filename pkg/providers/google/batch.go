@@ -223,7 +223,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	}
 	authHeaders = internalhttp.MergeHeaders(authHeaders, headers)
 
-	initPayload, err := json.Marshal(map[string]interface{}{"file": map[string]interface{}{"display_name": displayName}})
+	initPayload, err := jsonstr.Marshal(map[string]interface{}{"file": map[string]interface{}{"display_name": displayName}})
 	if err != nil {
 		return nil, err
 	}

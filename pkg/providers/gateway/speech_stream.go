@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/speechstream"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
@@ -240,7 +240,7 @@ func (s *gatewaySpeechStream) run(cfg gatewaySpeechStreamConfig) {
 	defer conn.Close() //nolint:errcheck
 	conn.MaxPayloadBytes = maxSpeechServerFrameBytes
 
-	startPayload, err := json.Marshal(cfg.startFrame)
+	startPayload, err := jsonstr.Marshal(cfg.startFrame) // TS JSON.stringify(startFrame)
 	if err != nil {
 		fail(err)
 		return
@@ -326,7 +326,7 @@ func (s *gatewaySpeechStream) run(cfg gatewaySpeechStreamConfig) {
 // which run()'s own handling covers.
 func (s *gatewaySpeechStream) pumpText(ctx context.Context, conn *websocket.Conn, text provider.SpeechTextStream, errCh chan<- error) {
 	send := func(frame interface{}) error {
-		data, err := json.Marshal(frame)
+		data, err := jsonstr.Marshal(frame) // TS JSON.stringify(frame)
 		if err != nil {
 			return err
 		}
