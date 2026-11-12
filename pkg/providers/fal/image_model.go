@@ -365,8 +365,9 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (*jsonord
 	var imageSize interface{}
 	if opts.Size != "" {
 		// TS size.split('x').map(Number): each side is JS Number() of its
-		// text (a missing side is undefined, an unreadable one NaN, both
-		// written as null; a fraction stays a fraction).
+		// text (an unreadable one is NaN, written as null; a fraction stays
+		// a fraction). A missing height is undefined, which JSON.stringify
+		// omits.
 		parts := strings.Split(opts.Size, "x")
 		side := func(i int) interface{} {
 			if i >= len(parts) {
@@ -384,7 +385,11 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (*jsonord
 			}
 			return f
 		}
-		imageSize = falImageSize(side(0), side(1))
+		size := falImageSize(side(0), side(1))
+		if len(parts) < 2 {
+			size.Delete("height")
+		}
+		imageSize = size
 	} else if opts.AspectRatio != "" {
 		if size := falAspectRatioSize(opts.AspectRatio); size != nil {
 			imageSize = size
