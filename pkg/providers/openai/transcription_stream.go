@@ -405,7 +405,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 	for {
 		select {
 		case <-s.Context().Done():
-			cause := s.Context().Err()
+			cause := context.Cause(s.Context()) // TS onAbort(abortSignal.reason)
 			s.SetErr(cause)
 			cfg.Audio.Cancel(cause)
 			return

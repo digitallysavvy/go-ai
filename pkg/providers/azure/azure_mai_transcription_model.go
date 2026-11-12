@@ -294,7 +294,7 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 	for {
 		select {
 		case <-s.Context().Done():
-			fail(s.Context().Err())
+			fail(context.Cause(s.Context())) // TS onAbort(abortSignal.reason)
 			return
 
 		case audioErr := <-audioErrCh:

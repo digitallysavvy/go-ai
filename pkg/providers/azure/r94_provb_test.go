@@ -3,12 +3,14 @@ package azure
 import (
 	"context"
 	"errors"
+	"io"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"golang.org/x/net/websocket"
 )
 
 // TestR94provbSpeechVoiceEmptyLanguageCode: TS resolveVoice computes
@@ -56,3 +58,42 @@ func TestR94provbMaiImageHeadersBeforeDownloadOnce(t *testing.T) {
 		t.Fatalf("err = %v, images %d, header calls %d; want 2 images and 1 call", err, len(res.Images), calls.Load())
 	}
 }
+
+// TestR94provbMaiTranscriptionAbortCause (cr-r94-prova-to-provb): TS
+// connectToWebSocket fails the stream with abortSignal.reason.
+func TestR94provbMaiTranscriptionAbortCause(t *testing.T) {
+	ts := httptest.NewServer(websocket.Server{Handler: func(conn *websocket.Conn) {
+		_, _ = io.Copy(io.Discard, conn)
+	}})
+	defer ts.Close()
+	m := newAzureMaiTranscriptionModel("mai-transcribe", func() (string, error) { return ts.URL, nil },
+		func(context.Context) (map[string]string, error) { return map[string]string{}, nil })
+	cause := errors.New("r94provb caller cancelled")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	audio := &r94provbBlockingAudio{}
+	res, err := m.DoStream(ctx, &provider.TranscriptionStreamOptions{Audio: audio, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"}}, AzureTranscriptionModelOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Stream.Close() //nolint:errcheck
+	if _, err := res.Stream.Next(); err != nil { // stream-start
+		t.Fatal(err)
+	}
+	cancel(cause)
+	for {
+		if _, err = res.Stream.Next(); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("err = %v, want the caller's cause", err)
+	}
+}
+
+type r94provbBlockingAudio struct{}
+
+func (r94provbBlockingAudio) Next(ctx context.Context) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (r94provbBlockingAudio) Cancel(error) {}

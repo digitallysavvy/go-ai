@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -208,5 +209,33 @@ func TestR94provbBatchResultLineSchema(t *testing.T) {
 		}
 		_ = stream.Close()
 		srv.Close()
+	}
+}
+
+// TestR94provbTranscriptionAbortCause (cr-r94-prova-to-provb sweep): TS
+// connectToWebSocket fails the stream with abortSignal.reason.
+func TestR94provbTranscriptionAbortCause(t *testing.T) {
+	server := newRealtimeTranscriptionTestServer(t)
+	defer server.close()
+	cause := errors.New("r94provb caller cancelled")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	blocking := &chanTestAudioStream{chunks: make(chan []byte)}
+	result, err := newTestTranscriptionModel(server.ts.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio:            blocking,
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForReceived(t, "session.update", time.Second)
+	cancel(cause)
+	for {
+		if _, err = result.Stream.Next(); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("err = %v, want the caller's cause", err)
 	}
 }

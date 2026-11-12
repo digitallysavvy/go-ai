@@ -318,7 +318,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 	// audio.cancel()/audioReader.cancel().
 	var cancelAudioOnce sync.Once
 	cancelAudio := func(err error) { cancelAudioOnce.Do(func() { cfg.audio.Cancel(err) }) }
-	defer func() { cancelAudio(s.Context().Err()) }()
+	defer func() { cancelAudio(context.Cause(s.Context())) }()
 
 	fail := func(err error) {
 		s.SetErr(err)
@@ -378,7 +378,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 	for {
 		select {
 		case <-s.Context().Done():
-			fail(s.Context().Err())
+			fail(context.Cause(s.Context())) // TS onAbort(abortSignal.reason)
 			return
 
 		case <-audioEndedCh:
