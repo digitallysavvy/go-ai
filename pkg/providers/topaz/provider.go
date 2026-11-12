@@ -28,6 +28,12 @@ const defaultBaseURL = "https://api.topazlabs.com"
 type Provider struct {
 	config Config
 	client *internalhttp.Client
+	// presetClient carries the static headers only. The video model resolves
+	// the credential up front (TS doStart resolves config.headers right after
+	// parsing the provider options) and passes it on each of its requests, so
+	// the key is resolved once per call, at the TS point.
+	presetClient *internalhttp.Client
+	authHeaders  func(ctx context.Context) (map[string]string, error)
 }
 
 // Config contains configuration for the Topaz Labs provider.
@@ -86,23 +92,26 @@ func New(cfg Config) *Provider {
 		"Accept":    "application/json",
 	}, cfg.Headers), version.ProviderUserAgent("topaz"))
 
+	// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+	authHeaders := func(ctx context.Context) (map[string]string, error) {
+		if cfg.APIKeyFunc != nil {
+			return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+				APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "TOPAZ_API_KEY", Description: "Topaz Labs",
+			}, "X-API-Key", "")
+		}
+		return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "TOPAZ_API_KEY", "Topaz Labs", "X-API-Key", "")
+	}
 	client := internalhttp.NewClient(internalhttp.Config{
-		BaseURL: baseURL,
-		Headers: headers,
-		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
-			if cfg.APIKeyFunc != nil {
-				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
-					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "TOPAZ_API_KEY", Description: "Topaz Labs",
-				}, "X-API-Key", "")
-			}
-			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "TOPAZ_API_KEY", "Topaz Labs", "X-API-Key", "")
-		},
+		BaseURL:        baseURL,
+		Headers:        headers,
+		HeadersFuncCtx: authHeaders,
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:       cfg,
+		client:       client,
+		presetClient: internalhttp.NewClient(internalhttp.Config{BaseURL: baseURL, Headers: headers}),
+		authHeaders:  authHeaders,
 	}
 }
 
