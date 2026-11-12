@@ -165,22 +165,37 @@ func (v *AnthropicCacheControlValidator) Warnings() []types.Warning {
 
 func anthropicCacheControlFromOptions(options map[string]interface{}, providerOptionsName string) interface{} {
 	// Prefer the configured namespace, retaining the canonical namespace as a
-	// fallback. Both cacheControl and cache_control are accepted.
-	var namespaces []map[string]interface{}
-	if providerOptionsName != "" && providerOptionsName != "anthropic" && options != nil {
-		if custom, ok := options[providerOptionsName].(map[string]interface{}); ok {
-			namespaces = append(namespaces, custom)
-		}
+	// fallback. Both cacheControl and cache_control are accepted (TS
+	// custom?.cacheControl ?? custom?.cache_control ?? anthropic?.cacheControl
+	// ?? anthropic?.cache_control: nil-only).
+	names := make([]string, 0, 2)
+	if providerOptionsName != "" && providerOptionsName != "anthropic" {
+		names = append(names, providerOptionsName)
 	}
-	if anthropicOpts := anthropicOptions(options); anthropicOpts != nil {
-		namespaces = append(namespaces, anthropicOpts)
-	}
-	for _, ns := range namespaces {
-		if cacheControl, ok := ns["cacheControl"]; ok && cacheControl != nil {
-			return cacheControl
+	names = append(names, "anthropic")
+	for _, name := range names {
+		// The namespace is read through its JSON form (typed literals).
+		ns := anthropicNamespace(options, name)
+		if ns == nil {
+			continue
 		}
-		if cacheControl, ok := ns["cache_control"]; ok && cacheControl != nil {
-			return cacheControl
+		raw, _ := options[name].(map[string]interface{})
+		for _, key := range []string{"cacheControl", "cache_control"} {
+			value, ok := ns[key]
+			if !ok || value == nil {
+				continue
+			}
+			// TS `if (!cacheControlValue) return undefined`: a JS-falsy value
+			// (false, 0, "", NaN) is no cache control and uses no
+			// breakpoint.
+			if !providerutils.JSTruthy(value) {
+				return nil
+			}
+			// The caller's own value is sent as given (same JSON).
+			if original, ok := raw[key]; ok && original != nil {
+				return original
+			}
+			return value
 		}
 	}
 	return nil
@@ -1786,7 +1801,8 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 				if opts == nil {
 					opts = rawMetadataMap(p.ProviderMetadata)
 				}
-				anthropicOpts, ok := opts["anthropic"].(map[string]interface{})
+				anthropicOpts := anthropicNamespace(opts, "anthropic")
+				ok := anthropicOpts != nil
 				if p.Kind != "anthropic.fallback" {
 					if !ok {
 						break
@@ -2670,11 +2686,48 @@ func inputOrEmpty(input interface{}) interface{} {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func anthropicOptions(options map[string]interface{}) map[string]interface{} {
-	if options == nil {
+	return anthropicNamespace(options, "anthropic")
+}
+
+// anthropicNamespace returns options[name] as a JSON-shaped object, or nil
+// when it is absent or not an object. A Go-typed value (map[string]bool,
+// map[string]string, a typed struct, int64 members) is read through its JSON
+// form (providerutils.NormalizeOptionsJSON), the shape TS parseProviderOptions
+// sees, so part and message options are normalized before any type assertion.
+func anthropicNamespace(options map[string]interface{}, name string) map[string]interface{} {
+	v, ok := options[name]
+	if !ok || v == nil {
 		return nil
 	}
-	anthropicOpts, _ := options["anthropic"].(map[string]interface{})
-	return anthropicOpts
+	if m, isMap := v.(map[string]interface{}); isMap && anthropicJSONShaped(m) {
+		return m
+	}
+	out, _ := providerutils.NormalizeOptionsJSON(map[string]interface{}{name: v})[name].(map[string]interface{})
+	return out
+}
+
+// anthropicJSONShaped reports whether v holds only the values encoding/json
+// decodes into interface{} (so a JSON round trip would not change it).
+func anthropicJSONShaped(v interface{}) bool {
+	switch x := v.(type) {
+	case nil, string, bool, float64:
+		return true
+	case map[string]interface{}:
+		for _, e := range x {
+			if !anthropicJSONShaped(e) {
+				return false
+			}
+		}
+		return true
+	case []interface{}:
+		for _, e := range x {
+			if !anthropicJSONShaped(e) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func rawMetadataMap(raw json.RawMessage) map[string]interface{} {
@@ -2725,9 +2778,14 @@ func jsonStringify(v interface{}) string {
 func parseErrorValue(value interface{}) map[string]interface{} {
 	switch v := value.(type) {
 	case string:
-		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(v), &parsed); err == nil {
-			return parsed
+		// TS secureJsonParse: a value with __proto__ (or
+		// constructor.prototype) throws like invalid JSON, so its errorCode
+		// is not read (extractErrorValue's catch / the code execution
+		// errorInfo {}). A non-object value has no errorCode.
+		if parsed, ok := SecureJSONParse(v); ok {
+			if m, isObject := parsed.(map[string]interface{}); isObject {
+				return m
+			}
 		}
 	case map[string]interface{}:
 		return v
