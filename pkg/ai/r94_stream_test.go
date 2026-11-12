@@ -561,3 +561,202 @@ func TestR94streamTranscribeTelemetryEventsConsumedByteCount(t *testing.T) {
 		t.Errorf("end settings = %+v, want functionId stream-audio", end.Settings)
 	}
 }
+
+// r94streamSettlesWithin reports whether fn returns within d, and its
+// error.
+func r94streamSettlesWithin(d time.Duration, fn func() error) (bool, error, chan error) {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		return true, err, done
+	case <-time.After(d):
+		return false, nil, done
+	}
+}
+
+// TS pipes the model stream through a TransformStream with a readable
+// high-water mark of 0: once fullStream is claimed, a part it does not
+// forward (here the finish part) is processed only when the reader pulls,
+// so the result promises wait for the reader. Without a FullStream the
+// accessors drain the stream themselves.
+func TestR94streamAccessorsWaitForFullStreamReader(t *testing.T) {
+	const quiet = 150 * time.Millisecond
+	t.Run("transcribe", func(t *testing.T) {
+		newResult := func() *StreamTranscriptionResult {
+			r, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+				Model: r94streamFinishModel(nil,
+					provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart},
+					provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: "Hello"},
+				),
+				Audio:            newMockChanAudioStream([]byte{1}),
+				InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}
+		r := newResult()
+		stream, err := r.FullStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+		settled, _, done := r94streamSettlesWithin(quiet, func() error { _, err := r.Text(); return err })
+		if settled {
+			t.Fatal("Text() settled before the FullStream reader pulled")
+		}
+		if _, err := stream.Next(); err == nil || err.Error() != "EOF" {
+			t.Fatalf("Next() = %v, want EOF", err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("Text() error = %v", err)
+		}
+		r = newResult()
+		if text, err := r.Text(); err != nil || text != "Hello" {
+			t.Fatalf("Text() without FullStream = %q, %v", text, err)
+		}
+	})
+	t.Run("translate", func(t *testing.T) {
+		newResult := func() *StreamTranslationResult {
+			r, err := ExperimentalStreamTranslate(context.Background(), StreamTranslateOptions{
+				Model: &mockSpeechTranslationModel{doStreamFn: func(context.Context, *provider.SpeechTranslationStreamOptions) (*provider.SpeechTranslationStreamResult, error) {
+					return translationSliceResult(
+						provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart},
+						provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeFinish, OutputText: "hola"},
+					), nil
+				}},
+				Audio: newMockChanAudioStream([]byte{1}), TargetLanguage: "es",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}
+		r := newResult()
+		stream, err := r.FullStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+		settled, _, done := r94streamSettlesWithin(quiet, func() error { _, err := r.TranslationText(); return err })
+		if settled {
+			t.Fatal("TranslationText() settled before the FullStream reader pulled")
+		}
+		if _, err := stream.Next(); err == nil || err.Error() != "EOF" {
+			t.Fatalf("Next() = %v, want EOF", err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("TranslationText() error = %v", err)
+		}
+		r = newResult()
+		if text, err := r.TranslationText(); err != nil || text != "hola" {
+			t.Fatalf("TranslationText() without FullStream = %q, %v", text, err)
+		}
+	})
+	t.Run("speech", func(t *testing.T) {
+		// No audio: the finish part fails the call with NoSpeechGeneratedError.
+		newResult := func() *StreamSpeechResult {
+			r, err := ExperimentalStreamSpeech(context.Background(), StreamSpeechOptions{
+				Model: &mockStreamingSpeechModel{doStream: func(context.Context, *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
+					return speechParts(provider.SpeechStreamPart{Type: provider.SpeechStreamPartTypeStreamStart}, finishPart()), nil
+				}},
+				Text: "Hello",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}
+		r := newResult()
+		stream, err := r.FullStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+		settled, _, done := r94streamSettlesWithin(quiet, func() error { _, err := r.Usage(); return err })
+		if settled {
+			t.Fatal("Usage() settled before the FullStream reader pulled")
+		}
+		if _, err := stream.Next(); err == nil {
+			t.Fatal("Next() = nil error, want the no-speech failure")
+		}
+		if err := <-done; err == nil {
+			t.Fatal("Usage() resolved, want the no-speech failure")
+		}
+		r = newResult()
+		if _, err := r.Usage(); err == nil {
+			t.Fatal("Usage() without FullStream resolved, want the no-speech failure")
+		}
+	})
+}
+
+// r94streamSpeechText is a caller text stream recording Cancel.
+type r94streamSpeechText struct {
+	mu        sync.Mutex
+	cancelled bool
+}
+
+func (s *r94streamSpeechText) Next(ctx context.Context) (*provider.SpeechStreamTextPart, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (s *r94streamSpeechText) Cancel(error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelled = true
+}
+
+func (s *r94streamSpeechText) wasCancelled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancelled
+}
+
+// TS stream-speech.test.ts 587 "should reject result promises and cancel
+// the text when doStream rejects", and stream-speech.ts's catch: once the
+// model returned its stream, the model owns the text stream, so a later
+// model stream failure does not cancel it from the pipe.
+func TestR94streamSpeechCancelsTextOnlyBeforeTheModelOwnsIt(t *testing.T) {
+	t.Run("doStream rejects", func(t *testing.T) {
+		text := &r94streamSpeechText{}
+		r, err := ExperimentalStreamSpeech(context.Background(), StreamSpeechOptions{
+			Model: &mockStreamingSpeechModel{doStream: func(context.Context, *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
+				return nil, errors.New("connect failed")
+			}},
+			TextStream: text,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Usage(); err == nil || err.Error() != "connect failed" {
+			t.Fatalf("Usage() error = %v, want connect failed", err)
+		}
+		if !text.wasCancelled() {
+			t.Error("text stream not cancelled after doStream rejected")
+		}
+	})
+	t.Run("model stream errors", func(t *testing.T) {
+		text := &r94streamSpeechText{}
+		r, err := ExperimentalStreamSpeech(context.Background(), StreamSpeechOptions{
+			Model: &mockStreamingSpeechModel{doStream: func(context.Context, *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
+				return &provider.SpeechStreamResult{Stream: &r94streamErrSpeechStream{err: errors.New("connection lost")}}, nil
+			}},
+			TextStream: text,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Usage(); err == nil || err.Error() != "connection lost" {
+			t.Fatalf("Usage() error = %v, want connection lost", err)
+		}
+		if text.wasCancelled() {
+			t.Error("the pipe cancelled a text stream the model owns")
+		}
+	})
+}
+
+type r94streamErrSpeechStream struct{ err error }
+
+func (s *r94streamErrSpeechStream) Next() (*provider.SpeechStreamPart, error) { return nil, s.err }
+func (s *r94streamErrSpeechStream) Err() error                                { return s.err }
+func (s *r94streamErrSpeechStream) Close() error                              { return nil }

@@ -88,6 +88,7 @@ type StreamTranscriptionResult struct {
 	mu          sync.Mutex
 	streamOwner string // "unclaimed" | "full-stream" | "result-promises"
 	ch          chan TranscriptionStreamPart
+	demand      *streamDemand
 	cancel      context.CancelCauseFunc
 	finalErr    *error
 	finalErrMu  sync.Mutex
@@ -128,6 +129,7 @@ func (r *StreamTranscriptionResult) consumeStream() {
 	}
 	r.streamOwner = "result-promises"
 	r.mu.Unlock()
+	r.demand.drainAll()
 	go func() {
 		for range r.ch { //nolint:revive // drain; results surface via the accessors
 		}
@@ -210,6 +212,7 @@ type transcriptionFullStream struct {
 }
 
 func (s *transcriptionFullStream) Next() (*TranscriptionStreamPart, error) {
+	s.result.demand.request()
 	part, ok := <-s.result.ch
 	if !ok {
 		if err := s.result.getFinalErr(); err != nil {
@@ -266,6 +269,7 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 		providerMetadataP: newStreamPromise[map[string]interface{}](),
 		streamOwner:       "unclaimed",
 		ch:                make(chan TranscriptionStreamPart),
+		demand:            newStreamDemand(),
 		cancel:            cancel,
 	}
 
@@ -392,6 +396,9 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 		logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	}
 
+	// hasDemand: a read of the output is pending (TS transform runs only
+	// on the reader's demand); given back after each forwarded part.
+	hasDemand := false
 	for {
 		part, nextErr := streamResult.Stream.Next()
 		if nextErr == io.EOF {
@@ -400,6 +407,13 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 		if nextErr != nil {
 			fail(abortReason(nextErr))
 			return
+		}
+		if !hasDemand {
+			if !result.demand.wait(ctx) {
+				fail(context.Cause(ctx))
+				return
+			}
+			hasDemand = true
 		}
 
 		switch part.Type {
@@ -439,6 +453,7 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 				fail(context.Cause(ctx))
 				return
 			}
+			hasDemand = false
 
 		case provider.TranscriptionStreamPartTypeFinish:
 			if !warningsResolved {
