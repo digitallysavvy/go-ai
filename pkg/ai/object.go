@@ -2088,6 +2088,13 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// legacy onObjectStepEnd "ai.stream.firstChunk" span event.
 	var firstChunkAt time.Time
 
+	// Array output scans each new text delta once (TS 91a67c2f56
+	// createArrayStreamParser); nil after a fallback to reparsing.
+	var arrayParser *arrayOutputStreamParser
+	if opts.OutputMode == ObjectModeArray {
+		arrayParser = newArrayOutputStreamParser(opts.Schema)
+	}
+
 	// Process stream chunks. A provider error part does not end the stream
 	// (TS stream-object.ts records the first one as the terminal error and
 	// keeps reading). A non-EOF error from the stream itself is recorded and
@@ -2128,6 +2135,20 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		case provider.ChunkTypeText:
 			// Accumulate text
 			accumulatedText += chunk.Text
+
+			if arrayParser != nil {
+				if r := arrayParser.next(chunk.Text); !r.fallback {
+					if r.changed {
+						lastObject = r.partial
+						havePartial = true
+						if opts.OnChunk != nil {
+							safeInvoke(func() { opts.OnChunk(lastObject) })
+						}
+					}
+					break
+				}
+				arrayParser = nil
+			}
 
 			// Try to parse partial JSON
 			parseResult := parsePartialJSON(accumulatedText)

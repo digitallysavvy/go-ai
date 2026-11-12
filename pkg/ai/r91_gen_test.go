@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -348,4 +350,133 @@ func TestR91genObjectCallIDPrefix(t *testing.T) {
 			t.Errorf("call id %q, want aiobj-<24>", id)
 		}
 	}
+}
+
+// r91genCountingSchema counts element validations.
+type r91genCountingSchema struct {
+	inner schema.Schema
+	calls *int
+}
+
+func (s r91genCountingSchema) Validator() schema.Validator { return r91genCountingValidator(s) }
+
+type r91genCountingValidator r91genCountingSchema
+
+func (v r91genCountingValidator) Validate(data interface{}) error {
+	*v.calls++
+	return v.inner.Validator().Validate(data)
+}
+
+func (v r91genCountingValidator) JSONSchema() map[string]interface{} {
+	return v.inner.Validator().JSONSchema()
+}
+
+// r91genReparsePartials is the partial sequence of the reparsing path
+// (parseStreamPartial over the accumulated text, published when it changes).
+func r91genReparsePartials(s schema.Schema, deltas []string) []string {
+	var out []string
+	acc := ""
+	var last interface{}
+	have := false
+	for _, d := range deltas {
+		acc += d
+		if partial, ok := parseStreamPartial(ObjectModeArray, s, nil, parsePartialJSON(acc)); ok && (!have || !deepEqual(partial, last)) {
+			last, have = partial, true
+			b, _ := json.Marshal(partial)
+			out = append(out, string(b))
+		}
+	}
+	return out
+}
+
+func r91genStreamObjectPartials(t *testing.T, s schema.Schema, deltas []string) []string {
+	t.Helper()
+	chunks := []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}}
+	for _, d := range deltas {
+		chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeText, Text: d})
+	}
+	chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop})
+	model := &testutil.MockLanguageModel{StructuredSupport: true, DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return testutil.NewMockTextStream(chunks), nil
+	}}
+	var out []string
+	_, _ = StreamObject(context.Background(), StreamObjectOptions{
+		Model: model, Prompt: "p", OutputMode: ObjectModeArray, Schema: s,
+		OnChunk: func(partial interface{}) {
+			b, _ := json.Marshal(partial)
+			out = append(out, string(b))
+		},
+	})
+	return out
+}
+
+// TS 91a67c2f56 (stream-object side): array output scans each new delta
+// once (util/array-output-stream.ts) and publishes the same partial arrays
+// as reparsing the accumulated text, falling back to reparsing for other
+// envelopes and malformed or invalid elements; each element is validated
+// once instead of once per chunk.
+func TestR91genStreamObjectArrayIncremental(t *testing.T) {
+	elem := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}, "n": map[string]interface{}{"type": "number"}},
+		"required":   []interface{}{"q"},
+	})
+	texts := []string{
+		`{"elements":[{"q":"a,]}","n":1},{"q":"b\"[","n":2}, {"q":"é😀"} ]}`,
+		` { "elements" : [ ] } `,
+		"{\n\"elements\":[{\"q\":\"x\"}\n,\n{\"q\":\"y\"}]}",
+		`{"elements":[{"q":"a"},{"n":1},{"q":"c"}]}`,
+		`{"other":1,"elements":[{"q":"a"}]}`,
+		`{"elements":[{"q":"a"},,{"q":"b"}]}`,
+		`{"elements":[{"q":"a"}]} x`,
+		`{"elements":[{"q":"a"}`,
+	}
+	for _, text := range texts {
+		runes := []rune(text)
+		for _, size := range []int{1, 2, 3, 7, len(runes)} {
+			var deltas []string
+			for i := 0; i < len(runes); i += size {
+				end := i + size
+				if end > len(runes) {
+					end = len(runes)
+				}
+				deltas = append(deltas, string(runes[i:end]))
+			}
+			want := r91genReparsePartials(elem, deltas)
+			got := r91genStreamObjectPartials(t, elem, deltas)
+			if strings.Join(got, " | ") != strings.Join(want, " | ") {
+				t.Errorf("%q size %d:\n got %v\nwant %v", text, size, got, want)
+			}
+		}
+	}
+
+	t.Run("validates each element once", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString(`{"elements":[`)
+		for i := 0; i < 50; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"q":"item %d","n":%d}`, i, i)
+		}
+		b.WriteString(`]}`)
+		var deltas []string
+		text := b.String()
+		for i := 0; i < len(text); i += 4 {
+			end := i + 4
+			if end > len(text) {
+				end = len(text)
+			}
+			deltas = append(deltas, text[i:end])
+		}
+		calls := 0
+		got := r91genStreamObjectPartials(t, r91genCountingSchema{inner: elem, calls: &calls}, deltas)
+		if len(got) != 51 {
+			t.Fatalf("partials = %d, want 51", len(got))
+		}
+		// 50 incremental validations plus the final result's validation.
+		if calls > 120 {
+			t.Fatalf("validations = %d, want about one per element", calls)
+		}
+	})
 }
