@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,5 +139,31 @@ func TestR93provbBatchExpiresAfterNull(t *testing.T) {
 func TestR93provbBatchErrorCodeNumberText(t *testing.T) {
 	if got := convertXAIBatchError("", &xaiBatchErrorWire{Code: 1e21}).Code; got != "1e+21" {
 		t.Fatalf("code = %q", got)
+	}
+}
+
+// TS convertXaiBatchTextResponse pushes each tool call into content in
+// place, so citation sources follow the tool calls.
+func TestR93provbBatchTextToolCallContentOrder(t *testing.T) {
+	text := "hi"
+	res, be := convertXAIBatchTextResponse(xaiBatchTextResponseWire{
+		Choices: []xaiBatchChoiceWire{{
+			Message: xaiBatchChoiceMessageWire{Role: "assistant", Content: &text, ToolCalls: []xaiBatchToolCallWire{{ID: "c1", Type: "function", Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "w", Arguments: `{"a":1}`}}}},
+			FinishReason: "tool_calls",
+		}},
+		Citations: []string{"https://x.ai"},
+	})
+	if be != nil {
+		t.Fatal(be)
+	}
+	var kinds []string
+	for _, p := range res.Content {
+		kinds = append(kinds, p.ContentType())
+	}
+	if strings.Join(kinds, ",") != "text,tool-call,source" {
+		t.Fatalf("content = %v", kinds)
 	}
 }

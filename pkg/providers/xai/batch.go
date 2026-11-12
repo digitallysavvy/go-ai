@@ -914,6 +914,16 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 				call.Dynamic = true
 			}
 			toolCalls = append(toolCalls, call)
+			// TS pushes the tool-call part in place, ahead of later choices'
+			// parts and the citation sources.
+			content = append(content, types.ToolCallContent{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Input:            call.RawArguments,
+				Arguments:        call.Arguments,
+				ProviderExecuted: call.ProviderExecuted,
+				Dynamic:          call.Dynamic,
+			})
 		}
 	}
 	for _, u := range resp.Citations {
