@@ -42,7 +42,10 @@ func TestR92carryResponseHeaderTimeoutIsConnectError(t *testing.T) {
 	hc := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 50 * time.Millisecond}}
 	c := NewClient(Config{BaseURL: srv.URL, HTTPClient: hc})
 	for name, call := range map[string]func() error{
-		"Do": func() error { _, err := c.Do(context.Background(), Request{Method: http.MethodPost, Path: "/x", Body: map[string]int{"a": 1}}); return err },
+		"Do": func() error {
+			_, err := c.Do(context.Background(), Request{Method: http.MethodPost, Path: "/x", Body: map[string]int{"a": 1}})
+			return err
+		},
 		"DoStream": func() error {
 			resp, err := c.DoStream(context.Background(), Request{Method: http.MethodPost, Path: "/x", Body: map[string]int{"a": 1}})
 			if resp != nil {
