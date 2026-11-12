@@ -517,10 +517,17 @@ consumeLoop:
 		published := []provider.StreamChunk{*chunk}
 		if output != nil {
 			var perr error
-			published, perr = output.stage(ctx, *chunk, r)
+			var partial any
+			var publish bool
+			published, partial, publish, perr = output.stage(ctx, *chunk)
 			if perr != nil {
 				r.err = perr
 				break consumeLoop
+			}
+			if publish {
+				r.mu.Lock()
+				r.partialOutput = partial
+				r.mu.Unlock()
 			}
 		}
 		for _, out := range published {
@@ -880,30 +887,29 @@ func (s *externalOutputStage) flush() []provider.StreamChunk {
 }
 
 // stage folds one source part in and returns the parts to publish, in
-// order; a published partial is stored on r.
-func (s *externalOutputStage) stage(ctx context.Context, c provider.StreamChunk, r *StreamTextResult) ([]provider.StreamChunk, error) {
-	var out []provider.StreamChunk
+// order, and the partial output to publish with them, if any.
+func (s *externalOutputStage) stage(ctx context.Context, c provider.StreamChunk) (out []provider.StreamChunk, partial any, publish bool, err error) {
 	if c.Type == provider.ChunkTypeFinishStep && s.pending != "" {
 		out = s.flush()
 	}
 	switch c.Type {
 	case provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd:
 	default:
-		return append(out, c), nil
+		return append(out, c), nil, false, nil
 	}
 	if !s.hasFirst {
 		s.hasFirst, s.firstID = true, c.ID
 	} else if c.ID != s.firstID {
-		return append(out, c), nil
+		return append(out, c), nil, false, nil
 	}
 	switch c.Type {
 	case provider.ChunkTypeTextStart:
-		return append(out, c), nil
+		return append(out, c), nil, false, nil
 	case provider.ChunkTypeTextEnd:
 		if s.pending != "" {
 			out = append(out, s.flush()...)
 		}
-		return append(out, c), nil
+		return append(out, c), nil, false, nil
 	}
 	s.text += c.Text
 	s.pending += c.Text
@@ -911,22 +917,19 @@ func (s *externalOutputStage) stage(ctx context.Context, c provider.StreamChunk,
 		s.metadata = c.ProviderMetadata
 	}
 	if c.Text == "" && len(c.ProviderMetadata) > 0 {
-		return append(out, c), nil
+		return append(out, c), nil, false, nil
 	}
 	partial, ok, err := s.spec.parsePartialOutput(ctx, ParsePartialOutputOptions{Text: s.text})
 	if err != nil {
-		return out, err
+		return out, nil, false, err
 	}
 	if !ok {
-		return out, nil
+		return out, nil, false, nil
 	}
 	key, keyOK := partialOutputDedupKey(partial)
 	if !keyOK || key == s.lastPublished {
-		return out, nil
+		return out, nil, false, nil
 	}
 	s.lastPublished = key
-	r.mu.Lock()
-	r.partialOutput = partial
-	r.mu.Unlock()
-	return append(out, s.flush()...), nil
+	return append(out, s.flush()...), partial, true, nil
 }
