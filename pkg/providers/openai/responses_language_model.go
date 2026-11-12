@@ -2956,6 +2956,11 @@ type responsesStream struct {
 	// call with nothing delivered; markOutputStarted releases the chunks.
 	held            []*provider.StreamChunk
 	responseHeaders http.Header
+	// accepted is set by response.in_progress (TS isAcceptedChunk): from
+	// then on a read that blocks longer than responsesAcceptedGrace hands
+	// the stream out (TS acceptedGraceMs), so a later error frame is an
+	// error part, not a failed call.
+	accepted bool
 
 	// hadDecodeError is set when a known event type (one with a dedicated
 	// case below) fails schema decode (row eee6200). The stream keeps
@@ -3326,7 +3331,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, s.err
 		}
 
+		readStart := time.Now()
 		event, err := s.parser.Next()
+		if s.accepted && !s.outputStarted && time.Since(readStart) > responsesAcceptedGrace {
+			// TS raceWithTimeout(reader.read(), acceptedGraceMs) timed out:
+			// the stream was already handed out (openai-stream-error.ts:83).
+			s.markOutputStarted()
+		}
 		if err != nil {
 			if err == io.EOF {
 				// End of stream without a terminal event: TS flush() still
@@ -3428,6 +3439,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			default:
 				s.held = append(s.held, rawChunk)
 			}
+		}
+
+		if peek.Type == "response.in_progress" {
+			s.accepted = true // TS isAcceptedChunk: isResponseInProgressChunk
 		}
 
 		switch peek.Type {
@@ -4164,8 +4179,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		case "response.failed":
 			var e responses.ResponseFailedEvent
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-				s.err = io.EOF
-				return nil, io.EOF
+				// TS: a chunk that fails its schema is an error part, and
+				// flush() still enqueues the finish part.
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
 			}
 			if !s.outputStarted && e.Response.Error != nil {
 				s.flushQueue = nil
@@ -4200,7 +4220,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: e.Response.Error.Message,
-					Err:  newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
+					Err:  newOpenAIStreamProviderErrorChunk(s.providerName, responsesFailedErrorFrame(event.Data)),
 				})
 			}
 			continue
@@ -4245,6 +4265,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 	}
 }
+
+// responsesAcceptedGrace is TS acceptedGraceMs (openai-stream-error.ts:44).
+const responsesAcceptedGrace = 50 * time.Millisecond
 
 func (s *responsesStream) markOutputStarted() {
 	if s.outputStarted {
@@ -5073,4 +5096,42 @@ func responsesErrorResponse(resp *internalhttp.Response) (map[string]string, str
 	}
 	_, headers, _ := (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails()
 	return headers, string(resp.Body)
+}
+
+// responsesFailedErrorFrame is the synthetic frame TS builds for a
+// mid-stream response.failed error part (openai-responses-language-model.ts
+// 2972-2980): {type, sequence_number, response: {error, incomplete_details,
+// service_tier}}, absent members left out like JSON.stringify of undefined.
+func responsesFailedErrorFrame(data string) json.RawMessage {
+	var frame struct {
+		SequenceNumber json.RawMessage `json:"sequence_number"`
+		Response       struct {
+			Error             json.RawMessage `json:"error"`
+			IncompleteDetails json.RawMessage `json:"incomplete_details"`
+			ServiceTier       json.RawMessage `json:"service_tier"`
+		} `json:"response"`
+	}
+	if json.Unmarshal([]byte(data), &frame) != nil {
+		return json.RawMessage(data)
+	}
+	out := jsonorder.New()
+	out.Set("type", "response.failed")
+	if frame.SequenceNumber != nil {
+		out.Set("sequence_number", frame.SequenceNumber)
+	}
+	resp := jsonorder.New()
+	for _, kv := range []struct {
+		key string
+		v   json.RawMessage
+	}{{"error", frame.Response.Error}, {"incomplete_details", frame.Response.IncompleteDetails}, {"service_tier", frame.Response.ServiceTier}} {
+		if kv.v != nil {
+			resp.Set(kv.key, kv.v)
+		}
+	}
+	out.Set("response", resp)
+	b, err := json.Marshal(out)
+	if err != nil {
+		return json.RawMessage(data)
+	}
+	return b
 }

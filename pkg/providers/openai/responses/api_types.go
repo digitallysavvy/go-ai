@@ -1,6 +1,9 @@
 package responses
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Responses API message item types
@@ -817,7 +820,17 @@ func (u *ResponsesAPIUsage) UnmarshalJSON(data []byte) error {
 	type responsesAPIUsageAlias ResponsesAPIUsage
 	var alias responsesAPIUsageAlias
 	if err := json.Unmarshal(data, &alias); err != nil {
-		return err
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return err
+		}
+		// TS z.number() accepts a fractional count; read it truncated (as
+		// the DoJSON decoder does for non-streaming bodies).
+		fractional, ferr := decodeFractionalUsage(data)
+		if ferr != nil {
+			return err
+		}
+		alias = responsesAPIUsageAlias(fractional)
 	}
 	*u = ResponsesAPIUsage(alias)
 	var raw map[string]interface{}
@@ -1102,4 +1115,52 @@ type ResponsesStreamErrorEvent struct {
 	Type    string `json:"type"` // "error"
 	Message string `json:"message"`
 	Code    string `json:"code,omitempty"`
+}
+
+// decodeFractionalUsage decodes a usage object whose token counts may be
+// fractional numbers, truncating them into the int fields.
+func decodeFractionalUsage(data []byte) (ResponsesAPIUsage, error) {
+	var w struct {
+		InputTokens        float64  `json:"input_tokens"`
+		OutputTokens       float64  `json:"output_tokens"`
+		CostInUsdTicks     *float64 `json:"cost_in_usd_ticks"`
+		InputTokensCost    *float64 `json:"input_tokens_cost"`
+		OutputTokensCost   *float64 `json:"output_tokens_cost"`
+		InputTokensDetails *struct {
+			CachedTokens     float64  `json:"cached_tokens"`
+			CacheWriteTokens *float64 `json:"cache_write_tokens"`
+		} `json:"input_tokens_details"`
+		OutputTokensDetails *struct {
+			ReasoningTokens float64 `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return ResponsesAPIUsage{}, err
+	}
+	u := ResponsesAPIUsage{
+		InputTokens:      int(w.InputTokens),
+		OutputTokens:     int(w.OutputTokens),
+		InputTokensCost:  w.InputTokensCost,
+		OutputTokensCost: w.OutputTokensCost,
+	}
+	if w.CostInUsdTicks != nil {
+		v := int64(*w.CostInUsdTicks)
+		u.CostInUsdTicks = &v
+	}
+	if d := w.InputTokensDetails; d != nil {
+		u.InputTokensDetails = &struct {
+			CachedTokens     int  `json:"cached_tokens,omitempty"`
+			CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+		}{CachedTokens: int(d.CachedTokens)}
+		if d.CacheWriteTokens != nil {
+			v := int(*d.CacheWriteTokens)
+			u.InputTokensDetails.CacheWriteTokens = &v
+		}
+	}
+	if d := w.OutputTokensDetails; d != nil {
+		u.OutputTokensDetails = &struct {
+			ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+		}{ReasoningTokens: int(d.ReasoningTokens)}
+	}
+	return u, nil
 }
