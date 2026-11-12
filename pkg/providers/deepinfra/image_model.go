@@ -434,7 +434,7 @@ func deepInfraFormString(value interface{}) string {
 
 func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
 	data, mediaType := file.Data, file.MediaType
-	if file.Type == "url" && file.URL != "" {
+	if file.Type == "url" {
 		// TS fileToBlob: downloadBlob(file.url) types the Blob with the
 		// response content-type (none without one), not file.mediaType.
 		res, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
