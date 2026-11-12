@@ -567,6 +567,11 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 
 		result, err := fileutil.DownloadWithMetadata(ctx, resultURL, pollOpts)
 		if err != nil {
+			// TS getFromApi handleFetchError: a network failure is the
+			// retryable "Cannot connect to API" error, an abort stays as is.
+			if cause, ok := fileutil.TransportFailure(err); ok {
+				err = internalhttp.TransportErrorCtx(ctx, cause)
+			}
 			return nil, nil, handleError(err)
 		}
 		// TS createJsonResponseHandler(gladiaTranscriptionResultResponseSchema).
