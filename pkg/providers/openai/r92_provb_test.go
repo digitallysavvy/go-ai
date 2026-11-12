@@ -337,3 +337,30 @@ func TestR92provbTranscriptionNullOptionRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TS openaiRealtimeModelLiveOptionsSchema.parse runs before the client
+// permission check: a malformed client value is a schema error, a valid one
+// is UnsupportedFunctionality over WebSocket.
+func TestR92provbLiveClientOptionValidated(t *testing.T) {
+	cfg := func(client interface{}) provider.RealtimeSessionConfig {
+		return provider.RealtimeSessionConfig{ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"client": client}}}
+	}
+	for _, bad := range []interface{}{
+		nil,
+		map[string]interface{}{},
+		map[string]interface{}{"dataChannel": map[string]interface{}{"extra": true}},
+		map[string]interface{}{"dataChannel": map[string]interface{}{"allowedServerEvents": []interface{}{map[string]interface{}{"type": "response.event"}}}},
+		map[string]interface{}{"dataChannel": map[string]interface{}{"allowedClientEvents": []interface{}{1.0}}},
+	} {
+		_, err := buildOpenAILiveSessionConfig(cfg(bad), "gpt-live-1")
+		var argErr *providererrors.InvalidArgumentError
+		if !errors.As(err, &argErr) {
+			t.Fatalf("%v: err = %v, want InvalidArgumentError", bad, err)
+		}
+	}
+	_, err := buildOpenAILiveSessionConfig(cfg(map[string]interface{}{"dataChannel": map[string]interface{}{"allowedClientEvents": "all"}}), "gpt-live-1")
+	var unsup *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &unsup) {
+		t.Fatalf("valid client: err = %v, want UnsupportedFunctionalityError", err)
+	}
+}

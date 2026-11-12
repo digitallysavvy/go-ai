@@ -98,7 +98,12 @@ func parseOpenAILiveOptions(providerOptions map[string]interface{}) (openAILiveO
 		}
 	}
 
-	if _, ok := m["client"]; ok {
+	if client, ok := m["client"]; ok {
+		// TS parses the strict client schema before rejecting client
+		// permissions outside WebRTC, so a malformed value is a schema error.
+		if err := validateOpenAILiveClientOption(client); err != nil {
+			return out, err
+		}
 		out.HasClient = true
 	}
 
@@ -197,6 +202,82 @@ func parseOpenAILiveOptions(providerOptions map[string]interface{}) (openAILiveO
 	}
 
 	return out, nil
+}
+
+// validateOpenAILiveClientOption is the strict client member of TS
+// openaiRealtimeModelLiveOptionsSchema: {dataChannel: {allowedClientEvents?:
+// 'all' | string[], allowedServerEvents?: 'all' | {type, responseEvent?}[]}},
+// where responseEvent is required exactly for type "response.event".
+func validateOpenAILiveClientOption(v interface{}) error {
+	invalid := func(field, msg string) error {
+		return &providererrors.InvalidArgumentError{Field: "providerOptions.openai.client" + field, Message: msg}
+	}
+	strictKeys := func(field string, obj map[string]interface{}, keys ...string) error {
+		for k := range obj {
+			known := false
+			for _, want := range keys {
+				known = known || k == want
+			}
+			if !known {
+				return invalid(field+"."+k, "unrecognized key")
+			}
+		}
+		return nil
+	}
+	client, ok := v.(map[string]interface{})
+	if !ok {
+		return invalid("", "must be an object")
+	}
+	if err := strictKeys("", client, "dataChannel"); err != nil {
+		return err
+	}
+	dc, ok := client["dataChannel"].(map[string]interface{})
+	if !ok {
+		return invalid(".dataChannel", "must be an object")
+	}
+	if err := strictKeys(".dataChannel", dc, "allowedClientEvents", "allowedServerEvents"); err != nil {
+		return err
+	}
+	if ev, present := dc["allowedClientEvents"]; present && ev != "all" {
+		list, ok := ev.([]interface{})
+		if !ok {
+			return invalid(".dataChannel.allowedClientEvents", `must be "all" or an array of strings`)
+		}
+		for _, item := range list {
+			if _, ok := item.(string); !ok {
+				return invalid(".dataChannel.allowedClientEvents", `must be "all" or an array of strings`)
+			}
+		}
+	}
+	if ev, present := dc["allowedServerEvents"]; present && ev != "all" {
+		list, ok := ev.([]interface{})
+		if !ok {
+			return invalid(".dataChannel.allowedServerEvents", `must be "all" or an array of selectors`)
+		}
+		for _, item := range list {
+			sel, ok := item.(map[string]interface{})
+			if !ok {
+				return invalid(".dataChannel.allowedServerEvents", "each selector must be an object")
+			}
+			if err := strictKeys(".dataChannel.allowedServerEvents", sel, "type", "responseEvent"); err != nil {
+				return err
+			}
+			t, ok := sel["type"].(string)
+			if !ok {
+				return invalid(".dataChannel.allowedServerEvents.type", "must be a string")
+			}
+			re, hasRE := sel["responseEvent"]
+			if hasRE {
+				if _, ok := re.(string); !ok {
+					return invalid(".dataChannel.allowedServerEvents.responseEvent", "must be a string")
+				}
+			}
+			if (t == "response.event") != hasRE {
+				return invalid(".dataChannel.allowedServerEvents", "responseEvent is required for response.event and forbidden for other event types.")
+			}
+		}
+	}
+	return nil
 }
 
 func liveUnsupported(feature string) error {
