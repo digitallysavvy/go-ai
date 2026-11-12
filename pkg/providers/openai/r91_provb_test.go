@@ -379,3 +379,10 @@ func TestR91provbLiveOptionsStrict(t *testing.T) {
 		t.Fatal("empty outputModalities accepted")
 	}
 }
+
+// PB-17 (provb1-10): the TS transcription model IDs have constants.
+func TestR91provbTranscriptionModelIDs(t *testing.T) {
+	if ModelGPTTranscribe != "gpt-transcribe" || ModelGPTLiveTranscribe != "gpt-live-transcribe" || ModelGPTRealtimeWhisper != "gpt-realtime-whisper" {
+		t.Fatal("transcription model ID constants differ from TS")
+	}
+}
