@@ -115,3 +115,46 @@ func TestR91genSimulateStreamingToolCallWithoutFlatEntry(t *testing.T) {
 		t.Fatalf("tool call = %+v", call)
 	}
 }
+
+type r91genTypedOptions struct {
+	Effort string `json:"effort,omitempty"`
+	Budget int64  `json:"budget,omitempty"`
+}
+
+// Typed-option ruling (class provg1-01 / OVC-01): DefaultSettingsMiddleware
+// merges Go-typed option objects (typed structs, map[string]string, pointers)
+// like the plain objects TS mergeObjects sees; arrays and primitives are
+// replaced, and prototype-polluting keys are skipped.
+func TestR91genDefaultSettingsTypedOptionsMerge(t *testing.T) {
+	defaults := map[string]interface{}{
+		"openai":    map[string]string{"user": "u1", "store": "x"},
+		"anthropic": r91genTypedOptions{Effort: "low", Budget: 10},
+		"google":    &r91genTypedOptions{Effort: "high"},
+		"list":      []map[string]interface{}{{"a": 1}},
+		"n":         int64(1),
+	}
+	overrides := map[string]interface{}{
+		"openai":    map[string]interface{}{"store": true},
+		"anthropic": map[string]interface{}{"budget": int64(20)},
+		"google":    map[string]string{"extra": "y"},
+		"list":      []map[string]interface{}{{"b": 2}},
+		"n":         int64(2),
+		"__proto__": map[string]interface{}{"polluted": true},
+	}
+	got := deepMergeProviderOptions(defaults, overrides)
+	want := map[string]interface{}{
+		"openai":    map[string]interface{}{"user": "u1", "store": true},
+		"anthropic": map[string]interface{}{"effort": "low", "budget": int64(20)},
+		"google":    map[string]interface{}{"effort": "high", "extra": "y"},
+		"list":      []map[string]interface{}{{"b": 2}},
+		"n":         int64(2),
+	}
+	gotJSON, _ := json.Marshal(got)
+	wantJSON, _ := json.Marshal(want)
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("merged = %s\nwant %s", gotJSON, wantJSON)
+	}
+	if _, ok := got["__proto__"]; ok {
+		t.Fatal("__proto__ merged")
+	}
+}
