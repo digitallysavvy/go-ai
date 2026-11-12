@@ -1660,21 +1660,29 @@ func (c *MCPClient) prepareRequestParams(method string, params interface{}) (int
 // modern era). Matches TS's generic response handler (mcp-client.ts, hash
 // e6a9927, c3af430640).
 func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessage) error {
+	if string(bytes.TrimSpace(rawResult)) == "null" {
+		// TS reads response.result.resultType inside the parse try: a null
+		// result throws a TypeError there.
+		return &MCPClientError{Message: "Failed to parse server response", Cause: errors.New("Cannot read properties of null (reading 'resultType')")}
+	}
 	var probe struct {
-		ResultType *string `json:"resultType"`
+		ResultType json.RawMessage `json:"resultType"`
 	}
 	if len(rawResult) > 0 {
 		_ = json.Unmarshal(rawResult, &probe)
 	}
-	// TS checks `input_required` in every era, the missing resultType only in
-	// the modern one.
-	if probe.ResultType == nil {
+	// TS checks `input_required` in every era, the missing resultType
+	// (`resultType == null`) only in the modern one. A resultType that is
+	// present but not a string is left to the result schema ("Failed to
+	// parse server response").
+	if len(probe.ResultType) == 0 || string(probe.ResultType) == "null" {
 		if c.protocolEra != "modern" {
 			return nil
 		}
 		return NewMCPClientError(0, "Modern MCP result is missing resultType", nil)
 	}
-	if *probe.ResultType == "input_required" {
+	var resultType string
+	if json.Unmarshal(probe.ResultType, &resultType) == nil && resultType == "input_required" {
 		return NewMCPClientError(0, fmt.Sprintf("Input-required results are not supported for %s on protocol %s", method, c.protocolVersion), nil)
 	}
 	return nil
