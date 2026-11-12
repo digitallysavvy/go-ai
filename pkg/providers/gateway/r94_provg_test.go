@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -283,4 +284,22 @@ func TestR94provgAbortCause(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	cancel2(reason)
 	drain("speech", func() error { _, err := sres.Stream.Next(); return err })
+}
+
+// cr-r94-carry-to-provg: the ranking entries decode through tagged wire
+// fields (index, relevanceScore), not case-insensitive matching on the
+// untagged types.RerankItem.
+func TestR94provgRerankWireItemTags(t *testing.T) {
+	var r gatewayRerankResponse
+	if err := json.Unmarshal([]byte(`{"ranking":[{"index":1,"relevanceScore":0.5}]}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	got := r.ranking()
+	if len(got) != 1 || got[0].Index != 1 || got[0].RelevanceScore != 0.5 {
+		t.Fatalf("ranking = %+v", got)
+	}
+	f, ok := reflect.TypeOf(gatewayRerankItem{}).FieldByName("RelevanceScore")
+	if !ok || f.Tag.Get("json") != "relevanceScore" {
+		t.Fatalf("tag = %q", f.Tag)
+	}
 }
