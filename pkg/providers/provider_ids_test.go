@@ -24,6 +24,7 @@ func TestProviderIDsFollowTSConfigProvider(t *testing.T) {
 		{"zai", "zai.chat", "zai.chat"},
 		{"cohere", "cohere.chat", "cohere.chat"},
 		{"mistral", "mistral.chat", "mistral.chat"},
+		{"tencent.chat", "tencent.chat", "tencent.chat"}, // TS 1c7a311d53 (new in v0.6)
 	}
 	for _, c := range lang {
 		for _, key := range []string{c.oldKey, c.newKey} {

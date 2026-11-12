@@ -39,6 +39,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/replicate"
 	"github.com/digitallysavvy/go-ai/pkg/providers/revai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/stability"
+	"github.com/digitallysavvy/go-ai/pkg/providers/tencent"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/topaz"
 	"github.com/digitallysavvy/go-ai/pkg/providers/typesafeai"
@@ -157,6 +158,13 @@ func TestUnsupportedModelKindsReturnNoSuchModelError(t *testing.T) {
 		}},
 		{"heygen", func() any { return heygen.New(heygen.Config{APIKey: "k"}) }, []kind{
 			{"LanguageModel", "languageModel", "m1", ""},
+			{"EmbeddingModel", "embeddingModel", "m1", ""},
+			{"ImageModel", "imageModel", "m1", ""},
+			{"SpeechModel", "speechModel", "m1", ""},
+			{"TranscriptionModel", "transcriptionModel", "m1", ""},
+			{"RerankingModel", "rerankingModel", "m1", ""},
+		}},
+		{"tencent", func() any { return tencent.New(tencent.Config{APIKey: "k"}) }, []kind{ // TS 1c7a311d53
 			{"EmbeddingModel", "embeddingModel", "m1", ""},
 			{"ImageModel", "imageModel", "m1", ""},
 			{"SpeechModel", "speechModel", "m1", ""},

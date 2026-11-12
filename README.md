@@ -343,6 +343,7 @@ The Go AI SDK supports 50 providers:
 | **KlingAI**      | -                            | -          | Video (v3.0)     | -            |
 | **Prodia**       | img2img                      | -          | Video (T2V/I2V)  | -            |
 | **HeyGen**       | -                            | -          | Video (T2V/I2V/R2V) | -         |
+| **Tencent Cloud**| Hunyuan (TokenHub)           | -          | Video (Kling, Seedance) | -     |
 | **Ollama**       | Local models                 | ✓          | -                | -            |
 
 And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, Topaz Labs, You.com tools)
@@ -361,7 +362,7 @@ And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT
 - ✅ **Built-in Tools** — `pkg/toolbash` (sandboxed bash) and `pkg/toolwebfetch` (SSRF-checked web fetch)
 - ✅ **Embeddings** — generate and search with vector embeddings, multimodal support
 - ✅ **Image Generation** — text-to-image with multiple providers
-- ✅ **Video Generation** — text/image-to-video (KlingAI, Prodia, ByteDance, xAI, HeyGen)
+- ✅ **Video Generation** — text/image-to-video (KlingAI, Prodia, ByteDance, xAI, HeyGen, Tencent Cloud)
 - ✅ **Speech** — TTS, transcription, and experimental streaming speech (`ExperimentalStreamSpeech`)
 - ✅ **Middleware** — logging, caching, rate limiting, and more
 - ✅ **Telemetry** — global registry with OpenTelemetry integration
