@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -236,7 +237,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		status, retryable := deepseekFailedResponseStatus(code)
 		pe := providererrors.NewProviderError(m.Provider(), status, code, message, nil)
 		pe.Message = message
-		pe.ResponseBody = string(resp.Body)
+		pe.ResponseBody = zodlite.CompactJSON(string(resp.Body)) // TS JSON.stringify(rawResponse)
 		pe.ResponseHeaders = headers
 		pe.Data = providerutils.RawJSONBody(resp.Body)
 		pe.Retryable = &retryable
@@ -293,15 +294,9 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		}
 	}
 
-	incompleteReason := ""
-	if response.IncompleteDetails != nil && response.IncompleteDetails.Reason != nil {
-		incompleteReason = *response.IncompleteDetails.Reason
-	}
+	incompleteReason, rawFinish := deepseekIncompleteReason(response.IncompleteDetails, response.Status)
 	result.FinishReason = mapDeepSeekResponsesFinishReason(response.Status, incompleteReason, hasFunctionCall)
-	result.RawFinishReason = incompleteReason
-	if result.RawFinishReason == "" {
-		result.RawFinishReason = response.Status
-	}
+	result.RawFinishReason = rawFinish
 	result.ProviderMetadata = deepseekResponsesProviderMetadata(name, response.ID, response.Usage, logprobs)
 	result.ResponseHeaders = headers
 	id := ""
@@ -387,6 +382,19 @@ func (m *ResponsesLanguageModel) handleError(err error) error {
 	return err
 }
 
+// deepseekIncompleteReason returns incomplete_details.reason and the raw
+// finish reason, TS `incomplete_details?.reason ?? status ?? undefined`: a
+// present "" reason is kept, only a null or absent one falls back to the
+// status.
+func deepseekIncompleteReason(details *struct {
+	Reason *string `json:"reason"`
+}, status string) (reason, raw string) {
+	if details != nil && details.Reason != nil {
+		return *details.Reason, *details.Reason
+	}
+	return "", status
+}
+
 // deepseekFailedResponseStatus is TS getFailedResponseStatus.
 func deepseekFailedResponseStatus(code string) (int, bool) {
 	switch code {
@@ -451,8 +459,20 @@ func convertDeepSeekResponsesUsage(raw json.RawMessage) types.Usage {
 		text = 0
 	}
 	total := input + output // TS core: input total + output total
-	var rawMap map[string]interface{}
-	_ = json.Unmarshal(raw, &rawMap)
+	// TS raw is the createUsageSchema output: z.object keeps only the declared
+	// keys (null values included), at the top level and in each nested object.
+	var full map[string]interface{}
+	_ = json.Unmarshal(raw, &full)
+	rawMap := providerutils.PickSchemaKeys(full, "input_tokens", "input_tokens_details", "output_tokens", "output_tokens_details", "total_tokens", "server_tool_use")
+	for key, nested := range map[string][]string{
+		"input_tokens_details":  {"cached_tokens"},
+		"output_tokens_details": {"reasoning_tokens"},
+		"server_tool_use":       {"tool_search", "tool_fetch"},
+	} {
+		if obj := providerutils.PickSchemaKeys(rawMap[key], nested...); obj != nil {
+			rawMap[key] = obj
+		}
+	}
 	return types.Usage{
 		InputTokens:   &input,
 		OutputTokens:  &output,
@@ -858,15 +878,9 @@ func (s *deepseekResponsesStream) transform(data string) {
 		if done.ID != nil {
 			s.responseID = done.ID
 		}
-		incomplete := ""
-		if done.IncompleteDetails != nil && done.IncompleteDetails.Reason != nil {
-			incomplete = *done.IncompleteDetails.Reason
-		}
+		incomplete, rawFinish := deepseekIncompleteReason(done.IncompleteDetails, done.Status)
 		s.finishReason = mapDeepSeekResponsesFinishReason(done.Status, incomplete, s.hasFunctionCall)
-		s.rawFinishReason = incomplete
-		if s.rawFinishReason == "" {
-			s.rawFinishReason = done.Status
-		}
+		s.rawFinishReason = rawFinish
 		if ev.Type == "response.failed" {
 			message := "DeepSeek response failed"
 			var code interface{}
