@@ -368,3 +368,12 @@ func TestR93provbRealtimeURLsAreWHATWG(t *testing.T) {
 		t.Fatalf("invalid base err = %v", err)
 	}
 }
+
+// TS context-append channel is z.enum(...).optional(): null is invalid.
+func TestR93provbLiveContextAppendNullChannel(t *testing.T) {
+	_, err := serializeOpenAILiveClientEvent(provider.RealtimeClientEvent{Type: "context-append", Content: "x",
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"channel": nil}}}, "gpt-live-1")
+	if err == nil {
+		t.Fatal("null channel accepted")
+	}
+}

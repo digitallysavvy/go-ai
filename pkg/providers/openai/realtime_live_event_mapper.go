@@ -440,9 +440,7 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 				if key != "channel" {
 					return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai." + key, Message: "unrecognized key"}
 				}
-				if value == nil {
-					continue
-				}
+				// z.enum(...).optional(): a present null is invalid too.
 				c, _ := value.(string)
 				if c != "instructions" && c != "thinking" && c != "commentary" {
 					return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.channel", Message: `must be "instructions", "thinking" or "commentary"`}
