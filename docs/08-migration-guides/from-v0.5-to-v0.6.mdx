@@ -9091,8 +9091,8 @@ after upgrading:
   [claude-code TurnStartTimeout zero](./known-differences.mdx).
 - **Mistral voice agent browser transport**: Mistral voice agent: server session helpers only; the LiveKit browser transport is TS-only (round 87). See
   [Mistral voice agent browser transport](./known-differences.mdx).
-- **Mistral realtime transcription WebSocket hint**: Mistral realtime transcription socket errors have no WebSocket-implementation hint (round 87). See
-  [Mistral realtime transcription WebSocket hint](./known-differences.mdx).
+- **Realtime transcription WebSocket hint**: Mistral, ElevenLabs, xAI, Vertex Gemini and AI Gateway realtime socket errors have no WebSocket-implementation hint (round 87, widened in round 91). See
+  [Realtime transcription WebSocket hint](./known-differences.mdx).
 - **Empty string message content**: A user message whose only part is an empty text part loses it; TS keeps a string `content: ''` (round 87). See
   [Empty string message content](./known-differences.mdx).
 - **Vercel Sandbox OIDC token refresh**: Vercel Sandbox: OIDC refresh is opt-in (`OIDCRefresh`), in memory, and follows `@vercel/oidc` 3.2.0 (round 87b). See
@@ -9127,6 +9127,63 @@ after upgrading:
 - **Perplexity unsupported-option warnings follow sorted option names**; TS
   follows the object's insertion order. See
   [Provider option warning order](./known-differences.mdx).
+
+- **DNS protection on by default**: Downloads (prompt files and generated file URLs) stay validated and DNS-pinned by default; TS made the protection opt-in. `DownloadOptions.Transport` is the `createDownload({ fetch })` counterpart (round 91). See
+  [DNS protection on by default](./known-differences.mdx).
+- **MCP OAuth: DNS protection without a custom fetch**: MCP OAuth hops always use the DNS-pinned transport; there is no runtime-dependent custom-fetch error (round 91). See
+  [MCP OAuth: DNS protection without a custom fetch](./known-differences.mdx).
+- **toolbash command execution**: `toolbash` spawns commands with bounded output and kills the process group (exit code 124 on timeout) (round 91). See
+  [toolbash command execution](./known-differences.mdx).
+- **LangSmith deployment stream reconnect**: `LangSmithDeploymentTransport` does not reconnect a dropped run stream; its connection error always says `fetch failed` (round 91). See
+  [LangSmith deployment stream reconnect](./known-differences.mdx).
+- **ExtractJSONMiddleware without text-start**: `ExtractJSONMiddleware` extracts JSON from start-less text deltas and flushes at the end, as v0.5.2 (round 91). See
+  [ExtractJSONMiddleware without text-start](./known-differences.mdx).
+- **ExtractReasoning separator**: `ExtractReasoningOptions.Separator: ""` means the default (round 91). See
+  [ExtractReasoning separator](./known-differences.mdx).
+- **Embed and rerank end events of failed attempts**: Embed / EmbedMany / Rerank fire an end event with `Error` per failed attempt; TS leaks that span (round 91). See
+  [Embed and rerank end events of failed attempts](./known-differences.mdx).
+- **WorkflowChatTransport request headers**: `WorkflowChatTransport` keeps the v0.5.2 JSON content type and event-stream accept headers (round 91). See
+  [WorkflowChatTransport request headers](./known-differences.mdx).
+- **CreateIDGenerator empty fields**: `CreateIDGenerator` treats empty fields as unset (round 91). See
+  [CreateIDGenerator empty fields](./known-differences.mdx).
+- **Empty StopWhen slice**: An empty `StopWhen` slice is the default stop condition, not "no stop condition" (round 91). See
+  [Empty StopWhen slice](./known-differences.mdx).
+- **GenAI OpenTelemetry empty-string attributes**: GenAI OTel drops empty-string provider, response id and function id attributes (round 91). See
+  [GenAI OpenTelemetry empty-string attributes](./known-differences.mdx).
+- **Anthropic custom content parts**: Anthropic forwards the options of any caller-built custom part, as v0.5.2 (round 91). See
+  [Anthropic custom content parts](./known-differences.mdx).
+- **Chunk schema error text**: Chunk schema failures report compact Go issue text (round 91). See
+  [Chunk schema error text](./known-differences.mdx).
+- **Text and reasoning deltas of never-started blocks**: `StreamText` records deltas of blocks that never started (v0.5 providers send no block parts) (round 91). See
+  [Text and reasoning deltas of never-started blocks](./known-differences.mdx).
+- **Non-finite numbers in UI messages**: `ValidateUIMessages` reports any non-finite number as one `ValidationError` without a path (round 91). See
+  [Non-finite numbers in UI messages](./known-differences.mdx).
+- **Claude Code resume state from v0.5.2**: Claude Code resumes v0.5.2 token state by respawning the bridge; it never uses the token (round 91). See
+  [Claude Code resume state from v0.5.2](./known-differences.mdx).
+- **DownloadError cause text**: `DownloadError` writes the cause's message without the error name (round 91). See
+  [DownloadError cause text](./known-differences.mdx).
+- **Legacy V4 prompt telemetry details**: Legacy prompt telemetry serializes the normalized messages (tool-result file JSON, no empty system message) (round 91). See
+  [Legacy V4 prompt telemetry details](./known-differences.mdx).
+- **Bedrock Converse task budget**: Bedrock Converse forwards `anthropic.taskBudget`, as v0.5.2 (round 91). See
+  [Bedrock Converse task budget](./known-differences.mdx).
+- **Header-only API key authentication**: A credential header in `Config.Headers` skips the missing-key error, as v0.5.2 (round 91). See
+  [Header-only API key authentication](./known-differences.mdx).
+- **Vertex Anthropic labels header key order**: The Vertex labels header has sorted JSON keys (round 91). See
+  [Vertex Anthropic labels header key order](./known-differences.mdx).
+- **xAI cost metadata**: xAI keeps the v0.5.2 `providerMetadata.xai.cost` (round 91). See
+  [xAI cost metadata](./known-differences.mdx).
+- **xAI video response warnings**: xAI video status warnings become `provider-warning` warnings, as v0.5.2 (round 91). See
+  [xAI video response warnings](./known-differences.mdx).
+- **OpenAI-compatible namespace for provider options**: Z.AI, Fireworks and DeepSeek also read options from the `openai-compatible` namespace, as v0.5.2 (round 91). See
+  [OpenAI-compatible namespace for provider options](./known-differences.mdx).
+- **Ordered schemas inside provider options**: Schemas inside provider options are sent in Go map key order (round 91). See
+  [Ordered schemas inside provider options](./known-differences.mdx).
+- **Media request body passthrough keys**: Media request bodies follow TS order, passthrough keys sorted (round 91). See
+  [Media request body passthrough keys](./known-differences.mdx).
+- **Tencent SubAppId and serialization**: Tencent `SubAppID` is a decimal string; the API key is never serialized (round 91). See
+  [Tencent SubAppId and serialization](./known-differences.mdx).
+- **Deepgram error data request id**: Deepgram error data keeps the v0.5 `requestId` key (round 91). See
+  [Deepgram error data request id](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 

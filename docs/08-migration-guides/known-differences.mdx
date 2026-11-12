@@ -545,8 +545,8 @@ The LiveKit WebRTC transport and the `provider` connection kind of `mistral.expe
 
 Reason: S3: browser-only WebRTC transport.
 
-## Mistral realtime transcription WebSocket hint
-TS appends "Pass a header-capable WebSocket implementation (e.g. ws) ..." to the socket error when no `webSocket` is configured. The Go client always sends the headers, so its error has no hint (S3: browser WebSocket). `Config.BaseURL` is the host root (v0.5.2): Go adds `/v1` unless the base URL already ends in `/v1`, for the realtime URL as for the REST paths of Mistral, Groq, Together and Fireworks; TS uses the base URL as given (S6, coordinator ruling round 87e).
+## Realtime transcription WebSocket hint
+TS appends "Pass a header-capable WebSocket implementation (e.g. ws) ..." to the socket error of Mistral, ElevenLabs, xAI and Vertex Gemini realtime transcription and the AI Gateway when no `webSocket` is configured. The Go clients always send the headers, so their errors have no hint (S3: browser WebSocket; widened in review round 91). `Config.BaseURL` is the host root (v0.5.2): Go adds `/v1` unless the base URL already ends in `/v1`, for the realtime URL as for the REST paths of Mistral, Groq, Together and Fireworks; TS uses the base URL as given (S6, coordinator ruling round 87e).
 
 ## Empty string message content
 Go messages have no string-content form, so a user message's single empty text part is removed before the model call; TS keeps the text part of `content: ''` (S1: `types.Message.Content` is `[]ContentPart`).
@@ -688,7 +688,7 @@ Anthropic client-side provider tool calls (bash, memory, text editor, computer) 
 Go skips a user block that converts to no content (TS sends `{role: user, content: []}`), sends a truthy non-object `cachePoint` as `{type: "default"}` (TS sends the raw value), and sends `anthropicBeta` only as `anthropic_beta` (TS also spreads it into the top-level command). Bedrock rejects each TS form (S7: copying TS would send a request the API rejects; review round 89).
 
 ## Bedrock and Anthropic null option values
-Bedrock option validators, and the Bedrock Converse / Anthropic file part option validators, accept an explicit `null` for an optional key, which TS zod `.optional()` rejects (S6: v0.5.2 accepted null values; review round 89). Round 90: Google / Vertex transcription and Google language-model options also treat an explicit `nil` like an absent key, as v0.5.2 did.
+Bedrock option validators, and the Bedrock Converse / Anthropic file part option validators, accept an explicit `null` for an optional key, which TS zod `.optional()` rejects (S6: v0.5.2 accepted null values; review round 89). Round 90: Google / Vertex transcription and Google language-model options also treat an explicit `nil` like an absent key, as v0.5.2 did. Round 91: the Anthropic system message options `clearAt`, `effort` and `toolChanges` also accept an explicit `null` (S6).
 
 ## Anthropic empty string option fields
 Anthropic `metadata.userId: ""`, `mcpServers[].authorizationToken: ""`, `container.id: ""`, skills `displayTitle: ""` and the batch list `cursor: ""` are omitted; TS sends the empty string (`!= null`) (S1: plain string fields; a presence flag per field is API sprawl; review round 89).
@@ -697,7 +697,7 @@ Anthropic `metadata.userId: ""`, `mcpServers[].authorizationToken: ""`, `contain
 A fractional Files API `size_bytes` is truncated in `ByteSize`; the provider metadata keeps the exact number (S1: `ByteSize` is an `int64` field; review round 89).
 
 ## Video response header keys
-xAI and Alibaba video results report response headers with Go canonical keys (the v0.5.2 shape), where TS uses lower case. Repeated values are joined with ", " as in TS (S6; review round 89).
+xAI and Alibaba video results report response headers with Go canonical keys (the v0.5.2 shape), where TS uses lower case. Repeated values are joined with ", " as in TS (S6; review round 89). Round 91: the same holds for every `ProviderError.ResponseHeaders` built by `NewProviderErrorFromResponse` (canonical keys, v0.5.2); `NewProviderError` and `NewSchemaProviderError` use the TS lower-case keys. Read a header with `(*ProviderError).ResponseHeader(name)`, which ignores case (S6).
 
 ## Empty binary response
 TS `createBinaryResponseHandler` fails only for a null body (204 / 205 / 304); an empty 200 gives empty bytes. Go's Fireworks sync image path rejects any empty body ("Response body is empty"), as before (S3: Go cannot tell a null body from an empty one; review round 89).
@@ -753,6 +753,90 @@ A harness tool with `Description: ""` gives the same Codex turn fingerprint as o
 ## UI message chunk validation on client reads
 TS chat transports validate every received chunk against `uiMessageChunkSchema` and report an `AI_TypeValidationError` for a chunk of the wrong shape; Go's `ReadUIMessageStream` and `WorkflowChatTransport` accept any JSON object. A frame that is not JSON is an `AI_JSONParseError`-style error in both, but Go's parser message is not V8's (S3: the TS transports are browser `useChat` APIs, and the parser text is V8's; review round 90).
 
+## DNS protection on by default
+TS `2ebc78b654` removed the DNS-pinned default download transport and asks Node.js callers to inject `guarded-fetch`. Go keeps validated, DNS-pinned downloads (`fileutil.SafeTransport`) as the default for every untrusted download, prompt files and the generated file URLs a model returns included (those use `ExperimentalDownload` when it is set). A caller-supplied transport takes over connect-time validation, as an injected `fetch` does in TS: `ai.DownloadOptions.Transport` is the opt-in counterpart of TS `createDownload({ fetch })` and keeps URL, DNS pre-check and redirect validation. URL validation, redirect checks and header isolation apply either way. TS added no opt-in flag, so Go has no new option. The TS tests that route Vertex image and tool-result downloads through a caller `fetch` are skipped in the wire replay for this reason (S2: security is never traded for parity; review round 91).
+
+## MCP OAuth: DNS protection without a custom fetch
+Go always dials untrusted MCP OAuth discovery, token and registration hops through the DNS-pinned transport unless the caller supplies an HTTP client, so there is no runtime-dependent "requires a custom fetch with connect-time DNS validation" error (TS `88b95757c1` on Bun, Deno and workers) (S2; review round 91).
+
+## toolbash command execution
+`toolbash` runs commands with `SandboxSession.Spawn`, a per-stream output bound and a process-group kill instead of TS `sandbox.run()`, which would buffer unbounded command output in memory. A timed-out command ends with exit code 124 in Go; with the TS Vercel adapter the run rejects and the tool returns an error (S2; review round 91).
+
+## LangSmith deployment stream reconnect
+`LangSmithDeploymentTransport` does not reconnect a dropped run stream. langgraph-sdk `streamWithRetry` reconnects up to 5 times with a GET on the response `Location` and `Last-Event-ID`, and its idle watchdog reconnects a half-open socket after heartbeats stop; Go reports the stream error. The initial request's connection retries match TS. The connection error always says `Original error: fetch failed` (undici's message for every network failure); the Go transport error is its `Unwrap()` (S3: Node fetch internals; S5 for the reconnect protocol; review round 91).
+
+## ExtractJSONMiddleware without text-start
+`ExtractJSONMiddleware` extracts JSON from text deltas that have no `text-start` and flushes them at the end of the stream, as v0.5.2 did; TS passes such deltas through unchanged (S6; review round 91).
+
+## ExtractReasoning separator
+`ExtractReasoningOptions.Separator: ""` means the default `"\n"`; TS honors an explicit empty separator (S1: v0.5.2 string field; review round 91).
+
+## Embed and rerank end events of failed attempts
+`Embed`, `EmbedMany` and `Rerank` fire an end event with `Error` for each failed provider attempt. TS fires none and leaves that attempt's span open when a retry succeeds, which leaks the span (S7; review round 91).
+
+## WorkflowChatTransport request headers
+`WorkflowChatTransport` POSTs with `Content-Type: application/json` and `Accept: text/event-stream`, as v0.5.2 did; TS sends only the configured headers (so `fetch` sends `text/plain;charset=UTF-8` for the string body and `accept: */*`). The prepared headers still win (S6: a server that parses only JSON bodies would stop reading the request; review round 91).
+
+## CreateIDGenerator empty fields
+`CreateIDGenerator` treats `Prefix: ""`, `Size: 0`, `Separator: ""` and `Alphabet: ""` as unset; TS uses them (an explicit `''` prefix gives `-<id>`, size 0 an empty id, an empty separator throws) (S1: v0.5.2 plain fields; review round 91).
+
+## Empty StopWhen slice
+An explicit empty `StopWhen` slice is the default (`StepCountIs(1)`; a `WorkflowAgent` uses the agent's condition or its default of 20 steps), not "no stop condition" as in TS. Sites: `stop_condition.go`, `StreamText`, `GenerateText`, the `ToolLoopAgent` loop and `WorkflowAgent` (S6: matching TS would turn a call that stops after one step in v0.5.2 into an unbounded tool loop for code that builds the slice with `make`; review round 91).
+
+## GenAI OpenTelemetry empty-string attributes
+The GenAI OpenTelemetry integration drops `gen_ai.provider.name` and `gen_ai.response.id` when the provider or response id is `""`, and agent span naming treats a `""` function id (or an `AgentSpanNameFunc` returning `""`) as unset; TS records the empty values (S1: plain v0.5.2 string fields; review round 91).
+
+## Anthropic custom content parts
+The Anthropic prompt converter forwards `providerOptions.anthropic` of a caller-built custom part of any kind as the block; TS drops every custom part that is not `anthropic.fallback` (S6: shipped in v0.5.2; review round 91).
+
+## Chunk schema error text
+A chunk or Responses chunk that fails its schema reports a compact Go issue text (the first failing member's code, path and message) and the compacted frame; TS `TypeValidationError` writes `JSON.stringify(value)` and zod's pretty-printed issue list rooted at `invalid_union` (S3: zod issue lists, error text only; review round 91).
+
+## Text and reasoning deltas of never-started blocks
+`StreamText` accepts a text or reasoning delta whose block never started (no `text-start` / `reasoning-start`) and records it, because v0.5 providers stream text without block parts; an end part of a never-started block is accepted too. TS emits an error part `text part <id> not found` and does not record it. A delta or end of a block that started and already ended matches TS (S6; review round 91).
+
+## Non-finite numbers in UI messages
+Go's JSON values cannot hold Infinity or NaN. `ValidateUIMessages` reports a non-finite number (a Go `+Inf` / `NaN`, or a JSON number out of range such as `1e999`) anywhere in the messages as one `ValidationError` with the TS text `Invalid JSON value. Expected null, a string, a finite number, a boolean, an array, or an object.`, without the issue path. TS reports it only in provider, tool and citation metadata, with its path, and ignores such values in unknown properties and in `input` / `output` (S1; review round 91).
+
+## Claude Code resume state from v0.5.2
+TS rejects lifecycle state whose bridge coordinates carry `token` instead of `privateKey`. Go accepts the v0.5.2 Claude Code state, never uses the token, and resumes by respawning the bridge with a new key pair instead of attaching (S6; review round 91). The other bridge adapters reject token state, as TS does.
+
+## DownloadError cause text
+`DownloadError.Error()` writes the cause's message; TS writes `${cause}`, which prefixes the error name (`Error: msg`) (S3; review round 91).
+
+## Legacy V4 prompt telemetry details
+The legacy `ai.prompt.messages` attribute serializes the step messages the SDK already normalized. A nested tool-result file keeps the Go `ToolResultOutput` JSON (TS leaves `Uint8Array` data as an index object), and an empty `System` string is no system message (S3; review round 91).
+
+## Bedrock Converse task budget
+Bedrock Converse forwards `providerOptions.anthropic.taskBudget` as `output_config.task_budget` with the task-budgets beta for Anthropic models; TS Bedrock ignores `taskBudget`. Go keeps the v0.5.2 behavior (S6; review round 91).
+
+## Header-only API key authentication
+When `Config.Headers` carries the credential header (`x-api-key` or `Authorization`), the Anthropic provider and the other providers that use `providerutils.RequestAuthHeader` send it and skip the missing-key `LoadAPIKeyError`; TS `getHeaders` still calls `loadApiKey` and throws `AI_LoadAPIKeyError` before the request. Go keeps the v0.5.2 header-only authentication (S6; review round 91).
+
+## Vertex Anthropic labels header key order
+The `x-vertex-ai-labels` header is the base64 of the labels JSON with keys in sorted order (a Go map); TS keeps the insertion order of the labels object, so the header bytes can differ. Vertex reads the same labels (S3: Go map order; review round 91).
+
+## xAI cost metadata
+Go also reports `providerMetadata.xai.cost` (`inputTokensCost`, `outputTokensCost`, from `usage.input_tokens_cost` / `output_tokens_cost`) on xAI Responses generate and stream finish results. TS has no such key. v0.5.2 shipped it and the xAI provider docs document it (S6; review round 91).
+
+## xAI video response warnings
+When a completed xAI video status response carries a `warnings` array, Go returns each entry as a warning of type `provider-warning`; TS returns `warnings: []` (S6: v0.5.2 behavior; review round 91).
+
+## OpenAI-compatible namespace for provider options
+Z.AI (`doSample`, `thinking`, `requestId`, `userId`), Fireworks (`thinking`, `reasoningHistory`, `promptCacheKey`, `serviceTier`) and every DeepSeek option are also read from `providerOptions["openai-compatible"]` / `["openaiCompatible"]` merged under the provider key (the provider key wins); TS reads them only from `providerOptions[<name>]`. DeepSeek also emits the deprecated `openai-compatible` key warning, which TS DeepSeek never emits (S6: v0.5.2 behavior; review round 91).
+
+## Ordered schemas inside provider options
+Provider option values are read through their JSON form (so Go-typed literals work), which sends an ordered schema given inside provider options (a Moonshot dynamic tool `inputSchema`, an OpenAI `textFormat` / `textFormatUpdate` schema) in Go map key order; an `outputSchema` in OpenAI tool options keeps its order (S1; review round 91).
+
+## Media request body passthrough keys
+Media providers (AssemblyAI, BFL, ByteDance, Gladia, fal, KlingAI, Luma, Replicate, Rev.ai) send their request bodies in TS key order, but passthrough provider-option keys go out sorted, since a Go map keeps no insertion order (S1; review round 91).
+
+## Tencent SubAppId and serialization
+TS accepts `subAppId` as `number | string`. Go's `tencent.Config.SubAppID` is a string of decimal digits, with the same validation (`Tencent VOD SubAppId must be a positive integer.`) (S1). A serialized Tencent chat model is restored from its base URL and headers; the API key is loaded again from `Config.APIKey` or `TENCENT_TOKENHUB_API_KEY` and is never serialized, as for the other OpenAI-compatible wrappers (review round 91).
+
+## Deepgram error data request id
+Deepgram error `Data` keeps the v0.5 `requestId` key beside the TS `request_id` (S6; review round 91).
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
@@ -768,6 +852,9 @@ TS chat transports validate every received chunk against `uiMessageChunkSchema` 
   other `ModelEntry` catalogs)** — TS exports capability metadata objects; Go
   has no catalog API. Runtime behavior (for example Claude Fable 5.2 on Vertex
   Anthropic) comes from the Anthropic capability rules, as in TS.
+- **Baseten `performanceClient`** — a Node NAPI addon
+  (`@basetenlabs/performance-client`); Go embeddings always use the
+  OpenAI-compatible HTTP endpoint (S3; review round 91).
 - **DeepSeek batch API / extra Files methods** — TS's `@ai-sdk/deepseek` does
   not implement these either, so this is parity, not a gap; the existing
   DeepSeek file support already matches TS.
