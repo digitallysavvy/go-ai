@@ -131,3 +131,21 @@ func r92provaJSON(t *testing.T, v interface{}) string {
 	}
 	return string(b)
 }
+
+// TS getCachePoint: `amazonBedrock?.cachePoint ?? bedrock?.cachePoint`, then
+// `if (!cachePointConfig) return undefined` -- a JS-falsy cachePoint (false,
+// 0, "") adds no cache point and does not fall back to the bedrock namespace.
+func TestR92provaFalsyCachePoint(t *testing.T) {
+	for _, v := range []interface{}{false, 0, 0.0, int64(0), ""} {
+		opts := map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{"cachePoint": v},
+			"bedrock":       map[string]interface{}{"cachePoint": map[string]interface{}{"type": "default"}},
+		}
+		if cp, ok := bedrockCachePoint(opts); ok {
+			t.Errorf("cachePoint %#v: got %v, want none", v, cp)
+		}
+	}
+	if cp, ok := bedrockCachePoint(map[string]interface{}{"amazonBedrock": map[string]interface{}{"cachePoint": 1}}); !ok || cp["type"] != "default" {
+		t.Errorf("truthy cachePoint 1 = %v, %v (known difference: {type: default})", cp, ok)
+	}
+}

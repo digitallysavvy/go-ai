@@ -395,8 +395,21 @@ func bedrockCachePoint(providerOptions map[string]interface{}) (map[string]inter
 		if !ok || cachePoint == nil {
 			continue
 		}
-		if disabled, ok := cachePoint.(bool); ok && !disabled {
-			return nil, false
+		// TS `if (!cachePointConfig)`: a JS-falsy value (false, 0, "") is no
+		// cache point, and it does not fall back to the legacy namespace.
+		switch v := cachePoint.(type) {
+		case bool:
+			if !v {
+				return nil, false
+			}
+		case float64:
+			if v == 0 {
+				return nil, false
+			}
+		case string:
+			if v == "" {
+				return nil, false
+			}
 		}
 		if cfg, ok := cachePoint.(map[string]interface{}); ok {
 			return cloneMap(cfg), true
