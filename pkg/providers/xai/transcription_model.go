@@ -91,7 +91,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}
 		return nil, err // TS handleFetchError: abort as is, else "Cannot connect to API"
 	}
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body)
 	}
 

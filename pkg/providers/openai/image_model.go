@@ -343,7 +343,12 @@ func openAIImageMarkup(opts *provider.ImageGenerateOptions) (openAIImageMarkupIn
 }
 
 func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOptions, markup openAIImageMarkupInput) (*types.ImageResult, error) {
-	opts, err := prefetchOpenAIImageInputs(ctx, opts)
+	// TS resolves config.headers before it downloads the inputs.
+	client, err := m.provider.resolvedClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	opts, err = prefetchOpenAIImageInputs(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +366,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	}
 
 	var response openaiImageResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := client.DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIImage),
 		Method:           http.MethodPost,
 		Path:             "/images/edits",

@@ -225,6 +225,12 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 		addField("web_grounding", *maiOpts.WebGrounding)
 	}
 
+	// TS resolves requestOptions.headers (the API key or token) once, before
+	// it downloads the input files.
+	baseHeaders, err := m.headers(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var images []azureMaiImageFile
 	for _, file := range opts.Files {
 		img, err := m.fileToImage(ctx, file, len(images)+1)
@@ -253,7 +259,7 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 		go func(i int) {
 			defer wg.Done()
 			var err error
-			results[i], err = m.call(callCtx, opts.Headers, jsonBody, fields, images)
+			results[i], err = m.call(callCtx, baseHeaders, opts.Headers, jsonBody, fields, images)
 			if err != nil {
 				errOnce.Do(func() { firstErr = err })
 				cancel()
@@ -403,7 +409,7 @@ func (m *azureMaiImageModel) fileToImage(ctx context.Context, file provider.Imag
 	return azureMaiImageFile{data: data, mediaType: mediaType, name: fmt.Sprintf("image-%d.%s", index, ext)}, nil
 }
 
-func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, jsonBody providerutils.OrderedMap, fields []azureMaiField, images []azureMaiImageFile) (azureMaiImageCallResult, error) {
+func (m *azureMaiImageModel) call(ctx context.Context, baseHeaders, extra map[string]string, jsonBody providerutils.OrderedMap, fields []azureMaiField, images []azureMaiImageFile) (azureMaiImageCallResult, error) {
 	path := "/images/generations"
 	if len(images) > 0 {
 		path = "/images/edits"
@@ -412,11 +418,6 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 	if err != nil {
 		return azureMaiImageCallResult{}, err
 	}
-	baseHeaders, err := m.headers(ctx)
-	if err != nil {
-		return azureMaiImageCallResult{}, err
-	}
-
 	var body io.Reader
 	contentType := "application/json"
 	if len(images) > 0 {

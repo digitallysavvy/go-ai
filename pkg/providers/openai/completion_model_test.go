@@ -269,8 +269,11 @@ func TestCompletionModelDoStreamEarlyErrorReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
 	}
-	if !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("error = %v, want boom", err)
+	// TS getError passes chunk.error ({message} only: no type, code or
+	// param), which parseStreamError does not accept, so the error has the
+	// default message.
+	if !strings.Contains(err.Error(), "OpenAI stream failed before any output was generated") {
+		t.Fatalf("error = %v, want the default early stream error", err)
 	}
 }
 

@@ -36,7 +36,7 @@ func TestR91provbAzureRawClientTransportErrors(t *testing.T) {
 	_, err = newAzureSpeechTranscriptionModel("m", urlFn, headers, stdhttp.DefaultClient).DoGenerate(context.Background(), &provider.TranscriptionOptions{Audio: []byte("RIFF"), MimeType: "audio/wav"}, AzureSpeechTranscriptionOptions{})
 	check("transcription", err)
 	mai := &azureMaiImageModel{modelID: "m", url: func(string) (string, error) { return url, nil }, headers: headers, httpClient: stdhttp.DefaultClient}
-	_, err = mai.call(context.Background(), nil, providerutils.OrderedMap{}, nil, nil)
+	_, err = mai.call(context.Background(), nil, nil, providerutils.OrderedMap{}, nil, nil)
 	check("mai image", err)
 }
 

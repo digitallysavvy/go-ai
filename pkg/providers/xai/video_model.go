@@ -562,7 +562,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 		return &status, respHeaders, nil
 	}
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, nil, newXAIProviderError("xai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 

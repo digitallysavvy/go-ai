@@ -585,7 +585,7 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 				s.flushQueue = nil
 				s.pendingRaw = nil
 				s.pendingMetadata = nil
-				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+				s.err = newOpenAIStreamProviderError(s.providerName, openAIErrorField(chunk.Error), s.responseHeaders) // TS getError: chunk.error
 				return nil, s.err
 			}
 			if rawChunk != nil {
@@ -597,7 +597,7 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 				// TS createOpenAIProviderStreamError(value.error): attach the
 				// structured StreamProviderError so retries see its
 				// type/code/statusCode/isRetryable.
-				Err: newOpenAIStreamProviderErrorChunk(s.providerName, chunk.Error),
+				Err: newOpenAIStreamProviderErrorChunk(s.providerName, openAIErrorField(chunk.Error)),
 			})
 			continue
 		}

@@ -84,7 +84,10 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 	sessionUpdate := BuildOpenAIRealtimeTranscriptionSession(m.modelID, opts.InputAudioFormat, streamOpts)
-	wsURL := realtimeTranscriptionWebSocketURL(m.provider.config.BaseURL)
+	wsURL, err := realtimeTranscriptionWebSocketURL(m.provider.config.BaseURL)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {
@@ -165,20 +168,14 @@ func supportsStreamingTranscriptionDelay(modelID string) bool {
 	return getOpenAITranscriptionModelEntry(modelID).streamingDelay == transcriptionSupportYes
 }
 
-func realtimeTranscriptionWebSocketURL(baseURL string) string {
+func realtimeTranscriptionWebSocketURL(baseURL string) (string, error) {
 	return openAIToWebSocketURL(baseURL + "/realtime?intent=transcription")
 }
 
-// openAIToWebSocketURL is TS toWebSocketUrl: only the URL's own scheme
-// changes (http: to ws:, https: to wss:, matched case-insensitively like
-// new URL); an "https://" later in the URL (a proxy path) is kept.
-func openAIToWebSocketURL(rawURL string) string {
-	for _, s := range [][2]string{{"https://", "wss://"}, {"http://", "ws://"}} {
-		if len(rawURL) >= len(s[0]) && strings.EqualFold(rawURL[:len(s[0])], s[0]) {
-			return s[1] + rawURL[len(s[0]):]
-		}
-	}
-	return rawURL
+// openAIToWebSocketURL is TS toWebSocketUrl (new URL, http: to ws:, https:
+// to wss:): the WHATWG serialization, "Invalid URL" for a URL it rejects.
+func openAIToWebSocketURL(rawURL string) (string, error) {
+	return wsutil.ToWebSocketURL(rawURL)
 }
 
 // BuildOpenAIRealtimeTranscriptionSession mirrors TS
@@ -405,7 +402,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 	for {
 		select {
 		case <-s.Context().Done():
-			cause := s.Context().Err()
+			cause := context.Cause(s.Context()) // TS onAbort(abortSignal.reason)
 			s.SetErr(cause)
 			cfg.Audio.Cancel(cause)
 			return

@@ -370,13 +370,14 @@ func TestR92provbLiveClientOptionValidated(t *testing.T) {
 // path stays as is.
 func TestR92provbRealtimeWebSocketURLScheme(t *testing.T) {
 	base := "http://localhost:8080/proxy/https://api.openai.com/v1"
-	if got, want := realtimeTranscriptionWebSocketURL(base), "ws://localhost:8080/proxy/https://api.openai.com/v1/realtime?intent=transcription"; got != want {
+	first := func(s string, _ error) string { return s }
+	if got, want := first(realtimeTranscriptionWebSocketURL(base)), "ws://localhost:8080/proxy/https://api.openai.com/v1/realtime?intent=transcription"; got != want {
 		t.Fatalf("transcription: got %s want %s", got, want)
 	}
-	if got, want := realtimeSpeechTranslationWebSocketURL(base, "m"), "ws://localhost:8080/proxy/https://api.openai.com/v1/realtime/translations?model=m"; got != want {
+	if got, want := first(realtimeSpeechTranslationWebSocketURL(base, "m")), "ws://localhost:8080/proxy/https://api.openai.com/v1/realtime/translations?model=m"; got != want {
 		t.Fatalf("translation: got %s want %s", got, want)
 	}
-	if got, want := realtimeTranscriptionWebSocketURL("HTTPS://api.openai.com/v1"), "wss://api.openai.com/v1/realtime?intent=transcription"; got != want {
+	if got, want := first(realtimeTranscriptionWebSocketURL("HTTPS://api.openai.com/v1")), "wss://api.openai.com/v1/realtime?intent=transcription"; got != want {
 		t.Fatalf("upper-case scheme: got %s want %s", got, want)
 	}
 }

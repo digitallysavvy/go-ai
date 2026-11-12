@@ -26,6 +26,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"io"
 	"net"
 	"net/http"
@@ -200,7 +201,7 @@ func Receive(ctx context.Context, conn *websocket.Conn) (string, error) {
 	}()
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return "", context.Cause(ctx) // TS onAbort(abortSignal.reason)
 	case res := <-done:
 		return res.Text, res.Err
 	}
@@ -218,7 +219,7 @@ func Send(ctx context.Context, conn *websocket.Conn, v interface{}) error {
 	}()
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx) // TS onAbort(abortSignal.reason)
 	case err := <-done:
 		return err
 	}
@@ -337,7 +338,7 @@ func dialWrapped(ctx context.Context, config *websocket.Config, wrap func(net.Co
 		_ = client.SetDeadline(time.Now())
 		<-done
 		_ = client.Close()
-		return nil, &websocket.DialError{Config: config, Err: ctx.Err()}
+		return nil, &websocket.DialError{Config: config, Err: context.Cause(ctx)}
 	case <-done:
 		if wsErr != nil {
 			_ = client.Close()
@@ -345,4 +346,23 @@ func dialWrapped(ctx context.Context, config *websocket.Config, wrap func(net.Co
 		}
 		return ws, nil
 	}
+}
+
+// ToWebSocketURL is TS provider-utils toWebSocketUrl: `new URL(url)` with an
+// http: protocol set to ws: and https: to wss: (other schemes are kept). The
+// result is the WHATWG serialization (host lower-cased, a default port left
+// out, the path normalized); input the WHATWG parser rejects is the TypeError
+// "Invalid URL".
+func ToWebSocketURL(rawURL string) (string, error) {
+	u, err := urlnorm.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	switch u.Scheme {
+	case "http":
+		u.Scheme = "ws"
+	case "https":
+		u.Scheme = "wss"
+	}
+	return u.String(), nil
 }

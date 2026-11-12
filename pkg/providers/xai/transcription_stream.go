@@ -69,16 +69,16 @@ func xaiInputAudioFormatTypesList() string {
 // transcription URL with query parameters, mirroring TS
 // buildXaiStreamingTranscriptionUrl.
 func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat provider.AudioFormat, opts XAITranscriptionProviderOptions) (*url.URL, error) {
-	full := baseURL + "/stt" // TS `${baseURL}/stt`; New removed one trailing "/"
-	u, err := url.Parse(full)
+	// TS toWebSocketUrl(`${baseURL}/stt`): new URL (WHATWG: host
+	// lower-cased, a default port left out), http: to ws:, https: to wss:.
+	// New removed one trailing "/".
+	normalized, err := wsutil.ToWebSocketURL(baseURL + "/stt")
 	if err != nil {
 		return nil, err
 	}
-	switch u.Scheme {
-	case "https":
-		u.Scheme = "wss"
-	case "http":
-		u.Scheme = "ws"
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return nil, err
 	}
 
 	// TS appendXaiSttParams appends to url.searchParams in object order
@@ -318,7 +318,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 	// audio.cancel()/audioReader.cancel().
 	var cancelAudioOnce sync.Once
 	cancelAudio := func(err error) { cancelAudioOnce.Do(func() { cfg.audio.Cancel(err) }) }
-	defer func() { cancelAudio(s.Context().Err()) }()
+	defer func() { cancelAudio(context.Cause(s.Context())) }()
 
 	fail := func(err error) {
 		s.SetErr(err)
@@ -378,7 +378,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 	for {
 		select {
 		case <-s.Context().Done():
-			fail(s.Context().Err())
+			fail(context.Cause(s.Context())) // TS onAbort(abortSignal.reason)
 			return
 
 		case <-audioEndedCh:

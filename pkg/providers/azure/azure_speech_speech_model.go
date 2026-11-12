@@ -210,12 +210,15 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 // used, falling back to azureDefaultVoice with a warning for "auto" or an
 // unmapped language.
 func azureResolveVoice(voice, language string) (resolved string, languageWarning string) {
-	code := ""
-	if language != "" {
+	// TS `language ? language.split('-')[0].toLowerCase() : undefined`: a
+	// set language whose first part is empty (e.g. "-US") is the code "",
+	// not "no language".
+	code, hasCode := "", language != ""
+	if hasCode {
 		code = providerutils.JSToLower(strings.SplitN(language, "-", 2)[0])
 	}
 	if voice == "" {
-		if code == "" {
+		if !hasCode {
 			return azureDefaultVoice, ""
 		}
 		if code == "auto" {
@@ -230,7 +233,7 @@ func azureResolveVoice(voice, language string) (resolved string, languageWarning
 	if match := azureVoiceLanguagePattern.FindStringSubmatch(voice); match != nil {
 		voiceLanguage = providerutils.JSToLower(match[1])
 	}
-	if code != "" && code != "auto" && voiceLanguage != "" && code != voiceLanguage {
+	if hasCode && code != "auto" && voiceLanguage != "" && code != voiceLanguage {
 		return voice, "The voice " + voice + " selects the language. Language \"" + language + "\" was ignored."
 	}
 	return voice, ""

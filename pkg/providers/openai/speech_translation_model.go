@@ -77,7 +77,7 @@ func buildOpenAISpeechTranslationSession(targetLanguage string) map[string]inter
 // realtimeSpeechTranslationWebSocketURL builds the wss:// realtime
 // translations URL, mirroring TS `this.config.url({ path:
 // '/realtime/translations?model=...' })`.
-func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
+func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) (string, error) {
 	return openAIToWebSocketURL(baseURL + "/realtime/translations?model=" + encodeURIComponent(modelID))
 }
 
@@ -140,7 +140,10 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 	}
 	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 	sessionUpdate := buildOpenAISpeechTranslationSession(opts.TargetLanguage)
-	wsURL := realtimeSpeechTranslationWebSocketURL(m.provider.config.BaseURL, m.modelID)
+	wsURL, err := realtimeSpeechTranslationWebSocketURL(m.provider.config.BaseURL, m.modelID)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {

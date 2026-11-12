@@ -64,6 +64,11 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 	if len(opts.Files) > 0 {
 		var body io.Reader
 		var contentType string
+		// TS resolves config.headers before it downloads the inputs.
+		client, cerr := m.provider.resolvedClient(ctx)
+		if cerr != nil {
+			return nil, cerr
+		}
 		if opts, err = prefetchOpenAIImageInputs(ctx, opts); err != nil {
 			return nil, err
 		}
@@ -71,7 +76,7 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 		if err != nil {
 			return nil, err
 		}
-		httpResp, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		httpResp, err = client.DoJSONResponse(ctx, internalhttp.Request{
 			ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCompatImage),
 			Method:           http.MethodPost,
 			Path:             "/images/edits",
