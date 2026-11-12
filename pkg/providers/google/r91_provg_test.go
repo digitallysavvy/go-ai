@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -555,5 +556,340 @@ func TestR91provgServiceTierFromHeader(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// --- f70336158e: native Gemini Decisions API (google-decision.test.ts) ---
+
+const r91provgDecisionFixture = `{"answers":{"requestsRefund":{"confidence":0.6375181188885488,"noul":0.36248188111145113,"type":"noul"},"department":{"confidence":0.8624268048164867,"choice":"billing","probabilities":{"billing":0.8624268048164867,"technical":0.13757319518351327},"type":"choice"},"severity":{"confidence":0.5849037405969755,"score":0.8093588003103453,"probabilities":{"0":0.3028687295463396,"1":0.5849037405969755,"2":0.11222752985668494},"legend":{"0":"Low","1":"Medium","2":"High"},"type":"score"}},"usage":{"total_tokens":193,"total_input_tokens":193,"input_tokens_by_modality":[{"modality":"text","tokens":193}],"total_output_tokens":0}}`
+
+type r91provgDecisionServer struct {
+	mu      sync.Mutex
+	calls   int
+	path    string
+	headers http.Header
+	body    []byte
+}
+
+func r91provgDecisionSetup(t *testing.T, body string, status int) (provider.DecisionModel, *r91provgDecisionServer, *Provider) {
+	t.Helper()
+	rec := &r91provgDecisionServer{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		rec.mu.Lock()
+		rec.calls++
+		rec.path, rec.headers, rec.body = r.URL.Path, r.Header.Clone(), b
+		rec.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req-test")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	p := New(Config{APIKey: "test-key", BaseURL: srv.URL + "/v1beta/", Headers: map[string]string{"x-provider": "configured"}})
+	m, err := p.DecisionModel(ModelGeminiDecision1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m, rec, p
+}
+
+func r91provgDecisionOptions() provider.DecisionCallOptions {
+	return provider.DecisionCallOptions{
+		State: []provider.DecisionStatePart{provider.DecisionJSONPart(map[string]interface{}{"message": "A billing issue with a workaround."})},
+		Questions: map[string]provider.DecisionQuestion{
+			"department":     {Type: "choice", Instructions: "Pick the team.", Criteria: map[string]interface{}{"technical": "Bugs", "billing": "Charges"}},
+			"severity":       {Type: "score", Instructions: []interface{}{"Rate severity."}, Criteria: []interface{}{"Low", "Medium", "High"}},
+			"requestsRefund": {Type: "boolean", Instructions: "Is a refund requested?"},
+		},
+		QuestionOrder: []string{"department", "severity", "requestsRefund"},
+		CriteriaOrder: map[string][]string{"department": {"technical", "billing"}},
+	}
+}
+
+func TestR91provgDecisionNativeAllQuestionTypes(t *testing.T) {
+	m, rec, _ := r91provgDecisionSetup(t, r91provgDecisionFixture, 200)
+	opts := r91provgDecisionOptions()
+	opts.Headers = map[string]string{"x-call": "forwarded"}
+	res, err := m.DoDecide(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Provider() != "google.decision" || m.ModelID() != "gemini-decision-1" || m.SpecificationVersion() != "v4" || strings.Join(m.SupportedQuestionTypes(), ",") != "choice,score,boolean" {
+		t.Fatalf("model metadata %s %s", m.Provider(), m.ModelID())
+	}
+	d, s, b := res.Answers["department"], res.Answers["severity"], res.Answers["requestsRefund"]
+	if d.Type != "choice" || d.Choice != "billing" || d.Probabilities["billing"] != 0.8624268048164867 {
+		t.Fatalf("department = %+v", d)
+	}
+	if s.Type != "score" || *s.Score != 0.8093588003103453 || s.Probabilities["1"] != 0.5849037405969755 {
+		t.Fatalf("severity = %+v", s)
+	}
+	if b.Type != "boolean" || *b.Probability != 0.36248188111145113 {
+		t.Fatalf("requestsRefund = %+v", b)
+	}
+	if res.Usage == nil || *res.Usage.InputTokens != 193 || *res.Usage.OutputTokens != 0 {
+		t.Fatalf("usage = %+v", res.Usage)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("warnings = %+v", res.Warnings)
+	}
+	if res.Response.ModelID != "gemini-decision-1" || res.Response.Headers["X-Request-Id"] != "req-test" {
+		t.Fatalf("response = %+v", res.Response)
+	}
+	meta, _ := json.Marshal(res.ProviderMetadata)
+	if want := `{"google":{"confidence":{"department":0.8624268048164867,"requestsRefund":0.6375181188885488,"severity":0.5849037405969755},"legend":{"severity":{"0":"Low","1":"Medium","2":"High"}},"usage":{"input_tokens_by_modality":[{"modality":"text","tokens":193}],"total_input_tokens":193,"total_output_tokens":0,"total_tokens":193}}}`; string(meta) != want {
+		t.Fatalf("providerMetadata = %s", meta)
+	}
+	if rec.calls != 1 || rec.path != "/v1beta/decisions" {
+		t.Fatalf("calls=%d path=%s", rec.calls, rec.path)
+	}
+	if rec.headers.Get("x-goog-api-key") != "test-key" || rec.headers.Get("x-provider") != "configured" || rec.headers.Get("x-call") != "forwarded" || !strings.Contains(rec.headers.Get("User-Agent"), "ai-sdk-google/") {
+		t.Fatalf("headers = %v", rec.headers)
+	}
+	if want := `{"model":"gemini-decision-1","input":[{"type":"text","text":"{\"message\":\"A billing issue with a workaround.\"}"}],"questions":{"department":{"type":"choice","instructions":"Pick the team.","criteria":{"technical":"Bugs","billing":"Charges"}},"severity":{"type":"score","instructions":"[\"Rate severity.\"]","criteria":["Low","Medium","High"]},"requestsRefund":{"type":"noul","instructions":"Is a refund requested?"}}}`; string(rec.body) != want {
+		t.Fatalf("body = %s\nwant %s", rec.body, want)
+	}
+}
+
+func TestR91provgDecisionStructuredInstructionsAndCriteria(t *testing.T) {
+	m, rec, _ := r91provgDecisionSetup(t, r91provgDecisionFixture, 200)
+	opts := r91provgDecisionOptions()
+	opts.Questions = map[string]provider.DecisionQuestion{
+		"department":     {Type: "choice", Instructions: map[string]interface{}{"task": "Pick a team"}, Criteria: map[string]interface{}{"billing": map[string]interface{}{"handles": []interface{}{"payments"}}, "technical": nil}},
+		"severity":       {Type: "score", Instructions: "Rate severity", Criteria: []interface{}{map[string]interface{}{"level": "low"}, []interface{}{"medium"}, "high"}},
+		"requestsRefund": {Type: "boolean", Instructions: "Refund?", Criteria: map[string]interface{}{"true": map[string]interface{}{"requests": "money back"}, "false": []interface{}{"No refund needed"}}},
+	}
+	opts.CriteriaOrder = map[string][]string{"department": {"billing", "technical"}}
+	if _, err := m.DoDecide(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Questions json.RawMessage `json:"questions"`
+	}
+	_ = json.Unmarshal(rec.body, &body)
+	if want := `{"department":{"type":"choice","instructions":"{\"task\":\"Pick a team\"}","criteria":{"billing":"{\"handles\":[\"payments\"]}","technical":null}},"severity":{"type":"score","instructions":"Rate severity","criteria":["{\"level\":\"low\"}","[\"medium\"]","high"]},"requestsRefund":{"type":"noul","instructions":"Refund?","criteria":{"true_description":"{\"requests\":\"money back\"}","false_description":"[\"No refund needed\"]"}}}`; string(body.Questions) != want {
+		t.Fatalf("questions = %s", body.Questions)
+	}
+	// 'omits null boolean descriptions'
+	opts.Questions["requestsRefund"] = provider.DecisionQuestion{Type: "boolean", Instructions: "Refund?", Criteria: map[string]interface{}{"true": "Money back", "false": nil}}
+	if _, err := m.DoDecide(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rec.body), `"requestsRefund":{"type":"noul","instructions":"Refund?","criteria":{"true_description":"Money back"}}`) {
+		t.Fatalf("body = %s", rec.body)
+	}
+}
+
+func TestR91provgDecisionWarnsAboutGenerationSettings(t *testing.T) {
+	m, rec, _ := r91provgDecisionSetup(t, r91provgDecisionFixture, 200)
+	opts := r91provgDecisionOptions()
+	maxTokens := 100
+	level := types.ReasoningHigh
+	opts.MaxOutputTokens, opts.Reasoning = &maxTokens, &level
+	opts.ProviderOptions = map[string]interface{}{"google": map[string]interface{}{"thinkingConfig": map[string]interface{}{"thinkingLevel": "high"}, "cachedContent": "cache-id"}}
+	res, err := m.DoDecide(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, w := range res.Warnings {
+		got = append(got, w.Type+":"+w.Feature)
+	}
+	// TS lists provider option keys in insertion order; a Go map has none, so
+	// they are sorted.
+	if want := "unsupported:maxOutputTokens,unsupported:reasoning,unsupported:providerOptions.google.cachedContent,unsupported:providerOptions.google.thinkingConfig"; strings.Join(got, ",") != want {
+		t.Fatalf("warnings = %v", got)
+	}
+	if !strings.HasPrefix(string(rec.body), `{"model":"gemini-decision-1","input":[`) || strings.Contains(string(rec.body), "thinking") {
+		t.Fatalf("body = %s", rec.body)
+	}
+}
+
+func TestR91provgDecisionStateParts(t *testing.T) {
+	m, rec, _ := r91provgDecisionSetup(t, r91provgDecisionFixture, 200)
+	opts := r91provgDecisionOptions()
+	opts.State = []provider.DecisionStatePart{
+		provider.DecisionTextPart("Check these files."),
+		provider.DecisionJSONPart(map[string]interface{}{"type": "image", "user": "data"}),
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}}}),
+		provider.DecisionFilePart(types.FileContent{MediaType: "audio/mp3", FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/clip.mp3"}}),
+		provider.DecisionFilePart(types.FileContent{MediaType: "video/mp4", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}}),
+		provider.DecisionFilePart(types.FileContent{MediaType: "application/pdf", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "BAUG"}}),
+	}
+	if _, err := m.DoDecide(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Input json.RawMessage `json:"input"`
+	}
+	_ = json.Unmarshal(rec.body, &body)
+	if want := `[{"type":"text","text":"Check these files."},{"type":"text","text":"{\"type\":\"image\",\"user\":\"data\"}"},{"type":"image","mime_type":"image/png","data":"AQID"},{"type":"audio","mime_type":"audio/mp3","uri":"https://example.com/clip.mp3"},{"type":"video","mime_type":"video/mp4","data":"AQID"},{"type":"document","mime_type":"application/pdf","data":"BAUG"}]`; string(body.Input) != want {
+		t.Fatalf("input = %s", body.Input)
+	}
+}
+
+func TestR91provgDecisionSafetyBlockedRefusals(t *testing.T) {
+	m, _, _ := r91provgDecisionSetup(t, `{"prompt_feedback":{"block_reason":"SAFETY","block_reason_message":"Blocked input."},"usage":{"total_tokens":193,"total_input_tokens":193,"total_output_tokens":0}}`, 200)
+	res, err := m.DoDecide(context.Background(), r91provgDecisionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, a := range res.Answers {
+		if a.Type != "refusal" {
+			t.Fatalf("%s = %+v", id, a)
+		}
+	}
+	meta, _ := json.Marshal(res.ProviderMetadata["google"].(map[string]interface{})["promptFeedback"])
+	if string(meta) != `{"block_reason":"SAFETY","block_reason_message":"Blocked input."}` || *res.Usage.InputTokens != 193 {
+		t.Fatalf("promptFeedback = %s usage = %+v", meta, res.Usage)
+	}
+}
+
+func TestR91provgDecisionRejectsInvalidAnswers(t *testing.T) {
+	var fx map[string]map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(r91provgDecisionFixture), &fx)
+	with := func(edit func(a map[string]json.RawMessage)) string {
+		a := map[string]json.RawMessage{}
+		for k, v := range fx["answers"] {
+			a[k] = v
+		}
+		edit(a)
+		b, _ := json.Marshal(map[string]interface{}{"answers": a})
+		return string(b)
+	}
+	for label, body := range map[string]string{
+		"missing answers":  `{}`,
+		"empty answers":    `{"answers":{}}`,
+		"missing question": `{"answers":{"department":` + string(fx["answers"]["department"]) + `}}`,
+		"extra question":   with(func(a map[string]json.RawMessage) { a["extra"] = json.RawMessage(`{"type":"noul","noul":0.5}`) }),
+		"wrong question ID": with(func(a map[string]json.RawMessage) {
+			a["wrong"] = a["requestsRefund"]
+			delete(a, "requestsRefund")
+		}),
+		"mismatched type": with(func(a map[string]json.RawMessage) { a["requestsRefund"] = a["department"] }),
+		"unknown choice": with(func(a map[string]json.RawMessage) {
+			a["department"] = json.RawMessage(strings.Replace(string(a["department"]), `"choice":"billing"`, `"choice":"unknown"`, 1))
+		}),
+		"out-of-bounds score": with(func(a map[string]json.RawMessage) {
+			a["severity"] = json.RawMessage(strings.Replace(string(a["severity"]), `"score":0.8093588003103453`, `"score":3`, 1))
+		}),
+	} {
+		m, _, _ := r91provgDecisionSetup(t, body, 200)
+		_, err := m.DoDecide(context.Background(), r91provgDecisionOptions())
+		var ire *providererrors.InvalidResponseDataError
+		if !errors.As(err, &ire) {
+			t.Fatalf("%s: error = %T %v", label, err, err)
+		}
+	}
+	for _, noul := range []string{"-0.1", "1.1"} {
+		m, _, _ := r91provgDecisionSetup(t, with(func(a map[string]json.RawMessage) { a["requestsRefund"] = json.RawMessage(`{"type":"noul","noul":` + noul + `}`) }), 200)
+		_, err := m.DoDecide(context.Background(), r91provgDecisionOptions())
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.Message != "Invalid JSON response" {
+			t.Fatalf("noul %s: error = %T %v", noul, err, err)
+		}
+	}
+}
+
+func TestR91provgDecisionAbsentOptionalMetadata(t *testing.T) {
+	m, _, _ := r91provgDecisionSetup(t, `{"answers":{"department":{"type":"choice","choice":"billing","probabilities":{"billing":0.9,"technical":0.1},"confidence":null},"severity":{"type":"score","score":1,"probabilities":{"1":1},"confidence":null,"legend":null},"requestsRefund":{"type":"noul","noul":0.02,"confidence":null}},"usage":null,"prompt_feedback":null}`, 200)
+	res, err := m.DoDecide(context.Background(), r91provgDecisionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := json.Marshal(res.ProviderMetadata)
+	if res.Usage != nil || string(meta) != `{"google":{"confidence":{},"legend":{}}}` {
+		t.Fatalf("usage = %+v meta = %s", res.Usage, meta)
+	}
+}
+
+func TestR91provgDecisionRejectsBeforeRequest(t *testing.T) {
+	levels := func(n int, v interface{}) []interface{} {
+		out := make([]interface{}, n)
+		for i := range out {
+			out[i] = v
+		}
+		return out
+	}
+	many := map[string]interface{}{}
+	for i := 0; i < 256; i++ {
+		many[fmt.Sprintf("c%d", i)] = nil
+	}
+	cases := []provider.DecisionQuestion{
+		{Type: "choice", Instructions: "Choose", Criteria: map[string]interface{}{"only": nil}},
+		{Type: "choice", Instructions: "Choose", Criteria: many},
+		{Type: "score", Instructions: "Rate", Criteria: []interface{}{"One"}},
+		{Type: "score", Instructions: "Rate", Criteria: levels(256, "Level")},
+		{Type: "score", Instructions: "Rate", Criteria: []interface{}{"Low", nil}},
+		{Type: "score", Instructions: "Rate", Criteria: []interface{}{"Low", ""}},
+		{Type: "boolean", Criteria: map[string]interface{}{"true": "Yes"}},
+	}
+	m, rec, _ := r91provgDecisionSetup(t, r91provgDecisionFixture, 200)
+	state := r91provgDecisionOptions().State
+	for i, q := range cases {
+		_, err := m.DoDecide(context.Background(), provider.DecisionCallOptions{State: state, Questions: map[string]provider.DecisionQuestion{"question": q}})
+		var ae *providererrors.InvalidArgumentError
+		if !errors.As(err, &ae) {
+			t.Fatalf("case %d: error = %T %v", i, err, err)
+		}
+	}
+	if _, err := m.DoDecide(context.Background(), provider.DecisionCallOptions{State: state, Questions: map[string]provider.DecisionQuestion{}}); err == nil {
+		t.Fatal("empty questions accepted")
+	}
+	_, err := m.DoDecide(context.Background(), provider.DecisionCallOptions{State: state, Questions: map[string]provider.DecisionQuestion{"box": {Type: "box", Instructions: "Find a box"}}})
+	var ue *providererrors.DecisionUnsupportedQuestionTypeError
+	if !errors.As(err, &ue) {
+		t.Fatalf("box: %T %v", err, err)
+	}
+	for _, mt := range []string{"text/plain", "application/octet-stream"} {
+		opts := r91provgDecisionOptions()
+		opts.State = []provider.DecisionStatePart{provider.DecisionFilePart(types.FileContent{MediaType: mt, FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}})}
+		_, err := m.DoDecide(context.Background(), opts)
+		var uf *providererrors.UnsupportedFunctionalityError
+		if !errors.As(err, &uf) {
+			t.Fatalf("%s: %T %v", mt, err, err)
+		}
+	}
+	opts := r91provgDecisionOptions()
+	opts.State = []provider.DecisionStatePart{provider.DecisionFilePart(types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"google": "files/image"}}})}
+	_, err = m.DoDecide(context.Background(), opts)
+	var uf *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &uf) {
+		t.Fatalf("reference: %T %v", err, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := m.DoDecide(ctx, r91provgDecisionOptions()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("aborted: %v", err)
+	}
+	if rec.calls != 0 {
+		t.Fatalf("requests sent: %d", rec.calls)
+	}
+}
+
+func TestR91provgDecisionGoogleAPIError(t *testing.T) {
+	m, rec, _ := r91provgDecisionSetup(t, `{"error":{"code":403,"message":"EAP access required","status":"PERMISSION_DENIED"}}`, 403)
+	_, err := m.DoDecide(context.Background(), r91provgDecisionOptions())
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "EAP access required" || pe.StatusCode != 403 || rec.calls != 1 {
+		t.Fatalf("error = %T %v calls=%d", err, err, rec.calls)
+	}
+}
+
+func TestR91provgDecisionDeprecatedFactoryAndNames(t *testing.T) {
+	_, rec, p := r91provgDecisionSetup(t, r91provgDecisionFixture, 200)
+	em, err := p.EvaluationModel(ModelGeminiDecision1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := em.DoEvaluate(context.Background(), r91provgDecisionOptions())
+	if err != nil || res.Answers["department"].Choice != "billing" || rec.path != "/v1beta/decisions" {
+		t.Fatalf("evaluate = %+v, %v", res, err)
+	}
+	custom := New(Config{APIKey: "k", Name: "custom.generative-ai"})
+	cm, _ := custom.DecisionModel("custom-model")
+	if cm.Provider() != "custom.decision" || cm.ModelID() != "custom-model" {
+		t.Fatalf("custom = %s %s", cm.Provider(), cm.ModelID())
 	}
 }
