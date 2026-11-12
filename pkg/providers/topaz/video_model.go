@@ -196,7 +196,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	var uploadBytes []byte
-	if input.Type == "url" {
+	// TS `bytes != null` for every file input: an empty file is uploaded
+	// too (a zero-length Uint8Array is not nullish).
+	upload := input.Type != "url"
+	if !upload {
 		// Topaz fetches URL inputs itself, so, like other providers, the
 		// bytes never need to pass through the SDK.
 		sourceBody["external"] = map[string]interface{}{"provider": "s3", "presignedUrl": input.URL}
@@ -252,7 +255,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, providererrors.NewInvalidResponseDataError(nil, "Topaz did not return a requestId for the video request.")
 	}
 
-	if uploadBytes != nil {
+	if upload {
 		if err := m.uploadVideo(callCtx, requestID, uploadBytes, created.UploadURLs, contentType); err != nil {
 			// Canceling before processing starts refunds any reserved
 			// credits.

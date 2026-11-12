@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -240,7 +241,7 @@ func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpt
 		return nil, "", err
 	}
 
-	if file.Type == "url" && file.URL != "" {
+	if file.Type == "url" {
 		// Topaz fetches the source itself when given a URL, so the bytes
 		// never need to pass through the SDK.
 		if err := providerutils.WriteFormDataField(writer, "source_url", file.URL); err != nil {
@@ -404,17 +405,19 @@ func (m *ImageModel) waitForCompletion(ctx context.Context, processID string, he
 			return nil, err
 		}
 		// TS reports the current poll's `status ?? 'unknown'`, not the last
-		// non-empty one.
+		// non-empty one; an empty string is not nullish.
 		lastStatus = "unknown"
-		if status.Status != "" {
-			lastStatus = status.Status
+		current := ""
+		if status.Status != nil {
+			current = *status.Status
+			lastStatus = current
 		}
 
-		if status.Status == "Completed" {
+		if current == "Completed" {
 			return status, nil
 		}
-		if status.Status == "Failed" || status.Status == "Cancelled" {
-			return nil, &Error{Name: "TOPAZ_IMAGE_ENHANCEMENT_FAILED", Message: "Topaz image enhancement " + providerutils.JSToLower(status.Status) + " for process " + processID + "."}
+		if current == "Failed" || current == "Cancelled" {
+			return nil, &Error{Name: "TOPAZ_IMAGE_ENHANCEMENT_FAILED", Message: "Topaz image enhancement " + providerutils.JSToLower(current) + " for process " + processID + "."}
 		}
 
 		if time.Now().Add(pollInterval).After(deadline) {
@@ -523,6 +526,13 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 
 	result, err := fileutil.DownloadWithMetadata(ctx, downloadResp.DownloadURL, downloadOpts)
 	if err != nil {
+		// TS getFromApi({failedResponseHandler: topazFailedResponseHandler}):
+		// a non-2xx response from the download URL is the Topaz APICallError
+		// built from its body, not a DownloadError.
+		var dl *providererrors.DownloadError
+		if errors.As(err, &dl) && dl.StatusCode >= 100 && (dl.StatusCode < 200 || dl.StatusCode >= 300) {
+			return nil, nil, newTopazAPIError(dl.StatusCode, []byte(textdecode.UTF8(dl.Body)), http.Header(dl.Headers))
+		}
 		return nil, nil, err
 	}
 
@@ -537,7 +547,7 @@ type topazImageSubmitResponse struct {
 type topazImageStatusResponse struct {
 	// Documented values are Pending, Processing, Completed, Cancelled and
 	// Failed. Unknown values keep polling rather than failing the parse.
-	Status       string   `json:"status"`
+	Status       *string  `json:"status"`
 	Credits      *float64 `json:"credits"`
 	OutputWidth  *float64 `json:"output_width"`
 	OutputHeight *float64 `json:"output_height"`
