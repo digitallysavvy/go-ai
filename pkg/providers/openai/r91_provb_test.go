@@ -81,3 +81,16 @@ func TestR91provbTypedOptionReaders(t *testing.T) {
 		}
 	})
 }
+
+// PB-03 (provc-04): an OpenAI-compatible wrapper has no input byte budget
+// (TS OpenAICompatibleEmbeddingModel has none); native OpenAI keeps 300000.
+func TestR91provbCompatEmbeddingByteBudget(t *testing.T) {
+	native, _ := New(Config{APIKey: "k"}).EmbeddingModel("text-embedding-3-small")
+	compat, _ := New(Config{APIKey: "k", Name: "acme", OpenAICompatible: true}).EmbeddingModel("e")
+	if got := native.(*EmbeddingModel).MaxInputBytesPerCall(); got != 300_000 {
+		t.Fatalf("native = %d", got)
+	}
+	if got := compat.(*EmbeddingModel).MaxInputBytesPerCall(); got != 0 {
+		t.Fatalf("compat = %d, want 0", got)
+	}
+}

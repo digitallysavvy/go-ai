@@ -51,7 +51,14 @@ func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
 // MaxInputBytesPerCall returns the conservative UTF-8 input byte budget for a
 // single embeddings request. ai.EmbedMany uses it to split large requests.
 // Mirrors the TS SDK's EXPERIMENTAL_EMBEDDING_MODEL_MAX_INPUT_BYTES_PER_CALL = 300_000.
+// An OpenAI-compatible wrapper (Config.OpenAICompatible: Baseten, DeepInfra,
+// Vertex MaaS, ...) has no byte budget, like TS
+// OpenAICompatibleEmbeddingModel (openai-compatible-embedding-model.ts:61):
+// it returns 0, so EmbedMany splits only by MaxEmbeddingsPerCall.
 func (m *EmbeddingModel) MaxInputBytesPerCall() int {
+	if m.provider.config.OpenAICompatible {
+		return 0
+	}
 	return 300_000
 }
 
