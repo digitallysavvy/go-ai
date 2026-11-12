@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -342,3 +343,75 @@ func TestR92streamValidateUIMessagesBoundedIssues(t *testing.T) {
 		}
 	}
 }
+
+// TS harness-stream-text-result.ts createOutputTransformStream: with an
+// output, the turn's first text block feeds the partial output (not reset at
+// step boundaries), its deltas are published with each changed partial and
+// flushed at text-end, and other blocks pass through.
+func TestR92streamExternalOutputStage(t *testing.T) {
+	answer := ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object", "properties": map[string]interface{}{"answer": map[string]interface{}{"type": "string"}},
+	})})
+	finishStep := provider.StreamChunk{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop, Usage: r71streamUsage}
+	finish := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r71streamUsage}
+	run := func(parts []provider.StreamChunk) (*StreamTextResult, []string) {
+		r := NewStreamTextResultFromParts(context.Background(), &r92streamParts{parts: parts}, ExternalStreamOptions{Output: answer, TerminalFinishClosesTurn: true})
+		var deltas []string
+		for _, c := range r91streamDrain(r.Stream()) {
+			if c.Type == provider.ChunkTypeText {
+				deltas = append(deltas, c.ID+":"+c.Text)
+			}
+		}
+		_ = r.Err()
+		return r, deltas
+	}
+	r, deltas := run([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "s"},
+		{Type: provider.ChunkTypeText, ID: "s", Text: `{"answer":"yes"`},
+		{Type: provider.ChunkTypeText, ID: "s", Text: ` `},
+		{Type: provider.ChunkTypeText, ID: "s", Text: `}`},
+		{Type: provider.ChunkTypeTextEnd, ID: "s"},
+		finishStep, finish,
+	})
+	if got := r92streamJSON(deltas); got != `["s:{\"answer\":\"yes\"","s: }"]` {
+		t.Fatalf("deltas = %s", got)
+	}
+	if got := r92streamJSON(r.PartialOutput()); got != `{"answer":"yes"}` {
+		t.Fatalf("partial = %s", got)
+	}
+	// A tool step's text block comes first: the final step's JSON block is
+	// not the turn's first text block, so it publishes no partial.
+	r, _ = run([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "a"},
+		{Type: provider.ChunkTypeText, ID: "a", Text: "Let me check."},
+		{Type: provider.ChunkTypeTextEnd, ID: "a"},
+		finishStep,
+		{Type: provider.ChunkTypeTextStart, ID: "b"},
+		{Type: provider.ChunkTypeText, ID: "b", Text: `{"answer":"yes"}`},
+		{Type: provider.ChunkTypeTextEnd, ID: "b"},
+		finishStep, finish,
+	})
+	if r.PartialOutput() != nil {
+		t.Fatalf("partial = %#v, want none", r.PartialOutput())
+	}
+	if got := r92streamJSON(r.Output()); got != `{"answer":"yes"}` {
+		t.Fatalf("output = %s", got)
+	}
+}
+
+// r92streamParts is a TextStream over fixed parts.
+type r92streamParts struct {
+	parts []provider.StreamChunk
+	i     int
+}
+
+func (s *r92streamParts) Next() (*provider.StreamChunk, error) {
+	if s.i >= len(s.parts) {
+		return nil, io.EOF
+	}
+	c := s.parts[s.i]
+	s.i++
+	return &c, nil
+}
+func (s *r92streamParts) Err() error   { return nil }
+func (s *r92streamParts) Close() error { return nil }
