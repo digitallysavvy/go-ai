@@ -562,16 +562,16 @@ func TestR94streamTranscribeTelemetryEventsConsumedByteCount(t *testing.T) {
 	}
 }
 
-// r94streamSettlesWithin reports whether fn returns within d, and its
-// error.
-func r94streamSettlesWithin(d time.Duration, fn func() error) (bool, error, chan error) {
+// r94streamSettlesWithin reports whether fn returns within d; when it does
+// not, its error arrives on the returned channel.
+func r94streamSettlesWithin(d time.Duration, fn func() error) (bool, chan error) {
 	done := make(chan error, 1)
 	go func() { done <- fn() }()
 	select {
-	case err := <-done:
-		return true, err, done
+	case <-done:
+		return true, done
 	case <-time.After(d):
-		return false, nil, done
+		return false, done
 	}
 }
 
@@ -602,7 +602,7 @@ func TestR94streamAccessorsWaitForFullStreamReader(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		settled, _, done := r94streamSettlesWithin(quiet, func() error { _, err := r.Text(); return err })
+		settled, done := r94streamSettlesWithin(quiet, func() error { _, err := r.Text(); return err })
 		if settled {
 			t.Fatal("Text() settled before the FullStream reader pulled")
 		}
@@ -638,7 +638,7 @@ func TestR94streamAccessorsWaitForFullStreamReader(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		settled, _, done := r94streamSettlesWithin(quiet, func() error { _, err := r.TranslationText(); return err })
+		settled, done := r94streamSettlesWithin(quiet, func() error { _, err := r.TranslationText(); return err })
 		if settled {
 			t.Fatal("TranslationText() settled before the FullStream reader pulled")
 		}
@@ -672,7 +672,7 @@ func TestR94streamAccessorsWaitForFullStreamReader(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		settled, _, done := r94streamSettlesWithin(quiet, func() error { _, err := r.Usage(); return err })
+		settled, done := r94streamSettlesWithin(quiet, func() error { _, err := r.Usage(); return err })
 		if settled {
 			t.Fatal("Usage() settled before the FullStream reader pulled")
 		}
