@@ -375,7 +375,10 @@ func mediaSourceBlock(payload bedrockFilePayload) map[string]interface{} {
 // ─── Cache points ──────────────────────────────────────────────────────────
 
 func bedrockProviderOptionMap(providerOptions map[string]interface{}, providerName string) map[string]interface{} {
-	raw, ok := providerOptions[providerName].(map[string]interface{})
+	// Go-typed literals (map[string]string, map[string]bool, ...) are read
+	// through their JSON form.
+	value, _ := normalizedNamespace(providerOptions, providerName)
+	raw, ok := value.(map[string]interface{})
 	if !ok {
 		return nil
 	}
@@ -525,8 +528,8 @@ func bedrockReasoningMetadata(part types.ReasoningContent) (signature string, ha
 // InvalidArgumentError.
 func bedrockPartOptions(providerOptions map[string]interface{}) (map[string]interface{}, string, error) {
 	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw, present := providerOptions[providerName]
-		if !present || raw == nil {
+		raw, present := normalizedNamespace(providerOptions, providerName)
+		if !present {
 			continue
 		}
 		m, ok := raw.(map[string]interface{})

@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -71,10 +70,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 
 	resp, err := internalhttp.WithFetchRedirects(m.provider.Client().HTTPClient()).Do(req)
 	if err != nil {
-		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
-			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
-		}
-		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
+		// TS handleFetchError: a rejected fetch is returned unchanged, a
+		// network failure is the retryable "Cannot connect to API" error.
+		return nil, providerErrorFromTransport(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	respBody, err := readJSONResponseBody(resp.Body)
@@ -106,10 +104,12 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 }
 
 func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[string]interface{}, error) {
-	if err := validateRerankProviderOptions(opts.ProviderOptions); err != nil {
+	// Go-typed option literals are read through their JSON form.
+	providerOptions := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	if err := validateRerankProviderOptions(providerOptions); err != nil {
 		return nil, err
 	}
-	options := bedrockRerankingOptions(opts.ProviderOptions)
+	options := bedrockRerankingOptions(providerOptions)
 	sources, err := bedrockRerankSources(opts.Documents)
 	if err != nil {
 		return nil, err

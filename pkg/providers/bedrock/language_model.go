@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
@@ -79,6 +80,9 @@ var legacyClaudeThinkingPattern = regexp.MustCompile(`claude-(?:instant|v?2|3-(?
 // getArgs ports TS amazon-bedrock-chat-language-model.ts#getArgs.
 func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, error) {
 	warnings := []types.Warning{}
+	// Go-typed option literals are read through their JSON form, once,
+	// before any validation or type assertion.
+	opts = normalizeCallOptions(opts)
 
 	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
@@ -1027,8 +1031,21 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	return result, nil
 }
 
+// providerErrorFromTransport maps a failed raw http.Client Do call to the TS
+// postJsonToApi / handleFetchError result (provider-utils
+// handle-fetch-error.ts:42-100): a rejected fetch (a signing or credential
+// failure of the provider's transport) is returned unchanged, cancellation
+// and timeouts stay as they are, and a network failure is the retryable
+// "Cannot connect to API: <cause>" APICallError, here a ProviderError.
 func providerErrorFromTransport(err error) error {
-	return fmt.Errorf("amazon-bedrock request failed: %w", err)
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause
+	}
+	mapped := internalhttp.TransportError(err)
+	if mapped == err {
+		return err
+	}
+	return providererrors.NewProviderError("amazon-bedrock", 0, "", mapped.Error(), mapped)
 }
 
 // ─── Response conversion ────────────────────────────────────────────────────

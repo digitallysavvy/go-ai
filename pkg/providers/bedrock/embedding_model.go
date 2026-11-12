@@ -8,6 +8,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"math"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -115,10 +116,12 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 func (m *EmbeddingModel) embedValues(ctx context.Context, values []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	embeddingOptions := m.options
 	if opts != nil {
-		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+		// Go-typed option literals are read through their JSON form.
+		providerOptions := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		if err := validateEmbeddingProviderOptions(providerOptions); err != nil {
 			return nil, err
 		}
-		embeddingOptions = mergeEmbeddingOptions(embeddingOptions, bedrockEmbeddingOptions(opts.ProviderOptions))
+		embeddingOptions = mergeEmbeddingOptions(embeddingOptions, bedrockEmbeddingOptions(providerOptions))
 	}
 
 	var reqBody map[string]interface{}
@@ -237,10 +240,9 @@ func (m *EmbeddingModel) embedValues(ctx context.Context, values []string, opts 
 	// Make the request using provider-scoped transport.
 	resp, err := internalhttp.WithFetchRedirects(m.provider.Client().HTTPClient()).Do(req)
 	if err != nil {
-		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
-			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
-		}
-		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
+		// TS handleFetchError: a rejected fetch is returned unchanged, a
+		// network failure is the retryable "Cannot connect to API" error.
+		return nil, providerErrorFromTransport(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -472,9 +474,17 @@ func intOption(value interface{}) (int, bool) {
 	switch v := value.(type) {
 	case int:
 		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
 	case int32:
 		return int(v), true
 	case int64:
+		return int(v), true
+	case uint, uint8, uint16, uint32, uint64:
+		return int(reflect.ValueOf(v).Uint()), true
+	case float32:
 		return int(v), true
 	case float64:
 		return int(v), true

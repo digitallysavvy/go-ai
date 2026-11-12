@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
+	"sort"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -112,6 +114,13 @@ func (m *SpeechModel) ModelID() string {
 // share this interface; providerOptions.elevenlabs.inputs generates a
 // multi-voice dialogue with an eleven_v3 or eleven_v4 model.
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+	if opts != nil && opts.ProviderOptions != nil {
+		// Go-typed option literals are read through their JSON form, once,
+		// before validation (the caller's options are not modified).
+		normalized := *opts
+		normalized.ProviderOptions = normalizeProviderOptions(opts.ProviderOptions)
+		opts = &normalized
+	}
 	if err := validateSpeechProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
@@ -126,11 +135,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		path += "/with-timestamps"
 	}
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    req.body,
-		Query:   req.query,
-		Headers: opts.Headers,
+		Method:       http.MethodPost,
+		Path:         path,
+		Body:         req.body,
+		SearchParams: speechSearchParams(req.query),
+		Headers:      opts.Headers,
 	})
 	if err != nil {
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS postJsonToApi lets a transport failure propagate unchanged
@@ -207,6 +216,33 @@ type speechRequest struct {
 	// withTimestamps requests the /with-timestamps variant of a speech or
 	// dialogue endpoint (TS 48ab95d62a).
 	withTimestamps bool
+}
+
+// speechQueryOrder is the order TS builds the speech, dialogue, music and
+// sound-effects queryParams object in (elevenlabs-speech-model.ts 178-260,
+// 337-341, 444-448), which new URLSearchParams(queryParams) keeps (:555).
+var speechQueryOrder = []string{"output_format", "enable_logging"}
+
+// speechSearchParams encodes query in the TS insertion order; any other key
+// follows in sorted order.
+func speechSearchParams(query map[string]string) *internalhttp.SearchParams {
+	params := internalhttp.NewSearchParams()
+	for _, key := range speechQueryOrder {
+		if v, ok := query[key]; ok {
+			params.Append(key, v)
+		}
+	}
+	rest := make([]string, 0, len(query))
+	for key := range query {
+		if !containsString(speechQueryOrder, key) {
+			rest = append(rest, key)
+		}
+	}
+	sort.Strings(rest)
+	for _, key := range rest {
+		params.Append(key, query[key])
+	}
+	return params
 }
 
 // buildRequest prepares the request for the model kind: music, sound effects,
@@ -537,14 +573,14 @@ func stringSlice(value interface{}) ([]string, bool) {
 
 func numberAsFloat(value interface{}) (float64, bool) {
 	switch n := value.(type) {
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case float32:
-		return float64(n), true
 	case float64:
 		return n, true
+	case float32:
+		return float64(n), true
+	case int, int8, int16, int32, int64:
+		return float64(reflect.ValueOf(n).Int()), true
+	case uint, uint8, uint16, uint32, uint64:
+		return float64(reflect.ValueOf(n).Uint()), true
 	default:
 		return 0, false
 	}

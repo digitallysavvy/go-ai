@@ -246,6 +246,12 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	if !isRealtimeTranscriptionModelID(m.modelID) {
 		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("streaming transcription with %s", m.modelID)}
 	}
+	if opts.ProviderOptions != nil {
+		// Go-typed option literals are read through their JSON form.
+		normalized := *opts
+		normalized.ProviderOptions = normalizeProviderOptions(opts.ProviderOptions)
+		opts = &normalized
+	}
 
 	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
 		return nil, err

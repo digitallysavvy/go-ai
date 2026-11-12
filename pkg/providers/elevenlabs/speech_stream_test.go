@@ -575,9 +575,9 @@ func TestSpeechGenerate_WarnsAboutStreamingAndDialogueOptions(t *testing.T) {
 	})
 	if len(warnings) != 2 ||
 		warnings[0].Feature != "providerOptions.elevenlabs.streaming" ||
-		warnings[0].Details != "Streaming options apply only to streaming speech (ExperimentalStreamSpeech) and were ignored." ||
+		warnings[0].Details != "Streaming options apply only to streaming speech (experimental_streamSpeech) and were ignored." ||
 		warnings[1].Feature != "providerOptions.elevenlabs.dialogue" ||
-		warnings[1].Details != "Dialogue options apply only to streaming speech (ExperimentalStreamSpeech) and were ignored." {
+		warnings[1].Details != "Dialogue options apply only to streaming speech (experimental_streamSpeech) and were ignored." {
 		t.Fatalf("warnings = %+v", warnings)
 	}
 }

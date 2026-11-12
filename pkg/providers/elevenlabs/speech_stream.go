@@ -84,7 +84,7 @@ type textSegment struct {
 
 // getNewTurn reads providerOptions.elevenlabs.newTurn from a text part.
 func getNewTurn(part *provider.SpeechStreamTextPart) (bool, error) {
-	opts, _ := part.ProviderOptions["elevenlabs"].(map[string]interface{})
+	opts, _ := normalizeProviderOptions(part.ProviderOptions)["elevenlabs"].(map[string]interface{})
 	v, present := opts["newTurn"]
 	if !present || v == nil {
 		return false, nil

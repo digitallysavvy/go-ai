@@ -2,6 +2,7 @@ package mantle
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
@@ -86,15 +87,20 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err)) //nolint:staticcheck // message text matches TS
 		}
-		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields"))
+		// TS signs with the provider's credentials as returned; aws4fetch's
+		// AwsV4Signer then throws its TypeError for a missing key.
+		if creds.AccessKeyID == "" {
+			return nil, internalhttp.RejectFetch(errors.New("accessKeyId is a required option"))
+		}
+		if creds.SecretAccessKey == "" {
+			return nil, internalhttp.RejectFetch(errors.New("secretAccessKey is a required option"))
 		}
 		signer = bedrock.NewAWSSignerForService(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region, mantleSigningService)
 	} else {
 		accessKeyID := firstNonEmpty(t.accessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
 		secretAccessKey := firstNonEmpty(t.secretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
 		if accessKeyID == "" {
-			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in settings\n3. Use a CredentialProvider function\n4. Use API key authentication with AWS_BEARER_TOKEN_BEDROCK or APIKey\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.")) //nolint:staticcheck // message text matches TS
+			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide accessKeyId and secretAccessKey in options\n3. Use a credentialProvider function\n4. Use API key authentication with AWS_BEARER_TOKEN_BEDROCK or apiKey option\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.")) //nolint:staticcheck // message text matches TS
 		}
 		if secretAccessKey == "" {
 			return nil, internalhttp.RejectFetch(fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.")) //nolint:staticcheck // message text matches TS

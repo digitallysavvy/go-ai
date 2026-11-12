@@ -73,22 +73,34 @@ type preparedTools struct {
 // the prompt provider-options map shape so the shared cache-control validator
 // can read cacheControl from it.
 func toolCacheControlOptions(t types.Tool) map[string]interface{} {
-	switch o := t.ProviderOptions.(type) {
-	case *ToolOptions:
-		if o != nil && o.CacheControl != nil {
+	if o := typedToolOptions(t.ProviderOptions); o != nil {
+		if o.CacheControl != nil {
 			return map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": o.CacheControl}}
 		}
-	case map[string]interface{}:
+		return nil
+	}
+	// Any Go map type is read through its JSON form (typed-literal ruling).
+	o, _ := normalizedOptionsMap(t.ProviderOptions)
+	return o
+}
+
+// typedToolOptions returns the tool's *ToolOptions (or ToolOptions value)
+// provider options, or nil.
+func typedToolOptions(v interface{}) *ToolOptions {
+	switch o := v.(type) {
+	case *ToolOptions:
 		return o
+	case ToolOptions:
+		return &o
 	}
 	return nil
 }
 
 func toolOptionsOf(t types.Tool) *ToolOptions {
-	switch o := t.ProviderOptions.(type) {
-	case *ToolOptions:
+	if o := typedToolOptions(t.ProviderOptions); o != nil {
 		return o
-	case map[string]interface{}:
+	}
+	if o, ok := normalizedOptionsMap(t.ProviderOptions); ok {
 		anth, _ := o["anthropic"].(map[string]interface{})
 		if anth == nil {
 			return nil

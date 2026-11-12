@@ -96,14 +96,14 @@ func speechCommonWarnings(o SpeechModelOptions) []types.Warning {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "providerOptions.elevenlabs.streaming",
-			Details: "Streaming options apply only to streaming speech (ExperimentalStreamSpeech) and were ignored.",
+			Details: "Streaming options apply only to streaming speech (experimental_streamSpeech) and were ignored.",
 		})
 	}
 	if o.Dialogue != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "providerOptions.elevenlabs.dialogue",
-			Details: "Dialogue options apply only to streaming speech (ExperimentalStreamSpeech) and were ignored.",
+			Details: "Dialogue options apply only to streaming speech (experimental_streamSpeech) and were ignored.",
 		})
 	}
 	for _, option := range append(append([]string{}, musicOnlyOptions...), soundEffectsOnlyOptions...) {

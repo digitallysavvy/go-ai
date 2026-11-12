@@ -36,6 +36,10 @@ const (
 type Provider struct {
 	config Config
 	client *http.Client
+	// clientConfig is the configuration client was built from, kept so a
+	// request that must not send one of the default headers (the batch
+	// start's anthropic-beta) can use a sibling client without it.
+	clientConfig http.Config
 	// batchToolNames keeps, for batches this provider started, the custom
 	// names of id-named provider tools so their batch results come back
 	// under the tool's Name (see batchToolNameStore).
@@ -268,18 +272,20 @@ func New(cfg Config) *Provider {
 		mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent(uaName))
 	}
 
-	client := http.NewClient(http.Config{
+	clientConfig := http.Config{
 		BaseURL:    baseURL,
 		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
 		// TS getHeaders runs per request: the key is (re)loaded then, and a
 		// missing key fails the request with a LoadAPIKeyError.
 		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) { return requestAuthHeaders(ctx, cfg) },
-	})
+	}
+	client := http.NewClient(clientConfig)
 
 	return &Provider{
 		config:         cfg,
 		client:         client,
+		clientConfig:   clientConfig,
 		batchToolNames: &batchToolNameStore{},
 	}
 }

@@ -128,6 +128,7 @@ func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []s
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts = normalizeCallOptions(opts)
 	ctx, req, err := m.prepareCallRequest(ctx, opts, false)
 	if err != nil {
 		return nil, err
@@ -177,6 +178,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	opts = normalizeCallOptions(opts)
 	ctx, req, err := m.prepareCallRequest(ctx, opts, true)
 	if err != nil {
 		return nil, err
@@ -2443,7 +2445,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Content   []anthropicContent          `json:"content"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &msg); err == nil {
+			// TS z.number() usage counts: a fractional count is truncated
+			// (providerutils.UnmarshalChunk), not a failed decode.
+			if err := providerutils.UnmarshalChunk([]byte(event.Data), &msg); err == nil {
 				if s.isMessageOpen {
 					if s.activeMessageID == msg.Message.ID {
 						continue
@@ -2905,7 +2909,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// Container info (with skills, if any) from message_delta
 				Container *anthropicContainerResponse `json:"container,omitempty"`
 			}
-			if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
+			if err := providerutils.UnmarshalChunk([]byte(event.Data), &delta); err != nil {
 				return nil, fmt.Errorf("failed to parse message delta: %w", err)
 			}
 

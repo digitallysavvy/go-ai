@@ -72,7 +72,8 @@ func asFileContent(part types.ContentPart) (types.FileContent, bool) {
 // fileCitationsEnabled reports whether providerOptions.anthropic.citations.enabled
 // is explicitly true.
 func fileCitationsEnabled(providerOptions map[string]interface{}) bool {
-	anthropicOpts, ok := providerOptions["anthropic"].(map[string]interface{})
+	// Go-typed literals are read through their JSON form.
+	anthropicOpts, ok := normalizedOptionsMap(providerOptions["anthropic"])
 	if !ok {
 		return false
 	}
