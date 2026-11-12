@@ -54,19 +54,11 @@ func handleError(err error) error {
 	return err
 }
 
-// flattenHeaders joins multi-value HTTP headers into single strings (the last
-// Set-Cookie line wins, providerutils.FetchHeaderEntry), matching
-// providerutils.ExtractHeaders's convention for other providers' response
-// metadata.
+// flattenHeaders is providerutils.ExtractHeaders (TS extractResponseHeaders:
+// repeated values joined, the last Set-Cookie line, each byte decoded as one
+// character; r91 provc-06).
 func flattenHeaders(h map[string][]string) map[string]string {
-	if len(h) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		out[http.CanonicalHeaderKey(k)] = providerutils.FetchHeaderEntry(k, vs)
-	}
-	return out
+	return providerutils.ExtractHeaders(h)
 }
 
 // errorMessageAndCode mirrors the TS revaiFailedResponseHandler: a body matching

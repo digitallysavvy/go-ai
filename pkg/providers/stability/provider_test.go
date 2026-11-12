@@ -3,6 +3,7 @@ package stability
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -70,7 +71,7 @@ func TestImageModelBuildAndConvert(t *testing.T) {
 		Artifacts: []struct {
 			Base64       string `json:"base64"`
 			FinishReason string `json:"finishReason"`
-			Seed         int    `json:"seed"`
+			Seed         int64  `json:"seed"`
 		}{
 			{Base64: encoded},
 		},
@@ -96,11 +97,11 @@ func TestStabilityImageSizeSeedAndAllArtifacts(t *testing.T) {
 	resp.Artifacts = append(resp.Artifacts, struct {
 		Base64       string `json:"base64"`
 		FinishReason string `json:"finishReason"`
-		Seed         int    `json:"seed"`
+		Seed         int64  `json:"seed"`
 	}{Base64: "YQ=="}, struct {
 		Base64       string `json:"base64"`
 		FinishReason string `json:"finishReason"`
-		Seed         int    `json:"seed"`
+		Seed         int64  `json:"seed"`
 	}{Base64: "Yg=="})
 	res, err := m.convertResponse(resp)
 	if err != nil || len(res.Images) != 2 || string(res.Images[1]) != "b" {
@@ -130,5 +131,14 @@ func TestStabilityDoGenerateResponseMetadataAndWarnings(t *testing.T) {
 	}
 	if _, err := model.DoGenerate(context.Background(), nil); err != nil {
 		t.Fatalf("nil options: %v", err)
+	}
+}
+
+// provc-02: a uint32 seed above 2^31-1 decodes (an int field failed the whole
+// response decode on 32-bit builds).
+func TestR91integLargeSeedDecodes(t *testing.T) {
+	var resp stabilityImageResponse
+	if err := json.Unmarshal([]byte(`{"artifacts":[{"base64":"YQ==","finishReason":"SUCCESS","seed":4294967295}]}`), &resp); err != nil || resp.Artifacts[0].Seed != 4294967295 {
+		t.Fatalf("decode = %+v, %v", resp, err)
 	}
 }

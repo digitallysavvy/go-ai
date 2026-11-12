@@ -125,7 +125,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 	if submission.Status == "failed" {
 		// TS AISDKError TranscriptionJobSubmissionFailed (cause: the response).
-		failure := providererrors.NewProviderError("revai", 0, "", "Failed to submit transcription job to Rev.ai", nil)
+		failure := providererrors.NewProviderError("revai", 0, "TranscriptionJobSubmissionFailed", "Failed to submit transcription job to Rev.ai", nil)
 		failure.Data = submission
 		return nil, failure
 	}
@@ -209,7 +209,7 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, he
 			return &status, nil
 		case "failed":
 			// TS AISDKError TranscriptionJobFailed (cause: the job response).
-			failure := providererrors.NewProviderError("revai", 0, "", "Transcription job failed", nil)
+			failure := providererrors.NewProviderError("revai", 0, "TranscriptionJobFailed", "Transcription job failed", nil)
 			failure.Data = status
 			return nil, failure
 		}
@@ -249,11 +249,10 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	for k, v := range revaiOpts {
 		config[k] = v
 	}
-	configBytes, err := json.Marshal(config)
-	if err != nil {
-		return nil, "", err
-	}
-	if err := providerutils.WriteFormDataField(writer, "config", string(configBytes)); err != nil {
+	// TS JSON.stringify(transcriptionModelOptions): transcriber, then the
+	// options in formDataConfig order (r91 provc-07).
+	configJSON := providerutils.StringifyOrdered(config, map[string][]string{"": append([]string{"transcriber"}, revaiConfigKeys...)})
+	if err := providerutils.WriteFormDataField(writer, "config", configJSON); err != nil {
 		return nil, "", err
 	}
 

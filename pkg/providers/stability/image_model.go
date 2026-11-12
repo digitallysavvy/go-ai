@@ -152,7 +152,7 @@ type stabilityImageResponse struct {
 	Artifacts []struct {
 		Base64       string `json:"base64"`
 		FinishReason string `json:"finishReason"`
-		Seed         int    `json:"seed"`
+		Seed         int64  `json:"seed"` // uint32 seeds overflow int on 32-bit builds (r91 provc-02)
 	} `json:"artifacts"`
 }
 
