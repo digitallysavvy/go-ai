@@ -1072,7 +1072,7 @@ func TestMCPClientElicitationRequestHandlerErrorRespondsInternalError(t *testing
 		JSONRpc: "2.0",
 		ID:      "elicit-4",
 		Method:  "elicitation/create",
-		Params:  json.RawMessage(`{"message":"hi"}`),
+		Params:  json.RawMessage(`{"message":"hi","requestedSchema":{}}`), // TS: requestedSchema must be present (z.unknown() in a zod 4 object)
 	}
 
 	response := awaitResponseTo(t, transport, "elicit-4")
@@ -1121,7 +1121,7 @@ func TestMCPClientElicitationRequestInvalidActionRespondsInternalError(t *testin
 		JSONRpc: "2.0",
 		ID:      "elicit-5",
 		Method:  "elicitation/create",
-		Params:  json.RawMessage(`{"message":"hi"}`),
+		Params:  json.RawMessage(`{"message":"hi","requestedSchema":{}}`), // TS: requestedSchema must be present (z.unknown() in a zod 4 object)
 	}
 
 	response := awaitResponseTo(t, transport, "elicit-5")
@@ -1157,7 +1157,7 @@ func TestMCPClientElicitationHandlerCanMakeNestedClientCall(t *testing.T) {
 		JSONRpc: "2.0",
 		ID:      "elicit-6",
 		Method:  "elicitation/create",
-		Params:  json.RawMessage(`{"message":"hi"}`),
+		Params:  json.RawMessage(`{"message":"hi","requestedSchema":{}}`), // TS: requestedSchema must be present (z.unknown() in a zod 4 object)
 	}
 
 	select {

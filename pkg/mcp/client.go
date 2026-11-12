@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -1418,16 +1420,22 @@ func (c *MCPClient) handleElicitationRequest(msg *MCPMessage) {
 		return
 	}
 
-	request, err := parseElicitationRequestParams(msg.Params)
-	if err != nil {
-		response := CreateErrorResponse(msg.ID, ErrorCodeInvalidParams, fmt.Sprintf("Invalid elicitation request: %s", err.Error()), nil)
+	request, invalid, issues := parseElicitationRequestParams(msg.Params)
+	if invalid != "" {
+		response := CreateErrorResponse(msg.ID, ErrorCodeInvalidParams, "Invalid elicitation request: "+invalid, issues)
 		_ = c.transport.Send(c.ctx, response)
 		return
 	}
 
 	result, err := handler(c.ctx, request)
-	if err == nil && result.Action != "accept" && result.Action != "decline" && result.Action != "cancel" {
-		err = fmt.Errorf(`invalid elicit result: action must be "accept", "decline", or "cancel"`)
+	if err == nil {
+		// TS ElicitResultSchema.parse: the ZodError message.
+		encoded, encErr := json.Marshal(result)
+		if encErr != nil {
+			err = encErr
+		} else if message, _ := zodIssues(elicitResultSchema, encoded); message != "" {
+			err = errors.New(message)
+		}
 	}
 	if err != nil {
 		// Matches TS: `error instanceof Error ? error.message : 'Failed to
@@ -1449,45 +1457,131 @@ func (c *MCPClient) handleElicitationRequest(msg *MCPMessage) {
 	_ = c.transport.Send(c.ctx, response)
 }
 
+// elicitationRequestIssues is TS ElicitationRequestSchema.safeParse({method,
+// params}) for elicitation/create: params is a loose object with an
+// optional object _meta, a string message and a requestedSchema that may be
+// anything but must be present (z.unknown() is non-optional in a zod 4
+// object). It returns the zod issues in zod's key order, nil when valid.
+func elicitationRequestIssues(params interface{}, present bool) []interface{} {
+	jsType := func(v interface{}, present bool) string {
+		if !present {
+			return "undefined"
+		}
+		switch v.(type) {
+		case nil:
+			return "null"
+		case string:
+			return "string"
+		case bool:
+			return "boolean"
+		case float64:
+			return "number"
+		case []interface{}:
+			return "array"
+		}
+		return "object"
+	}
+	issue := func(expected string, v interface{}, present bool, path ...string) interface{} {
+		o := jsonorder.New()
+		o.Set("expected", expected)
+		o.Set("code", "invalid_type")
+		p := make([]interface{}, len(path))
+		for i, s := range path {
+			p[i] = s
+		}
+		o.Set("path", p)
+		o.Set("message", "Invalid input: expected "+expected+", received "+jsType(v, present))
+		return o
+	}
+	obj, ok := params.(map[string]interface{})
+	if !ok {
+		return []interface{}{issue("object", params, present, "params")}
+	}
+	var issues []interface{}
+	if meta, has := obj["_meta"]; has {
+		if _, isObj := meta.(map[string]interface{}); !isObj {
+			issues = append(issues, issue("object", meta, true, "params", "_meta"))
+		}
+	}
+	message, has := obj["message"]
+	if _, isString := message.(string); !isString {
+		issues = append(issues, issue("string", message, has, "params", "message"))
+	}
+	if _, has := obj["requestedSchema"]; !has {
+		o := jsonorder.New()
+		o.Set("code", "invalid_type")
+		o.Set("expected", "nonoptional")
+		o.Set("path", []interface{}{"params", "requestedSchema"})
+		o.Set("message", "Invalid input: expected nonoptional, received undefined")
+		issues = append(issues, o)
+	}
+	return issues
+}
+
+// zodErrorMessage is zod's ZodError.message: JSON.stringify(issues, null, 2).
+func zodErrorMessage(issues []interface{}) string {
+	var b bytes.Buffer
+	raw := []byte(jsonorder.Stringify(issues))
+	if json.Indent(&b, raw, "", "  ") != nil {
+		return string(raw)
+	}
+	return b.String()
+}
+
+// elicitResultSchema is TS ElicitResultSchema (loose).
+var elicitResultSchema = zodlite.Object(
+	zodlite.F("_meta", zodlite.Optional(zodlite.Object())),
+	zodlite.F("resultType", zodlite.Optional(zodlite.String)),
+	zodlite.F("action", zodlite.Union(zodlite.Literal("accept"), zodlite.Literal("decline"), zodlite.Literal("cancel"))),
+	zodlite.F("content", zodlite.Optional(zodlite.RecordOf(zodlite.Unknown))),
+)
+
+// zodIssues returns zod's error.message (the issue list as
+// JSON.stringify(issues, null, 2)) and the issues for value, or "" when it
+// matches schema.
+func zodIssues(schema zodlite.Node, value []byte) (string, interface{}) {
+	message := zodlite.ValidationMessage(schema, string(value))
+	if message == "" {
+		return "", nil
+	}
+	text := zodlite.IssueText(message)
+	var issues interface{}
+	_ = json.Unmarshal([]byte(text), &issues)
+	return text, issues
+}
+
 // parseElicitationRequestParams validates and extracts an ElicitationRequest
 // from raw JSON-RPC params, matching TS's
 // `ElicitationRequestSchema.safeParse({method, params})`: params must be a
-// JSON object with a string "message" field. "requestedSchema" and "_meta"
-// are carried through unvalidated (TS: z.unknown() / a loose object).
-func parseElicitationRequestParams(raw json.RawMessage) (ElicitationRequest, error) {
-	if len(raw) == 0 {
-		return ElicitationRequest{}, fmt.Errorf("params is required")
+// JSON object with a string "message" field, a present "requestedSchema"
+// (any value) and, when present, an object "_meta" (null fails). Every other
+// key goes to Extra (a loose object). A failure returns zod's
+// error message and issues (tools-07).
+func parseElicitationRequestParams(raw json.RawMessage) (ElicitationRequest, string, interface{}) {
+	var params interface{}
+	present := len(raw) > 0
+	if present && json.Unmarshal(raw, &params) != nil {
+		return ElicitationRequest{}, "params must be JSON", nil
 	}
-
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return ElicitationRequest{}, fmt.Errorf("params must be an object: %w", err)
+	if issues := elicitationRequestIssues(params, present); issues != nil {
+		var data interface{}
+		_ = json.Unmarshal([]byte(jsonorder.Stringify(issues)), &data)
+		return ElicitationRequest{}, zodErrorMessage(issues), data
 	}
-
-	messageRaw, ok := fields["message"]
-	if !ok {
-		return ElicitationRequest{}, fmt.Errorf("params.message is required")
-	}
-	var message string
-	if err := json.Unmarshal(messageRaw, &message); err != nil {
-		return ElicitationRequest{}, fmt.Errorf("params.message must be a string: %w", err)
-	}
-
-	var requestedSchema interface{}
-	if schemaRaw, ok := fields["requestedSchema"]; ok {
-		if err := json.Unmarshal(schemaRaw, &requestedSchema); err != nil {
-			return ElicitationRequest{}, fmt.Errorf("params.requestedSchema is invalid: %w", err)
+	fields, _ := params.(map[string]interface{})
+	request := ElicitationRequest{RequestedSchema: fields["requestedSchema"]}
+	request.Message, _ = fields["message"].(string)
+	request.Meta, _ = fields["_meta"].(map[string]interface{})
+	for k, v := range fields {
+		if k == "message" || k == "requestedSchema" || k == "_meta" {
+			continue
 		}
-	}
-
-	var meta map[string]interface{}
-	if metaRaw, ok := fields["_meta"]; ok {
-		if err := json.Unmarshal(metaRaw, &meta); err != nil {
-			return ElicitationRequest{}, fmt.Errorf("params._meta must be an object: %w", err)
+		if request.Extra == nil {
+			request.Extra = map[string]interface{}{}
 		}
+		request.Extra[k] = v
 	}
-
-	return ElicitationRequest{Message: message, RequestedSchema: requestedSchema, Meta: meta}, nil
+	return request, "", nil
 }
 
 // unsupportedProtocolVersionError is TS applyInitializeResult's error.

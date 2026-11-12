@@ -268,3 +268,61 @@ func TestR91toolsMCPClosedBeforeCapability(t *testing.T) {
 		t.Fatalf("closed events err = %v", err)
 	}
 }
+
+// tools-07 (TS types.ts:459 ElicitationRequestSchema / ElicitResultSchema,
+// loose objects): undeclared params keys reach the handler, a null _meta or
+// a missing requestedSchema is -32602 with zod's message and issues as data,
+// undeclared result keys are sent, and an invalid action is zod's message.
+// Expected texts: node with zod 4 at 2ebc78b654.
+func TestR91toolsMCPElicitationLooseParams(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close() //nolint:errcheck
+	var mu sync.Mutex
+	var got ElicitationRequest
+	client.OnElicitationRequest(func(_ context.Context, req ElicitationRequest) (ElicitResult, error) {
+		mu.Lock()
+		got = req
+		mu.Unlock()
+		if req.Message == "bad action" {
+			return ElicitResult{Action: "nope"}, nil
+		}
+		return ElicitResult{Action: "accept", Extra: map[string]interface{}{"extra": 1.0}}, nil
+	})
+	send := func(id, params string) *MCPMessage {
+		transport.messages <- &MCPMessage{JSONRpc: "2.0", ID: id, Method: "elicitation/create", Params: json.RawMessage(params)}
+		return awaitResponseTo(t, transport, id)
+	}
+
+	resp := send("e1", `{"message":"m","requestedSchema":{},"mode":"url","url":"https://x","elicitationId":"e1"}`)
+	if resp.Error != nil || !strings.Contains(string(resp.Result), `"extra":1`) {
+		t.Fatalf("response = %+v / %s", resp.Error, resp.Result)
+	}
+	mu.Lock()
+	if got.Extra["mode"] != "url" || got.Extra["url"] != "https://x" || got.Extra["elicitationId"] != "e1" {
+		t.Errorf("Extra = %v", got.Extra)
+	}
+	mu.Unlock()
+
+	resp = send("e2", `{"message":"m","_meta":null}`)
+	want := "Invalid elicitation request: [\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"params\",\n      \"_meta\"\n    ],\n    \"message\": \"Invalid input: expected object, received null\"\n  },\n  {\n    \"code\": \"invalid_type\",\n    \"expected\": \"nonoptional\",\n    \"path\": [\n      \"params\",\n      \"requestedSchema\"\n    ],\n    \"message\": \"Invalid input: expected nonoptional, received undefined\"\n  }\n]"
+	if resp.Error == nil || resp.Error.Code != ErrorCodeInvalidParams || resp.Error.Message != want {
+		t.Fatalf("null _meta = %#v", resp.Error)
+	}
+	if issues, ok := resp.Error.Data.([]interface{}); !ok || len(issues) != 2 {
+		t.Fatalf("data = %#v", resp.Error.Data)
+	}
+	resp = send("e3", `{"requestedSchema":{}}`)
+	if resp.Error == nil || resp.Error.Message != "Invalid elicitation request: [\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"params\",\n      \"message\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]" {
+		t.Fatalf("missing message = %#v", resp.Error)
+	}
+
+	resp = send("e4", `{"message":"bad action","requestedSchema":{}}`)
+	wantAction := "[\n  {\n    \"code\": \"invalid_union\",\n    \"errors\": [\n      [\n        {\n          \"code\": \"invalid_value\",\n          \"values\": [\n            \"accept\"\n          ],\n          \"path\": [],\n          \"message\": \"Invalid input: expected \\\"accept\\\"\"\n        }\n      ],\n      [\n        {\n          \"code\": \"invalid_value\",\n          \"values\": [\n            \"decline\"\n          ],\n          \"path\": [],\n          \"message\": \"Invalid input: expected \\\"decline\\\"\"\n        }\n      ],\n      [\n        {\n          \"code\": \"invalid_value\",\n          \"values\": [\n            \"cancel\"\n          ],\n          \"path\": [],\n          \"message\": \"Invalid input: expected \\\"cancel\\\"\"\n        }\n      ]\n    ],\n    \"path\": [\n      \"action\"\n    ],\n    \"message\": \"Invalid input\"\n  }\n]"
+	if resp.Error == nil || resp.Error.Code != ErrorCodeInternalError || resp.Error.Message != wantAction {
+		t.Fatalf("invalid action = %#v", resp.Error)
+	}
+}
