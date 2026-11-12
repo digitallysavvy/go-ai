@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -288,6 +289,16 @@ func firstNonEmptyPerplexity(values ...string) string {
 // types.ToolCallContent.MarshalJSON's toolCallContentInput resolves the same
 // field for wire serialization elsewhere.
 func perplexityToolCallArguments(part types.ToolCallContent) string {
+	// TS part.input keeps the input's own key order and JS number text, so a
+	// valid JSON Input is re-stringified in order (convert-to-perplexity-input.ts:143).
+	if part.Input != "" {
+		if parsed, ok := jsonorder.Parse([]byte(part.Input)); ok {
+			if parsed == nil { // JSON null falls back to {} like `input ?? {}`
+				return "{}"
+			}
+			return jsonorder.Stringify(parsed)
+		}
+	}
 	var value interface{} = map[string]interface{}{}
 	if part.Arguments != nil {
 		value = part.Arguments
