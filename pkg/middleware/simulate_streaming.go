@@ -95,6 +95,37 @@ func toolResultFromResultContent(rc types.ToolResultContent) types.ToolResult {
 	}
 }
 
+// toolCallFromCallContent converts a tool-call content part into the
+// stream's ToolCall: the decoded Arguments win, otherwise the raw JSON
+// Input is parsed.
+func toolCallFromCallContent(part types.ToolCallContent) types.ToolCall {
+	args := part.Arguments
+	if args == nil && part.Input != "" {
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(part.Input), &parsed); err == nil {
+			args = parsed
+		}
+	}
+	var providerMetadata map[string]interface{}
+	if len(part.ProviderMetadata) > 0 {
+		_ = json.Unmarshal(part.ProviderMetadata, &providerMetadata)
+	}
+	return types.ToolCall{
+		ID:                  part.ToolCallID,
+		ToolName:            part.ToolName,
+		Title:               part.Title,
+		Arguments:           args,
+		RawArguments:        part.Input,
+		ProviderExecuted:    part.ProviderExecuted,
+		ProviderExecutedSet: part.ProviderExecuted,
+		ProviderMetadata:    providerMetadata,
+		ToolMetadata:        part.ToolMetadata,
+		ThoughtSignature:    part.ThoughtSignature,
+		Dynamic:             part.Dynamic,
+		Invalid:             part.Invalid,
+	}
+}
+
 // simulatedStream simulates a streaming response from a GenerateResult
 type simulatedStream struct {
 	result  *types.GenerateResult
@@ -189,12 +220,20 @@ func (s *simulatedStream) buildChunks() {
 			// Emitted in content order (TS enqueues every other part as is).
 			// The flat GenerateResult.ToolCalls entry carries the full
 			// provider-facing call; calls missing from Content follow below.
+			matched := false
 			for i := range s.result.ToolCalls {
 				if s.result.ToolCalls[i].ID == p.ToolCallID && !emittedCalls[p.ToolCallID] {
 					emittedCalls[p.ToolCallID] = true
 					chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &s.result.ToolCalls[i]})
+					matched = true
 					break
 				}
+			}
+			if !matched {
+				// A tool-call part with no flat ToolCalls entry is still
+				// enqueued (TS enqueues every tool-call content part).
+				call := toolCallFromCallContent(p)
+				chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &call})
 			}
 		}
 	}

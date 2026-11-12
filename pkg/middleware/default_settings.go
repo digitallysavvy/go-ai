@@ -2,8 +2,10 @@ package middleware
 
 import (
 	"context"
+	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // DefaultSettingsMiddleware creates a language model middleware that applies default settings
@@ -167,14 +169,51 @@ func deepMergeProviderOptions(base, overrides map[string]interface{}) map[string
 		result[k] = v
 	}
 	for k, v := range overrides {
+		// TS mergeObjects skips prototype-polluting keys.
+		if k == "__proto__" || k == "constructor" || k == "prototype" {
+			continue
+		}
 		baseVal, baseHas := result[k]
-		if overrideMap, ok := v.(map[string]interface{}); ok {
-			if baseMap, ok := baseVal.(map[string]interface{}); ok && baseHas {
-				result[k] = deepMergeProviderOptions(baseMap, overrideMap)
-				continue
+		if baseHas {
+			// Go-typed objects (typed option structs, map[string]string,
+			// ...) merge like the plain objects TS sees.
+			if overrideMap, ok := providerOptionsObject(v); ok {
+				if baseMap, ok := providerOptionsObject(baseVal); ok {
+					result[k] = deepMergeProviderOptions(baseMap, overrideMap)
+					continue
+				}
 			}
 		}
 		result[k] = v
 	}
 	return result
+}
+
+// providerOptionsObject returns v as a JSON object when it is one: a
+// map[string]interface{} as is, and a Go-typed map with string keys, struct
+// or pointer to one through its JSON form (providerutils.NormalizeOptionsJSON).
+// Arrays, primitives and nil are not objects.
+func providerOptionsObject(v interface{}) (map[string]interface{}, bool) {
+	if m, ok := v.(map[string]interface{}); ok {
+		return m, true
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	switch {
+	case rv.Kind() == reflect.Struct:
+	case rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String:
+		if rv.IsNil() {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	normalized := providerutils.NormalizeOptionsJSON(map[string]interface{}{"v": v})
+	m, ok := normalized["v"].(map[string]interface{})
+	return m, ok
 }

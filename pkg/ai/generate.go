@@ -456,9 +456,12 @@ type GenerateTextOptions struct {
 	// approval, callbacks, telemetry, execution, and response messages.
 	ExperimentalRefineToolInput map[string]ToolInputRefiner
 
-	// ExperimentalDownload downloads remote file URLs that need inline data
-	// before sending tool-result messages back to the model. Defaults to
-	// DefaultDownload, matching the TypeScript SDK's default download behavior.
+	// ExperimentalDownload downloads URLs in the prompt and the generated
+	// file URLs the model returns. By default (DefaultDownload, validated and
+	// DNS-pinned), prompt files are downloaded when the model does not
+	// support the URL for the media type. Generated file URLs are always
+	// downloaded (IsURLSupportedByModel false); a nil result for one is a
+	// DownloadError.
 	ExperimentalDownload DownloadFunction
 
 	// ========================================================================
@@ -946,6 +949,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// the fire function is a no-op.
 	telSystem := ""
 	var telMessages, telInstructionMessages []types.Message
+	// telPromptString is the caller's string prompt: TS standardizePrompt
+	// keeps it as the user message content, which the legacy root ai.prompt
+	// records as is ({"role":"user","content":"hi"}).
+	var telPromptString *string
 	// A nil *Options records inputs (integrations treat it the same way).
 	if telemetrySettings.ShouldRecordInputs() {
 		telSystem = system
@@ -961,6 +968,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// array. buildPrompt performs the same prompt-string-to-message
 		// normalization Go already does for the actual provider call.
 		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
+		if len(opts.Messages) == 0 && opts.Prompt != "" {
+			promptString := opts.Prompt
+			telPromptString = &promptString
+		}
 	}
 	generateTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	// H5: compute callID before FireOnStart (previously computed further down,
@@ -978,6 +989,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Settings:            telemetrySettings,
 		System:              telSystem,
 		Messages:            telMessages,
+		PromptString:        telPromptString,
 		InstructionMessages: telInstructionMessages,
 		Headers:             opts.Headers,
 		MaxOutputTokens:     opts.MaxTokens,
@@ -1130,7 +1142,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	liveResult = result
 
 	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
-	maxSteps := 1000 // safety ceiling only
 
 	// Current messages for conversation history
 	currentMessages := prompt.Messages
@@ -1193,7 +1204,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	var lastResponseHeaders map[string]string
 
 	// Execute generation loop (for tool calling)
-	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
+	// No step ceiling: TS loops while shouldStartNextStep() (the stop
+	// conditions and the natural end of the run decide).
+	for stepNum := 1; ; stepNum++ {
 		// TS `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`: a
 		// call aborted after a step ended (e.g. while a tool that ignores
 		// ctx ran) fails before the next step starts, so PrepareStep and the
@@ -1383,7 +1396,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		logPromptDeprecations(promptDeprecations.forStep(stepMessages))
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 			Messages: messagesForModel(stepMessages),
-			System:   appendSandboxDescription(stepSystem, stepSandbox),
+			// The sandbox description is not added to the prompt (TS:
+			// "The experimental sandbox description is not added to the
+			// model prompt automatically"; tool description functions and
+			// PrepareStep read it).
+			System: stepSystem,
 		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 		if normErr != nil {
 			return nil, normErr
@@ -1467,6 +1484,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Fire step-start telemetry. OTel implementations create a child step span
 		// and embed it in the returned context so OnStepFinish can end it. The
 		// tool choice is TS stepToolChoice (prepareToolChoice: unset is auto).
+		// System is the step's instructions text, which TS folds into
+		// promptMessages as the leading system message
+		// (convertToLanguageModelPrompt). Instructions given as system
+		// messages are already the leading messages of PromptMessages
+		// (prependInstructionMessages), so InstructionMessages stays empty
+		// and the serializer does not write them twice.
+		stepTelSystem := ""
+		if telemetrySettings.ShouldRecordInputs() {
+			stepTelSystem = stepSystem
+		}
 		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
 			CallID:         callID,
 			OperationType:  "ai.generateText",
@@ -1476,6 +1503,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ModelID:        stepModel.ModelID(),
 			ToolChoice:     preparedToolChoice(stepToolChoice),
 			PromptMessages: genOpts.Prompt.Messages,
+			System:         stepTelSystem,
 			StepTools:      stepTools,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
@@ -1598,7 +1626,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// URL-backed generated files are downloaded once, before anything
 		// observes the content (TS convertLanguageModelContent).
-		if resolvedContent, resolveErr := resolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+		if resolvedContent, resolveErr := resolveContentFilesWith(stepCtx, genResult.Content, opts.ExperimentalDownload); resolveErr != nil {
 			return nil, resolveErr
 		} else if len(resolvedContent) > 0 {
 			resolvedResult := *genResult
@@ -2211,6 +2239,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 		parsed, parseErr := op.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
 			Text:         textForOutput,
+			Response:     outputParseResponse(result.FinalStep.Response),
 			FinishReason: result.FinalStep.FinishReason,
 			Usage:        &lastUsage,
 		})
@@ -2779,6 +2808,16 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			}
 		}
 
+		if tool == nil && call.ProviderExecuted {
+			// A provider-executed (dynamic) call of a tool not in the set,
+			// e.g. an OpenAI mcp.* or Anthropic MCP connector call, is the
+			// provider's: TS runs only the client calls (generate-text.ts
+			// clientToolCalls = !providerExecuted) and a non-executable call
+			// has no output (execute-tool-call.ts), so it gets no "tool not
+			// found" error and no role:tool message.
+			continue
+		}
+
 		if tool == nil {
 			toolErr := fmt.Errorf("tool not found: %s", call.ToolName)
 			// No Title: TS builds a client tool's tool-result and tool-error without it.
@@ -2977,7 +3016,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			if toolTimeout := callbacks.timeout.GetToolTimeout(call.ToolName); toolTimeout != nil {
 				// TS mergeAbortSignals(abortSignal, toolMs): the tool's
 				// signal aborts with AbortSignal.timeout's TimeoutError.
-				execCtx, execCancel = context.WithTimeoutCause(toolCtx, *toolTimeout, &TimeoutError{Reason: TimeoutReasonTool, Err: context.DeadlineExceeded, Timeout: *toolTimeout})
+				execCtx, execCancel = context.WithTimeoutCause(toolCtx, *toolTimeout, NewToolTimeoutError(*toolTimeout, context.DeadlineExceeded))
 			}
 
 			toolStarted := time.Now()
@@ -3011,7 +3050,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// operation was aborted due to timeout").
 			if callbacks.timeout != nil && timedOut && toolErr != nil {
 				if toolTimeout := callbacks.timeout.GetToolTimeout(call.ToolName); toolTimeout != nil {
-					toolErr = &TimeoutError{Reason: TimeoutReasonTool, Err: toolErr, Timeout: *toolTimeout}
+					toolErr = NewToolTimeoutError(*toolTimeout, toolErr)
 				}
 			}
 			// No Title: TS builds a client tool's tool-result and tool-error without it.
@@ -3119,6 +3158,14 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		executed = append(executed, result)
 	}
 	return executed, nil
+}
+
+// outputParseResponse is the final step's response metadata handed to
+// parseCompleteOutput (TS generate-text.ts passes response: step.response),
+// so a NoObjectGeneratedError carries the response id, timestamp, model id,
+// headers and body.
+func outputParseResponse(r types.StepResponse) *types.ResponseMetadata {
+	return &types.ResponseMetadata{ID: r.ID, Timestamp: r.Timestamp, ModelID: r.ModelID, Headers: r.Headers, Body: r.Body}
 }
 
 // validateToolResults validates tool results, especially for provider-executed tools

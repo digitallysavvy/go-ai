@@ -932,8 +932,10 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	// reaches both the model call and the onStart/onStepStart callbacks.
 	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
-	// Generate a call ID for correlating all callback events for this call.
-	callID := newCallID()
+	// Generate a call ID for correlating all callback events for this call:
+	// TS generateObject's generateId, createIdGenerator({prefix: 'aiobj',
+	// size: 24}) (generate-object.ts:46,351).
+	callID := newObjectID()
 
 	// Extract telemetry info for callback events.
 	cbFuncID, cbMeta := telemetryCallbackInfo(opts.ExperimentalTelemetry)
@@ -1854,6 +1856,19 @@ type StreamObjectOptions struct {
 	ExperimentalContext interface{}
 }
 
+// streamObjectPrepError notifies OnError of a failure before the model
+// call (prompt preparation, a failed download, the response format): TS
+// streamObject's catch enqueues an error part after telemetry onError, and
+// its event processor notifies onError with wrapGatewayError(error)
+// (stream-object.ts:532-541, 948-960).
+func streamObjectPrepError(ctx context.Context, opts StreamObjectOptions, err error) {
+	if opts.OnError == nil {
+		return
+	}
+	wrapped := wrapGatewayError(err)
+	safeInvoke(func() { opts.OnError(ctx, wrapped) })
+}
+
 // StreamObject performs streaming object generation.
 // As JSON is streamed, partial objects are parsed and validated.
 //
@@ -1895,7 +1910,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	}
 
 	// Generate call ID and extract telemetry info for callback events.
-	callID := newCallID()
+	// TS streamObject's callId comes from its generateId,
+	// createIdGenerator({prefix: 'aiobj', size: 24}) (stream-object.ts:70,570).
+	callID := newObjectID()
 	cbFuncID, cbMeta := telemetryCallbackInfo(opts.ExperimentalTelemetry)
 
 	var isEnabled, recordInputs, recordOutputs *bool
@@ -1977,6 +1994,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
 	if err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
+		streamObjectPrepError(ctx, opts, err)
 		return nil, err
 	}
 
@@ -1998,6 +2016,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	responseFormat, err := buildStreamObjectResponseFormat(opts)
 	if err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
+		streamObjectPrepError(ctx, opts, err)
 		return nil, err
 	}
 	genOpts.ResponseFormat = responseFormat
@@ -2069,6 +2088,13 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// legacy onObjectStepEnd "ai.stream.firstChunk" span event.
 	var firstChunkAt time.Time
 
+	// Array output scans each new text delta once (TS 91a67c2f56
+	// createArrayStreamParser); nil after a fallback to reparsing.
+	var arrayParser *arrayOutputStreamParser
+	if opts.OutputMode == ObjectModeArray {
+		arrayParser = newArrayOutputStreamParser(opts.Schema)
+	}
+
 	// Process stream chunks. A provider error part does not end the stream
 	// (TS stream-object.ts records the first one as the terminal error and
 	// keeps reading). A non-EOF error from the stream itself is recorded and
@@ -2109,6 +2135,20 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		case provider.ChunkTypeText:
 			// Accumulate text
 			accumulatedText += chunk.Text
+
+			if arrayParser != nil {
+				if r := arrayParser.next(chunk.Text); !r.fallback {
+					if r.changed {
+						lastObject = r.partial
+						havePartial = true
+						if opts.OnChunk != nil {
+							safeInvoke(func() { opts.OnChunk(lastObject) })
+						}
+					}
+					break
+				}
+				arrayParser = nil
+			}
 
 			// Try to parse partial JSON
 			parseResult := parsePartialJSON(accumulatedText)

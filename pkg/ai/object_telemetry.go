@@ -41,6 +41,12 @@ func fireObjectStepStart(
 	genOpts *provider.GenerateOptions,
 	settings *telemetry.Options,
 ) objectTelemetryStep {
+	// System is the call's system text, the leading system message of TS
+	// promptMessages (convertToLanguageModelPrompt).
+	system := ""
+	if settings.ShouldRecordInputs() {
+		system = genOpts.Prompt.System
+	}
 	stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
 		CallID:         callID,
 		OperationType:  operationType,
@@ -49,6 +55,7 @@ func fireObjectStepStart(
 		ModelProvider:  model.Provider(),
 		ModelID:        model.ModelID(),
 		PromptMessages: genOpts.Prompt.Messages,
+		System:         system,
 	})
 	modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
 		Settings:         settings,

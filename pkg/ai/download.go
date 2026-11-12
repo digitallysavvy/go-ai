@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"net/http"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -44,6 +45,13 @@ type DownloadOptions struct {
 
 	// Headers are additional HTTP headers to include in download requests.
 	Headers map[string]string
+
+	// Transport, when set, replaces the default transport, which validates
+	// and pins DNS results at connect time (TS createDownload `fetch`, e.g.
+	// guarded-fetch). The URL and every redirect hop are still validated; a
+	// custom Transport is responsible for connect-time address checks. Nil
+	// keeps the protected default.
+	Transport http.RoundTripper
 }
 
 // CreateURLDownload creates a single-URL download function with configurable
@@ -86,6 +94,9 @@ func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMeta
 
 		opts.URLValidator = downloadURLValidator
 		opts.Transport = downloadTransport()
+		if options.Transport != nil {
+			opts.Transport = options.Transport
+		}
 
 		result, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 		if err != nil {

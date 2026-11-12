@@ -1320,7 +1320,8 @@ func legacyReferenceMediaType(blockType string) string {
 }
 
 // inferToolResultMediaTypeFromURL mirrors TS getMediaTypeFromUrl: the text
-// after the last "." of the WHATWG pathname (`new URL(url).pathname`), or
+// after the last "." of the WHATWG pathname (`new URL(url).pathname`), the
+// whole pathname when it has no "." (JS `split('.').pop()`), or
 // application/octet-stream when the URL does not parse.
 func inferToolResultMediaTypeFromURL(value string) string {
 	parsed, err := urlnorm.Parse(value)
@@ -1328,11 +1329,11 @@ func inferToolResultMediaTypeFromURL(value string) string {
 		return "application/octet-stream"
 	}
 	path := parsed.Pathname()
-	idx := strings.LastIndex(path, ".")
-	if idx < 0 || idx == len(path)-1 {
+	ext := path[strings.LastIndex(path, ".")+1:]
+	if ext == "" {
 		return "application/octet-stream"
 	}
-	switch jscase.ToLower(path[idx+1:]) {
+	switch jscase.ToLower(ext) {
 	case "jpg", "jpeg":
 		return "image/jpeg"
 	case "png":
@@ -1514,6 +1515,14 @@ type FileContentBlock struct {
 // ToolResultContentType implements ToolResultContentBlock interface
 func (f FileContentBlock) ToolResultContentType() string {
 	return "file"
+}
+
+// LegacyContentType is the deprecated TS tool-result content type the block
+// was decoded from ("file-data", "file-url", "file-id", "file-reference",
+// "image-data", "image-url", "image-file-id", "image-file-reference"), or ""
+// for a "file" block or one built in Go.
+func (f FileContentBlock) LegacyContentType() string {
+	return f.legacyType
 }
 
 // DeprecationWarning returns the deprecation warning TS mapToolResultOutput

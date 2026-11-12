@@ -536,10 +536,20 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 		toolChoice = types.AutoToolChoice()
 	}
 	promptMessages, stepTools := loopPromptMessages(c), c.Tools
+	// System is the step's instructions text (the leading system message of
+	// TS promptMessages). Instructions given as system messages are already
+	// the leading messages of promptMessages (loopPromptMessages), so
+	// InstructionMessages stays empty and the serializer does not write them
+	// twice, and System (their text then) is left empty.
+	stepSystem := ""
+	if lt.settings.ShouldRecordInputs() && len(c.InstructionMessages) == 0 {
+		stepSystem = c.System
+	}
 	if c.Internal != nil && c.Internal.OmitStepPromptTelemetry {
 		// TS WorkflowAgent's model-call iterator dispatches onStepStart
 		// without promptMessages, stepTools or stepToolChoice.
 		toolChoice, promptMessages, stepTools = types.ToolChoice{}, nil, nil
+		stepSystem = ""
 	}
 	stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
 		CallID:         lt.callID,
@@ -550,6 +560,7 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 		ModelID:        c.Model.ModelID(),
 		ToolChoice:     toolChoice,
 		PromptMessages: promptMessages,
+		System:         stepSystem,
 		StepTools:      stepTools,
 		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext, c.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContextFor(lt.settings, c.ToolsContext),
