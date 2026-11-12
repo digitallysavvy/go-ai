@@ -265,12 +265,21 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	// host is validated against the SSRF blocklist, DNS-pinned, and never
 	// sees credentials, matching TS's outgoingHeaders = {} for a
 	// non-same-origin hop.
-	baseURL := b.provider.config.BaseURL
+	// The origin is the resolved base URL (TS config.baseURL: Config.BaseURL,
+	// else ANTHROPIC_BASE_URL, else the default API URL), never the raw
+	// Config.BaseURL, which is empty for a default provider.
+	baseURL := b.provider.clientConfig.BaseURL
 	isTrusted := func(raw string) bool { return providerutils.IsSameOrigin(raw, baseURL) }
 	downloadOpts := fileutil.DefaultDownloadOptions()
 	downloadOpts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
 	downloadOpts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
-	downloadOpts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, fileutil.SafeTransport())
+	// The credentialed hop goes through the provider's own HTTP client
+	// transport (TS `fetch: this.options.config.fetch`).
+	var trustedTransport stdhttp.RoundTripper
+	if hc := b.provider.config.HTTPClient; hc != nil {
+		trustedTransport = hc.Transport
+	}
+	downloadOpts.Transport = fileutil.TrustRoutingTransport(isTrusted, trustedTransport, fileutil.SafeTransport())
 	if err := downloadOpts.URLValidator(resultsURL); err != nil {
 		return nil, err
 	}
