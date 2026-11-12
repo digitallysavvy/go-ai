@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -501,4 +503,177 @@ func r91streamValidate(msgs []UIMessage) error {
 		return nil
 	}
 	return res.Error
+}
+
+// r91streamCountingSchema validates against a JSON schema and counts calls.
+type r91streamCountingSchema struct {
+	inner schema.Validator
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *r91streamCountingSchema) Validator() schema.Validator { return s }
+func (s *r91streamCountingSchema) JSONSchema() map[string]interface{} {
+	return s.inner.JSONSchema()
+}
+func (s *r91streamCountingSchema) Validate(v interface{}) error {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	return s.inner.Validate(v)
+}
+
+func r91streamArrayParser(t *testing.T, elementSchema map[string]interface{}) (*arrayOutputStreamParser, *r91streamCountingSchema) {
+	t.Helper()
+	cs := &r91streamCountingSchema{inner: schema.NewJSONSchema(elementSchema)}
+	out := ArrayOutput[interface{}](ArrayOutputOptions[interface{}]{ElementSchema: cs})
+	p := newArrayOutputStreamParser(context.Background(), out.(outputProcessor))
+	if p == nil {
+		t.Fatal("no array stream parser for ArrayOutput")
+	}
+	cs.mu.Lock()
+	cs.calls = 0
+	cs.mu.Unlock()
+	return p, cs
+}
+
+// TS 91a67c2f56 util/array-output-stream.test.ts: nested values and escaped
+// strings in chunks of 1, 2, 7 and 10000 characters; each element is
+// validated once and snapshots only grow.
+func TestR91streamArrayStreamParserChunks(t *testing.T) {
+	values := []interface{}{
+		map[string]interface{}{"nested": []interface{}{`a,]}\"`, map[string]interface{}{"number": -1.25e30}}, "unicode": "中文🌍"},
+		[]interface{}{false, nil, []interface{}{float64(1), float64(2)}},
+		-12.5e-3,
+		`escaped \ and " quotes`,
+		true,
+		nil,
+	}
+	b, _ := json.Marshal(map[string]interface{}{"elements": values})
+	text := []rune(string(b))
+	for _, size := range []int{1, 2, 7, 10000} {
+		p, cs := r91streamArrayParser(t, map[string]interface{}{})
+		var last []interface{}
+		prev := -1
+		for i := 0; i < len(text); i += size {
+			end := i + size
+			if end > len(text) {
+				end = len(text)
+			}
+			partial, publish, fallback := p.feed(context.Background(), string(text[i:end]))
+			if fallback {
+				t.Fatalf("size %d: fallback at %d", size, i)
+			}
+			if publish {
+				last = partial.([]interface{})
+				if len(last) <= prev {
+					t.Fatalf("size %d: snapshot length %d after %d", size, len(last), prev)
+				}
+				prev = len(last)
+			}
+		}
+		gotJSON, _ := json.Marshal(last)
+		wantJSON, _ := json.Marshal(values)
+		if string(gotJSON) != string(wantJSON) {
+			t.Fatalf("size %d: %s, want %s", size, gotJSON, wantJSON)
+		}
+		if cs.calls != len(values) {
+			t.Fatalf("size %d: %d validations, want %d", size, cs.calls, len(values))
+		}
+	}
+}
+
+func TestR91streamArrayStreamParserWithholdAndFallback(t *testing.T) {
+	ctx := context.Background()
+	p, _ := r91streamArrayParser(t, map[string]interface{}{"type": "number"})
+	steps := []struct {
+		delta   string
+		publish bool
+		want    string
+	}{
+		{`{"elements":[1,`, true, `[]`},
+		{`2`, true, `[1]`},
+		{`]`, false, ``},
+		{`}`, true, `[1,2]`},
+	}
+	for _, s := range steps {
+		partial, publish, fallback := p.feed(ctx, s.delta)
+		if fallback || publish != s.publish {
+			t.Fatalf("%q: publish %v fallback %v", s.delta, publish, fallback)
+		}
+		if publish {
+			if b, _ := json.Marshal(partial); string(b) != s.want {
+				t.Fatalf("%q: %s, want %s", s.delta, b, s.want)
+			}
+		}
+	}
+	for _, text := range []string{
+		`{"other":[],"elements":[1]}`,
+		`{"elem\u0065nts":[1]}`,
+		`{"elements":[1,]}`,
+		`{"elements":[1e,2]}`,
+		`{"elements":[1],"elements":[2]}`,
+		`{"elements":[1]} trailing`,
+	} {
+		p, _ := r91streamArrayParser(t, map[string]interface{}{"type": "number"})
+		if _, _, fallback := p.feed(ctx, text); !fallback {
+			t.Errorf("%s: no fallback", text)
+		}
+	}
+	// Invalid elements are skipped.
+	p, _ = r91streamArrayParser(t, map[string]interface{}{"type": "number"})
+	partial, publish, fallback := p.feed(ctx, `{"elements":[1,"invalid",2]}`)
+	if b, _ := json.Marshal(partial); fallback || !publish || string(b) != `[1,2]` {
+		t.Fatalf("skip invalid: %s %v %v", b, publish, fallback)
+	}
+	// Non-array outputs get no incremental parser.
+	if newArrayOutputStreamParser(ctx, ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})}).(outputProcessor)) != nil {
+		t.Fatal("object output got an array parser")
+	}
+}
+
+// StreamText with ArrayOutput streams elements validated once each and the
+// same partials as the stateless parser; a nonstandard envelope falls back.
+func TestR91streamArrayOutputStreamText(t *testing.T) {
+	run := func(text string, piece int) (string, int) {
+		cs := &r91streamCountingSchema{inner: schema.NewJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"n": map[string]interface{}{"type": "number"}}, "required": []interface{}{"n"}})}
+		chunks := []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}, {Type: provider.ChunkTypeTextStart, ID: "t"}}
+		for i := 0; i < len(text); i += piece {
+			end := i + piece
+			if end > len(text) {
+				end = len(text)
+			}
+			chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeText, ID: "t", Text: text[i:end]})
+		}
+		chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "t"},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage})
+		r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, chunks), Prompt: "x",
+			Output: ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{ElementSchema: cs})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r91streamDrain(r.FullStream())
+		b, _ := json.Marshal(r.PartialOutput())
+		cs.mu.Lock()
+		defer cs.mu.Unlock()
+		return string(b), cs.calls
+	}
+	elems := make([]string, 20)
+	for i := range elems {
+		elems[i] = fmt.Sprintf(`{"n":%d}`, i)
+	}
+	text := `{"elements":[` + strings.Join(elems, ",") + `]}`
+	last, calls := run(text, 3)
+	if !strings.HasPrefix(last, `[{"n":0},`) || !strings.HasSuffix(last, `{"n":19}]`) {
+		t.Fatalf("partial = %s", last)
+	}
+	// Each element once while streaming, plus the final output's own
+	// validation of every element (TS: the same counts).
+	if calls != 40 {
+		t.Fatalf("validations = %d, want 40", calls)
+	}
+	// Another envelope falls back to the stateless parser.
+	if last, _ = run(`{"x":1,"elements":[{"n":1},{"n":2}]}`, 4); last != `[{"n":1},{"n":2}]` {
+		t.Fatalf("fallback partial = %s", last)
+	}
 }
