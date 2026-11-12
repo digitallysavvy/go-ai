@@ -119,6 +119,11 @@ func (p *LegacyProvider) CreateSession(ctx context.Context, opts harness.CreateS
 	}
 
 	baseParams := withDefaultSandboxSettings(p.settings.createParams())
+	// 3.9.0 Sandbox.create / getOrCreate throw this TypeError before
+	// getCredentials, so it wins over a missing credential.
+	if err := checkRuntimeOrImage(baseParams); err != nil {
+		return nil, err
+	}
 
 	creds, err := resolveCredentialsWithRefresh(ctx, p.settings.Credentials, p.settings.OIDCRefresh)
 	if err != nil {
