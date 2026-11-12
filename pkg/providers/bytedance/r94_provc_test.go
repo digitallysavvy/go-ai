@@ -38,12 +38,12 @@ func TestR94provcNon2xxFails(t *testing.T) {
 func TestR94provcResponseBodyIsText(t *testing.T) {
 	const bom = "\xEF\xBB\xBF"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/contents/generations/tasks":
+		switch r.URL.Path {
+		case "/contents/generations/tasks":
 			_, _ = w.Write([]byte(bom + `{"id":"t1"}`))
-		case r.URL.Path == "/contents/generations/tasks/t1":
+		case "/contents/generations/tasks/t1":
 			_, _ = w.Write([]byte(bom + `{"id":"t1","status":"succeeded","content":{"video_url":"https://x/v.mp4"}}`))
-		case r.URL.Path == "/images/generations":
+		case "/images/generations":
 			_, _ = w.Write([]byte(bom + `{"data":[{"b64_json":"aGk="}]}`))
 		default:
 			w.WriteHeader(400)

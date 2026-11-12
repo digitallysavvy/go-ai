@@ -42,12 +42,12 @@ func TestR94provcResponseBodyIsText(t *testing.T) {
 	const bom = "\xEF\xBB\xBF"
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/flux-pro":
+		switch r.URL.Path {
+		case "/flux-pro":
 			_, _ = w.Write([]byte(bom + `{"id":"t1","polling_url":"` + srv.URL + `/poll"}`))
-		case r.URL.Path == "/flux-3-video":
+		case "/flux-3-video":
 			_, _ = w.Write([]byte(bom + `{"id":"t1","polling_url":"` + srv.URL + `/poll"}`))
-		case r.URL.Path == "/poll":
+		case "/poll":
 			_, _ = w.Write([]byte(`{"status":"Error"}`))
 		default:
 			w.WriteHeader(400)
