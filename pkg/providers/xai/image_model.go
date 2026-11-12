@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -177,8 +178,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// SDK's xai-image-model.ts behavior.
 	for _, d := range resp.Data {
 		if d.RespectModeration != nil && !*d.RespectModeration {
-			return nil, providererrors.NewProviderError("xai", 0, "",
-				"Image generation was blocked due to a content policy violation.", nil)
+			// TS throws a plain Error (xai-image-model.ts:185-189).
+			return nil, errors.New("Image generation was blocked due to a content policy violation.") //nolint:staticcheck // TS message text
 		}
 	}
 
@@ -308,17 +309,14 @@ func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([
 	return images, nil, nil
 }
 
+// flattenHeaders is TS extractResponseHeaders (repeated values joined with
+// ", ", each byte decoded as one character): providerutils.ExtractHeaders.
+// It kept only the first value of a repeated header.
 func flattenHeaders(headers http.Header) map[string]string {
 	if len(headers) == 0 {
 		return nil
 	}
-	flattened := make(map[string]string, len(headers))
-	for key, values := range headers {
-		if len(values) > 0 {
-			flattened[key] = values[0]
-		}
-	}
-	return flattened
+	return providerutils.ExtractHeaders(headers)
 }
 
 // buildRequestBody constructs the API request body
@@ -493,7 +491,7 @@ func (m *ImageModel) handleError(err error) error {
 	if provErr, ok := xaiStatusError("xai.image", err); ok {
 		return provErr // TS xaiFailedResponseHandler
 	}
-	return providererrors.NewProviderError("xai.image", 0, "", err.Error(), err)
+	return err // TS handleFetchError: no HTTP response, returned unchanged
 }
 
 // xaiImageResponse represents the image generation API response

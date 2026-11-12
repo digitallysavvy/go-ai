@@ -170,8 +170,8 @@ type xaiVideoOperation struct {
 // (TS 2e44144812: the error could echo the signed URL).
 func xaiUploadError(err error, message string) error {
 	var pe *providererrors.ProviderError
-	if !errors.As(err, &pe) {
-		return err
+	if !errors.As(err, &pe) || pe.StatusCode == 0 {
+		return err // a transport failure (cancel included) stays as is
 	}
 	retryable := pe.IsRetryable()
 	return &providererrors.ProviderError{Provider: "xai", StatusCode: pe.StatusCode, Message: message, Retryable: &retryable}
@@ -227,8 +227,8 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	if createResp.RequestID == "" {
-		return nil, providererrors.NewProviderError("xai", 0, "",
-			"No request_id returned from xAI API.", nil)
+		// TS AISDKError XAI_VIDEO_GENERATION_ERROR (xai-video-model.ts:640-646).
+		return nil, providererrors.NewVideoGenerationError("xai", m.modelID, "No request_id returned from xAI API.", nil)
 	}
 
 	operation, _ := json.Marshal(xaiVideoOperation{RequestID: createResp.RequestID, HasUploadURL: provOpts.Output != nil})
@@ -1181,7 +1181,7 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 		// is a hard validation error (InvalidArgumentError), not a warning
 		// with silent truncation.
 		if len(provOpts.ReferenceVoiceIDs) > 3 {
-			return providererrors.NewArgumentError("referenceVoiceIds", "xai provider option referenceVoiceIds accepts at most 3 voice ids", nil)
+			return fmt.Errorf("xai provider option referenceVoiceIds accepts at most 3 voice ids")
 		}
 		for _, voiceID := range provOpts.ReferenceVoiceIDs {
 			if voiceID == "" {
@@ -1191,7 +1191,9 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 	}
 
 	if len(provOpts.Keyframes) > 4 {
-		return providererrors.NewArgumentError("keyframes", "xai provider option keyframes accepts at most 4 entries", nil)
+		// TS z.array(...).max(4) fails parseProviderOptions: the caller wraps
+		// this as "invalid xai provider options" (argument providerOptions).
+		return fmt.Errorf("xai provider option keyframes accepts at most 4 entries")
 	}
 	for _, kf := range provOpts.Keyframes {
 		if kf.ImageURL == "" {
@@ -1312,7 +1314,7 @@ func (m *VideoModel) handleError(err error) error {
 	if provErr, ok := xaiStatusError("xai", err); ok {
 		return provErr // TS xaiFailedResponseHandler
 	}
-	return providererrors.NewProviderError("xai", 0, "", err.Error(), err)
+	return err // TS handleFetchError: no HTTP response, returned unchanged
 }
 
 // xaiVideoCreateResponse represents the video creation API response

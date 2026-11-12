@@ -85,7 +85,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 		}
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+		return nil, err // TS handleFetchError: abort as is, else "Cannot connect to API"
 	}
 	// xAI returns a trace id on every response, success and error.
 	traceID := providerutils.FetchHeaderText(http.Header(resp.Headers), "x-trace-id")
@@ -241,8 +241,26 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	if xaiOpts.WithTimestamps != nil {
 		body["with_timestamps"] = *xaiOpts.WithTimestamps
 	}
-	if len(xaiOpts.Replace) > 0 {
-		body["replace"] = xaiOpts.Replace
+	// TS copies xaiOptions?.<key> (zod .nullish keeps null), so an explicit
+	// null is sent as null and replace: {} is sent as {}
+	// (xai-speech-model.ts:128-138).
+	rawXAI, _ := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["xai"])
+	for optionKey, bodyKey := range map[string]string{
+		"optimizeStreamingLatency": "optimize_streaming_latency",
+		"textNormalization":        "text_normalization",
+		"withTimestamps":           "with_timestamps",
+		"replace":                  "replace",
+	} {
+		if v, present := rawXAI[optionKey]; present && v == nil {
+			body[bodyKey] = nil
+		}
+	}
+	if _, isObject := rawXAI["replace"].(map[string]interface{}); isObject || len(xaiOpts.Replace) > 0 {
+		replace := xaiOpts.Replace
+		if replace == nil {
+			replace = map[string]string{}
+		}
+		body["replace"] = replace
 	}
 	return body, warnings, nil
 }
