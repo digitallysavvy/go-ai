@@ -317,3 +317,23 @@ func TestR92provbCompatFormDataJSString(t *testing.T) {
 		}
 	}
 }
+
+// TS openAITranscriptionModelOptions fields are .optional(), not nullish: a
+// present null is an invalid provider option.
+func TestR92provbTranscriptionNullOptionRejected(t *testing.T) {
+	for _, opts := range []map[string]interface{}{
+		{"language": nil},
+		{"temperature": nil},
+		{"chunkingStrategy": map[string]interface{}{"type": "server_vad", "threshold": nil}},
+		{"streaming": map[string]interface{}{"delay": nil}},
+	} {
+		err := validateTranscriptionProviderOptions(map[string]interface{}{"openai": opts})
+		var argErr *providererrors.InvalidArgumentError
+		if !errors.As(err, &argErr) {
+			t.Fatalf("%v: err = %v, want InvalidArgumentError", opts, err)
+		}
+	}
+	if err := validateTranscriptionProviderOptions(map[string]interface{}{"openai": map[string]interface{}{"language": "en"}}); err != nil {
+		t.Fatal(err)
+	}
+}

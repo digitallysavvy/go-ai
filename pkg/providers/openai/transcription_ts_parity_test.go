@@ -29,7 +29,7 @@ func TestTranscriptionProviderOptionsValidatedLikeTS(t *testing.T) {
 	}
 	if err := validateTranscriptionProviderOptions(map[string]interface{}{"openai": map[string]interface{}{
 		"temperature": 0.5, "responseFormat": "json", "streaming": map[string]interface{}{"delay": "low"},
-		"chunkingStrategy": map[string]interface{}{"type": "server_vad", "threshold": nil},
+		"chunkingStrategy": map[string]interface{}{"type": "server_vad", "threshold": 0.5},
 	}}); err != nil {
 		t.Fatal(err)
 	}
