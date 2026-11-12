@@ -320,6 +320,26 @@ func deepInfraSchemaError(resp *internalhttp.Response, schema providererrors.Err
 }
 
 func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.ImageGenerateOptions) (io.Reader, string, error) {
+	// TS awaits fileToBlob for every file, then the mask, before
+	// postFormDataToApi: a failed download is the DownloadError itself, and
+	// the edit request is never sent.
+	images := make([]deepInfraBlob, 0, len(opts.Files))
+	for _, file := range opts.Files {
+		blob, err := deepInfraFileToBlob(ctx, file)
+		if err != nil {
+			return nil, "", err
+		}
+		images = append(images, blob)
+	}
+	var mask *deepInfraBlob
+	if opts.Mask != nil {
+		blob, err := deepInfraFileToBlob(ctx, *opts.Mask)
+		if err != nil {
+			return nil, "", err
+		}
+		mask = &blob
+	}
+
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 
@@ -349,14 +369,14 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 						err = providerutils.WriteFormDataField(writer, "prompt", opts.Prompt)
 					}
 				case "image":
-					for _, file := range opts.Files {
-						if err = writeImageFilePart(ctx, writer, "image", "", file); err != nil {
+					for _, blob := range images {
+						if err = writeImageFilePart(writer, "image", blob); err != nil {
 							break
 						}
 					}
 				case "mask":
-					if opts.Mask != nil {
-						err = writeImageFilePart(ctx, writer, "mask", "", *opts.Mask)
+					if mask != nil {
+						err = writeImageFilePart(writer, "mask", *mask)
 					}
 				case "n":
 					if opts.N != nil {
@@ -432,23 +452,33 @@ func deepInfraFormString(value interface{}) string {
 	return providerutils.JSString(value)
 }
 
-func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
-	data, mediaType := file.Data, file.MediaType
+// deepInfraBlob is the Blob TS fileToBlob resolves for an edit file.
+type deepInfraBlob struct {
+	data      []byte
+	mediaType string
+}
+
+// deepInfraFileToBlob is TS fileToBlob.
+func deepInfraFileToBlob(ctx context.Context, file provider.ImageFile) (deepInfraBlob, error) {
 	if file.Type == "url" {
 		// TS fileToBlob: downloadBlob(file.url) types the Blob with the
 		// response content-type (none without one), not file.mediaType.
 		res, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
 		if err != nil {
-			return err
+			return deepInfraBlob{}, err
 		}
-		data, mediaType = res.Data, res.ContentType
+		return deepInfraBlob{data: res.Data, mediaType: res.ContentType}, nil
 	}
+	return deepInfraBlob{data: file.Data, mediaType: file.MediaType}, nil
+}
+
+func writeImageFilePart(writer *multipart.Writer, fieldName string, blob deepInfraBlob) error {
 	// TS appends a typed Blob (filename "blob").
-	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", mediaType)
+	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", blob.mediaType)
 	if err != nil {
 		return err
 	}
-	_, err = part.Write(data)
+	_, err = part.Write(blob.data)
 	return err
 }
 
