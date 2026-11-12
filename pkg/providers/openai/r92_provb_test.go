@@ -3,8 +3,11 @@ package openai
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -182,4 +185,47 @@ func TestR92provbImageEditDownloadAbort(t *testing.T) {
 			}
 		})
 	}
+}
+
+func r92provbCompletionKinds(t *testing.T, s *completionStream) ([]provider.ChunkType, error) {
+	t.Helper()
+	var kinds []provider.ChunkType
+	for {
+		c, err := s.Next()
+		if err != nil {
+			if err == io.EOF {
+				return kinds, nil
+			}
+			return kinds, err
+		}
+		kinds = append(kinds, c.Type)
+	}
+}
+
+// TS openai-completion-language-model.ts doStream: the early-error peek
+// (throwIfOpenAIStreamErrorBeforeOutput) ends at a chunk that fails to
+// parse, so the parts read before it come first and a later error frame is
+// an error part. TS OpenAICompatibleCompletionLanguageModel has no peek:
+// nothing is held back, and an error frame is an error part in arrival
+// order.
+func TestR92provbCompletionStreamHeldChunkOrder(t *testing.T) {
+	first := "data: {\"id\":\"c\",\"object\":\"text_completion\",\"created\":1,\"model\":\"m\",\"choices\":[{\"text\":\"\",\"index\":0,\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+	errFrame := "data: {\"error\":{\"message\":\"boom\",\"type\":\"server_error\",\"code\":null}}\n\n"
+	t.Run("openai: a parse failure ends the early-error peek", func(t *testing.T) {
+		s := newCompletionStream(io.NopCloser(strings.NewReader(first+"data: {bad\n\n"+errFrame)), false)
+		kinds, err := r92provbCompletionKinds(t, s)
+		want := []provider.ChunkType{provider.ChunkTypeResponseMetadata, provider.ChunkTypeTextStart, provider.ChunkTypeError, provider.ChunkTypeError, provider.ChunkTypeTextEnd, provider.ChunkTypeFinish}
+		if err != nil || !reflect.DeepEqual(kinds, want) {
+			t.Fatalf("parts = %v, %v; want %v", kinds, err, want)
+		}
+	})
+	t.Run("openai-compatible: no chunk is held back", func(t *testing.T) {
+		s := newCompletionStream(io.NopCloser(strings.NewReader("data: {\"id\":\"c\",\"created\":1,\"model\":\"m\",\"choices\":[]}\n\n"+errFrame)), true)
+		s.compat = true
+		kinds, err := r92provbCompletionKinds(t, s)
+		want := []provider.ChunkType{provider.ChunkTypeRaw, provider.ChunkTypeResponseMetadata, provider.ChunkTypeTextStart, provider.ChunkTypeRaw, provider.ChunkTypeError, provider.ChunkTypeTextEnd, provider.ChunkTypeFinish}
+		if err != nil || !reflect.DeepEqual(kinds, want) {
+			t.Fatalf("parts = %v, %v; want %v", kinds, err, want)
+		}
+	})
 }

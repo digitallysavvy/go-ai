@@ -540,6 +540,12 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 		if perr != nil {
+			// TS throwIfOpenAIStreamErrorBeforeOutput stops peeking at a
+			// chunk that fails to parse: the stream is handed out, the parts
+			// read before it come first and a later error frame is an error
+			// part.
+			s.outputStarted = true
+			s.flushPendingMetadata()
 			s.queueRawChunk(event.Data)
 			// TS finishReason = {unified: 'error', raw: undefined}.
 			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
@@ -629,9 +635,10 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 }
 
 // queueOrHold queues c, or holds it in arrival order until the first output
-// (the early-error peek drops held chunks).
+// (the early-error peek drops held chunks). An OpenAI-compatible stream has
+// no peek (TS OpenAICompatibleCompletionLanguageModel), so nothing is held.
 func (s *completionStream) queueOrHold(c *provider.StreamChunk) {
-	if s.outputStarted {
+	if s.outputStarted || s.compat {
 		s.flushQueue = append(s.flushQueue, c)
 		return
 	}
