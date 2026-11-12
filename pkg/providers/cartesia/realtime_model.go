@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -225,7 +225,7 @@ func (m *RealtimeModel) SerializeClientEventRaw(event provider.RealtimeClientEve
 	case "input-audio-append":
 		// TS convertBase64ToUint8Array maps base64url ('-', '_') to base64
 		// first (uint8-utils.ts:6).
-		audio, err := types.DecodeFileDataString(event.Audio)
+		audio, err := fileutil.ConvertBase64ToBytes(event.Audio)
 		if err != nil {
 			return nil, false, true, err
 		}

@@ -687,7 +687,7 @@ func decodeVideoPromptImageDataString(value string) ([]byte, string, error) {
 		mediaType, content = splitVideoDataURL(value)
 	}
 
-	data, err := types.DecodeFileDataString(content)
+	data, err := fileutil.ConvertBase64ToBytes(content)
 	if err != nil {
 		return nil, "", err
 	}
@@ -845,7 +845,7 @@ func decodeVideoReferenceDataString(value string, explicitMediaType string) ([]b
 		}
 	}
 
-	data, err := types.DecodeFileDataString(content)
+	data, err := fileutil.ConvertBase64ToBytes(content)
 	if err != nil {
 		return nil, "", err
 	}
@@ -892,7 +892,7 @@ func convertVideoData(ctx context.Context, data provider.VideoModelV3VideoData, 
 		}, nil
 
 	case "base64":
-		decoded, err := types.DecodeFileDataString(data.Data)
+		decoded, err := fileutil.ConvertBase64ToBytes(data.Data)
 		if err != nil {
 			return nil, err
 		}
