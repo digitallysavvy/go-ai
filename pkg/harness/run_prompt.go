@@ -1729,6 +1729,7 @@ func (d *turnDriver) ensureToolExecutionStarted(telCtx context.Context, call typ
 			ToolCallID: call.ID,
 			ToolName:   call.ToolName,
 			Args:       call.Arguments,
+			ArgsText:   call.RawArguments,
 			// TS publishToolExecutionStart passes `toolContext: undefined`, so
 			// the dispatcher never augments the event with a tool context.
 			ToolContext: nil,

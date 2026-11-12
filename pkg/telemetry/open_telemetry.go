@@ -1417,7 +1417,7 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	)
 	// TS: gen_ai.tool.call.arguments is an input (recordInputs gate).
 	if e.Settings.ShouldRecordInputs() {
-		if b, err := jsonstr.Marshal(e.Args); err == nil {
+		if b, err := jsonstr.Marshal(orderedToolInput(e.Args, e.ArgsText)); err == nil {
 			child.SetAttributes(attribute.String("gen_ai.tool.call.arguments", string(b)))
 		}
 	}

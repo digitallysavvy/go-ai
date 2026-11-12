@@ -1168,6 +1168,7 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		ToolCallID:  call.ID,
 		ToolName:    call.ToolName,
 		Args:        call.Arguments,
+		ArgsText:    call.RawArguments,
 		ToolContext: telToolContext,
 	})
 	if opts.startDone != nil {

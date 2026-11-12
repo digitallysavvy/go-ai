@@ -1,11 +1,14 @@
 package telemetry
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // GetBaseAttributes leaves out credential headers whatever their case.
@@ -50,5 +53,51 @@ func TestR92carryToolCallInputKeepsModelKeyOrder(t *testing.T) {
 	// An input that is not JSON stays the raw text.
 	if got, _ := legacyToolCallsJSON([]types.ToolCall{{ID: "c3", ToolName: "w", RawArguments: "{bad"}}); !strings.Contains(got, `"input":"{bad"`) {
 		t.Fatalf("invalid = %s", got)
+	}
+}
+
+// Local tool spans record the tool input in the model's key order
+// (ai.toolCall.args, gen_ai.tool.call.arguments); FilterEvent clears ArgsText
+// with the other inputs.
+func TestR92carryToolSpanArgsKeepModelKeyOrder(t *testing.T) {
+	for _, legacy := range []bool{true, false} {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		var integ TelemetryIntegration
+		key := "gen_ai.tool.call.arguments"
+		if legacy {
+			integ = NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+			key = "ai.toolCall.args"
+		} else {
+			integ = NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
+		}
+		set := &Settings{Integrations: []TelemetryIntegration{integ}}
+		id := t.Name() + map[bool]string{true: "l", false: "g"}[legacy]
+		ctx := FireOnStart(context.Background(), TelemetryStartEvent{Settings: set, CallID: id, OperationType: "ai.generateText", ModelID: "m", ModelProvider: "p"})
+		ctx = FireOnStepStart(ctx, TelemetryStepStartEvent{Settings: set, CallID: id, OperationType: "ai.generateText", ModelID: "m", ModelProvider: "p"})
+		tctx := FireOnToolCallStart(ctx, TelemetryToolCallStartEvent{Settings: set, CallID: id, ToolCallID: "c1", ToolName: "w",
+			Args: map[string]interface{}{"zeta": 1, "alpha": 2}, ArgsText: `{"zeta":1,"alpha":2}`})
+		FireOnToolCallFinish(tctx, TelemetryToolCallFinishEvent{Settings: set, CallID: id, ToolCallID: "c1", ToolName: "w", Result: "ok"})
+		FireOnStepEnd(ctx, TelemetryStepEndEvent{Settings: set, CallID: id, OperationType: "ai.generateText"})
+		FireOnEnd(ctx, TelemetryFinishEvent{Settings: set, CallID: id, OperationType: "ai.generateText"})
+		_ = tp.Shutdown(context.Background())
+		found := false
+		for _, s := range rec.Ended() {
+			for _, kv := range s.Attributes() {
+				if string(kv.Key) == key {
+					found = true
+					if got := kv.Value.AsString(); got != `{"zeta":1,"alpha":2}` {
+						t.Fatalf("legacy=%v %s = %s", legacy, key, got)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("legacy=%v: no %s", legacy, key)
+		}
+	}
+	hidden := FilterEvent(TelemetryToolCallStartEvent{ArgsText: `{"a":1}`, Args: map[string]interface{}{"a": 1}}, &Options{RecordInputs: Bool(false)})
+	if hidden.ArgsText != "" || hidden.Args != nil {
+		t.Fatalf("filtered = %+v", hidden)
 	}
 }
