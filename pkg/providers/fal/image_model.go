@@ -429,7 +429,27 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (*jsonord
 		body.Set(apiKey, falOpts[key])
 	}
 
-	return body, warnings, nil
+	return falReservedOrder(body), warnings, nil
+}
+
+// falReservedOrder is the TS requestBody literal: prompt, seed, image_size
+// and num_images hold the first positions even when undefined, so an option
+// that sets one of them later (e.g. providerOptions.fal.image_size) is
+// written there, not after the other options.
+func falReservedOrder(body *jsonorder.Object) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range []string{"prompt", "seed", "image_size", "num_images"} {
+		if v, ok := body.Get(k); ok {
+			out.Set(k, v)
+		}
+	}
+	for _, k := range body.Keys() {
+		if _, done := out.Get(k); !done {
+			v, _ := body.Get(k)
+			out.Set(k, v)
+		}
+	}
+	return out
 }
 
 // convertBody parses the response, downloads every image and builds the
