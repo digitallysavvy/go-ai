@@ -26,6 +26,12 @@ func TestR93carryRetryAfterHugeDelayFallsBack(t *testing.T) {
 			t.Errorf("%v: delay %v, want the exponential delay", h, d)
 		}
 	}
+	// 18446744073710 ms is 2^64 ns plus a little: in time.Duration it wraps
+	// to about 30 s, but as a JS number it is ~585 years ahead.
+	wrap := time.UnixMilli(time.Now().UnixMilli() + 18446744073710 + 30000).UTC().Format(time.RFC1123)
+	if d, ok := retryHeaderDelay(headers(map[string]string{"retry-after": wrap}), time.Second); ok {
+		t.Errorf("retry-after %s: delay %v, want the exponential delay", wrap, d)
+	}
 	if d, ok := retryHeaderDelay(headers(map[string]string{"retry-after-ms": "1500.5"}), time.Second); !ok || d != 1500500*time.Microsecond {
 		t.Errorf("retry-after-ms 1500.5 = %v %v", d, ok)
 	}
