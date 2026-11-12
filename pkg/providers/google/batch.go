@@ -687,10 +687,8 @@ func mapGoogleBatchStatus(rawStatus string, hasRawStatus bool, done bool, hasErr
 		return provider.BatchStatusPending
 	}
 	// TS rawStatus.replace(/^(?:BATCH|JOB)_STATE_/, ''): one prefix, once.
-	normalized := rawStatus
-	if rest, ok := strings.CutPrefix(rawStatus, "BATCH_STATE_"); ok {
-		normalized = rest
-	} else {
+	normalized, ok := strings.CutPrefix(rawStatus, "BATCH_STATE_")
+	if !ok {
 		normalized = strings.TrimPrefix(rawStatus, "JOB_STATE_")
 	}
 	switch normalized {
