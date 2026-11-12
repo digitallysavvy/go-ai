@@ -182,7 +182,7 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 		case types.CustomContent:
 			flush()
 			google := extractGoogleMetadata(p.ProviderMetadata)
-			if opt, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
+			if opt, ok := providerutils.NormalizeOptionsJSON(p.ProviderOptions)["google"].(map[string]interface{}); ok {
 				// TS reads these from providerOptions.google; options win.
 				merged := map[string]interface{}{}
 				for k, v := range google {

@@ -534,6 +534,8 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	// than TS by default.
 	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOpts = providerutils.NormalizeOptionsJSON(providerOpts)
 	if providerOpts != nil {
 		if googleOpts, ok := providerOpts["google"].(map[string]interface{}); ok {
 			// CoerceInt (not a bare `.(int)` assertion) because

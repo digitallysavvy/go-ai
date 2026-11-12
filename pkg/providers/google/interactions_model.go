@@ -595,6 +595,14 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 	if !ok {
 		return out, nil
 	}
+	// Typed-option ruling: anything but the typed options struct is read in
+	// its JSON form, so Go-typed nested literals ([]map[string]string,
+	// map[string]string, int64) parse the way the TS zod schema parses them.
+	switch raw.(type) {
+	case GoogleInteractionsProviderOptions, *GoogleInteractionsProviderOptions:
+	default:
+		raw = providerutils.NormalizeOptionsJSON(map[string]interface{}{"google": raw})["google"]
+	}
 	switch v := raw.(type) {
 	case GoogleInteractionsProviderOptions:
 		out = v

@@ -61,8 +61,15 @@ func (m *LanguageModel) getProviderOptsNamed(opts *provider.GenerateOptions) (ma
 	if opts == nil || opts.ProviderOptions == nil {
 		return nil, ""
 	}
+	// Typed-option ruling: read the namespace through its JSON form, so Go-typed
+	// literals (map[string]string, []map[string]string, typed numbers) have the
+	// JSON shape the TS zod schema parses.
 	for _, key := range m.cfg.ProviderOptionsKeys {
-		if v, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
+		raw, present := opts.ProviderOptions[key]
+		if !present || raw == nil {
+			continue
+		}
+		if v, ok := providerutils.NormalizeOptionsJSON(map[string]interface{}{key: raw})[key].(map[string]interface{}); ok {
 			return v, key
 		}
 	}

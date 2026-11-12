@@ -535,6 +535,8 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	// than TS by default.
 	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOpts = providerutils.NormalizeOptionsJSON(providerOpts)
 	if providerOpts != nil {
 		// A null "googleVertex" entry falls through to "vertex", like TS
 		// parseProviderOptions treating null as absent.

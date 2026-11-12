@@ -513,6 +513,11 @@ func parseEmbeddingProviderOptionsRaw(opts *provider.EmbedModelOptions) (GoogleE
 	case map[string]interface{}:
 		return parseEmbeddingOptionsMap(v)
 	default:
+		// Typed-option ruling: another Go-typed object (map[string]string, a
+		// struct) is read in its JSON form.
+		if m, isMap := providerutils.NormalizeOptionsJSON(map[string]interface{}{"google": raw})["google"].(map[string]interface{}); isMap {
+			return parseEmbeddingOptionsMap(m)
+		}
 		return GoogleEmbeddingProviderOptions{}, fmt.Errorf("google embedding provider options must be GoogleEmbeddingProviderOptions or map[string]interface{}, got %T", raw)
 	}
 }

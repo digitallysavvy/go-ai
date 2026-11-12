@@ -101,7 +101,7 @@ func TestReasoningProviderOptionsOverrideResolved(t *testing.T) {
 		},
 	}, false)
 	tc := body["generationConfig"].(map[string]interface{})["thinkingConfig"].(map[string]interface{})
-	if tc["thinkingBudget"] != 999 {
+	if tc["thinkingBudget"] != float64(999) {
 		t.Errorf("thinkingBudget = %v, want 999", tc["thinkingBudget"])
 	}
 }
@@ -202,7 +202,7 @@ func TestProviderOptionsThinkingConfig_Google(t *testing.T) {
 
 	genConfig := body["generationConfig"].(map[string]interface{})
 	tc := genConfig["thinkingConfig"].(map[string]interface{})
-	if tc["thinkingBudget"] != 1000 {
+	if tc["thinkingBudget"] != float64(1000) { // options are read in their JSON form
 		t.Errorf("thinkingBudget: got %v, want 1000", tc["thinkingBudget"])
 	}
 	if tc["includeThoughts"] != true {
@@ -225,7 +225,7 @@ func TestProviderOptionsThinkingConfig_VertexFallbackChain(t *testing.T) {
 		},
 	}, false)
 	tc := body["generationConfig"].(map[string]interface{})["thinkingConfig"].(map[string]interface{})
-	if tc["thinkingBudget"] != 500 {
+	if tc["thinkingBudget"] != float64(500) {
 		t.Errorf("expected vertex key to win, got thinkingBudget=%v", tc["thinkingBudget"])
 	}
 
@@ -238,7 +238,7 @@ func TestProviderOptionsThinkingConfig_VertexFallbackChain(t *testing.T) {
 		},
 	}, false)
 	tc2 := body2["generationConfig"].(map[string]interface{})["thinkingConfig"].(map[string]interface{})
-	if tc2["thinkingBudget"] != 200 {
+	if tc2["thinkingBudget"] != float64(200) {
 		t.Errorf("expected googleVertex key to match, got thinkingBudget=%v", tc2["thinkingBudget"])
 	}
 }
@@ -313,7 +313,7 @@ func TestIsGemmaModel(t *testing.T) {
 // TS #22394: a resolved thinkingLevel is never combined with an explicit
 // providerOptions thinkingBudget (or the reverse).
 func TestReasoningNotCombinedWithExplicitThinkingOptions(t *testing.T) {
-	for _, opt := range []map[string]interface{}{{"thinkingBudget": 999}, {"thinkingLevel": "medium"}} {
+	for _, opt := range []map[string]interface{}{{"thinkingBudget": float64(999)}, {"thinkingLevel": "medium"}} {
 		level := types.ReasoningHigh
 		body, _, warnings, err := makeTestModel("gemini-3-pro-preview").buildRequest(context.Background(), &provider.GenerateOptions{
 			Reasoning:       &level,

@@ -52,7 +52,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	var displayName *string
 	pollIntervalMs := float64(2000)
 	pollTimeoutMs := float64(300000)
-	if raw, present := opts.ProviderOptions["google"]; present && raw != nil {
+	if raw, present := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["google"]; present && raw != nil {
 		// TS parseProviderOptions with z.looseObject({displayName: string,
 		// pollIntervalMs/pollTimeoutMs: positive number}, all nullish).
 		google, ok := raw.(map[string]interface{})

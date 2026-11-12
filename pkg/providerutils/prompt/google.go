@@ -221,7 +221,8 @@ func containsString(list []string, s string) bool {
 // readProviderOpts returns the per-part Google options/metadata. ProviderOptions
 // take precedence over ProviderMetadata (the output-direction mirror).
 func (c *googleConverter) readProviderOpts(providerOptions map[string]interface{}, providerMetadata interface{}) map[string]interface{} {
-	sources := []map[string]interface{}{providerOptions, googleMetadataMap(providerMetadata)}
+	// Typed-option ruling: Go-typed part options are read in their JSON form.
+	sources := []map[string]interface{}{providerutils.NormalizeOptionsJSON(providerOptions), googleMetadataMap(providerMetadata)}
 	for _, src := range sources {
 		if src == nil {
 			continue
@@ -343,7 +344,7 @@ func (c *googleConverter) convertUser(msg types.Message) ([]map[string]interface
 			}
 			parts = append(parts, fp)
 		case types.CustomContent:
-			if googleOpts, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
+			if googleOpts, ok := providerutils.NormalizeOptionsJSON(p.ProviderOptions)["google"].(map[string]interface{}); ok {
 				block := map[string]interface{}{}
 				for k, v := range googleOpts {
 					block[k] = v
@@ -733,7 +734,7 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 			parts = append(parts, part)
 
 		case types.CustomContent:
-			if googleOpts, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
+			if googleOpts, ok := providerutils.NormalizeOptionsJSON(p.ProviderOptions)["google"].(map[string]interface{}); ok {
 				block := map[string]interface{}{}
 				for k, v := range googleOpts {
 					block[k] = v

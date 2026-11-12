@@ -150,6 +150,8 @@ type vertexTranscriptionProviderOptions struct {
 // type fails with an InvalidArgumentError. Empty languageCodes stay non-nil
 // because TS forwards `languageCodes: []`.
 func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexTranscriptionProviderOptions, error) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	invalid := func(key string, cause error) error {
 		return providererrors.NewArgumentError("providerOptions", "invalid "+key+" provider options", cause)
 	}

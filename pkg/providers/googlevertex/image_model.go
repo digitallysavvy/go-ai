@@ -9,6 +9,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // imagenRemovedError matches TS google-image-model.ts / google-vertex-image-model.ts
@@ -257,6 +258,7 @@ func extractVertexOptions(providerOptions map[string]interface{}) map[string]int
 	if providerOptions == nil {
 		return map[string]interface{}{}
 	}
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	opts, _ := providerOptions["googleVertex"].(map[string]interface{})
 	if opts == nil {
 		opts, _ = providerOptions["vertex"].(map[string]interface{})

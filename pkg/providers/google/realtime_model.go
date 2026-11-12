@@ -233,6 +233,8 @@ func isThinkingLiveModel(modelID string) bool {
 // (realtime/google-realtime-event-mapper.ts).
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	config.ProviderOptions = providerutils.NormalizeOptionsJSON(config.ProviderOptions)
 	googleOptions, _ := config.ProviderOptions["google"].(map[string]interface{})
 
 	generation := map[string]interface{}{}

@@ -443,6 +443,13 @@ func (m *SpeechModel) extractProviderOptions(providerOptions map[string]interfac
 }
 
 func parseGoogleSpeechOptions(raw interface{}) (GoogleSpeechModelOptions, error) {
+	// Typed-option ruling: anything but the typed options struct is read in
+	// its JSON form (map[string]string, []map[string]string, int64, ...).
+	switch raw.(type) {
+	case GoogleSpeechModelOptions, *GoogleSpeechModelOptions:
+	default:
+		raw = providerutils.NormalizeOptionsJSON(map[string]interface{}{"v": raw})["v"]
+	}
 	switch v := raw.(type) {
 	case GoogleSpeechModelOptions:
 		return validateGoogleSpeechModelOptions(v)
@@ -583,6 +590,9 @@ func validateGoogleSpeechModelOptions(opts GoogleSpeechModelOptions) (GoogleSpee
 }
 
 func normalizeGoogleMultiSpeakerVoiceConfig(config map[string]interface{}) (map[string]interface{}, error) {
+	// A typed struct field may hold Go-typed nested literals
+	// ([]map[string]interface{} speakers); read it in its JSON form.
+	config = providerutils.NormalizeOptionsJSON(config)
 	rawSpeakers, ok := config["speakerVoiceConfigs"]
 	if !ok {
 		return nil, fmt.Errorf("invalid google speech multiSpeakerVoiceConfig: missing speakerVoiceConfigs")

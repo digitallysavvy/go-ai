@@ -293,6 +293,9 @@ func vertexEmbeddingOptions(opts *provider.EmbedModelOptions) VertexEmbeddingPro
 			if typed, isTyped := typedVertexEmbeddingOptions(v); isTyped {
 				return typed
 			}
+			// Typed-option ruling: other Go-typed objects are read in their
+			// JSON form.
+			v = providerutils.NormalizeOptionsJSON(map[string]interface{}{key: v})[key]
 			if m, ok := v.(map[string]interface{}); ok {
 				result := VertexEmbeddingProviderOptions{}
 				if t, ok := m["taskType"].(string); ok {
@@ -374,7 +377,7 @@ func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
 			}
 			return nil
 		}
-		m, ok := v.(map[string]interface{})
+		m, ok := providerutils.NormalizeOptionsJSON(map[string]interface{}{key: v})[key].(map[string]interface{})
 		if !ok {
 			return bad("value", "an object")
 		}
