@@ -366,7 +366,7 @@ func parseDecisionProviderOptions(providerOptions map[string]interface{}) (Decis
 	if !ok || openaiOpts == nil {
 		return out, nil
 	}
-	options, ok := openaiOpts.(map[string]interface{})
+	options, ok := providerutils.NormalizeProviderOptionsObject(openaiOpts)
 	if !ok {
 		return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
 	}
@@ -400,7 +400,7 @@ func parseDecisionProviderOptions(providerOptions map[string]interface{}) (Decis
 var decisionSupportedProviderOptions = map[string]bool{"safetyIdentifier": true, "promptCacheKey": true}
 
 func decisionUnsupportedOptionWarnings(providerOptions map[string]interface{}) []types.Warning {
-	openaiOpts, _ := providerOptions["openai"].(map[string]interface{})
+	openaiOpts, _ := providerutils.NormalizeProviderOptionsObject(providerOptions["openai"])
 	keys := make([]string, 0, len(openaiOpts))
 	for k := range openaiOpts {
 		if !decisionSupportedProviderOptions[k] {
@@ -567,7 +567,7 @@ func decisionImageContent(part provider.DecisionStatePart) (map[string]interface
 		"type":      "input_image",
 		"image_url": "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data),
 	}
-	if openaiOpts, ok := part.File.ProviderOptions["openai"].(map[string]interface{}); ok {
+	if openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(part.File.ProviderOptions["openai"]); ok {
 		if detail, ok := openaiOpts["imageDetail"]; ok && detail != nil {
 			image["detail"] = detail
 		}

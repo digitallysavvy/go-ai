@@ -248,8 +248,10 @@ func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *p
 		resolved, warnings = providerutils.ResolveOpenAICompatibleProviderOptions(name, opts.ProviderOptions)
 		dimensionsOption, userOption = resolved["dimensions"], resolved["user"]
 	} else {
-		dimensionsOption = providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "dimensions")
-		userOption = providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "user")
+		// Read through the JSON form so a Go-typed literal
+		// (map[string]int, map[string]string) is read like the map form.
+		openaiOpts, _ := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"])
+		dimensionsOption, userOption = openaiOpts["dimensions"], openaiOpts["user"]
 	}
 	if d, ok := providerutils.ResolveEmbeddingDimensions(dimensionsOption, opts.Dimensions); ok {
 		reqBody["dimensions"] = d

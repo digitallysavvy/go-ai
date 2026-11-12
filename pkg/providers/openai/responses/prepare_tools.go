@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
+	"reflect"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -782,6 +783,15 @@ func functionToolOutputSchema(providerOptions interface{}) (interface{}, bool) {
 	if !ok {
 		return nil, false
 	}
+	// The schema as given keeps its key order (an ordered schema value);
+	// the JSON form is the fallback for a typed options literal.
+	if options, isMap := providerOptions.(map[string]interface{}); isMap {
+		if raw, isMap := options["openai"].(map[string]interface{}); isMap {
+			if schema, present := raw["outputSchema"]; present && schema != nil {
+				return schema, true
+			}
+		}
+	}
 	schema, ok := openaiOptions["outputSchema"]
 	return schema, ok && schema != nil
 }
@@ -827,6 +837,10 @@ func scopeFunctionToolOptions(tools []types.Tool, name string) []types.Tool {
 	var out []types.Tool
 	for i, t := range tools {
 		options, ok := t.ProviderOptions.(map[string]interface{})
+		if !ok {
+			// A Go-typed options map is read through its JSON form.
+			options, ok = toolOptionsMap(t.ProviderOptions)
+		}
 		if !ok || options[name] == nil {
 			continue
 		}
@@ -847,7 +861,7 @@ func scopeFunctionToolOptions(tools []types.Tool, name string) []types.Tool {
 }
 
 func functionToolOpenAIOptions(providerOptions interface{}) (map[string]interface{}, bool) {
-	options, ok := providerOptions.(map[string]interface{})
+	options, ok := toolOptionsMap(providerOptions)
 	if !ok {
 		return nil, false
 	}
@@ -855,11 +869,23 @@ func functionToolOpenAIOptions(providerOptions interface{}) (map[string]interfac
 	if !ok {
 		return nil, false
 	}
-	openaiOptions, ok := openaiRaw.(map[string]interface{})
+	openaiOptions, ok := providerutils.NormalizeProviderOptionsObject(openaiRaw)
 	if !ok {
 		return nil, false
 	}
 	return openaiOptions, true
+}
+
+// toolOptionsMap reads a function tool's map-valued ProviderOptions through
+// its JSON form (TS options are JSON objects), so a Go-typed literal such as
+// map[string]map[string]interface{} or map[string]map[string]bool is read like
+// map[string]interface{}. Typed provider tool configs (structs) are not maps
+// and are left to their own readers.
+func toolOptionsMap(providerOptions interface{}) (map[string]interface{}, bool) {
+	if providerOptions == nil || reflect.ValueOf(providerOptions).Kind() != reflect.Map {
+		return nil, false
+	}
+	return providerutils.NormalizeProviderOptionsObject(providerOptions)
 }
 
 // allowedToolResolution mirrors TS AllowedToolResolution: a requested

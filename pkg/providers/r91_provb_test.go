@@ -7,15 +7,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
+	"github.com/digitallysavvy/go-ai/pkg/providers/azure"
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/moonshot"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/zai"
@@ -29,13 +32,27 @@ func r91provbCapture(t *testing.T, call func(base string)) interface{} {
 	var mu sync.Mutex
 	var body interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		if body == nil {
-			var v interface{}
+		var v interface{}
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+			// Multipart boundaries are random: record the fields and files.
+			if err := r.ParseMultipartForm(1 << 20); err == nil {
+				fields := map[string]interface{}{}
+				for k, vs := range r.MultipartForm.Value {
+					fields[k] = strings.Join(vs, ",")
+				}
+				for k, fs := range r.MultipartForm.File {
+					fields["file:"+k] = fs[0].Filename
+				}
+				v = fields
+			}
+		} else {
+			raw, _ := io.ReadAll(r.Body)
 			if json.Unmarshal(raw, &v) != nil {
 				v = string(raw)
 			}
+		}
+		mu.Lock()
+		if body == nil {
 			body = v
 		}
 		mu.Unlock()
@@ -208,4 +225,89 @@ func TestR91provbTypedOptionLiteralsMedia(t *testing.T) {
 				Prompt: "p", ProviderOptions: map[string]interface{}{"alibaba": o}}})
 		}},
 	})
+}
+
+// PB-01 (provb1-11): the OpenAI and Azure readers (Responses, chat,
+// completion, speech, transcription, embedding; part and tool options) read
+// Go-typed literals like their JSON form.
+func TestR91provbTypedOptionLiteralsOpenAI(t *testing.T) {
+	oa := func(base string) *openai.Provider { return openai.New(openai.Config{APIKey: "k", BaseURL: base}) }
+	gen := func(mk func(p *openai.Provider) (provider.LanguageModel, error), build func(o interface{}) *provider.GenerateOptions) func(string, interface{}) {
+		return func(base string, o interface{}) {
+			m, err := mk(oa(base))
+			r91provbGenerate(m, err, build(o))
+		}
+	}
+	ns := func(o interface{}) *provider.GenerateOptions {
+		return &provider.GenerateOptions{Prompt: r91provbPrompt(), ProviderOptions: map[string]interface{}{"openai": o}}
+	}
+	responses := func(p *openai.Provider) (provider.LanguageModel, error) { return p.ResponsesModel("gpt-5") }
+	chatM := func(p *openai.Provider) (provider.LanguageModel, error) { return p.ChatModel("gpt-4o") }
+	completion := func(p *openai.Provider) (provider.LanguageModel, error) {
+		return p.CompletionModel("gpt-3.5-turbo-instruct")
+	}
+	imagePart := func(o interface{}) *provider.GenerateOptions {
+		return &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+			types.ImageContent{Image: []byte{1, 2, 3}, MimeType: "image/png", ProviderOptions: map[string]interface{}{"openai": o}},
+		}}}}}
+	}
+	toolOpts := func(o interface{}) *provider.GenerateOptions {
+		return &provider.GenerateOptions{Prompt: r91provbPrompt(), Tools: []types.Tool{{Name: "f", Parameters: map[string]interface{}{"type": "object"}, ProviderOptions: o}}}
+	}
+	r91provbRunTypedCases(t, []r91provbTypedCase{
+		{"responses namespace map[string]string", map[string]string{"user": "u1"}, map[string]interface{}{"user": "u1"}, gen(responses, ns)},
+		{"responses promptCacheOptions map[string]string", map[string]interface{}{"promptCacheOptions": map[string]string{"mode": "explicit"}},
+			map[string]interface{}{"promptCacheOptions": map[string]interface{}{"mode": "explicit"}}, gen(responses, ns)},
+		{"responses allowedTools map[string][]string + int32", map[string]interface{}{"allowedTools": map[string][]string{"toolNames": {"f"}}, "maxToolCalls": int32(3), "logprobs": int64(2)},
+			map[string]interface{}{"allowedTools": map[string]interface{}{"toolNames": []interface{}{"f"}}, "maxToolCalls": float64(3), "logprobs": float64(2)}, func(base string, o interface{}) {
+				m, err := responses(oa(base))
+				opts := ns(o)
+				opts.Tools = []types.Tool{{Name: "f", Parameters: map[string]interface{}{"type": "object"}}}
+				r91provbGenerate(m, err, opts)
+			}},
+		{"responses image part map[string]string", map[string]string{"imageDetail": "high"}, map[string]interface{}{"imageDetail": "high"}, gen(responses, imagePart)},
+		{"responses tool options typed map", map[string]map[string]interface{}{"openai": {"deferLoading": true}},
+			map[string]interface{}{"openai": map[string]interface{}{"deferLoading": true}}, gen(responses, toolOpts)},
+		{"chat namespace map[string]string", map[string]string{"user": "u1"}, map[string]interface{}{"user": "u1"}, gen(chatM, ns)},
+		{"chat logprobs int32 + logitBias map[string]int", map[string]interface{}{"logprobs": int32(2), "logitBias": map[string]int{"50256": -100}},
+			map[string]interface{}{"logprobs": float64(2), "logitBias": map[string]interface{}{"50256": float64(-100)}}, gen(chatM, ns)},
+		{"chat image part map[string]string", map[string]string{"imageDetail": "low"}, map[string]interface{}{"imageDetail": "low"}, gen(chatM, imagePart)},
+		{"completion namespace map[string]string", map[string]string{"user": "u1"}, map[string]interface{}{"user": "u1"}, gen(completion, ns)},
+		{"speech speed int64", map[string]interface{}{"speed": int64(2)}, map[string]interface{}{"speed": float64(2)}, func(base string, o interface{}) {
+			m, _ := oa(base).SpeechModel("tts-1")
+			_, _ = m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi", ProviderOptions: map[string]interface{}{"openai": o}})
+		}},
+		{"transcription namespace map[string]string", map[string]string{"language": "en", "prompt": "p"}, map[string]interface{}{"language": "en", "prompt": "p"}, func(base string, o interface{}) {
+			m, _ := oa(base).TranscriptionModel("whisper-1")
+			_, _ = m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("RIFF"), MimeType: "audio/wav", ProviderOptions: map[string]interface{}{"openai": o}})
+		}},
+		{"embedding map[string]int", map[string]int{"dimensions": 64}, map[string]interface{}{"dimensions": float64(64)}, func(base string, o interface{}) {
+			m, _ := oa(base).EmbeddingModel("text-embedding-3-small")
+			_, _ = m.DoEmbed(context.Background(), "x", &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"openai": o}})
+		}},
+		{"azure transcription namespace map[string]string", map[string]string{"language": "en"}, map[string]interface{}{"language": "en"}, func(base string, o interface{}) {
+			m, _ := r91provbAzure(base).TranscriptionModel("whisper-1")
+			_, _ = m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("RIFF"), MimeType: "audio/wav", ProviderOptions: map[string]interface{}{"azure": o}})
+		}},
+		{"azure speech namespace map[string]interface{} int64", map[string]interface{}{"speed": int64(2)}, map[string]interface{}{"speed": float64(2)}, func(base string, o interface{}) {
+			m, _ := r91provbAzure(base).SpeechModel("tts-1")
+			_, _ = m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi", ProviderOptions: map[string]interface{}{"azure": o}})
+		}},
+		{"azure image namespace map[string]string", map[string]string{"quality": "high"}, map[string]interface{}{"quality": "high"}, func(base string, o interface{}) {
+			m, _ := r91provbAzure(base).ImageModel("gpt-image-1")
+			_, _ = m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p", ProviderOptions: map[string]interface{}{"azure": o}})
+		}},
+		{"azure embedding map[string]int", map[string]int{"dimensions": 64}, map[string]interface{}{"dimensions": float64(64)}, func(base string, o interface{}) {
+			m, _ := r91provbAzure(base).EmbeddingModel("text-embedding-3-small")
+			_, _ = m.DoEmbed(context.Background(), "x", &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"openai": o}})
+		}},
+	})
+}
+
+func r91provbAzure(base string) *azure.Provider {
+	p, err := azure.New(azure.Config{APIKey: "k", BaseURL: base})
+	if err != nil {
+		panic(err)
+	}
+	return p
 }

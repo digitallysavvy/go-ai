@@ -57,6 +57,7 @@ func (m *CompletionModel) SupportsStructuredOutput() bool { return false }
 func (m *CompletionModel) SupportsImageInput() bool { return false }
 
 func (m *CompletionModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts = normalizedGenerateOptions(opts)
 	body, warnings, err := m.buildCompletionRequest(opts, false)
 	if err != nil {
 		return nil, err
@@ -96,6 +97,7 @@ func (m *CompletionModel) DoGenerate(ctx context.Context, opts *provider.Generat
 }
 
 func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	opts = normalizedGenerateOptions(opts)
 	body, warnings, err := m.buildCompletionRequest(opts, true)
 	if err != nil {
 		return nil, err
@@ -126,6 +128,7 @@ func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateO
 }
 
 func (m *CompletionModel) buildCompletionRequest(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	opts = normalizedGenerateOptions(opts)
 	// TS parseProviderOptions runs before the prompt conversion.
 	if err := m.validateCompletionProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, nil, err
@@ -200,7 +203,7 @@ func (m *CompletionModel) buildCompletionRequest(opts *provider.GenerateOptions,
 			}
 		}
 		for _, key := range []string{name, camel} {
-			if raw, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
+			if raw, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions[key]); ok {
 				for k, v := range raw {
 					if k == "prompt" || k == "stop" {
 						continue
@@ -229,7 +232,7 @@ func (m *CompletionModel) completionProviderOptions(providerOptions map[string]i
 		if !ok {
 			return
 		}
-		if opts, ok := raw.(map[string]interface{}); ok {
+		if opts, ok := providerutils.NormalizeProviderOptionsObject(raw); ok {
 			for k, v := range opts {
 				merged[k] = v
 			}

@@ -74,7 +74,7 @@ func ConvertPromptToXAIInput(prompt types.Prompt) ([]interface{}, []types.Warnin
 // providerOptions.xai (output-direction providerMetadata.xai is accepted too,
 // since Go callers replay model output parts as-is).
 func xaiPartString(options map[string]interface{}, metadata json.RawMessage, key string) (string, bool) {
-	if opts, ok := options["xai"].(map[string]interface{}); ok {
+	if opts, ok := providerutils.NormalizeProviderOptionsObject(options["xai"]); ok {
 		if v, ok := opts[key].(string); ok {
 			return v, true
 		}

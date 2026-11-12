@@ -69,7 +69,7 @@ func parseAzureImageProviderOptions(providerOptions map[string]interface{}) (Azu
 	if !ok || raw == nil {
 		return result, nil
 	}
-	m, ok := raw.(map[string]interface{})
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return result, invalidAzureOption("providerOptions.azure", "must be an object")
 	}

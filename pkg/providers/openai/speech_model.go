@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -115,7 +116,7 @@ func validateSpeechProviderOptions(providerOptions map[string]interface{}) error
 	invalid := func(msg string) error {
 		return providererrors.NewArgumentError("providerOptions", "invalid openai provider options", errors.New(msg))
 	}
-	m, ok := raw.(map[string]interface{})
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return invalid("Invalid input: expected object")
 	}
@@ -172,7 +173,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	// providerOptions.openai.speed/instructions take priority over the
 	// top-level fields when explicitly set (e13c32f; no speed default).
 	if opts.ProviderOptions != nil {
-		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
+		if openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"]); ok {
 			if v, ok := speechSpeedOption(openaiOpts["speed"]); ok {
 				body["speed"] = v
 			}
@@ -194,19 +195,28 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 // speechSpeedOption converts a JSON-decoded providerOptions.openai.speed
 // value (typically float64, but tolerate int/json.Number) to float64.
 func speechSpeedOption(v interface{}) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	case json.Number:
+	if n, ok := v.(json.Number); ok {
 		f, err := n.Float64()
 		return f, err == nil
-	default:
+	}
+	return goNumber(v)
+}
+
+// goNumber reads every Go integer and float kind (int64, uint8, float32,
+// ...) as a float64.
+func goNumber(v interface{}) (float64, bool) {
+	if v == nil {
 		return 0, false
 	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	}
+	return 0, false
 }
 
 // openAISpeechBodyOrder is the key order of TS getArgs' requestBody literal

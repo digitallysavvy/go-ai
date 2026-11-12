@@ -586,7 +586,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 					// CustomContent in assistant messages may carry OpenAI-specific
 					// provider options. Forward the openai-keyed options verbatim if
 					// present; otherwise skip.
-					if openaiOpts, ok := p.ProviderOptions["openai"].(map[string]interface{}); ok {
+					if openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(p.ProviderOptions["openai"]); ok {
 						block := map[string]interface{}{}
 						for k, v := range openaiOpts {
 							block[k] = v
@@ -682,7 +682,7 @@ func spreadCompatMetadata(dst map[string]interface{}, providerOptions map[string
 	if !enabled {
 		return
 	}
-	meta, _ := providerOptions["openaiCompatible"].(map[string]interface{})
+	meta, _ := providerutils.NormalizeProviderOptionsObject(providerOptions["openaiCompatible"])
 	for k, v := range meta {
 		dst[k] = v
 	}
@@ -725,7 +725,7 @@ func assistantReasoningContent(content []types.ContentPart) string {
 func hasOpenAICustomBlock(content []types.ContentPart) bool {
 	for _, part := range content {
 		if c, ok := part.(types.CustomContent); ok {
-			if _, ok := c.ProviderOptions["openai"].(map[string]interface{}); ok {
+			if _, ok := providerutils.NormalizeProviderOptionsObject(c.ProviderOptions["openai"]); ok {
 				return true
 			}
 		}
@@ -772,7 +772,7 @@ func openAIPromptCacheBreakpoint(providerOptions map[string]interface{}) (interf
 	if providerOptions == nil {
 		return nil, false
 	}
-	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
+	openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["openai"])
 	if !ok {
 		return nil, false
 	}
@@ -1000,7 +1000,7 @@ func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, ref
 				"type": "file",
 				"file": map[string]interface{}{"file_id": id},
 			}
-			if meta, ok := file.ProviderOptions["openaiCompatible"].(map[string]interface{}); ok {
+			if meta, ok := providerutils.NormalizeProviderOptionsObject(file.ProviderOptions["openaiCompatible"]); ok {
 				for k, v := range meta {
 					part[k] = v
 				}
@@ -1123,7 +1123,7 @@ func openAIImageDetail(providerOptions map[string]interface{}) string {
 	if providerOptions == nil {
 		return ""
 	}
-	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
+	openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["openai"])
 	if !ok {
 		return ""
 	}
@@ -1216,7 +1216,7 @@ func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Messag
 	// sent).
 	fromOptions := func(po map[string]interface{}) (string, bool) {
 		for _, k := range []string{key, "google"} {
-			if m, ok := po[k].(map[string]interface{}); ok {
+			if m, ok := providerutils.NormalizeProviderOptionsObject(po[k]); ok {
 				if v, ok := m["thoughtSignature"]; ok && v != nil {
 					return fmt.Sprint(v), true
 				}

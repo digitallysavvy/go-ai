@@ -78,6 +78,7 @@ func (m *ResponsesLanguageModel) SupportsImageInput() bool { return true }
 
 // DoGenerate performs non-streaming generation via POST /v1/responses.
 func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts = normalizedGenerateOptions(opts)
 	body, store, warnings, err := m.buildRequest(opts, false)
 	if err != nil {
 		return nil, err
@@ -264,6 +265,7 @@ func responsesCreatedAt(data []byte, event bool) (time.Time, bool) {
 
 // DoStream performs streaming generation via POST /v1/responses with stream=true.
 func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	opts = normalizedGenerateOptions(opts)
 	body, _, warnings, err := m.buildRequest(opts, true)
 	if err != nil {
 		return nil, err
@@ -323,6 +325,7 @@ func responsesExplicitStore(body map[string]interface{}) bool {
 }
 
 func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, bool, []types.Warning, error) {
+	opts = normalizedGenerateOptions(opts)
 	// Extract provider options early (store needed before input conversion).
 	store := true
 	storeExplicit := false
@@ -362,9 +365,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	if opts.ProviderOptions != nil {
 		var ok bool
-		openaiOpts, ok = opts.ProviderOptions[providerOptionsName].(map[string]interface{})
+		openaiOpts, ok = providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions[providerOptionsName])
 		if !ok && providerOptionsName != "openai" {
-			openaiOpts, ok = opts.ProviderOptions["openai"].(map[string]interface{})
+			openaiOpts, ok = providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"])
 		}
 		if ok {
 			if v, ok := openaiOpts["store"].(bool); ok {
@@ -1065,19 +1068,14 @@ func stringSliceFromInterface(value interface{}) []string {
 }
 
 func intFromInterface(value interface{}) (int, bool) {
-	switch v := value.(type) {
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case float64:
-		return int(v), true
-	case json.Number:
+	if v, ok := value.(json.Number); ok {
 		if i, err := v.Int64(); err == nil {
 			return int(i), true
 		}
+		return 0, false
 	}
-	return 0, false
+	// Every Go integer and float kind (int32, uint16, float32, ...).
+	return providerutils.OpenAICompatibleIntOption(map[string]interface{}{"v": value}, "v")
 }
 
 // responsesTopLogprobs mirrors TS: a number is sent verbatim as top_logprobs
@@ -1337,7 +1335,7 @@ func customToolNames(tools []types.Tool) map[string]bool {
 // responsesLogprobsRequested mirrors TS's truthiness check of
 // providerOptions[providerOptionsName].logprobs (true or a non-zero number).
 func responsesLogprobsRequested(providerOptions map[string]interface{}, providerName string) bool {
-	opts, _ := providerOptions[providerName].(map[string]interface{})
+	opts, _ := providerutils.NormalizeProviderOptionsObject(providerOptions[providerName])
 	switch v := opts["logprobs"].(type) {
 	case bool:
 		return v
@@ -1458,11 +1456,11 @@ func outputSchemaToolNames(tools []types.Tool) map[string]bool {
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
-		options, ok := tool.ProviderOptions.(map[string]interface{})
+		options, ok := optionsObject(tool.ProviderOptions)
 		if !ok {
 			continue
 		}
-		openaiOptions, ok := options["openai"].(map[string]interface{})
+		openaiOptions, ok := optionsObject(options["openai"])
 		if !ok {
 			continue
 		}
@@ -1495,7 +1493,7 @@ func extractApprovalRequestIDToToolCallIDFromPrompt(prompt types.Prompt) map[str
 			if !ok {
 				continue
 			}
-			openaiOpts, ok := toolCall.ProviderOptions["openai"].(map[string]interface{})
+			openaiOpts, ok := optionsObject(toolCall.ProviderOptions["openai"])
 			if !ok {
 				continue
 			}

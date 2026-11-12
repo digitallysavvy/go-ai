@@ -355,7 +355,7 @@ func parseOpenAIFilesOptions(providerOptions map[string]interface{}) (openAIFile
 	invalid := func(msg string) error {
 		return providererrors.NewArgumentError("providerOptions", "invalid openai provider options", errors.New(msg))
 	}
-	openaiOpts, ok := raw.(map[string]interface{})
+	openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return out, invalid("Invalid input: expected object")
 	}

@@ -338,11 +338,11 @@ func systemMessageProviderOptions(msg types.Message, providerName string) map[st
 	if msg.ProviderOptions == nil {
 		return nil
 	}
-	if v, ok := msg.ProviderOptions[providerName].(map[string]interface{}); ok {
+	if v, ok := providerutils.NormalizeProviderOptionsObject(msg.ProviderOptions[providerName]); ok {
 		return v
 	}
 	if providerName != "openai" {
-		if v, ok := msg.ProviderOptions["openai"].(map[string]interface{}); ok {
+		if v, ok := providerutils.NormalizeProviderOptionsObject(msg.ProviderOptions["openai"]); ok {
 			return v
 		}
 	}
@@ -781,7 +781,7 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 // input item (row 1f6dd3a). Mirrors TS's caller.type === 'program' ?
 // {type:'program', caller_id} : caller, applied in reverse (SDK -> wire).
 func toolCallCallerFromMetadata(metadata map[string]interface{}, providerName string) *ToolCaller {
-	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if !ok {
 		return nil
 	}
@@ -805,7 +805,7 @@ func toolCallCallerFromMetadata(metadata map[string]interface{}, providerName st
 // lookup) or ProviderMetadata (checked second), for the
 // execution-denied-for-programmatic-calls rejection below (row e105b2b).
 func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCaller {
-	if openaiOptions, ok := part.ProviderOptions[providerName].(map[string]interface{}); ok {
+	if openaiOptions, ok := providerutils.NormalizeProviderOptionsObject(part.ProviderOptions[providerName]); ok {
 		if caller, ok := openaiOptions["caller"].(map[string]interface{}); ok {
 			callerType, _ := caller["type"].(string)
 			if callerType == "program" {
@@ -1410,7 +1410,7 @@ func openAIReasoningEncryptedContent(part types.ReasoningContent, providerName s
 // openAIReasoningEncryptedFrom reads metadata[provider].reasoningEncryptedContent
 // when it is a string; null (TS nullish) and absent are nil.
 func openAIReasoningEncryptedFrom(metadata map[string]interface{}, providerName string) *string {
-	m, _ := metadata[providerName].(map[string]interface{})
+	m, _ := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if enc, ok := m["reasoningEncryptedContent"].(string); ok {
 		return &enc
 	}
@@ -1453,7 +1453,7 @@ func openAICompactionMetadata(part types.CustomContent, providerName string) (st
 }
 
 func openAICompactionMetadataFromMap(metadata map[string]interface{}, providerName string) (string, string) {
-	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if !ok {
 		return "", ""
 	}
@@ -1478,7 +1478,7 @@ func openAITextMetadata(part types.TextContent, providerName string) (string, st
 }
 
 func openAIItemIDAndPhase(metadata map[string]interface{}, providerName string) (string, string) {
-	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if !ok {
 		return "", ""
 	}
@@ -1716,7 +1716,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 // strict are optional; unknown keys are rejected.
 func appendAdditionalTools(items *[]interface{}, part types.ToolResultContent, opts ConvertOptions) error {
 	providerName := openAIProviderOptionsName(opts)
-	openaiOptions, ok := part.ProviderOptions[providerName].(map[string]interface{})
+	openaiOptions, ok := providerutils.NormalizeProviderOptionsObject(part.ProviderOptions[providerName])
 	if !ok {
 		return nil
 	}
@@ -2334,7 +2334,7 @@ func shouldSkipApprovalDeniedOutput(part types.ToolResultContent) bool {
 	// core builds for provider-executed tools); the part-level options are
 	// also honoured for callers that set it there.
 	for _, options := range []map[string]interface{}{part.Output.ProviderOptions, part.ProviderOptions} {
-		openaiOptions, ok := options["openai"].(map[string]interface{})
+		openaiOptions, ok := providerutils.NormalizeProviderOptionsObject(options["openai"])
 		if !ok {
 			continue
 		}
@@ -2615,7 +2615,7 @@ func openAIResponsesImageDetail(providerOptions map[string]interface{}, provider
 	if len(providerName) > 0 && providerName[0] != "" {
 		name = providerName[0]
 	}
-	openaiOpts, ok := providerOptions[name].(map[string]interface{})
+	openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[name])
 	if !ok {
 		return ""
 	}
@@ -2777,7 +2777,7 @@ func promptCacheBreakpoint(providerOptions map[string]interface{}, providerName 
 	if providerOptions == nil {
 		return nil
 	}
-	opts, ok := providerOptions[providerName].(map[string]interface{})
+	opts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[providerName])
 	if !ok {
 		return nil
 	}

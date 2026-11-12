@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // NewProgrammaticToolCallingTool creates a types.Tool that enables OpenAI's
@@ -53,7 +54,7 @@ func NewProgrammaticToolCallingTool() types.Tool {
 					out[k] = v
 				}
 				openaiOpts := map[string]interface{}{}
-				if existing, ok := providerOptions["openai"].(map[string]interface{}); ok {
+				if existing, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["openai"]); ok {
 					for k, v := range existing {
 						openaiOpts[k] = v
 					}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // openAILiveOptions is the parsed form of
@@ -35,7 +36,10 @@ func parseOpenAILiveOptions(providerOptions map[string]interface{}) (openAILiveO
 	if !ok || raw == nil {
 		return out, nil
 	}
-	m, ok := raw.(map[string]interface{})
+	// Read through the JSON form (TS options are JSON values), so Go-typed
+	// literals ([]map[string]interface{} input, map[string]string voice)
+	// validate like the map[string]interface{} form.
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
 	}
@@ -297,7 +301,7 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 		// delegationId: z.string().min(1).nullable().
 		channel := "thinking"
 		if raw, present := event.ProviderOptions["openai"]; present && raw != nil {
-			openaiOpts, ok := raw.(map[string]interface{})
+			openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(raw)
 			if !ok {
 				return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
 			}

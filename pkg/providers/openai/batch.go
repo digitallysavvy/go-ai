@@ -371,7 +371,7 @@ func openaiBatchInputFileExpiresAfter(providerName string, providerOptions map[s
 		if !present || raw == nil {
 			continue
 		}
-		opts, ok := raw.(map[string]interface{})
+		opts, ok := providerutils.NormalizeProviderOptionsObject(raw)
 		if !ok {
 			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("expected an object"))
 		}

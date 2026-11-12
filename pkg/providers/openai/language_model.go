@@ -120,6 +120,7 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts = normalizedGenerateOptions(opts)
 	// Build request body
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, false)
 	if err != nil {
@@ -256,6 +257,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // openChatStream posts the streaming request and returns the unwrapped chat
 // stream with the call warnings.
 func (m *LanguageModel) openChatStream(ctx context.Context, opts *provider.GenerateOptions) (*openAIStream, []types.Warning, error) {
+	opts = normalizedGenerateOptions(opts)
 	// Build request body with streaming enabled
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, true)
 	if err != nil {
@@ -323,6 +325,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 // thrown UnsupportedFunctionalityError (d5e3024: a non-string propertyNames
 // sub-schema).
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	opts = normalizedGenerateOptions(opts)
 	var warnings []types.Warning
 	capabilities := GetLanguageModelCapabilities(m.modelID)
 	if m.provider.config.OpenAICompatible {
@@ -357,7 +360,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// from it.
 	var openaiOpts map[string]interface{}
 	if opts.ProviderOptions != nil {
-		openaiOpts, _ = opts.ProviderOptions["openai"].(map[string]interface{})
+		openaiOpts, _ = providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"])
 	}
 	// TS 6400cf8b88: on an Azure chat model `openai` and `azure` are merged
 	// key by key, `azure` winning.
@@ -365,7 +368,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if len(optionKeys) > 1 {
 		merged := map[string]interface{}{}
 		for _, key := range optionKeys {
-			if o, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
+			if o, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions[key]); ok {
 				for k, v := range o {
 					merged[k] = v
 				}
@@ -1098,7 +1101,7 @@ func (m *LanguageModel) chatProviderOptionKeys() []string {
 // (TS providerOptionsNames.some(name => providerOptions?.[name]?.[option] != null)).
 func chatRawOptionSet(providerOptions map[string]interface{}, keys []string, option string) bool {
 	for _, key := range keys {
-		if o, ok := providerOptions[key].(map[string]interface{}); ok && o[option] != nil {
+		if o, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[key]); ok && o[option] != nil {
 			return true
 		}
 	}
@@ -2205,7 +2208,7 @@ func (s *openAIStream) endStream() {
 func (m *LanguageModel) strictJSONSchema(providerOptions map[string]interface{}) bool {
 	strict := true
 	for _, key := range []string{"openai", m.provider.Name(), providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())} {
-		if opts, ok := providerOptions[key].(map[string]interface{}); ok {
+		if opts, ok := providerutils.NormalizeProviderOptionsObject(providerOptions[key]); ok {
 			if v, ok := opts["strictJsonSchema"].(bool); ok {
 				strict = v
 			}
