@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -167,10 +168,12 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := m.provider.client.HTTPClient().Do(req)
 	if err != nil {
-		return provider.ClientSecretResult{}, err
+		// The URL carries ?key=<API key>; a TS fetch rejection never names
+		// the URL, so strip the query before the error leaves the SDK.
+		return provider.ClientSecretResult{}, internalhttp.TransportError(redactURLErrorQuery(err))
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
@@ -231,6 +234,23 @@ func isThinkingLiveModel(modelID string) bool {
 
 // BuildSessionConfig ports TS buildGoogleSessionConfig
 // (realtime/google-realtime-event-mapper.ts).
+// redactURLErrorQuery drops the query (the API key) from a *url.Error's URL.
+func redactURLErrorQuery(err error) error {
+	ue, ok := err.(*url.Error)
+	if !ok {
+		return err
+	}
+	redacted := *ue
+	if u, perr := url.Parse(ue.URL); perr == nil {
+		u.RawQuery = ""
+		u.ForceQuery = false
+		redacted.URL = u.String()
+	} else {
+		redacted.URL = "<redacted>"
+	}
+	return &redacted
+}
+
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
 	// Typed-option ruling: Go-typed literals are read in their JSON form.

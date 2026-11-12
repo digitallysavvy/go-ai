@@ -1,6 +1,10 @@
 package googlevertex
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -31,4 +35,39 @@ func TestR91provgTypedOptionLiterals(t *testing.T) {
 	if poll := vm.getPollOptions(map[string]interface{}{"googleVertex": map[string]int64{"pollIntervalMs": 1234}}); poll.PollIntervalMs != 1234 {
 		t.Fatalf("video poll = %+v", poll)
 	}
+}
+
+func r91provgFailingProvider(t *testing.T) *Provider {
+	t.Helper()
+	failing := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial tcp: connection refused")
+	})}
+	p, err := New(Config{Project: "p", Location: "us-central1", AccessToken: "t", HTTPClient: failing, CloudTTSBaseURL: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func r91provgWantConnect(t *testing.T, what string, err error) {
+	t.Helper()
+	var r interface{ IsRetryable() bool }
+	if err == nil || !strings.HasPrefix(err.Error(), "Cannot connect to API: ") || !errors.As(err, &r) || !r.IsRetryable() {
+		t.Fatalf("%s: error = %T %v", what, err, err)
+	}
+}
+
+// provg1-07 (Vertex transcription raw Do) and provg1-08 (Cloud TTS and
+// embedding keep the client's connect error text, no prefix).
+func TestR91provgTransportErrors(t *testing.T) {
+	p := r91provgFailingProvider(t)
+	tm, _ := p.TranscriptionModel("chirp_2")
+	_, err := tm.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "AQ=="})
+	r91provgWantConnect(t, "transcription", err)
+	sm, _ := p.SpeechModel("chirp-3-hd")
+	_, err = sm.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"})
+	r91provgWantConnect(t, "cloud tts", err)
+	em, _ := p.EmbeddingModel("text-embedding-005")
+	_, err = em.DoEmbed(context.Background(), "hi", nil)
+	r91provgWantConnect(t, "embedding", err)
 }

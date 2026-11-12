@@ -114,7 +114,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	resp, err := internalhttp.WithFetchRedirects(m.provider.mainClient().HTTPClient()).Do(req)
 	if err != nil {
-		return nil, err
+		// TS postToApi/getFromApi handleFetchError: the retryable
+		// "Cannot connect to API" APICallError (aborts unchanged).
+		return nil, internalhttp.TransportError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	respBody, err := io.ReadAll(resp.Body)

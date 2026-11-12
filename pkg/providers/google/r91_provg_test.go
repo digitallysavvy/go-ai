@@ -295,3 +295,91 @@ func TestR91provgInteractionsUsageNoModalityDetails(t *testing.T) {
 		t.Fatalf("modality-only input details = %+v", u2.InputDetails)
 	}
 }
+
+// r91provgClosedURL is a base URL with nothing listening.
+func r91provgClosedURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	u := srv.URL
+	srv.Close()
+	return u
+}
+
+func r91provgWantConnectError(t *testing.T, what string, err error) {
+	t.Helper()
+	var r interface{ IsRetryable() bool }
+	if err == nil || !strings.HasPrefix(err.Error(), "Cannot connect to API: ") || !errors.As(err, &r) || !r.IsRetryable() {
+		t.Fatalf("%s: error = %T %v, want the retryable Cannot connect to API error", what, err, err)
+	}
+}
+
+// provg1-02: the realtime client-secret transport error must not carry the
+// API key from ?key=.
+func TestR91provgRealtimeClientSecretRedactsKey(t *testing.T) {
+	p := New(Config{APIKey: "SECRET-KEY-123", BaseURL: r91provgClosedURL(t) + "/v1beta"})
+	m := &GoogleRealtimeModel{provider: p, modelID: "gemini-live-2.5-flash"}
+	_, err := m.DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
+	if err == nil || strings.Contains(err.Error(), "SECRET-KEY-123") {
+		t.Fatalf("error = %v", err)
+	}
+	r91provgWantConnectError(t, "realtime", err)
+}
+
+// provg1-07: raw Do sites return the TS handleFetchError APICallError.
+func TestR91provgRawDoTransportErrors(t *testing.T) {
+	base := r91provgClosedURL(t)
+	p := New(Config{APIKey: "k", BaseURL: base + "/v1beta"})
+	b := &Batch{provider: p}
+	_, err := b.uploadBatchInputFile(context.Background(), []byte("{}\n"), "d", nil)
+	r91provgWantConnectError(t, "batch upload", err)
+	// Results download: the operation names a responses file and the
+	// download connection is dropped.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/download/") {
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, `{"name":"batches/x","done":true,"metadata":{"name":"batches/x","state":"BATCH_STATE_SUCCEEDED","output":{"responsesFile":"files/out"}}}`)
+	}))
+	defer srv.Close()
+	b2 := &Batch{provider: New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"})}
+	_, err = b2.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batches/x"})
+	r91provgWantConnectError(t, "batch download", err)
+	_, err = p.Files().UploadFile(context.Background(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "application/pdf"})
+	r91provgWantConnectError(t, "files upload", err)
+}
+
+// provg1-06: the batch JSONL input file is JSON.stringify'd per line, with no
+// HTML escaping.
+func TestR91provgBatchJSONLNoHTMLEscape(t *testing.T) {
+	var uploaded []byte
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/upload/v1beta/files", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-goog-upload-url", srv.URL+"/upload/v1beta/files/s")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("/upload/v1beta/files/s", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		uploaded = b
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"file":{"name":"files/in"}}`))
+	})
+	mux.HandleFunc("/v1beta/models/gemini-2.5-flash:batchGenerateContent", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(googleBatchOperationJSON))
+	})
+	b := New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"}).ExperimentalBatch()
+	prompt := "<b>& " + strings.Repeat("a", 20_000_000)
+	if _, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{googleTextBatchRequest("r1", "gemini-2.5-flash", prompt)}}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(string(uploaded[:200]), "<b>& ") || uploaded[len(uploaded)-1] != '\n' || strings.Count(string(uploaded), "\n") != 1 {
+		t.Fatalf("uploaded JSONL head = %q", uploaded[:200])
+	}
+}

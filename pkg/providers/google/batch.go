@@ -24,6 +24,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // googleBatchInputFileMaxBytes is the maximum size Google accepts for a batch
@@ -155,9 +156,11 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		return &provider.BatchV4StartResult{BatchV4Status: operation.toStatus(), BatchID: operation.Name, Warnings: warnings}, nil
 	}
 
+	// TS JSON.stringify per line (google-batch.ts:291): no HTML escaping of
+	// <, >, & and U+2028/U+2029 written as is.
 	var fileParts bytes.Buffer
 	for _, line := range fileLines {
-		encoded, err := json.Marshal(line)
+		encoded, err := jsonstr.Marshal(line)
 		if err != nil {
 			return nil, err
 		}
@@ -238,7 +241,9 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 
 	initResp, err := internalhttp.WithFetchRedirects(b.provider.client.HTTPClient()).Do(initReq)
 	if err != nil {
-		return nil, err
+		// TS postToApi/getFromApi handleFetchError: the retryable
+		// "Cannot connect to API" APICallError (aborts unchanged).
+		return nil, internalhttp.TransportError(err)
 	}
 	defer initResp.Body.Close() //nolint:errcheck
 	if initResp.StatusCode >= 400 {
@@ -265,7 +270,9 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 
 	uploadResp, err := internalhttp.WithFetchRedirects(b.provider.client.HTTPClient()).Do(uploadReq)
 	if err != nil {
-		return nil, err
+		// TS postToApi/getFromApi handleFetchError: the retryable
+		// "Cannot connect to API" APICallError (aborts unchanged).
+		return nil, internalhttp.TransportError(err)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
@@ -458,7 +465,9 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 
 	resp, err := internalhttp.WithFetchRedirects(b.provider.client.HTTPClient()).Do(req)
 	if err != nil {
-		return nil, err
+		// TS postToApi/getFromApi handleFetchError: the retryable
+		// "Cannot connect to API" APICallError (aborts unchanged).
+		return nil, internalhttp.TransportError(err)
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close() //nolint:errcheck

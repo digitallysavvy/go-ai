@@ -452,5 +452,7 @@ func vertexEmbeddingError(providerName string, err error) error {
 	if errors.As(err, &statusErr) {
 		return gemini.GoogleHTTPError(providerName, statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
 	}
-	return providererrors.NewProviderError(providerName, 0, "", "vertex embedding request failed: "+err.Error(), err)
+	// TS postJsonToApi: the client's error (the "Cannot connect to API"
+	// APICallError, or an abort) unchanged, with no prefix.
+	return err
 }
