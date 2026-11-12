@@ -3,6 +3,7 @@ package elevenlabs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -74,5 +75,67 @@ func TestR94provaTranscriptionNullFrame(t *testing.T) {
 	}
 	if want := []string{"raw", "stream-start", "raw"}; !reflect.DeepEqual(kinds, want) || lastRaw != nil {
 		t.Fatalf("parts = %v, last raw = %#v", kinds, lastRaw)
+	}
+}
+
+// TestR94provaTranscriptionSessionID: TS ids are `${sessionId ?? 'session'}:n`
+// with sessionId = raw.session_id, so an empty id stays empty and a number
+// is its String form.
+func TestR94provaTranscriptionSessionID(t *testing.T) {
+	for _, tc := range []struct {
+		sessionID interface{}
+		want      string
+	}{{"", ":0"}, {float64(7), "7:0"}, {nil, "session:0"}} {
+		server := newRealtimeTestServer(t)
+		result, err := newRealtimeTestModel(server.ts.URL).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            newBlockingAudioStream(),
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.toSend <- map[string]interface{}{"message_type": "session_started", "session_id": tc.sessionID}
+		server.toSend <- map[string]interface{}{"message_type": "partial_transcript", "text": "hi"}
+		var id string
+		for id == "" {
+			part, err := result.Stream.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if part.Type == provider.TranscriptionStreamPartTypePartial {
+				id = part.ID
+			}
+		}
+		if id != tc.want {
+			t.Errorf("session_id %#v: id = %q, want %q", tc.sessionID, id, tc.want)
+		}
+		_ = result.Stream.Close()
+		server.close()
+	}
+}
+
+// TestR94provaTranscriptionAbortCause: TS onAbort passes abortSignal.reason,
+// so a cancel cause is the stream error.
+func TestR94provaTranscriptionAbortCause(t *testing.T) {
+	server := newRealtimeTestServer(t)
+	defer server.close()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	result, err := newRealtimeTestModel(server.ts.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio:            newBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.toSend <- map[string]interface{}{"message_type": "session_started", "session_id": "s"}
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	reason := errors.New("r94prova user stop")
+	cancel(reason)
+	_, err = drainUntilFinishOrError(t, result.Stream)
+	if err != reason {
+		t.Fatalf("err = %v, want the cancel cause", err)
 	}
 }

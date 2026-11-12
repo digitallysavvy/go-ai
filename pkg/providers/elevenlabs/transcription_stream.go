@@ -395,8 +395,11 @@ type elevenLabsRealtimeWord struct {
 // elevenLabsRealtimeEvent is a server->client realtime transcription event,
 // mirroring TS ElevenLabsRealtimeTranscriptionEvent.
 type elevenLabsRealtimeEvent struct {
-	MessageType  string                   `json:"message_type,omitempty"`
-	SessionID    string                   `json:"session_id,omitempty"`
+	MessageType string `json:"message_type,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	// HasSessionID reports a present, non-null session_id (TS `sessionId
+	// ?? 'session'` keeps an empty one); SessionID is then String(value).
+	HasSessionID bool                     `json:"-"`
 	Text         string                   `json:"text,omitempty"`
 	LanguageCode *string                  `json:"language_code,omitempty"`
 	Words        []elevenLabsRealtimeWord `json:"words,omitempty"`
@@ -423,7 +426,10 @@ func decodeElevenLabsRealtimeEvent(text string) (elevenLabsRealtimeEvent, bool) 
 	m, _ := value.(map[string]interface{})
 	var ev elevenLabsRealtimeEvent
 	ev.MessageType, _ = m["message_type"].(string)
-	ev.SessionID, _ = m["session_id"].(string)
+	if sid, present := m["session_id"]; present && sid != nil {
+		ev.SessionID = jsErrorMessage(sid)
+		ev.HasSessionID = true
+	}
 	ev.Text, _ = m["text"].(string)
 	if lc, ok := m["language_code"].(string); ok {
 		ev.LanguageCode = &lc
@@ -568,7 +574,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 		endOfInput                  bool
 		receivedPostInputCommit     bool
 		segmentIndex                int
-		sessionID                   string
+		sessionID                   *string
 		committedEventCount         int
 		committedEventsAtEndOfInput int
 		finalCommitEventCount       *int
@@ -585,9 +591,9 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 	}
 
 	segID := func() string {
-		sid := sessionID
-		if sid == "" {
-			sid = "session"
+		sid := "session" // TS sessionId ?? 'session'
+		if sessionID != nil {
+			sid = *sessionID
 		}
 		return fmt.Sprintf("%s:%d", sid, segmentIndex)
 	}
@@ -621,7 +627,8 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 	for {
 		select {
 		case <-s.Context().Done():
-			fail(s.Context().Err())
+			// TS onAbort(abortSignal.reason): the caller's cancel cause.
+			fail(context.Cause(s.Context()))
 			return
 
 		case <-finishTimerC:
@@ -709,7 +716,12 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 
 			switch raw.MessageType {
 			case "session_started":
-				sessionID = raw.SessionID
+				// TS sessionId = raw.session_id (absent or null: undefined).
+				sessionID = nil
+				if raw.HasSessionID {
+					sid := raw.SessionID
+					sessionID = &sid
+				}
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 					return
 				}
