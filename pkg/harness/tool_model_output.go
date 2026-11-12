@@ -53,8 +53,10 @@ func unsupportedModelOutput(detail string) error {
 // NormalizeToolModelOutput validates a tool's model output for harness
 // delivery and canonicalizes inline images (full media type, inline bytes).
 // Only text and inline images are supported in "content" outputs; anything
-// else returns a *CapabilityUnsupportedError. An inline file part stays a
-// FileContentBlock (filename and provider options kept). Non-content
+// else returns a *CapabilityUnsupportedError. An inline image, given as a
+// file part or a legacy image-data part (ImageContentBlock), comes back as a
+// FileContentBlock with inline data (a file's filename and provider options
+// kept), as TS turns both into file parts. Non-content
 // outputs pass through unchanged. Mirrors TS `normalizeHarnessToolModelOutput`.
 func NormalizeToolModelOutput(output types.ToolResultOutput) (types.ToolResultOutput, error) {
 	if output.Type != types.ToolResultOutputContent {
@@ -70,7 +72,13 @@ func NormalizeToolModelOutput(output types.ToolResultOutput) (types.ToolResultOu
 			if err != nil {
 				return types.ToolResultOutput{}, err
 			}
-			blocks = append(blocks, img)
+			// TS `{...part, type: 'file', data: {type: 'data', data}}`: a
+			// legacy image-data part becomes a file part too.
+			blocks = append(blocks, types.FileContentBlock{
+				FileData:        types.FileData{Type: types.FileDataTypeData, Data: img.Data},
+				MediaType:       img.MediaType,
+				ProviderOptions: b.ProviderOptions,
+			})
 		case types.FileContentBlock:
 			// TS: a file whose data is not inline fails with its data type,
 			// "Unsupported content 'file' (<mediaType>, <data.type>).".
