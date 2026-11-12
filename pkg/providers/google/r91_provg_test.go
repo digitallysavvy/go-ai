@@ -427,3 +427,39 @@ func TestR91provgVideoHeadersJoinValues(t *testing.T) {
 		t.Fatalf("headers = %v", got)
 	}
 }
+
+// core2-12: TS parseToolCallInput sends `args: null` for a JSON null input
+// (convert-to-google-messages.test.ts:3007 'retains ... parsed null'); a call
+// with no input keeps {}.
+func TestR91provgNullToolInputArgs(t *testing.T) {
+	for in, want := range map[string]string{`null`: `"args":null`, `"null"`: `"args":null`, ``: `"args":{}`, `{"city":`: `"args":"{\"city\":"`} {
+		msgs := []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "call1", ToolName: "weather", Input: in}}},
+		}
+		out, err := prompt.ConvertToGoogleMessages(msgs, prompt.GoogleMessagesOptions{ProviderOptionsNames: []string{"google"}})
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		b, _ := json.Marshal(out.Contents)
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("%q: contents = %s, want %s", in, b, want)
+		}
+	}
+}
+
+// core2-13: a reasoning file given as a base64 DataString is sent as is.
+func TestR91provgReasoningFileDataString(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ReasoningFileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AAEC"}}}},
+	}
+	out, err := prompt.ConvertToGoogleMessages(msgs, prompt.GoogleMessagesOptions{ProviderOptionsNames: []string{"google"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out.Contents)
+	if !strings.Contains(string(b), `"data":"AAEC"`) {
+		t.Fatalf("contents = %s", b)
+	}
+}

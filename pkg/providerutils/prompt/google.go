@@ -705,8 +705,14 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 			if len(data) == 0 {
 				data = p.FileData.Data
 			}
+			// TS convertToBase64(part.data.data) returns a base64 string
+			// as is (convert-to-google-messages.ts:430-438).
+			encoded := base64.StdEncoding.EncodeToString(data)
+			if len(data) == 0 && p.FileData.DataString != "" {
+				encoded = p.FileData.DataString
+			}
 			part := map[string]interface{}{
-				"inlineData": map[string]interface{}{"mimeType": firstNonEmpty(p.MediaType, p.FileData.MediaType), "data": base64.StdEncoding.EncodeToString(data)},
+				"inlineData": map[string]interface{}{"mimeType": firstNonEmpty(p.MediaType, p.FileData.MediaType), "data": encoded},
 				"thought":    true,
 			}
 			if sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); ok {
@@ -829,15 +835,24 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 		// TS 4ae6986cd8 parseToolCallInput: a string input that is valid
 		// JSON is sent as the value it holds.
 		args, argsRaw := tc.input, tc.inputRaw
+		// A JSON null input (or a string input holding "null") parses to
+		// null, which TS sends as `args: null`; only a call with no input at
+		// all gets {}.
+		parsedNull := args == nil && strings.TrimSpace(argsRaw) != ""
 		if s, ok := args.(string); ok {
 			if v, ok := SecureJSONParse(s); ok {
 				args, argsRaw = v, s
+				parsedNull = v == nil
 			}
 		}
-		if args == nil {
-			args = map[string]interface{}{}
+		var fcArgs interface{}
+		if !parsedNull {
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			fcArgs = orderedInput(args, argsRaw)
 		}
-		fc := map[string]interface{}{"name": tc.toolName, "args": orderedInput(args, argsRaw)}
+		fc := map[string]interface{}{"name": tc.toolName, "args": fcArgs}
 		if c.opts.IncludeFunctionCallIDs && tc.id != "" {
 			fc["id"] = tc.id
 		}
