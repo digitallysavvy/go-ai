@@ -228,15 +228,10 @@ func TestGenerateText_Telemetry(t *testing.T) {
 	}
 
 	// Verify attributes. ai.prompt is JSON-encoded as {system, messages}
-	// (TS legacy-open-telemetry.ts onGenerateStart), where a bare `prompt`
-	// string call option normalizes into a single user message — matching
-	// TS's `initialPrompt.messages` (always normalized via
-	// standardizePrompt regardless of whether prompt or messages was used).
-	wantPromptJSON := mustMarshalJSON(t, map[string]interface{}{
-		"messages": []types.Message{
-			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Test prompt"}}},
-		},
-	})
+	// (TS legacy-open-telemetry.ts onGenerateStart); a bare `prompt` string
+	// is the user message TS standardizePrompt builds,
+	// [{role: 'user', content: prompt}] (string content, r91 core1-R02).
+	wantPromptJSON := `{"messages":[{"role":"user","content":"Test prompt"}]}`
 	attrs := generateTextSpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":           "ai.generateText",

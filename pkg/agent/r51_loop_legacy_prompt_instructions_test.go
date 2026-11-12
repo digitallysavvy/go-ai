@@ -106,7 +106,7 @@ func TestR51LoopStepTelemetryInstructionMessages(t *testing.T) {
 				}
 			case s.Name() == "ai.generateText.doGenerate" && kv.Key == "ai.prompt.messages":
 				sawStep = true
-				if v := kv.Value.AsString(); !strings.HasPrefix(v, `[{"role":"system","content":[{"type":"text","text":"be brief"`) {
+				if v := kv.Value.AsString(); v != `[{"role":"system","content":"be brief"},{"role":"user","content":[{"type":"text","text":"Hello"}]}]` {
 					t.Errorf("step ai.prompt.messages = %s", v)
 				}
 			}
