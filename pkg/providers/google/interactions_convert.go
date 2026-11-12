@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -534,7 +535,8 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 						content = append(content, types.GeneratedFileContent{MediaType: inner.mimeTypeOr("image/png"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
 						mediaType := inner.mimeTypeOr("image/png")
-						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
+						uri := interactionsFileURL(inner.URI)
+						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}, URL: uri, ProviderMetadata: meta})
 					}
 				case "video":
 					if inner.Data != "" {
@@ -542,7 +544,8 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 						content = append(content, types.GeneratedFileContent{MediaType: inner.mimeTypeOr("video/mp4"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
 						mediaType := inner.mimeTypeOr("video/mp4")
-						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
+						uri := interactionsFileURL(inner.URI)
+						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}, URL: uri, ProviderMetadata: meta})
 					}
 				}
 			}
@@ -1121,4 +1124,35 @@ func (m *InteractionsLanguageModel) generateID() string {
 		return m.cfg.GenerateID()
 	}
 	return streaming.GenerateID()
+}
+
+// interactionsFileURL is TS `new URL(uri)` for a generated file URL: the
+// WHATWG serialization (lower-cased host, default port dropped, ...). A URI
+// that does not parse is reported by interactionsOutputsURLError first.
+func interactionsFileURL(uri string) string {
+	if href, err := urlnorm.Href(uri); err == nil {
+		return href
+	}
+	return uri
+}
+
+// interactionsOutputsURLError is the TypeError TS parseGoogleInteractionsOutputs
+// throws from `new URL(uri)` for a model_output image or video block that has
+// no inline data and a URI that does not parse.
+func interactionsOutputsURLError(steps []interactionsContentBlock) error {
+	for _, block := range steps {
+		if block.Type != "model_output" || len(block.ContentRaw) == 0 {
+			continue
+		}
+		var inner []interactionsContentBlock
+		_ = json.Unmarshal(block.ContentRaw, &inner)
+		for _, b := range inner {
+			if (b.Type == "image" || b.Type == "video") && b.Data == "" && b.URI != "" {
+				if _, err := urlnorm.Href(b.URI); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }

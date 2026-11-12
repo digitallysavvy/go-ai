@@ -455,3 +455,51 @@ func TestR94provgVideoNoVideosErrorText(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TS parse-google-interactions-outputs and the stream transform wrap a
+// generated file URI in `new URL(uri)`: the URL is the WHATWG serialization
+// and a URI that does not parse is the TypeError "Invalid URL".
+func TestR94provgInteractionsFileURLIsWHATWG(t *testing.T) {
+	steps := []interactionsContentBlock{{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"image","uri":"HTTPS://Example.COM:443/a/../b"}]`)}}
+	if err := interactionsOutputsURLError(steps); err != nil {
+		t.Fatal(err)
+	}
+	content, _, _ := (&InteractionsLanguageModel{}).parseOutputs(steps, "")
+	file, ok := content[0].(types.GeneratedFileContent)
+	if !ok || file.URL != "https://example.com/b" || file.FileData.URL != "https://example.com/b" {
+		t.Fatalf("content = %#v", content)
+	}
+	bad := []interactionsContentBlock{{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"video","uri":"not a url"}]`)}}
+	if err := interactionsOutputsURLError(bad); err == nil || err.Error() != "Invalid URL" {
+		t.Fatalf("err = %v", err)
+	}
+	m := NewInteractionsLanguageModel(New(Config{APIKey: "k"}), "m")
+	s := newSynthesizedInteractionsStream(m, interactionsResponse{Status: "completed", Steps: bad}, nil, nil, false)
+	if _, err := s.Next(); err == nil || err.Error() != "Invalid URL" {
+		t.Fatalf("synth stream err = %v", err)
+	}
+
+	// The live stream: a delta with a bad URI errors the stream.
+	var b strings.Builder
+	for _, e := range []string{icreated,
+		`{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"image","uri":"not a url"}}`} {
+		b.WriteString("data: " + e + "\n\n")
+	}
+	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "k"}).client, io.NopCloser(strings.NewReader(b.String())), "", nil, nil, nil, 0)
+	defer func() { _ = stream.Close() }()
+	var last error
+	for i := 0; i < 20; i++ {
+		c, err := stream.Next()
+		if err != nil {
+			last = err
+			break
+		}
+		if c.Type == provider.ChunkTypeFile {
+			t.Fatalf("file chunk emitted: %+v", c.GeneratedFileContent)
+		}
+	}
+	if last == nil || last.Error() != "Invalid URL" {
+		t.Fatalf("stream err = %v", last)
+	}
+}

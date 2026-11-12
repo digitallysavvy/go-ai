@@ -168,6 +168,9 @@ func (m *InteractionsLanguageModel) DoGenerate(ctx context.Context, opts *provid
 		}
 	}
 
+	if err := interactionsOutputsURLError(response.Steps); err != nil {
+		return nil, err // TS new URL(uri) TypeError
+	}
 	result := m.convertResponse(response, resp, args, warnings)
 	return result, nil
 }

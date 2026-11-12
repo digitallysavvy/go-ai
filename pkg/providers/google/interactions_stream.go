@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"io"
 	"net/http"
 	"strings"
@@ -181,6 +182,11 @@ func parseInteractionsCreated(created string) time.Time {
 }
 
 func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response interactionsResponse, warnings []types.Warning, headers http.Header, includeRawChunks bool) provider.TextStream {
+	if err := interactionsOutputsURLError(response.Steps); err != nil {
+		// TS start() throws from new URL(uri): the stream errors and its
+		// queued parts are dropped.
+		return &sliceTextStream{err: err, failed: true}
+	}
 	content, _, hasFunctionCall := model.parseOutputs(response.Steps, normalizedInteractionID(response.ID))
 	chunks := make([]*provider.StreamChunk, 0, len(content)+4)
 	// TS always enqueues stream-start first, even without warnings.
@@ -397,6 +403,12 @@ restart:
 		}
 		s.currentEventData = event.Data
 		s.processEvent(payload)
+		if s.err != nil {
+			// A transform throw (new URL TypeError) errors the stream and
+			// drops what the event queued.
+			s.buffer = nil
+			return nil, s.err
+		}
 		if len(s.buffer) > 0 {
 			goto restart
 		}
@@ -923,6 +935,8 @@ func defaultMap(v map[string]interface{}) map[string]interface{} {
 type sliceTextStream struct {
 	chunks []*provider.StreamChunk
 	err    error
+	// failed reports err as the stream's first result (TS start() threw).
+	failed bool
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -935,6 +949,9 @@ type sliceTextStream struct {
 func (s *sliceTextStream) RequestBody() interface{} { return s.requestBody }
 
 func (s *sliceTextStream) Next() (*provider.StreamChunk, error) {
+	if s.failed {
+		return nil, s.err
+	}
 	if len(s.chunks) == 0 {
 		s.err = io.EOF
 		return nil, io.EOF
@@ -995,6 +1012,16 @@ func (s *interactionsStream) emitFile(data, uri, mediaType string) {
 		decoded, _ := fileutil.ConvertBase64ToBytes(data)
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: mediaType, Data: decoded, ProviderMetadata: meta}, ProviderMetadata: meta})
 	case uri != "":
+		// TS new URL(uri): the WHATWG serialization; a URI that does not
+		// parse throws in the transform, which errors the stream and drops
+		// the parts queued by the same event.
+		href, err := urlnorm.Href(uri)
+		if err != nil {
+			s.buffer = nil
+			s.err = err
+			return
+		}
+		uri = href
 		fileData := types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: mediaType, FileData: fileData, URL: uri, ProviderMetadata: meta}, ProviderMetadata: meta})
 	}
