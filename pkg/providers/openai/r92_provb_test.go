@@ -256,3 +256,19 @@ func TestR92provbMissingAPIKeyUnwrapped(t *testing.T) {
 	want("transcription", err)
 
 }
+
+// CR r92 provc -> provb: TS sets limit, then after (openai-batch.ts:385-390).
+func TestR92provbBatchListQueryOrder(t *testing.T) {
+	var rawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[],"has_more":false}`))
+	}))
+	defer srv.Close()
+	limit := 5
+	_, err := NewBatch(New(Config{APIKey: "k", BaseURL: srv.URL})).DoListBatches(context.Background(), provider.BatchV4ListOptions{Limit: &limit, Cursor: "c"})
+	if err != nil || rawQuery != "limit=5&after=c" {
+		t.Fatalf("query = %q, err = %v", rawQuery, err)
+	}
+}
