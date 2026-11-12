@@ -3,12 +3,14 @@ package ai
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -276,4 +278,74 @@ func TestR91genTelemetryPromptFields(t *testing.T) {
 			t.Fatalf("object step events = %+v, want System sys", rec.steps)
 		}
 	})
+}
+
+// core1-O01: a StreamObject prompt preparation failure (here a failed
+// download) reaches OnError once: TS streamObject's catch enqueues an error
+// part that the event processor reports to onError (stream-object.ts:532-541,
+// 948-960).
+func TestR91genStreamObjectPrepErrorOnError(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		t.Error("model called")
+		return nil, errors.New("unreachable")
+	}}
+	downloadErr := errors.New("download failed")
+	var mu sync.Mutex
+	var got []error
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:    model,
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.ImageContent{URL: "https://example.com/a.png"}}}},
+		Schema:   schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		ExperimentalDownload: func(context.Context, []promptutils.DownloadRequest) ([]*promptutils.DownloadResult, error) {
+			return nil, downloadErr
+		},
+		OnError: func(_ context.Context, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, err)
+		},
+	})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || !errors.Is(got[0], downloadErr) {
+		t.Fatalf("OnError calls = %v, want the download error once", got)
+	}
+}
+
+// core1-O02: generateObject / streamObject call IDs come from their
+// generateId, createIdGenerator({prefix: 'aiobj', size: 24})
+// (generate-object.ts:46,351; stream-object.ts:70,570).
+func TestR91genObjectCallIDPrefix(t *testing.T) {
+	sch := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	var mu sync.Mutex
+	var ids []string
+	onStart := func(_ context.Context, e ObjectOnStartEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		ids = append(ids, e.CallID)
+	}
+	if _, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: r91genTextModel(), Prompt: "hi", Schema: sch, OnStart: onStart}); err != nil {
+		t.Fatal(err)
+	}
+	streamModel := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeText, Text: `{"a":1}`}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}}), nil
+	}}
+	res, err := StreamObject(context.Background(), StreamObjectOptions{Model: streamModel, Prompt: "hi", Schema: sch, OnStart: onStart})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ids) != 2 {
+		t.Fatalf("call ids = %v", ids)
+	}
+	for _, id := range ids {
+		if !strings.HasPrefix(id, "aiobj-") || len(id) != len("aiobj-")+24 {
+			t.Errorf("call id %q, want aiobj-<24>", id)
+		}
+	}
 }
