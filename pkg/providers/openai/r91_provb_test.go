@@ -255,3 +255,25 @@ func TestR91provbChatPromptCacheKeysAndRemoveWarnings(t *testing.T) {
 		t.Fatalf("remove warnings = %d, want 2 (%v)", n, warnings)
 	}
 }
+
+// PB-18 (provb1-12): with includeRawChunks the completions stream sends the
+// first chunk's response-metadata and text-start right after its raw part
+// (TS openai-completion-language-model.ts:321-333).
+func TestR91provbCompletionRawChunkOrder(t *testing.T) {
+	sse := "data: {\"id\":\"c\",\"object\":\"text_completion\",\"created\":1,\"model\":\"m\",\"choices\":[{\"text\":\"\",\"index\":0}]}\n\n" +
+		"data: {\"id\":\"c\",\"object\":\"text_completion\",\"created\":1,\"model\":\"m\",\"choices\":[{\"text\":\"hi\",\"index\":0}]}\n\n" +
+		"data: [DONE]\n\n"
+	s := newCompletionStream(io.NopCloser(strings.NewReader(sse)), true)
+	var kinds []provider.ChunkType
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		kinds = append(kinds, c.Type)
+	}
+	want := []provider.ChunkType{provider.ChunkTypeRaw, provider.ChunkTypeResponseMetadata, provider.ChunkTypeTextStart, provider.ChunkTypeRaw, provider.ChunkTypeText}
+	if len(kinds) < len(want) || !reflect.DeepEqual(kinds[:len(want)], want) {
+		t.Fatalf("order = %v, want prefix %v", kinds, want)
+	}
+}

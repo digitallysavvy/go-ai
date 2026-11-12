@@ -572,9 +572,17 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			})
 			continue
 		}
+		// TS order: the raw chunk, then (first valid chunk) response-metadata
+		// and text-start, then the delta
+		// (openai-completion-language-model.ts:321-333). Before the first
+		// output they wait in arrival order (the early-error peek).
+		if rawChunk != nil {
+			s.queueOrHold(rawChunk)
+		}
 		if !s.metadataEmitted {
 			s.metadataEmitted = true
-			s.pendingMetadata = &provider.StreamChunk{
+			s.textStarted = true
+			s.queueOrHold(&provider.StreamChunk{
 				Type: provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: &provider.ResponseMetadata{
 					ID:        chunk.ID,
@@ -584,7 +592,8 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 					// them on the response-metadata part.
 					Headers: s.headerMap(),
 				},
-			}
+			})
+			s.queueOrHold(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
 		}
 		if chunk.Usage != nil {
 			usage := convertOpenAICompletionUsage(chunk.Usage)
@@ -603,14 +612,7 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			// (the schema requires the string, so an empty one is a delta).
 			if choice.Text != "" || (s.compat && choice.TextPresent) {
 				s.outputStarted = true
-				if rawChunk != nil {
-					s.pendingRaw = append(s.pendingRaw, rawChunk)
-				}
 				s.flushPendingMetadata()
-				if !s.textStarted {
-					s.textStarted = true
-					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
-				}
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeText,
 					ID:   "0",
@@ -618,12 +620,19 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 				})
 			}
 		}
-		if rawChunk != nil {
-			s.pendingRaw = append(s.pendingRaw, rawChunk)
-		}
 		continue
 
 	}
+}
+
+// queueOrHold queues c, or holds it in arrival order until the first output
+// (the early-error peek drops held chunks).
+func (s *completionStream) queueOrHold(c *provider.StreamChunk) {
+	if s.outputStarted {
+		s.flushQueue = append(s.flushQueue, c)
+		return
+	}
+	s.pendingRaw = append(s.pendingRaw, c)
 }
 
 func (s *completionStream) finish() {
