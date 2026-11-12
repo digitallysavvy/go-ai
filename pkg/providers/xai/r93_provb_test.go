@@ -123,3 +123,13 @@ func TestR93provbTranscriptionStreamNumericErrorMessage(t *testing.T) {
 		t.Fatalf("err = %v, want 42", err)
 	}
 }
+
+// TS inputFileExpiresAfter is z.number().optional(): a present null fails.
+func TestR93provbBatchExpiresAfterNull(t *testing.T) {
+	if _, err := extractXAIBatchProviderOptions(map[string]interface{}{"xai": map[string]interface{}{"inputFileExpiresAfter": nil}}); err == nil {
+		t.Fatal("null accepted")
+	}
+	if _, err := extractXAIBatchProviderOptions(map[string]interface{}{"xai": map[string]interface{}{"inputFileExpiresAfter": 7200}}); err != nil {
+		t.Fatal(err)
+	}
+}

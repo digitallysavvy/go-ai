@@ -382,8 +382,12 @@ func openaiBatchInputFileExpiresAfter(providerName string, providerOptions map[s
 			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("expected an object"))
 		}
 		v, present := opts["inputFileExpiresAfter"]
-		if !present || v == nil {
+		if !present {
 			return openaiBatchInputFileDefaultExpiresAfterSeconds, nil
+		}
+		if v == nil {
+			// TS z.number().optional(): a present null is invalid.
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("inputFileExpiresAfter must be a number"))
 		}
 		var n float64
 		switch x := v.(type) {

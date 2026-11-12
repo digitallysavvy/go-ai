@@ -105,6 +105,11 @@ func extractXAIBatchProviderOptions(providerOptions map[string]interface{}) (xai
 	if err := json.Unmarshal(b, &opts); err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}
+	// TS z.number().optional(): a present null is invalid.
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(b, &probe) == nil && string(probe["inputFileExpiresAfter"]) == "null" {
+		return opts, invalidXAIProviderOptions(fmt.Errorf("inputFileExpiresAfter must be a number"))
+	}
 	if opts.InputFileExpiresAfter != nil && (*opts.InputFileExpiresAfter < 3600 || *opts.InputFileExpiresAfter > 2_592_000) {
 		return opts, invalidXAIProviderOptions(fmt.Errorf("inputFileExpiresAfter must be between 3600 and 2592000"))
 	}

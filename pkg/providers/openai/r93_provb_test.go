@@ -302,3 +302,13 @@ func TestR93provbImageEditEmptyURLIsDownloaded(t *testing.T) {
 		}
 	}
 }
+
+// TS inputFileExpiresAfter is z.number().optional(): a present null fails.
+func TestR93provbBatchExpiresAfterNull(t *testing.T) {
+	if _, err := openaiBatchInputFileExpiresAfter("openai", map[string]interface{}{"openai": map[string]interface{}{"inputFileExpiresAfter": nil}}); err == nil {
+		t.Fatal("null accepted")
+	}
+	if n, err := openaiBatchInputFileExpiresAfter("openai", map[string]interface{}{"openai": map[string]interface{}{}}); err != nil || n != openaiBatchInputFileDefaultExpiresAfterSeconds {
+		t.Fatalf("default: %d, %v", n, err)
+	}
+}
