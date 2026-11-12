@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -203,6 +204,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if err != nil {
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
+	// TS response.text(): a BOM is dropped and invalid UTF-8 replaced
+	// (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, providererrors.NewSchemaProviderError("minimax.image",
 			&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}, minimaxImageErrorSchema)
