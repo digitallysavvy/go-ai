@@ -364,3 +364,18 @@ func TestR92provbLiveClientOptionValidated(t *testing.T) {
 		t.Fatalf("valid client: err = %v, want UnsupportedFunctionalityError", err)
 	}
 }
+
+// TS toWebSocketUrl changes only the URL's scheme: an "https://" in a proxy
+// path stays as is.
+func TestR92provbRealtimeWebSocketURLScheme(t *testing.T) {
+	base := "http://localhost:8080/proxy/https://api.openai.com/v1"
+	if got, want := realtimeTranscriptionWebSocketURL(base), "ws://localhost:8080/proxy/https://api.openai.com/v1/realtime?intent=transcription"; got != want {
+		t.Fatalf("transcription: got %s want %s", got, want)
+	}
+	if got, want := realtimeSpeechTranslationWebSocketURL(base, "m"), "ws://localhost:8080/proxy/https://api.openai.com/v1/realtime/translations?model=m"; got != want {
+		t.Fatalf("translation: got %s want %s", got, want)
+	}
+	if got, want := realtimeTranscriptionWebSocketURL("HTTPS://api.openai.com/v1"), "wss://api.openai.com/v1/realtime?intent=transcription"; got != want {
+		t.Fatalf("upper-case scheme: got %s want %s", got, want)
+	}
+}

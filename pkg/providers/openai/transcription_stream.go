@@ -166,9 +166,19 @@ func supportsStreamingTranscriptionDelay(modelID string) bool {
 }
 
 func realtimeTranscriptionWebSocketURL(baseURL string) string {
-	wsBase := strings.Replace(baseURL, "https://", "wss://", 1)
-	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
-	return wsBase + "/realtime?intent=transcription"
+	return openAIToWebSocketURL(baseURL + "/realtime?intent=transcription")
+}
+
+// openAIToWebSocketURL is TS toWebSocketUrl: only the URL's own scheme
+// changes (http: to ws:, https: to wss:, matched case-insensitively like
+// new URL); an "https://" later in the URL (a proxy path) is kept.
+func openAIToWebSocketURL(rawURL string) string {
+	for _, s := range [][2]string{{"https://", "wss://"}, {"http://", "ws://"}} {
+		if len(rawURL) >= len(s[0]) && strings.EqualFold(rawURL[:len(s[0])], s[0]) {
+			return s[1] + rawURL[len(s[0]):]
+		}
+	}
+	return rawURL
 }
 
 // BuildOpenAIRealtimeTranscriptionSession mirrors TS
