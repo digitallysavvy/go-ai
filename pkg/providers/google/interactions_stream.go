@@ -459,15 +459,18 @@ func (s *interactionsStream) Close() error {
 }
 
 func (s *interactionsStream) openGETStream() error {
-	query := map[string]string{"stream": "true"}
+	// TS new URLSearchParams({stream: 'true'}) then set('last_event_id'):
+	// insertion order, not sorted.
+	query := internalhttp.NewSearchParams()
+	query.Set("stream", "true")
 	if s.lastEventID != "" {
-		query["last_event_id"] = s.lastEventID
+		query.Set("last_event_id", s.lastEventID)
 	}
 	resp, err := s.client.DoStream(s.ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/interactions/" + providerutils.EncodeURIComponent(s.interactionID),
-		Query:   query,
-		Headers: internalhttp.MergeHeaders(s.headers, map[string]string{"Accept": "text/event-stream"}),
+		Method:       http.MethodGet,
+		Path:         "/interactions/" + providerutils.EncodeURIComponent(s.interactionID),
+		SearchParams: query,
+		Headers:      internalhttp.MergeHeaders(s.headers, map[string]string{"Accept": "text/event-stream"}),
 	})
 	if err != nil {
 		// An abort keeps its own error; other failures read like the

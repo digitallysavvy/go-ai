@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -270,5 +271,52 @@ func TestR92provgDecisionWorkflowSerialization(t *testing.T) {
 	}
 	if restored.ModelID() != m.ModelID() || restored.Provider() != m.Provider() {
 		t.Fatalf("restored %s %s", restored.Provider(), restored.ModelID())
+	}
+}
+
+// TS stream-google-interactions.ts buildUrl: URLSearchParams({stream})
+// then set('last_event_id'), so a reconnect sends stream first
+// (cr-r92-provc-to-provg).
+func TestR92provgInteractionsReconnectQueryOrder(t *testing.T) {
+	old := interactionsStreamRetryDelay
+	interactionsStreamRetryDelay = time.Millisecond
+	t.Cleanup(func() { interactionsStreamRetryDelay = old })
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"i1","status":"in_progress"}`))
+			return
+		}
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		n := len(queries)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 1 {
+			_, _ = w.Write([]byte("data: {\"event_type\":\"interaction.status_update\",\"event_id\":\"e1\",\"status\":\"in_progress\"}\n\n"))
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"event_type\":\"interaction.completed\",\"event_id\":\"e2\",\"interaction\":{\"id\":\"i1\",\"status\":\"completed\"}}\n\n"))
+	}))
+	defer srv.Close()
+	model, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).Interactions(ModelGemini25Flash)
+	st, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "x"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"background": true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close() //nolint:errcheck
+	for {
+		if _, err := st.Next(); err != nil {
+			break
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) < 2 || queries[0] != "stream=true" || queries[1] != "stream=true&last_event_id=e1" {
+		t.Fatalf("queries = %q", queries)
 	}
 }
