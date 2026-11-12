@@ -1,8 +1,10 @@
 package anthropic
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -113,5 +115,51 @@ func TestR92provaBatchResultsUseConfiguredHTTPClient(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("configured transport saw %v, want the results request too", rt.paths)
+	}
+}
+
+// r92provaStreamParts runs the SSE events through the Anthropic stream and
+// returns the content parts (TS stream minus stream-start, response-metadata,
+// custom and finish).
+func r92provaStreamParts(t *testing.T, usesJSONResponseTool bool, events []string) []*provider.StreamChunk {
+	t.Helper()
+	var sse strings.Builder
+	for _, e := range events {
+		sse.WriteString("data: " + e + "\n\n")
+	}
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sse.String())), usesJSONResponseTool)
+	parts, err := r88provaDrain(stream)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var out []*provider.StreamChunk
+	for _, p := range parts {
+		switch p.Type {
+		case provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata, provider.ChunkTypeCustom, provider.ChunkTypeFinish:
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// TS message_start returns on a repeated message_start of the open message
+// before it clears heldBackTextByIndex (anthropic-language-model.ts:3309-3333),
+// so the held-back text of a block started before the repeat keeps its
+// deltas. Recorded with node on @ai-sdk/anthropic 2ebc78b654: text-start 0,
+// text-delta "hello", text-end 0.
+func TestR92provaRepeatedMessageStartKeepsHeldBackText(t *testing.T) {
+	parts := r92provaStreamParts(t, true, []string{
+		`{"type":"message_start","message":{"id":"msg_1","model":"m","usage":{"input_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"message_start","message":{"id":"msg_1","model":"m","usage":{"input_tokens":1}}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+		`{"type":"message_stop"}`,
+	})
+	if len(parts) != 3 || parts[0].Type != provider.ChunkTypeTextStart || parts[1].Type != provider.ChunkTypeText ||
+		parts[1].Text != "hello" || parts[2].Type != provider.ChunkTypeTextEnd {
+		t.Fatalf("parts = %s, want text-start, text-delta hello, text-end", r88provaJSON(parts))
 	}
 }

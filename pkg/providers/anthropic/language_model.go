@@ -2420,8 +2420,6 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			continue
 
 		case "message_start":
-			// Block indexes restart with each message (TS e10aebbad6).
-			s.heldBackTextByIndex = nil
 			// Capture input/cache tokens for inclusion in the final finish chunk.
 			// These are only available here — the message_delta only has output_tokens.
 			//
@@ -2485,6 +2483,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
+				// Block indexes restart with each message (TS e10aebbad6); a
+				// repeated message_start of the open message returned above.
+				s.heldBackTextByIndex = nil
 				if msg.Message.StopReason != "" {
 					// TS: a message_start that already carries a stop_reason
 					// sets the stream-wide finish reason.
