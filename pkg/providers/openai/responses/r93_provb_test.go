@@ -64,3 +64,12 @@ func TestR93provbToolMessageEdges(t *testing.T) {
 		t.Fatal("null description accepted")
 	}
 }
+
+// A legacy ToolResultContent.Result map is sent as JSON (TS json output),
+// not as Go %v text.
+func TestR93provbLegacyResultIsJSON(t *testing.T) {
+	got := toolResultOutput(types.ToolResultContent{ToolCallID: "c", ToolName: "t", Result: map[string]interface{}{"a": 1}})
+	if got != `{"a":1}` {
+		t.Fatalf("output = %#v", got)
+	}
+}

@@ -2622,7 +2622,13 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 	if s, ok := tr.Result.(string); ok {
 		return s
 	}
-	return fmt.Sprintf("%v", tr.Result)
+	// A legacy Result value is the TS json output: JSON.stringify(value),
+	// not Go's %v syntax.
+	b, err := jsonstr.Marshal(tr.Result)
+	if err != nil {
+		return fmt.Sprintf("%v", tr.Result)
+	}
+	return string(b)
 }
 
 // toolResultBlockDataType returns the block's explicit file data type, or the
