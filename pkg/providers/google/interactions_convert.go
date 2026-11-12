@@ -321,7 +321,8 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 // when unset, and (nil, warning) for an invalid value (option dropped, block
 // still emitted).
 func videoProcessingField(providerOptions map[string]interface{}) (interface{}, *types.Warning) {
-	google, _ := providerOptions["google"].(map[string]interface{})
+	// Typed-option ruling: part options are read in their JSON form.
+	google, _ := providerutils.NormalizeOptionsJSON(providerOptions)["google"].(map[string]interface{})
 	if google == nil {
 		return nil, nil
 	}
@@ -985,7 +986,8 @@ func baseName(uriOrName string) string {
 // Go field; then a string google metadata signature (parts that came back
 // from this provider carry it there). nil leaves the field out.
 func inputSignature(opts map[string]interface{}, field string, googleMeta map[string]interface{}) *string {
-	if google, ok := opts["google"].(map[string]interface{}); ok {
+	// Typed-option ruling: part options are read in their JSON form.
+	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
 		if v, ok := google["signature"].(string); ok {
 			return &v
 		}
@@ -1003,7 +1005,8 @@ func inputSignature(opts map[string]interface{}, field string, googleMeta map[st
 // converter reads signatures, interaction ids and processing ids from the
 // prompt part's providerOptions).
 func googleOptString(opts map[string]interface{}, key string) string {
-	if google, ok := opts["google"].(map[string]interface{}); ok {
+	// Typed-option ruling: part options are read in their JSON form.
+	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
 		if v, ok := google[key].(string); ok {
 			return v
 		}

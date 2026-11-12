@@ -159,3 +159,33 @@ func TestR92provgBatchInputFileExpiresAtPresence(t *testing.T) {
 		}
 	}
 }
+
+// Typed-option ruling, part level: a Go-typed providerOptions.google literal
+// on a prompt part reads like its JSON form (TS parses JSON values): the
+// reasoning signature and the video processing config are sent.
+func TestR92provgInteractionsPartOptionsTypedLiterals(t *testing.T) {
+	m := NewInteractionsLanguageModel(New(Config{APIKey: "k"}), ModelGemini25Flash)
+	steps, _, warnings, err := m.convertPrompt(types.Prompt{Messages: []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.FileContent{
+			FileData:        types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/v.mp4"},
+			MediaType:       "video/mp4",
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"processing": map[string]interface{}{"type": "static", "fps": uint8(2), "startOffset": int16(3)}}},
+		}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ReasoningContent{
+			Text:            "thinking",
+			ProviderOptions: map[string]interface{}{"google": map[string]string{"signature": "sig-1"}},
+		}}},
+	}}, GoogleInteractionsProviderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+	b, _ := json.Marshal(steps)
+	for _, want := range []string{`"processing":{"fps":2,"start_offset":"3s","type":"static"}`, `"signature":"sig-1"`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("steps = %s, missing %s", b, want)
+		}
+	}
+}

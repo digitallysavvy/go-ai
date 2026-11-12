@@ -562,7 +562,8 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 // the core 5000 / 600000 defaults), which TS ignores; Go keeps honoring them
 // (v0.5.2 contract, S6).
 func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
-	opts, _ := providerOptions["google"].(map[string]interface{})
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	opts, _ := providerutils.NormalizeOptionsJSON(providerOptions)["google"].(map[string]interface{})
 	if v, ok := providerutils.CoerceInt(opts["pollIntervalMs"]); ok && v > 0 {
 		intervalMs = v
 	}
