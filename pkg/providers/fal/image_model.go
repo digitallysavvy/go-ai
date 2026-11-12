@@ -171,16 +171,10 @@ var falCamelToAPI = map[string]string{
 
 var falSnakeRe = regexp.MustCompile(`_([a-z])`)
 
-// normalizeFalImageOptions mirrors the TS falImageModelOptionsSchema
-// transform: snake_case keys win over camelCase and are reported as
-// deprecated.
-func normalizeFalImageOptions(raw map[string]interface{}) (map[string]interface{}, []string) {
-	result, _, deprecated := normalizeFalImageOptionsOrdered(raw)
-	return result, deprecated
-}
-
-// normalizeFalImageOptionsOrdered is normalizeFalImageOptions plus the key
-// order of the TS transform result: the mapped keys in mapKey order, then
+// normalizeFalImageOptionsOrdered mirrors the TS falImageModelOptionsSchema
+// transform (snake_case keys win over camelCase and are reported as
+// deprecated) and returns the key order of the transform result: the mapped
+// keys in mapKey order, then
 // strength, acceleration and useMultipleImages, then the passthrough keys
 // (sorted: a Go map has no input order).
 func normalizeFalImageOptionsOrdered(raw map[string]interface{}) (map[string]interface{}, []string, []string) {
