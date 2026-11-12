@@ -158,13 +158,15 @@ func newInteractionsEventStream(ctx context.Context, client *internalhttp.Client
 // headerServiceTier reads the applied service tier from the
 // x-gemini-service-tier response header (TS headerServiceTier). The lookup is
 // case-insensitive because header maps carry canonical keys.
-func headerServiceTier(headers map[string]string) string {
+// headerServiceTier is TS responseHeaders?.['x-gemini-service-tier']: nil
+// when the header is absent, a present "" kept.
+func headerServiceTier(headers map[string]string) *string {
 	for k, v := range headers {
 		if strings.EqualFold(k, "x-gemini-service-tier") {
-			return v
+			return &v
 		}
 	}
-	return ""
+	return nil
 }
 
 // parseInteractionsCreated parses an Interactions `created` timestamp like

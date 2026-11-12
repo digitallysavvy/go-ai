@@ -1178,15 +1178,12 @@ func nonEmptyStrings(v []string) interface{} {
 }
 
 // interactionsServiceTier is TS `response.service_tier ?? headerServiceTier`:
-// a body value ("" included) wins, else the header's (nil when absent).
-func interactionsServiceTier(body *string, header string) *string {
+// a body value ("" included) wins, else the header's ("" included; nil when absent).
+func interactionsServiceTier(body *string, header *string) *string {
 	if body != nil {
 		return body
 	}
-	if header != "" {
-		return &header
-	}
-	return nil
+	return header
 }
 
 func emptyToNil(v string) interface{} {

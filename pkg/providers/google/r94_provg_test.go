@@ -13,6 +13,8 @@ import (
 
 	"golang.org/x/net/websocket"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -389,5 +391,16 @@ func TestR94provgInteractionsEmptyStringOptions(t *testing.T) {
 		if _, _, err := r94provgInteractionsBody(t, map[string]interface{}{k: ""}, user); err == nil {
 			t.Errorf("%s: \"\" accepted", k)
 		}
+	}
+}
+
+// TS `response.service_tier ?? responseHeaders?.['x-gemini-service-tier']`:
+// a present empty header is the service tier.
+func TestR94provgInteractionsEmptyServiceTierHeader(t *testing.T) {
+	m := NewInteractionsLanguageModel(New(Config{APIKey: "k"}), "gemini-3-flash-preview")
+	res := m.convertResponse(interactionsResponse{Status: "completed"}, &internalhttp.Response{Headers: http.Header{"X-Gemini-Service-Tier": {""}}, Body: []byte(`{}`)}, interactionsRequest{}, nil)
+	meta, _ := res.ProviderMetadata["google"].(map[string]interface{})
+	if v, ok := meta["serviceTier"]; !ok || v != "" {
+		t.Fatalf("serviceTier = %#v (present %v)", v, ok)
 	}
 }
