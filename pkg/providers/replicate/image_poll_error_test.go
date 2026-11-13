@@ -20,7 +20,7 @@ func TestImagePollErrorUsesReplicateFailedResponseHandler(t *testing.T) {
 	if err := m.handlePollError(context.Background(), dl); !errors.As(err, &perr) || perr.Message != "Not found" || perr.StatusCode != 404 {
 		t.Fatalf("got %v", err)
 	}
-	dl = &providererrors.DownloadError{StatusCode: 502, Body: []byte(`<html>`)}
+	dl = &providererrors.DownloadError{StatusCode: 502, StatusText: "Bad Gateway", Body: []byte(`<html>`)}
 	if err := m.handlePollError(context.Background(), dl); !errors.As(err, &perr) || perr.Message != "Bad Gateway" {
 		t.Fatalf("got %v", err)
 	}

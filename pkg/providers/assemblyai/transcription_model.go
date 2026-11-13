@@ -308,9 +308,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Path:             "/upload",
 		Body:             uploadContent(opts),
 		// TS: { 'Content-Type': ..., ...combineHeaders(config, options.headers) },
-		// so a caller header (any case matches in a map; exact key here) wins.
+		// so a provider or call Content-Type wins over octet-stream.
 		Headers: internalhttp.MergeHeaders(map[string]string{
-			"Content-Type": "application/octet-stream",
+			"Content-Type": m.uploadContentType(),
 		}, opts.Headers),
 	}, &uploadResult)
 	if err != nil {
@@ -346,6 +346,19 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	return m.convertResponse(rawTranscript, currentDate, httpResp.Headers, warnings), nil
+}
+
+// uploadContentType is the upload Content-Type before the call headers:
+// application/octet-stream unless the provider headers set one (TS spreads
+// the config headers over the default).
+func (m *TranscriptionModel) uploadContentType() string {
+	contentType := "application/octet-stream"
+	for k, v := range m.provider.config.Headers {
+		if strings.EqualFold(k, "Content-Type") {
+			contentType = v
+		}
+	}
+	return contentType
 }
 
 // uploadContent is TS postToApi's body.content (options.audio): the audio

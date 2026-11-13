@@ -254,6 +254,12 @@ func replicateErrorMessage(status int, body []byte) string {
 // APICallError.data: the zod output of replicateErrorSchema ({detail?,
 // error?}, undeclared keys stripped) for a matching body, else nil.
 func replicateErrorMessageData(status int, body []byte) (string, interface{}) {
+	return replicateErrorMessageDataText(http.StatusText(status), body)
+}
+
+// replicateErrorMessageDataText is replicateErrorMessageData with the
+// response's own status text (TS response.statusText, the reason phrase).
+func replicateErrorMessageDataText(statusText string, body []byte) (string, interface{}) {
 	// z.string().optional(): absent is fine, null or a non-string is off-schema.
 	var parsed struct {
 		Detail json.RawMessage `json:"detail"`
@@ -288,15 +294,21 @@ func replicateErrorMessageData(status int, body []byte) (string, interface{}) {
 			return "Unknown Replicate error", data
 		}
 	}
-	return http.StatusText(status), nil
+	return statusText, nil
 }
 
 // replicateAPIError builds the provider error for a non-2xx Replicate
 // response: status, headers and body are kept and the message follows
 // replicateErrorMessage.
 func replicateAPIError(status int, headers http.Header, body []byte) error {
+	return replicateAPIErrorText(status, http.StatusText(status), headers, body)
+}
+
+// replicateAPIErrorText is replicateAPIError with the response's own status
+// text (a DownloadError keeps the server's reason phrase).
+func replicateAPIErrorText(status int, statusText string, headers http.Header, body []byte) error {
 	cause := &internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body}
-	message, data := replicateErrorMessageData(status, body)
+	message, data := replicateErrorMessageDataText(statusText, body)
 	perr := providererrors.NewProviderErrorFromResponse("replicate", 0, "", message, cause)
 	perr.Data = data
 	return perr
@@ -538,7 +550,7 @@ func (m *ImageModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		// TS reads the failed body as text (TextDecoder).
-		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
+		return replicateAPIErrorText(dlErr.StatusCode, dlErr.StatusText, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
 	}
 	// TS getFromApi handleFetchError: a network failure is the retryable
 	// "Cannot connect to API" error and an abort stays as is; a URL or
@@ -562,21 +574,22 @@ func completedImagePrediction(p replicateImagePrediction) (bool, error) {
 
 // convertResponse downloads every output image (TS downloads all of them).
 func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateImagePrediction) (*types.ImageResult, error) {
+	// TS downloads every output entry (z.string(): an empty one fails URL
+	// validation like any bad URL); an empty output array gives no images
+	// (core then reports NoImageGeneratedError).
 	var urls []string
 	switch v := prediction.Output.(type) {
 	case []interface{}:
 		for _, item := range v {
-			if urlStr, ok := item.(string); ok && urlStr != "" {
+			if urlStr, ok := item.(string); ok {
 				urls = append(urls, urlStr)
 			}
 		}
 	case string:
-		if v != "" {
-			urls = append(urls, v)
-		}
+		urls = append(urls, v)
 	}
 	if len(urls) == 0 {
-		return nil, fmt.Errorf("no image URL in prediction output")
+		return &types.ImageResult{}, nil
 	}
 
 	images := make([][]byte, 0, len(urls))
@@ -588,7 +601,7 @@ func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateIm
 			// failure is an API error whose message is `detail ?? error`.
 			var dlErr *providererrors.DownloadError
 			if errors.As(err, &dlErr) && dlErr.StatusCode >= 100 && (dlErr.StatusCode < 200 || dlErr.StatusCode >= 300) {
-				return nil, replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
+				return nil, replicateAPIErrorText(dlErr.StatusCode, dlErr.StatusText, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
 			}
 			// TS getFromApi lets any other failure (a URL rejected by
 			// validateUrl, an abort) propagate unchanged.

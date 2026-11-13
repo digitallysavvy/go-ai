@@ -70,8 +70,8 @@ func TestReplicateImageModelBuildAndConvertErrors(t *testing.T) {
 		t.Fatalf("input mismatch: %#v", input)
 	}
 
-	if _, err := m.convertResponse(t.Context(), replicateImagePrediction{Output: []interface{}{}}); err == nil {
-		t.Fatal("expected no image URL error")
+	if res, err := m.convertResponse(t.Context(), replicateImagePrediction{Output: []interface{}{}}); err != nil || len(res.Images) != 0 {
+		t.Fatalf("expected no images, got %v, %v", res, err)
 	}
 }
 

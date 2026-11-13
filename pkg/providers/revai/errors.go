@@ -47,7 +47,7 @@ func handleError(err error) error {
 		// response and propagates unchanged below.
 		// TS reads the failed body as text (TextDecoder).
 		body := []byte(textdecode.UTF8(downloadErr.Body))
-		message, code := errorMessageAndCode(downloadErr.StatusCode, body)
+		message, code := errorMessageAndCodeText(downloadErr.StatusText, body)
 		providerErr := providererrors.NewProviderError("revai", downloadErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
 		providerErr.ResponseBody = string(body)
@@ -72,12 +72,18 @@ func flattenHeaders(h map[string][]string) map[string]string {
 // empty one) and the code; anything else (empty, not JSON, a missing or
 // wrongly typed field) gives the HTTP status text.
 func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
+	return errorMessageAndCodeText(http.StatusText(statusCode), body)
+}
+
+// errorMessageAndCodeText is errorMessageAndCode with the response's own
+// status text (TS response.statusText, the server's reason phrase).
+func errorMessageAndCodeText(statusText string, body []byte) (message, code string) {
 	var payload revaiErrorPayload
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
 		payload.Error.Message != nil && payload.Error.Code != nil && !math.IsInf(*payload.Error.Code, 0) && !math.IsNaN(*payload.Error.Code) { // z.number() rejects Infinity
 		return *payload.Error.Message, providerutils.JSNumberString(*payload.Error.Code)
 	}
-	return http.StatusText(statusCode), ""
+	return statusText, ""
 }
 
 // revaiErrorData is TS APICallError.data: the revaiErrorDataSchema output

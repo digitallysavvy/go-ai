@@ -1,7 +1,6 @@
 package fal
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -141,19 +140,11 @@ var (
 )
 
 // checkFalResponse is createJsonResponseHandler(schema): a body that does not
-// match is an APICallError "Invalid JSON response".
+// match is an APICallError "Invalid JSON response". The body is parsed like
+// JSON.parse (a number past the double range reads as Infinity, ruling 4)
+// with the secureJsonParse prototype check.
 func checkFalResponse(node zodlite.Node, statusCode int, headers http.Header, body []byte) error {
-	var value interface{}
-	err := json.Unmarshal(body, &value)
-	if err == nil {
-		if bad := zodlite.Validate(node, body, value); bad != nil {
-			err = bad
-		}
-	}
-	if err == nil {
-		return nil
-	}
-	return providerutils.InvalidJSONResponseError("fal", statusCode, headers, body, err)
+	return providerutils.NodeResponseValidator("fal", node)(statusCode, headers, body)
 }
 
 func validateVideoJob(statusCode int, headers http.Header, body []byte) error {

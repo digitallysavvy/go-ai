@@ -1,11 +1,11 @@
 package bfl
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -237,9 +237,13 @@ func validateBFLImageSubmitBody(body []byte) error {
 	return validateBFLSubmitBodyWith(bflImageSubmitNode, body)
 }
 
+// validateBFLSubmitBodyWith and the poll checks parse like TS
+// createJsonResponseHandler: JSON.parse (a number past the double range reads
+// as Infinity, ruling 4) behind the secureJsonParse prototype check, whose
+// JSONParseError comes before the schema.
 func validateBFLSubmitBodyWith(node zodlite.Node, body []byte) error {
 	var value interface{}
-	if err := json.Unmarshal(body, &value); err != nil {
+	if err := jsonexact.Unmarshal(body, &value); err != nil {
 		return err
 	}
 	if bad := zodlite.Validate(node, body, value); bad != nil {
@@ -271,7 +275,7 @@ var bflPollNode = func() zodlite.Node {
 // JSON syntax error.
 func validateBFLPollBody(body []byte) error {
 	var value interface{}
-	if err := json.Unmarshal(body, &value); err != nil {
+	if err := jsonexact.Unmarshal(body, &value); err != nil {
 		return err
 	}
 	if bad := zodlite.Validate(bflPollNode, body, value); bad != nil {
@@ -299,7 +303,7 @@ var bflVideoPollNode = zodlite.Object(
 // bflVideoPollSchema, including its "Missing status" refinement.
 func validateBFLVideoPollBody(body []byte) error {
 	var value interface{}
-	if err := json.Unmarshal(body, &value); err != nil {
+	if err := jsonexact.Unmarshal(body, &value); err != nil {
 		return err
 	}
 	if bad := zodlite.Validate(bflVideoPollNode, body, value); bad != nil {

@@ -1,7 +1,6 @@
 package luma
 
 import (
-	"encoding/json"
 	"math"
 	"net/http"
 
@@ -39,16 +38,9 @@ var lumaGenerationNode = zodlite.Object(
 // validateLumaGeneration is createJsonResponseHandler(
 // lumaGenerationResponseSchema): a body that does not match is an
 // APICallError "Invalid JSON response".
+//
+// The body is parsed like JSON.parse (a number past the double range reads
+// as Infinity, ruling 4) with the secureJsonParse prototype check.
 func validateLumaGeneration(statusCode int, headers http.Header, body []byte) error {
-	var value interface{}
-	err := json.Unmarshal(body, &value)
-	if err == nil {
-		if bad := zodlite.Validate(lumaGenerationNode, body, value); bad != nil {
-			err = bad
-		}
-	}
-	if err == nil {
-		return nil
-	}
-	return providerutils.InvalidJSONResponseError("luma", statusCode, headers, body, err)
+	return providerutils.NodeResponseValidator("luma", lumaGenerationNode)(statusCode, headers, body)
 }

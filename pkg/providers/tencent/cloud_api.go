@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -156,10 +156,18 @@ func formatTencentCloudErrorMessage(e map[string]interface{}) string {
 }
 
 // tencentCloudEnvelopeData is the zod output of the success envelope: the
-// top-level object keeps only Response, which is loose (every key kept).
+// top-level object keeps only Response, which is loose (every key kept),
+// while its Error is a z.object that keeps only Code and Message.
 func tencentCloudEnvelopeData(tree map[string]interface{}) map[string]interface{} {
 	response, _ := tree["Response"].(map[string]interface{})
-	return map[string]interface{}{"Response": response}
+	out := make(map[string]interface{}, len(response))
+	for k, v := range response {
+		out[k] = v
+	}
+	if e, ok := response["Error"].(map[string]interface{}); ok {
+		out["Error"] = map[string]interface{}{"Code": e["Code"], "Message": e["Message"]}
+	}
+	return map[string]interface{}{"Response": out}
 }
 
 // tencentCloudErrorData is the zod output of the error envelope:
@@ -193,9 +201,15 @@ func (p *Provider) postTencentCloudAPI(ctx context.Context, service, action, api
 	if err != nil {
 		return nil, err
 	}
-	host := ""
-	if u, parseErr := url.Parse(p.vodBaseURL); parseErr == nil {
-		host = u.Host
+	// TS new URL(url).host: the WHATWG host (lower-cased, default port
+	// dropped); a URL it rejects throws TypeError "Invalid URL" first.
+	parsed, err := urlnorm.Parse(p.vodBaseURL)
+	if err != nil {
+		return nil, err
+	}
+	host := parsed.Host
+	if parsed.Port >= 0 {
+		host += ":" + strconv.Itoa(parsed.Port)
 	}
 	authorization := createTC3Authorization(creds.secretID, creds.secretKey, service, timestamp, string(payload), map[string]string{
 		"content-type": tc3ContentType,

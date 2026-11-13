@@ -355,7 +355,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return parseKlingAIErrorBody(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
+		return parseKlingAIErrorBodyText(dlErr.StatusCode, dlErr.StatusText, http.Header(dlErr.Headers), dlErr.Body)
 	}
 	// TS getFromApi handleFetchError: a network failure is the retryable
 	// "Cannot connect to API" error and an abort stays as is; a URL or
@@ -371,6 +371,12 @@ func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 // klingaiErrorDataSchema), falling back to a generic error carrying the raw
 // body when the envelope cannot be parsed or carries no message.
 func parseKlingAIErrorBody(statusCode int, headers http.Header, body []byte) error {
+	return parseKlingAIErrorBodyText(statusCode, http.StatusText(statusCode), headers, body)
+}
+
+// parseKlingAIErrorBodyText is parseKlingAIErrorBody with the response's own
+// status text (TS response.statusText, the server's reason phrase).
+func parseKlingAIErrorBodyText(statusCode int, statusText string, headers http.Header, body []byte) error {
 	var envelope struct {
 		Code    *float64 `json:"code"`
 		Message *string  `json:"message"`
@@ -383,7 +389,7 @@ func parseKlingAIErrorBody(statusCode int, headers http.Header, body []byte) err
 	}
 	// TS createJsonErrorResponseHandler: a body that does not match the
 	// error schema gives the HTTP status text as the message.
-	return &Error{Code: statusCode, Message: http.StatusText(statusCode), httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers)}
+	return &Error{Code: statusCode, Message: statusText, httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers)}
 }
 
 // detectMode detects the video generation mode from the model ID suffix

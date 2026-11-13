@@ -504,6 +504,12 @@ func ReadResponseWithSizeLimit(resp *http.Response, rawURL string, maxBytes int6
 	return data, nil
 }
 
+// ResponseStatusText is TS response.statusText: the reason phrase of resp's
+// status line (the standard text when the line carries none Go can split).
+func ResponseStatusText(resp *http.Response) string {
+	return responseStatusText(resp)
+}
+
 func responseStatusText(resp *http.Response) string {
 	if resp == nil {
 		return ""

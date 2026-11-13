@@ -837,6 +837,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 			req.Header.Set("X-Key", providerutils.APIKeyOrEnv(m.provider.config.APIKey, "BFL_API_KEY"))
 		}
 	}
+	bflTagRuntimeUserAgent(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, bflFetchError(req, err)
@@ -854,7 +855,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 		return nil, fmt.Errorf("BFL poll response exceeded maximum size of %d bytes", limit)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bflStatusError(resp.StatusCode, resp.Header, body)
+		return nil, bflStatusErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), resp.Header, body)
 	}
 	return body, nil
 }
@@ -960,6 +961,15 @@ var downloadTransport = fileutil.SafeTransport
 // caller's abort or deadline unchanged, and a network failure, a dial or
 // response-header timeout included, is the retryable "Cannot connect to
 // API" error.
+// bflTagRuntimeUserAgent is TS getFromApi's withUserAgentSuffix(headers,
+// ..., getRuntimeEnvironmentUserAgent()): the poll and the image download
+// are sent with a raw client, so the runtime tag the provider client adds to
+// every request is appended here.
+func bflTagRuntimeUserAgent(req *http.Request) {
+	merged := providerutils.WithUserAgentSuffix(map[string]string{"user-agent": req.Header.Get("User-Agent")}, providerutils.RuntimeEnvironmentUserAgent())
+	req.Header.Set("User-Agent", merged["user-agent"])
+}
+
 func bflFetchError(req *http.Request, err error) error {
 	var downloadErr *providererrors.DownloadError
 	if errors.As(err, &downloadErr) {
@@ -1016,6 +1026,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 		}
 		req.Header.Set("User-Agent", userAgent)
 	}
+	bflTagRuntimeUserAgent(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, bflFetchError(req, err)
@@ -1026,7 +1037,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 		// message is the HTTP status text.
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: errBody}
-		return nil, nil, providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(resp.StatusCode), cause)
+		return nil, nil, providererrors.NewProviderErrorFromResponse("bfl", 0, "", fileutil.ResponseStatusText(resp), cause)
 	}
 	limit := opts.MaxSize
 	if limit == 0 {

@@ -88,9 +88,11 @@ func TestReplicateImageDoGeneratePollingAndNoURLError(t *testing.T) {
 	if im.SpecificationVersion() != "v4" || im.Provider() != "replicate" || im.ModelID() != "img-ver:v1" {
 		t.Fatalf("metadata mismatch")
 	}
-	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
-	if err == nil || !strings.Contains(err.Error(), "no image URL in prediction output") {
-		t.Fatalf("expected no-image-url error, got %v", err)
+	// TS returns the empty output as no images (r98: core reports
+	// NoImageGeneratedError); it is not a provider error.
+	res, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
+	if err != nil || len(res.Images) != 0 {
+		t.Fatalf("expected no images, got %v, %v", res, err)
 	}
 }
 

@@ -95,23 +95,30 @@ func byteDanceErrorData(body []byte) interface{} {
 // Error() is the TS APICallError message alone (textOnly), with no Go
 // prefix (bytedance-video-model.ts:507).
 func newHTTPError(statusCode int, headers http.Header, body []byte) *Error {
+	return newHTTPErrorText(statusCode, http.StatusText(statusCode), headers, body)
+}
+
+// newHTTPErrorText is newHTTPError with the response's own status text (TS
+// response.statusText, the server's reason phrase).
+func newHTTPErrorText(statusCode int, statusText string, headers http.Header, body []byte) *Error {
 	body = []byte(textdecode.UTF8(body)) // TS reads the failed body as text (TextDecoder)
-	return &Error{Code: statusCode, Message: byteDanceErrorMessage(statusCode, body), httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers), textOnly: true}
+	message, _ := byteDanceErrorParseText(statusText, body)
+	return &Error{Code: statusCode, Message: message, httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers), textOnly: true}
 }
 
-func byteDanceErrorMessage(statusCode int, body []byte) string {
-	message, _ := byteDanceErrorParse(statusCode, body)
-	return message
-}
-
-// byteDanceErrorParse is byteDanceErrorMessage plus whether the body matched
-// byteDanceErrorSchema.
+// byteDanceErrorParse is the error message of body (the HTTP status text for
+// an off-schema body) and whether the body matched byteDanceErrorSchema.
 func byteDanceErrorParse(statusCode int, body []byte) (string, bool) {
+	return byteDanceErrorParseText(http.StatusText(statusCode), body)
+}
+
+// byteDanceErrorParseText is byteDanceErrorParse with the fallback status
+// text given.
+func byteDanceErrorParseText(statusText string, body []byte) (string, bool) {
 	var raw struct {
 		Error   json.RawMessage `json:"error"`
 		Message json.RawMessage `json:"message"`
 	}
-	statusText := http.StatusText(statusCode)
 	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &raw) != nil {
 		return statusText, false
 	}

@@ -825,7 +825,7 @@ func handleError(err error) error {
 		// response and propagates unchanged below.
 		// TS reads the failed body as text (TextDecoder).
 		body := []byte(textdecode.UTF8(downloadErr.Body))
-		message, code := parseGladiaErrorBody(downloadErr.StatusCode, body)
+		message, code := parseGladiaErrorBodyText(downloadErr.StatusText, body)
 		providerErr := providererrors.NewProviderError("gladia", downloadErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
 		if len(body) > 0 {
@@ -850,6 +850,12 @@ func handleError(err error) error {
 // (even an empty one) and the code; anything else (empty, not JSON, a missing
 // or wrongly typed field) gives the HTTP status text as the message.
 func parseGladiaErrorBody(statusCode int, body []byte) (message string, code string) {
+	return parseGladiaErrorBodyText(http.StatusText(statusCode), body)
+}
+
+// parseGladiaErrorBodyText is parseGladiaErrorBody with the response's own
+// status text (TS response.statusText, the server's reason phrase).
+func parseGladiaErrorBodyText(statusText string, body []byte) (message string, code string) {
 	var payload struct {
 		Error *struct {
 			Message *string  `json:"message"`
@@ -861,7 +867,7 @@ func parseGladiaErrorBody(statusCode int, body []byte) (message string, code str
 		!math.IsInf(*payload.Error.Code, 0) && !math.IsNaN(*payload.Error.Code) { // z.number() rejects Infinity
 		return *payload.Error.Message, providerutils.JSNumberString(*payload.Error.Code)
 	}
-	return http.StatusText(statusCode), ""
+	return statusText, ""
 }
 
 // gladiaSchemaResult applies the TS result schema (TS 9207c2b1e0): the top

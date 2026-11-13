@@ -373,10 +373,21 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 				fl("nsfw_content_detected", zOptional(zArr(zodlite.Boolean))), fl("num_inference_steps", zOptional(zNum)),
 				fl("debug_latents", zOptional(lora)), fl("debug_per_pass_latents", zOptional(lora)),
 			}
-			return zUnionOf(
-				zObj(append(append([]zFld{}, common...), fl("images", zArr(falImage)))...),
-				zObj(append(append([]zFld{}, common...), fl("image", falImage))...),
-			)
+			withImages := zObj(append(append([]zFld{}, common...), fl("images", zArr(falImage)))...)
+			union := zUnionOf(withImages, zObj(append(append([]zFld{}, common...), fl("image", falImage))...))
+			// .transform(v => 'images' in v ? v : {...v, images: [v.image]})
+			// .pipe(base().extend({images: z.array(falImageSchema())})): when
+			// the `image` branch matched, a passthrough `images` key must still
+			// be a valid image list.
+			return func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+				if bad := union(v, present, path); bad != nil {
+					return bad
+				}
+				if _, has := v.(map[string]interface{})["images"]; has {
+					return withImages(v, present, path)
+				}
+				return nil
+			}
 		}(),
 		SchemaGatewayEmbedding: zObj(fl("embeddings", zArr(zNumVec())), fl("usage", zNullish(zObj(fl("tokens", zNum)))),
 			fl("warnings", zOptional(zArr(gatewayWarning))), fl("providerMetadata", zOptional(zRec(zRec(zAny))))),
