@@ -112,7 +112,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 	headers := vertexTranscriptionHeaders(m.provider.config, opts.Headers)
-	for k, v := range headers {
+	// TS postJsonToApi tags the user-agent with the runtime.
+	for k, v := range providerutils.WithUserAgentSuffix(headers, providerutils.RuntimeEnvironmentUserAgent()) {
 		req.Header.Set(k, v)
 	}
 

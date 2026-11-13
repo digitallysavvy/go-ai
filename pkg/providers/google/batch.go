@@ -234,7 +234,8 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range authHeaders {
+	// TS postJsonToApi: the runtime user-agent tag.
+	for k, v := range googleWithRuntimeUserAgent(authHeaders) {
 		initReq.Header.Set(k, v)
 	}
 	initReq.Header.Set("X-Goog-Upload-Protocol", "resumable")
@@ -272,6 +273,11 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(content))
 	if err != nil {
 		return nil, err
+	}
+	// TS postToApi with only the upload headers: the user-agent is the
+	// runtime tag alone.
+	for k, v := range googleWithRuntimeUserAgent(nil) {
+		uploadReq.Header.Set(k, v)
 	}
 	uploadReq.Header.Set("Content-Length", strconv.Itoa(len(content)))
 	uploadReq.Header.Set("X-Goog-Upload-Offset", "0")
@@ -469,7 +475,8 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, err
 	}
 	authHeaders = internalhttp.MergeHeaders(authHeaders, opts.Headers)
-	for k, v := range authHeaders {
+	// TS getFromApi: the runtime user-agent tag.
+	for k, v := range googleWithRuntimeUserAgent(authHeaders) {
 		req.Header.Set(k, v)
 	}
 
