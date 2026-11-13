@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
-	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
@@ -420,10 +420,8 @@ func (s *gatewayTranscriptionStream) sendBinary(conn *websocket.Conn, message []
 // flattened TranscriptionModelV4StreamPart) into a provider.TranscriptionStreamPart.
 // Unknown types are ignored (envelope rule 6); malformed JSON returns ok=false.
 func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionStreamPart, bool) {
-	// TS secureJsonParse: a __proto__ key or a constructor.prototype is a
-	// parse failure, so the frame is ignored.
 	var raw map[string]interface{}
-	if err := securejson.Unmarshal([]byte(text), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(text), &raw); err != nil {
 		return nil, false
 	}
 	rawType, _ := raw["type"].(string)
