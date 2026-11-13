@@ -217,8 +217,9 @@ func formURLEncode(s string) string {
 	return b.String()
 }
 
+// formatFloatParam is TS String(value) for a number (1e-7, 1e+21).
 func formatFloatParam(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 64)
+	return providerutils.JSNumberString(f)
 }
 
 func boolValue(v *bool) bool { return v != nil && *v }

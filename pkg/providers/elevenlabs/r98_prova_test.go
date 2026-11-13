@@ -126,3 +126,19 @@ func TestR98provaSpeechFrameKeyOrder(t *testing.T) {
 }
 
 func r98provaFloat(v float64) *float64 { return &v }
+
+// TS url.searchParams.set(key, String(value)): numbers use the JS number
+// text (1e-7, 1e+21), not a fixed-point rendering.
+func TestR98provaRealtimeURLNumberText(t *testing.T) {
+	small, big := 1e-7, 1e21
+	u, err := buildElevenLabsRealtimeURL("https://api.elevenlabs.io", ModelScribeV2Realtime, "pcm_16000", nil,
+		&StreamingOptions{VadThreshold: &small, VadSilenceThresholdSecs: &big})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"vad_silence_threshold_secs=1e%2B21", "vad_threshold=1e-7"} {
+		if !strings.Contains(u.RawQuery, want) {
+			t.Fatalf("query %q, want %s", u.RawQuery, want)
+		}
+	}
+}
