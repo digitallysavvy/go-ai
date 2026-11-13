@@ -40,14 +40,19 @@ func r95genToolCalls(n int, onExec func(id string)) ([]types.ToolCall, []types.T
 // limit (Promise.all) the signal is not checked.
 func TestR95genToolLimitAbortAfterEveryCallStarted(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		limit   int
-		wantErr bool
+		name     string
+		limit    int
+		cancelAt string
+		wantRan  int32
+		wantErr  bool
 	}{
-		{"limited", 2, true},
-		{"sequential", 1, true},
-		{"unlimited", 0, false},
-		{"limit covers every call", 3, false},
+		{"limited", 2, "c", 3, true},
+		{"sequential", 1, "c", 3, true},
+		// tool-call-concurrency.test.ts "should not start queued items
+		// after abort".
+		{"sequential queued after abort", 1, "a", 1, true},
+		{"unlimited", 0, "c", 3, false},
+		{"limit covers every call", 3, "c", 3, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(context.Background())
@@ -55,14 +60,14 @@ func TestR95genToolLimitAbortAfterEveryCallStarted(t *testing.T) {
 			var ran atomic.Int32
 			calls, tools := r95genToolCalls(3, func(id string) {
 				ran.Add(1)
-				if id == "c" {
+				if id == tc.cancelAt {
 					cancel(errR95genAbort)
 				}
 			})
 			var usage types.Usage
 			results, err := executeToolsLimited(ctx, calls, tools, nil, nil, nil, &usage, toolCallEventCallbacks{}, tc.limit)
-			if ran.Load() != 3 || len(results) != 3 {
-				t.Fatalf("ran %d calls, %d results; want every call to run", ran.Load(), len(results))
+			if ran.Load() != tc.wantRan || len(results) != int(tc.wantRan) {
+				t.Fatalf("ran %d calls, %d results; want %d", ran.Load(), len(results), tc.wantRan)
 			}
 			if tc.wantErr && err != errR95genAbort {
 				t.Fatalf("err = %v, want the abort reason", err)
