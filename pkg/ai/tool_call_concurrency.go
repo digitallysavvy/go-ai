@@ -117,10 +117,20 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 		}
 	}
 	// TS abortSignal?.throwIfAborted(): signal.reason (context.Cause).
-	if notStarted && ctx != nil && ctx.Err() != nil {
+	if ctx != nil && ctx.Err() != nil && (notStarted || toolLimitApplies(limit, len(calls))) {
 		return out, context.Cause(ctx)
 	}
 	return out, nil
+}
+
+// toolLimitApplies reports whether TS mapWithConcurrency runs its limited
+// workers for n calls (concurrency < items.length). Each worker checks
+// abortSignal.throwIfAborted() before it claims the next call, also after its
+// last one, so an abort while the last calls run rejects the execution even
+// though every call started. Without a limit, or with one that covers every
+// call, TS uses Promise.all and never checks the signal.
+func toolLimitApplies(limit, n int) bool {
+	return limit > 0 && limit < n
 }
 
 // executeToolsConfigured executes tool calls honoring an optional

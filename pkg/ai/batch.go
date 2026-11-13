@@ -237,6 +237,11 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 	if err != nil {
 		return nil, wrapGatewayError(err)
 	}
+	if result == nil {
+		// TS destructures the result right here: a provider that resolves
+		// without one fails the call instead of crashing it.
+		return nil, errBatchNoResult(batchAPI)
+	}
 
 	modelByRequestID := make(map[string]string, len(opts.Requests))
 	for _, req := range opts.Requests {
@@ -304,6 +309,9 @@ func ExperimentalGetBatchStatus(ctx context.Context, opts GetBatchStatusOptions)
 	})
 	if err != nil {
 		return nil, wrapGatewayError(err)
+	}
+	if status == nil {
+		return nil, errBatchNoResult(batchAPI)
 	}
 
 	return &Batch{BatchReference: opts.Batch, BatchV4Status: *status}, nil
@@ -448,6 +456,12 @@ func ExperimentalGetBatchResults(ctx context.Context, opts GetBatchResultsOption
 		cancel()
 		return nil, wrapGatewayError(err)
 	}
+	if inner == nil {
+		// TS pipes the returned stream: a provider that resolves without one
+		// fails the call instead of crashing it.
+		cancel()
+		return nil, errBatchNoResult(batchAPI)
+	}
 
 	return &BatchResultsStream{inner: inner, cancel: cancel, ctx: callCtx, tools: opts.Tools}, nil
 }
@@ -527,6 +541,10 @@ func ExperimentalCancelBatch(ctx context.Context, opts CancelBatchOptions) (*Can
 	if err != nil {
 		return nil, wrapGatewayError(err)
 	}
+	if result == nil {
+		// TS returns the provider's result as is; Go reads it.
+		return &CancelBatchResult{}, nil
+	}
 	return &CancelBatchResult{ProviderMetadata: result.ProviderMetadata}, nil
 }
 
@@ -593,6 +611,9 @@ func ExperimentalListBatches(ctx context.Context, opts ListBatchesOptions) (*Lis
 	if err != nil {
 		return nil, wrapGatewayError(err)
 	}
+	if result == nil {
+		return nil, errBatchNoResult(batchAPI)
+	}
 
 	batches := make([]Batch, 0, len(result.Batches))
 	for _, item := range result.Batches {
@@ -606,6 +627,12 @@ func ExperimentalListBatches(ctx context.Context, opts ListBatchesOptions) (*Lis
 		NextCursor:       result.NextCursor,
 		ProviderMetadata: result.ProviderMetadata,
 	}, nil
+}
+
+// errBatchNoResult is the error for a batch provider call that returned
+// neither a result nor an error (TS fails reading the missing result).
+func errBatchNoResult(batchAPI provider.BatchV4) error {
+	return fmt.Errorf("batch provider %s returned no result", batchAPI.Provider())
 }
 
 // resolveBatchAPI resolves p (nil, a provider.BatchV4, or a
