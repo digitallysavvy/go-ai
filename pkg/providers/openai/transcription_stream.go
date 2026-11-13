@@ -458,6 +458,14 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 					return
 				}
 			}
+			if rawValue == nil {
+				// TS reads raw.type of a JSON null: the TypeError fails the
+				// stream through onProcessingError.
+				typeErr := errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
+				s.SetErr(typeErr)
+				cfg.Audio.Cancel(typeErr)
+				return
+			}
 			raw, _ := rawValue.(map[string]interface{})
 
 			eventType, _ := raw["type"].(string)

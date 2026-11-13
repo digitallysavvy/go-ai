@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"golang.org/x/net/websocket"
 )
 
 // TestR97provbChatFractionalUsageRawExact: TS chat usage counts are
@@ -30,5 +32,68 @@ func TestR97provbChatFractionalUsageRawExact(t *testing.T) {
 	details, _ := res.Usage.Raw["prompt_tokens_details"].(map[string]interface{})
 	if res.Usage.Raw["prompt_tokens"] != 10.5 || details["cached_tokens"] != 1.5 {
 		t.Fatalf("raw = %#v, want the exact fractional counts", res.Usage.Raw)
+	}
+}
+
+// r97provbNullMessageServer accepts the realtime handshake, reads the
+// session update and sends a JSON null text message.
+func r97provbNullMessageServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(websocket.Server{Handshake: func(cfg *websocket.Config, _ *http.Request) error {
+		if len(cfg.Protocol) > 0 {
+			cfg.Protocol = cfg.Protocol[:1]
+		}
+		return nil
+	}, Handler: func(ws *websocket.Conn) {
+		var msg string
+		_ = websocket.Message.Receive(ws, &msg)
+		_ = websocket.Message.Send(ws, "null")
+		_ = websocket.Message.Receive(ws, &msg)
+	}})
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestR97provbRealtimeNullMessageTypeError: TS safeParseJSON parses a JSON
+// null message, then reads raw.type of it, and the TypeError fails the
+// stream through onProcessingError (after the raw part). Go treated it as
+// an object without a type and kept the stream open.
+func TestR97provbRealtimeNullMessageTypeError(t *testing.T) {
+	const want = "Cannot read properties of null (reading 'type')"
+	ts := r97provbNullMessageServer(t)
+	rate := 24000
+	tr, err := newTestTranscriptionModel(ts.URL).DoStream(context.Background(), &provider.TranscriptionStreamOptions{Audio: newChanTestAudioStream(), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"}, IncludeRawChunks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Stream.Close() //nolint:errcheck
+	var parts []string
+	for {
+		p, err := tr.Stream.Next()
+		if err != nil {
+			if err.Error() != want {
+				t.Errorf("transcription: err = %v, want %q", err, want)
+			}
+			break
+		}
+		parts = append(parts, string(p.Type))
+	}
+	if strings.Join(parts, ",") != "stream-start,raw" {
+		t.Errorf("transcription parts = %v", parts)
+	}
+
+	st, err := newTestSpeechTranslationModel(ts.URL).DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{Audio: newChanTestAudioStream(), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate}, TargetLanguage: "es"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Stream.Close() //nolint:errcheck
+	for {
+		_, err := st.Stream.Next()
+		if err != nil {
+			if err.Error() != want {
+				t.Errorf("translation: err = %v, want %q", err, want)
+			}
+			break
+		}
 	}
 }

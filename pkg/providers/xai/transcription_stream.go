@@ -430,6 +430,12 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 					return
 				}
 			}
+			if rawValue == nil {
+				// TS reads raw.type of a JSON null: the TypeError fails the
+				// stream through onProcessingError.
+				fail(errors.New("Cannot read properties of null (reading 'type')")) //nolint:staticcheck // ST1005: TypeError text from TS
+				return
+			}
 			var raw xaiStreamingTranscriptionEvent
 			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
 				continue

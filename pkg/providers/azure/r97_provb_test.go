@@ -3,11 +3,14 @@ package azure
 import (
 	"context"
 	stdhttp "net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"golang.org/x/net/websocket"
 )
 
 // TestR97provbMaiImageFractionalTokenMetadata: TS maiImageResponseSchema
@@ -89,5 +92,42 @@ func TestR97provbMaiStreamHeadersBeforeURL(t *testing.T) {
 	_, err = sm.DoStream(context.Background(), &provider.TranscriptionStreamOptions{InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate}})
 	if err == nil || !providererrors.IsLoadAPIKeyError(err) {
 		t.Fatalf("err = %v, want the LoadAPIKeyError", err)
+	}
+}
+
+// TestR97provbMaiNullMessageTypeError: TS safeParseJSON parses a JSON null
+// message and then reads event.type of it; the TypeError fails the stream
+// through onProcessingError (Go ignored the message).
+func TestR97provbMaiNullMessageTypeError(t *testing.T) {
+	ts := httptest.NewServer(websocket.Server{Handler: func(conn *websocket.Conn) {
+		_ = websocket.Message.Send(conn, "null")
+		var msg string
+		_ = websocket.Message.Receive(conn, &msg)
+	}})
+	defer ts.Close()
+	p, err := New(Config{APIKey: "k", ResourceName: "r", MaiBaseURL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ := p.TranscriptionModel("mai-transcribe-2-streaming")
+	rate := 16000
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := model.(provider.TranscriptionStreamer).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio: newChanAudioStream([]byte{1, 2}), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	for {
+		_, nextErr := result.Stream.Next()
+		if nextErr == nil {
+			continue
+		}
+		if nextErr.Error() != "Cannot read properties of null (reading 'type')" {
+			t.Fatalf("err = %v, want the TypeError", nextErr)
+		}
+		return
 	}
 }

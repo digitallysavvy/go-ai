@@ -331,6 +331,12 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 					return
 				}
 			}
+			if rawValue == nil {
+				// TS reads event.type of a JSON null: the TypeError fails the
+				// stream through onProcessingError.
+				fail(errors.New("Cannot read properties of null (reading 'type')")) //nolint:staticcheck // ST1005: TypeError text from TS
+				return
+			}
 			var event azureMaiRealtimeEvent
 			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &event); jsonErr != nil {
 				continue
