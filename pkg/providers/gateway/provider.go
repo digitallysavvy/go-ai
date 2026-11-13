@@ -486,19 +486,19 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
 	}
 
-	// Add custom headers
-	for k, v := range cfg.Headers {
-		headers[k] = v
-	}
+	// Add custom headers. TS spreads options.headers last and
+	// withUserAgentSuffix lower-cases the names in entry order, so a custom
+	// header replaces the SDK's whatever its case.
+	headers = internalhttp.MergeHeaders(headers, cfg.Headers)
 
 	// Add zero data retention header if enabled
 	if cfg.ZeroDataRetention {
-		headers["ai-gateway-zero-retention"] = "true"
+		headers = internalhttp.MergeHeaders(headers, map[string]string{"ai-gateway-zero-retention": "true"})
 	}
 
 	// Inject project ID header when explicitly configured
 	if cfg.ProjectID != nil {
-		headers["ai-o11y-project-id"] = *cfg.ProjectID
+		headers = internalhttp.MergeHeaders(headers, map[string]string{"ai-o11y-project-id": *cfg.ProjectID})
 	}
 	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("gateway"))
 
