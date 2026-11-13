@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -178,6 +180,33 @@ func (e *NoObjectGeneratedError) Unwrap() error {
 	return e.Cause
 }
 
+// outputValueAs converts a parsed (and validated) JSON value to T through its
+// JSON text. TS returns the parsed value itself, so a number beyond the
+// double range stays Infinity (JSON.parse of 1e400). encoding/json cannot
+// write it: the value is then returned as is when T holds it (interface{},
+// map[string]interface{}, []interface{}), and otherwise converted from its
+// JSON.stringify text, where a non-finite number is null (ruling 4).
+func outputValueAs[T any](v interface{}) (T, error) {
+	var typed T
+	data, err := json.Marshal(v)
+	if err != nil {
+		var unsupported *json.UnsupportedValueError
+		if !errors.As(err, &unsupported) {
+			return typed, err
+		}
+		if same, ok := v.(T); ok {
+			return same, nil
+		}
+		if data, err = jsonstr.Marshal(v); err != nil {
+			return typed, err
+		}
+	}
+	if err := json.Unmarshal(data, &typed); err != nil {
+		return typed, err
+	}
+	return typed, nil
+}
+
 // =============================================================================
 // Text Output
 // =============================================================================
@@ -335,20 +364,8 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 		}
 	}
 
-	jsonBytes, err := json.Marshal(result)
+	typedResult, err := outputValueAs[T](result)
 	if err != nil {
-		return zero, &NoObjectGeneratedError{
-			Message:      "No object generated: response did not match schema.",
-			Cause:        err,
-			Text:         options.Text,
-			Response:     options.Response,
-			Usage:        options.Usage,
-			FinishReason: options.FinishReason,
-		}
-	}
-
-	var typedResult T
-	if err := json.Unmarshal(jsonBytes, &typedResult); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
 			Cause:        err,
@@ -371,13 +388,8 @@ func (o *objectOutput[T]) ParsePartialOutput(ctx context.Context, options ParseP
 
 	// Convert to expected type
 	// Note: This does not validate partial results, matching TypeScript behavior
-	jsonBytes, err := json.Marshal(parseResult.Value)
+	partial, err := outputValueAs[T](parseResult.Value)
 	if err != nil {
-		return nil, nil
-	}
-
-	var partial T
-	if err := json.Unmarshal(jsonBytes, &partial); err != nil {
 		return nil, nil
 	}
 
@@ -669,20 +681,8 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 		}
 
 		// Convert to typed element
-		jsonBytes, err := json.Marshal(elem)
+		typedElem, err := outputValueAs[ELEMENT](elem)
 		if err != nil {
-			return nil, &NoObjectGeneratedError{
-				Message:      "No object generated: could not convert element",
-				Cause:        err,
-				Text:         options.Text,
-				Response:     options.Response,
-				Usage:        options.Usage,
-				FinishReason: options.FinishReason,
-			}
-		}
-
-		var typedElem ELEMENT
-		if err := json.Unmarshal(jsonBytes, &typedElem); err != nil {
 			return nil, &NoObjectGeneratedError{
 				Message:      "No object generated: could not convert element",
 				Cause:        err,
@@ -739,13 +739,8 @@ func (o *arrayOutput[ELEMENT]) ParsePartialOutput(ctx context.Context, options P
 		}
 
 		// Convert to typed element
-		jsonBytes, err := json.Marshal(elemRaw)
+		typedElem, err := outputValueAs[ELEMENT](elemRaw)
 		if err != nil {
-			continue
-		}
-
-		var typedElem ELEMENT
-		if err := json.Unmarshal(jsonBytes, &typedElem); err != nil {
 			continue
 		}
 
