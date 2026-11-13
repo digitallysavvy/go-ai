@@ -1,9 +1,14 @@
 package openresponses
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -22,5 +27,61 @@ func TestR95provbImageFullMediaType(t *testing.T) {
 		if !ok || !strings.HasPrefix(img.ImageURL, "data:image/png;base64,") {
 			t.Errorf("%q: part = %#v, want a data:image/png input image", mt, out[0])
 		}
+	}
+}
+
+func r95provbGenerate(t *testing.T, body string) *types.GenerateResult {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	res, err := New(Config{BaseURL: srv.URL, Name: "test"}).languageModelForTest("m").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: r91provbUser("hi")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+// TestR95provbFinishReasonLikeTS: TS mapOpenResponsesFinishReason maps
+// max_output_tokens to length and content_filter to content-filter even
+// when the response has tool calls, and a present reason it does not know
+// ("" or a non-string included) to other (tool-calls with tool calls); only
+// a missing reason is stop.
+func TestR95provbFinishReasonLikeTS(t *testing.T) {
+	call := `{"type":"function_call","id":"fc","call_id":"c1","name":"f","arguments":"{}"}`
+	for _, tc := range []struct {
+		output, details string
+		want            types.FinishReason
+	}{
+		{call, `{"reason":"max_output_tokens"}`, types.FinishReasonLength},
+		{call, `{"reason":"content_filter"}`, types.FinishReasonContentFilter},
+		{``, `{"reason":""}`, types.FinishReasonOther},
+		{``, `{"reason":"max_tokens"}`, types.FinishReasonOther},
+		{call, `{"reason":"stop"}`, types.FinishReasonToolCalls},
+		{``, `{}`, types.FinishReasonStop},
+	} {
+		res := r95provbGenerate(t, `{"id":"r","created_at":1,"model":"m","status":"incomplete","output":[`+tc.output+`],"incomplete_details":`+tc.details+`}`)
+		if res.FinishReason != tc.want {
+			t.Errorf("%s %s: finish = %q, want %q", tc.output, tc.details, res.FinishReason, tc.want)
+		}
+	}
+
+	s := newOpenResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":""}}}
+
+`)), nil, "test")
+	var finish *provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finish = c
+		}
+	}
+	if finish == nil || finish.FinishReason != types.FinishReasonOther {
+		t.Errorf("stream finish = %+v, want other", finish)
 	}
 }
