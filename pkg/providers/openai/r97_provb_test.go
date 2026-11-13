@@ -2,6 +2,8 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,5 +163,42 @@ func TestR97provbRealtimeParseNullEvent(t *testing.T) {
 	_, err := NewRealtimeModel(New(Config{APIKey: "k"}), "gpt-realtime").ParseServerEvent([]byte("null"))
 	if err == nil || err.Error() != "Cannot read properties of null (reading 'type')" {
 		t.Fatalf("err = %v, want the TypeError", err)
+	}
+}
+
+// TestR97provbCustomToolCallNameMapping: TS names a custom_tool_call
+// toolNameMapping.toCustomToolName(item.name) in generate and stream, so a
+// name equal to a mapped provider tool's wire name reports that tool's
+// declared name.
+func TestR97provbCustomToolCallNameMapping(t *testing.T) {
+	tools := []types.Tool{{Type: types.ToolTypeProviderDefined, Name: "search", ProviderID: "openai.web_search"}}
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "custom_tool_call", "id": "ct_1", "call_id": "call_1", "name": "web_search", "input": "x",
+	})
+	result, err := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-5").convertResponse(mockResponsesResponseWith(item), true, "", tools, nil)
+	if err != nil || len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "search" {
+		t.Fatalf("generate ToolCalls = %#v, err = %v, want name search", result, err)
+	}
+
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ct_1","call_id":"call_1","name":"web_search","input":""}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ct_1","call_id":"call_1","name":"web_search","input":"x","status":"completed"}}
+
+`)), false)
+	stream.tools = tools
+	defer stream.Close() //nolint:errcheck
+	var names []string
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if chunk.ToolCall != nil && chunk.ToolCall.ToolName != "" {
+			names = append(names, string(chunk.Type)+":"+chunk.ToolCall.ToolName)
+		}
+	}
+	want := []string{string(provider.ChunkTypeToolInputStart) + ":search", string(provider.ChunkTypeToolCall) + ":search"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("stream names = %v, want %v", names, want)
 	}
 }

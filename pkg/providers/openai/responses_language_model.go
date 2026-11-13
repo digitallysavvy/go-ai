@@ -1482,6 +1482,20 @@ func openAIProviderToolDisplayName(tools []types.Tool, providerID, bareName stri
 	return bareName
 }
 
+// openAIResponsesCustomToolName is TS toolNameMapping.toCustomToolName of a
+// custom_tool_call's name: a name equal to a mapped provider tool's wire name
+// (createToolNameMapping providerToolNames) reports that declared provider
+// tool's name; any other name is returned as is.
+func openAIResponsesCustomToolName(tools []types.Tool, name string) string {
+	switch name {
+	case "code_interpreter", "computer", "file_search", "image_generation",
+		"local_shell", "shell", "web_search", "web_search_preview", "mcp",
+		"apply_patch", "tool_search", "programmatic_tool_calling":
+		return openAIProviderToolDisplayName(tools, "openai."+name, name)
+	}
+	return name
+}
+
 // openAIToolSearchDisplayName is the tool name of tool_search calls and
 // outputs: the declared tool_search tool's Name (TS
 // toolNameMapping.toCustomToolName), else "tool_search". Stream and generate
@@ -1861,7 +1875,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			customRaw, _ := jsonstr.Marshal(item.Input)
 			pushCall(types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         item.Name,
+				ToolName:         openAIResponsesCustomToolName(tools, item.Name),
 				Arguments:        map[string]interface{}{"input": item.Input},
 				RawArguments:     string(customRaw),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, item.Async, nil),
@@ -3789,8 +3803,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				continue
 			case "custom_tool_call":
+				customName := openAIResponsesCustomToolName(s.tools, e.Item.Name)
 				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-					toolName:   e.Item.Name,
+					toolName:   customName,
 					toolCallID: e.Item.CallID,
 					async:      e.Item.Async,
 				}
@@ -3799,7 +3814,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						Type: provider.ChunkTypeToolInputStart,
 						ToolCall: &types.ToolCall{
 							ID:       e.Item.CallID,
-							ToolName: e.Item.Name,
+							ToolName: customName,
 							// Custom tool deltas are raw text; the final tool
 							// call input stays JSON-encoded (TS #23407).
 							InputEncoding: "text",
@@ -4812,7 +4827,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         item.Name,
+				ToolName:         openAIResponsesCustomToolName(s.tools, item.Name),
 				Arguments:        map[string]interface{}{"input": item.Input},
 				RawArguments:     customToolRaw(item.Input),
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, item.Async, nil),
