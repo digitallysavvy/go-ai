@@ -59,4 +59,3 @@ func TestR99provbDecisionUsagePlatformInt(t *testing.T) {
 		}
 	}
 }
-
