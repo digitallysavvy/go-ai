@@ -390,7 +390,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		opts = &provider.VideoModelV3StatusOptions{}
 	}
 	var op heygenOperation
-	if err := json.Unmarshal(opts.Operation, &op); err != nil {
+	// TS validateTypes(operationSchema): z.object keys match exactly (a
+	// "videoid" key is not videoId).
+	if err := jsonexact.UnmarshalPlain(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("heygen: invalid operation reference: %w", err)
 	}
 	if op.VideoID == "" {
