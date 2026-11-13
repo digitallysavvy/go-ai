@@ -38,10 +38,10 @@ func TestR95carrySetters(t *testing.T) {
 			t.Errorf("%s %q %q = %s, want %s", c.kind, c.base, c.value, got, c.want)
 		}
 	}
-	// "/\t/x" is the authority form "//x" once tabs are dropped: not a
-	// path-absolute reference.
+	// "/\t/x" is the authority form "//x" once tabs are dropped: a
+	// scheme-relative reference (r96: resolved, as new URL does).
 	base, _ := Parse("https://h/a")
-	if _, err := base.ResolvePath("/\t/x"); err == nil {
-		t.Error(`ResolvePath("/\t/x") must fail like "//x"`)
+	if u, err := base.ResolvePath("/\t/x"); err != nil || u.String() != "https://x/" {
+		t.Errorf(`ResolvePath("/\t/x") = %v, %v; want https://x/ like "//x"`, u, err)
 	}
 }
