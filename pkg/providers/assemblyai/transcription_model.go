@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -364,17 +367,9 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 		default:
 		}
 
-		var raw map[string]interface{}
-		resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-			// TS parses the polled transcript with schema.parse: a mismatch is
-			// the validation error itself, not "Invalid JSON response".
-			ValidateResponse: providerutils.MediaSchemaParser(providerutils.SchemaAssemblyAITranscript),
-			Method:           http.MethodGet,
-			Path:             "/transcript/" + transcriptID,
-			Headers:          headers,
-		}, &raw)
+		raw, resp, err := m.pollTranscript(ctx, transcriptID, headers)
 		if err != nil {
-			return nil, nil, m.handleError(err)
+			return nil, nil, err
 		}
 
 		status, _ := raw["status"].(string)
@@ -397,6 +392,75 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 		case <-time.After(pollingInterval):
 		}
 	}
+}
+
+// defaultBaseURL is the API base URL New uses when Config.BaseURL is empty.
+const defaultBaseURL = "https://api.assemblyai.com/v2"
+
+// pollTranscript is one TS waitForCompletion poll. TS calls the fetch
+// function directly (no getFromApi): the headers are combineHeaders(config
+// headers, call headers) with no Content-Type and no runtime user-agent tag,
+// and a fetch rejection propagates as is instead of becoming the retryable
+// "Cannot connect to API" APICallError (so core does not retry the whole
+// transcription). A non-ok response goes through
+// assemblyaiFailedResponseHandler; the body is parsed with schema.parse, so
+// a mismatch is the validation error itself, not "Invalid JSON response".
+func (m *TranscriptionModel) pollTranscript(ctx context.Context, transcriptID string, headers map[string]string) (map[string]interface{}, *internalhttp.Response, error) {
+	base := m.provider.config.BaseURL
+	if base == "" {
+		base = defaultBaseURL
+	}
+	pollURL := base + "/transcript/" + transcriptID
+	configHeaders, err := m.provider.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return nil, nil, err // TS: resolve(config.headers) throws as is (LoadAPIKeyError)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	userContentType := false
+	for k := range m.provider.config.Headers {
+		if strings.EqualFold(k, "Content-Type") {
+			userContentType = true
+		}
+	}
+	for k, v := range configHeaders {
+		// The client's JSON Content-Type default is for the POST requests;
+		// the TS config headers have none.
+		if strings.EqualFold(k, "Content-Type") && !userContentType {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	httpResp, err := internalhttp.WithFetchRedirects(m.provider.client.HTTPClient()).Do(req)
+	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, nil, cause
+		}
+		return nil, nil, err
+	}
+	defer httpResp.Body.Close() //nolint:errcheck
+	body, err := fileutil.ReadResponseWithSizeLimit(httpResp, pollURL, fileutil.DefaultMaxDownloadSize)
+	if err != nil {
+		return nil, nil, err
+	}
+	// TS response.text() / response.json(): UTF-8 decoded, BOM dropped.
+	body = []byte(textdecode.UTF8(body))
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return nil, nil, m.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
+	}
+	if err := providerutils.MediaSchemaParser(providerutils.SchemaAssemblyAITranscript)(httpResp.StatusCode, httpResp.Header, body); err != nil {
+		return nil, nil, err
+	}
+	var raw map[string]interface{}
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
+		return nil, nil, err
+	}
+	return raw, &internalhttp.Response{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body}, nil
 }
 
 // transcriptionAbortedError is TS waitForCompletion's
