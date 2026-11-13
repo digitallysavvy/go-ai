@@ -653,9 +653,12 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 // sourceMetadata holds the resolved width/height/duration/frameRate/
 // frameCount for the input video.
 type sourceMetadata struct {
-	duration   float64
-	frameRate  float64
-	frameCount int
+	duration  float64
+	frameRate float64
+	// frameCount is a JS number: Math.round(duration * frameRate) can exceed
+	// the platform int (int() of it overflows on 32-bit targets and is
+	// implementation-defined beyond int64).
+	frameCount float64
 	width      int
 	height     int
 }
@@ -685,13 +688,15 @@ func resolveSource(topazOpts *VideoModelOptions, container string) (resolvedSour
 		return resolvedSource{container: container}, nil
 	}
 
-	var frameCount *int
+	var frameCount *float64
 	if source.FrameCount != nil {
-		frameCount = source.FrameCount
+		n := float64(*source.FrameCount)
+		frameCount = &n
 	} else if source.Duration != nil && source.FrameRate != nil {
-		// Matches TS Math.round(duration * frameRate); int() alone would
+		// Matches TS Math.round(duration * frameRate) (both are positive, so
+		// math.Round's half-away-from-zero is JS half-up); int() alone would
 		// truncate toward zero instead of rounding.
-		n := int(math.Round(*source.Duration * *source.FrameRate))
+		n := math.Round(*source.Duration * *source.FrameRate)
 		frameCount = &n
 	}
 

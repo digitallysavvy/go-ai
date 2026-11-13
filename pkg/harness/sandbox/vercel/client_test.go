@@ -40,7 +40,7 @@ func TestRunCommandWait_OversizedLine_PreservesCauseAndPartialOutput(t *testing.
 		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1", SessionID: sessionID}})
 		writeNDJSON(&buf, ndjsonLine{Stream: "stdout", Data: "hello "})
 		writeNDJSON(&buf, ndjsonLine{Stream: "stdout", Data: oversized})
-		_, _ = w.Write(buf.Bytes())
+		_, _ = r99toolsWrite(w, buf.String())
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
@@ -113,7 +113,7 @@ func TestR42RunCommandWaitSkipsBlankLines(t *testing.T) {
 		buf.WriteString("\n")
 		exit := 0
 		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1", ExitCode: &exit}})
-		_, _ = w.Write(buf.Bytes())
+		_, _ = r99toolsWrite(w, buf.String())
 	}))
 	defer srv.Close()
 	result, err := NewAPIClient(srv.URL, Credentials{Token: "tok"}).RunCommandWait(t.Context(), "s", runCommandRequest{Command: "echo"})
@@ -129,7 +129,7 @@ func TestR42SandboxUpdateSendsTimeout(t *testing.T) {
 		if r.Method == http.MethodPatch {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 		}
-		_, _ = w.Write([]byte(`{"sandbox":{"name":"sbx"}}`))
+		_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sbx"}}`)
 	}))
 	defer srv.Close()
 	sbx := &Sandbox{client: NewAPIClient(srv.URL, Credentials{Token: "tok"}), name: "sbx"}

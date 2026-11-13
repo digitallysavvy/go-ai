@@ -242,8 +242,8 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		if resp == nil {
 			return fail(NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response")))
 		}
-		missingBody = resp.Body == nil
-		if missingBody {
+		missingBody = fetchNullBody(resp)
+		if resp.Body == nil {
 			resp.Body = io.NopCloser(bytes.NewReader(nil))
 		}
 		if resp.StatusCode == http.StatusUnauthorized && t.auth.enabled() && attempt == 0 {

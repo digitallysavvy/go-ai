@@ -996,7 +996,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// parser at all, unlike a Go http.Response's Body, which is normally
 		// always non-nil (nil only occurs with a fake/custom RoundTripper, as
 		// in tests). Reported via OnError like every other send() failure.
-		if resp.Body == nil {
+		if fetchNullBody(resp) {
 			return failReported(NewMCPClientError(0, "MCP HTTP Transport Error: text/event-stream response without body", nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 		}
 		// Guard the handoff with the same sseClosing flag (and sseMu lock)
@@ -1036,6 +1036,14 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 // server sent (resp.Status without the code, "" when it sent none), or the
 // canonical text when resp.Status does not start with the code (a custom
 // SSEClient).
+// fetchNullBody is TS `!response.body`: fetch gives a 204 or 205 response
+// (fetch null body statuses; the others are never ok) a null body, where
+// net/http hands back http.NoBody. A nil Body (a custom SSEClient) is null
+// too.
+func fetchNullBody(resp *http.Response) bool {
+	return resp.Body == nil || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusResetContent
+}
+
 func responseStatusText(resp *http.Response) string {
 	code := strconv.Itoa(resp.StatusCode)
 	switch {
@@ -1504,7 +1512,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// missing body fails the same way a non-2xx status does, even when the
 	// status itself is OK (only reachable via a custom SSEClient, since a
 	// real net/http response body is never nil).
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.Body == nil {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || fetchNullBody(resp) {
 		if resp.Body != nil {
 			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck

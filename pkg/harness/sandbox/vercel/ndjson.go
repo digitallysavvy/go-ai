@@ -103,38 +103,36 @@ type logLine struct {
 	Err    *StreamError
 }
 
-// parseLogLine is `LogLine.parse` (a discriminated union on stream).
+// parseLogLine is `LogLine.parse` (a discriminated union on stream): a
+// record that does not match is the ZodError, whose message is the issue
+// list.
 func parseLogLine(raw []byte, sessionID string) (logLine, error) {
-	var line struct {
-		Stream *string          `json:"stream"`
-		Data   *json.RawMessage `json:"data"`
-	}
 	// jsonlines: plain JSON.parse of each line, then LogLine.parse.
-	if err := jsonexact.UnmarshalPlain(raw, &line); err != nil || line.Stream == nil || line.Data == nil {
-		return logLine{}, invalidLogLine(raw)
+	if issues := vercelResponseIssues(vercelLogLine, raw); issues != "" {
+		return logLine{}, errors.New(issues)
 	}
-	switch *line.Stream {
-	case "stdout", "stderr":
-		var data string
-		if err := json.Unmarshal(*line.Data, &data); err != nil {
-			return logLine{}, invalidLogLine(raw)
-		}
-		return logLine{Stream: *line.Stream, Data: data}, nil
-	case "error":
+	var line struct {
+		Stream string          `json:"stream"`
+		Data   json.RawMessage `json:"data"`
+	}
+	if err := jsonexact.UnmarshalPlain(raw, &line); err != nil {
+		return logLine{}, fmt.Errorf("vercel sandbox: invalid log line: %w", err)
+	}
+	if line.Stream == "error" {
 		var data struct {
-			Code    *string `json:"code"`
-			Message *string `json:"message"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
 		}
-		if err := jsonexact.UnmarshalPlain(*line.Data, &data); err != nil || data.Code == nil || data.Message == nil {
-			return logLine{}, invalidLogLine(raw)
+		if err := jsonexact.UnmarshalPlain(line.Data, &data); err != nil {
+			return logLine{}, fmt.Errorf("vercel sandbox: invalid log line: %w", err)
 		}
-		return logLine{Stream: "error", Err: &StreamError{Code: *data.Code, Message: *data.Message, SessionID: sessionID}}, nil
+		return logLine{Stream: "error", Err: &StreamError{Code: data.Code, Message: data.Message, SessionID: sessionID}}, nil
 	}
-	return logLine{}, invalidLogLine(raw)
-}
-
-func invalidLogLine(raw []byte) error {
-	return fmt.Errorf("vercel sandbox: invalid log line: %s", truncateForError(raw))
+	var data string
+	if err := json.Unmarshal(line.Data, &data); err != nil {
+		return logLine{}, fmt.Errorf("vercel sandbox: invalid log line: %w", err)
+	}
+	return logLine{Stream: line.Stream, Data: data}, nil
 }
 
 // jsLength is JS `string.length` (UTF-16 code units).

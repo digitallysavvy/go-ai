@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,7 +90,7 @@ func TestR95toolsVercelStdinAbortCause(t *testing.T) {
 		case <-release:
 		case <-r.Context().Done():
 		}
-		_, _ = io.WriteString(w, `{}`)
+		_, _ = r99toolsWrite(w, `{}`)
 	}))
 	defer srv.Close()
 	defer close(release)
@@ -110,7 +109,7 @@ func TestR95toolsVercelStdinAbortCause(t *testing.T) {
 // @vercel/sandbox parses responses with zod: keys match exactly, so a
 // differently cased key is not the field.
 func TestR95toolsVercelResponsesDecodeCaseExact(t *testing.T) {
-	got, err := parseStdinResponse(&httpinternal.Response{StatusCode: 200, Body: []byte(`{"BytesWritten":5}`)}, false)
+	got, err := parseStdinResponse(&httpinternal.Response{StatusCode: 200, Body: r99toolsRealistic([]byte(`{"command":{"id":"c1"},"BytesWritten":5}`))}, false)
 	if err != nil || got != nil {
 		t.Fatalf("parseStdinResponse = %v, %v; want no bytesWritten", got, err)
 	}

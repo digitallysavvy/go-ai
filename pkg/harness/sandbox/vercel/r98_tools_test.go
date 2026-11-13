@@ -3,6 +3,7 @@ package vercel
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -17,12 +18,12 @@ func TestR98toolsAPIResponsesKeepProtoKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			_, _ = w.Write([]byte(`{"sandbox":{"name":"sbx","__proto__":{"x":1}},"session":{"id":"s1","networkPolicy":{"constructor":{"prototype":{}}}},"routes":[]}`))
+			_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sbx","__proto__":{"x":1}},"session":{"id":"s1","networkPolicy":{"constructor":{"prototype":{}}}},"routes":[]}`)
 		case http.MethodPost:
 			w.Header().Set("Content-Type", "application/x-ndjson")
-			_, _ = w.Write([]byte(`{"command":{"id":"cmd1","__proto__":{}}}` + "\n" +
-				`{"stream":"stdout","data":"hi","__proto__":{}}` + "\n" +
-				`{"command":{"id":"cmd1","exitCode":0},"__proto__":1}` + "\n"))
+			_, _ = r99toolsWrite(w, `{"command":{"id":"cmd1","__proto__":{}}}`+"\n"+
+				`{"stream":"stdout","data":"hi","__proto__":{}}`+"\n"+
+				`{"command":{"id":"cmd1","exitCode":0},"__proto__":1}`+"\n")
 		}
 	}))
 	defer srv.Close()
@@ -38,7 +39,7 @@ func TestR98toolsAPIResponsesKeepProtoKey(t *testing.T) {
 	// An error body is parsed the same way (extractServerMessage).
 	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"message":"bad","code":"c"},"__proto__":{}}`))
+		_, _ = r99toolsWrite(w, `{"error":{"message":"bad","code":"c"},"__proto__":{}}`)
 	}))
 	defer errSrv.Close()
 	_, err = NewAPIClient(errSrv.URL, Credentials{Token: "tok"}).GetSandbox(t.Context(), "sbx", nil)
@@ -49,8 +50,9 @@ func TestR98toolsAPIResponsesKeepProtoKey(t *testing.T) {
 }
 
 // parse() reads an empty body as `JSON.parse(text || "{}")`: the
-// EmptyResponse endpoints (mkdir, file writes) and the stdin write response
-// accept it. Go failed with "unexpected end of JSON input" (review round 98).
+// EmptyResponse endpoints (mkdir, file writes) accept it. Go failed with
+// "unexpected end of JSON input" (review round 98). The stdin write response
+// does not: CommandStdinResponse requires the command (review round 99).
 func TestR98toolsEmptyBodyIsEmptyObject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -64,11 +66,10 @@ func TestR98toolsEmptyBodyIsEmptyObject(t *testing.T) {
 		t.Fatalf("WriteFiles: %v", err)
 	}
 	n, err := parseStdinResponse(&httpinternal.Response{StatusCode: 200}, false)
-	if err != nil || n != nil {
+	if err == nil || n != nil || !strings.Contains(err.Error(), "Response JSON is not valid: ") {
 		t.Fatalf("parseStdinResponse(empty) = %v, %v", n, err)
 	}
-	// Other endpoints still fail on an empty body (TS: the response schema
-	// rejects {}; Go: the decode fails).
+	// Other endpoints fail on an empty body too: their schemas reject {}.
 	if _, err := client.GetSandbox(t.Context(), "sbx", nil); err == nil {
 		t.Fatal("GetSandbox accepted an empty body")
 	}

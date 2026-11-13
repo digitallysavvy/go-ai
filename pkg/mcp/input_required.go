@@ -269,12 +269,26 @@ func (c *MCPClient) inputRequiredRound(ctx context.Context, method string, param
 		return false, wrap(err)
 	}
 	if !isInputRequiredResult(raw) {
+		// TS resultSchema.parse(result) inside request()'s try: the ZodError
+		// is caught and wrapped as "Failed to process server response" (the
+		// requestOnce text "Failed to parse server response" applies only
+		// outside this loop).
+		// The ResultSchema part (an object, resultType a string, _meta an
+		// object) is checked by requestOnce, so it keeps that text.
 		if err := validateMCPResultShape(method, raw); err != nil {
-			return false, err
+			var obj map[string]json.RawMessage
+			if json.Unmarshal(raw, &obj) != nil || obj == nil || checkResultBase(obj) != nil {
+				return false, err
+			}
+			var mcpErr *MCPClientError
+			if errors.As(err, &mcpErr) && mcpErr.Cause != nil {
+				err = mcpErr.Cause
+			}
+			return false, &MCPClientError{Message: "Failed to process server response", Cause: err}
 		}
 		if result != nil && raw != nil {
 			if err := unmarshalPlainJSON(raw, result); err != nil {
-				return false, &MCPClientError{Message: "Failed to parse server response", Cause: err}
+				return false, &MCPClientError{Message: "Failed to process server response", Cause: err}
 			}
 		}
 		return true, nil

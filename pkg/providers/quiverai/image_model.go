@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -123,14 +124,14 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		} `json:"data"`
 	}
 	_ = jsonexact.Unmarshal(resp.Body, &rawResponse)
-	nullable := func(raw json.RawMessage, v *int) (interface{}, bool) {
+	nullable := func(raw json.RawMessage, v *int64) (interface{}, bool) {
 		if raw == nil {
 			return nil, false
 		}
 		if v == nil {
 			return nil, true
 		}
-		return *v, true
+		return quiverNumber(*v), true
 	}
 
 	images := make([][]byte, len(response.Data))
@@ -158,9 +159,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	usage := types.ImageUsage{ImageCount: len(images)}
 	if response.Usage != nil {
-		usage.InputTokens = response.Usage.InputTokens
-		usage.OutputTokens = response.Usage.OutputTokens
-		usage.TotalTokens = response.Usage.TotalTokens
+		usage.InputTokens = quiverPlatformInt(response.Usage.InputTokens)
+		usage.OutputTokens = quiverPlatformInt(response.Usage.OutputTokens)
+		usage.TotalTokens = quiverPlatformInt(response.Usage.TotalTokens)
 	}
 
 	// Fixed-credit billing metadata: the API reports a flat per-request credit
@@ -168,7 +169,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// the TS SDK's `...(response.credits != null && { credits: ... })` spread.
 	quiverMeta := map[string]interface{}{"images": imageMetadata}
 	if response.Credits != nil {
-		quiverMeta["credits"] = *response.Credits
+		quiverMeta["credits"] = quiverNumber(*response.Credits)
 	}
 
 	result := &types.ImageResult{
@@ -593,19 +594,39 @@ type svgGenerationResponse struct {
 	Data    []struct {
 		SVG                string `json:"svg"`
 		MimeType           string `json:"mime_type"`
-		LoopPeriodMs       *int   `json:"loop_period_ms,omitempty"`
-		OpeningAnimationMs *int   `json:"opening_animation_ms,omitempty"`
+		LoopPeriodMs       *int64 `json:"loop_period_ms,omitempty"`
+		OpeningAnimationMs *int64 `json:"opening_animation_ms,omitempty"`
 	} `json:"data"`
+	// The integers are int64: svgGenerationResponseSchema accepts any safe
+	// integer (up to 2^53-1), which does not fit a 32-bit int.
 	Usage *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-		TotalTokens  int `json:"total_tokens"`
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+		TotalTokens  int64 `json:"total_tokens"`
 	} `json:"usage,omitempty"`
-	Credits *int `json:"credits,omitempty"`
+	Credits *int64 `json:"credits,omitempty"`
+}
+
+// quiverNumber reports a schema-validated safe integer as an int (the
+// v0.5.2 metadata type) when it fits the platform int, else as an int64.
+func quiverNumber(v int64) interface{} {
+	if v >= math.MinInt && v <= math.MaxInt {
+		return int(v)
+	}
+	return v
+}
+
+// quiverPlatformInt clamps a non-negative token count to the platform int
+// (ImageUsage fields are int).
+func quiverPlatformInt(v int64) int {
+	if v > math.MaxInt {
+		return math.MaxInt
+	}
+	return int(v)
 }
 
 type quiverAPIError struct {
-	Status    int    `json:"status"`
+	Status    int64  `json:"status"`
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	RequestID string `json:"request_id"`

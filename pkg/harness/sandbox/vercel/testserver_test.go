@@ -132,7 +132,11 @@ func (f *fakeServer) id() string {
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	b, _ := json.Marshal(v)
+	if status >= 200 && status < 300 {
+		b = r99toolsRealistic(b) // a real API response carries every schema-required field
+	}
+	_, _ = w.Write(append(b, '\n'))
 }
 
 func writeAPIError(w http.ResponseWriter, status int, code, message string) {
@@ -444,7 +448,7 @@ func (f *fakeServer) handleCommandSubpath(w http.ResponseWriter, r *http.Request
 
 func writeNDJSON(w io.Writer, v interface{}) {
 	b, _ := json.Marshal(v)
-	_, _ = w.Write(b)
+	_, _ = w.Write(r99toolsRealistic(b))
 	_, _ = w.Write([]byte("\n"))
 }
 

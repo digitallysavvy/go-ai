@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -145,11 +146,23 @@ func (c *APIClient) writeCommandStdin(ctx context.Context, sessionID, cmdID stri
 				lastWritten = written
 				stalledTimeouts = 0
 			} else if stalledTimeouts++; stalledTimeouts >= stdinMaxStalledTimeouts {
-				return parseStdinResponse(resp, maybeApplied)
+				return withStdinSession(parseStdinResponse(resp, maybeApplied))(sessionID)
 			}
 			continue
 		}
-		return parseStdinResponse(resp, maybeApplied)
+		return withStdinSession(parseStdinResponse(resp, maybeApplied))(sessionID)
+	}
+}
+
+// withStdinSession sets the session of an invalid-response APIError
+// (base-client.js extractSessionId of the stdin URL).
+func withStdinSession(n *int64, err error) func(string) (*int64, error) {
+	return func(sessionID string) (*int64, error) {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.SessionID == "" && strings.HasPrefix(apiErr.Message, "Response JSON is not valid: ") {
+			apiErr.SessionID = sessionID
+		}
+		return n, err
 	}
 }
 
@@ -165,7 +178,9 @@ func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64,
 		BytesWritten json.RawMessage `json:"bytesWritten"`
 	}
 	// base-client.js parse(): `JSON.parse(text || "{}")` of response.text()
-	// (plain JSON.parse, an empty body is an empty object).
+	// (plain JSON.parse, an empty body is an empty object), then
+	// CommandStdinResponse ({command: Command, bytesWritten?: non-negative
+	// safe integer}).
 	body := []byte(textdecode.UTF8(resp.Body))
 	if len(body) == 0 {
 		body = []byte("{}")
@@ -173,15 +188,14 @@ func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64,
 	if err := jsonexact.UnmarshalPlain(body, &out); err != nil {
 		return nil, &stdinWriteError{err: err, maybeApplied: maybeApplied}
 	}
+	if issues := vercelResponseIssues(vercelCommandStdinResponse, body); issues != "" {
+		return nil, &stdinWriteError{err: vercelInvalidResponse(resp.StatusCode, "", issues), maybeApplied: maybeApplied}
+	}
 	if out.BytesWritten == nil {
 		return nil, nil
 	}
-	// zod number().int().nonnegative().optional(): null is not a number,
-	// and int() means a safe integer (at most 2^53-1).
 	var v float64
-	if json.Unmarshal(out.BytesWritten, &v) != nil || string(out.BytesWritten) == "null" || v < 0 || v != math.Trunc(v) || v > 9007199254740991 {
-		return nil, &stdinWriteError{err: errors.New("Response JSON is not valid: bytesWritten must be a non-negative integer"), maybeApplied: maybeApplied} //nolint:staticcheck // TS parse error text prefix
-	}
+	_ = json.Unmarshal(out.BytesWritten, &v)
 	n := int64(v)
 	return &n, nil
 }
