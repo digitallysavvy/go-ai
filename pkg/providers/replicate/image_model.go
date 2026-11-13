@@ -574,21 +574,22 @@ func completedImagePrediction(p replicateImagePrediction) (bool, error) {
 
 // convertResponse downloads every output image (TS downloads all of them).
 func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateImagePrediction) (*types.ImageResult, error) {
+	// TS downloads every output entry (z.string(): an empty one fails URL
+	// validation like any bad URL); an empty output array gives no images
+	// (core then reports NoImageGeneratedError).
 	var urls []string
 	switch v := prediction.Output.(type) {
 	case []interface{}:
 		for _, item := range v {
-			if urlStr, ok := item.(string); ok && urlStr != "" {
+			if urlStr, ok := item.(string); ok {
 				urls = append(urls, urlStr)
 			}
 		}
 	case string:
-		if v != "" {
-			urls = append(urls, v)
-		}
+		urls = append(urls, v)
 	}
 	if len(urls) == 0 {
-		return nil, fmt.Errorf("no image URL in prediction output")
+		return &types.ImageResult{}, nil
 	}
 
 	images := make([][]byte, 0, len(urls))

@@ -104,8 +104,10 @@ func TestImageModelBuildAndConvertErrors(t *testing.T) {
 		t.Fatalf("input mismatch: %#v", input)
 	}
 
-	if _, err := m.convertResponse(t.Context(), replicateImagePrediction{Output: nil}); err == nil {
-		t.Fatal("convertResponse should fail when image URL is missing")
+	// A nil output fails earlier in DoGenerate ("completed without output");
+	// convertResponse itself has no images to download.
+	if res, err := m.convertResponse(t.Context(), replicateImagePrediction{Output: nil}); err != nil || len(res.Images) != 0 {
+		t.Fatalf("convertResponse(nil output) = %v, %v", res, err)
 	}
 }
 

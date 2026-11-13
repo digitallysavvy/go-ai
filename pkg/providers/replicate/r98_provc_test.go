@@ -40,3 +40,14 @@ func TestR98provcReplicatePollReasonPhrase(t *testing.T) {
 		}
 	}
 }
+
+// TS downloads every output entry: an empty URL fails getFromApi URL
+// validation with DownloadError "Invalid URL: " (Go skipped it).
+func TestR98provcReplicateEmptyOutputURL(t *testing.T) {
+	m := NewImageModel(New(Config{APIKey: "k"}), "m")
+	_, err := m.convertResponse(context.Background(), replicateImagePrediction{Output: []interface{}{""}})
+	var dl *providererrors.DownloadError
+	if !errors.As(err, &dl) || dl.Message != "Invalid URL: " {
+		t.Fatalf("got %T %v", err, err)
+	}
+}
