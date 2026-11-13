@@ -2,13 +2,13 @@ package alibaba
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -282,7 +282,7 @@ func optsHeaders(opts *provider.EmbedModelOptions) map[string]string {
 
 func parseAlibabaEmbeddingRawBody(body []byte) (interface{}, error) {
 	var raw interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Alibaba embedding response metadata: %w", err)
 	}
 	return raw, nil

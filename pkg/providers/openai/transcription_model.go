@@ -109,7 +109,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, fmt.Errorf("failed to decode transcription response: %w", err)
 	}
 	var rawResponse interface{}
-	_ = json.Unmarshal(resp.Body, &rawResponse)
+	_ = jsonexact.Unmarshal(resp.Body, &rawResponse)
 
 	duration := transcriptionDuration(response)
 	result := &types.TranscriptionResult{

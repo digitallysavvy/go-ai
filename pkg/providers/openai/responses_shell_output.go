@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
@@ -157,7 +158,7 @@ func openAILocalShellToolCall(providerName string, tools []types.Tool, raw json.
 		}{item.Action.Type, item.Action.Command, item.Action.TimeoutMs, item.Action.User, item.Action.WorkingDirectory, env}})
 	}
 	var args map[string]interface{}
-	_ = json.Unmarshal(input, &args)
+	_ = jsonexact.Unmarshal(input, &args)
 	return types.ToolCall{
 		ID:               item.CallID,
 		ToolName:         openAIDeclaredToolName(tools, "openai.local_shell", "local_shell"),
@@ -172,7 +173,7 @@ func marshalOrNil(m map[string]interface{}) json.RawMessage {
 	if len(m) == 0 {
 		return nil
 	}
-	b, err := json.Marshal(m)
+	b, err := jsonstr.Marshal(m)
 	if err != nil {
 		return nil
 	}

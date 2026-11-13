@@ -1,9 +1,9 @@
 package huggingface
 
 import (
-	"encoding/json"
-
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // convertHuggingFaceResponsesUsage mirrors TS convertHuggingFaceResponsesUsage.
@@ -34,8 +34,8 @@ func convertHuggingFaceResponsesUsage(usage *hfUsage) types.Usage {
 	// re-marshaled through hfUsage so absent optional sub-objects are
 	// omitted rather than appearing as null/zero.
 	var raw map[string]interface{}
-	if data, err := json.Marshal(usage); err == nil {
-		_ = json.Unmarshal(data, &raw)
+	if data, err := jsonstr.Marshal(usage); err == nil {
+		_ = jsonexact.Unmarshal(data, &raw)
 	}
 
 	return types.Usage{

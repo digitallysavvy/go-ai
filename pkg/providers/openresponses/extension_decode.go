@@ -5,8 +5,10 @@ package openresponses
 import (
 	"encoding/json"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // extensionReplayKind is the Kind of the synthetic CustomContent part added
@@ -25,7 +27,7 @@ func decodeExtensionItem(registry *ExtensionRegistry, rawItem json.RawMessage, m
 		return nil, false, nil
 	}
 	var record ExtensionRecord
-	if err := json.Unmarshal(rawItem, &record); err != nil {
+	if err := jsonexact.Unmarshal(rawItem, &record); err != nil {
 		return nil, false, nil
 	}
 	if !IsExtensionItem(record) {
@@ -56,7 +58,7 @@ func decodeExtensionItem(registry *ExtensionRegistry, rawItem json.RawMessage, m
 // buildExtensionReplayCarrier builds the synthetic CustomContent part that
 // preserves item verbatim for replay, mirroring TS createExtensionReplayCarrier.
 func buildExtensionReplayCarrier(extensionID string, item ExtensionRecord, providerName string) types.CustomContent {
-	raw, _ := json.Marshal(map[string]interface{}{
+	raw, _ := jsonstr.Marshal(map[string]interface{}{
 		providerName: map[string]interface{}{
 			"openResponsesExtension": map[string]interface{}{
 				"id":   extensionID,
@@ -125,7 +127,7 @@ func mergeExtensionReference(existing json.RawMessage, providerName string, refe
 	}
 	providerMeta["openResponsesExtension"] = reference
 	metadata[providerName] = providerMeta
-	raw, err := json.Marshal(metadata)
+	raw, err := jsonstr.Marshal(metadata)
 	if err != nil {
 		return existing
 	}
@@ -251,7 +253,7 @@ func decodeExtensionEvent(registry *ExtensionRegistry, rawEvent []byte, state ma
 		return nil, false, nil
 	}
 	var record ExtensionRecord
-	if err := json.Unmarshal(rawEvent, &record); err != nil {
+	if err := jsonexact.Unmarshal(rawEvent, &record); err != nil {
 		return nil, false, nil
 	}
 	if !IsExtensionEvent(record) {

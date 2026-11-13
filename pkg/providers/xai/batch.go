@@ -99,7 +99,7 @@ func extractXAIBatchProviderOptions(providerOptions map[string]interface{}) (xai
 	if !ok || raw == nil {
 		return opts, nil
 	}
-	b, err := json.Marshal(raw)
+	b, err := json.Marshal(raw) // caller options: a non-finite number is invalid (zod), not null
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}
@@ -784,7 +784,7 @@ func (u *xaiBatchTextUsageWire) UnmarshalJSON(data []byte) error {
 	}
 	*u = xaiBatchTextUsageWire(a)
 	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err == nil {
+	if err := jsonexact.Unmarshal(data, &raw); err == nil {
 		u.Raw = raw
 	}
 	return nil
@@ -914,7 +914,7 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 		}
 		for _, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args)
 			call := types.ToolCall{
 				ID:           tc.ID,
 				ToolName:     tc.Function.Name,

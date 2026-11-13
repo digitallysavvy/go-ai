@@ -59,7 +59,7 @@ func parseFireworksProviderError(err error) error {
 	}
 	pe := providererrors.NewProviderErrorFromResponse("fireworks", 0, fireworksErrorCode(obj.Code), *obj.Message, err)
 	var errObj map[string]interface{}
-	_ = json.Unmarshal(payload.Error, &errObj)
+	_ = jsonexact.Unmarshal(payload.Error, &errObj)
 	// TS APICallError.data: the schema output (undeclared keys stripped).
 	pe.Data = map[string]interface{}{"error": providerutils.PickSchemaKeys(errObj, "message", "object", "type", "param", "code")}
 	return pe

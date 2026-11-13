@@ -3,13 +3,14 @@ package streaming
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 )
 
@@ -332,8 +333,13 @@ func (w *SSEWriter) WriteDone() error {
 // returns `rawValue: undefined` for a JSONParseError. A payload that parses
 // but fails the chunk schema keeps its parsed value.
 func RawChunkValue(data string) interface{} {
+	// safeParseJSON (secureJsonParse) fails on a forbidden __proto__ /
+	// constructor.prototype key: rawValue is undefined.
+	if securejson.Check([]byte(data)) != nil {
+		return nil
+	}
 	var raw interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(data), &raw); err != nil {
 		return nil
 	}
 	return raw

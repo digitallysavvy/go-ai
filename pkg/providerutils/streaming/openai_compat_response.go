@@ -162,7 +162,7 @@ func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte
 	}
 	if len(wire.Choices) == 0 {
 		var data interface{}
-		_ = json.Unmarshal(body, &data) //nolint:errcheck // best-effort error data
+		_ = jsonexact.Unmarshal(body, &data) //nolint:errcheck // best-effort error data
 		return providererrors.NewInvalidResponseDataError(data, "Response did not contain any choices.")
 	}
 	choice := wire.Choices[0]
@@ -220,7 +220,7 @@ func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte
 	for _, tc := range choice.Message.ToolCalls {
 		var args map[string]interface{}
 		if tc.Function.Arguments != "" {
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck // invalid input stays empty like before
+			_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck // invalid input stays empty like before
 		}
 		id := tc.ID
 		if id == "" {

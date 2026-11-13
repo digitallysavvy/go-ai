@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -27,7 +28,7 @@ func newOpenAIStreamProviderError(providerName string, raw json.RawMessage, head
 	var data interface{}
 
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &data)
+		_ = jsonexact.Unmarshal(raw, &data)
 	}
 	if frame != nil {
 		message = frame.Message
@@ -55,7 +56,7 @@ func newOpenAIStreamProviderError(providerName string, raw json.RawMessage, head
 
 func parseOpenAIStreamError(raw json.RawMessage) *openAIStreamErrorFrame {
 	var value map[string]interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := jsonexact.Unmarshal(raw, &value); err != nil {
 		return nil
 	}
 
@@ -197,7 +198,7 @@ func newOpenAIStreamProviderErrorChunk(providerName string, raw json.RawMessage)
 	statusCode := 500
 	var data interface{}
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &data)
+		_ = jsonexact.Unmarshal(raw, &data)
 	}
 	if frame != nil {
 		message = frame.Message

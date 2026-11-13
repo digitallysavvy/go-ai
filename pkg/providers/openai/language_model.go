@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -144,7 +145,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// TS result.response.body: the response as received.
 	var rawResponse interface{}
-	rawErr := json.Unmarshal(resp.Body, &rawResponse)
+	rawErr := jsonexact.Unmarshal(resp.Body, &rawResponse)
 	result, err := m.convertGenerateResponse(ctx, response, resp.Body, rawResponse, opts.ProviderOptions)
 	if err != nil {
 		return nil, err
@@ -194,7 +195,7 @@ func (m *LanguageModel) ConvertResponse(ctx context.Context, body []byte, provid
 		return nil, typed
 	}
 	var rawResponse interface{}
-	_ = json.Unmarshal(body, &rawResponse) //nolint:errcheck // validated above
+	_ = jsonexact.Unmarshal(body, &rawResponse) //nolint:errcheck // validated above
 	result, err := m.convertGenerateResponse(ctx, response, body, rawResponse, providerOptions)
 	if err != nil {
 		return nil, err
@@ -721,7 +722,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// reasoning-model gating below only backfills max_completion_tokens from
 	// max_tokens when this was not already explicitly set.
 	if v, ok := openaiOpts["maxCompletionTokens"]; ok && v != nil {
-		if n, ok := intFromInterface(v); ok {
+		if n, ok := responsesJSNumber(v); ok { // z.number(): a fraction is sent as is
 			body["max_completion_tokens"] = n
 		}
 	}
@@ -741,7 +742,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				body["top_logprobs"] = 0
 			}
 		default:
-			if n, ok := intFromInterface(v); ok {
+			if n, ok := responsesJSNumber(v); ok { // z.number(): a fraction is sent as is
 				body["logprobs"] = true
 				body["top_logprobs"] = n
 			}
@@ -1050,7 +1051,7 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 			result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 			for i, tc := range choice.Message.ToolCalls {
 				var args map[string]interface{}
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 
 				id := tc.ID
 				if id == "" {
@@ -1393,7 +1394,7 @@ func (u *openAIUsage) UnmarshalJSON(b []byte) error {
 	}
 	*u = openAIUsage(p)
 	var raw map[string]interface{}
-	if json.Unmarshal(b, &raw) == nil && raw != nil {
+	if jsonexact.Unmarshal(b, &raw) == nil && raw != nil {
 		u.rawWire = filterChatUsageRaw(raw)
 		u.rawFull = raw
 	}
@@ -1770,7 +1771,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			// TS metadataExtractor.processChunk(chunk.rawValue) for every
 			// chunk that passes the schema, before the error check.
 			var parsed interface{}
-			if json.Unmarshal([]byte(event.Data), &parsed) == nil {
+			if jsonexact.Unmarshal([]byte(event.Data), &parsed) == nil {
 				s.metaExtractor.ProcessChunk(parsed)
 			}
 		}
@@ -2210,7 +2211,7 @@ func (s *openAIStream) endStream() {
 		if s.metaExtractor != nil {
 			all = mergeExtractedMetadata(all, key, s.metaExtractor.BuildMetadata())
 		}
-		if raw, err := json.Marshal(all); err == nil {
+		if raw, err := jsonstr.Marshal(all); err == nil {
 			finish.ProviderMetadata = raw
 		}
 		s.flushQueue = append(s.flushQueue, finish)

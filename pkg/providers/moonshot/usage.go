@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // MoonshotUsage represents token usage information from Moonshot API responses.
@@ -63,7 +64,7 @@ type moonshotUsageKnownFields struct {
 // wire-parsing path uses ConvertMoonshotUsageRaw so unknown fields survive
 // into Usage.Raw.
 func ConvertMoonshotUsage(usage MoonshotUsage) types.Usage {
-	raw, err := json.Marshal(usage)
+	raw, err := jsonstr.Marshal(usage)
 	if err != nil {
 		return types.Usage{}
 	}
@@ -91,7 +92,7 @@ func ConvertMoonshotUsageRaw(raw json.RawMessage) (types.Usage, error) {
 	}
 
 	var rawMap map[string]interface{}
-	if err := json.Unmarshal(raw, &rawMap); err != nil {
+	if err := jsonexact.Unmarshal(raw, &rawMap); err != nil {
 		return types.Usage{}, err
 	}
 

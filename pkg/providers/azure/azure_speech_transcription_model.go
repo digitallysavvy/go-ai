@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -291,7 +292,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 
 	// TS exposes the parsed JSON body; a []byte would marshal as base64.
 	var rawBody interface{}
-	if json.Unmarshal(respBody, &rawBody) != nil {
+	if jsonexact.Unmarshal(respBody, &rawBody) != nil {
 		rawBody = string(respBody)
 	}
 	return &types.TranscriptionResult{

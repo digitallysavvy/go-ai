@@ -3444,12 +3444,13 @@ func TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools(t *testing.
 	}
 
 	// Streaming path: the wrapper's arguments arrive as one delta, expansion
-	// happens at output_item.done.
+	// happens at output_item.done from the done item's arguments (TS reads
+	// item.arguments, as the parallel-tool-call-wrapper fixture sends them).
 	stream := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":"","status":"completed"}}
 
 data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"`+strings.ReplaceAll(rawInput, `"`, `\"`)+`"}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":"","status":"completed"}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":"`+strings.ReplaceAll(rawInput, `"`, `\"`)+`","status":"completed"}}
 
 `)), false, "web_search", "openai", nil)
 	stream.tools = tools

@@ -2,11 +2,11 @@ package together
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -283,7 +283,7 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
 			// TS openai-compatible chat: `toolCall.id || generateId()`.
 			id := tc.ID

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -331,9 +332,9 @@ type FunctionToolDef struct {
 func (d FunctionToolDef) MarshalJSON() ([]byte, error) {
 	type plain FunctionToolDef
 	if d.AllowedCallers == nil || len(d.AllowedCallers) > 0 {
-		return json.Marshal(plain(d))
+		return jsonstr.Marshal(plain(d))
 	}
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		plain
 		AllowedCallers []string `json:"allowed_callers"`
 	}{plain(d), d.AllowedCallers})
@@ -431,7 +432,7 @@ func (p ShellNetworkPolicy) MarshalJSON() ([]byte, error) {
 // marshalKeepingEmpty marshals v and, for each key marked true in keep,
 // adds the empty list omitempty dropped (appended after v's own keys).
 func marshalKeepingEmpty(v interface{}, keep map[string]bool) ([]byte, error) {
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
@@ -692,7 +693,7 @@ func (e McpErrorValue) MarshalJSON() ([]byte, error) {
 	if e.Raw != nil {
 		return e.Raw, nil
 	}
-	return json.Marshal(e.Message)
+	return jsonstr.Marshal(e.Message)
 }
 
 // AsJSONValue returns the error as a value suitable for a tool-result JSON
@@ -700,7 +701,7 @@ func (e McpErrorValue) MarshalJSON() ([]byte, error) {
 func (e McpErrorValue) AsJSONValue() interface{} {
 	if e.Raw != nil {
 		var v interface{}
-		if err := json.Unmarshal(e.Raw, &v); err == nil {
+		if err := jsonexact.Unmarshal(e.Raw, &v); err == nil {
 			return v
 		}
 		return string(e.Raw)
@@ -837,7 +838,7 @@ func (u *ResponsesAPIUsage) UnmarshalJSON(data []byte) error {
 	}
 	*u = ResponsesAPIUsage(alias)
 	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err == nil {
+	if err := jsonexact.Unmarshal(data, &raw); err == nil {
 		u.Raw = raw
 	}
 	return nil
@@ -1039,7 +1040,7 @@ type TextAnnotation struct {
 func (a TextAnnotation) MarshalJSON() ([]byte, error) {
 	switch a.Type {
 	case "url_citation":
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			Type       string `json:"type"`
 			StartIndex int    `json:"start_index"`
 			EndIndex   int    `json:"end_index"`
@@ -1047,14 +1048,14 @@ func (a TextAnnotation) MarshalJSON() ([]byte, error) {
 			Title      string `json:"title"`
 		}{a.Type, a.StartIndex, a.EndIndex, a.URL, a.Title})
 	case "file_citation":
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			Type     string `json:"type"`
 			FileID   string `json:"file_id"`
 			Filename string `json:"filename"`
 			Index    int    `json:"index"`
 		}{a.Type, a.FileID, a.Filename, a.Index})
 	case "container_file_citation":
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			Type        string `json:"type"`
 			ContainerID string `json:"container_id"`
 			FileID      string `json:"file_id"`
@@ -1063,14 +1064,14 @@ func (a TextAnnotation) MarshalJSON() ([]byte, error) {
 			EndIndex    int    `json:"end_index"`
 		}{a.Type, a.ContainerID, a.FileID, a.Filename, a.StartIndex, a.EndIndex})
 	case "file_path":
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			Type   string `json:"type"`
 			FileID string `json:"file_id"`
 			Index  int    `json:"index"`
 		}{a.Type, a.FileID, a.Index})
 	}
 	type plain TextAnnotation
-	return json.Marshal(plain(a))
+	return jsonstr.Marshal(plain(a))
 }
 
 // OutputItemDoneEvent is emitted when an output item is fully assembled.

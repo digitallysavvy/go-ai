@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -321,7 +322,7 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 			// TS safeParseJSON: any JSON value is a message and is reported
 			// as a raw part; only an object with known fields is an event.
 			var rawValue interface{}
-			if jsonErr := json.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 			if cfg.includeRawChunks {
@@ -336,12 +337,15 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 
 			switch event.Type {
 			case "session.created":
-				payload, marshalErr := json.Marshal(cfg.sessionUpdate)
-				if marshalErr == nil {
-					if sendErr := s.send(conn, payload); sendErr != nil {
-						fail(sendErr)
-						return
-					}
+				// TS socket.send(JSON.stringify(sessionUpdate)): a failure
+				// to serialize or send fails the stream.
+				payload, sendErr := jsonstr.Marshal(cfg.sessionUpdate)
+				if sendErr == nil {
+					sendErr = s.send(conn, payload)
+				}
+				if sendErr != nil {
+					fail(sendErr)
+					return
 				}
 
 			case "session.updated":

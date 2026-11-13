@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"io"
 	"math"
 	"net/http"
 	"regexp"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -733,7 +735,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			var args map[string]interface{}
-			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			pushCall(types.ToolCall{
 				ID:           item.CallID,
 				ToolName:     item.Name,
@@ -785,7 +787,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				if item.EncryptedContent != "" {
 					meta["reasoningEncryptedContent"] = item.EncryptedContent
 				}
-				if raw, err := json.Marshal(map[string]interface{}{"xai": meta}); err == nil {
+				if raw, err := jsonstr.Marshal(map[string]interface{}{"xai": meta}); err == nil {
 					rc.ProviderMetadata = raw
 				}
 			}
@@ -816,7 +818,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				toolInput = item.Input
 			}
 			var toolArgs map[string]interface{}
-			_ = json.Unmarshal([]byte(toolInput), &toolArgs)
+			_ = jsonexact.Unmarshal([]byte(toolInput), &toolArgs)
 			pushCall(types.ToolCall{
 				ID:               item.ID,
 				ToolName:         toolName,
@@ -1556,7 +1558,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.activeReasoning[e.ItemID] = struct{}{}
-			meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
+			meta, _ := jsonstr.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoningStart,
 				ID:               blockID,
@@ -1573,7 +1575,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			blockID := "reasoning-" + e.ItemID
-			meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
+			meta, _ := jsonstr.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoning,
 				ID:               blockID,
@@ -1596,7 +1598,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			blockID := "reasoning-" + e.ItemID
-			meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
+			meta, _ := jsonstr.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 			if _, started := s.activeReasoning[e.ItemID]; !started {
 				// First delta without a prior summary_part.added — emit start now.
 				s.activeReasoning[e.ItemID] = struct{}{}
@@ -1772,7 +1774,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			// end of the stream.
 			if e.Response.Error != nil {
 				var data interface{}
-				_ = json.Unmarshal([]byte(event.Data), &data)
+				_ = jsonexact.Unmarshal([]byte(event.Data), &data)
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: formatXAIResponseError(e.Response.Error.Code, e.Response.Error.Message),
@@ -1789,7 +1791,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			streamErr := &XAIStreamError{Code: e.Code, Message: e.Message}
 			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			var data interface{}
-			_ = json.Unmarshal([]byte(event.Data), &data)
+			_ = jsonexact.Unmarshal([]byte(event.Data), &data)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: streamErr.Error(),
@@ -1924,7 +1926,7 @@ func (s *xaiResponsesStream) recordMetadata(u *responses.ResponsesAPIUsage, echo
 		s.finishMeta = nil
 		return
 	}
-	s.finishMeta, _ = json.Marshal(map[string]interface{}{"xai": xaiMeta})
+	s.finishMeta, _ = jsonstr.Marshal(map[string]interface{}{"xai": xaiMeta})
 }
 
 // queueFlush is TS flush(): end every text block, then enqueue `finish` with
@@ -1983,19 +1985,15 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			Arguments string `json:"arguments"`
 		}
 		if jsonexact.Unmarshal(e.Item, &doneItem) == nil {
-			if doneItem.CallID != "" {
-				callID = doneItem.CallID
-			}
-			if doneItem.Name != "" {
-				name = doneItem.Name
-			}
-			// TS: `input: part.arguments` -- the done item's arguments verbatim,
-			// not the accumulated deltas.
-			rawArgs = doneItem.Arguments
+			// TS: `toolCallId: part.call_id, toolName: part.name, input:
+			// part.arguments` -- the done item's values verbatim (required
+			// strings in the chunk schema, so a present "" is kept), not the
+			// added item's or the accumulated deltas.
+			callID, name, rawArgs = doneItem.CallID, doneItem.Name, doneItem.Arguments
 		}
 		var args map[string]interface{}
 		if rawArgs != "" {
-			json.Unmarshal([]byte(rawArgs), &args) //nolint:errcheck
+			jsonexact.Unmarshal([]byte(rawArgs), &args) //nolint:errcheck
 		}
 		s.flushQueue = append(s.flushQueue,
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID, ToolCall: &types.ToolCall{ID: callID, ToolName: name}},
@@ -2040,7 +2038,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if item.EncryptedContent != "" {
 			meta["reasoningEncryptedContent"] = item.EncryptedContent
 		}
-		providerMeta, _ := json.Marshal(map[string]interface{}{"xai": meta})
+		providerMeta, _ := jsonstr.Marshal(map[string]interface{}{"xai": meta})
 		blockID := "reasoning-" + item.ID
 
 		// If no reasoning-start was emitted yet (encrypted reasoning path where
@@ -2050,7 +2048,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			if item.ID != "" {
 				startXAI["itemId"] = item.ID
 			}
-			startMeta, _ := json.Marshal(map[string]interface{}{"xai": startXAI})
+			startMeta, _ := jsonstr.Marshal(map[string]interface{}{"xai": startXAI})
 			s.flushQueue = append(s.flushQueue,
 				&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: blockID, ProviderMetadata: startMeta},
 				&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: blockID, ProviderMetadata: providerMeta},
@@ -2140,7 +2138,7 @@ func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json
 	if emit {
 		s.seenToolCalls[item.ID] = true
 		var args map[string]interface{}
-		_ = json.Unmarshal([]byte(toolInput), &args)
+		_ = jsonexact.Unmarshal([]byte(toolInput), &args)
 		s.flushQueue = append(s.flushQueue,
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: item.ID, ToolName: toolName}},
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: item.ID, Text: toolInput},

@@ -100,7 +100,7 @@ func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.Raw
 	message := deepseekStreamErrorText(raw)
 	var code interface{}
 	if len(payload.Code) > 0 {
-		_ = json.Unmarshal(payload.Code, &code)
+		_ = jsonexact.Unmarshal(payload.Code, &code)
 	}
 	codeStr, _ := code.(string)
 	if codeStr == "" {
@@ -114,7 +114,7 @@ func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.Raw
 		dataSrc = raw
 	}
 	var data interface{}
-	_ = json.Unmarshal(dataSrc, &data)
+	_ = jsonexact.Unmarshal(dataSrc, &data)
 	var statusPtr *int
 	var retryablePtr *bool
 	if matched {

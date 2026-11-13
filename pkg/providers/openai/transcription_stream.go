@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -384,13 +387,18 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 	// stream-start: setup must not wait for a consumer to be reading yet
 	// (mirrors TS onOpen, where controller.enqueue does not block on a
 	// reader before the socket send and sendAudio() call that follow it).
-	payload, err := json.Marshal(cfg.SessionUpdate)
-	if err != nil {
-		s.SetErr(err)
-		cfg.Audio.Cancel(err)
-		return
+	streamStart := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.Warnings}
+	payload, err := jsonstr.Marshal(cfg.SessionUpdate)
+	if err == nil {
+		err = s.send(conn, payload)
 	}
-	if err := s.send(conn, payload); err != nil {
+	if err != nil {
+		// TS onOpen enqueues stream-start before it serializes and sends
+		// the session update, so a failure errors the stream after that
+		// part (connectToWebSocket onProcessingError).
+		if !s.Emit(streamStart) {
+			err = context.Cause(s.Context())
+		}
 		s.SetErr(err)
 		cfg.Audio.Cancel(err)
 		return
@@ -399,7 +407,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.Audio, audioErrCh)
 
-	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.Warnings}) {
+	if !s.Emit(streamStart) {
 		return
 	}
 
@@ -442,7 +450,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 			// TS safeParseJSON: any JSON value (not only an object) is a
 			// message; the raw part carries it as parsed.
 			var rawValue interface{}
-			if jsonErr := json.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 			if cfg.IncludeRawChunks {
@@ -522,8 +530,12 @@ func (s *openAIRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, audi
 
 func (s *openAIRealtimeTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
 	protocols, filteredHeaders := openAIRealtimeWSAuth(headers)
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols, WrapConn: openAIRealtimeWrapConn})
 }
+
+// openAIRealtimeWrapConn, when set (tests only), wraps the raw connection of
+// the realtime transcription and speech translation WebSockets.
+var openAIRealtimeWrapConn func(net.Conn) net.Conn
 
 func (s *openAIRealtimeTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
 	return wsutil.Send(s.Context(), conn, string(message))

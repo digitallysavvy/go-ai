@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -200,7 +201,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 
 	var response decisionResponseWire
 	var rawBody interface{}
-	_ = json.Unmarshal(raw, &rawBody)
+	_ = jsonexact.Unmarshal(raw, &rawBody)
 	// TS createJsonResponseHandler(openaiDecisionResponseSchema): a body
 	// that fails the schema is the "Invalid JSON response" APICallError with
 	// the status, headers and body (response-handler.ts:259-271).

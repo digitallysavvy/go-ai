@@ -2,11 +2,11 @@ package openai
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -156,7 +156,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	// TS response.body is the raw parsed JSON.
 	var rawBody interface{} = response
-	_ = json.Unmarshal(httpResp.Body, &rawBody)
+	_ = jsonexact.Unmarshal(httpResp.Body, &rawBody)
 	result := &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Warnings:   warnings,

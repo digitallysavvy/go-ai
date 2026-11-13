@@ -145,7 +145,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 	result.RawRequest = body
 	var rawResponse interface{}
-	if json.Unmarshal(httpResp.Body, &rawResponse) == nil {
+	if jsonexact.Unmarshal(httpResp.Body, &rawResponse) == nil {
 		result.RawResponse = rawResponse
 	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
@@ -350,7 +350,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	safetyIdentifier := ""
 	passThroughUnsupportedFiles := false
 	forceReasoning := (*bool)(nil)
-	maxToolCalls := (*int)(nil)
+	var maxToolCalls interface{} // a JS number: int when integral, else float64
 	parallelToolCalls := (*bool)(nil)
 	truncation := ""
 	includeFields := []string(nil)
@@ -367,6 +367,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// TS sends these string options as given (`openaiOptions?.x`), so a
 	// present "" is sent and counts as set (`!= null`).
 	var conversationSet, previousResponseIDSet, promptCacheKeySet, userSet, instructionsSet, safetyIdentifierSet bool
+	// reasoningEffortSet / reasoningSummaryString: reasoningEffort and
+	// reasoningSummary are z.string() options, so a present "" is sent
+	// (TS `!= null`).
+	var reasoningEffortSet, reasoningSummaryString bool
 
 	if opts.ProviderOptions != nil {
 		var ok bool
@@ -418,7 +422,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				promptCacheKey, promptCacheKeySet = v, true
 			}
 			if v, ok := openaiOpts["reasoningEffort"].(string); ok {
-				reasoningEffort = v
+				reasoningEffort, reasoningEffortSet = v, true
 			}
 			if v, ok := openaiOpts["reasoningEffortUpdate"].(string); ok {
 				// TS validates reasoningEffortUpdate against a fixed schema
@@ -446,7 +450,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["reasoningSummary"]; ok {
 				reasoningSummarySet = true
 				if summary, ok := v.(string); ok {
-					reasoningSummary = summary
+					reasoningSummary, reasoningSummaryString = summary, true
 				}
 			}
 			if v, ok := openaiOpts["strictJsonSchema"].(bool); ok {
@@ -470,8 +474,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["passThroughUnsupportedFiles"].(bool); ok {
 				passThroughUnsupportedFiles = v
 			}
-			if v, ok := intFromInterface(openaiOpts["maxToolCalls"]); ok {
-				maxToolCalls = &v
+			if v, ok := responsesJSNumber(openaiOpts["maxToolCalls"]); ok {
+				maxToolCalls = v
 			}
 			if v, ok := openaiOpts["parallelToolCalls"].(bool); ok {
 				parallelToolCalls = &v
@@ -564,10 +568,13 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// a "compatibility" warning when the effort sent differs.
 	reasoningEffortOption := reasoningEffort
 	var providerReasoningEffort *string
-	if reasoningEffortOption != "" {
+	if reasoningEffortSet {
 		providerReasoningEffort = &reasoningEffortOption
 	}
 	reasoningEffort = resolveOpenAIReasoningEffort(providerReasoningEffort, opts.Reasoning, modelCapabilities.SupportedReasoningEfforts, &warnings)
+	// TS resolvedReasoningEffort != null: a provider option ("" included)
+	// or a mapped top-level reasoning value.
+	effortResolved := reasoningEffortSet || reasoningEffort != ""
 	// TS reports this after the reasoningEffort check above.
 	if conversation != "" && previousResponseID != "" {
 		warnings = append(warnings, types.Warning{
@@ -762,16 +769,19 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	effort := reasoningEffort
+	// TS resolvedReasoningSummary: the option when present (null included),
+	// else "detailed" for a resolved effort other than none.
 	resolvedReasoningSummary := reasoningSummary
-	if !reasoningSummarySet && resolvedReasoningSummary == "" && effort != "" && effort != "none" {
-		resolvedReasoningSummary = "detailed"
+	summaryResolved := reasoningSummaryString
+	if !reasoningSummarySet && effortResolved && effort != "none" {
+		resolvedReasoningSummary, summaryResolved = "detailed", true
 	}
-	if isReasoning && (effort != "" || resolvedReasoningSummary != "" || reasoningMode != "" || reasoningContext != "") {
+	if isReasoning && (effortResolved || summaryResolved || reasoningMode != "" || reasoningContext != "") {
 		reasoning := map[string]interface{}{}
-		if effort != "" {
+		if effortResolved {
 			reasoning["effort"] = effort
 		}
-		if resolvedReasoningSummary != "" {
+		if summaryResolved {
 			reasoning["summary"] = resolvedReasoningSummary
 		}
 		// Row b2b1bb9 (Responses half): GPT-5.6 reasoningMode ("standard"/
@@ -817,14 +827,14 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 	}
 	if !isReasoning {
-		if reasoningEffortOption != "" {
+		if reasoningEffortSet {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoningEffort",
 				Details: "reasoningEffort is not supported for non-reasoning models",
 			})
 		}
-		if reasoningSummary != "" {
+		if reasoningSummaryString {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoningSummary",
@@ -1057,7 +1067,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["safety_identifier"] = nil
 	}
 	if maxToolCalls != nil {
-		body["max_tool_calls"] = *maxToolCalls
+		body["max_tool_calls"] = maxToolCalls
 	} else if hasNilProviderOption(openaiOpts, "maxToolCalls") {
 		body["max_tool_calls"] = nil
 	}
@@ -1111,29 +1121,47 @@ func intFromInterface(value interface{}) (int, bool) {
 // also adds the message.output_text.logprobs include (see
 // responsesTopLogprobsIncluded).
 func responsesTopLogprobs(value interface{}) (interface{}, bool) {
-	switch v := value.(type) {
-	case bool:
+	if v, ok := value.(bool); ok {
 		if v {
 			return 20, true
 		}
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
+		return nil, false
+	}
+	return responsesJSNumber(value)
+}
+
+// responsesJSNumber reads a numeric option as the JS number TS sends: an int
+// when integral, else the float64 (z.number() keeps a fraction).
+func responsesJSNumber(value interface{}) (interface{}, bool) {
+	switch v := value.(type) {
 	case float64:
-		return int(v), true
-	case json.Number:
-		if i, err := v.Int64(); err == nil {
-			return int(i), true
+		if v == math.Trunc(v) && math.Abs(v) <= 1<<53 {
+			return int(v), true
 		}
+		return v, true
+	case float32:
+		return responsesJSNumber(float64(v))
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return responsesJSNumber(f)
+		}
+		return nil, false
+	}
+	if i, ok := intFromInterface(value); ok {
+		return i, true
 	}
 	return nil, false
 }
 
 // responsesTopLogprobsIncluded is TS's `if (topLogprobs)` truthiness check.
 func responsesTopLogprobsIncluded(v interface{}) bool {
-	n, ok := v.(int)
-	return ok && n != 0
+	switch n := v.(type) {
+	case int:
+		return n != 0
+	case float64:
+		return n != 0
+	}
+	return false
 }
 
 func responsesContextManagement(value interface{}) []map[string]interface{} {
@@ -1655,7 +1683,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					text := types.TextContent{Text: part.Refusal}
 					if meta := openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, nil); meta != nil {
 						text.ProviderOptions = meta
-						text.ProviderMetadata, _ = json.Marshal(meta)
+						text.ProviderMetadata, _ = jsonstr.Marshal(meta)
 					}
 					result.Content = append(result.Content, text)
 					continue
@@ -1669,7 +1697,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				}
 				// TS exposes the same data as the part's providerMetadata.
 				if msgMeta != nil {
-					text.ProviderMetadata, _ = json.Marshal(msgMeta)
+					text.ProviderMetadata, _ = jsonstr.Marshal(msgMeta)
 				}
 				result.Content = append(result.Content, text)
 				for _, ann := range part.Annotations {
@@ -1699,7 +1727,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			var args map[string]interface{}
-			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			tc := types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
@@ -1721,7 +1749,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				"operation": item.Operation,
 			})
 			var args map[string]interface{}
-			json.Unmarshal(rawArgs, &args) //nolint:errcheck
+			jsonexact.Unmarshal(rawArgs, &args) //nolint:errcheck
 			itemID := ""
 			if item.ID != nil {
 				itemID = *item.ID
@@ -2015,7 +2043,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				RawArguments:     string(inputRaw),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil),
 			}
-			json.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
+			jsonexact.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
 			if isHosted {
 				tc.ProviderExecuted = true
 			}
@@ -2036,7 +2064,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			matchedTools := make([]interface{}, 0, len(item.Tools))
 			for _, t := range item.Tools {
 				var v interface{}
-				json.Unmarshal(t, &v) //nolint:errcheck
+				jsonexact.Unmarshal(t, &v) //nolint:errcheck
 				matchedTools = append(matchedTools, v)
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
@@ -2166,7 +2194,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolName := "mcp." + item.Name
 			var args map[string]interface{}
-			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			mcpResult := map[string]interface{}{
 				"type":        "call",
 				"serverLabel": item.ServerLabel,
@@ -2223,7 +2251,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			dummyToolCallID := streaming.GenerateID()
 			toolName := "mcp." + item.Name
 			var args map[string]interface{}
-			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               dummyToolCallID,
 				ToolName:         toolName,
@@ -2305,7 +2333,7 @@ func normalizeResponsesLogprobs(raw json.RawMessage) json.RawMessage {
 	if err := jsonexact.Unmarshal(raw, &items); err != nil {
 		return raw
 	}
-	out, err := json.Marshal(items)
+	out, err := jsonstr.Marshal(items)
 	if err != nil {
 		return raw
 	}
@@ -2493,7 +2521,7 @@ func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID string, 
 	if encrypted != nil {
 		enc = *encrypted
 	}
-	raw, _ := json.Marshal(map[string]interface{}{
+	raw, _ := jsonstr.Marshal(map[string]interface{}{
 		providerName: map[string]interface{}{"itemId": itemID, "reasoningEncryptedContent": enc},
 	})
 	return raw
@@ -2529,7 +2557,7 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation,
 			Title:      ann.Title,
 		}, true
 	case "file_citation":
-		meta, _ := json.Marshal(map[string]interface{}{
+		meta, _ := jsonstr.Marshal(map[string]interface{}{
 			providerName: map[string]interface{}{
 				"type":   ann.Type,
 				"fileId": ann.FileID,
@@ -2545,7 +2573,7 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation,
 			ProviderMetadata: meta,
 		}, true
 	case "container_file_citation":
-		meta, _ := json.Marshal(map[string]interface{}{
+		meta, _ := jsonstr.Marshal(map[string]interface{}{
 			providerName: map[string]interface{}{
 				"type":        ann.Type,
 				"fileId":      ann.FileID,
@@ -2561,7 +2589,7 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation,
 			ProviderMetadata: meta,
 		}, true
 	case "file_path":
-		meta, _ := json.Marshal(map[string]interface{}{
+		meta, _ := jsonstr.Marshal(map[string]interface{}{
 			providerName: map[string]interface{}{
 				"type":   ann.Type,
 				"fileId": ann.FileID,
@@ -2669,7 +2697,7 @@ func openAIFileSearchResultSource(providerName string, r responses.FileSearchRes
 		return types.SourceContent{}, false
 	}
 	seen[r.FileID] = true
-	meta, _ := json.Marshal(map[string]interface{}{
+	meta, _ := jsonstr.Marshal(map[string]interface{}{
 		providerName: map[string]interface{}{"type": "file_search", "fileId": r.FileID},
 	})
 	return types.SourceContent{
@@ -2689,7 +2717,7 @@ func toRawMetadata(m map[string]interface{}) json.RawMessage {
 	if len(m) == 0 {
 		return nil
 	}
-	raw, _ := json.Marshal(m)
+	raw, _ := jsonstr.Marshal(m)
 	return raw
 }
 
@@ -2751,15 +2779,6 @@ func responsesRawItemString(item json.RawMessage, key string) *string {
 		return nil
 	}
 	return str
-}
-
-// nonEmptyOrNil returns nil for an empty string so it marshals as JSON null
-// (matching TS's `encryptedContent ?? null`), or the string itself otherwise.
-func nonEmptyOrNil(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 // escapeJSONDelta returns delta's JSON string-escaped form without the
@@ -3036,6 +3055,7 @@ type responsesStream struct {
 	webSearchToolName string
 	providerName      string
 	responseID        string
+	responseIDSet     bool
 	logprobsEnabled   bool              // providerOptions.<name>.logprobs is truthy
 	logprobs          []json.RawMessage // per-delta logprobs collected for finish metadata
 	outputStarted     bool
@@ -3308,7 +3328,11 @@ func (s *responsesStream) queueEOFFinish() {
 	}
 	// TS: { responseId (null until response.created arrives), logprobs?,
 	// serviceTier?, reasoningContext? }.
-	fields := map[string]interface{}{"responseId": nonEmptyOrNil(s.responseID)}
+	var responseID interface{} // TS responseId: null until response.created
+	if s.responseIDSet {
+		responseID = s.responseID
+	}
+	fields := map[string]interface{}{"responseId": responseID}
 	if len(s.logprobs) > 0 {
 		fields["logprobs"] = s.logprobs
 	}
@@ -3321,7 +3345,7 @@ func (s *responsesStream) queueEOFFinish() {
 	if s.promptCacheDiagnostics != nil {
 		fields["promptCacheDiagnostics"] = s.promptCacheDiagnostics
 	}
-	meta, _ := json.Marshal(map[string]interface{}{s.providerName: fields})
+	meta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: fields})
 	usage := convertResponsesUsage(s.finishUsage)
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
@@ -3553,9 +3577,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				continue
 			}
-			if e.Response.ID != "" {
-				s.responseID = e.Response.ID
-			}
+			// TS responseId = value.response.id (a required string: "" kept).
+			s.responseID, s.responseIDSet = e.Response.ID, true
 			metadata := &provider.ResponseMetadata{
 				ID:      e.Response.ID,
 				ModelID: e.Response.Model,
@@ -3589,7 +3612,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// id for its output_index until that item is done (a later item,
 			// such as the next response in the same stream, replaces it);
 			// other item types are not recorded.
-			if (e.Item.Type == "message" || e.Item.Type == "reasoning") && e.Item.ID != "" {
+			// The id is a required string, so a present "" is recorded too
+			// (TS `activeOutputItemIds[i] ?? itemId` keeps it).
+			if e.Item.Type == "message" || e.Item.Type == "reasoning" {
 				s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
 			}
 			// TS isResponseOutputChunk: an item type the chunk schema does not
@@ -3653,7 +3678,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.activeMessagePhase = e.Item.Phase
 				var meta json.RawMessage
 				if m := openAIResponsesMessageProviderOptions(s.providerName, e.Item.ID, e.Item.Phase, nil); m != nil {
-					meta, _ = json.Marshal(m)
+					meta, _ = jsonstr.Marshal(m)
 				}
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type:             provider.ChunkTypeTextStart,
@@ -3669,7 +3694,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					summaryParts:     map[int]string{0: "active"},
 				}
 				s.reasoningAccum[e.Item.ID] = accum
-				meta, _ := json.Marshal(map[string]interface{}{
+				meta, _ := jsonstr.Marshal(map[string]interface{}{
 					s.providerName: map[string]interface{}{
 						"itemId":                    e.Item.ID,
 						"reasoningEncryptedContent": encMeta,
@@ -3931,7 +3956,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// TS unconditionally enqueues reasoning-delta here, even for an
 			// empty-string delta -- no guard.
 			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
-			meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+			meta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoning,
 				ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
@@ -3973,7 +3998,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					}
 					sort.Ints(canConclude)
 					for _, idx := range canConclude {
-						endMeta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+						endMeta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 							Type:             provider.ChunkTypeReasoningEnd,
 							ID:               fmt.Sprintf("%s:%d", itemID, idx),
@@ -3981,7 +4006,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						})
 						accum.summaryParts[idx] = "concluded"
 					}
-					startMeta, _ := json.Marshal(map[string]interface{}{
+					startMeta, _ := jsonstr.Marshal(map[string]interface{}{
 						s.providerName: map[string]interface{}{
 							"itemId":                    itemID,
 							"reasoningEncryptedContent": accum.encryptedContent,
@@ -4011,7 +4036,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				if s.store {
 					// The response is stored server-side, so no encrypted_content
 					// needs to be attached: the reasoning block can close now.
-					meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+					meta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 					accum.summaryParts[e.SummaryIndex] = "concluded"
 					chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 						Type:             provider.ChunkTypeReasoningEnd,
@@ -4439,24 +4464,16 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		callID, name, rawArguments := accum.id, accum.name, accum.arguments
 		var item responses.FunctionCallItem
 		if err := jsonexact.Unmarshal(e.Item, &item); err == nil {
-			if item.ID != "" {
-				accum.itemID = item.ID
-			}
-			// TS reads the namespace from the done item only.
+			// TS reads item.id / call_id / name / arguments of the done item
+			// verbatim (required strings in the chunk schema, so a present ""
+			// is kept), and the namespace from the done item only.
+			accum.itemID = item.ID
 			ns := responsesRawItemString(e.Item, "namespace")
 			accum.namespace, accum.namespaceSet = "", ns != nil
 			if ns != nil {
 				accum.namespace = *ns
 			}
-			if item.CallID != "" {
-				callID = item.CallID
-			}
-			if item.Name != "" {
-				name = item.Name
-			}
-			if item.Arguments != "" || accum.arguments == "" {
-				rawArguments = item.Arguments
-			}
+			callID, name, rawArguments = item.CallID, item.Name, item.Arguments
 		}
 		async := item.Async
 		if async == nil {
@@ -4465,7 +4482,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		newToolCall := func(id, toolName, input string, metadata map[string]interface{}) *provider.StreamChunk {
 			var args map[string]interface{}
 			if input != "" {
-				json.Unmarshal([]byte(input), &args) //nolint:errcheck
+				jsonexact.Unmarshal([]byte(input), &args) //nolint:errcheck
 			}
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
@@ -4496,7 +4513,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			var namespace *string
 			if accum.namespaceSet || accum.namespace != "" {
 				namespace = &accum.namespace
-				end.ProviderMetadata, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"namespace": accum.namespace}})
+				end.ProviderMetadata, _ = jsonstr.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"namespace": accum.namespace}})
 			}
 			s.flushQueue = append(s.flushQueue, end,
 				newToolCall(callID, name, rawArguments, openAIResponsesToolCallMetadata(s.providerName, accum.itemID, namespace, async, item.Caller)))
@@ -4568,8 +4585,8 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		itemID := s.firstItemIDByOutputIndex[e.OutputIndex]
-		if itemID == "" {
+		itemID, recorded := s.firstItemIDByOutputIndex[e.OutputIndex]
+		if !recorded {
 			itemID = item.ID
 		}
 		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
@@ -4585,7 +4602,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		s.activeMessagePhase = nil
 		var meta json.RawMessage
 		if m := openAIResponsesMessageProviderOptions(s.providerName, itemID, phase, annotations); m != nil {
-			meta, _ = json.Marshal(m)
+			meta, _ = jsonstr.Marshal(m)
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeTextEnd,
@@ -4601,7 +4618,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// Row 73d48d0: use the id first seen for this output_index (at
 		// output_item.added) rather than this done event's own id, in case
 		// OpenAI rotated the item id mid-stream.
-		firstID := s.firstItemIDByOutputIndex[e.OutputIndex]
+		firstID, recorded := s.firstItemIDByOutputIndex[e.OutputIndex]
 		delete(s.itemTypes, e.OutputIndex)
 		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
 		var item struct {
@@ -4615,7 +4632,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// carries neither an id nor encrypted_content still closes the
 		// reasoning parts opened at output_item.added.
 		id := firstID
-		if id == "" {
+		if !recorded {
 			id = item.ID
 		}
 		accum := s.reasoningAccum[id]
@@ -4626,7 +4643,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// other two reasoning-end sites in this file (output_item.added and
 		// reasoning_summary_part.added).
 		meta := map[string]interface{}{"itemId": id, "reasoningEncryptedContent": responsesItemEncryptedContent(e.Item, false)}
-		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
+		providerMeta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: meta})
 
 		// Row 3b9f025/6fe187f: close every summary part that is still open
 		// (active, i.e. never got its own response.reasoning_summary_part.done,
@@ -4694,7 +4711,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			"operation": item.Operation,
 		})
 		var args map[string]interface{}
-		json.Unmarshal(rawArgs, &args) //nolint:errcheck
+		jsonexact.Unmarshal(rawArgs, &args) //nolint:errcheck
 		itemID := ""
 		if item.ID != nil {
 			itemID = *item.ID
@@ -5003,7 +5020,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			ProviderExecuted: isHosted,
 			ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, nil, nil),
 		}
-		json.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
+		jsonexact.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
 		return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc})
 
 	case "tool_search_output":
@@ -5022,7 +5039,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		matchedTools := make([]interface{}, 0, len(item.Tools))
 		for _, t := range item.Tools {
 			var v interface{}
-			json.Unmarshal(t, &v) //nolint:errcheck
+			jsonexact.Unmarshal(t, &v) //nolint:errcheck
 			matchedTools = append(matchedTools, v)
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
@@ -5055,7 +5072,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		}
 		toolName := "mcp." + item.Name
 		var args map[string]interface{}
-		json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+		jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 		mcpResult := map[string]interface{}{
 			"type":        "call",
 			"serverLabel": item.ServerLabel,
@@ -5111,7 +5128,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		s.mcpApprovalAlias[approvalRequestID] = dummyToolCallID
 		toolName := "mcp." + item.Name
 		var args map[string]interface{}
-		json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+		jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
@@ -5240,7 +5257,7 @@ func responsesFailedErrorFrame(data string) json.RawMessage {
 		}
 	}
 	out.Set("response", resp)
-	b, err := json.Marshal(out)
+	b, err := jsonstr.Marshal(out)
 	if err != nil {
 		return json.RawMessage(data)
 	}
@@ -5256,7 +5273,7 @@ func responsesPromptCacheDiagnostics(raw json.RawMessage) interface{} {
 		return nil
 	}
 	var v interface{}
-	if json.Unmarshal(raw, &v) != nil {
+	if jsonexact.Unmarshal(raw, &v) != nil {
 		return nil
 	}
 	if picked := providerutils.PickSchemaKeys(v, "type", "reason", "cache_missed_tokens", "comparison_reusable_tokens"); picked != nil {

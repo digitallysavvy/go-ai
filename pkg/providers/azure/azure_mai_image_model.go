@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -530,7 +531,7 @@ func azureMaiErrorCodeValid(code json.RawMessage) bool {
 		return true
 	}
 	var v interface{}
-	if json.Unmarshal(code, &v) != nil {
+	if jsonexact.Unmarshal(code, &v) != nil {
 		return false
 	}
 	switch v.(type) {

@@ -2,7 +2,6 @@ package fireworks
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -334,7 +333,7 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
 			// TS openai-compatible chat: `toolCall.id || generateId()`.
 			id := tc.ID

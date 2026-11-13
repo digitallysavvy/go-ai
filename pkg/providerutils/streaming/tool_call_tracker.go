@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -974,7 +975,7 @@ func parseToolArguments(raw string) map[string]interface{} {
 		return map[string]interface{}{}
 	}
 	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+	if err := jsonexact.Unmarshal([]byte(raw), &args); err != nil {
 		return nil
 	}
 	if args == nil {

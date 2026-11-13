@@ -11,6 +11,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -371,6 +372,18 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 		}
 		if hasThinkingBudget {
 			body["thinking_budget"] = thinkingBudget
+			// TS z.number().positive(): a fractional budget is sent as given.
+			for _, key := range []string{"thinkingBudget", "thinking_budget", "thinking-budget"} {
+				if f, ok := alibabaOpts[key].(float64); ok {
+					if f != math.Trunc(f) {
+						body["thinking_budget"] = f
+					}
+					break
+				}
+				if _, ok := alibabaOpts[key]; ok {
+					break
+				}
+			}
 		}
 	} else if opts.Reasoning != nil {
 		switch *opts.Reasoning {
@@ -456,7 +469,7 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 			rawArgs := providerutils.ToolArgumentsString(tc.Function.Arguments)
 			var args map[string]interface{}
 			if rawArgs != "" {
-				if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+				if err := jsonexact.Unmarshal([]byte(rawArgs), &args); err != nil {
 					// If unmarshal fails, use empty args
 					args = make(map[string]interface{})
 				}

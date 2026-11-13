@@ -67,7 +67,7 @@ func extractXAIFilesOptions(providerOptions map[string]interface{}) (xaiFilesOpt
 			}
 		}
 	}
-	b, err := json.Marshal(raw)
+	b, err := json.Marshal(raw) // caller options: a non-finite number is invalid (zod), not null
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}

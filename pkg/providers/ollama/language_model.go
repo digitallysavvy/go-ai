@@ -2,12 +2,12 @@ package ollama
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -151,7 +151,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil { // TS openai-compatible stop: stopSequences (an empty array counts)
 		body["stop"] = opts.StopSequences
 	}
 	// TS prepareTools (openai-compatible): a provider-defined tool is dropped
@@ -209,7 +209,7 @@ func (m *LanguageModel) convertResponse(response ollamaResponse) *types.Generate
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
 			result.ToolCalls[i] = types.ToolCall{
 				ID:           tc.ID,

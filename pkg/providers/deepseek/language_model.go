@@ -469,7 +469,7 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			id := tc.ID
 			if id == "" {
@@ -639,7 +639,7 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
 
 	var rawMap map[string]interface{}
-	_ = json.Unmarshal(raw, &rawMap)
+	_ = jsonexact.Unmarshal(raw, &rawMap)
 	result.Raw = rawMap
 
 	return result
@@ -1092,7 +1092,7 @@ func (s *deepseekStream) attachFinishMetadata(chunk *provider.StreamChunk) {
 	if providerOptionsName == "" {
 		providerOptionsName = "deepseek"
 	}
-	if raw, err := json.Marshal(map[string]interface{}{providerOptionsName: meta}); err == nil {
+	if raw, err := jsonstr.Marshal(map[string]interface{}{providerOptionsName: meta}); err == nil {
 		chunk.ProviderMetadata = raw
 	}
 }

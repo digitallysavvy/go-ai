@@ -1,8 +1,6 @@
 package alibaba
 
 import (
-	"encoding/json"
-
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -51,7 +49,7 @@ func (u *AlibabaUsage) UnmarshalJSON(data []byte) error {
 	}
 	*u = AlibabaUsage(a)
 	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err == nil {
+	if err := jsonexact.Unmarshal(data, &raw); err == nil {
 		u.raw = raw
 	}
 	return nil

@@ -277,7 +277,7 @@ func extractXAISpeechProviderOptions(providerOptions map[string]interface{}) (XA
 	if !ok || raw == nil {
 		return opts, nil
 	}
-	b, err := json.Marshal(raw)
+	b, err := json.Marshal(raw) // caller options: a non-finite number is invalid (zod), not null
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}

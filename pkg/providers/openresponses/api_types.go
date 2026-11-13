@@ -466,7 +466,7 @@ func (o *OutputItem) idValue() (interface{}, bool) {
 		return nil, false
 	}
 	var v interface{}
-	if json.Unmarshal(raw, &v) != nil {
+	if jsonexact.Unmarshal(raw, &v) != nil {
 		return o.ID, true
 	}
 	return v, true
@@ -579,7 +579,7 @@ func (u Usage) wire() map[string]interface{} {
 		return nil
 	}
 	var m map[string]interface{}
-	if json.Unmarshal([]byte(u.rawWire), &m) != nil {
+	if jsonexact.Unmarshal([]byte(u.rawWire), &m) != nil {
 		return nil
 	}
 	return m
@@ -594,7 +594,7 @@ func (u *Usage) UnmarshalJSON(b []byte) error {
 	}
 	*u = Usage(p)
 	var raw map[string]interface{}
-	if json.Unmarshal(b, &raw) == nil {
+	if jsonexact.Unmarshal(b, &raw) == nil {
 		u.rawWire = string(b)
 	}
 	return nil
@@ -724,7 +724,7 @@ func openResponsesMapKey(raw json.RawMessage) string {
 		return "\xffu"
 	}
 	var v interface{}
-	if json.Unmarshal(raw, &v) != nil {
+	if jsonexact.Unmarshal(raw, &v) != nil {
 		return "\xffu"
 	}
 	switch x := v.(type) {
@@ -872,7 +872,7 @@ func openResponsesWireString(raw json.RawMessage) string {
 		return ""
 	}
 	var v interface{}
-	if json.Unmarshal(raw, &v) != nil {
+	if jsonexact.Unmarshal(raw, &v) != nil {
 		return ""
 	}
 	return openResponsesJSString(v)
