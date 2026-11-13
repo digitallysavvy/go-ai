@@ -374,7 +374,13 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	// Setup is sent (and stream-start emitted) before waiting on a consumer
 	// to start reading, mirroring TS onOpen where controller.enqueue does not
 	// block on a reader before the socket send that follows it.
+	streamStart := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}
 	if err := s.send(conn, payload); err != nil {
+		// TS onOpen enqueues stream-start before it sends the setup, so a
+		// failed send errors the stream after that part.
+		if !s.Emit(streamStart) {
+			err = context.Cause(s.Context())
+		}
 		fail(err)
 		return
 	}
@@ -387,7 +393,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
 
-	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(streamStart) {
 		return
 	}
 
@@ -641,7 +647,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 }
 
 func (s *googleLiveTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: closeInfo.Wrap})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: liveWrapConn(closeInfo.Wrap)})
 }
 
 func (s *googleLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
