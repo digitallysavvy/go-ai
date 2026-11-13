@@ -167,6 +167,17 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		if response.Usage.RequestCount != nil {
 			rawUsage["request_count"] = mistralUsageCount(*response.Usage.RequestCount)
 		}
+		// zod nullish keeps a present null: TS usage carries the key as null.
+		var wire struct {
+			Usage map[string]json.RawMessage `json:"usage"`
+		}
+		if jsonexact.UnmarshalPlain(resp.Body, &wire) == nil {
+			for _, key := range []string{"prompt_tokens", "completion_tokens", "total_tokens", "prompt_audio_seconds", "request_count"} {
+				if raw, ok := wire.Usage[key]; ok && string(raw) == "null" {
+					rawUsage[key] = nil
+				}
+			}
+		}
 		result.ProviderUsage = rawUsage
 	}
 

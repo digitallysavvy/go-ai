@@ -67,7 +67,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	// TS combineHeaders(config, options.headers, {ai-model-id}, o11y, idempotency-key)
 	headers := gatewayRequestHeaders(ctx, opts.Headers, map[string]string{"ai-model-id": modelID})
 	if idempotencyKey != "" {
-		headers["idempotency-key"] = idempotencyKey
+		headers = internalhttp.MergeHeaders(headers, map[string]string{"idempotency-key": idempotencyKey})
 	}
 
 	wireRequests := make([]map[string]interface{}, 0, len(opts.Requests))

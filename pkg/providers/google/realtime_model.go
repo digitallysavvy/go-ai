@@ -951,22 +951,26 @@ func googleRealtimeISOString(ms float64) (string, error) {
 	return "", errors.New("Invalid time value") //nolint:staticcheck // TS RangeError text
 }
 
+// firstGoogleRawType is TS String(Object.keys(data)[0]): the first key in JS
+// enumeration order (array-index keys first, ascending, then the others in
+// insertion order), "0" for a non-empty array or string, else "undefined".
 func firstGoogleRawType(raw json.RawMessage) string {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	token, err := decoder.Token()
-	if err != nil {
+	parsed, ok := jsonorder.Parse(raw)
+	if !ok {
 		return "undefined"
 	}
-	if delimiter, ok := token.(json.Delim); !ok || delimiter != '{' {
-		return "undefined"
-	}
-	for decoder.More() {
-		token, err = decoder.Token()
-		if err != nil {
-			return "undefined"
+	switch v := parsed.(type) {
+	case *jsonorder.Object:
+		if keys := v.Keys(); len(keys) > 0 {
+			return keys[0]
 		}
-		if key, ok := token.(string); ok {
-			return key
+	case []interface{}:
+		if len(v) > 0 {
+			return "0"
+		}
+	case string:
+		if v != "" {
+			return "0"
 		}
 	}
 	return "undefined"

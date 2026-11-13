@@ -486,19 +486,19 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
 	}
 
-	// Add custom headers
-	for k, v := range cfg.Headers {
-		headers[k] = v
-	}
+	// Add custom headers. TS spreads options.headers last and
+	// withUserAgentSuffix lower-cases the names in entry order, so a custom
+	// header replaces the SDK's whatever its case.
+	headers = internalhttp.MergeHeaders(headers, cfg.Headers)
 
 	// Add zero data retention header if enabled
 	if cfg.ZeroDataRetention {
-		headers["ai-gateway-zero-retention"] = "true"
+		headers = internalhttp.MergeHeaders(headers, map[string]string{"ai-gateway-zero-retention": "true"})
 	}
 
 	// Inject project ID header when explicitly configured
 	if cfg.ProjectID != nil {
-		headers["ai-o11y-project-id"] = *cfg.ProjectID
+		headers = internalhttp.MergeHeaders(headers, map[string]string{"ai-o11y-project-id": *cfg.ProjectID})
 	}
 	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("gateway"))
 
@@ -1170,10 +1170,19 @@ func GetO11yHeaders(ctx context.Context) O11yHeaders {
 // and the observability headers in the TS order (later wins):
 // combineHeaders(config, options.headers, model headers, o11y). The client's
 // own headers are applied by the HTTP client underneath.
+//
+// Each layer replaces a header of an earlier one whatever its case (TS
+// postToApi lower-cases the combined record in entry order).
 func gatewayRequestHeaders(ctx context.Context, call, model map[string]string) map[string]string {
-	headers := internalhttp.MergeHeaders(call, model)
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	return headers
+	return internalhttp.MergeHeaders(call, model, gatewayO11yHeaderMap(ctx))
+}
+
+// gatewayO11yHeaderMap is TS createO11yHeaders() for ctx: the observability
+// headers that are set, as their own layer.
+func gatewayO11yHeaderMap(ctx context.Context) map[string]string {
+	o11y := map[string]string{}
+	AddO11yHeaders(o11y, GetO11yHeaders(ctx))
+	return o11y
 }
 
 // AddO11yHeaders adds observability headers to the request headers

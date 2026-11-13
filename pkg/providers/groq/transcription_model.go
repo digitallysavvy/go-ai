@@ -217,7 +217,8 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 		// TS groqTextTranscriptionResponseHandler: textDecoder.decode(value).
 		text := prompt.DecodeUTF8Text(resp.Body)
 		return &types.TranscriptionResult{
-			Text: text,
+			Text:     text,
+			Warnings: []types.Warning{}, // TS always returns warnings: []
 			Response: &types.ResponseMetadata{
 				Timestamp: timestamp,
 				ModelID:   m.modelID,
@@ -241,6 +242,7 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 	result := &types.TranscriptionResult{
 		Text:     response.Text,
 		Language: response.Language,
+		Warnings: []types.Warning{}, // TS always returns warnings: []
 	}
 	if response.Duration != nil {
 		result.DurationInSeconds = response.Duration

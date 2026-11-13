@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -123,18 +124,18 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve Vertex auth token for streaming transcription: %w", err)
 	}
-	wsHeaders := map[string]string{"Authorization": "Bearer " + token}
-	for k, v := range m.provider.config.Headers {
-		wsHeaders[k] = v
-	}
 	// TS google-vertex-gemini-transcription-model.ts reuses
 	// this.config.headers() -- the same tagged getHeaders() closure used for
-	// REST calls -- so the WS handshake carries the `ai-sdk-google-vertex/
-	// VERSION` tag too.
-	wsHeaders = version.WithUserAgentSuffix(wsHeaders, version.ProviderUserAgent("google-vertex"))
-	for k, v := range opts.Headers {
-		wsHeaders[k] = v
-	}
+	// REST calls ({Authorization, ...options.headers} through
+	// withUserAgentSuffix) -- so the WS handshake carries the
+	// `ai-sdk-google-vertex/VERSION` tag too, then combineHeaders adds the
+	// call headers. A later header replaces an earlier one whatever its
+	// case (the ws handshake sets them case-insensitively, last one wins).
+	wsHeaders := version.WithUserAgentSuffix(
+		internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + token}, m.provider.config.Headers),
+		version.ProviderUserAgent("google-vertex"),
+	)
+	wsHeaders = internalhttp.MergeHeaders(wsHeaders, opts.Headers)
 
 	// NOTE: Google's GA announcement shows the setup with
 	// `generationConfig: { responseModalities: ['TEXT'] }`, but sending it

@@ -376,8 +376,11 @@ func (s *mistralRealtimeTranscriptionStream) run(cfg mistralRealtimeTranscriptio
 				return
 			}
 
-			var raw map[string]interface{}
-			if err := securejson.Unmarshal([]byte(res.Text), &raw); err != nil { // TS safeParseJSON (secureJsonParse)
+			// TS safeParseJSON (secureJsonParse), then the envelope schema: a
+			// frame that parses but is not an object with a string type is a
+			// TypeValidationError, not a JSONParseError.
+			var parsed interface{}
+			if err := securejson.Unmarshal([]byte(res.Text), &parsed); err != nil {
 				// One JSONParseError whose cause is the SyntaxError (securejson
 				// already returns a JSONParseError for a prototype key).
 				var parseErr *providererrors.JSONParseError
@@ -387,6 +390,7 @@ func (s *mistralRealtimeTranscriptionStream) run(cfg mistralRealtimeTranscriptio
 				fail(providererrors.NewJSONParseError(res.Text, err)) // TS safeParseJSON JSONParseError
 				return
 			}
+			raw, _ := parsed.(map[string]interface{})
 			eventType, ok := raw["type"].(string)
 			if !ok {
 				fail(errors.New("Type validation failed: expected an object with a string type")) //nolint:staticcheck // TS TypeValidationError prefix
