@@ -117,10 +117,12 @@ func (m *OpenAIRealtimeModelLive) serverWebSocketConfig(requestHeaders func() (m
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}
+	// The protocol setter: a port equal to the new scheme's default is
+	// dropped, and a non-special scheme is left as is.
 	if u.Scheme == "http" {
-		u.Scheme = "ws"
+		u.SetProtocol("ws")
 	} else {
-		u.Scheme = "wss"
+		u.SetProtocol("wss")
 	}
 
 	// TS getServerWebSocketConfig reads config.headers(): a missing API key

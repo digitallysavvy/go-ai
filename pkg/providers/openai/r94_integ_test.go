@@ -43,3 +43,19 @@ func TestR94integBatchTimestampsISOString(t *testing.T) {
 		t.Errorf("ExpiresAt = %q, want it left out (Invalid Date)", result.ExpiresAt)
 	}
 }
+
+// TestR94integLiveURLProtocolSetter: TS sets url.protocol (not the raw
+// scheme): a port equal to the new scheme's default is dropped and a
+// non-special scheme is left as is. Expected from Node 24.
+func TestR94integLiveURLProtocolSetter(t *testing.T) {
+	for base, want := range map[string]string{
+		"ws://h:443/v1":   "wss://h/v1/live/sessions",
+		"foo://h/v1":      "foo://h/v1/live/sessions",
+		"http://h:443/v1": "ws://h:443/v1/live/sessions",
+	} {
+		live, err := NewRealtimeModelLive(New(Config{APIKey: "k", BaseURL: base}), "gpt-live-1").GetServerWebSocketConfig()
+		if err != nil || live.URL != want {
+			t.Errorf("base %s: live url = %q, %v; want %s", base, live.URL, err, want)
+		}
+	}
+}
