@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // appendTextPart accumulates a ChunkTypeText delta into stepContent, merging
@@ -389,7 +390,10 @@ func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
 	if len(metadata) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(metadata)
+	// jsonstr writes a NaN or +-Inf value (a provider's 1e400 read as
+	// Infinity) as null, as JSON.stringify does, where json.Marshal would
+	// fail and drop the whole metadata (ruling 4).
+	raw, err := jsonstr.Marshal(metadata)
 	if err != nil {
 		return nil
 	}

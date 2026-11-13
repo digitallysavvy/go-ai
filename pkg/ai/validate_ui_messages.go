@@ -368,8 +368,10 @@ func uiMessagesToJSONValue(messages interface{}) (interface{}, error) {
 }
 
 // uiValueHasNonFinite reports whether a NaN or +-Inf float is reachable the
-// way encoding/json reaches values (exported struct fields, map values, slice
-// and array elements, pointer and interface targets).
+// way encoding/json reaches values (exported struct fields not tagged "-",
+// map values, slice and array elements, pointer and interface targets). A
+// field tagged "-" is never encoded, so it holds no JSON value. (An
+// unexported embedded struct's fields fail json.Marshal below instead.)
 func uiValueHasNonFinite(rv reflect.Value, depth int) bool {
 	if depth > 512 || !rv.IsValid() {
 		return false
@@ -381,8 +383,13 @@ func uiValueHasNonFinite(rv reflect.Value, depth int) bool {
 	case reflect.Pointer, reflect.Interface:
 		return !rv.IsNil() && uiValueHasNonFinite(rv.Elem(), depth+1)
 	case reflect.Struct:
+		t := rv.Type()
 		for i := 0; i < rv.NumField(); i++ {
-			if rv.Type().Field(i).IsExported() && uiValueHasNonFinite(rv.Field(i), depth+1) {
+			field := t.Field(i)
+			if field.Tag.Get("json") == "-" {
+				continue
+			}
+			if field.IsExported() && uiValueHasNonFinite(rv.Field(i), depth+1) {
 				return true
 			}
 		}
