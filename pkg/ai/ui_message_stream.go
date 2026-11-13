@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -343,8 +344,19 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		// (TS processUIMessageStream throws a UIMessageStreamError). Only set
 		// on the consumer goroutine, read after it is done.
 		var processingErr error
+		// stepEndFailed: an onError that threw while reporting an onStepEnd
+		// error (TS: the throw rejects handleUIMessageStreamFinish's own
+		// transform, so the stream errors there: that finish-step and every
+		// later chunk are not written, and neither flush nor cancel runs, so
+		// onEnd is not called). Only used on the consumer goroutine.
+		stepEndFailed := false
+		// sourceErrored: an onError that threw while reporting an execute or
+		// merge failure (TS handleError's safeError errors the source stream,
+		// which discards what is still queued and ends delivery; onEnd then
+		// runs through the pipeline's cancel).
+		var sourceErrored atomic.Bool
 		callOnEnd := func() {
-			if onEnd == nil {
+			if onEnd == nil || stepEndFailed {
 				return
 			}
 			outcomeMu.Lock()
@@ -397,6 +409,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				if r := recover(); r != nil {
 					defer func() {
 						if r2 := recover(); r2 != nil {
+							stepEndFailed = true
 							reportUIStreamCallbackFailure(errCh, r2)
 						}
 					}()
@@ -409,8 +422,9 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		// state, step callbacks) when an end or step-end callback is set.
 		processing := onEnd != nil || onStepEnd != nil
 		processAndEnqueue := func(part UIMessageChunk) {
-			if processingErr != nil {
-				// TS: the processing failure errored the stream.
+			if processingErr != nil || stepEndFailed || sourceErrored.Load() {
+				// TS: the processing failure (or a throwing onError) errored
+				// the stream.
 				return
 			}
 			if ctx.Err() != nil {
@@ -443,6 +457,9 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				}
 				if part["type"] == "finish-step" {
 					callOnStepFinish()
+					if stepEndFailed {
+						return
+					}
 				}
 			}
 			safeEnqueue(part)
@@ -492,6 +509,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				if r := recover(); r != nil {
 					onErrorErr := panicToError(r)
 					failOutcome(onErrorErr)
+					sourceErrored.Store(true)
 					reportUIStreamCallbackFailure(errCh, r)
 				}
 			}()
@@ -740,9 +758,15 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// (TS processUIMessageStream throws a UIMessageStreamError, which
 		// errors the stream and becomes the outcome).
 		var processingErr error
+		// stepEndFailed: an onError that threw while reporting an onStepEnd
+		// error. TS: the throw rejects handleUIMessageStreamFinish's own
+		// transform, so the stream errors there; that finish-step and every
+		// later chunk are not written, and onEnd is not called (neither flush
+		// nor cancel runs).
+		stepEndFailed := false
 		endCalled := false
 		callOnEnd := func() {
-			if onEnd == nil || endCalled {
+			if onEnd == nil || endCalled || stepEndFailed {
 				return
 			}
 			endCalled = true
@@ -807,6 +831,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				if r := recover(); r != nil {
 					defer func() {
 						if r2 := recover(); r2 != nil {
+							stepEndFailed = true
 							reportUIStreamCallbackFailure(errCh, r2)
 						}
 					}()
@@ -838,7 +863,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// state, step callbacks) when an end or step-end callback is set.
 		processing := onEnd != nil || onStepEnd != nil
 		processChunk := func(chunk UIMessageChunk) {
-			if processingErr != nil {
+			if processingErr != nil || stepEndFailed {
 				return
 			}
 			if ctx.Err() != nil {
@@ -854,6 +879,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				}
 				if chunk["type"] == "finish-step" {
 					callOnStepFinish()
+					if stepEndFailed {
+						return
+					}
 				}
 			}
 			safeEnqueue(chunk)
@@ -1100,7 +1128,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 		for {
-			if processingErr != nil {
+			if processingErr != nil || stepEndFailed {
 				callOnEnd()
 				return
 			}
@@ -3673,7 +3701,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
 				part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 			}
-			if len(chunk.ToolCall.ToolMetadata) > 0 {
+			if chunk.ToolCall.ToolMetadata != nil {
 				part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 			}
 			if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
@@ -3700,7 +3728,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
 			part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 		}
-		if len(chunk.ToolCall.ToolMetadata) > 0 {
+		if chunk.ToolCall.ToolMetadata != nil {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
 		if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
@@ -3731,7 +3759,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
 			part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 		}
-		if len(chunk.ToolCall.ToolMetadata) > 0 {
+		if chunk.ToolCall.ToolMetadata != nil {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
 		// TS streamText gives every tool-input-start a boolean dynamic
@@ -3883,7 +3911,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"toolCallId": chunk.ToolResult.ToolCallID,
 			"output":     chunk.ToolResult.Result,
 		}
-		if len(chunk.ToolResult.ToolMetadata) > 0 {
+		if chunk.ToolResult.ToolMetadata != nil {
 			part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 		}
 		if chunk.ToolResult.Error != nil {
@@ -3916,7 +3944,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				// without a value: the chunk has no errorText.
 				delete(part, "errorText")
 			}
-			if len(chunk.ToolResult.ToolMetadata) > 0 {
+			if chunk.ToolResult.ToolMetadata != nil {
 				part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 			}
 		}
