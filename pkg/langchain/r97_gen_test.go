@@ -1,6 +1,9 @@
 package langchain
 
 import (
+	"context"
+	"io"
+	"strings"
 	"testing"
 )
 
@@ -130,4 +133,31 @@ func r97genOfType(chunks []map[string]interface{}, typ string) []map[string]inte
 		}
 	}
 	return out
+}
+
+// TS matches an interrupt's action request to a tool call by
+// `${name}:${JSON.stringify(args)}` in wire key order: the same keys in a
+// different order do not match, so the approval gets its own id.
+func TestR97genInterruptToolCallKeyOrder(t *testing.T) {
+	restore := nowMillis
+	nowMillis = func() int64 { return 42 }
+	defer func() { nowMillis = restore }()
+	run := func(callArgs, requestArgs string) []map[string]interface{} {
+		sse := "event: values\ndata: {\"messages\":[{\"type\":\"ai\",\"id\":\"m1\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\",\"name\":\"get\",\"args\":" + callArgs + "}]}]," +
+			"\"__interrupt__\":[{\"value\":{\"actionRequests\":[{\"name\":\"get\",\"args\":" + requestArgs + "}]}}]}\n\n"
+		events := readRemoteGraphEvents(context.Background(), io.NopCloser(strings.NewReader(sse)))
+		var out []map[string]interface{}
+		for _, c := range collectChunks(t, events) {
+			out = append(out, c)
+		}
+		return out
+	}
+	approvals := r97genOfType(run(`{"a":1,"b":2}`, `{"a":1,"b":2}`), "tool-approval-request")
+	if len(approvals) != 1 || approvals[0]["toolCallId"] != "c1" {
+		t.Fatalf("same order: approvals = %#v, want c1", approvals)
+	}
+	approvals = r97genOfType(run(`{"a":1,"b":2}`, `{"b":2,"a":1}`), "tool-approval-request")
+	if len(approvals) != 1 || approvals[0]["toolCallId"] != "hitl-get-42" {
+		t.Fatalf("different order: approvals = %#v, want hitl-get-42", approvals)
+	}
 }
