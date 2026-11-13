@@ -148,9 +148,13 @@ func convertUserMessage(msg types.Message, validator *CacheControlValidator) map
 				data = fd.Data
 			}
 			if url == "" && len(data) > 0 {
-				mt := mediaType
-				if mt == "image" || mt == "image/*" {
-					mt = "image/jpeg"
+				// TS formatImageUrl: resolveFullMediaType sniffs a
+				// top-level-only or wildcard type ("image", "image/",
+				// "image/*") from the bytes and throws when it cannot; this
+				// error-free legacy path drops such a part instead.
+				mt, err := prompt.ResolveFullMediaType(mediaType, data, true)
+				if err != nil {
+					continue
 				}
 				url = fmt.Sprintf("data:%s;base64,%s", mt, base64.StdEncoding.EncodeToString(data))
 			}
