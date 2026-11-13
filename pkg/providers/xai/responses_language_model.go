@@ -1985,15 +1985,11 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			Arguments string `json:"arguments"`
 		}
 		if jsonexact.Unmarshal(e.Item, &doneItem) == nil {
-			if doneItem.CallID != "" {
-				callID = doneItem.CallID
-			}
-			if doneItem.Name != "" {
-				name = doneItem.Name
-			}
-			// TS: `input: part.arguments` -- the done item's arguments verbatim,
-			// not the accumulated deltas.
-			rawArgs = doneItem.Arguments
+			// TS: `toolCallId: part.call_id, toolName: part.name, input:
+			// part.arguments` -- the done item's values verbatim (required
+			// strings in the chunk schema, so a present "" is kept), not the
+			// added item's or the accumulated deltas.
+			callID, name, rawArgs = doneItem.CallID, doneItem.Name, doneItem.Arguments
 		}
 		var args map[string]interface{}
 		if rawArgs != "" {
