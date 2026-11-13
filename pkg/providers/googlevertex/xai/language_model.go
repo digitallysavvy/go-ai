@@ -452,7 +452,9 @@ func newVertexXaiStream(reader io.ReadCloser) *vertexXaiStream {
 			return nil
 		}
 		var u vertexXaiUsage
-		if jsonexact.Unmarshal(b, &u) != nil {
+		// The wire keeps a fractional count exactly (TS usage.raw); the
+		// z.number() counts truncate into the int fields.
+		if providerutils.UnmarshalChunk(b, &u) != nil {
 			return nil
 		}
 		converted := convertVertexXaiUsage(&u)

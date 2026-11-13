@@ -66,7 +66,7 @@ func TestR97provaStreamForbiddenPrototypeFrame(t *testing.T) {
 		t.Fatal("no error part")
 	}
 	r97provaForbiddenCause(t, errPart.Err)
-	if want := `JSON parsing failed: Text: {"type":"ping","__proto__":{}}.` + "\nError message: Object contains forbidden prototype property"; errPart.Text != want {
+	if want := `JSON parsing failed: Text: {"type":"ping","__proto__":{}}.` + "\nError message: SyntaxError: Object contains forbidden prototype property"; errPart.Text != want {
 		t.Fatalf("text = %q, want %q", errPart.Text, want)
 	}
 }
