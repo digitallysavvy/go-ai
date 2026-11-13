@@ -542,6 +542,9 @@ func (m *ImageModel) cancelPrediction(ctx context.Context, predictionID string) 
 			Method: http.MethodPost,
 			Path:   "/predictions/" + providerutils.EncodePathSegment(predictionID) + "/cancel",
 			Body:   []byte{},
+			// TS postToApi sets no Content-Type: fetch gives the empty
+			// string body its text/plain type.
+			Headers: map[string]string{"Content-Type": "text/plain;charset=UTF-8"},
 		})
 	}()
 }
@@ -637,6 +640,10 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, str
 		// download is the Replicate API error, a network failure the
 		// retryable connect error.
 		return nil, "", m.handlePollError(ctx, err)
+	}
+	// TS createBinaryResponseHandler: a 204 / 205 has a null body.
+	if err := fileutil.EmptyBinaryBodyError("replicate", res.StatusCode, http.Header(res.Headers)); err != nil {
+		return nil, "", err
 	}
 	ct := res.ContentType
 	if i := strings.Index(ct, ";"); i >= 0 {

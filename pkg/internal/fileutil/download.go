@@ -64,7 +64,29 @@ type DownloadOptions struct {
 	// connect-time checks, redirect checks, header isolation and MaxSize
 	// still apply.
 	RawFetch bool
+
+	// UserAgent selects the SDK user-agent tag the request carries (ignored
+	// with RawFetch, which sends none). The zero value is TS download().
+	UserAgent UserAgentMode
 }
+
+// UserAgentMode is the SDK user-agent tag a download appends to the
+// caller's User-Agent, by the TS function the call ports.
+type UserAgentMode int
+
+const (
+	// UserAgentDownload is TS download() (packages/ai): `ai-sdk/<version>`
+	// plus the runtime tag.
+	UserAgentDownload UserAgentMode = iota
+	// UserAgentAPI is TS getFromApi: the runtime tag only, the shape every
+	// SDK client request has (Go sends no ai-sdk-provider-utils tag, see
+	// internalhttp applyUserAgentSuffix). TrustedOriginDownloadOptions sets
+	// it.
+	UserAgentAPI
+	// UserAgentNone is TS downloadBlob (fetchUntrustedUrl with no headers):
+	// no SDK tag at all. NoTimeoutDownloadOptions sets it.
+	UserAgentNone
+)
 
 // DownloadResult contains downloaded file bytes and response metadata.
 type DownloadResult struct {
@@ -76,6 +98,30 @@ type DownloadResult struct {
 	// this to surface a provider's response headers on the caller-visible
 	// result, matching TS getFromApi's responseHeaders.
 	Headers map[string][]string
+
+	// StatusCode is the final HTTP response's status (0 for data: URLs), so
+	// a caller can tell a 204 / 205 reply, whose body fetch reports as null
+	// (see EmptyBinaryBodyError), from a 200 with an empty body.
+	StatusCode int
+}
+
+// EmptyBinaryBodyError is TS createBinaryResponseHandler's APICallError
+// "Response body is empty" for a successful response fetch gives a null
+// body (204 No Content, 205 Reset Content): the status and response headers,
+// no body. It is nil for every other status (a 200 with an empty body is an
+// empty, not a null, body and returns no bytes).
+func EmptyBinaryBodyError(provider string, statusCode int, headers http.Header) error {
+	if statusCode != http.StatusNoContent && statusCode != http.StatusResetContent {
+		return nil
+	}
+	perr := providererrors.NewProviderError(provider, statusCode, "", "Response body is empty", nil)
+	// TS extractResponseHeaders: lower-case names.
+	lower := make(map[string]string, len(headers))
+	for k, v := range headers {
+		lower[strings.ToLower(k)] = providerutils.IsomorphicDecode(providerutils.FetchHeaderEntry(k, v))
+	}
+	perr.ResponseHeaders = lower
+	return perr
 }
 
 // maxErrorBodyBytes bounds how much of a non-2xx response body
@@ -150,7 +196,7 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 	}
 	SanitizeRequestHeaders(req.Header)
 	if !opts.RawFetch {
-		setDownloadUserAgent(req.Header)
+		setRequestUserAgent(req.Header, opts.UserAgent)
 	}
 
 	// Execute request
@@ -184,6 +230,7 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 		Data:        data,
 		ContentType: providerutils.FetchHeaderText(resp.Header, "Content-Type"),
 		Headers:     map[string][]string(resp.Header),
+		StatusCode:  resp.StatusCode,
 	}, nil
 }
 
@@ -230,7 +277,7 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 	}
 	SanitizeRequestHeaders(req.Header)
 	if !opts.RawFetch {
-		setDownloadUserAgent(req.Header)
+		setRequestUserAgent(req.Header, opts.UserAgent)
 	}
 
 	// Execute request
@@ -294,12 +341,14 @@ const maxDownloadRedirects = 10
 // off; the caller's context still cancels the request.
 const NoTimeout time.Duration = -1
 
-// NoTimeoutDownloadOptions is DefaultDownloadOptions with NoTimeout: the
-// redirect, size and SSRF limits stay, and only the context ends the request
-// (TS download / downloadBlob set no timeout).
+// NoTimeoutDownloadOptions is the TS downloadBlob twin: DefaultDownloadOptions
+// with NoTimeout (the redirect, size and SSRF limits stay, and only the
+// context ends the request) and no SDK user-agent tag (UserAgentNone:
+// downloadBlob sends no headers).
 func NoTimeoutDownloadOptions() DownloadOptions {
 	opts := DefaultDownloadOptions()
 	opts.Timeout = NoTimeout
+	opts.UserAgent = UserAgentNone
 	return opts
 }
 
@@ -413,6 +462,22 @@ var blockedRequestHeaders = []string{
 	"Metadata", "Metadata-Flavor", "X-Aws-Ec2-Metadata-Token", "X-Metadata-Token",
 	// Session / cookie
 	"Cookie", "Set-Cookie",
+}
+
+// setRequestUserAgent tags h's User-Agent for mode: TS download()'s tags,
+// getFromApi's runtime tag, or none.
+func setRequestUserAgent(h http.Header, mode UserAgentMode) {
+	switch mode {
+	case UserAgentAPI:
+		merged := providerutils.WithUserAgentSuffix(
+			map[string]string{"user-agent": h.Get("User-Agent")},
+			providerutils.RuntimeEnvironmentUserAgent(),
+		)
+		h.Set("User-Agent", merged["user-agent"])
+	case UserAgentNone:
+	default:
+		setDownloadUserAgent(h)
+	}
 }
 
 // setDownloadUserAgent tags req's User-Agent with the SDK-wide tag plus the

@@ -614,11 +614,12 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 }
 
 // pollHeaders is TS getFromApi({ credentialedOrigin }): caller and provider
-// headers (the API key) are withheld unless the response-supplied URL is
-// same-origin with the configured API; the user agent is still sent.
+// headers (the API key and the provider's user agent) are withheld unless
+// the response-supplied URL is same-origin with the configured API; only
+// getFromApi's own user-agent suffix (the runtime tag) is sent then.
 func (m *TranscriptionModel) pollHeaders(resultURL, trustedOrigin string, headers map[string]string) map[string]string {
 	if !fileutil.IsSameOrigin(resultURL, trustedOrigin) {
-		return version.WithUserAgentSuffix(nil, version.ProviderUserAgent("gladia"))
+		return nil
 	}
 	return version.WithUserAgentSuffix(mergeHeadersFold(map[string]string{
 		"x-gladia-key":     providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY"),

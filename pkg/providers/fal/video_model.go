@@ -247,7 +247,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	currentDate := time.Now()
 
 	var op falVideoOperation
-	if err := json.Unmarshal(opts.Operation, &op); err != nil {
+	if err := jsonexact.UnmarshalPlain(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("fal: invalid operation reference: %w", err)
 	}
 

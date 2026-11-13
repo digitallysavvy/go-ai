@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -57,6 +58,10 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, handleError(resp.StatusError([]byte(textdecode.UTF8(resp.Body)))) // TS reads the failed body as text (TextDecoder)
+	}
+	// TS createBinaryResponseHandler: a 204 / 205 has a null body.
+	if err := fileutil.EmptyBinaryBodyError("hume", resp.StatusCode, resp.Headers); err != nil {
+		return nil, err
 	}
 
 	return &types.SpeechResult{

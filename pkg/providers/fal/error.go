@@ -1,6 +1,8 @@
 package fal
 
 import (
+	"math"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -31,7 +33,7 @@ func falErrorData(body []byte) interface{} {
 	inner, _ := obj["error"].(map[string]interface{})
 	message, okMessage := inner["message"].(string)
 	code, okCode := inner["code"].(float64)
-	if !okMessage || !okCode {
+	if !okMessage || !okCode || math.IsInf(code, 0) || math.IsNaN(code) { // z.number() rejects Infinity
 		return nil
 	}
 	return map[string]interface{}{"error": map[string]interface{}{"message": message, "code": code}}

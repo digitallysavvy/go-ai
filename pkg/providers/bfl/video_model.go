@@ -647,7 +647,8 @@ func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, header
 	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 
 	opts := fileutil.DefaultDownloadOptions()
-	opts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
+	opts.Timeout = fileutil.NoTimeout      // TS getFromApi sets no timeout
+	opts.UserAgent = fileutil.UserAgentAPI // TS getFromApi: the runtime tag, not download()'s ai-sdk tag
 	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
 	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
 	if err := opts.URLValidator(pollURL); err != nil {
@@ -669,7 +670,7 @@ func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, header
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
 	currentDate := time.Now()
 	var op bflVideoOperation
-	if err := json.Unmarshal(opts.Operation, &op); err != nil {
+	if err := jsonexact.UnmarshalPlain(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("bfl: invalid operation reference: %w", err)
 	}
 
