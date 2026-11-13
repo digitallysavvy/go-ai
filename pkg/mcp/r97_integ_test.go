@@ -59,6 +59,19 @@ func TestR97integResponseJSONKeepsPrototypeKey(t *testing.T) {
 			t.Fatalf("error.data = %#v", msgs[0].Error.Data)
 		}
 	})
+	t.Run("typed results with nested UnmarshalJSON", func(t *testing.T) {
+		var res CallToolResult
+		if err := unmarshalPlainJSON([]byte(`{`+proto+`"content":[{"type":"text","text":"x","__proto__":{}}]}`), &res); err != nil || len(res.Content) != 1 {
+			t.Fatalf("CallToolResult = %+v, err = %v", res, err)
+		}
+		var init InitializeResult
+		if err := unmarshalPlainJSON([]byte(`{"protocolVersion":"2025-06-18","capabilities":{`+proto+`"tools":{}},"serverInfo":{"name":"s","version":"1","__proto__":{}}}`), &init); err != nil || init.ServerInfo.Name != "s" {
+			t.Fatalf("InitializeResult = %+v, err = %v", init, err)
+		}
+		if err := unmarshalSafeJSON([]byte(`{"content":[{"type":"text","text":"x","__proto__":{}}]}`), &res); err == nil {
+			t.Fatal("secure decode accepted a nested __proto__ key")
+		}
+	})
 	t.Run("result re-read", func(t *testing.T) {
 		var v map[string]interface{}
 		if err := unmarshalPlainJSON([]byte(`{`+proto+`"k":1}`), &v); err != nil || v["k"] != float64(1) {

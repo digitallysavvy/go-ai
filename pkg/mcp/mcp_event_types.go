@@ -50,7 +50,7 @@ func (n *Nullable[T]) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var v T
-	if err := jsonexact.Unmarshal(data, &v); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
 		return err
 	}
 	n.Value = &v
@@ -111,7 +111,7 @@ type ListEventsResult struct {
 func (r *ListEventsResult) UnmarshalJSON(data []byte) error {
 	type alias ListEventsResult
 	var a alias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	if a.Events == nil {
@@ -227,7 +227,7 @@ func (e *MCPEvent) UnmarshalJSON(data []byte) error {
 	if !bytes.HasPrefix(bytes.TrimSpace(raw["data"]), []byte("{")) {
 		return fmt.Errorf("invalid MCP event: data must be an object")
 	}
-	if err := unmarshalSafeJSON(raw["data"], &out.Data); err != nil {
+	if err := unmarshalPlainJSON(raw["data"], &out.Data); err != nil {
 		return fmt.Errorf("invalid MCP event: data must be an object")
 	}
 	if c, ok := raw["cursor"]; ok {

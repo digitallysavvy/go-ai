@@ -330,11 +330,13 @@ type googleFileResource struct {
 	wire map[string]json.RawMessage
 }
 
-// UnmarshalJSON decodes the resource and records which keys were sent.
+// UnmarshalJSON decodes the resource and records which keys were sent. The
+// entry decoder applies the prototype check where TS secure-parses (the
+// poll); the upload result is TS response.json(), which keeps the keys.
 func (r *googleFileResource) UnmarshalJSON(b []byte) error {
 	type plain googleFileResource
 	var p plain
-	if err := jsonexact.Unmarshal(b, &p); err != nil {
+	if err := jsonexact.UnmarshalPlain(b, &p); err != nil {
 		return err
 	}
 	*r = googleFileResource(p)

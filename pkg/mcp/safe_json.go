@@ -53,6 +53,12 @@ func unmarshalSafeJSON(data []byte, target interface{}) error {
 	return unmarshalServerJSON(data, target, true)
 }
 
+// The UnmarshalJSON methods of the MCP message types decode their own bytes
+// with jsonexact.UnmarshalPlain: the entry decoder (unmarshalSafeJSON /
+// parseMCPMessage, or the webhook's body check) has already applied the
+// prototype check where TS secure-parses, and a response TS reads with
+// response.json() keeps a __proto__ key at any depth.
+
 // unmarshalPlainJSON is unmarshalSafeJSON for a body TS reads with plain
 // JSON.parse (response.json(), or a result re-read after the transport):
 // the depth and field limits still apply (Go memory guards), the prototype

@@ -427,6 +427,11 @@ func TestR96integNetworkDecodesRejectForbiddenPrototype(t *testing.T) {
 	// The plain-JSON entry points: every call is listed with its TS site.
 	plainFound := map[string]int{}
 	for _, fn := range fns {
+		// A nested decode inside an UnmarshalJSON method: the entry decoder
+		// of the message applied the prototype check where TS secure-parses.
+		if fn.decl.Name.Name == "UnmarshalJSON" {
+			continue
+		}
 		info := fn.info
 		ast.Inspect(fn.decl.Body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)

@@ -162,7 +162,7 @@ func (t *MCPTool) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var out mcpToolJSON
-	if err := jsonexact.Unmarshal(data, &out); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &out); err != nil {
 		return err
 	}
 	*t = MCPTool{
@@ -428,7 +428,7 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	}
 	var out callToolResultJSON
 	looseArm := false
-	err := jsonexact.Unmarshal(data, &out)
+	err := jsonexact.UnmarshalPlain(data, &out)
 	if err == nil {
 		// CallToolResultWithStructuredContentSchema: without content,
 		// structuredContent is z.json(), so a non-finite number in it
@@ -451,7 +451,7 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 			ToolResult interface{}            `json:"toolResult"`
 			Metadata   map[string]interface{} `json:"_meta,omitempty"`
 		}
-		if looseErr := jsonexact.Unmarshal(data, &looseFields); looseErr != nil {
+		if looseErr := jsonexact.UnmarshalPlain(data, &looseFields); looseErr != nil {
 			return err
 		}
 		out = callToolResultJSON{ToolResult: looseFields.ToolResult, Metadata: looseFields.Metadata}
@@ -605,12 +605,12 @@ func (c *ToolResultContent) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if rawMetadata, ok := raw["metadata"]; ok && string(rawMetadata) != "null" {
-		if err := jsonexact.Unmarshal(rawMetadata, &c.Metadata); err != nil {
+		if err := jsonexact.UnmarshalPlain(rawMetadata, &c.Metadata); err != nil {
 			return err
 		}
 	}
 	if rawMeta, ok := raw["_meta"]; ok && string(rawMeta) != "null" {
-		if err := jsonexact.Unmarshal(rawMeta, &c.Meta); err != nil {
+		if err := jsonexact.UnmarshalPlain(rawMeta, &c.Meta); err != nil {
 			return err
 		}
 	}
@@ -884,7 +884,7 @@ type resourceContentAlias ResourceContent
 // present as strings.
 func (r *ResourceContent) UnmarshalJSON(data []byte) error {
 	var alias resourceContentAlias
-	if err := jsonexact.Unmarshal(data, &alias); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &alias); err != nil {
 		return err
 	}
 	var raw map[string]json.RawMessage

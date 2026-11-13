@@ -11,7 +11,7 @@ type looseMCPResourceAlias MCPResource
 // UnmarshalJSON decodes MCPResource and keeps the keys it does not declare in Extra.
 func (v *MCPResource) UnmarshalJSON(data []byte) error {
 	var a looseMCPResourceAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = MCPResource(a)
@@ -29,7 +29,7 @@ type looseMCPResourceTemplateAlias MCPResourceTemplate
 // UnmarshalJSON decodes MCPResourceTemplate and keeps the keys it does not declare in Extra.
 func (v *MCPResourceTemplate) UnmarshalJSON(data []byte) error {
 	var a looseMCPResourceTemplateAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = MCPResourceTemplate(a)
@@ -47,7 +47,7 @@ type looseMCPPromptAlias MCPPrompt
 // UnmarshalJSON decodes MCPPrompt and keeps the keys it does not declare in Extra.
 func (v *MCPPrompt) UnmarshalJSON(data []byte) error {
 	var a looseMCPPromptAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = MCPPrompt(a)
@@ -65,7 +65,7 @@ type looseMCPPromptArgumentAlias MCPPromptArgument
 // UnmarshalJSON decodes MCPPromptArgument and keeps the keys it does not declare in Extra.
 func (v *MCPPromptArgument) UnmarshalJSON(data []byte) error {
 	var a looseMCPPromptArgumentAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = MCPPromptArgument(a)
@@ -83,7 +83,7 @@ type looseServerInfoAlias ServerInfo
 // UnmarshalJSON decodes ServerInfo and keeps the keys it does not declare in Extra.
 func (v *ServerInfo) UnmarshalJSON(data []byte) error {
 	var a looseServerInfoAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = ServerInfo(a)
@@ -101,7 +101,7 @@ type looseClientInfoAlias ClientInfo
 // UnmarshalJSON decodes ClientInfo and keeps the keys it does not declare in Extra.
 func (v *ClientInfo) UnmarshalJSON(data []byte) error {
 	var a looseClientInfoAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = ClientInfo(a)
@@ -119,7 +119,7 @@ type looseServerCapabilitiesAlias ServerCapabilities
 // UnmarshalJSON decodes ServerCapabilities and keeps the keys it does not declare in Extra.
 func (v *ServerCapabilities) UnmarshalJSON(data []byte) error {
 	var a looseServerCapabilitiesAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = ServerCapabilities(a)
@@ -137,7 +137,7 @@ type looseClientCapabilitiesAlias ClientCapabilities
 // UnmarshalJSON decodes ClientCapabilities and keeps the keys it does not declare in Extra.
 func (v *ClientCapabilities) UnmarshalJSON(data []byte) error {
 	var a looseClientCapabilitiesAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = ClientCapabilities(a)
@@ -155,7 +155,7 @@ type looseEventsCapabilityAlias EventsCapability
 // UnmarshalJSON decodes EventsCapability and keeps the keys it does not declare in Extra.
 func (v *EventsCapability) UnmarshalJSON(data []byte) error {
 	var a looseEventsCapabilityAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = EventsCapability(a)
@@ -233,7 +233,7 @@ type loosePromptsCapabilityAlias PromptsCapability
 // UnmarshalJSON decodes PromptsCapability and keeps the keys it does not declare in Extra.
 func (v *PromptsCapability) UnmarshalJSON(data []byte) error {
 	var a loosePromptsCapabilityAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = PromptsCapability(a)
@@ -251,7 +251,7 @@ type looseResourcesCapabilityAlias ResourcesCapability
 // UnmarshalJSON decodes ResourcesCapability and keeps the keys it does not declare in Extra.
 func (v *ResourcesCapability) UnmarshalJSON(data []byte) error {
 	var a looseResourcesCapabilityAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = ResourcesCapability(a)
@@ -269,7 +269,7 @@ type looseToolsCapabilityAlias ToolsCapability
 // UnmarshalJSON decodes ToolsCapability and keeps the keys it does not declare in Extra.
 func (v *ToolsCapability) UnmarshalJSON(data []byte) error {
 	var a looseToolsCapabilityAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = ToolsCapability(a)
@@ -287,7 +287,7 @@ type looseRootsCapabilityAlias RootsCapability
 // UnmarshalJSON decodes RootsCapability and keeps the keys it does not declare in Extra.
 func (v *RootsCapability) UnmarshalJSON(data []byte) error {
 	var a looseRootsCapabilityAlias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &a); err != nil {
 		return err
 	}
 	*v = RootsCapability(a)
