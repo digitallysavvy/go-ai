@@ -828,13 +828,16 @@ func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 // a field (it keeps its zero value) and decodes the rest. Syntax errors
 // still fail.
 func openResponsesLenientUnmarshal(data []byte, v interface{}) error {
-	err := json.Unmarshal(data, v)
+	// TS reads the body's properties by their exact names: a key that
+	// differs from a field's name only in case is not that field (jsonexact).
+	filtered := jsonexact.Filter(data, v)
+	err := json.Unmarshal(filtered, v)
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {
 		// A fractional number in an integer field (TS z.number() keeps it)
 		// is truncated into the field instead of left at zero.
-		if strings.HasPrefix(typeErr.Value, "number") && providerutils.UnmarshalChunk(data, v) != nil {
-			_ = json.Unmarshal(data, v)
+		if strings.HasPrefix(typeErr.Value, "number") && providerutils.UnmarshalChunk(filtered, v) != nil {
+			_ = json.Unmarshal(filtered, v)
 		}
 		return nil
 	}

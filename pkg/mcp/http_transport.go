@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -515,7 +516,8 @@ func (t *HTTPTransport) applyModernRequestHeaders(req *http.Request, message *MC
 		Name interface{} `json:"name"`
 	}
 	if len(message.Params) > 0 {
-		_ = json.Unmarshal(message.Params, &params)
+		// TS reads params.uri / params.name by their exact names.
+		_ = jsonexact.Unmarshal(message.Params, &params)
 	}
 	var name interface{}
 	switch message.Method {

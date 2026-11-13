@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // NetworkPolicy is the Go equivalent of @vercel/sandbox's public `NetworkPolicy`
@@ -177,7 +179,8 @@ func (p *NetworkPolicy) UnmarshalJSON(data []byte) error {
 		Allow   json.RawMessage `json:"allow"`
 		Subnets *PolicySubnets  `json:"subnets"`
 	}
-	if err := json.Unmarshal(data, &obj); err != nil {
+	// The API's policy is parsed by its zod schema: exact keys (jsonexact).
+	if err := jsonexact.Unmarshal(data, &obj); err != nil {
 		return err
 	}
 	out := NetworkPolicy{Subnets: obj.Subnets}
@@ -187,7 +190,7 @@ func (p *NetworkPolicy) UnmarshalJSON(data []byte) error {
 			out.AllowList = list
 		} else {
 			var m map[string][]PolicyRule
-			if err := json.Unmarshal(obj.Allow, &m); err != nil {
+			if err := jsonexact.Unmarshal(obj.Allow, &m); err != nil {
 				return err
 			}
 			out.AllowMap = m

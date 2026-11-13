@@ -1,9 +1,9 @@
 package responses
 
 import (
-	"encoding/json"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -182,5 +182,6 @@ func decodeStrict(node zodlite.Node, value interface{}, target interface{}) erro
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, target)
+	// The zod parse TS returns keeps only the schema's exact keys.
+	return jsonexact.Unmarshal(data, target)
 }
