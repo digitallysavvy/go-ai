@@ -2,6 +2,7 @@ package xai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,5 +52,22 @@ func TestR99provbVideoProgressPlatformInt(t *testing.T) {
 		if meta["progress"] != tc.want {
 			t.Errorf("progress(%v) = %#v, want %#v", tc.in, meta["progress"], tc.want)
 		}
+	}
+}
+
+// TestR99provbVideoStatusOperationKeyExact: TS reads options.operation's
+// requestId with its exact key, so a wrong-case "RequestId" is not the id.
+func TestR99provbVideoStatusOperationKeyExact(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"pending"}`))
+	}))
+	defer srv.Close()
+	_, _ = NewVideoModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "grok-imagine-video").DoStatus(context.Background(),
+		&provider.VideoModelV3StatusOptions{Operation: json.RawMessage(`{"RequestId":"wrong_case"}`)})
+	if strings.Contains(gotPath, "wrong_case") {
+		t.Fatalf("wrong-case RequestId key was read as requestId (path %s)", gotPath)
 	}
 }
