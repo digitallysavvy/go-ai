@@ -325,8 +325,18 @@ func parseJSONRPCErrorObject(raw json.RawMessage) (*MCPError, error) {
 // request, notification, response or error shape. A transport reports a
 // failure through its error callback and keeps reading.
 func parseMCPMessage(data []byte) (*MCPMessage, error) {
-	var probe interface{}
-	if err := unmarshalSafeJSON(data, &probe); err != nil {
+	return parseMCPMessageChecked(data, true)
+}
+
+// parseMCPMessagePlain is parseMCPMessage for a message TS reads with plain
+// JSON.parse (an application/json POST response, TS response.json() then
+// validateJSONRPCMessage): no prototype check.
+func parseMCPMessagePlain(data []byte) (*MCPMessage, error) {
+	return parseMCPMessageChecked(data, false)
+}
+
+func parseMCPMessageChecked(data []byte, checkPrototype bool) (*MCPMessage, error) {
+	if err := checkServerJSON(data, checkPrototype); err != nil {
 		return nil, err
 	}
 	msg, err := ValidateJSONRPCMessage(data)

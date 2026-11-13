@@ -72,3 +72,36 @@ func TestR97toolsElicitationIssueNonFinite(t *testing.T) {
 		t.Fatalf("message = %s", msg)
 	}
 }
+
+// TS reads an application/json POST response with response.json() (plain
+// JSON.parse, mcp-http-transport.ts 390): a __proto__ key is an ordinary
+// member and the message is delivered. The event-stream, SSE and stdio
+// paths use parseJSONRPCMessage (secure parseJSON) and keep rejecting it
+// (review round 97, coordinator class from provg).
+func TestR97toolsHTTPJSONResponseAcceptsProtoKey(t *testing.T) {
+	single := []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[],"__proto__":{"x":1}}}`)
+	msgs, err := parseMCPHTTPJSONMessages(single)
+	if err != nil || len(msgs) != 1 || msgs[0].ID != float64(1) {
+		t.Fatalf("single: %v, %#v", err, msgs)
+	}
+	batch := []byte(`[{"jsonrpc":"2.0","id":2,"result":{"constructor":{"prototype":{}}}}]`)
+	if msgs, err := parseMCPHTTPJSONMessages(batch); err != nil || len(msgs) != 1 {
+		t.Fatalf("batch: %v, %#v", err, msgs)
+	}
+	if _, err := parseMCPMessage(single); err == nil {
+		t.Fatal("event-stream path accepted a __proto__ key")
+	}
+	// The Go memory guards still apply on the plain path.
+	deep := `{"jsonrpc":"2.0","id":1,"result":` + strings.Repeat(`{"a":`, 70) + `1` + strings.Repeat(`}`, 70) + `}`
+	if _, err := parseMCPHTTPJSONMessages([]byte(deep)); err == nil || !strings.Contains(err.Error(), "maximum depth") {
+		t.Fatalf("deep: %v", err)
+	}
+	// The result re-read after the transport (callOnce, the input_required
+	// loop) applies only the limits; its jsonexact decode is the CR'd swap.
+	if err := checkServerJSON([]byte(`{"__proto__":1}`), false); err != nil {
+		t.Fatalf("plain check: %v", err)
+	}
+	if err := checkServerJSON([]byte(`{"__proto__":1}`), true); err == nil {
+		t.Fatal("secure check accepted __proto__")
+	}
+}

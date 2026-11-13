@@ -273,7 +273,7 @@ func (c *MCPClient) inputRequiredRound(ctx context.Context, method string, param
 			return false, err
 		}
 		if result != nil && raw != nil {
-			if err := unmarshalSafeJSON(raw, result); err != nil {
+			if err := unmarshalPlainJSON(raw, result); err != nil {
 				return false, &MCPClientError{Message: "Failed to parse server response", Cause: err}
 			}
 		}

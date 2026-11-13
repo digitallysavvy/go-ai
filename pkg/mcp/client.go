@@ -1200,7 +1200,7 @@ func (c *MCPClient) callOnce(ctx context.Context, method string, params interfac
 
 		// Parse result
 		if result != nil && response.Result != nil {
-			if err := unmarshalSafeJSON(response.Result, result); err != nil {
+			if err := unmarshalPlainJSON(response.Result, result); err != nil {
 				return &MCPClientError{Message: "Failed to parse server response", Cause: err}
 			}
 		}

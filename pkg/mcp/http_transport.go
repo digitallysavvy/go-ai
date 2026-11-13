@@ -1067,13 +1067,19 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 	// TS validateJSONRPCMessage runs on the body, or on each element of an
 	// array body, and throws on a message that is not JSON-RPC.
 	if trimmed[0] == '[' {
+		// TS response.json(): plain JSON.parse, so a __proto__ key is an
+		// ordinary member (the event-stream paths use parseJSONRPCMessage,
+		// which rejects it).
+		if err := checkServerJSON(trimmed, false); err != nil {
+			return nil, err
+		}
 		var batch []json.RawMessage
-		if err := unmarshalSafeJSON(trimmed, &batch); err != nil {
+		if err := json.Unmarshal(trimmed, &batch); err != nil {
 			return nil, err
 		}
 		messages := make([]*MCPMessage, 0, len(batch))
 		for _, raw := range batch {
-			msg, err := parseMCPMessage(raw)
+			msg, err := parseMCPMessagePlain(raw)
 			if err != nil {
 				return nil, err
 			}
@@ -1081,7 +1087,7 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 		}
 		return messages, nil
 	}
-	msg, err := parseMCPMessage(trimmed)
+	msg, err := parseMCPMessagePlain(trimmed)
 	if err != nil {
 		return nil, err
 	}
