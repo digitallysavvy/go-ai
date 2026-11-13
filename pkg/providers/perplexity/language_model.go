@@ -324,10 +324,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	body["stream"] = true
 
-	headers := map[string]string{"Accept": "text/event-stream"}
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	// A call header replaces the Accept default whatever its case.
+	headers := internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers)
 
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
