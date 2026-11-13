@@ -22,7 +22,7 @@ import (
 // payload), read Text / Cause, and IsJSONParseError.
 func TestR96integJSONParseErrorPublicAPI(t *testing.T) {
 	cause := errors.New("boom")
-	var err error = fmt.Errorf("wrapped: %w", providererrors.NewJSONParseError("{x", cause))
+	err := fmt.Errorf("wrapped: %w", providererrors.NewJSONParseError("{x", cause))
 	var target *providererrors.JSONParseError
 	if !errors.As(err, &target) || target.Text != "{x" || !errors.Is(target.Cause, cause) {
 		t.Fatalf("errors.As = %+v", target)
