@@ -95,6 +95,13 @@ var r97integResponseJSONDecodes = map[string]struct {
 	// TS already holds).
 	"pkg/providerutils/prompt/google.go|*googleConverter.googleVideoMetadata": {1, "convert-to-google-messages.ts:381 googleVideoMetadataSchema.parse of the caller's providerOptions object (no JSON parse, no secureJsonParse)"},
 	"pkg/providerutils/prompt/google.go|googleParseCodeExecution":             {1, "convert-to-google-messages.ts:576 / 644 codeExecutionInput/OutputSchema.parse of the prompt's tool input / output value (no JSON parse)"},
+	// Caller-value sites (round 98): TS validateTypes on an object the caller
+	// built, no JSON parse at all, so zod sees a __proto__ key as an ordinary
+	// own property and strips it.
+	"pkg/providerutils/prompt/anthropic.go|validateAnthropicToolOutput": {1, "convert-to-anthropic-prompt.ts validateTypes on the caller's in-memory tool output value (no JSON.parse; zod strips __proto__); not network bytes"},
+	"openai/responses/strict_payloads.go|validateToolPayload":           {1, "convert-to-openai-responses-input.ts:915 / 940 validateTypes on the tool-call input object (tool_search / program / computer inputs); caller value, no JSON parse"},
+	"openai/responses/tool_args_validation.go|zodIssueText":             {1, "openai-responses-prepare-tools.ts:239+ validateTypes({value: tool.args, schema}); caller value, no JSON parse"},
+	"xai/responses_prepare_tools.go|validateXAIResponsesToolArgs":       {1, "xai-responses-prepare-tools.ts:48+ validateTypes on tool.args; caller value, no JSON parse"},
 }
 
 // TestR96integNetworkDecodesRejectForbiddenPrototype is the class guard for
