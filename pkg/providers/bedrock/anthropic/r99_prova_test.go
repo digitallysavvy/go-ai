@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -85,5 +86,16 @@ func TestR99provaStreamTransformFollowsContentType(t *testing.T) {
 	text, ct := r99provaStreamText(t, es)
 	if text != "Hello" || !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("event-stream response: text %q content-type %q, want Hello / text/event-stream", text, ct)
+	}
+}
+
+// TS convertBase64ToUint8Array (atob) throws for chunk bytes that are not
+// base64, and that error fails the stream as is (no Go prefix).
+func TestR99provaInvalidChunkBytesErrorAsIs(t *testing.T) {
+	frame := encodeEventStreamMessage(t, map[string]string{":message-type": "event", ":event-type": "chunk"}, []byte(`{"bytes":"*"}`))
+	_, err := io.ReadAll(transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{}))
+	_, want := convertBase64ToBytes("*")
+	if err == nil || want == nil || err.Error() != want.Error() {
+		t.Fatalf("err = %v, want the base64 decode error %v as is", err, want)
 	}
 }

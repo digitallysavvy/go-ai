@@ -140,7 +140,7 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 			// which errors the stream; it does not fall back to the payload.
 			decoded, err := convertBase64ToBytes(chunkBytes)
 			if err != nil {
-				return fmt.Errorf("invalid base64 in bedrock chunk bytes: %w", err)
+				return err // the atob error errors the stream as is
 			}
 			// TS new TextDecoder().decode(convertBase64ToUint8Array(bytes)).
 			_, err = fmt.Fprintf(w, "data: %s\n\n", prompt.DecodeUTF8Text(decoded))
