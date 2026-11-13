@@ -55,7 +55,10 @@ func decodeLooseExtra(data []byte, known interface{}) map[string]interface{} {
 			continue
 		}
 		var val interface{}
-		if err := jsonexact.Unmarshal(v, &val); err != nil {
+		// zod copies a passthrough value as parsed: the entry decoder has
+		// applied the prototype check where TS secure-parses, and a
+		// response.json() body keeps a nested __proto__ key.
+		if err := jsonexact.UnmarshalPlain(v, &val); err != nil {
 			continue
 		}
 		if extra == nil {
