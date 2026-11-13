@@ -348,6 +348,7 @@ func DecodeReady(line []byte) (*Ready, error) {
 	if err := harness.RequireKeys(typ, fields, []string{"port"}); err != nil {
 		return nil, err
 	}
+	// TS safeParseJSON: secureJsonParse, then zod (exact keys).
 	var r Ready
 	if err := securejson.Unmarshal(line, &r); err != nil {
 		return nil, err
@@ -519,10 +520,139 @@ func DecodeInbound(data []byte) (InboundCommand, error) {
 	if err := harness.RequireKeys(typ, fields, required); err != nil {
 		return nil, err
 	}
+	// zod `.optional()` accepts an absent key but rejects an explicit null.
+	if err := harness.RejectNullKeys(typ, fields, inboundOptionalKeys[typ]); err != nil {
+		return nil, err
+	}
+	if typ == TypeStart {
+		var err error
+		if data, err = startWithoutStrippedKeys(data, fields); err != nil {
+			return nil, err
+		}
+	}
 	if err := jsonexact.UnmarshalPlain(data, cmd); err != nil { // zod: exact keys
 		return nil, fmt.Errorf("harness bridge: invalid %s command: %w", typ, err)
 	}
+	if start, ok := cmd.(*StartBase); ok {
+		if err := validateStartBase(start, fields); err != nil {
+			return nil, err
+		}
+	}
 	return cmd, nil
+}
+
+// startWithoutStrippedKeys returns a start frame whose `responseFormat` of
+// type "text" keeps only its type: zod picks the `{ type: 'text' }` member of
+// the discriminated union and strips `schema`, `name` and `description`
+// whatever their values, which the struct decode would otherwise read.
+func startWithoutStrippedKeys(data []byte, fields map[string]json.RawMessage) ([]byte, error) {
+	rf := readObject(fields["responseFormat"])
+	var rfType string
+	if rf == nil || json.Unmarshal(rf["type"], &rfType) != nil || rfType != string(harness.ResponseFormatText) {
+		return data, nil
+	}
+	out := make(map[string]json.RawMessage, len(fields))
+	for k, v := range fields {
+		out[k] = v
+	}
+	out["responseFormat"] = json.RawMessage(`{"type":"text"}`)
+	return json.Marshal(out)
+}
+
+// inboundOptionalKeys lists the `.optional()` keys of the shared inbound
+// commands and of harnessV1BridgeStartBaseSchema (`toolResult` is
+// z.unknown(), which accepts null).
+var inboundOptionalKeys = map[string][]string{
+	TypeToolResult:           {"isError"},
+	TypeToolApprovalResponse: {"reason"},
+	TypeUserMessage:          {"messageId"},
+	TypeStart:                {"startId", "tools", "model", "debug", "permissionMode", "builtinToolFiltering", "responseFormat"},
+}
+
+// validateStartBase applies the harnessV1BridgeStartBaseSchema checks the
+// struct decode cannot see: the enums, the tool wire objects' required name,
+// the discriminated unions' required keys, nested optional keys that must not
+// be null, string arrays without null elements and the z.json() schema
+// values (JSON.parse reads 1e400 as Infinity, which z.json() rejects).
+func validateStartBase(b *StartBase, fields map[string]json.RawMessage) error {
+	invalid := func(format string, args ...any) error {
+		return fmt.Errorf("harness bridge: invalid start command: "+format, args...)
+	}
+	if _, ok := fields["permissionMode"]; ok && !b.PermissionMode.Valid() {
+		return invalid("permissionMode %q", b.PermissionMode)
+	}
+	var tools []map[string]json.RawMessage
+	_ = json.Unmarshal(fields["tools"], &tools)
+	for i, tool := range tools {
+		name := fmt.Sprintf("start tools[%d]", i)
+		if err := harness.RequireKeys(name, tool, []string{"name"}); err != nil {
+			return err
+		}
+		if err := harness.RejectNullKeys(name, tool, []string{"description"}); err != nil {
+			return err
+		}
+	}
+	if raw, ok := fields["debug"]; ok {
+		obj := readObject(raw)
+		if err := harness.RejectNullKeys("start debug", obj, []string{"enabled", "level", "subsystems"}); err != nil {
+			return err
+		}
+		if _, ok := obj["level"]; ok && !b.Debug.Level.Valid() {
+			return invalid("debug level %q", b.Debug.Level)
+		}
+		if hasNullElement(obj["subsystems"]) {
+			return invalid("debug subsystems must be strings")
+		}
+	}
+	if raw, ok := fields["builtinToolFiltering"]; ok {
+		obj := readObject(raw)
+		if err := harness.RequireKeys("start builtinToolFiltering", obj, []string{"mode", "toolNames"}); err != nil {
+			return err
+		}
+		if m := b.BuiltinToolFiltering.Mode; m != harness.BuiltinToolFilteringAllow && m != harness.BuiltinToolFilteringDeny {
+			return invalid("builtinToolFiltering mode %q", m)
+		}
+		if hasNullElement(obj["toolNames"]) {
+			return invalid("builtinToolFiltering toolNames must be strings")
+		}
+	}
+	if raw, ok := fields["responseFormat"]; ok {
+		obj := readObject(raw)
+		if err := harness.RequireKeys("start responseFormat", obj, []string{"type"}); err != nil {
+			return err
+		}
+		switch b.ResponseFormat.Type {
+		case harness.ResponseFormatText:
+		case harness.ResponseFormatJSON:
+			if err := harness.RejectNullKeys("start responseFormat", obj, []string{"schema", "name", "description"}); err != nil {
+				return err
+			}
+			if schema, ok := obj["schema"]; ok {
+				var v map[string]any
+				if err := json.Unmarshal(schema, &v); err != nil {
+					return invalid("responseFormat schema must hold JSON values: %v", err)
+				}
+			}
+		default:
+			return invalid("responseFormat type %q", b.ResponseFormat.Type)
+		}
+	}
+	return nil
+}
+
+// hasNullElement reports whether raw is an array holding a JSON null (a
+// z.array(z.string()) element encoding/json would read as "").
+func hasNullElement(raw json.RawMessage) bool {
+	var elems []json.RawMessage
+	if json.Unmarshal(raw, &elems) != nil {
+		return false
+	}
+	for _, e := range elems {
+		if string(e) == "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // frameSeq is TS SandboxChannel's `typeof value.seq === 'number' ?

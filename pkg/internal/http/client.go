@@ -619,6 +619,9 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 			return err
 		}
 	}
+	if err := notJSONResponse(resp); err != nil {
+		return err
+	}
 	if err := forbiddenPrototype(resp.Body); err != nil {
 		return err
 	}
@@ -655,6 +658,9 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 			return nil, err
 		}
+	}
+	if err := notJSONResponse(resp); err != nil {
+		return nil, err
 	}
 	if err := forbiddenPrototype(resp.Body); err != nil {
 		return nil, err
@@ -698,6 +704,19 @@ func decodeJSONBody(body []byte, result interface{}) error {
 		return retryErr
 	}
 	return err
+}
+
+// notJSONResponse is TS createJsonResponseHandler for a successful body that
+// is not JSON text (an empty body included, such as the null body fetch gives
+// a 204 or 205 response): safeParseJSON fails and the handler throws the
+// APICallError "Invalid JSON response" with the status, headers and body,
+// caused by the JSONParseError. It is built without a provider name;
+// providererrors.NewProviderError returns it as is under the handler's name.
+func notJSONResponse(resp *Response) error {
+	if json.Valid(resp.Body) {
+		return nil
+	}
+	return providerutils.InvalidJSONResponseError("", resp.StatusCode, resp.Headers, resp.Body, nil)
 }
 
 // forbiddenPrototype is the response handlers' secureJsonParse check: a body
@@ -875,8 +894,41 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		}
 	}
 
+	// fetch gives a 204 or 205 response a null body, so the TS stream
+	// response handlers (createEventSourceResponseHandler,
+	// createJsonStreamResponseHandler) throw EmptyResponseBodyError, which
+	// postToApi wraps in the APICallError "Failed to process successful
+	// response" (no response body; not retryable for a 2xx status).
+	if isNullBodyStatus(httpResp.StatusCode) {
+		_ = httpResp.Body.Close()
+		return nil, SuccessfulResponseFailure(httpResp, &providererrors.EmptyResponseBodyError{})
+	}
+
 	// Return the response for streaming (caller must close Body)
 	return httpResp, nil
+}
+
+// isNullBodyStatus reports the fetch spec's null body statuses a client can
+// receive as a final response (204 No Content, 205 Reset Content): fetch
+// gives them a null response body, net/http an empty one.
+func isNullBodyStatus(code int) bool {
+	return code == http.StatusNoContent || code == http.StatusResetContent
+}
+
+// SuccessfulResponseFailure is the TS postToApi / getFromApi APICallError
+// "Failed to process successful response" for a successful resp whose
+// response handler failed with cause: the status code and the response
+// headers (TS extractResponseHeaders keys), no response body. It is built
+// without a provider name; providererrors.NewProviderError (every
+// provider's error fallback) returns it as is under its own name.
+func SuccessfulResponseFailure(resp *http.Response, cause error) *providererrors.ProviderError {
+	_, headers, _ := (&HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header}).HTTPStatusDetails()
+	return &providererrors.ProviderError{
+		StatusCode:      resp.StatusCode,
+		Message:         providererrors.FailedToProcessSuccessfulResponseMessage,
+		Cause:           cause,
+		ResponseHeaders: headers,
+	}
 }
 
 // Post performs a POST request

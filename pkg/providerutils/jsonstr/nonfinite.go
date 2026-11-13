@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"reflect"
+	"unsafe"
 )
 
 // nonFiniteDepth bounds the copy's recursion (a pointer cycle, which
@@ -146,10 +147,19 @@ func replaceNonFinite(rv reflect.Value, s float64, n *int, depth int) (reflect.V
 		out.Set(rv)
 		for i := 0; i < rv.NumField(); i++ {
 			f := out.Field(i)
+			src := rv.Field(i)
 			if !f.CanSet() {
-				continue
+				// encoding/json still encodes the exported fields promoted
+				// from an unexported embedded struct (or pointer to one), so
+				// their floats are replaced too, through a settable view of
+				// the field in the copy (the copy is addressable).
+				if !embedsStruct(rv.Type().Field(i)) {
+					continue
+				}
+				f = reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
+				src = f
 			}
-			v, ok := replaceNonFinite(rv.Field(i), s, n, depth+1)
+			v, ok := replaceNonFinite(src, s, n, depth+1)
 			if !ok {
 				return reflect.Value{}, false
 			}
@@ -198,4 +208,18 @@ func replaceNonFinite(rv reflect.Value, s float64, n *int, depth int) (reflect.V
 		return out, true
 	}
 	return rv, true
+}
+
+// embedsStruct reports an anonymous field whose type is a struct or a
+// pointer to one: encoding/json encodes its promoted exported fields even
+// when the field itself is unexported.
+func embedsStruct(sf reflect.StructField) bool {
+	if !sf.Anonymous {
+		return false
+	}
+	t := sf.Type
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.Struct
 }

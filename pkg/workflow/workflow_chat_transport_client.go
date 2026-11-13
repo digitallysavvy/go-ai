@@ -208,7 +208,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 		errs <- err
 		return
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
+	if !fetchResponseOKWithBody(resp) {
 		errs <- failedFetchChatError(resp, api)
 		return
 	}
@@ -322,7 +322,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 			errs <- err
 			return
 		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
+		if !fetchResponseOKWithBody(resp) {
 			errs <- failedFetchChatError(resp, reqURL)
 			return
 		}
@@ -389,6 +389,17 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 	}
 
 	t.finishChat(chatID, chunkIndex, errs)
+}
+
+// fetchResponseOKWithBody is TS `response.ok && response.body`: a 2xx status
+// whose response has a body. fetch gives a 204 or 205 response a null body
+// (the fetch spec's null body statuses), so TS fails it with "Failed to fetch
+// chat"; net/http hands back an empty body instead.
+func fetchResponseOKWithBody(resp *http.Response) bool {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
+		return false
+	}
+	return resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusResetContent
 }
 
 // failedFetchChatError is TS `new Error(\`Failed to fetch chat: ${status}
