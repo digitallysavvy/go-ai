@@ -217,6 +217,9 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		Path:    "/responses",
 		Body:    body,
 		Headers: opts.Headers,
+		// TS createJsonResponseHandler(deepseekResponsesResponseSchema): a
+		// body that fails the schema is an "Invalid JSON response" error.
+		ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), deepseekResponsesResponseNode),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -566,6 +569,35 @@ func deepseekWebSearchCallContent(rawItem json.RawMessage, toolName, name string
 }
 
 // Wire types (TS deepseek-responses-api.ts).
+
+// deepseekResponsesResponseNode is TS createResponseObjectSchema. Every
+// output item union ends in z.looseObject({type: z.string()}), so an item
+// only has to be an object with a string type.
+var deepseekResponsesResponseNode = func() zodlite.Node {
+	nullishNumber := zodlite.Nullish(zodlite.Number)
+	nullishString := zodlite.Nullish(zodlite.String)
+	usage := zodlite.Object(
+		zodlite.F("input_tokens", nullishNumber),
+		zodlite.F("input_tokens_details", zodlite.Nullish(zodlite.Object(zodlite.F("cached_tokens", nullishNumber)))),
+		zodlite.F("output_tokens", nullishNumber),
+		zodlite.F("output_tokens_details", zodlite.Nullish(zodlite.Object(zodlite.F("reasoning_tokens", nullishNumber)))),
+		zodlite.F("total_tokens", nullishNumber),
+		zodlite.F("server_tool_use", zodlite.Nullish(zodlite.Object(
+			zodlite.F("tool_search", nullishNumber),
+			zodlite.F("tool_fetch", nullishNumber),
+		))),
+	)
+	return zodlite.Object(
+		zodlite.F("id", nullishString),
+		zodlite.F("created_at", nullishNumber),
+		zodlite.F("model", nullishString),
+		zodlite.F("status", nullishString),
+		zodlite.F("error", zodlite.Nullish(zodlite.Object(zodlite.F("code", nullishString), zodlite.F("message", nullishString)))),
+		zodlite.F("incomplete_details", zodlite.Nullish(zodlite.Object(zodlite.F("reason", nullishString)))),
+		zodlite.F("output", zodlite.Nullish(zodlite.Array(zodlite.Object(zodlite.F("type", zodlite.String))))),
+		zodlite.F("usage", zodlite.Nullish(usage)),
+	)
+}()
 
 type deepseekResponsesResponse struct {
 	ID        *string  `json:"id"`
