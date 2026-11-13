@@ -13,6 +13,7 @@ package zodlite
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"regexp"
 	"sort"
@@ -692,6 +693,12 @@ func ValidationMessage(schema Node, data string) string {
 	// which z.number() then rejects; encoding/json fails the whole frame.
 	var value interface{}
 	if err := jsonexact.Decode([]byte(data), &value); err != nil {
+		var parseErr *jsonexact.JSONParseError
+		if errors.As(err, &parseErr) {
+			// secureJsonParse rejected the frame (a forbidden prototype
+			// key): it never validates, so it must not pass.
+			return parseErr.Error()
+		}
 		return ""
 	}
 	bad := schema(value, true, nil)

@@ -481,8 +481,9 @@ func CheckTypedFrame(data string) (string, error) {
 	return "", nil
 }
 
-// parseJSValue is JSON.parse for a frame validated by a zod schema: syntax
-// errors fail (with encoding/json's text), and a number out of the double
+// parseJSValue is secureJsonParse for a frame validated by a zod schema:
+// syntax errors fail (with encoding/json's text), a forbidden prototype key
+// fails with ErrForbiddenPrototype, and a number out of the double
 // range reads as +-Infinity (0 when it underflows) instead of failing the
 // whole frame as encoding/json does. zod's object schemas then strip such a
 // value under an undeclared key, so the frame passes as in TS.
@@ -497,6 +498,11 @@ func parseJSValue(data []byte) (interface{}, error) {
 	dec.UseNumber()
 	var v interface{}
 	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	// secureJsonParse: a forbidden prototype key fails the parse (the
+	// caller's JSONParseError carries this cause).
+	if err := jsonexact.CheckPrototype(data); err != nil {
 		return nil, err
 	}
 	return jsNumberTree(v), nil
@@ -529,6 +535,11 @@ func jsNumberTree(v interface{}) interface{} {
 // exact value, so a frame TS accepts is never rejected for its number
 // spelling and no float is altered.
 func UnmarshalChunk(data []byte, v interface{}) error {
+	// TS parseJsonEventStream (safeParseJSON) rejects a forbidden prototype
+	// key with a JSONParseError over the frame as sent.
+	if perr := jsonexact.ParseError(data); perr != nil {
+		return perr
+	}
 	// zod matches object keys exactly; drop the ones encoding/json would
 	// fill a field with only case-insensitively.
 	data = jsonexact.Filter(data, v)

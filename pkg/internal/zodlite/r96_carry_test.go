@@ -33,3 +33,14 @@ func TestR96carryValidationMessageOutOfRangeNumber(t *testing.T) {
 		t.Fatalf("undeclared key holding 1e400: %s", msg)
 	}
 }
+
+// A frame secureJsonParse rejects never validates.
+func TestR96carryValidationMessageForbiddenPrototype(t *testing.T) {
+	node := Object(F("duration", Nullish(Number)))
+	if msg := ValidationMessage(node, `{"duration":1,"__proto__":{}}`); msg == "" {
+		t.Fatal("a __proto__ frame passed")
+	}
+	if msg := ValidationMessage(node, `{"duration":1,"constructor":"x"}`); msg != "" {
+		t.Fatalf("plain constructor key failed: %s", msg)
+	}
+}

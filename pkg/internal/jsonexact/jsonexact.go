@@ -432,8 +432,14 @@ func filterObject(data []byte, depth int, field func(string) (reflect.Type, bool
 // options) keeps json.Unmarshal's case-insensitive matching (v0.5.2). A
 // number beyond the double range reads as +-Inf in an interface position,
 // as JSON.parse reads it (Decode), for struct, map and interface{} targets.
+// A payload with a forbidden prototype key fails first with the TS
+// JSONParseError (ParseError), as TS secureJsonParse rejects it before its
+// schema runs.
 func Unmarshal(data []byte, v interface{}) error {
-	return Decode(Filter(data, v), v)
+	if err := ParseError(data); err != nil {
+		return err
+	}
+	return decodeJS(Filter(data, v), v)
 }
 
 // UntaggedFields lists, as "Type.Field", every exported struct field reachable

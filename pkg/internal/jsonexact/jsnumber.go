@@ -20,8 +20,18 @@ const jsNumberSentinel = "\x00go-ai:jsnumber:"
 // map or slice of interface values, at any depth. encoding/json fails the
 // whole decode on such a number. A number held by a typed numeric field
 // still fails (zod's z.number() rejects Infinity), with the strict decode's
-// error. A number that underflows reads as 0 in both.
+// error. A number that underflows reads as 0 in both. A payload with a
+// forbidden prototype key fails first with the TS JSONParseError
+// (ParseError), as TS secureJsonParse does.
 func Decode(data []byte, v interface{}) error {
+	if err := ParseError(data); err != nil {
+		return err
+	}
+	return decodeJS(data, v)
+}
+
+// decodeJS is Decode without the prototype check.
+func decodeJS(data []byte, v interface{}) error {
 	err := json.Unmarshal(data, v)
 	if err == nil || !isOverflowError(err) {
 		return err

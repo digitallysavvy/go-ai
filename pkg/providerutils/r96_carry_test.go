@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -79,5 +80,24 @@ func TestR96carryXAIResponseIncompleteDetails(t *testing.T) {
 	}
 	if err := ValidateXAIResponsesChunk([]byte(strings.Replace(base, "%s", `"x"`, 1))); err == nil {
 		t.Error("a string incomplete_details passed")
+	}
+}
+
+// TS parseJsonEventStream (safeParseJSON) turns a frame with a forbidden
+// prototype key into a JSONParseError; a frame without one decodes.
+func TestR96carryChunkForbiddenPrototype(t *testing.T) {
+	frame := `{"choices":[],"__proto__":{"polluted":true}}`
+	want := "JSON parsing failed: Text: " + frame + ".\nError message: Object contains forbidden prototype property"
+	var v struct {
+		Choices []interface{} `json:"choices"`
+	}
+	if err := UnmarshalChunk([]byte(frame), &v); err == nil || err.Error() != want {
+		t.Errorf("UnmarshalChunk = %v, want %q", err, want)
+	}
+	if msg, err := CheckChatChunk(frame, ChatChunkShape{}); msg != want || !providererrors.IsJSONParseError(err) {
+		t.Errorf("CheckChatChunk = %q, %T", msg, err)
+	}
+	if err := UnmarshalChunk([]byte(`{"choices":[],"constructor":"x"}`), &v); err != nil {
+		t.Errorf("accepted frame failed: %v", err)
 	}
 }

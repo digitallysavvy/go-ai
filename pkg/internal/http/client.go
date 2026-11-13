@@ -478,6 +478,11 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 		}
 	}
 
+	// TS safeParseJSON (secureJsonParse) rejects a forbidden prototype key
+	// before the response schema runs.
+	if err := forbiddenPrototype(resp.Body); err != nil {
+		return err
+	}
 	if req.ValidateResponse != nil {
 		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 			return err
@@ -508,6 +513,9 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 			Headers:    resp.Headers,
 			Body:       resp.Body,
 		}
+	}
+	if err := forbiddenPrototype(resp.Body); err != nil {
+		return nil, err
 	}
 	if req.ValidateResponse != nil {
 		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -553,6 +561,17 @@ func decodeJSONBody(body []byte, result interface{}) error {
 		return retryErr
 	}
 	return err
+}
+
+// forbiddenPrototype is the response handlers' secureJsonParse check: a body
+// with a `__proto__` key or a `constructor.prototype` key fails with the TS
+// JSONParseError (inside the decode error DoJSON returns for any body that
+// does not parse).
+func forbiddenPrototype(body []byte) error {
+	if err := jsonexact.CheckPrototype(body); err != nil {
+		return fmt.Errorf("failed to decode JSON response: %w", providererrors.NewJSONParseError(string(body), err))
+	}
+	return nil
 }
 
 // utf8BOM is the UTF-8 byte order mark TextDecoder drops.
