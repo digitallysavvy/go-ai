@@ -26,3 +26,18 @@ func TestR99provbLiveSessionInputKeyOrder(t *testing.T) {
 		t.Errorf("session-start = %s, %v\nwant %s", raw, err, want)
 	}
 }
+
+// TestR99provbBatchErrorInfiniteCode: TS openaiErrorDataSchema's code is
+// z.union([z.string(), z.number()]) and z.number() rejects the Infinity
+// JSON.parse reads for 1e400, so the item error is the status-code fallback.
+// Go accepted it and reported the code "Infinity".
+func TestR99provbBatchErrorInfiniteCode(t *testing.T) {
+	got := convertOpenAIBatchErrorResponse([]byte(`{"error":{"message":"m","code":1e400}}`), 400)
+	if got.Message != "OpenAI batch request failed with status code 400." || got.Code != "" {
+		t.Errorf("error = %+v, want the status-code fallback", got)
+	}
+	got = convertOpenAIBatchErrorResponse([]byte(`{"error":{"message":"m","code":42}}`), 400)
+	if got.Message != "m" || got.Code != "42" {
+		t.Errorf("error = %+v, want message m code 42", got)
+	}
+}

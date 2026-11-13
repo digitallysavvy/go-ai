@@ -2,6 +2,7 @@ package zai
 
 import (
 	"errors"
+	"math"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -21,7 +22,13 @@ func zaiErrorDetails(v interface{}) (code interface{}, message string, ok bool) 
 		return nil, "", false
 	}
 	switch c := obj["code"].(type) {
-	case nil, string, float64:
+	case nil, string:
+		return c, msg, true
+	case float64:
+		// z.number() rejects the Infinity JSON.parse reads for 1e400.
+		if math.IsInf(c, 0) {
+			return nil, "", false
+		}
 		return c, msg, true
 	default:
 		return nil, "", false
