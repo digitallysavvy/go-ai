@@ -22,6 +22,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -3448,11 +3449,18 @@ func ReadUIMessageStream(r io.Reader) ([]UIMessageChunk, error) {
 		if data == "[DONE]" {
 			continue
 		}
-		var chunk UIMessageChunk
-		if err := jsonexact.Unmarshal([]byte(data), &chunk); err != nil {
+		var value interface{}
+		if err := jsonexact.Unmarshal([]byte(data), &value); err != nil {
 			return nil, err
 		}
-		chunks = append(chunks, chunk)
+		// TS parseJsonEventStream validates each chunk against
+		// uiMessageChunkSchema (objects only): null, a number, a string or an
+		// array fails with a TypeValidationError.
+		chunk, ok := value.(map[string]interface{})
+		if !ok {
+			return nil, providererrors.NewValidationErrorWithContext(value, "Invalid UI message chunk: expected an object", nil, &providererrors.ValidationContext{})
+		}
+		chunks = append(chunks, UIMessageChunk(chunk))
 	}
 }
 

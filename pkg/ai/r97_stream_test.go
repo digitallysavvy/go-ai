@@ -2,10 +2,13 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -75,5 +78,19 @@ func TestR97streamValidateUIMessagesIgnoresUnencodedNonFinite(t *testing.T) {
 	res = SafeValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: msgs(map[string]interface{}{"score": math.NaN()})})
 	if res.Success || res.Error == nil || res.Error.Error() == "" {
 		t.Fatalf("encoded NaN: want a validation error, got %#v", res)
+	}
+}
+
+// ReadUIMessageStream fails a chunk that is not a JSON object (TS
+// parseJsonEventStream validates against uiMessageChunkSchema, a union of
+// objects, and reports a TypeValidationError for null, numbers, strings and
+// arrays) instead of returning a nil chunk for `data: null`.
+func TestR97streamReadUIMessageStreamRejectsNonObjectChunk(t *testing.T) {
+	for _, data := range []string{"null", "5", `"x"`, "[]"} {
+		chunks, err := ReadUIMessageStream(strings.NewReader(`data: {"type":"start"}` + "\n\n" + "data: " + data + "\n\n"))
+		var verr *providererrors.ValidationError
+		if !errors.As(err, &verr) || chunks != nil {
+			t.Fatalf("data %s: chunks %#v, err %v; want a ValidationError and no chunks", data, chunks, err)
+		}
 	}
 }
