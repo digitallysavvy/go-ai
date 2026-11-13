@@ -326,7 +326,9 @@ func (c *googleConverter) convertUser(msg types.Message) ([]map[string]interface
 		case types.ImageContent:
 			if p.URL != "" {
 				mimeType := p.MimeType
-				if mimeType == "" || mimeType == "image/*" || mimeType == "image" {
+				// TS isFullMediaType: "", "image", "image/" and "image/*" are
+				// not full media types.
+				if !fileutil.IsFullMediaType(mimeType) {
 					mimeType = "image/jpeg"
 				}
 				parts = append(parts, map[string]interface{}{

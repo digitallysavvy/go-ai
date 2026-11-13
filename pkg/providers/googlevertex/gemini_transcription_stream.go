@@ -263,7 +263,9 @@ type geminiLiveServerMessage struct {
 		InterimInputTranscription *geminiLiveTranscription `json:"interimInputTranscription,omitempty"`
 		TurnComplete              bool                     `json:"turnComplete,omitempty"`
 		GenerationComplete        bool                     `json:"generationComplete,omitempty"`
-		InteractionStatus         string                   `json:"interactionStatus,omitempty"`
+		// InteractionStatus is a pointer: TS `interactionStatus == null` is
+		// false for a present "".
+		InteractionStatus *string `json:"interactionStatus,omitempty"`
 	} `json:"serverContent,omitempty"`
 	InputTranscription *geminiLiveTranscription `json:"inputTranscription,omitempty"`
 	UsageMetadata      map[string]interface{}   `json:"usageMetadata,omitempty"`
@@ -284,6 +286,12 @@ type geminiLiveTranscription struct {
 func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamConfig) {
 	defer s.CloseParts()
 	defer failOnAbort(s.SetErr, s.abortCtx)
+	// TS cleanup() cancels the caller's audio on every terminal path, also a
+	// consumer cancel or an abort that unblocks a pending emit.
+	if cfg.audio != nil {
+		cfg.audio = &vertexLiveAudioCancelOnce{AudioStream: cfg.audio}
+		defer cfg.audio.Cancel(nil)
+	}
 	// Release the session's resources as soon as run() returns for any
 	// reason instead of only on an explicit Close() call, which a consumer
 	// that only drains Next() to io.EOF may never make.
@@ -310,7 +318,8 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	closeInfo := &wsutil.CloseInfo{}
 	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
-		fail(err)
+		// TS appends a native-WebSocket hint, which Go leaves out (S3).
+		fail(vertexLiveDialError(s.Context(), "Vertex Live transcription error.", err))
 		return
 	}
 	s.SetConn(conn)
@@ -547,7 +556,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 
 			if serverContent != nil && audioEnded {
 				status := serverContent.InteractionStatus
-				if status == "IDLE" || status == "REQUIRES_ACTION" || (serverContent.TurnComplete && status == "") {
+				if (status != nil && (*status == "IDLE" || *status == "REQUIRES_ACTION")) || (serverContent.TurnComplete && status == nil) {
 					finish()
 					return
 				}
@@ -577,4 +586,37 @@ func failOnAbort(setErr func(error), ctx context.Context) {
 	if ctx != nil && ctx.Err() != nil {
 		setErr(context.Cause(ctx))
 	}
+}
+
+// vertexLiveSocketOpenError is TS onSocketError for a WebSocket that fails to open (a refused
+// handshake, an unreachable host): the provider's socket error text, with the
+// dial error kept reachable through Unwrap. An abort while the handshake is
+// pending is the abort reason instead (TS onAbort).
+type vertexLiveSocketOpenError struct {
+	msg   string
+	cause error
+}
+
+func (e *vertexLiveSocketOpenError) Error() string { return e.msg }
+func (e *vertexLiveSocketOpenError) Unwrap() error { return e.cause }
+
+// vertexLiveDialError is the error of a failed dial: the cancel cause when the stream's
+// context is done (TS onAbort(abortSignal.reason)), else the socket error.
+func vertexLiveDialError(ctx context.Context, msg string, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return &vertexLiveSocketOpenError{msg: msg, cause: err}
+}
+
+// vertexLiveAudioCancelOnce cancels the caller's audio input once: the first reason wins and a
+// later Cancel is a no-op, so a deferred Cancel(nil) on every terminal path
+// (TS cleanup / cancel()) cannot replace a failure's reason.
+type vertexLiveAudioCancelOnce struct {
+	provider.AudioStream
+	once sync.Once
+}
+
+func (a *vertexLiveAudioCancelOnce) Cancel(reason error) {
+	a.once.Do(func() { a.AudioStream.Cancel(reason) })
 }

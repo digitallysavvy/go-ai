@@ -2,6 +2,7 @@ package googlevertex
 
 import (
 	"context"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"strings"
 	"time"
 
@@ -170,7 +171,8 @@ func vertexGeminiImageContent(opts *provider.ImageGenerateOptions) []types.Conte
 	}
 	for _, file := range opts.Files {
 		mediaType := file.MediaType
-		if file.URL != "" && (mediaType == "" || mediaType == "image" || mediaType == "image/*") {
+		// TS isFullMediaType: "", "image", "image/" and "image/*" are not full.
+		if file.URL != "" && !fileutil.IsFullMediaType(mediaType) {
 			// A URL file without a full caller image media type takes it
 			// from the URL path, so a query string or fragment does not hide the
 			// extension (y.png?sig=1 is image/png).

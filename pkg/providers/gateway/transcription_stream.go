@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
@@ -161,6 +162,9 @@ type gatewayTranscriptionStream struct {
 	*wsutil.Session[provider.TranscriptionStreamPart]
 	// abortCtx is the caller's context (TS abortSignal).
 	abortCtx context.Context
+	// audioExhausted is set once the caller's audio reached io.EOF: TS
+	// cleanup then cancels a closed stream, which reaches no producer.
+	audioExhausted atomic.Bool
 }
 
 func newGatewayTranscriptionStream(parentCtx context.Context, cfg gatewayTranscriptionStreamConfig) *gatewayTranscriptionStream {
@@ -173,6 +177,14 @@ func newGatewayTranscriptionStream(parentCtx context.Context, cfg gatewayTranscr
 func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	defer s.CloseParts()
 	defer failOnAbort(s.SetErr, s.abortCtx)
+	// TS cleanup() cancels the caller's audio on every terminal path: the
+	// finish part (cleanup(1000)), a consumer cancel and an abort, not only
+	// a failure. A failure has cancelled it with its error already.
+	defer func() {
+		if !s.audioExhausted.Load() {
+			cfg.audio.Cancel(nil)
+		}
+	}()
 	// Release the session's resources as soon as run() returns for any
 	// reason (finish, error, or cancellation) instead of only on an
 	// explicit Close() call, which a consumer that only drains Next() to
@@ -180,20 +192,14 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	defer s.CancelContext()
 
 	fail := func(err error) {
-		// TS finishWithError runs every terminal error except an abort reason
-		// through asGatewayError, so callers always see a GatewayError for
-		// connection, protocol and audio-read failures.
-		if cfg.wrapError != nil && !gatewayerrors.IsGatewayError(err) &&
-			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			err = cfg.wrapError(err)
-		}
+		err = gatewayStreamTerminalError(s.abortCtx, err, cfg.wrapError)
 		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
 
 	conn, err := s.dial(cfg.url, cfg.protocols, cfg.headers)
 	if err != nil {
-		fail(err)
+		fail(gatewayDialError(s.Context(), "Connection error on AI Gateway transcription stream", err))
 		return
 	}
 	s.SetConn(conn)
@@ -373,6 +379,7 @@ func (s *gatewayTranscriptionStream) pumpAudio(ctx context.Context, conn *websoc
 		chunk, err := audio.Next(ctx)
 		if err != nil {
 			if err == io.EOF {
+				s.audioExhausted.Store(true)
 				if sendErr := s.sendText(conn, fmt.Sprintf(`{"type":%q}`, transcriptionStreamAudioDoneFrameType)); sendErr != nil && ctx.Err() == nil {
 					wsutil.ReportError(ctx, errCh, sendErr)
 				}
@@ -674,6 +681,23 @@ var (
 	_ provider.TranscriptionStream   = (*gatewayTranscriptionStream)(nil)
 )
 
+// gatewayStreamTerminalError is the error a Gateway WebSocket stream fails
+// with. Once the caller's context is done the stream fails with its cancel
+// cause as is (TS connectToWebSocket onAbort: controller.error(reason), not
+// through asGatewayError), whichever operation the abort interrupted. Every
+// other error goes through wrapError (TS finishWithError: asGatewayError),
+// except a GatewayError and a context error.
+func gatewayStreamTerminalError(abortCtx context.Context, err error, wrapError func(error) error) error {
+	if abortCtx != nil && abortCtx.Err() != nil {
+		return context.Cause(abortCtx)
+	}
+	if wrapError != nil && !gatewayerrors.IsGatewayError(err) &&
+		!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return wrapError(err)
+	}
+	return err
+}
+
 // failOnAbort is TS connectToWebSocket onAbort(abortSignal.reason): when the
 // caller's context is cancelled the stream fails with its cancel cause, also
 // when run() returns from an emit the cancellation unblocked. An error set
@@ -682,4 +706,25 @@ func failOnAbort(setErr func(error), ctx context.Context) {
 	if ctx != nil && ctx.Err() != nil {
 		setErr(context.Cause(ctx))
 	}
+}
+
+// gatewaySocketOpenError is TS onSocketError for a WebSocket that fails to open (a refused
+// handshake, an unreachable host): the provider's socket error text, with the
+// dial error kept reachable through Unwrap. An abort while the handshake is
+// pending is the abort reason instead (TS onAbort).
+type gatewaySocketOpenError struct {
+	msg   string
+	cause error
+}
+
+func (e *gatewaySocketOpenError) Error() string { return e.msg }
+func (e *gatewaySocketOpenError) Unwrap() error { return e.cause }
+
+// gatewayDialError is the error of a failed dial: the cancel cause when the stream's
+// context is done (TS onAbort(abortSignal.reason)), else the socket error.
+func gatewayDialError(ctx context.Context, msg string, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return &gatewaySocketOpenError{msg: msg, cause: err}
 }

@@ -101,6 +101,8 @@ func parseSpeechTranslationModelOptionsChecked(providerOptions map[string]interf
 	if !isMap {
 		return out, invalidGoogleFilesOptions(fmt.Errorf("google: expected object, received %T", raw))
 	}
+	// An explicit null is treated like an absent key, as v0.5.2 did (known
+	// difference "Bedrock and Anthropic null option values", S6).
 	if v, present := google["echoTargetLanguage"]; present && v != nil {
 		b, isBool := v.(bool)
 		if !isBool {

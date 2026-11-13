@@ -48,12 +48,15 @@ type interactionsStream struct {
 	// terminal status is reported as interrupted (TS #23814).
 	hasCompletionEvent bool
 	finishStatus       string
-	usage              *interactionsUsage
-	serviceTier        *string
-	hasFunction        bool
-	lastEventID        string
-	resumable          bool
-	finished           bool
+	// finishStatusSet is TS `finishStatus != null`: a present "" status
+	// is set.
+	finishStatusSet bool
+	usage           *interactionsUsage
+	serviceTier     *string
+	hasFunction     bool
+	lastEventID     string
+	resumable       bool
+	finished        bool
 
 	// attempt and receivedEvent mirror streamGoogleInteractionEvents'
 	// consecutive-failure accounting (stream-google-interactions.ts):
@@ -61,6 +64,10 @@ type interactionsStream struct {
 	// connection produced any event.
 	attempt       int
 	receivedEvent bool
+
+	// cancelSent records the best-effort POST /interactions/{id}/cancel, so
+	// an abort seen in Next and the Close after it send one request.
+	cancelSent bool
 
 	// includeRawChunks emits a ChunkTypeRaw chunk with the parsed SSE payload
 	// ahead of the chunks each event produces (TS includeRawChunks).
@@ -120,6 +127,10 @@ type interactionOpenBlock struct {
 	callID       string
 	isError      bool
 	startEmitted bool
+	// processingID / processingCallID are the processing step's TS
+	// google.processingId / google.processingCallId.
+	processingID     string
+	processingCallID string
 }
 
 func newInteractionsStream(ctx context.Context, client *internalhttp.Client, interactionID string, headers map[string]string, warnings []types.Warning, responseHeaders map[string]string, timeoutMs int) (provider.TextStream, error) {
@@ -242,8 +253,9 @@ func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response
 		case types.ToolCallContent:
 			// TS streams the tool input (start, one delta with the whole
 			// input, end) before the tool call itself. The tool call carries
-			// the part's own providerMetadata (an empty signature included).
-			toolCallMeta := providerMetaMap(signaturePtr(p.ThoughtSignature), normalizedInteractionID(response.ID))
+			// the part's own providerMetadata (an empty signature included),
+			// and a built-in tool call has none.
+			var toolCallMeta map[string]interface{}
 			if len(p.ProviderMetadata) > 0 {
 				var partMeta map[string]interface{}
 				if json.Unmarshal(p.ProviderMetadata, &partMeta) == nil && partMeta != nil {
@@ -338,6 +350,11 @@ restart:
 			// TS reconnects with last_event_id after a mid-stream read
 			// failure, up to maxRetries consecutive failures; an abort is
 			// surfaced as is.
+			// TS: an abort errors the stream and its finally block sends
+			// the cancel request when the interaction is not complete.
+			if s.resumable && !s.completed && s.interactionID != "" && s.ctx.Err() != nil {
+				s.cancelOnAbort()
+			}
 			if s.resumable && !s.completed && s.interactionID != "" && s.ctx.Err() == nil {
 				s.attempt++
 				if s.attempt < interactionsStreamMaxRetries {
@@ -390,7 +407,7 @@ restart:
 			} else {
 				chunkErr = providererrors.NewValidationErrorWithContext(event.Data, fmt.Sprintf("failed to parse interactions stream event: %v", err), err, &providererrors.ValidationContext{})
 			}
-			s.finishStatus = InteractionStatusFailed
+			s.setFinishStatus(InteractionStatusFailed)
 			s.buffer = append(s.buffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: chunkErr.Error(),
@@ -463,8 +480,13 @@ func (s *interactionsStream) cancelCtx() context.Context {
 }
 
 func (s *interactionsStream) Close() error {
-	if s.resumable && !s.completed && s.interactionID != "" {
-		_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(s.cancelCtx(), s.interactionID, s.headers)
+	// TS cancels the run on Google's side only when the stream ends through
+	// an abort (the caller's signal or the consumer's cancel) before the
+	// interaction completed: a stream that already failed on its own (retries
+	// exhausted, an HTTP error) leaves the run going so it can still be
+	// retrieved by id.
+	if s.resumable && !s.completed && s.interactionID != "" && (s.err == nil || s.ctx == nil || s.ctx.Err() != nil) {
+		s.cancelOnAbort()
 	}
 	if s.reader == nil {
 		return nil
@@ -511,6 +533,10 @@ var interactionsStreamRetryDelay = 500 * time.Millisecond
 // cancelOnAbort fires the best-effort POST /interactions/{id}/cancel TS sends
 // when the caller aborts before the interaction completed.
 func (s *interactionsStream) cancelOnAbort() {
+	if s.cancelSent {
+		return
+	}
+	s.cancelSent = true
 	_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(s.cancelCtx(), s.interactionID, s.headers)
 }
 
@@ -588,9 +614,8 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 	switch event.EventType {
 	case "interaction.created":
 		if event.Interaction != nil {
-			if event.Interaction.ID != "" {
-				s.interactionID = event.Interaction.ID
-			}
+			// The id the stream reconnects to and cancels stays the one it
+			// was opened with (TS streamGoogleInteractionEvents' parameter).
 			// TS: `id.length > 0 ? id : undefined` (store: false streams
 			// send "").
 			s.transformID = event.Interaction.ID
@@ -614,6 +639,12 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		block := event.Step
 		id := fmt.Sprintf("%s:%d", firstNonEmpty(s.transformID, "interaction"), idx)
 		open := &interactionOpenBlock{kind: block.Type, id: id, blockType: block.Type, toolCallID: firstNonEmpty(block.ID, id), toolName: block.Name, signature: block.Signature, data: block.Data, mimeType: block.MimeType, mimeTypeSet: block.mimeTypeSet, uri: block.URI, callID: firstNonEmpty(block.CallID, id), result: block.Result, isError: block.IsError != nil && *block.IsError}
+		switch block.Type {
+		case "processing_call":
+			open.processingID = firstNonEmpty(block.ID, id)
+		case "processing_result":
+			open.processingCallID = firstNonEmpty(block.CallID, id)
+		}
 		s.open[idx] = open
 		switch block.Type {
 		case "thought":
@@ -709,17 +740,19 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		}
 		switch {
 		case open.kind == "processing_call" || open.kind == "processing_result":
-			if delta.Type != open.kind {
+			// TS: either processing delta type updates a processing block,
+			// whatever its own kind.
+			if delta.Type != "processing_call" && delta.Type != "processing_result" {
 				break
 			}
 			if delta.Signature != nil {
 				open.signature = delta.Signature
 			}
-			if open.kind == "processing_call" && delta.ID != "" {
-				open.toolCallID = delta.ID
+			if delta.Type == "processing_call" && delta.ID != "" {
+				open.processingID = delta.ID
 			}
-			if open.kind == "processing_result" && delta.CallID != "" {
-				open.callID = delta.CallID
+			if delta.Type == "processing_result" && delta.CallID != "" {
+				open.processingCallID = delta.CallID
 			}
 		case open.kind == "text" && delta.Type == "text":
 			if delta.Text != "" {
@@ -790,20 +823,21 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 	case "interaction.status_update", "interaction.in_progress", "interaction.requires_action":
 		// TS: a status-less event keeps the interaction going, except that
 		// requires_action implies its own status.
-		switch {
-		case event.Status != "":
-			s.finishStatus = event.Status
+		switch status, ok := interactionsEventStatus(s.currentEventData, false, event.Status); {
+		case ok:
+			// TS `event.status != null`: a present "" is a status.
+			s.setFinishStatus(status)
 		case event.EventType == "interaction.requires_action":
-			s.finishStatus = InteractionStatusRequiresAction
+			s.setFinishStatus(InteractionStatusRequiresAction)
 		default:
-			s.finishStatus = InteractionStatusInProgress
+			s.setFinishStatus(InteractionStatusInProgress)
 		}
 	case "interaction.completed":
 		s.completed = true
 		s.hasCompletionEvent = true
 		if event.Interaction != nil {
-			if event.Interaction.Status != "" {
-				s.finishStatus = event.Interaction.Status
+			if status, ok := interactionsEventStatus(s.currentEventData, true, event.Interaction.Status); ok {
+				s.setFinishStatus(status)
 			}
 			if event.Interaction.Usage != nil {
 				s.usage = event.Interaction.Usage
@@ -813,12 +847,11 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 				s.serviceTier = event.Interaction.ServiceTier
 			}
 			if event.Interaction.ID != "" {
-				s.interactionID = event.Interaction.ID
 				s.transformID = event.Interaction.ID
 			}
 		}
 	case "error":
-		s.finishStatus = InteractionStatusFailed
+		s.setFinishStatus(InteractionStatusFailed)
 		// TS: createProviderStreamError({message: error?.message ?? 'Unknown
 		// interaction error', type: 'error', code: error?.code, data: event}).
 		message := "Unknown interaction error"
@@ -827,8 +860,9 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if event.Error.Message != nil {
 				message = *event.Error.Message
 			}
-			if event.Error.Code != "" {
-				code = event.Error.Code
+			// TS `error?.code ?? undefined`: a present "" code is kept.
+			if c, ok := interactionsEventErrorCode(s.currentEventData, event.Error.Code); ok {
+				code = c
 			}
 		}
 		var data interface{}
@@ -854,10 +888,10 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 	case "image":
 		s.emitFile(open.data, open.uri, mediaTypeOr(open.mimeType, open.mimeTypeSet, "image/png"))
 	case "processing_call":
-		meta := processingMeta(open.signature, s.transformID, open.toolCallID, "")
+		meta := processingMeta(open.signature, s.transformID, open.processingID, open.processingCallID)
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "google.processing_call", ProviderMetadata: meta}, ProviderMetadata: meta})
 	case "processing_result":
-		meta := processingMeta(open.signature, s.transformID, "", open.callID)
+		meta := processingMeta(open.signature, s.transformID, open.processingID, open.processingCallID)
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "google.processing_result", ProviderMetadata: meta}, ProviderMetadata: meta})
 	case "function_call":
 		var args map[string]interface{}
@@ -889,13 +923,17 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 	}
 }
 
+func (s *interactionsStream) setFinishStatus(status string) {
+	s.finishStatus, s.finishStatusSet = status, true
+}
+
 func (s *interactionsStream) appendFinish() {
 	if s.finished {
 		return
 	}
 	s.finished = true
 	finishReason, rawFinishReason := mapInteractionsFinishReason(s.finishStatus, s.hasFunction), s.finishStatus
-	if !s.hasCompletionEvent && (s.finishStatus == "" || s.finishStatus == InteractionStatusInProgress) {
+	if !s.hasCompletionEvent && (!s.finishStatusSet || s.finishStatus == InteractionStatusInProgress) {
 		finishReason, rawFinishReason = types.FinishReasonInterrupted, ""
 	}
 	s.buffer = append(s.buffer, &provider.StreamChunk{
@@ -1026,4 +1064,46 @@ func (s *interactionsStream) emitFile(data, uri, mediaType string) {
 		fileData := types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: mediaType, FileData: fileData, URL: uri, ProviderMetadata: meta}, ProviderMetadata: meta})
 	}
+}
+
+// interactionsEventStatus is TS `event.status` (nested: the event's
+// `interaction.status`) != null: a present string, "" included. fallback is
+// the decoded value, used when the raw event is not available.
+func interactionsEventStatus(data string, nested bool, fallback string) (string, bool) {
+	var probe struct {
+		Status      *string `json:"status"`
+		Interaction *struct {
+			Status *string `json:"status"`
+		} `json:"interaction"`
+	}
+	if data == "" || jsonexact.Unmarshal([]byte(data), &probe) != nil {
+		return fallback, fallback != ""
+	}
+	if nested {
+		if probe.Interaction != nil && probe.Interaction.Status != nil {
+			return *probe.Interaction.Status, true
+		}
+		return "", false
+	}
+	if probe.Status != nil {
+		return *probe.Status, true
+	}
+	return "", false
+}
+
+// interactionsEventErrorCode is TS `event.error?.code ?? undefined` for an
+// error event: a present string code, "" included.
+func interactionsEventErrorCode(data string, fallback string) (string, bool) {
+	var probe struct {
+		Error *struct {
+			Code *string `json:"code"`
+		} `json:"error"`
+	}
+	if data == "" || jsonexact.Unmarshal([]byte(data), &probe) != nil {
+		return fallback, fallback != ""
+	}
+	if probe.Error != nil && probe.Error.Code != nil {
+		return *probe.Error.Code, true
+	}
+	return "", false
 }

@@ -331,8 +331,11 @@ func decodeGatewayStreamChunk(data []byte, chunk *gatewayStreamChunk) error {
 // JSON type keeps its zero value instead of failing the whole value (the
 // object is decoded key by key, in sorted key order, when the one-shot decode
 // fails), and a JSON value that is not an object decodes as the zero value.
+//
+// Keys match exactly (jsonexact), as for every provider response: a key
+// that differs from a field's name only in case is not that field.
 func decodeGatewayLenient(data []byte, dst interface{}) error {
-	err := json.Unmarshal(data, dst)
+	err := jsonexact.Unmarshal(data, dst)
 	if err == nil {
 		return nil
 	}
@@ -354,7 +357,7 @@ func decodeGatewayLenient(data []byte, dst interface{}) error {
 		if merr != nil {
 			continue
 		}
-		_ = json.Unmarshal(one, dst)
+		_ = jsonexact.Unmarshal(one, dst)
 	}
 	return nil
 }
