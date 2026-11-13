@@ -2814,26 +2814,39 @@ func fireWorkflowStartBeforeAbort(ctx context.Context, onStart StartCallback, mo
 }
 
 // stepResultFromFinishEvent converts a step-end event to the StepResult handed
-// to OnAbort.
+// to OnAbort: TS onAbort's steps are the finished steps' full StepResults
+// (content, sources, provider metadata, request and response included).
 func stepResultFromFinishEvent(e ai.OnStepFinishEvent) types.StepResult {
 	return types.StepResult{
-		CallID:             e.CallID,
-		StepNumber:         e.StepNumber,
-		Model:              e.Model,
-		Text:               e.Text,
-		Reasoning:          e.Reasoning,
-		ReasoningText:      e.ReasoningText,
-		Files:              e.Files,
-		ToolCalls:          e.ToolCalls,
-		StaticToolCalls:    e.StaticToolCalls,
-		DynamicToolCalls:   e.DynamicToolCalls,
-		ToolResults:        e.ToolResults,
-		StaticToolResults:  e.StaticToolResults,
-		DynamicToolResults: e.DynamicToolResults,
-		FinishReason:       e.FinishReason,
-		RawFinishReason:    e.RawFinishReason,
-		Usage:              e.Usage,
-		Warnings:           e.Warnings,
+		CallID:                       e.CallID,
+		StepNumber:                   e.StepNumber,
+		ExperimentalSteeringMessages: e.ExperimentalSteeringMessages,
+		Model:                        e.Model,
+		Text:                         e.Text,
+		Content:                      e.Content,
+		Reasoning:                    e.Reasoning,
+		ReasoningText:                e.ReasoningText,
+		Files:                        e.Files,
+		ToolCalls:                    e.ToolCalls,
+		StaticToolCalls:              e.StaticToolCalls,
+		DynamicToolCalls:             e.DynamicToolCalls,
+		ToolResults:                  e.ToolResults,
+		StaticToolResults:            e.StaticToolResults,
+		DynamicToolResults:           e.DynamicToolResults,
+		FinishReason:                 e.FinishReason,
+		RawFinishReason:              e.RawFinishReason,
+		Usage:                        e.Usage,
+		Performance:                  e.Performance,
+		Warnings:                     e.Warnings,
+		Sources:                      e.Sources,
+		Request:                      types.StepRequest{Body: e.Request.Body, Messages: e.Request.Messages, URL: e.Request.URL},
+		Response: types.StepResponse{
+			ID: e.Response.ID, Timestamp: e.Response.Timestamp, ModelID: e.Response.ModelID,
+			Headers: e.Response.Headers, Messages: e.Response.Messages, Body: e.Response.Body,
+		},
+		ProviderMetadata: e.ProviderMetadata,
+		ToolsContext:     e.ToolsContext,
+		RuntimeContext:   e.RuntimeContext,
 	}
 }
 
