@@ -311,7 +311,9 @@ func ExperimentalGetBatchStatus(ctx context.Context, opts GetBatchStatusOptions)
 		return nil, wrapGatewayError(err)
 	}
 	if status == nil {
-		return nil, errBatchNoResult(batchAPI)
+		// TS returns the provider's status as is (undefined, no error); Go
+		// keeps the reference with an empty status.
+		return &Batch{BatchReference: opts.Batch}, nil
 	}
 
 	return &Batch{BatchReference: opts.Batch, BatchV4Status: *status}, nil
@@ -630,7 +632,8 @@ func ExperimentalListBatches(ctx context.Context, opts ListBatchesOptions) (*Lis
 }
 
 // errBatchNoResult is the error for a batch provider call that returned
-// neither a result nor an error (TS fails reading the missing result).
+// neither a result nor an error where TS reads the missing result (start
+// and list destructure it, results pipe it) and fails with a TypeError.
 func errBatchNoResult(batchAPI provider.BatchV4) error {
 	return fmt.Errorf("batch provider %s returned no result", batchAPI.Provider())
 }

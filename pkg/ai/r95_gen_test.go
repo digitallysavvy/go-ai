@@ -181,8 +181,9 @@ func (r95genNilBatch) DoListBatches(context.Context, provider.BatchV4ListOptions
 	return nil, nil
 }
 
-// A batch provider call that resolves without a result fails the call (TS
-// fails reading the missing result) instead of crashing it.
+// A batch provider call that resolves without a result fails the call where
+// TS reads the missing result (start, list, results), and passes it through
+// where TS returns it as is (status, cancel), instead of crashing.
 func TestR95genBatchProviderNoResult(t *testing.T) {
 	ctx := context.Background()
 	b := r95genNilBatch{}
@@ -198,8 +199,11 @@ func TestR95genBatchProviderNoResult(t *testing.T) {
 		wantNoResult(t, err)
 	})
 	t.Run("status", func(t *testing.T) {
-		_, err := ExperimentalGetBatchStatus(ctx, GetBatchStatusOptions{Provider: b, Batch: ref})
-		wantNoResult(t, err)
+		// TS returns the provider's undefined status without an error.
+		got, err := ExperimentalGetBatchStatus(ctx, GetBatchStatusOptions{Provider: b, Batch: ref})
+		if err != nil || got == nil || got.BatchReference != ref {
+			t.Fatalf("status = %+v, %v; want the reference with an empty status", got, err)
+		}
 	})
 	t.Run("results", func(t *testing.T) {
 		_, err := ExperimentalGetBatchResults(ctx, GetBatchResultsOptions{Provider: b, Batch: ref})
