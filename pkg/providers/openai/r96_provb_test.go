@@ -199,3 +199,35 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"funct
 		}
 	}
 }
+
+// TestR96provbFractionalNumberOptions: z.number() options keep a fraction,
+// so TS sends maxToolCalls, logprobs (top_logprobs) and maxCompletionTokens
+// as given; Go truncated them to integers.
+func TestR96provbFractionalNumberOptions(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-4o")
+	body, _, err := m.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"maxToolCalls": 2.5, "logprobs": 3.5}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["max_tool_calls"] != 2.5 || body["top_logprobs"] != 3.5 {
+		t.Errorf("responses body max_tool_calls = %#v, top_logprobs = %#v, want 2.5 and 3.5", body["max_tool_calls"], body["top_logprobs"])
+	}
+	if inc, _ := body["include"].([]string); len(inc) != 1 || inc[0] != "message.output_text.logprobs" {
+		t.Errorf("include = %#v, want the logprobs include", body["include"])
+	}
+	body, _, err = m.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"maxToolCalls": 3.0}}}, false)
+	if err != nil || body["max_tool_calls"] != 3 {
+		t.Errorf("integral max_tool_calls = %#v (%v), want int 3", body["max_tool_calls"], err)
+	}
+	chat := NewLanguageModel(New(Config{APIKey: "k"}), "gpt-4o")
+	cbody, _, err := chat.buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"maxCompletionTokens": 100.5, "logprobs": 2.5}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cbody["max_completion_tokens"] != 100.5 || cbody["top_logprobs"] != 2.5 {
+		t.Errorf("chat body max_completion_tokens = %#v, top_logprobs = %#v, want 100.5 and 2.5", cbody["max_completion_tokens"], cbody["top_logprobs"])
+	}
+}

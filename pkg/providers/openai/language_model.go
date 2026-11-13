@@ -722,7 +722,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// reasoning-model gating below only backfills max_completion_tokens from
 	// max_tokens when this was not already explicitly set.
 	if v, ok := openaiOpts["maxCompletionTokens"]; ok && v != nil {
-		if n, ok := intFromInterface(v); ok {
+		if n, ok := responsesJSNumber(v); ok { // z.number(): a fraction is sent as is
 			body["max_completion_tokens"] = n
 		}
 	}
@@ -742,7 +742,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				body["top_logprobs"] = 0
 			}
 		default:
-			if n, ok := intFromInterface(v); ok {
+			if n, ok := responsesJSNumber(v); ok { // z.number(): a fraction is sent as is
 				body["logprobs"] = true
 				body["top_logprobs"] = n
 			}

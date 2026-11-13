@@ -350,7 +350,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	safetyIdentifier := ""
 	passThroughUnsupportedFiles := false
 	forceReasoning := (*bool)(nil)
-	maxToolCalls := (*int)(nil)
+	var maxToolCalls interface{} // a JS number: int when integral, else float64
 	parallelToolCalls := (*bool)(nil)
 	truncation := ""
 	includeFields := []string(nil)
@@ -474,8 +474,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["passThroughUnsupportedFiles"].(bool); ok {
 				passThroughUnsupportedFiles = v
 			}
-			if v, ok := intFromInterface(openaiOpts["maxToolCalls"]); ok {
-				maxToolCalls = &v
+			if v, ok := responsesJSNumber(openaiOpts["maxToolCalls"]); ok {
+				maxToolCalls = v
 			}
 			if v, ok := openaiOpts["parallelToolCalls"].(bool); ok {
 				parallelToolCalls = &v
@@ -1067,7 +1067,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["safety_identifier"] = nil
 	}
 	if maxToolCalls != nil {
-		body["max_tool_calls"] = *maxToolCalls
+		body["max_tool_calls"] = maxToolCalls
 	} else if hasNilProviderOption(openaiOpts, "maxToolCalls") {
 		body["max_tool_calls"] = nil
 	}
@@ -1121,29 +1121,47 @@ func intFromInterface(value interface{}) (int, bool) {
 // also adds the message.output_text.logprobs include (see
 // responsesTopLogprobsIncluded).
 func responsesTopLogprobs(value interface{}) (interface{}, bool) {
-	switch v := value.(type) {
-	case bool:
+	if v, ok := value.(bool); ok {
 		if v {
 			return 20, true
 		}
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
+		return nil, false
+	}
+	return responsesJSNumber(value)
+}
+
+// responsesJSNumber reads a numeric option as the JS number TS sends: an int
+// when integral, else the float64 (z.number() keeps a fraction).
+func responsesJSNumber(value interface{}) (interface{}, bool) {
+	switch v := value.(type) {
 	case float64:
-		return int(v), true
-	case json.Number:
-		if i, err := v.Int64(); err == nil {
-			return int(i), true
+		if v == math.Trunc(v) && math.Abs(v) <= 1<<53 {
+			return int(v), true
 		}
+		return v, true
+	case float32:
+		return responsesJSNumber(float64(v))
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return responsesJSNumber(f)
+		}
+		return nil, false
+	}
+	if i, ok := intFromInterface(value); ok {
+		return i, true
 	}
 	return nil, false
 }
 
 // responsesTopLogprobsIncluded is TS's `if (topLogprobs)` truthiness check.
 func responsesTopLogprobsIncluded(v interface{}) bool {
-	n, ok := v.(int)
-	return ok && n != 0
+	switch n := v.(type) {
+	case int:
+		return n != 0
+	case float64:
+		return n != 0
+	}
+	return false
 }
 
 func responsesContextManagement(value interface{}) []map[string]interface{} {
