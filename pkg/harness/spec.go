@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -478,6 +479,59 @@ func (w CallWarning) MarshalJSON() ([]byte, error) {
 			Message string          `json:"message"`
 		}{w.Type, w.Message})
 	}
+}
+
+// UnmarshalJSON decodes the keys of the warning's variant only, like the
+// `harnessV1CallWarningSchema` union member zod picks: the members are plain
+// objects, so a key of another variant (a `details` on an `other` warning, a
+// `tool` on an `unsupported-setting` one) is stripped whatever its value. An
+// unknown type decodes every field; the stream-part validation rejects it.
+func (w *CallWarning) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	var head struct {
+		Type CallWarningType `json:"type"`
+	}
+	if err := jsonexact.UnmarshalPlain(data, &head); err != nil {
+		return err
+	}
+	switch head.Type {
+	case CallWarningUnsupportedSetting:
+		var v struct {
+			Setting string `json:"setting"`
+			Details string `json:"details"`
+		}
+		if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
+			return err
+		}
+		*w = CallWarning{Type: head.Type, Setting: v.Setting, Details: v.Details}
+	case CallWarningUnsupportedTool:
+		var v struct {
+			Tool    string `json:"tool"`
+			Details string `json:"details"`
+		}
+		if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
+			return err
+		}
+		*w = CallWarning{Type: head.Type, Tool: v.Tool, Details: v.Details}
+	case CallWarningOther:
+		var v struct {
+			Message string `json:"message"`
+		}
+		if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
+			return err
+		}
+		*w = CallWarning{Type: head.Type, Message: v.Message}
+	default:
+		type plain CallWarning
+		var v plain
+		if err := jsonexact.UnmarshalPlain(data, &v); err != nil {
+			return err
+		}
+		*w = CallWarning(v)
+	}
+	return nil
 }
 
 // Observability is diagnostics wiring handed to DoStart. Mirrors TS
