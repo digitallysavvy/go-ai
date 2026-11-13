@@ -478,15 +478,18 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 		}
 	}
 
-	// TS safeParseJSON (secureJsonParse) rejects a forbidden prototype key
-	// before the response schema runs.
-	if err := forbiddenPrototype(resp.Body); err != nil {
-		return err
-	}
+	// TS createJsonResponseHandler: safeParseJSON (secureJsonParse, then the
+	// schema) fails with the APICallError "Invalid JSON response" caused by
+	// the JSONParseError, so the provider's validator (which parses with the
+	// prototype check) runs first; the plain check covers a validator that
+	// does not, and requests without one.
 	if req.ValidateResponse != nil {
 		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 			return err
 		}
+	}
+	if err := forbiddenPrototype(resp.Body); err != nil {
+		return err
 	}
 
 	// Decode JSON response
@@ -514,13 +517,14 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 			Body:       resp.Body,
 		}
 	}
-	if err := forbiddenPrototype(resp.Body); err != nil {
-		return nil, err
-	}
+	// Validator first, as in DoJSON (TS "Invalid JSON response").
 	if req.ValidateResponse != nil {
 		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 			return nil, err
 		}
+	}
+	if err := forbiddenPrototype(resp.Body); err != nil {
+		return nil, err
 	}
 	if err := decodeJSONBody(resp.Body, result); err != nil {
 		return nil, fmt.Errorf("failed to decode JSON response: %w", err)

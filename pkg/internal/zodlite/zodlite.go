@@ -3,9 +3,9 @@
 // google chunkSchema). zod objects are non-strict (unknown keys pass),
 // `nullish` means absent or null, `optional` means absent only, and
 // `nullable` means the key must be present but may be null. Like zod, objects,
-// arrays and records report every failing entry (in schema or sorted-key
-// order). A union follows zod v4: when exactly one member failed only on
-// checks (a regex, a bound; issues with Continue set), its issues are
+// arrays and records report every failing entry (in schema order, or the JS
+// key order of the raw JSON under Validate). A union follows zod v4: when
+// exactly one member failed only on checks (a regex, a bound; issues with Continue set), its issues are
 // reported directly; otherwise an invalid_union issue lists each member's
 // full issue list. Type, value and key issues abort, as in zod.
 package zodlite
@@ -15,10 +15,12 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -291,7 +293,8 @@ func Intersection(a, b Node) Node {
 }
 
 // ObjectCatchall is z.object({...}).catchall(rest): the declared fields'
-// issues, then rest's for every other key (sorted: Go maps lose wire order).
+// issues, then rest's for every other key, in the JS object's key order
+// (see Validate).
 func ObjectCatchall(rest Node, fields ...Field) Node {
 	known := make(map[string]bool, len(fields))
 	for _, f := range fields {
@@ -310,13 +313,135 @@ func ObjectCatchall(rest Node, fields ...Field) Node {
 				keys = append(keys, k)
 			}
 		}
-		sort.Strings(keys)
-		list := []*Issue{bad}
-		for _, k := range keys {
-			list = append(list, rest(m[k], true, append(append([]interface{}{}, path...), k)))
-		}
+		list := append([]*Issue{bad}, entryIssues(m, keys, func(k string) *Issue {
+			return rest(m[k], true, append(append([]interface{}{}, path...), k))
+		})...)
 		return join(list)
 	}
+}
+
+// entryIssues runs check for each of keys (a subset of m's keys) and returns
+// the issues in the order the JS object enumerates its keys (see jsKeyOrder),
+// as zod walks a record or catchall in object key order.
+func entryIssues(m map[string]interface{}, keys []string, check func(string) *Issue) []*Issue {
+	found := map[string]*Issue{}
+	for _, k := range keys {
+		if issue := check(k); issue != nil {
+			found[k] = issue
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	ordered := make([]string, 0, len(found))
+	for k := range found {
+		ordered = append(ordered, k)
+	}
+	ordered = jsKeyOrder(m, ordered)
+	out := make([]*Issue, 0, len(ordered))
+	for _, k := range ordered {
+		out = append(out, found[k])
+	}
+	return out
+}
+
+// orderSource is one validation's raw JSON, from which the JS key order of
+// each object of value is read on demand (see Validate).
+type orderSource struct {
+	data   []byte
+	value  interface{}
+	once   sync.Once
+	orders map[uintptr][]string
+}
+
+// build walks value and the ordered parse of data in step and records the
+// JS key order of every object, keyed by the identity of value's map.
+func (s *orderSource) build() {
+	s.orders = map[uintptr][]string{}
+	tree, ok := jsonorder.Parse(s.data)
+	if !ok {
+		return
+	}
+	var walk func(v, t interface{}, depth int)
+	walk = func(v, t interface{}, depth int) {
+		if depth > 10000 {
+			return
+		}
+		switch x := v.(type) {
+		case map[string]interface{}:
+			o, ok := t.(*jsonorder.Object)
+			if !ok || o.Len() != len(x) {
+				return
+			}
+			s.orders[reflect.ValueOf(x).Pointer()] = o.Keys()
+			for k, child := range x {
+				if tc, ok := o.Get(k); ok {
+					walk(child, tc, depth+1)
+				}
+			}
+		case []interface{}:
+			a, ok := t.([]interface{})
+			if !ok || len(a) != len(x) {
+				return
+			}
+			for i := range x {
+				walk(x[i], a[i], depth+1)
+			}
+		}
+	}
+	walk(s.value, tree, 0)
+}
+
+// orderSources holds the sources of the validations running now.
+var orderSources sync.Map // *orderSource -> struct{}
+
+// jsKeyOrder returns keys (a subset of m's keys) in the order JavaScript
+// enumerates m's wire object: array-index keys ascending, then the others in
+// wire order. The order comes from the raw JSON of a running Validate; a map
+// validated without one falls back to sorted keys, array-index keys first.
+func jsKeyOrder(m map[string]interface{}, keys []string) []string {
+	if len(keys) < 2 {
+		return keys
+	}
+	p := reflect.ValueOf(m).Pointer()
+	var order []string
+	orderSources.Range(func(k, _ any) bool {
+		s := k.(*orderSource)
+		s.once.Do(s.build)
+		if o, ok := s.orders[p]; ok {
+			order = o
+			return false
+		}
+		return true
+	})
+	if order == nil {
+		sorted := append([]string(nil), keys...)
+		sort.Strings(sorted)
+		return jsonorder.JSKeyOrder(sorted)
+	}
+	want := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		want[k] = true
+	}
+	out := make([]string, 0, len(keys))
+	for _, k := range order {
+		if want[k] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// Validate runs schema over value, the JSON.parse result of data, with the
+// object key order of data: record, catchall and strict-object issues come
+// in the order zod reports them (the JS object's key order). value must be
+// decoded from data and not changed while Validate runs. Calling a Node
+// directly works too, with sorted keys in those issues.
+func Validate(schema Node, data []byte, value interface{}) *Issue {
+	s := &orderSource{data: data, value: value}
+	orderSources.Store(s, struct{}{})
+	defer orderSources.Delete(s)
+	return schema(value, true, nil)
 }
 
 // Literal is z.literal(want) for strings.
@@ -437,14 +562,15 @@ func Object(fields ...Field) Node {
 }
 
 // StrictEmptyObject is z.object({}).strict(): an object with no keys. Go maps
-// lose wire order, so the unrecognized keys are reported sorted.
+// lose wire order: the unrecognized keys come in the JS key order under
+// Validate, sorted otherwise.
 func StrictEmptyObject(v interface{}, present bool, path []interface{}) *Issue {
 	return StrictObject()(v, present, path)
 }
 
 // StrictObject is z.object({...}).strict(): the fields' issues first, then
 // one unrecognized_keys issue for the keys the schema does not declare
-// (sorted: Go maps lose wire order).
+// (in the JS key order under Validate, sorted otherwise).
 func StrictObject(fields ...Field) Node {
 	known := make(map[string]bool, len(fields))
 	for _, f := range fields {
@@ -471,7 +597,7 @@ func unrecognizedKeys(m map[string]interface{}, known map[string]bool, path []in
 	if len(keys) == 0 {
 		return nil
 	}
-	sort.Strings(keys)
+	keys = jsKeyOrder(m, keys)
 	quoted := make([]string, len(keys))
 	for i, k := range keys {
 		quoted[i] = `"` + k + `"`
@@ -498,17 +624,13 @@ func RecordOf(n Node) Node {
 		if !ok {
 			return Invalid("record", v, present, path)
 		}
-		// Go maps lose wire order; sorted keys keep the report deterministic.
 		keys := make([]string, 0, len(m))
 		for k := range m {
 			keys = append(keys, k)
 		}
-		sort.Strings(keys)
-		var bad []*Issue
-		for _, k := range keys {
-			bad = append(bad, n(m[k], true, append(append([]interface{}{}, path...), k)))
-		}
-		return join(bad)
+		return join(entryIssues(m, keys, func(k string) *Issue {
+			return n(m[k], true, append(append([]interface{}{}, path...), k))
+		}))
 	}
 }
 
@@ -701,7 +823,7 @@ func ValidationMessage(schema Node, data string) string {
 		}
 		return ""
 	}
-	bad := schema(value, true, nil)
+	bad := Validate(schema, []byte(data), value)
 	if bad == nil {
 		return ""
 	}

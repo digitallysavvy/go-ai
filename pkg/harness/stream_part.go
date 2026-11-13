@@ -8,7 +8,9 @@ import (
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // StreamPart is one event emitted by a harness adapter during a prompt turn.
@@ -374,7 +376,8 @@ func (p *ErrorPart) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var v any
-	if err := json.Unmarshal(aux.Error, &v); err != nil {
+	// error is z.unknown(): JSON.parse reads 1e400 as Infinity.
+	if err := jsonexact.UnmarshalPlain(aux.Error, &v); err != nil {
 		return err
 	}
 	p.Error = v
@@ -472,7 +475,8 @@ func MarshalStreamPart(part StreamPart) ([]byte, error) {
 // MarshalTagged encodes v (a struct) as a JSON object whose first key is
 // `"type": typ`. It is shared with the bridge frame encoders.
 func MarshalTagged(typ string, v any) ([]byte, error) {
-	body, err := json.Marshal(v)
+	// JSON.stringify: NaN and +-Inf write null (ruling 4), no HTML escaping.
+	body, err := jsonstr.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
@@ -593,14 +597,17 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 			*toolCallAlias
 			StepToolCallCount json.RawMessage `json:"stepToolCallCount"`
 		}{toolCallAlias: (*toolCallAlias)(tc)}
-		if err := json.Unmarshal(data, &wire); err != nil {
+		if err := jsonexact.UnmarshalPlain(data, &wire); err != nil {
 			return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 		}
 		var n int
 		if json.Unmarshal(wire.StepToolCallCount, &n) == nil && n > 0 {
 			tc.StepToolCallCount = &n
 		}
-	} else if err := json.Unmarshal(data, part); err != nil {
+	} else if err := jsonexact.UnmarshalPlain(data, part); err != nil {
+		// zod matches keys exactly, and JSON.parse reads 1e400 as Infinity
+		// in a z.unknown() value (a tool result, a raw value). The caller
+		// runs the secureJsonParse check.
 		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 	}
 	if err := validateStreamPart(part); err != nil {

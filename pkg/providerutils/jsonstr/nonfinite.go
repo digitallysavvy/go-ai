@@ -52,6 +52,17 @@ func sentinelTexts(s float64) map[string]bool {
 // nullSentinelTokens rewrites each number token of JSON text b (outside
 // strings) whose text is a sentinel text as null, counting them.
 func nullSentinelTokens(b []byte, texts map[string]bool) ([]byte, int) {
+	return rewriteNumberTokens(b, func(tok []byte) ([]byte, bool) {
+		if texts[string(tok)] {
+			return []byte("null"), true
+		}
+		return nil, false
+	})
+}
+
+// rewriteNumberTokens replaces each number token of JSON text b (outside
+// strings) for which repl reports true with its replacement, counting them.
+func rewriteNumberTokens(b []byte, repl func(tok []byte) ([]byte, bool)) ([]byte, int) {
 	out := make([]byte, 0, len(b))
 	found := 0
 	for i := 0; i < len(b); {
@@ -65,9 +76,7 @@ func nullSentinelTokens(b []byte, texts map[string]bool) ([]byte, int) {
 				}
 				j++
 			}
-			if j < len(b) {
-				j++
-			}
+			j = min(j+1, len(b))
 			out = append(out, b[i:j]...)
 			i = j
 		case c == '-' || (c >= '0' && c <= '9'):
@@ -75,8 +84,8 @@ func nullSentinelTokens(b []byte, texts map[string]bool) ([]byte, int) {
 			for j < len(b) && (b[j] == '.' || b[j] == 'e' || b[j] == 'E' || b[j] == '+' || b[j] == '-' || (b[j] >= '0' && b[j] <= '9')) {
 				j++
 			}
-			if texts[string(b[i:j])] {
-				out = append(out, "null"...)
+			if r, ok := repl(b[i:j]); ok {
+				out = append(out, r...)
 				found++
 			} else {
 				out = append(out, b[i:j]...)

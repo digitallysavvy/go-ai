@@ -34,7 +34,7 @@ func TestR96integJSONParseErrorPublicAPI(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", target.Error(), want)
 	}
 	literal := &providererrors.JSONParseError{Text: "t"}
-	if literal.Error() != "JSON parsing failed: Text: t." {
+	if literal.Error() != "JSON parsing failed: Text: t.\nError message: unknown error" {
 		t.Fatalf("literal Error() = %q", literal.Error())
 	}
 

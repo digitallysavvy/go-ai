@@ -442,6 +442,16 @@ func Unmarshal(data []byte, v interface{}) error {
 	return decodeJS(Filter(data, v), v)
 }
 
+// UnmarshalPlain is Unmarshal without the prototype check: the twin of a TS
+// `await response.json()` (plain JSON.parse), which keeps a `__proto__` key
+// or a `constructor.prototype` as an ordinary own property instead of
+// rejecting the payload as secureJsonParse does. Keys still match exactly,
+// and a number beyond the double range reads as +-Inf in an interface
+// position. Use Unmarshal wherever TS runs secureJsonParse / safeParseJSON.
+func UnmarshalPlain(data []byte, v interface{}) error {
+	return decodeJS(Filter(data, v), v)
+}
+
 // UntaggedFields lists, as "Type.Field", every exported struct field reachable
 // from the targets' types (through pointers, slices, arrays, maps and nested
 // structs, not into types with their own UnmarshalJSON / UnmarshalText) that

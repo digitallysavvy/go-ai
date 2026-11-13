@@ -38,7 +38,7 @@ func TestR96carryDoJSONForbiddenPrototype(t *testing.T) {
 	c := NewClient(Config{BaseURL: srv.URL})
 	var out map[string]interface{}
 	err := c.DoJSON(context.Background(), Request{Method: "GET", Path: "/"}, &out)
-	if !providererrors.IsJSONParseError(err) || !strings.Contains(err.Error(), "JSON parsing failed: Text: "+body+".\nError message: Object contains forbidden prototype property") {
+	if !providererrors.IsJSONParseError(err) || !strings.Contains(err.Error(), "JSON parsing failed: Text: "+body+".\nError message: SyntaxError: Object contains forbidden prototype property") {
 		t.Fatalf("DoJSON = %v", err)
 	}
 	if _, err := c.DoJSONResponse(context.Background(), Request{Method: "GET", Path: "/"}, &out); !providererrors.IsJSONParseError(err) {

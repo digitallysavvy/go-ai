@@ -54,7 +54,7 @@ func TestR75ProvbChecksAndUnionReporting(t *testing.T) {
 // TestR75ProvbExistingNodesUnchanged: nodes the stream frame schemas
 // (anthropic, google) and the other providers use render as before r75: Disc
 // keeps the zod 4.1-4.3 discriminator issue, a union of type-failing members
-// is one invalid_union, StrictEmptyObject reports sorted keys.
+// is one invalid_union, StrictEmptyObject reports its keys in the JS key order (r97: wire order).
 func TestR75ProvbExistingNodesUnchanged(t *testing.T) {
 	disc := Disc(map[string]Node{"a": Typed("a")})
 	if got := r75provbIssues(t, disc, `{"type":"c"}`); got != `[{"code":"invalid_union","errors":[],"note":"No matching discriminator","discriminator":"type","path":["type"],"message":"Invalid input"}]` {
@@ -67,7 +67,7 @@ func TestR75ProvbExistingNodesUnchanged(t *testing.T) {
 	if got := r75provbIssues(t, u, `true`); got != `[{"code":"invalid_union","errors":[[{"expected":"string","code":"invalid_type","path":[],"message":"Invalid input: expected string, received boolean"}],[{"expected":"number","code":"invalid_type","path":[],"message":"Invalid input: expected number, received boolean"}]],"path":[],"message":"Invalid input"}]` {
 		t.Errorf("Union = %s", got)
 	}
-	if got := r75provbIssues(t, StrictEmptyObject, `{"b":1,"a":2}`); got != `[{"code":"unrecognized_keys","keys":["a","b"],"path":[],"message":"Unrecognized keys: \"a\", \"b\""}]` {
+	if got := r75provbIssues(t, StrictEmptyObject, `{"b":1,"a":2}`); got != `[{"code":"unrecognized_keys","keys":["b","a"],"path":[],"message":"Unrecognized keys: \"b\", \"a\""}]` {
 		t.Errorf("StrictEmptyObject = %s", got)
 	}
 	// A hand-built issue without Continue (bfl's invalid_format URL) still

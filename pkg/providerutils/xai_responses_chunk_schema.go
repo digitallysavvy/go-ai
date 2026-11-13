@@ -140,7 +140,7 @@ func ValidateXAIResponsesChunk(data []byte) error {
 	if !known {
 		return &ChunkSchemaError{Path: []interface{}{"type"}, Code: "invalid_union", Message: "Invalid input"}
 	}
-	if bad := node(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(node, data, value); bad != nil {
 		return bad
 	}
 	return nil
@@ -167,7 +167,7 @@ func XAIResponsesResponseValidator(providerName string) func(statusCode int, hea
 		if err != nil {
 			return err
 		}
-		if bad := zXaiResponseFields(false)(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(zXaiResponseFields(false), body, value); bad != nil {
 			return bad
 		}
 		return nil
