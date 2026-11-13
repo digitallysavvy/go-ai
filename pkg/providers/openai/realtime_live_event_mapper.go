@@ -9,7 +9,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // openAILiveOptions is the parsed form of
@@ -470,7 +469,21 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 	for k, v := range eventID {
 		out[k] = v
 	}
-	return jsonstr.Marshal(out)
+	// TS JSON.stringify of the event object literal: its key order.
+	return json.RawMessage(providerutils.StringifyOrdered(out, openAILiveClientEventOrder)), nil
+}
+
+// openAILiveClientEventOrder is the key order of TS
+// serializeOpenAILiveClientEvent's object literals and
+// buildOpenAILiveSessionConfig's session (event_id is spread last).
+var openAILiveClientEventOrder = map[string][]string{
+	"":                           {"type", "session", "audio", "content", "delegation_id", "event_id"},
+	"session":                    {"model", "instructions", "audio", "delegation", "client", "input", "store"},
+	"session.audio":              {"format", "output"},
+	"session.audio.format":       {"type", "rate"},
+	"session.audio.output":       {"voice"},
+	"session.audio.output.voice": {"id"},
+	"session.delegation":         {"type"},
 }
 
 var openAILiveKnownServerTypes = map[string]bool{
@@ -587,7 +600,7 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 			e.Speaker = "assistant"
 		}
 		e.Delta = delta
-		start, end := int(startMs), int(endMs)
+		start, end := liveMsInt(startMs), liveMsInt(endMs)
 		e.StartMs, e.EndMs = &start, &end
 	case "session.delegation.created":
 		delegation, ok := envelope["delegation"].(map[string]interface{})
@@ -623,7 +636,7 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 			if !ok || offset < 0 || math.IsInf(offset, 1) { // z.number(): Infinity is invalid
 				return invalidLiveServerEvent(raw)
 			}
-			off := int(offset)
+			off := liveMsInt(offset)
 			e.OffsetMs = &off
 		}
 	case "error":
@@ -702,6 +715,17 @@ func invalidLiveEventTimeInterval(raw json.RawMessage) []provider.RealtimeServer
 // numbers. ok is false when either field is missing/malformed (schema
 // failure -> invalidLiveServerEvent); when ok is true, intervalOK reports
 // whether end_ms >= start_ms (false -> invalidLiveEventTimeInterval).
+// liveMsInt is a validated (finite, non-negative) millisecond count in the
+// v0.5.2 int field: truncated, and clamped to the platform int (a Go
+// conversion of a double beyond it is implementation-defined, and 32-bit
+// targets overflow past 2^31-1).
+func liveMsInt(v float64) int {
+	if v >= math.MaxInt {
+		return math.MaxInt
+	}
+	return int(v)
+}
+
 func reqLiveInterval(envelope map[string]interface{}) (startMs, endMs float64, ok, intervalOK bool) {
 	startMs, ok = reqLiveFloat(envelope, "start_ms")
 	if !ok {

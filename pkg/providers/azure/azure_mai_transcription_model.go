@@ -3,7 +3,6 @@ package azure
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -13,7 +12,6 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -237,11 +235,8 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 					return nil
 				}
 				audioBytes += len(chunk)
-				msg, marshalErr := json.Marshal(map[string]string{"type": "input_audio_buffer.append", "audio": b64})
-				if marshalErr != nil {
-					return nil
-				}
-				return s.send(socket, msg)
+				// TS JSON.stringify({type, audio}): literal key order.
+				return s.send(socket, []byte(providerutils.StringifyOrdered(map[string]interface{}{"type": "input_audio_buffer.append", "audio": b64}, azureMaiAppendOrder)))
 			},
 			func() error {
 				select {
@@ -346,10 +341,7 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 			case "session.created":
 				// TS socket.send(JSON.stringify(sessionUpdate)): a failure
 				// to serialize or send fails the stream.
-				payload, sendErr := jsonstr.Marshal(cfg.sessionUpdate)
-				if sendErr == nil {
-					sendErr = s.send(conn, payload)
-				}
+				sendErr := s.send(conn, []byte(providerutils.StringifyOrdered(cfg.sessionUpdate, azureMaiSessionOrder)))
 				if sendErr != nil {
 					fail(sendErr)
 					return
@@ -404,6 +396,20 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 		}
 	}
 }
+
+// azureMaiAppendOrder and azureMaiSessionOrder are the key orders of TS's
+// append frame and session.update object literals.
+var (
+	azureMaiAppendOrder  = map[string][]string{"": {"type", "audio"}}
+	azureMaiSessionOrder = map[string][]string{
+		"":                                  {"type", "session"},
+		"session":                           {"type", "audio"},
+		"session.audio":                     {"input"},
+		"session.audio.input":               {"format", "transcription", "turn_detection", "noise_reduction"},
+		"session.audio.input.format":        {"type", "rate"},
+		"session.audio.input.transcription": {"model", "language"},
+	}
+)
 
 func (s *azureMaiTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
 	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: closeInfo.Wrap})

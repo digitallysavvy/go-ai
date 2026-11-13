@@ -164,10 +164,11 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range internalhttp.MergeHeaders(headers, map[string]string{
+	// TS postToApi appends the runtime user-agent tag.
+	for k, v := range providerutils.WithUserAgentSuffix(internalhttp.MergeHeaders(headers, map[string]string{
 		"Content-Type":             "application/ssml+xml",
 		"X-Microsoft-OutputFormat": outputFormat,
-	}, opts.Headers) {
+	}, opts.Headers), providerutils.RuntimeEnvironmentUserAgent()) {
 		req.Header.Set(k, v)
 	}
 

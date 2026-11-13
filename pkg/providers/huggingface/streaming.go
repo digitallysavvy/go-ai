@@ -167,10 +167,14 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 		}, nil
 	}
 
+	// A frame with a string type always passes TS's chunk schema (its last
+	// member is the loose {type} fallback), and transform then reads the
+	// members as sent: keep what decodes (a fractional count truncated into
+	// the int fields) instead of skipping the frame.
 	var event hfStreamEvent
-	if err := jsonexact.Unmarshal([]byte(data), &event); err != nil {
-		return nil, nil //nolint:nilerr // malformed known-shape event: skip, matching TS's silent fallthrough
-	}
+	// A member that is not an object decodes as an empty struct: TS reads
+	// undefined from each of its fields (no TypeError).
+	_ = providerutils.UnmarshalChunk([]byte(data), &event)
 
 	// TS reads value.response.* / value.item.* of a frame that matched the
 	// loose {type} fallback member: a missing or null member is a TypeError

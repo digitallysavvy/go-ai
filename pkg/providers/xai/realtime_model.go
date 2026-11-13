@@ -16,7 +16,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -448,7 +447,26 @@ func xaiSerializeClientEvent(event provider.RealtimeClientEvent, buildSession fu
 	default:
 		return nil, nil
 	}
-	return jsonstr.Marshal(out)
+	// TS JSON.stringify of the event object literal: its key order.
+	return json.RawMessage(providerutils.StringifyOrdered(out, xaiRealtimeClientEventOrder)), nil
+}
+
+// xaiRealtimeClientEventOrder is the key order of TS
+// serializeXaiRealtimeClientEvent's object literals and buildXaiSessionConfig's
+// session (provider options follow).
+var xaiRealtimeClientEventOrder = map[string][]string{
+	"":                            {"type", "session", "audio", "item", "response"},
+	"session":                     {"instructions", "voice", "audio", "turn_detection", "tools"},
+	"session.audio":               {"input", "output"},
+	"session.audio.input":         {"format"},
+	"session.audio.input.format":  {"type", "rate"},
+	"session.audio.output":        {"format"},
+	"session.audio.output.format": {"type", "rate"},
+	"session.turn_detection":      {"type", "threshold", "silence_duration_ms", "prefix_padding_ms"},
+	"session.tools":               {"type", "name", "description", "parameters"},
+	"item":                        {"type", "role", "content", "call_id", "output"},
+	"item.content":                {"type", "text", "audio"},
+	"response":                    {"modalities", "instructions"},
 }
 
 func xaiConversationItem(item provider.RealtimeConversationItem) (map[string]interface{}, error) {

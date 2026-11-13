@@ -284,12 +284,12 @@ func TestRealtimeSerializePreservesEventID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"event_id":"client-event","session":{"instructions":"Be concise.","model":"gpt-realtime","type":"realtime"},"type":"session.update"}`
+	want := `{"type":"session.update","session":{"type":"realtime","model":"gpt-realtime","instructions":"Be concise."},"event_id":"client-event"}` // TS key order
 	if string(raw) != want {
 		t.Fatalf("session-update = %s", raw)
 	}
 	raw, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "AA==", EventID: "client-event"})
-	if string(raw) != `{"audio":"AA==","event_id":"client-event","type":"input_audio_buffer.append"}` {
+	if string(raw) != `{"type":"input_audio_buffer.append","audio":"AA==","event_id":"client-event"}` {
 		t.Fatalf("append = %s", raw)
 	}
 	raw, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "AA=="})

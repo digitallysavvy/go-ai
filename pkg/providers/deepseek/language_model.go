@@ -902,6 +902,11 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			}
 			return errorChunk, nil
 		}
+		// TS deepseekChatChunkSchema's data member is a z.object, which
+		// strips an `error` key: a frame matching it is a data chunk.
+		if len(chunkData.Error) > 0 && deepseekChunkMatchesDataMember(event.Data) {
+			chunkData.Error = nil
+		}
 		if len(chunkData.Error) > 0 {
 			s.finishErrored = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -1020,6 +1025,27 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		continue
 
 	}
+}
+
+// deepseekChunkMatchesDataMember reports whether a stream frame with an
+// `error` key also passes the data member of the chunk union. TS tries the
+// data member first and its z.object strips the key, so `'error' in value`
+// is false. The frame is checked without the key: the error member requires
+// it, so the union then passes only through the data member.
+func deepseekChunkMatchesDataMember(data string) bool {
+	var fields map[string]json.RawMessage
+	if jsonexact.Unmarshal([]byte(data), &fields) != nil {
+		return false
+	}
+	if _, ok := fields["error"]; !ok {
+		return false
+	}
+	delete(fields, "error")
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return false
+	}
+	return providerutils.ValidateChatChunk(stripped, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindDeepSeek}) == nil
 }
 
 func deepseekStreamErrorText(raw json.RawMessage) string {

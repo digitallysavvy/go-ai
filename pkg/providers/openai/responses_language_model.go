@@ -1135,7 +1135,9 @@ func responsesTopLogprobs(value interface{}) (interface{}, bool) {
 func responsesJSNumber(value interface{}) (interface{}, bool) {
 	switch v := value.(type) {
 	case float64:
-		if v == math.Trunc(v) && math.Abs(v) <= 1<<53 {
+		// An int only when it fits the platform int (32-bit included); a
+		// larger integral double stays float64, which encodes the same.
+		if v == math.Trunc(v) && math.Abs(v) <= 1<<53 && v >= math.MinInt && v <= math.MaxInt {
 			return int(v), true
 		}
 		return v, true

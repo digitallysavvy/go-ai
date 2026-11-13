@@ -48,7 +48,7 @@ func zodIssueText(node zodlite.Node, args interface{}) string {
 	if err != nil {
 		return ""
 	}
-	return zodlite.IssueText(zodlite.ValidationMessage(node, string(data)))
+	return zodlite.IssueText(zodlite.ValidationMessagePlain(node, string(data)))
 }
 
 // openAIToolArgsError is the TypeValidationError TS validateTypes throws

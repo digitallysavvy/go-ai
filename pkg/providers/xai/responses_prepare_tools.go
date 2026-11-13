@@ -66,7 +66,7 @@ func validateXAIResponsesToolArgs(tools []types.Tool) error {
 		if err != nil {
 			return &providererrors.TypeValidationError{Context: &providererrors.ValidationContext{}, Message: err.Error(), Cause: err}
 		}
-		msg := zodlite.ValidationMessage(node, string(data))
+		msg := zodlite.ValidationMessagePlain(node, string(data))
 		if msg == "" {
 			continue
 		}

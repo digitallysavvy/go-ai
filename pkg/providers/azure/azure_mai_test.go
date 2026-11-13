@@ -487,6 +487,8 @@ type maiTestServer struct {
 	mu       sync.Mutex
 	received []map[string]interface{}
 	toSend   chan interface{}
+	// rawReceived keeps each frame's text (key order included).
+	rawReceived []string
 }
 
 func newMAITestServer() *maiTestServer {
@@ -514,6 +516,7 @@ func newMAITestServer() *maiTestServer {
 			}
 			s.mu.Lock()
 			s.received = append(s.received, decoded)
+			s.rawReceived = append(s.rawReceived, raw)
 			s.mu.Unlock()
 		}
 	}}

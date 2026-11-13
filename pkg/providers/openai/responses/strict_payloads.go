@@ -158,7 +158,7 @@ func validateToolPayload(node zodlite.Node, value interface{}) error {
 	if err != nil {
 		return &providererrors.TypeValidationError{Cause: err, Message: err.Error()}
 	}
-	msg := zodlite.ValidationMessage(node, string(data))
+	msg := zodlite.ValidationMessagePlain(node, string(data))
 	if msg == "" {
 		return nil
 	}

@@ -915,6 +915,11 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			return errChunk, nil
 		}
 
+		// TS moonshotAIChatChunkSchema's data member is a z.object, which
+		// strips an `error` key: a frame matching it is a data chunk.
+		if chunk.Error != nil && moonshotChunkMatchesDataMember(event.Data) {
+			chunk.Error = nil
+		}
 		if chunk.Error != nil {
 			// TS: an error chunk sets the finish reason to error and enqueues
 			// the error part; the stream keeps going and flush() finishes it.
@@ -1047,6 +1052,27 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		continue
 
 	}
+}
+
+// moonshotChunkMatchesDataMember reports whether a stream frame with an
+// `error` key also passes the data member of the chunk union. TS tries the
+// data member first and its z.object strips the key, so `'error' in value`
+// is false. The frame is checked without the key: the error member requires
+// it, so the union then passes only through the data member.
+func moonshotChunkMatchesDataMember(data string) bool {
+	var fields map[string]json.RawMessage
+	if jsonexact.Unmarshal([]byte(data), &fields) != nil {
+		return false
+	}
+	if _, ok := fields["error"]; !ok {
+		return false
+	}
+	delete(fields, "error")
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return false
+	}
+	return providerutils.ValidateChatChunk(stripped, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindMoonshot}) == nil
 }
 
 // buildFlushChunks closes any open text/reasoning blocks, flushes accumulated

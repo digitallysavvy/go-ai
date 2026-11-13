@@ -30,12 +30,15 @@ func convertHuggingFaceResponsesUsage(usage *hfUsage) types.Usage {
 	noCache := inputTokens - cachedTokens
 	textTokens := outputTokens - reasoningTokens
 
-	// raw mirrors TS's `raw: usage` -- the exact usage object as received,
+	// raw mirrors TS's `raw: usage` -- the usage object as received (the
+	// schema's declared keys, numbers exact); a usage built in Go is
 	// re-marshaled through hfUsage so absent optional sub-objects are
 	// omitted rather than appearing as null/zero.
-	var raw map[string]interface{}
-	if data, err := jsonstr.Marshal(usage); err == nil {
-		_ = jsonexact.Unmarshal(data, &raw)
+	raw := usage.raw
+	if raw == nil {
+		if data, err := jsonstr.Marshal(usage); err == nil {
+			_ = jsonexact.Unmarshal(data, &raw)
+		}
 	}
 
 	return types.Usage{
