@@ -468,6 +468,9 @@ func (m *ImageModel) cancelQuietly(ctx context.Context, processID string, header
 		Method:  http.MethodDelete,
 		Path:    "/image/v1/cancel/" + processID,
 		Headers: headers,
+		// TS calls fetchImpl directly with the resolved headers only (no
+		// runtime user-agent tag).
+		RawFetch: true,
 	})
 }
 

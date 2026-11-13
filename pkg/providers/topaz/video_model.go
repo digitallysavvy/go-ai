@@ -1006,6 +1006,9 @@ func (m *VideoModel) cancelQuietly(ctx context.Context, requestID string, header
 		Method:  http.MethodDelete,
 		Path:    "/video/" + requestID,
 		Headers: headers,
+		// TS calls fetchImpl directly with the resolved headers only (no
+		// runtime user-agent tag).
+		RawFetch: true,
 	})
 }
 

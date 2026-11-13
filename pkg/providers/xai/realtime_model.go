@@ -145,7 +145,10 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 		Method:  http.MethodPost,
 		Path:    "/realtime/client_secrets",
 		Headers: map[string]string{"Content-Type": "application/json"},
-		Body:    body,
+		// TS calls fetchFn directly with {...config headers, Content-Type}:
+		// no runtime user-agent tag, and a fetch rejection as is.
+		RawFetch: true,
+		Body:     body,
 	})
 	if err != nil {
 		return provider.ClientSecretResult{}, internalhttp.UnwrapFetchRejection(err) // TS: the header error as is

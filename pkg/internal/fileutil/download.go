@@ -54,6 +54,15 @@ type DownloadOptions struct {
 	// validation (TS: an injected fetch). URL validation, redirect checks
 	// and header isolation apply with any Transport.
 	Transport http.RoundTripper
+
+	// RawFetch is a TS call of the fetch function itself instead of
+	// download(): the request carries no SDK user-agent tag, and a non-2xx
+	// response's body is returned as the data (fetch resolves for any
+	// status; the caller reads response.arrayBuffer(); DownloadToWriter
+	// still fails it). URL validation,
+	// connect-time checks, redirect checks, header isolation and MaxSize
+	// still apply.
+	RawFetch bool
 }
 
 // DownloadResult contains downloaded file bytes and response metadata.
@@ -139,7 +148,9 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 		req.Header.Set(k, v)
 	}
 	SanitizeRequestHeaders(req.Header)
-	setDownloadUserAgent(req.Header)
+	if !opts.RawFetch {
+		setDownloadUserAgent(req.Header)
+	}
 
 	// Execute request
 	resp, err := client.Do(req)
@@ -149,7 +160,7 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 	defer resp.Body.Close() //nolint:errcheck
 
 	// Check status code
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	if !opts.RawFetch && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		downloadErr := providererrors.NewDownloadError(
 			url,
@@ -217,7 +228,9 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 		req.Header.Set(k, v)
 	}
 	SanitizeRequestHeaders(req.Header)
-	setDownloadUserAgent(req.Header)
+	if !opts.RawFetch {
+		setDownloadUserAgent(req.Header)
+	}
 
 	// Execute request
 	resp, err := client.Do(req)

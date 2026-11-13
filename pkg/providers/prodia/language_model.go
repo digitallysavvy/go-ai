@@ -353,7 +353,12 @@ var promptImageDownloadOptions = func() fileutil.DownloadOptions {
 }
 
 func fetchImageURL(ctx context.Context, rawURL string) ([]byte, error) {
-	return fileutil.Download(ctx, rawURL, promptImageDownloadOptions())
+	opts := promptImageDownloadOptions()
+	// TS `await fetchFn(part.data.url.toString())` then arrayBuffer(): no SDK
+	// user-agent tag, and the body is read whatever the status. The URL is
+	// still validated (security is not traded for parity).
+	opts.RawFetch = true
+	return fileutil.Download(ctx, rawURL, opts)
 }
 
 // extractPromptAndImage walks the message prompt and returns:

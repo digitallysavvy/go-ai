@@ -189,6 +189,14 @@ type Request struct {
 	// in DoJSON and DoJSONResponse before it is decoded: TS createJsonResponseHandler
 	// (response schema). Its error is returned as is.
 	ValidateResponse func(statusCode int, headers http.Header, body []byte) error
+
+	// RawFetch makes Do the twin of a TS call of the fetch function itself
+	// (`(config.fetch ?? fetch)(url, init)`, no postJsonToApi / getFromApi):
+	// the request carries the config headers and Headers only (no runtime
+	// user-agent tag, no default Content-Type), and a transport failure is
+	// returned as is instead of the retryable "Cannot connect to API"
+	// APICallError (no handleFetchError).
+	RawFetch bool
 }
 
 // Response represents an HTTP response
@@ -430,18 +438,27 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 		httpReq.Header.Set(k, v)
 	}
 
-	// Tag the request's User-Agent, appending to (not replacing) whatever
-	// the headers above already set. See applyUserAgentSuffix.
-	applyUserAgentSuffix(httpReq.Header)
+	if !req.RawFetch {
+		// Tag the request's User-Agent, appending to (not replacing) whatever
+		// the headers above already set. See applyUserAgentSuffix.
+		applyUserAgentSuffix(httpReq.Header)
 
-	// Set content type for JSON body
-	if req.Body != nil && httpReq.Header.Get("Content-Type") == "" {
-		httpReq.Header.Set("Content-Type", "application/json")
+		// Set content type for JSON body
+		if req.Body != nil && httpReq.Header.Get("Content-Type") == "" {
+			httpReq.Header.Set("Content-Type", "application/json")
+		}
 	}
 
 	// Perform request
 	httpResp, err := WithFetchRedirects(c.client).Do(httpReq)
 	if err != nil {
+		if req.RawFetch {
+			// TS: the fetch rejection propagates as is.
+			if cause, ok := FetchRejectionCause(err); ok {
+				return nil, cause
+			}
+			return nil, err
+		}
 		return nil, TransportErrorCtx(ctx, err)
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
