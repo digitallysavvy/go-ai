@@ -214,7 +214,8 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		Name       string `json:"name"`
 		ExpireTime string `json:"expireTime"`
 	}
-	if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(respBody)), &data); err != nil {
+	// TS response.json(): plain JSON.parse, not secureJsonParse.
+	if err := googlePlainJSONParse([]byte(textdecode.UTF8(respBody)), &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	var expiresAt *int64
