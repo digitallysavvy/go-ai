@@ -2661,7 +2661,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Citation    map[string]interface{} `json:"citation"`     // in citations_delta
 				} `json:"delta"`
 			}
-			if err := jsonexact.Unmarshal([]byte(event.Data), &delta); err != nil {
+			// TS z.number() index: a fractional index is truncated into the
+			// int (the "integer fields" known difference), not a failed decode.
+			if err := providerutils.UnmarshalChunk([]byte(event.Data), &delta); err != nil {
 				return nil, fmt.Errorf("failed to parse content delta: %w", err)
 			}
 

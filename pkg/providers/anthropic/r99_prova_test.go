@@ -1,8 +1,10 @@
 package anthropic
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -78,5 +80,32 @@ func TestR99provaStreamCallerAcceptWins(t *testing.T) {
 			t.Errorf("call header %q: Accept = %v, want only the caller's", key, got)
 		}
 		mu.Unlock()
+	}
+}
+
+// TS reads a content_block_delta index with z.number(); the "integer fields"
+// known difference truncates a fractional stream block index in Go, so the
+// delta is still delivered instead of failing the stream.
+func TestR99provaFractionalDeltaIndexTruncated(t *testing.T) {
+	sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"usage\":{\"input_tokens\":1}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0.5,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+	s := newAnthropicStream(io.NopCloser(strings.NewReader(sse)), false)
+	text := ""
+	for {
+		c, err := s.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream failed: %v", err)
+		}
+		if c.Type == provider.ChunkTypeText {
+			text += c.Text
+		}
+	}
+	if text != "hi" {
+		t.Fatalf("text = %q, want hi", text)
 	}
 }
