@@ -575,7 +575,14 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 		format := raw["audioFormat"].(map[string]interface{})
 		part.AudioFormat.Type = format["type"].(string)
 		if rate, ok := format["rate"].(float64); ok {
-			r := int(rate)
+			// Truncated to the v0.5.2 *int (known difference "Audio sample
+			// rate is an int"); a rate beyond int is clamped, because an
+			// out-of-range float conversion is implementation-defined in Go
+			// (negative on amd64 and 386).
+			r := math.MaxInt
+			if rate < float64(math.MaxInt) {
+				r = int(rate)
+			}
 			part.AudioFormat.Rate = &r
 		}
 		part.ProviderMetadata, _ = raw["providerMetadata"].(map[string]interface{})
