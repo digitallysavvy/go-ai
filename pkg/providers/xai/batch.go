@@ -195,7 +195,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		return nil, b.handleError(err)
 	}
 	if uploadResp.StatusCode < 200 || uploadResp.StatusCode >= 300 { // TS !response.ok
-		return nil, newXAIProviderError(b.Provider(), uploadResp.StatusCode, uploadResp.Headers, uploadResp.Body)
+		return nil, newXAIProviderErrorFrom(b.Provider(), uploadResp.StatusError(uploadResp.Body))
 	}
 	uploadResp.Body = []byte(textdecode.UTF8(uploadResp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIFile)(uploadResp.StatusCode, uploadResp.Headers, uploadResp.Body); err != nil {
@@ -378,7 +378,7 @@ func (b *Batch) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return newXAIProviderError(b.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body)
+		return newXAIProviderErrorFrom(b.Provider(), statusErr)
 	}
 	return err
 }
@@ -1031,7 +1031,7 @@ func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResp
 				}
 				var dl *providererrors.DownloadError
 				if errors.As(err, &dl) && dl.StatusCode >= 100 && (dl.StatusCode < 200 || dl.StatusCode >= 300) {
-					return nil, newXAIProviderError(b.Provider(), dl.StatusCode, dl.Headers, dl.Body)
+					return nil, newXAIProviderErrorFrom(b.Provider(), internalhttp.StatusErrorFromDownload(dl, dl.Body))
 				}
 				return nil, err
 			}

@@ -6,12 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"math"
 	"net/http"
 	"strings"
 	"time"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -131,7 +132,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+		return nil, bedrockAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	// TS createJsonResponseHandler(amazonBedrockImageResponseSchema).

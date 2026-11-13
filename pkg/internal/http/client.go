@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -225,6 +224,55 @@ type Response struct {
 	StatusText string
 	Headers    http.Header
 	Body       []byte
+
+	// statusTextSet records that StatusText came from a status line, so an
+	// empty reason phrase stays empty (TS statusText "").
+	statusTextSet bool
+}
+
+// StatusError is the HTTPStatusError of a failed response with the given
+// body (TS reads the failed body as text; callers pass the decoded body
+// when they decode it). It keeps the reason phrase.
+func (r *Response) StatusError(body []byte) *HTTPStatusError {
+	if r == nil {
+		return &HTTPStatusError{Body: body}
+	}
+	return &HTTPStatusError{StatusCode: r.StatusCode, StatusText: r.StatusText, Headers: r.Headers, Body: body, statusTextSet: r.statusTextSet}
+}
+
+// HTTPStatusText is TS response.statusText for r: its reason phrase (see
+// HTTPStatusError.HTTPStatusText).
+func (r *Response) HTTPStatusText() string {
+	return r.StatusError(nil).Text()
+}
+
+// ResponseFromRaw is the Response of a raw *http.Response whose body the
+// caller already read; it keeps the reason phrase (TS response.statusText).
+func ResponseFromRaw(resp *http.Response, body []byte) *Response {
+	if resp == nil {
+		return &Response{Body: body}
+	}
+	return &Response{StatusCode: resp.StatusCode, StatusText: httpStatusText(resp), Headers: resp.Header, Body: body, statusTextSet: true}
+}
+
+// StatusErrorFromRaw is the HTTPStatusError of a failed raw *http.Response
+// whose body the caller already read. It keeps the reason phrase.
+func StatusErrorFromRaw(resp *http.Response, body []byte) *HTTPStatusError {
+	if resp == nil {
+		return &HTTPStatusError{Body: body}
+	}
+	return &HTTPStatusError{StatusCode: resp.StatusCode, StatusText: httpStatusText(resp), Headers: resp.Header, Body: body, statusTextSet: true}
+}
+
+// StatusErrorFromDownload is the HTTPStatusError of a failed download's
+// response (fileutil Download* / PollJSON) with the given body. It keeps
+// the response's reason phrase (DownloadError.StatusText), falling back to
+// the standard text when the download carried none.
+func StatusErrorFromDownload(dl *providererrors.DownloadError, body []byte) *HTTPStatusError {
+	if dl == nil {
+		return &HTTPStatusError{Body: body}
+	}
+	return &HTTPStatusError{StatusCode: dl.StatusCode, StatusText: dl.StatusText, Headers: http.Header(dl.Headers), Body: body}
 }
 
 // HTTPStatusError preserves non-2xx response metadata for provider error
@@ -238,6 +286,42 @@ type HTTPStatusError struct {
 	StatusText string
 	Headers    http.Header
 	Body       []byte
+
+	statusTextSet bool
+}
+
+// HTTPStatusText is TS response.statusText for the failed response. When
+// the error was built from a response (Client, Response.StatusError,
+// StatusErrorFromRaw) it is the reason phrase, which may be empty, and
+// fromResponse is true. Otherwise it is StatusText when set, else the
+// standard text for the code. It implements
+// providererrors.HTTPStatusTextDetails.
+func (e *HTTPStatusError) HTTPStatusText() (text string, fromResponse bool) {
+	if e == nil {
+		return "", false
+	}
+	if e.statusTextSet {
+		return e.StatusText, true
+	}
+	if e.StatusText != "" {
+		return e.StatusText, true
+	}
+	return http.StatusText(e.StatusCode), false
+}
+
+// Response is the failed response e describes, keeping its reason phrase.
+func (e *HTTPStatusError) Response() *Response {
+	if e == nil {
+		return nil
+	}
+	return &Response{StatusCode: e.StatusCode, StatusText: e.StatusText, Headers: e.Headers, Body: e.Body, statusTextSet: e.statusTextSet}
+}
+
+// Text is HTTPStatusText without the flag: the text TS failed-response
+// handlers fall back to.
+func (e *HTTPStatusError) Text() string {
+	text, _ := e.HTTPStatusText()
+	return text
 }
 
 func (e *HTTPStatusError) Error() string {
@@ -498,10 +582,11 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	return &Response{
-		StatusCode: httpResp.StatusCode,
-		StatusText: httpStatusText(httpResp),
-		Headers:    httpResp.Header,
-		Body:       respBody,
+		StatusCode:    httpResp.StatusCode,
+		StatusText:    httpStatusText(httpResp),
+		Headers:       httpResp.Header,
+		Body:          respBody,
+		statusTextSet: true,
 	}, nil
 }
 
@@ -516,10 +601,11 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 	// Check for error status codes
 	if !statusOK(resp.StatusCode) {
 		return &HTTPStatusError{
-			StatusCode: resp.StatusCode,
-			StatusText: resp.StatusText,
-			Headers:    resp.Headers,
-			Body:       resp.Body,
+			StatusCode:    resp.StatusCode,
+			StatusText:    resp.StatusText,
+			Headers:       resp.Headers,
+			Body:          resp.Body,
+			statusTextSet: resp.statusTextSet,
 		}
 	}
 
@@ -557,10 +643,11 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 	resp.Body = responseText(resp.Body)
 	if !statusOK(resp.StatusCode) {
 		return nil, &HTTPStatusError{
-			StatusCode: resp.StatusCode,
-			StatusText: resp.StatusText,
-			Headers:    resp.Headers,
-			Body:       resp.Body,
+			StatusCode:    resp.StatusCode,
+			StatusText:    resp.StatusText,
+			Headers:       resp.Headers,
+			Body:          resp.Body,
+			statusTextSet: resp.statusTextSet,
 		}
 	}
 	// Validator first, as in DoJSON (TS "Invalid JSON response").
@@ -652,18 +739,9 @@ func (c *Client) streamClient() *http.Client {
 	return c.client
 }
 
-// httpStatusText is TS response.statusText: the reason phrase of the status
-// line ("" for a line that ends after the code and a space), else the
-// standard text for the code. The same rule as fileutil.ResponseStatusText.
+// httpStatusText is TS response.statusText (fileutil.ResponseStatusText).
 func httpStatusText(resp *http.Response) string {
-	if resp == nil {
-		return ""
-	}
-	prefix := strconv.Itoa(resp.StatusCode) + " "
-	if strings.HasPrefix(resp.Status, prefix) {
-		return strings.TrimPrefix(resp.Status, prefix)
-	}
-	return http.StatusText(resp.StatusCode)
+	return fileutil.ResponseStatusText(resp)
 }
 
 // statusOK is fetch's response.ok: a 2xx status. TS postToApi / getFromApi
@@ -789,10 +867,11 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		defer httpResp.Body.Close() //nolint:errcheck
 		errBody, _ := fileutil.ReadResponseWithSizeLimit(httpResp, url, c.maxResponseBytes())
 		return nil, &HTTPStatusError{
-			StatusCode: httpResp.StatusCode,
-			StatusText: httpStatusText(httpResp),
-			Headers:    httpResp.Header,
-			Body:       responseText(errBody),
+			StatusCode:    httpResp.StatusCode,
+			StatusText:    httpStatusText(httpResp),
+			Headers:       httpResp.Header,
+			Body:          responseText(errBody),
+			statusTextSet: true,
 		}
 	}
 
@@ -1069,6 +1148,12 @@ func FetchRejectionCause(err error) (error, bool) {
 // are preserved and the message is taken from the JSON error body when
 // present.
 func StatusProviderError(providerName string, statusCode int, headers http.Header, body []byte) error {
-	cause := &HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return StatusProviderErrorFrom(providerName, &HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+}
+
+// StatusProviderErrorFrom is StatusProviderError for a status error built
+// from the response, so the fallback message is its reason phrase (TS
+// response.statusText).
+func StatusProviderErrorFrom(providerName string, cause *HTTPStatusError) error {
 	return providererrors.NewProviderError(providerName, 0, "", cause.Error(), cause)
 }

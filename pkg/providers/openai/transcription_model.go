@@ -96,7 +96,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced

@@ -376,13 +376,24 @@ func (m *LanguageModel) handleError(err error) error {
 // (TS googleFailedResponseHandler): the message is error.message when the body
 // matches googleErrorDataSchema, otherwise the HTTP status text.
 func GoogleHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
-	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
-	// invalid UTF-8 replaced).
-	body = []byte(textdecode.UTF8(body))
+	if text, ok := providererrors.ResponseStatusText(cause); ok {
+		return GoogleHTTPErrorText(providerName, status, text, headers, body, cause)
+	}
 	message := http.StatusText(status)
 	if message == "" && cause != nil {
 		message = cause.Error()
 	}
+	return GoogleHTTPErrorText(providerName, status, message, headers, body, cause)
+}
+
+// GoogleHTTPErrorText is GoogleHTTPError with the response's status text
+// (TS response.statusText, the server's reason phrase) as the message of a
+// body outside the error schema.
+func GoogleHTTPErrorText(providerName string, status int, statusText string, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	body = []byte(textdecode.UTF8(body))
+	message := statusText
 	var data googleErrorData
 	schemaOK := parseGoogleErrorData(body, &data)
 	if schemaOK {

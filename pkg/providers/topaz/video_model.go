@@ -238,7 +238,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, newTopazAPIErrorFrom(resp.StatusError(resp.Body))
 	}
 
 	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazVideoCreate)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -317,7 +317,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, newTopazAPIErrorFrom(resp.StatusError(resp.Body))
 	}
 
 	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazVideoStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {

@@ -143,7 +143,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
+		return nil, m.parseStatusError(resp.StatusError(resp.Body))
 	}
 
 	// TS createJsonResponseHandler(lumaGenerationResponseSchema).
@@ -236,7 +236,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			return "", err // TS getFromApi lets a transport failure propagate unchanged
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return "", m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
+			return "", m.parseStatusError(resp.StatusError(resp.Body))
 		}
 
 		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, []byte(textdecode.UTF8(resp.Body))); err != nil {
@@ -401,9 +401,17 @@ func (m *ImageModel) parseErrorResponse(body []byte, statusCode int) error {
 // parseErrorResponseWithHeaders is parseErrorResponse keeping the failed
 // response's headers on the error (TS APICallError.responseHeaders).
 func (m *ImageModel) parseErrorResponseWithHeaders(body []byte, statusCode int, headers stdhttp.Header) error {
+	return m.parseStatusError(&internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+}
+
+// parseStatusError is parseErrorResponse for the failed response's status
+// error.
+func (m *ImageModel) parseStatusError(cause *internalhttp.HTTPStatusError) error {
+	body := cause.Body
 	// TS createJsonErrorResponseHandler: a body that does not match the error
-	// schema (or is empty) gives the HTTP status text as the message.
-	msg := stdhttp.StatusText(statusCode)
+	// schema (or is empty) gives the response status text (the server's
+	// reason phrase) as the message.
+	msg := cause.Text()
 	var data interface{}
 	var errResp lumaErrorResponse
 	if err := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &errResp); err == nil && errResp.valid() {
@@ -413,7 +421,6 @@ func (m *ImageModel) parseErrorResponseWithHeaders(body []byte, statusCode int, 
 		msg = *errResp.Detail[0].Msg
 		data = lumaErrorData(body)
 	}
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
 	perr := providererrors.NewProviderErrorFromResponse("luma", 0, "", msg, cause)
 	// TS APICallError.data: the zod-parsed body when it matches
 	// lumaErrorSchema (undeclared keys stripped), else undefined.

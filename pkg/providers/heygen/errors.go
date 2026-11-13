@@ -27,9 +27,15 @@ type heygenErrorBody struct {
 // error, mirroring TS heygenFailedResponseHandler: the message is
 // "<message> (<code>) [<param>]".
 func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
+	return newHeyGenAPIErrorFrom(&internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+}
+
+// newHeyGenAPIErrorFrom is newHeyGenAPIError for the failed response's status
+// error; an off-schema body gives its reason phrase (TS response.statusText).
+func newHeyGenAPIErrorFrom(status *internalhttp.HTTPStatusError) error {
 	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
 	// invalid UTF-8 replaced).
-	body = []byte(textdecode.UTF8(body))
+	body := []byte(textdecode.UTF8(status.Body))
 	var parsed heygenErrorBody
 	message := ""
 	code := ""
@@ -59,10 +65,11 @@ func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
 			}
 		}
 	} else {
-		message = http.StatusText(statusCode)
+		message = status.Text()
 	}
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
-	perr := providererrors.NewProviderErrorFromResponse("heygen", 0, code, message, cause)
+	cause := *status
+	cause.Body = body
+	perr := providererrors.NewProviderErrorFromResponse("heygen", 0, code, message, &cause)
 	// TS createJsonErrorResponseHandler: data only for a body matching the
 	// error schema.
 	perr.Data = nil

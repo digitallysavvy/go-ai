@@ -293,7 +293,7 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		return nil, m.handleError(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, vertexHTTPError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body, nil)
+		return nil, vertexHTTPErrorText(m.Provider(), resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body, nil)
 	}
 
 	var plainText, transcriptionText strings.Builder

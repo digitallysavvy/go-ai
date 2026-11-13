@@ -3,7 +3,6 @@ package deepgram
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -36,7 +35,7 @@ func handleError(providerName string, err error) error {
 		var payload deepgramErrorPayload
 		// TS deepgramErrorDataSchema: err_code and err_msg are required
 		// strings; anything else gives the HTTP status text.
-		message := http.StatusText(statusErr.StatusCode)
+		message := statusErr.Text()
 		code := ""
 		matched := false
 		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.ErrCode != nil && payload.ErrMsg != nil && requestIDValid(payload.RequestID) {

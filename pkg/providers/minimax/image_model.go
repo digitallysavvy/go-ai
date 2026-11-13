@@ -210,7 +210,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, providererrors.NewSchemaProviderError("minimax.image",
-			&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}, minimaxImageErrorSchema)
+			resp.StatusError(resp.Body), minimaxImageErrorSchema)
 	}
 	if err := providerutils.NodeResponseValidator("minimax.image", minimaxImageResponseNode)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err

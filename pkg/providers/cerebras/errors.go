@@ -2,7 +2,6 @@ package cerebras
 
 import (
 	"errors"
-	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -42,8 +41,8 @@ func parseCerebrasHTTPStatusError(candidate error, cause error) error {
 		payload.Message == nil || payload.Type == nil || payload.Param == nil || payload.Code == nil {
 		// TS createJsonErrorResponseHandler: a body that fails
 		// cerebrasErrorSchema gives the status text and no data.
-		perr := providererrors.NewProviderErrorFromResponse("cerebras", 0, "", http.StatusText(statusErr.StatusCode), cause)
-		perr.Message = http.StatusText(statusErr.StatusCode)
+		perr := providererrors.NewProviderErrorFromResponse("cerebras", 0, "", statusErr.Text(), cause)
+		perr.Message = statusErr.Text()
 		perr.Data = nil
 		return perr
 	}

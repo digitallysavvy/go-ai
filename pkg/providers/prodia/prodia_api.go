@@ -375,7 +375,7 @@ func postMultipartToProdia(ctx context.Context, client *internalhttp.Client, bod
 		return nil, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, nil, newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, nil, newProdiaProviderErrorFrom(resp.StatusError(resp.Body))
 	}
 	return resp.Body, resp.Headers, nil
 }

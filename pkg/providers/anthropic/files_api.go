@@ -58,7 +58,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, anthropicHTTPError(f.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
+		return nil, anthropicHTTPErrorText(f.provider.Name(), resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body, nil)
 	}
 
 	// TS createJsonResponseHandler(anthropicUploadFileResponseSchema).
@@ -193,7 +193,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, anthropicHTTPError(f.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
+		return nil, anthropicHTTPErrorText(f.provider.Name(), resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body, nil)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if err := anthropicSchemaValidator(f.provider.Name(), zFileUpload)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -235,7 +235,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 	if err != nil {
 		var statusErr *internalhttp.HTTPStatusError
 		if errors.As(err, &statusErr) {
-			return nil, anthropicHTTPError(f.provider.Name(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, nil)
+			return nil, anthropicHTTPErrorText(f.provider.Name(), statusErr.StatusCode, statusErr.Text(), statusErr.Headers, statusErr.Body, nil)
 		}
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
@@ -262,7 +262,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, anthropicHTTPError(f.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
+		return nil, anthropicHTTPErrorText(f.provider.Name(), resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body, nil)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if err := anthropicSchemaValidator(f.provider.Name(), zFileDelete)(resp.StatusCode, resp.Headers, resp.Body); err != nil {

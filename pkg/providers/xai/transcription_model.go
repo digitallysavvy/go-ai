@@ -93,7 +93,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err // TS handleFetchError: abort as is, else "Cannot connect to API"
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body)
+		return nil, newXAIProviderErrorFrom(m.Provider(), resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced

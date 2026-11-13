@@ -81,7 +81,13 @@ func TestR98carryResponseStatusTextIsReasonPhrase(t *testing.T) {
 	if _, err := c.DoStream(context.Background(), Request{Method: stdhttp.MethodGet, Path: "/x"}); err.(*HTTPStatusError).StatusText != "Custom Phrase" {
 		t.Fatalf("DoStream error = %#v", err)
 	}
-	if got := httpStatusText(&stdhttp.Response{StatusCode: 404, Status: "404"}); got != "Not Found" {
-		t.Fatalf("httpStatusText without a phrase = %q, want the standard text", got)
+	// "HTTP/1.1 404" with no reason phrase: fetch (llhttp) reads statusText
+	// "" (integrator r98, the rule mcp responseStatusText already follows).
+	if got := httpStatusText(&stdhttp.Response{StatusCode: 404, Status: "404"}); got != "" {
+		t.Fatalf("httpStatusText without a phrase = %q, want empty", got)
+	}
+	// A response Go built itself (no status line) keeps the standard text.
+	if got := httpStatusText(&stdhttp.Response{StatusCode: 404}); got != "Not Found" {
+		t.Fatalf("httpStatusText of a synthetic response = %q, want the standard text", got)
 	}
 }

@@ -158,7 +158,7 @@ func (c *APIClient) writeCommandStdin(ctx context.Context, sessionID, cmdID stri
 // be a non-negative integer when present.
 func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		err := toAPIError(&httpinternal.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
+		err := toAPIError(resp.StatusError(resp.Body))
 		return nil, &stdinWriteError{err: err, maybeApplied: maybeApplied}
 	}
 	var out struct {

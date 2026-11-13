@@ -96,7 +96,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	traceID := providerutils.FetchHeaderText(http.Header(resp.Headers), "x-trace-id")
 	_, hasTraceID := http.Header(resp.Headers)[http.CanonicalHeaderKey("x-trace-id")]
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, http.Header(resp.Headers), resp.Body)
+		return nil, newXAIProviderErrorFrom(m.Provider(), resp.StatusError(resp.Body))
 	}
 
 	requestBytes := []byte(requestText)

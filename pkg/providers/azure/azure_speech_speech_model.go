@@ -186,7 +186,7 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, true)
+		return nil, azureSpeechAPIErrorText(m.Provider(), resp.StatusCode, fileutil.ResponseStatusText(resp), resp.Header, respBody, true)
 	}
 
 	if warnings == nil {

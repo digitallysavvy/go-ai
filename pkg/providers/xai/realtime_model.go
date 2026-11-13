@@ -154,7 +154,7 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// TS: `xAI realtime client secret request failed: ${status} ${text}`.
-		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+		cause := resp.StatusError(resp.Body)
 		// TS throws a plain Error with exactly this text
 		// (xai-realtime-model.ts:69-74); the HTTP cause stays reachable.
 		return provider.ClientSecretResult{}, &xaiPlainError{

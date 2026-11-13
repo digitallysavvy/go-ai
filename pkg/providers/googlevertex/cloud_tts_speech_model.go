@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -155,7 +156,7 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, cloudTTSError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, cloudTTSStatusError(resp)
 	}
 
 	// TS createJsonResponseHandler(googleVertexCloudTTSResponseSchema).
@@ -214,4 +215,10 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 // Google error body, else the HTTP status text.
 func cloudTTSError(statusCode int, body []byte, headers http.Header) error {
 	return vertexHTTPError("google-vertex", statusCode, headers, body, nil)
+}
+
+// cloudTTSStatusError is cloudTTSError for the failed response, with its
+// reason phrase (TS response.statusText) as the off-schema message.
+func cloudTTSStatusError(resp *internalhttp.Response) error {
+	return vertexHTTPErrorText("google-vertex", resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body, nil)
 }

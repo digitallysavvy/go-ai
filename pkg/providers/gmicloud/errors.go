@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -41,7 +40,7 @@ func parseGmicloudProviderError(err error) error {
 		return nil
 	}
 
-	message := http.StatusText(statusErr.StatusCode)
+	message := statusErr.Text()
 	code := ""
 	var data interface{}
 	var payload gmicloudErrorPayload

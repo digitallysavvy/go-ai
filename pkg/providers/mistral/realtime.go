@@ -80,7 +80,7 @@ func (r *RealtimeSessions) CreateSession(ctx context.Context, opts RealtimeCreat
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, providererrors.NewSchemaProviderError("mistral", &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}, mistralErrorSchema)
+		return nil, providererrors.NewSchemaProviderError("mistral", resp.StatusError(resp.Body), mistralErrorSchema)
 	}
 	text := []byte(textdecode.UTF8(resp.Body))
 	var value struct {
@@ -124,7 +124,7 @@ func (r *RealtimeSessions) CloseSession(ctx context.Context, sessionID string) e
 		return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return providererrors.NewSchemaProviderError("mistral", &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}, mistralErrorSchema)
+		return providererrors.NewSchemaProviderError("mistral", resp.StatusError(resp.Body), mistralErrorSchema)
 	}
 	return nil
 }

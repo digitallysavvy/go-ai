@@ -222,7 +222,7 @@ func (c *APIClient) doJSONWith(ctx context.Context, req httpinternal.Request, ou
 	}
 	body := []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return &httpinternal.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: body}
+		return resp.StatusError(body)
 	}
 	if emptyIsObject && len(body) == 0 {
 		body = []byte("{}")

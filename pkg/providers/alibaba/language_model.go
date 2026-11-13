@@ -143,7 +143,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		body, _ := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close() //nolint:errcheck
-		return nil, chatStatusError(httpResp.StatusCode, httpResp.Header, body)
+		return nil, chatStatusErrorFrom(internalhttp.StatusErrorFromRaw(httpResp, body))
 	}
 
 	// Create stream wrapper

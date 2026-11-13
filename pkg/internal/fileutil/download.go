@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -514,9 +515,13 @@ func responseStatusText(resp *http.Response) string {
 	if resp == nil {
 		return ""
 	}
-	prefix := fmt.Sprintf("%d ", resp.StatusCode)
-	if strings.HasPrefix(resp.Status, prefix) {
-		return strings.TrimPrefix(resp.Status, prefix)
+	code := strconv.Itoa(resp.StatusCode)
+	if strings.HasPrefix(resp.Status, code+" ") {
+		return strings.TrimPrefix(resp.Status, code+" ")
+	}
+	if resp.Status == code {
+		// "HTTP/1.1 418" with no reason phrase: fetch's statusText is "".
+		return ""
 	}
 	return http.StatusText(resp.StatusCode)
 }

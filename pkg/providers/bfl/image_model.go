@@ -138,7 +138,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bflStatusError(resp.StatusCode, resp.Headers, resp.Body)
+		return nil, bflStatusErrorText(resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body)
 	}
 
 	// TS createJsonResponseHandler(bflSubmitSchema).
@@ -1036,7 +1036,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 		// TS createStatusCodeErrorResponseHandler: an APICallError whose
 		// message is the HTTP status text.
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: errBody}
+		cause := internalhttp.StatusErrorFromRaw(resp, errBody)
 		return nil, nil, providererrors.NewProviderErrorFromResponse("bfl", 0, "", fileutil.ResponseStatusText(resp), cause)
 	}
 	limit := opts.MaxSize

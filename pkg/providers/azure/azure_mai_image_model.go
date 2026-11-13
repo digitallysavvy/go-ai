@@ -489,7 +489,7 @@ func (m *azureMaiImageModel) call(ctx context.Context, baseHeaders, extra map[st
 	}
 	headers := providerutils.ExtractHeaders(resp.Header)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return azureMaiImageCallResult{}, azureMaiImageAPIError(resp.StatusCode, headers, respBody)
+		return azureMaiImageCallResult{}, azureMaiImageAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), headers, respBody)
 	}
 	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator("azure.image", providerutils.SchemaAzureMAIImage)(resp.StatusCode, resp.Header, respBody); err != nil {
@@ -509,11 +509,18 @@ func (m *azureMaiImageModel) call(ctx context.Context, baseHeaders, extra map[st
 // the JSON error message when present, else the HTTP status text with the
 // raw body preserved.
 func azureMaiImageAPIError(status int, headers map[string]string, body []byte) error {
-	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	message := stdhttp.StatusText(status)
 	if message == "" {
 		message = "Azure MAI image request failed with status " + strconv.Itoa(status) + "."
 	}
+	return azureMaiImageAPIErrorText(status, message, headers, body)
+}
+
+// azureMaiImageAPIErrorText is azureMaiImageAPIError with the response's
+// reason phrase (TS response.statusText) as the off-schema message.
+func azureMaiImageAPIErrorText(status int, statusText string, headers map[string]string, body []byte) error {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
+	message := statusText
 	var data interface{}
 	// TS maiErrorSchema: { error: { code?: string | number | null, message:
 	// string } }; a body that fails it gets the status text.

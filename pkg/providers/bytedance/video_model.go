@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	stdhttp "net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -246,7 +247,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
-		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, submitResp.Headers)
+		return nil, newHTTPErrorText(submitResp.StatusCode, submitResp.HTTPStatusText(), submitResp.Headers, submitResp.Body)
 	}
 
 	// TS createJsonResponseHandler reads response.text() (TextDecoder).
@@ -609,11 +610,6 @@ func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3Cal
 	}
 
 	return body, warnings, nil
-}
-
-// parseAPIError parses a ByteDance API error response
-func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers stdhttp.Header) error {
-	return newHTTPError(statusCode, headers, body)
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError

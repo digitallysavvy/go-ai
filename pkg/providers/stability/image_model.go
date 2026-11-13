@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/http"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -165,7 +164,7 @@ func handleError(err error) error {
 	if !errors.As(err, &statusErr) {
 		return err
 	}
-	message := http.StatusText(statusErr.StatusCode)
+	message := statusErr.Text()
 	var body struct {
 		Message *string `json:"message"`
 	}

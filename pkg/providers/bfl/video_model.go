@@ -498,7 +498,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bflStatusError(resp.StatusCode, resp.Headers, resp.Body)
+		return nil, bflStatusErrorText(resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body)
 	}
 
 	// TS createJsonResponseHandler(bflVideoSubmitSchema).

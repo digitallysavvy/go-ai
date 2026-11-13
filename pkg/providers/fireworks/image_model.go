@@ -147,7 +147,7 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, providererrors.NewSchemaProviderError("fireworks", &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}, nil) // TS createStatusCodeErrorResponseHandler
+		return nil, providererrors.NewSchemaProviderError("fireworks", resp.StatusError(resp.Body), nil) // TS createStatusCodeErrorResponseHandler
 	}
 
 	// TS createBinaryResponseHandler: an empty body is an error.

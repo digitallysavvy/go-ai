@@ -323,11 +323,11 @@ func (m *LanguageModel) handleError(err error) error {
 	message := err.Error()
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		statusCode := statusErr.StatusCode
 		// TS createJsonErrorResponseHandler: an empty body, or one that does
 		// not parse (secureJsonParse) or match the error schema, gives the
 		// response status text.
-		if text := stdhttp.StatusText(statusCode); text != "" {
+		// (the server reason phrase).
+		if text, fromResponse := statusErr.HTTPStatusText(); fromResponse || text != "" {
 			message = text
 		}
 	}

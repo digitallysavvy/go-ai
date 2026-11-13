@@ -84,11 +84,7 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 		}
 		return nil, p.gatewayUnknownError(err)
 	}
-	response := &internalhttp.Response{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header,
-		Body:       responseBody,
-	}
+	response := internalhttp.ResponseFromRaw(resp, responseBody)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, p.gatewayAPIErrorWithAuthMethod(response, authMethod)
 	}

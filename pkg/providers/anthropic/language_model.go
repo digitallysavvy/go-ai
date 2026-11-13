@@ -3502,6 +3502,20 @@ func messageStartChunk(data string) *provider.StreamChunk {
 // anthropicFailedResponseHandler), falling back to the raw body, and the
 // response headers and body are kept like TS APICallError.
 func anthropicHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	statusText, ok := providererrors.ResponseStatusText(cause)
+	if !ok {
+		statusText = http.StatusText(status)
+		if statusText == "" {
+			statusText = textdecode.UTF8(body)
+		}
+	}
+	return anthropicHTTPErrorText(providerName, status, statusText, headers, body, cause)
+}
+
+// anthropicHTTPErrorText is anthropicHTTPError with the response's status
+// text (TS response.statusText, the server's reason phrase) as the message
+// of an off-schema body.
+func anthropicHTTPErrorText(providerName string, status int, statusText string, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
 	// TS createJsonErrorResponseHandler reads response.text(): a leading BOM
 	// is dropped and invalid UTF-8 becomes U+FFFD (streamed and raw requests
 	// hand the body over undecoded).
@@ -3531,11 +3545,7 @@ func anthropicHTTPError(providerName string, status int, headers http.Header, bo
 	} else {
 		// TS createJsonErrorResponseHandler: an empty or unparseable body gives
 		// the response status text (the body stays on ResponseBody).
-		message := http.StatusText(status)
-		if message == "" {
-			message = string(body)
-		}
-		perr = providererrors.NewProviderError(providerName, status, "", message, cause)
+		perr = providererrors.NewProviderError(providerName, status, "", statusText, cause)
 	}
 	perr.ResponseBody = string(body)
 	if len(headers) > 0 {

@@ -29,16 +29,23 @@ type bedrockErrorBody struct {
 // createJsonErrorResponseHandler always populates with responseHeaders and
 // responseBody from the failed HTTP response).
 func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *providererrors.ProviderError {
+	statusText := http.StatusText(statusCode)
+	if statusText == "" {
+		statusText = textdecode.UTF8(body)
+	}
+	return bedrockAPIErrorText(statusCode, statusText, body, headers)
+}
+
+// bedrockAPIErrorText is bedrockAPIError with the response's reason phrase
+// (TS response.statusText) as the message of an off-schema body.
+func bedrockAPIErrorText(statusCode int, statusText string, body []byte, headers map[string]string) *providererrors.ProviderError {
 	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
 	// invalid UTF-8 replaced).
 	body = []byte(textdecode.UTF8(body))
 	var parsed bedrockErrorBody
 	// TS createJsonErrorResponseHandler: an empty or unparseable body gives the
 	// response status text (the body stays on ResponseBody).
-	message := http.StatusText(statusCode)
-	if message == "" {
-		message = string(body)
-	}
+	message := statusText
 	// TS: error.type == null ? error.message : `${error.type}: ${error.message}`;
 	// an empty string is a valid message or type.
 	var data interface{}
@@ -81,10 +88,20 @@ func bedrockErrorData(body []byte, parsed bedrockErrorBody) map[string]interface
 // error "type" is not part of the message there (unlike every other Bedrock
 // endpoint, which uses the shared handler above).
 func bedrockConverseGenerateAPIError(statusCode int, body []byte, headers map[string]string) *providererrors.ProviderError {
+	statusText := http.StatusText(statusCode)
+	if statusText == "" {
+		statusText = textdecode.UTF8(body)
+	}
+	return bedrockConverseGenerateAPIErrorText(statusCode, statusText, body, headers)
+}
+
+// bedrockConverseGenerateAPIErrorText is bedrockConverseGenerateAPIError with
+// the response's reason phrase (TS response.statusText).
+func bedrockConverseGenerateAPIErrorText(statusCode int, statusText string, body []byte, headers map[string]string) *providererrors.ProviderError {
 	body = []byte(textdecode.UTF8(body))
 	var parsed bedrockErrorBody
 	if err := jsonexact.Unmarshal(body, &parsed); err != nil || parsed.Message == nil || !secureJSON(body) {
-		return bedrockAPIError(statusCode, body, headers)
+		return bedrockAPIErrorText(statusCode, statusText, body, headers)
 	}
 	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", *parsed.Message, nil)
 	providerErr.ResponseHeaders = headers

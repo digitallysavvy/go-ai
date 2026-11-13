@@ -34,7 +34,7 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
+		message, code := errorMessageAndCodeText(statusErr.Text(), statusErr.Body)
 		perr := providererrors.NewProviderErrorFromResponse("revai", 0, code, message, err)
 		perr.Data = revaiErrorData(statusErr.Body)
 		return perr

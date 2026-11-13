@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
@@ -203,7 +204,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		if !googleFilesStatusOK(pollResp.StatusCode) {
 			b, _ := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))
 			_ = pollResp.Body.Close()
-			return nil, f.provider.handleFilesError(pollResp.StatusCode, pollResp.Header, b)
+			return nil, gemini.GoogleHTTPErrorText("google", pollResp.StatusCode, fileutil.ResponseStatusText(pollResp), pollResp.Header, b, nil)
 		}
 		var polled googleFileResource
 		pollBody, err := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))

@@ -81,7 +81,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 	return &types.SpeechResult{
 		Audio:    resp.Body,

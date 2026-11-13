@@ -253,7 +253,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	defer initResp.Body.Close() //nolint:errcheck
 	if initResp.StatusCode < 200 || initResp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(initResp.Body, googleFilesMaxResponseBytes))
-		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: initResp.StatusCode, Headers: initResp.Header, Body: body})
+		return nil, b.handleError(internalhttp.StatusErrorFromRaw(initResp, body))
 	}
 	// TS headers.get('x-goog-upload-url') passed to fetch: new URL(text).
 	uploadURL, uploadURLErr := providerutils.FetchURLFromHeader(initResp.Header, "x-goog-upload-url")
@@ -293,7 +293,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode < 200 || uploadResp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
-		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: uploadResp.StatusCode, Headers: uploadResp.Header, Body: body})
+		return nil, b.handleError(internalhttp.StatusErrorFromRaw(uploadResp, body))
 	}
 
 	var result struct {
@@ -489,7 +489,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
-		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: body})
+		return nil, b.handleError(internalhttp.StatusErrorFromRaw(resp, body))
 	}
 
 	return newGoogleBatchFileResultsStream(b, resp.Body, downloadURL, maxLineBytes), nil

@@ -318,7 +318,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 { // TS !response.ok
 		defer httpResp.Body.Close() //nolint:errcheck
 		body, _ := fileutil.ReadResponseWithSizeLimit(httpResp, resultsURL, downloadOpts.MaxSize)
-		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
+		return nil, b.handleError(internalhttp.StatusErrorFromRaw(httpResp, body))
 	}
 
 	stream := newAnthropicBatchResultsStream(httpResp.Body, b.provider, resultsURL, maxLineBytes)

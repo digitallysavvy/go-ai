@@ -320,7 +320,7 @@ func deepInfraEditErrorSchema(body interface{}) (string, interface{}, bool) {
 // status, response headers (so retry-after(-ms) reaches the retry loop) and
 // body, with the schema output as data only when the body matched.
 func deepInfraSchemaError(resp *internalhttp.Response, schema providererrors.ErrorSchema) error {
-	cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+	cause := resp.StatusError(resp.Body)
 	return providererrors.NewSchemaProviderError("deepinfra", cause, schema)
 }
 

@@ -2,7 +2,6 @@ package perplexity
 
 import (
 	"errors"
-	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -29,7 +28,7 @@ func perplexityHTTPError(err error, providerName string) error {
 	decoded := *statusErr
 	decoded.Body = []byte(textdecode.UTF8(statusErr.Body))
 	statusErr = &decoded
-	message := http.StatusText(statusErr.StatusCode)
+	message := statusErr.Text()
 	var raw map[string]interface{}
 	if perplexityErrorBodyMatches(statusErr.Body) {
 		var envelope perplexityErrorEnvelope

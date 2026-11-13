@@ -204,7 +204,7 @@ func (m *TranscriptionModel) generate(ctx context.Context, in groqTranscribeInpu
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// TS groqFailedResponseHandler: error.message from the JSON envelope,
 		// otherwise the status text; headers and body in both cases.
-		statusErr := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+		statusErr := resp.StatusError(resp.Body)
 		perr, _ := groqHTTPError(statusErr, statusErr)
 		return nil, perr
 	}

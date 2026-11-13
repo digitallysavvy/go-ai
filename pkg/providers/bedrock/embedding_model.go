@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"math"
 	"net/http"
 	"reflect"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -254,7 +256,7 @@ func (m *EmbeddingModel) embedValues(ctx context.Context, values []string, opts 
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+		return nil, bedrockAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	if err := bedrockValidator(zbEmbedding)(resp.StatusCode, resp.Header, respBody); err != nil {

@@ -163,7 +163,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, m.handleError(err)
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 { // TS !response.ok
-		return nil, newXAIProviderError("xai.image", httpResp.StatusCode, httpResp.Headers, httpResp.Body)
+		return nil, newXAIProviderErrorFrom("xai.image", httpResp.StatusError(httpResp.Body))
 	}
 	httpResp.Body = []byte(textdecode.UTF8(httpResp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator("xai.image", providerutils.SchemaXAIImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {

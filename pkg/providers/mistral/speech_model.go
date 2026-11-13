@@ -78,7 +78,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, providererrors.NewSchemaProviderError("mistral", &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}, mistralErrorSchema)
+		return nil, providererrors.NewSchemaProviderError("mistral", resp.StatusError(resp.Body), mistralErrorSchema)
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse

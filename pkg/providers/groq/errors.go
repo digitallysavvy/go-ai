@@ -3,7 +3,6 @@ package groq
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -61,7 +60,7 @@ func groqHTTPError(statusErr *internalhttp.HTTPStatusError, cause error) (perr *
 			"message": *payload.Error.Message, "type": *payload.Error.Type,
 		}}
 	} else {
-		message := http.StatusText(statusErr.StatusCode)
+		message := statusErr.Text()
 		if message == "" && cause != nil {
 			message = cause.Error()
 		}

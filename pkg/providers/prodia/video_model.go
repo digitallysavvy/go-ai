@@ -158,7 +158,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		if err != nil {
 			reqErr = internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged
 		} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			reqErr = newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
+			reqErr = newProdiaProviderErrorFrom(resp.StatusError(resp.Body))
 		} else {
 			respBodyBytes = resp.Body
 			respHeaders = resp.Headers
@@ -216,8 +216,14 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 }
 
 func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *providererrors.ProviderError {
-	message := prodiaErrorMessage(statusCode, body)
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return newProdiaProviderErrorFrom(&internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+}
+
+// newProdiaProviderErrorFrom is newProdiaProviderError for the failed
+// response's status error (its reason phrase is the TS statusText fallback).
+func newProdiaProviderErrorFrom(cause *internalhttp.HTTPStatusError) *providererrors.ProviderError {
+	body := cause.Body
+	message := prodiaErrorMessageText(cause.Text(), body)
 	perr := providererrors.NewProviderErrorFromResponse("prodia", 0, "", message, cause)
 	perr.Data = prodiaErrorData(body)
 	return perr
@@ -228,10 +234,16 @@ func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *p
 // status text is the message. Then: a string detail, else the compact JSON of
 // any non-null detail, else `error ?? message ?? 'Unknown Prodia error'`.
 func prodiaErrorMessage(statusCode int, body []byte) string {
+	return prodiaErrorMessageText(http.StatusText(statusCode), body)
+}
+
+// prodiaErrorMessageText is prodiaErrorMessage with the response's reason
+// phrase (TS response.statusText) as the off-schema message.
+func prodiaErrorMessageText(statusText string, body []byte) string {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var fields map[string]json.RawMessage
 	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &fields) != nil {
-		return http.StatusText(statusCode)
+		return statusText
 	}
 	optionalString := func(key string) (string, bool, bool) {
 		raw, present := fields[key]
@@ -247,11 +259,11 @@ func prodiaErrorMessage(statusCode int, body []byte) string {
 	}
 	message, hasMessage, ok := optionalString("message")
 	if !ok {
-		return http.StatusText(statusCode)
+		return statusText
 	}
 	errorField, hasError, ok := optionalString("error")
 	if !ok {
-		return http.StatusText(statusCode)
+		return statusText
 	}
 	if raw, present := fields["detail"]; present && string(bytes.TrimSpace(raw)) != "null" {
 		var detail string

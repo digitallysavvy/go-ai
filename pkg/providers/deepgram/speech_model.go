@@ -103,11 +103,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, handleError("deepgram", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, handleError("deepgram", &internalhttp.HTTPStatusError{
-			StatusCode: resp.StatusCode,
-			Headers:    resp.Headers,
-			Body:       []byte(textdecode.UTF8(resp.Body)), // TS reads the failed body as text (TextDecoder)
-		})
+		return nil, handleError("deepgram", resp.StatusError([]byte(textdecode.UTF8(resp.Body)))) // TS reads the failed body as text (TextDecoder)
 	}
 
 	// JSON.stringify leaves <, > and & literal.

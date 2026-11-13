@@ -74,7 +74,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, internalhttp.StatusProviderError("replicate", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, internalhttp.StatusProviderErrorFrom("replicate", resp.StatusError(resp.Body))
 	}
 
 	var prediction replicatePrediction
@@ -178,7 +178,7 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string,
 		// progress (its body would otherwise decode to an empty status and the
 		// loop would spin until the attempt limit).
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return replicatePrediction{}, internalhttp.StatusProviderError("replicate", resp.StatusCode, resp.Headers, resp.Body)
+			return replicatePrediction{}, internalhttp.StatusProviderErrorFrom("replicate", resp.StatusError(resp.Body))
 		}
 
 		var prediction replicatePrediction

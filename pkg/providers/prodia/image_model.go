@@ -142,7 +142,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, newProdiaProviderErrorFrom(resp.StatusError(resp.Body))
 	}
 
 	// TS response.headers.get('content-type') ?? '': repeated lines joined,

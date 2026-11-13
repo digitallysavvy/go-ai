@@ -16,6 +16,12 @@ import (
 // "type"?:string|null}} gives its message and code; any other body (empty,
 // not JSON, a missing or wrongly typed field) gives the HTTP status text.
 func alibabaChatErrorMessage(statusCode int, body []byte) (message, code string) {
+	return alibabaChatErrorMessageText(http.StatusText(statusCode), body)
+}
+
+// alibabaChatErrorMessageText is alibabaChatErrorMessage with the response's reason phrase (TS
+// response.statusText) as the off-schema message.
+func alibabaChatErrorMessageText(statusText string, body []byte) (message, code string) {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var payload struct {
 		Error *struct {
@@ -30,7 +36,7 @@ func alibabaChatErrorMessage(statusCode int, body []byte) (message, code string)
 		}
 		return *payload.Error.Message, code
 	}
-	return http.StatusText(statusCode), ""
+	return statusText, ""
 }
 
 // alibabaNativeErrorMessage mirrors TS alibabaVideoFailedResponseHandler and
@@ -38,6 +44,12 @@ func alibabaChatErrorMessage(statusCode int, body []byte) (message, code string)
 // {"code"?:string|null,"message":string,"request_id"?:string|null}; any other
 // body gives the HTTP status text.
 func alibabaNativeErrorMessage(statusCode int, body []byte) (message, code string) {
+	return alibabaNativeErrorMessageText(http.StatusText(statusCode), body)
+}
+
+// alibabaNativeErrorMessageText is alibabaNativeErrorMessage with the response's reason phrase (TS
+// response.statusText) as the off-schema message.
+func alibabaNativeErrorMessageText(statusText string, body []byte) (message, code string) {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var payload struct {
 		Code      *string `json:"code"`
@@ -50,7 +62,7 @@ func alibabaNativeErrorMessage(statusCode int, body []byte) (message, code strin
 		}
 		return *payload.Message, code
 	}
-	return http.StatusText(statusCode), ""
+	return statusText, ""
 }
 
 // alibabaChatErrorData is the alibabaErrorDataSchema output for a matching
@@ -91,7 +103,7 @@ func alibabaNativeErrorData(body []byte) interface{} {
 // alibabaNativeStatusError is the provider error of a DashScope native API
 // (video, embedding) HTTP failure.
 func alibabaNativeStatusError(provider string, statusCode int, body []byte, err error) error {
-	message, code := alibabaNativeErrorMessage(statusCode, body)
+	message, code := alibabaNativeErrorMessageText(providererrors.StatusText(err, statusCode), body)
 	pe := providererrors.NewProviderErrorFromResponse(provider, 0, code, message, err)
 	pe.Data = alibabaNativeErrorData(body)
 	return pe
@@ -99,8 +111,14 @@ func alibabaNativeStatusError(provider string, statusCode int, body []byte, err 
 
 // chatStatusError builds the provider error for a non-2xx chat response.
 func chatStatusError(statusCode int, headers http.Header, body []byte) error {
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
-	message, code := alibabaChatErrorMessage(statusCode, body)
+	return chatStatusErrorFrom(&internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+}
+
+// chatStatusErrorFrom is chatStatusError for the failed response's status
+// error (its reason phrase is the TS statusText fallback).
+func chatStatusErrorFrom(cause *internalhttp.HTTPStatusError) error {
+	body := cause.Body
+	message, code := alibabaChatErrorMessageText(cause.Text(), body)
 	pe := providererrors.NewProviderErrorFromResponse("alibaba", 0, code, message, cause)
 	pe.Data = alibabaChatErrorData(body)
 	return pe
@@ -113,5 +131,5 @@ func asChatStatusError(err error) (error, bool) {
 	if !errors.As(err, &statusErr) {
 		return nil, false
 	}
-	return chatStatusError(statusErr.StatusCode, statusErr.Headers, statusErr.Body), true
+	return chatStatusErrorFrom(statusErr), true
 }

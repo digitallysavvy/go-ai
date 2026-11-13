@@ -163,7 +163,7 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 		return provider.ClientSecretResult{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+		cause := resp.StatusError(resp.Body)
 		return provider.ClientSecretResult{}, providererrors.NewProviderError("cartesia", 0, "",
 			// TS response.text(): UTF-8 decoded, BOM dropped.
 			fmt.Sprintf("Cartesia realtime client secret request failed: %d %s", resp.StatusCode, textdecode.UTF8(resp.Body)), cause)
@@ -270,7 +270,7 @@ func (m *RealtimeModel) postAccessToken(ctx context.Context, body *jsonorder.Obj
 	if err != nil {
 		return nil, err
 	}
-	return &internalhttp.Response{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: respBody}, nil
+	return internalhttp.ResponseFromRaw(httpResp, respBody), nil
 }
 
 // GetWebSocketConfig adds the access token to the STT URL and records whether

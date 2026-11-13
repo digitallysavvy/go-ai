@@ -115,7 +115,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	// (WHATWG TextDecoder) before the body is parsed.
 	submitResp.Body = []byte(textdecode.UTF8(submitResp.Body))
 	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 { // TS !response.ok
-		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode, providerutils.ExtractHeaders(submitResp.Headers))
+		return nil, m.parseAPIErrorText(submitResp.Body, submitResp.StatusCode, submitResp.HTTPStatusText(), providerutils.ExtractHeaders(submitResp.Headers))
 	}
 
 	if err := providerutils.MediaResponseValidator("minimax", providerutils.SchemaMiniMaxCreate)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
@@ -908,11 +908,17 @@ func minimaxEncodeFile(f *provider.VideoModelV3File) (string, error) {
 // parseAPIError parses a MiniMax API error response (TS
 // minimaxVideoFailedResponseHandler / minimaxVideoErrorSchema).
 func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers map[string]string) error {
+	return m.parseAPIErrorText(body, statusCode, stdhttp.StatusText(statusCode), headers)
+}
+
+// parseAPIErrorText is parseAPIError with the response's reason phrase (TS
+// response.statusText) as the off-schema message.
+func (m *VideoModel) parseAPIErrorText(body []byte, statusCode int, statusText string, headers map[string]string) error {
 	// TS createJsonErrorResponseHandler: the message is
 	// `error?.message ?? 'MiniMax video generation error'` and the data the
 	// schema output; a body that is empty, not JSON or not matching the
 	// schema gives the HTTP status text and no data (tools-08).
-	message := stdhttp.StatusText(statusCode)
+	message := statusText
 	var data interface{}
 	var parsed interface{}
 	if providerutils.JSTrim(string(body)) != "" && securejson.Unmarshal(body, &parsed) == nil {
@@ -996,7 +1002,7 @@ func minimaxVideoErrorSchemaOutput(v interface{}) (map[string]interface{}, bool)
 func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return m.parseAPIError([]byte(textdecode.UTF8(dlErr.Body)), dlErr.StatusCode, providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
+		return m.parseAPIErrorText([]byte(textdecode.UTF8(dlErr.Body)), dlErr.StatusCode, internalhttp.StatusErrorFromDownload(dlErr, nil).Text(), providerutils.ExtractHeaders(stdhttp.Header(dlErr.Headers)))
 	}
 	// TS getFromApi handleFetchError: a connection that failed before any
 	// response is the retryable "Cannot connect to API" error.

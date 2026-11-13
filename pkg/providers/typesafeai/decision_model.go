@@ -381,7 +381,7 @@ func (m *DecisionModel) handleError(err error) error {
 		return err // includes the schema failure (Invalid JSON response)
 	}
 
-	message, matched := typesafeErrorMessageMatched(httpErr.StatusCode, httpErr.Body)
+	message, matched := typesafeErrorMessageMatched(httpErr.Text(), httpErr.Body)
 
 	providerErr := &providererrors.ProviderError{
 		Provider:        m.Provider(),
@@ -432,14 +432,14 @@ func typesafeErrorData(body []byte) map[string]interface{} {
 // it, which is the text "null" for an explicit null), then error_type, then
 // "TypeSafe request failed".
 func typesafeErrorMessage(statusCode int, body []byte) string {
-	message, _ := typesafeErrorMessageMatched(statusCode, body)
+	message, _ := typesafeErrorMessageMatched(http.StatusText(statusCode), body)
 	return message
 }
 
 // typesafeErrorMessageMatched is typesafeErrorMessage plus whether the body
 // matched the TS error schema (false: the status text fallback).
-func typesafeErrorMessageMatched(statusCode int, body []byte) (string, bool) {
-	statusText := http.StatusText(statusCode)
+// statusText is the response's reason phrase (TS response.statusText).
+func typesafeErrorMessageMatched(statusText string, body []byte) (string, bool) {
 	var fields map[string]json.RawMessage
 	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &fields) != nil {
 		return statusText, false

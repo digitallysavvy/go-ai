@@ -33,7 +33,7 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
+		message, code := errorMessageAndCodeText(statusErr.Text(), statusErr.Body)
 		perr := providererrors.NewProviderErrorFromResponse("hume", 0, code, message, err)
 		perr.Data = humeErrorData(statusErr.Body)
 		return perr
@@ -48,12 +48,18 @@ func handleError(err error) error {
 // empty one) and the code; anything else (empty, not JSON, a missing or
 // wrongly typed field) gives the HTTP status text.
 func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
+	return errorMessageAndCodeText(http.StatusText(statusCode), body)
+}
+
+// errorMessageAndCodeText is errorMessageAndCode with the response's reason
+// phrase (TS response.statusText) as the off-schema message.
+func errorMessageAndCodeText(statusText string, body []byte) (message, code string) {
 	var payload humeErrorPayload
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
 		payload.Error.Message != nil && payload.Error.Code != nil && !math.IsInf(*payload.Error.Code, 0) && !math.IsNaN(*payload.Error.Code) { // z.number() rejects Infinity
 		return *payload.Error.Message, providerutils.JSNumberString(*payload.Error.Code)
 	}
-	return http.StatusText(statusCode), ""
+	return statusText, ""
 }
 
 // humeErrorData is TS APICallError.data: the humeErrorDataSchema output

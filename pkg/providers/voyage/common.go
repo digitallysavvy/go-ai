@@ -26,7 +26,7 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		perr := providererrors.NewProviderErrorFromResponse("voyage", 0, "", voyageErrorMessage(statusErr.StatusCode, statusErr.Body), err)
+		perr := providererrors.NewProviderErrorFromResponse("voyage", 0, "", voyageErrorMessageText(statusErr.Text(), statusErr.Body), err)
 		perr.Data = voyageErrorData(statusErr.Body)
 		return perr
 	}
@@ -38,13 +38,19 @@ func handleError(err error) error {
 // voyageErrorMessage mirrors TS voyageFailedResponseHandler: {"detail":string}
 // gives the detail, any other body gives the HTTP status text.
 func voyageErrorMessage(statusCode int, body []byte) string {
+	return voyageErrorMessageText(http.StatusText(statusCode), body)
+}
+
+// voyageErrorMessageText is voyageErrorMessage with the response's reason
+// phrase (TS response.statusText) as the off-schema message.
+func voyageErrorMessageText(statusText string, body []byte) string {
 	var payload struct {
 		Detail *string `json:"detail"`
 	}
 	if securejson.Unmarshal(body, &payload) == nil && payload.Detail != nil {
 		return *payload.Detail
 	}
-	return http.StatusText(statusCode)
+	return statusText
 }
 
 func optsHeaders(opts *provider.EmbedModelOptions) map[string]string {

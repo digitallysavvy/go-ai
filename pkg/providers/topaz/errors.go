@@ -126,8 +126,16 @@ func topazBaseErrorMessage(data topazErrorData) string {
 // newTopazAPIError converts a failed Topaz API response into a provider
 // error, mirroring TS topazFailedResponseHandler.
 func newTopazAPIError(statusCode int, body []byte, headers http.Header) error {
+	return newTopazAPIErrorFrom(&internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+}
+
+// newTopazAPIErrorFrom is newTopazAPIError for the failed response's status
+// error; the off-schema message is its reason phrase (TS
+// response.statusText).
+func newTopazAPIErrorFrom(cause *internalhttp.HTTPStatusError) error {
+	body := cause.Body
 	data, ok := parseTopazErrorData(body)
-	message := http.StatusText(statusCode)
+	message := cause.Text()
 	if ok {
 		message = topazErrorToMessage(data)
 	}
@@ -135,7 +143,6 @@ func newTopazAPIError(statusCode int, body []byte, headers http.Header) error {
 	if data.ErrorCode != nil {
 		errorCode = *data.ErrorCode
 	}
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
 	perr := providererrors.NewProviderErrorFromResponse("topaz", 0, errorCode, message, cause)
 	// TS APICallError.data: the topazErrorDataSchema output (the declared
 	// keys present; loose issue objects kept) for a matching body, else

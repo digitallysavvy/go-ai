@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 
@@ -88,7 +89,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, fmt.Errorf("failed to read rerank response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+		return nil, bedrockAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	if err := bedrockValidator(zbRerank)(resp.StatusCode, resp.Header, respBody); err != nil {

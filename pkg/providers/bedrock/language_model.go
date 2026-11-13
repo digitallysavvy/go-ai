@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 
@@ -996,7 +997,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockConverseGenerateAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+		return nil, bedrockConverseGenerateAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	// TS createJsonResponseHandler(AmazonBedrockResponseSchema).
@@ -1421,7 +1422,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := readResponseBody(resp.Body)
 		resp.Body.Close() //nolint:errcheck
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+		return nil, bedrockAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	stream := &bedrockConverseStream{

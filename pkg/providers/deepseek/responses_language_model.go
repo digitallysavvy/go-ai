@@ -378,8 +378,8 @@ func (m *ResponsesLanguageModel) handleError(err error) error {
 	}
 	var status *internalhttp.HTTPStatusError
 	if errors.As(err, &status) {
-		pe := providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", http.StatusText(status.StatusCode), status)
-		pe.Message = http.StatusText(status.StatusCode)
+		pe := providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", status.Text(), status)
+		pe.Message = status.Text()
 		pe.Data = nil
 		_, h, _ := status.HTTPStatusDetails()
 		pe.ResponseHeaders = h

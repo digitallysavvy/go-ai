@@ -3,7 +3,6 @@ package cartesia
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -39,7 +38,7 @@ func handleError(err error) error {
 		// TS cartesiaErrorDataSchema: title, message and request_id are all
 		// required strings; a body that does not match gives the HTTP status
 		// text.
-		message := http.StatusText(statusErr.StatusCode)
+		message := statusErr.Text()
 		var data interface{}
 		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil &&
 			payload.Title != nil && payload.Message != nil && payload.RequestID != nil && docURLMatchesSchema(payload.DocURL) {

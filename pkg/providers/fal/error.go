@@ -1,8 +1,6 @@
 package fal
 
 import (
-	"net/http"
-
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -42,7 +40,7 @@ func falErrorData(body []byte) interface{} {
 // falAPIError is TS falFailedResponseHandler for an HTTP error response:
 // the schema message (else the status text) and the schema data.
 func falAPIError(provider string, statusErr *internalhttp.HTTPStatusError, err error) error {
-	message := parseFalErrorMessage(statusErr.Body, http.StatusText(statusErr.StatusCode))
+	message := parseFalErrorMessage(statusErr.Body, statusErr.Text())
 	perr := providererrors.NewProviderErrorFromResponse(provider, 0, "", message, err)
 	perr.Data = falErrorData(statusErr.Body)
 	return perr

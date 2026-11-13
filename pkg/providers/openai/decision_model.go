@@ -322,7 +322,7 @@ func (m *DecisionModel) handleError(err error) error {
 	}
 	// TS createJsonErrorResponseHandler: a body that does not match
 	// openaiErrorDataSchema gives the status text.
-	message := http.StatusText(statusErr.StatusCode)
+	message := statusErr.Text()
 	errorCode := ""
 	var envelope struct {
 		Error *struct {

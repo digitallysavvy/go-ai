@@ -59,12 +59,14 @@ func tokenHubErrorData(tree map[string]interface{}) (map[string]interface{}, str
 	return map[string]interface{}{"error": inner}, message
 }
 
-// tokenHubFailedResponse is TS tencentTokenHubFailedResponseHandler for a
+// tokenHubFailedStatus is TS tencentTokenHubFailedResponseHandler for a
 // non-2xx response: the message and data of a body matching the error
 // schema, else the HTTP status text with no data.
-func tokenHubFailedResponse(statusCode int, headers http.Header, body []byte) error {
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
-	message := http.StatusText(statusCode)
+// The fallback is the failed response's reason phrase (TS
+// response.statusText).
+func tokenHubFailedStatus(cause *internalhttp.HTTPStatusError) error {
+	body := cause.Body
+	message := cause.Text()
 	var data interface{}
 	var tree interface{}
 	if securejson.Unmarshal(body, &tree) == nil && tokenHubErrorDataSchema(tree, true, nil) == nil {

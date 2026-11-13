@@ -208,7 +208,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, expire
 		return nil, b.handleError(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
+		return nil, b.handleError(resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced

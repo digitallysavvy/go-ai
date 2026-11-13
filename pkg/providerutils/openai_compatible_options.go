@@ -3,7 +3,6 @@ package providerutils
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 	"sort"
 	"strings"
 
@@ -371,7 +370,8 @@ func OpenAICompatibleAPIError(provider string, err error) (*providererrors.Provi
 	}
 	message, ok := OpenAICompatibleErrorMessage([]byte(textdecode.UTF8(body)))
 	if !ok {
-		message = http.StatusText(status)
+		// TS response.statusText: the server reason phrase.
+		message = providererrors.StatusText(err, status)
 	}
 	pe := providererrors.NewProviderErrorFromResponse(provider, 0, "", message, err)
 	pe.ResponseHeaders = headers

@@ -94,7 +94,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, newTopazAPIErrorFrom(resp.StatusError(resp.Body))
 	}
 	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazSubmit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
@@ -448,7 +448,7 @@ func (m *ImageModel) getStatus(ctx context.Context, processID string, headers ma
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, newTopazAPIErrorFrom(resp.StatusError(resp.Body))
 	}
 	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
@@ -492,7 +492,7 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 	// replaced (WHATWG TextDecoder) before the body is parsed.
 	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, nil, newTopazAPIErrorFrom(resp.StatusError(resp.Body))
 	}
 
 	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazDownload)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -534,7 +534,7 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		// built from its body, not a DownloadError.
 		var dl *providererrors.DownloadError
 		if errors.As(err, &dl) && dl.StatusCode >= 100 && (dl.StatusCode < 200 || dl.StatusCode >= 300) {
-			return nil, nil, newTopazAPIError(dl.StatusCode, []byte(textdecode.UTF8(dl.Body)), http.Header(dl.Headers))
+			return nil, nil, newTopazAPIErrorFrom(internalhttp.StatusErrorFromDownload(dl, []byte(textdecode.UTF8(dl.Body))))
 		}
 		// handleFetchError: a network failure is the retryable "Cannot
 		// connect to API" error.

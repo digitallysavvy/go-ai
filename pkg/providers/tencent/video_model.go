@@ -137,7 +137,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		}
 		resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS reads the body as text (TextDecoder)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, tokenHubFailedResponse(resp.StatusCode, resp.Headers, resp.Body)
+			return nil, tokenHubFailedStatus(resp.StatusError(resp.Body))
 		}
 		value, err := tokenHubResponse(resp.StatusCode, resp.Headers, resp.Body, tokenHubKlingCreateResponseSchema, stripCreateResponse)
 		if err != nil {
@@ -204,7 +204,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}
 		resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS reads the body as text (TextDecoder)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, tokenHubFailedResponse(resp.StatusCode, resp.Headers, resp.Body)
+			return nil, tokenHubFailedStatus(resp.StatusError(resp.Body))
 		}
 		value, err := tokenHubResponse(resp.StatusCode, resp.Headers, resp.Body, tokenHubKlingStatusResponseSchema, stripStatusResponse)
 		if err != nil {

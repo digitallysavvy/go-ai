@@ -106,12 +106,21 @@ type vertexErrorData struct {
 // TS googleVertexFailedResponseHandler: the message is error.message when the
 // body matches googleVertexErrorDataSchema, otherwise the HTTP status text.
 func vertexHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
-	// TS createJsonErrorResponseHandler reads response.text().
-	body = []byte(textdecode.UTF8(body))
 	message := http.StatusText(status)
-	if message == "" && cause != nil {
+	if text, ok := providererrors.ResponseStatusText(cause); ok {
+		message = text // TS response.statusText (the server reason phrase)
+	} else if message == "" && cause != nil {
 		message = cause.Error()
 	}
+	return vertexHTTPErrorText(providerName, status, message, headers, body, cause)
+}
+
+// vertexHTTPErrorText is vertexHTTPError with the response's status text
+// (TS response.statusText) as the off-schema message.
+func vertexHTTPErrorText(providerName string, status int, statusText string, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	// TS createJsonErrorResponseHandler reads response.text().
+	body = []byte(textdecode.UTF8(body))
+	message := statusText
 	var raw struct {
 		Error *struct {
 			Code    json.RawMessage `json:"code"`

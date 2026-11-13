@@ -248,7 +248,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, m.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
+		return nil, m.handleError(resp.StatusError(resp.Body))
 	}
 
 	responseHeaders := providerutils.ExtractHeaders(resp.Headers)

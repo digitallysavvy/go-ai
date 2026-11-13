@@ -349,11 +349,7 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			// response' with the status code and headers
 			// (get-from-api.ts:104-122).
 			if trimmed := strings.TrimSpace(string(resp.Body)); !json.Valid(resp.Body) || trimmed == "null" {
-				return nil, nil, nil, providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", "Failed to process error response", &internalhttp.HTTPStatusError{
-					StatusCode: resp.StatusCode,
-					Headers:    resp.Headers,
-					Body:       resp.Body,
-				})
+				return nil, nil, nil, providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", "Failed to process error response", resp.StatusError(resp.Body))
 			}
 			var detail struct {
 				Detail string `json:"detail"`
@@ -374,11 +370,7 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 				}
 				continue
 			}
-			return nil, nil, nil, m.handleError(&internalhttp.HTTPStatusError{
-				StatusCode: resp.StatusCode,
-				Headers:    resp.Headers,
-				Body:       resp.Body,
-			})
+			return nil, nil, nil, m.handleError(resp.StatusError(resp.Body))
 		}
 
 		if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFalTranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {

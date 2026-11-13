@@ -211,7 +211,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 
 	// TS postFormDataToApi treats any 2xx (response.ok) as success.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, false)
+		return nil, azureSpeechAPIErrorText(m.Provider(), resp.StatusCode, fileutil.ResponseStatusText(resp), resp.Header, respBody, false)
 	}
 
 	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -388,6 +388,12 @@ func azureSpeechErrorMessages(body []byte) (nested, top *string) {
 // {"error":{"message"}} and {"message"}; an empty or unparseable body gets the
 // HTTP status text as its message.
 func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte, speechSynthesis bool) error {
+	return azureSpeechAPIErrorText(providerName, statusCode, stdhttp.StatusText(statusCode), headers, body, speechSynthesis)
+}
+
+// azureSpeechAPIErrorText is azureSpeechAPIError with the response's reason
+// phrase (TS response.statusText), the transcription fallback message.
+func azureSpeechAPIErrorText(providerName string, statusCode int, statusText string, headers stdhttp.Header, body []byte, speechSynthesis bool) error {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	nested, top := azureSpeechErrorMessages(body)
 	var message string
@@ -411,7 +417,7 @@ func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.He
 			message = *top
 			data = map[string]interface{}{"message": message}
 		default:
-			message = stdhttp.StatusText(statusCode)
+			message = statusText
 		}
 	}
 	return &providererrors.ProviderError{

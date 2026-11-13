@@ -806,7 +806,7 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := parseGladiaErrorBody(statusErr.StatusCode, statusErr.Body)
+		message, code := parseGladiaErrorBodyText(statusErr.Text(), statusErr.Body)
 		perr := providererrors.NewProviderErrorFromResponse("gladia", 0, code, message, err)
 		// TS APICallError.data: the schema-parsed body ({error: {message,
 		// code}}, undeclared keys stripped), else undefined.

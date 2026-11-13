@@ -234,10 +234,7 @@ func (m *ImageModel) doStreamingImageRequest(ctx context.Context, request intern
 // Content-Length check first, then every chunk is handed to onChunk instead of
 // being collected; a read error or a body over maxBytes is a DownloadError.
 func gatewayReadResponseChunks(resp *http.Response, url string, maxBytes int64, onChunk func([]byte)) error {
-	statusText := http.StatusText(resp.StatusCode)
-	if prefix := fmt.Sprintf("%d ", resp.StatusCode); strings.HasPrefix(resp.Status, prefix) {
-		statusText = strings.TrimPrefix(resp.Status, prefix)
-	}
+	statusText := fileutil.ResponseStatusText(resp)
 	if raw := strings.TrimSpace(resp.Header.Get("Content-Length")); raw != "" {
 		if contentLength, err := strconv.ParseInt(raw, 10, 64); err == nil && contentLength > maxBytes {
 			return providererrors.NewDownloadError(url, resp.StatusCode, statusText,

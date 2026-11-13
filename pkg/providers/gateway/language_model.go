@@ -1268,11 +1268,7 @@ func (m *LanguageModel) handleErrorWithContext(ctx context.Context, err error) e
 
 	var httpStatusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &httpStatusErr) {
-		return m.provider.gatewayAPIErrorWithContext(ctx, &internalhttp.Response{
-			StatusCode: httpStatusErr.StatusCode,
-			Headers:    httpStatusErr.Headers,
-			Body:       httpStatusErr.Body,
-		})
+		return m.provider.gatewayAPIErrorWithContext(ctx, httpStatusErr.Response())
 	}
 
 	return m.provider.gatewayUnknownError(err)

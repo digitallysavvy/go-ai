@@ -92,7 +92,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	// Check response status
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, internalhttp.StatusProviderError("lmnt", resp.StatusCode, nil, []byte(bodyBytes))
+		return nil, internalhttp.StatusProviderErrorFrom("lmnt", internalhttp.StatusErrorFromRaw(resp, bodyBytes))
 	}
 
 	// Read audio data

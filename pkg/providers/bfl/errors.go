@@ -31,7 +31,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 // (TS response.statusText, the server's reason phrase).
 func bflStatusErrorText(statusCode int, statusText string, headers http.Header, body []byte) error {
 	body = []byte(textdecode.UTF8(body)) // TS reads the failed body as text (TextDecoder)
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, StatusText: statusText, Headers: headers, Body: body}
 
 	var raw struct {
 		Message json.RawMessage `json:"message"`

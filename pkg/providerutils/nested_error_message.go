@@ -15,6 +15,12 @@ import (
 // else (empty body, not JSON, a missing, wrongly typed or differently cased
 // field) gives the HTTP status text and no code.
 func NestedErrorMessage(statusCode int, body []byte) (message, code string) {
+	return NestedErrorMessageText(http.StatusText(statusCode), body)
+}
+
+// NestedErrorMessageText is NestedErrorMessage with the response's status
+// text (TS response.statusText, the server reason phrase) as the fallback.
+func NestedErrorMessageText(statusText string, body []byte) (message, code string) {
 	// Decoded through raw maps, not a struct, so the keys match exactly as
 	// zod's do (encoding/json would also match "Error" or "MESSAGE"), and a
 	// number out of the double range in another field (JS Infinity, which
@@ -28,7 +34,7 @@ func NestedErrorMessage(statusCode int, body []byte) (message, code string) {
 		jsonExact(errObj["message"], &msg) && jsonExact(errObj["code"], &num) {
 		return msg, JSNumberString(num)
 	}
-	return http.StatusText(statusCode), ""
+	return statusText, ""
 }
 
 // jsonExact decodes a present, non-null raw value into v (a string or float64

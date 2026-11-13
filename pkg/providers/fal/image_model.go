@@ -245,7 +245,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, m.statusError(resp.StatusCode, resp.Headers, resp.Body)
+		return nil, m.statusErrorFrom(resp.StatusError(resp.Body))
 	}
 	if err := providerutils.MediaResponseValidator("fal", providerutils.SchemaFalImage)(resp.StatusCode, resp.Headers, []byte(textdecode.UTF8(resp.Body))); err != nil {
 		return nil, err
@@ -268,8 +268,14 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // falFailedResponseHandler's message rules (validation detail list, else
 // message).
 func (m *ImageModel) statusError(status int, headers http.Header, body []byte) error {
-	cause := &internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body}
-	perr := providererrors.NewProviderErrorFromResponse("fal", 0, "", falImageErrorMessage(status, body), cause)
+	return m.statusErrorFrom(&internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body})
+}
+
+// statusErrorFrom is statusError for the failed response's status error (its
+// reason phrase is the TS response.statusText fallback).
+func (m *ImageModel) statusErrorFrom(cause *internalhttp.HTTPStatusError) error {
+	body := cause.Body
+	perr := providererrors.NewProviderErrorFromResponse("fal", 0, "", falImageErrorMessageText(cause.Text(), body), cause)
 	perr.Data = falImageErrorData(body)
 	return perr
 }
@@ -320,11 +326,17 @@ func falImageErrorData(body []byte) interface{} {
 // "loc.joined: msg" lines) and {message:string}; any other body gives the
 // HTTP status text.
 func falImageErrorMessage(status int, body []byte) string {
+	return falImageErrorMessageText(http.StatusText(status), body)
+}
+
+// falImageErrorMessageText is falImageErrorMessage with the response's
+// reason phrase (TS response.statusText) as the off-schema message.
+func falImageErrorMessageText(statusText string, body []byte) string {
 	// Decode field by field: a mistyped `detail` (a string) must not hide a
 	// valid `message`, which the second union branch still accepts.
 	var top map[string]json.RawMessage
 	if securejson.Unmarshal([]byte(textdecode.UTF8(body)), &top) != nil || top == nil {
-		return http.StatusText(status)
+		return statusText
 	}
 	var detail []json.RawMessage
 	if raw, ok := top["detail"]; ok && json.Unmarshal(raw, &detail) == nil && detail != nil {
@@ -350,7 +362,7 @@ func falImageErrorMessage(status int, body []byte) string {
 	if raw, ok := top["message"]; ok && json.Unmarshal(raw, &message) == nil && message != nil {
 		return *message
 	}
-	return http.StatusText(status)
+	return statusText
 }
 
 // buildRequest builds the request body and warnings (TS getArgs), in the

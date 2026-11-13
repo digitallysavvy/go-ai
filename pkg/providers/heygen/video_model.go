@@ -338,7 +338,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newHeyGenAPIError(resp.StatusCode, resp.Body, resp.Headers)
+		return nil, newHeyGenAPIErrorFrom(resp.StatusError(resp.Body))
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := providerutils.MediaResponseValidator("heygen", providerutils.SchemaHeyGenVideoCreate)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -424,7 +424,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		var dlErr *providererrors.DownloadError
 		if errors.As(err, &dlErr) && dlErr.StatusCode >= 100 && (dlErr.StatusCode < 200 || dlErr.StatusCode >= 300) {
-			return nil, newHeyGenAPIError(dlErr.StatusCode, dlErr.Body, http.Header(dlErr.Headers))
+			return nil, newHeyGenAPIErrorFrom(internalhttp.StatusErrorFromDownload(dlErr, dlErr.Body))
 		}
 		// TS getFromApi handleFetchError: a network failure is the
 		// retryable "Cannot connect to API" error.

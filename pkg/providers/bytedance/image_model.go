@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"sort"
 
+	"time"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
-	stdhttp "net/http"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
@@ -137,7 +137,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode, httpResp.Headers)
+		return nil, newHTTPErrorText(httpResp.StatusCode, httpResp.HTTPStatusText(), httpResp.Headers, httpResp.Body)
 	}
 	// TS createJsonResponseHandler reads response.text() (TextDecoder).
 	respBody := []byte(textdecode.UTF8(httpResp.Body))
@@ -246,12 +246,6 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteD
 	body.Set("response_format", "b64_json")
 
 	return body, nil
-}
-
-// parseAPIError parses a ByteDance image API error response (TS
-// byteDanceFailedResponseHandler).
-func (m *ImageModel) parseAPIError(body []byte, statusCode int, headers stdhttp.Header) error {
-	return newHTTPError(statusCode, headers, body)
 }
 
 // encodeImageFile encodes a provider.ImageFile to the string form ByteDance

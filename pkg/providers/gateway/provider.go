@@ -847,11 +847,7 @@ func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error 
 	}
 	var httpStatusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &httpStatusErr) {
-		return p.gatewayAPIErrorWithContext(ctx, &internalhttp.Response{
-			StatusCode: httpStatusErr.StatusCode,
-			Headers:    httpStatusErr.Headers,
-			Body:       httpStatusErr.Body,
-		})
+		return p.gatewayAPIErrorWithContext(ctx, httpStatusErr.Response())
 	}
 	return p.gatewayUnknownError(err)
 }
@@ -884,7 +880,7 @@ func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, au
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
-		Message:         gatewayErrorMessage(resp.Body, resp.StatusCode),
+		Message:         gatewayErrorMessageText(resp.Body, gatewayResponseStatusText(resp)),
 		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
 		ResponseBody:    string(resp.Body),
 		Data:            gatewayErrorData(resp.Body),
@@ -901,12 +897,18 @@ func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, au
 // the full error body instead of the generic "Gateway request failed"
 // placeholder.
 func gatewayErrorMessage(body []byte, statusCode int) string {
+	return gatewayErrorMessageText(body, gatewayStatusTextFallback(statusCode))
+}
+
+// gatewayErrorMessageText is gatewayErrorMessage with the status text
+// fallback already resolved (gatewayResponseStatusText).
+func gatewayErrorMessageText(body []byte, statusText string) string {
 	if len(bytes.TrimSpace(body)) == 0 {
-		return gatewayStatusTextFallback(statusCode)
+		return statusText
 	}
 	var value interface{}
 	if err := securejson.Unmarshal(body, &value); err != nil {
-		return gatewayStatusTextFallback(statusCode)
+		return statusText
 	}
 	if value == nil {
 		return "unknown error"
@@ -921,9 +923,19 @@ func gatewayErrorMessage(body []byte, statusCode int) string {
 	}
 	serialized, err := jsonstr.Marshal(value)
 	if err != nil {
-		return gatewayStatusTextFallback(statusCode)
+		return statusText
 	}
 	return string(serialized)
+}
+
+// gatewayResponseStatusText is TS response.statusText for resp: the
+// server's reason phrase when resp came from a response, else
+// gatewayStatusTextFallback.
+func gatewayResponseStatusText(resp *internalhttp.Response) string {
+	if text, ok := resp.StatusError(nil).HTTPStatusText(); ok {
+		return text
+	}
+	return gatewayStatusTextFallback(resp.StatusCode)
 }
 
 // gatewayStatusTextFallback returns the standard HTTP status text for
@@ -963,7 +975,7 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
-		Message:         gatewayErrorMessage(resp.Body, resp.StatusCode),
+		Message:         gatewayErrorMessageText(resp.Body, gatewayResponseStatusText(resp)),
 		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
 		ResponseBody:    string(resp.Body),
 		Data:            gatewayErrorData(resp.Body),

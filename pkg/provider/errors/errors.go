@@ -179,6 +179,38 @@ type HTTPStatusDetails interface {
 	HTTPStatusDetails() (statusCode int, headers map[string]string, body []byte)
 }
 
+// HTTPStatusTextDetails is implemented by an HTTP status cause that can
+// carry the response's reason phrase (TS response.statusText). fromResponse
+// reports that text came from a status line (it may then be empty).
+type HTTPStatusTextDetails interface {
+	HTTPStatusText() (text string, fromResponse bool)
+}
+
+// StatusText is TS response.statusText for a failed response: the reason
+// phrase carried by cause (see HTTPStatusTextDetails), else the standard
+// text for code. TS createJsonErrorResponseHandler and
+// createStatusCodeErrorResponseHandler fall back to it.
+func StatusText(cause error, code int) string {
+	if text, ok := responseStatusText(cause); ok {
+		return text
+	}
+	return http.StatusText(code)
+}
+
+// ResponseStatusText is the reason phrase cause carries (see
+// HTTPStatusTextDetails); ok is false when it carries none.
+func ResponseStatusText(cause error) (text string, ok bool) {
+	return responseStatusText(cause)
+}
+
+func responseStatusText(cause error) (string, bool) {
+	var st HTTPStatusTextDetails
+	if cause == nil || !errors.As(cause, &st) {
+		return "", false
+	}
+	return st.HTTPStatusText()
+}
+
 // NewProviderError creates a new provider error.
 //
 // When statusCode is 0 and the cause chain carries an HTTP error response,
@@ -256,6 +288,10 @@ func newProviderError(provider string, statusCode int, errorCode, message string
 	if message == cause.Error() || message == hs.Error() || (replaceEmpty && message == "") {
 		if msg := ExtractAPIErrorMessage(body); msg != "" {
 			e.Message = msg
+		} else if text, ok := responseStatusText(cause); ok {
+			// TS createJsonErrorResponseHandler: response.statusText, the
+			// server's reason phrase (empty when the line has none).
+			e.Message = text
 		} else if text := http.StatusText(code); text != "" {
 			// TS createJsonErrorResponseHandler: an empty or unparseable
 			// body falls back to the response status text. The body stays
@@ -312,7 +348,7 @@ func NewSchemaProviderError(provider string, cause error, schema ErrorSchema) *P
 	if e.StatusCode == 0 || !errors.As(cause, &hs) || e.Message == InvalidJSONResponseMessage {
 		return e
 	}
-	e.Message, e.Data = http.StatusText(e.StatusCode), nil
+	e.Message, e.Data = StatusText(cause, e.StatusCode), nil
 	if schema == nil || strings.TrimSpace(e.ResponseBody) == "" {
 		return e
 	}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"math"
-	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -44,7 +43,7 @@ func handleError(err error) error {
 		// TS fishAudioErrorDataSchema: every field is nullish, so any JSON
 		// object matches and the message is `message ?? 'Unknown Fish Audio
 		// error'`; a body that is not such an object gives the status text.
-		message := http.StatusText(statusErr.StatusCode)
+		message := statusErr.Text()
 		// TS APICallError.data: the schema output ({status?, message?},
 		// only the keys present) for a matching body, else undefined.
 		var data interface{}

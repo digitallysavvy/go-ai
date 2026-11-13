@@ -199,7 +199,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -247,7 +247,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -288,7 +288,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 	if err != nil {
 		var statusErr *internalhttp.HTTPStatusError
 		if errors.As(err, &statusErr) {
-			return nil, openAICompatStatusError("openai", statusErr.StatusCode, statusErr.Headers, statusErr.Body)
+			return nil, openAICompatStatusError("openai", statusErr)
 		}
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
@@ -322,7 +322,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, openAICompatStatusError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -444,7 +444,7 @@ func filesString(s *string) string {
 // openAICompatStatusError is the error of a non-2xx response under TS
 // openaiFailedResponseHandler (createJsonErrorResponseHandler with
 // openaiErrorDataSchema).
-func openAICompatStatusError(provider string, statusCode int, headers map[string][]string, body []byte) error {
-	pe, _ := providerutils.OpenAICompatibleAPIError(provider, &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+func openAICompatStatusError(provider string, cause *internalhttp.HTTPStatusError) error {
+	pe, _ := providerutils.OpenAICompatibleAPIError(provider, cause)
 	return pe
 }

@@ -59,7 +59,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		return nil, internalhttp.UnwrapFetchRejection(err) // TS: a rejected fetch or header resolution is thrown as is
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
+		return nil, anthropicHTTPErrorText(s.provider.Name(), resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body, nil)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := anthropicSchemaValidator(s.provider.Name(), zSkillResponse)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -136,7 +136,7 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 	// error instead, matching TS's anthropicFailedResponseHandler, which
 	// throws on any non-2xx response from this endpoint.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
+		return nil, anthropicHTTPErrorText(s.provider.Name(), resp.StatusCode, resp.HTTPStatusText(), resp.Headers, resp.Body, nil)
 	}
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := anthropicSchemaValidator(s.provider.Name(), zSkillVersionResponse)(resp.StatusCode, resp.Headers, resp.Body); err != nil {

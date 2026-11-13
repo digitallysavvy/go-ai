@@ -358,7 +358,7 @@ func parallelHTTPError(err error) error {
 	if !errors.As(err, &statusErr) {
 		return err
 	}
-	message := http.StatusText(statusErr.StatusCode)
+	message := statusErr.Text()
 	var data interface{}
 	var envelope struct {
 		Error *struct {

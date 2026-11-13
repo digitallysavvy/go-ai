@@ -157,7 +157,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Headers, resp.Body)
+		return nil, newXAIProviderErrorFrom(f.Provider(), resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -217,7 +217,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Headers, resp.Body)
+		return nil, newXAIProviderErrorFrom(f.Provider(), resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
@@ -256,7 +256,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 	if err != nil {
 		var statusErr *internalhttp.HTTPStatusError
 		if errors.As(err, &statusErr) {
-			return nil, newXAIProviderError(f.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body)
+			return nil, newXAIProviderErrorFrom(f.Provider(), statusErr)
 		}
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
@@ -292,7 +292,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
-		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Headers, resp.Body)
+		return nil, newXAIProviderErrorFrom(f.Provider(), resp.StatusError(resp.Body))
 	}
 
 	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced

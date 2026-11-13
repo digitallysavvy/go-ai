@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -129,7 +130,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, vertexHTTPError(m.Provider(), resp.StatusCode, resp.Header, respBody, nil)
+		return nil, vertexHTTPErrorText(m.Provider(), resp.StatusCode, fileutil.ResponseStatusText(resp), resp.Header, respBody, nil)
 	}
 	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text() before JSON.parse
 

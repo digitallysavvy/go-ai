@@ -464,7 +464,7 @@ func (m *TranscriptionModel) pollTranscript(ctx context.Context, transcriptID st
 	// TS response.text() / response.json(): UTF-8 decoded, BOM dropped.
 	body = []byte(textdecode.UTF8(body))
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return nil, nil, m.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
+		return nil, nil, m.handleError(internalhttp.StatusErrorFromRaw(httpResp, body))
 	}
 	// TS `await response.json()` then schema.parse: plain JSON.parse keeps
 	// a __proto__ key as an ordinary property.
@@ -475,7 +475,7 @@ func (m *TranscriptionModel) pollTranscript(ctx context.Context, transcriptID st
 	if err := jsonexact.UnmarshalPlain(body, &raw); err != nil {
 		return nil, nil, err
 	}
-	return raw, &internalhttp.Response{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body}, nil
+	return raw, internalhttp.ResponseFromRaw(httpResp, body), nil
 }
 
 // transcriptionAbortedError is TS waitForCompletion's
@@ -636,8 +636,8 @@ func durationValue(duration *float64) float64 {
 // assemblyAIErrorMessage is TS assemblyaiFailedResponseHandler (c87b19ee75):
 // the documented flat `{"error": "<message>"}` shape gives that message; the
 // older nested `{"error": {"message", "code"}}` shape is still accepted;
-// anything else gives the HTTP status text.
-func assemblyAIErrorMessage(statusCode int, body []byte) (message, code string) {
+// anything else gives the response status text (TS response.statusText).
+func assemblyAIErrorMessage(statusText string, body []byte) (message, code string) {
 	var flat struct {
 		Error json.RawMessage `json:"error"`
 	}
@@ -647,7 +647,7 @@ func assemblyAIErrorMessage(statusCode int, body []byte) (message, code string) 
 			return text, ""
 		}
 	}
-	return providerutils.NestedErrorMessage(statusCode, body)
+	return providerutils.NestedErrorMessageText(statusText, body)
 }
 
 // handleError converts an HTTP error into a ProviderError, parsing
@@ -665,7 +665,7 @@ func (m *TranscriptionModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := assemblyAIErrorMessage(statusErr.StatusCode, statusErr.Body)
+		message, code := assemblyAIErrorMessage(statusErr.Text(), statusErr.Body)
 		perr := providererrors.NewProviderErrorFromResponse("assemblyai", 0, code, message, err)
 		perr.Data = assemblyAIErrorData(statusErr.Body)
 		return perr

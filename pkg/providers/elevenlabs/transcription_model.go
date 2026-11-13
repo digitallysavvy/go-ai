@@ -302,17 +302,23 @@ var elevenlabsErrorObjectSchema = zodlite.Object(zodlite.F("error", zodlite.Obje
 // body that matches the schema, else the HTTP status text. code is the
 // numeric error.code of the older shape (Go ProviderError.ErrorCode).
 func elevenlabsErrorMessage(statusCode int, body []byte) (message, code string) {
+	return elevenlabsErrorMessageText(http.StatusText(statusCode), body)
+}
+
+// elevenlabsErrorMessageText is elevenlabsErrorMessage with the response's
+// reason phrase (TS response.statusText) as the fallback.
+func elevenlabsErrorMessageText(statusText string, body []byte) (message, code string) {
 	var data map[string]interface{}
 	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
 	// invalid UTF-8 replaced).
 	body = []byte(textdecode.UTF8(body))
 	if securejson.Unmarshal(body, &data) != nil || elevenlabsErrorDataSchema(data, true, nil) != nil {
-		return http.StatusText(statusCode), ""
+		return statusText, ""
 	}
 	// zod's union yields the first member that matches: a body whose detail
 	// does not match is read through its error object.
 	if elevenlabsErrorDetailSchema(data, true, nil) != nil {
-		return providerutils.NestedErrorMessage(statusCode, body)
+		return providerutils.NestedErrorMessageText(statusText, body)
 	}
 	detail := data["detail"]
 	switch d := detail.(type) {
@@ -344,7 +350,7 @@ func elevenlabsErrorMessage(statusCode int, body []byte) (message, code string) 
 		}
 		return msg, ""
 	}
-	return http.StatusText(statusCode), ""
+	return statusText, ""
 }
 
 // handleTranscriptionError converts an HTTP error into a ProviderError,
@@ -352,7 +358,7 @@ func elevenlabsErrorMessage(statusCode int, body []byte) (message, code string) 
 func handleTranscriptionError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := elevenlabsErrorMessage(statusErr.StatusCode, statusErr.Body)
+		message, code := elevenlabsErrorMessageText(statusErr.Text(), statusErr.Body)
 		perr := providererrors.NewProviderErrorFromResponse("elevenlabs", 0, code, message, err)
 		perr.Data = elevenlabsErrorData(statusErr.Body)
 		return perr

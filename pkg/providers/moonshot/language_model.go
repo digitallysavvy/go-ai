@@ -641,8 +641,8 @@ func (m *LanguageModel) handleError(err error) error {
 	if !errors.As(err, &statusErr) {
 		return err
 	}
-	pe := providererrors.NewProviderErrorFromResponse("moonshot", 0, "", http.StatusText(statusErr.StatusCode), statusErr)
-	pe.Message = http.StatusText(statusErr.StatusCode)
+	pe := providererrors.NewProviderErrorFromResponse("moonshot", 0, "", statusErr.Text(), statusErr)
+	pe.Message = statusErr.Text()
 	pe.Data = nil
 	// TS APICallError.responseHeaders (lower-case keys): retries honor
 	// retry-after(-ms).

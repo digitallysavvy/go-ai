@@ -569,7 +569,7 @@ func (m *ImageModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		code, message := "", http.StatusText(statusErr.StatusCode)
+		code, message := "", statusErr.Text()
 		// TS APICallError.data: the quiveraiErrorSchema output for a
 		// matching body, else undefined.
 		var data interface{}

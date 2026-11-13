@@ -5,12 +5,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -293,8 +294,8 @@ func (p *Provider) postTencentCloudAPI(ctx context.Context, service, action, api
 // non-2xx response: the message is "<Code>: <Message>" of a body matching
 // the error envelope, else the HTTP status text.
 func tencentCloudFailedResponse(resp *internalhttp.Response) error {
-	cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
-	message := http.StatusText(resp.StatusCode)
+	cause := resp.StatusError(resp.Body)
+	message := cause.Text() // TS response.statusText (the reason phrase)
 	var data interface{}
 	var tree interface{}
 	if securejson.Unmarshal(resp.Body, &tree) == nil && tencentCloudErrorEnvelopeSchema(tree, true, nil) == nil {

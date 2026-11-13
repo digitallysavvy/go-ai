@@ -130,7 +130,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
-		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Headers, submitResp.Body)
+		return nil, parseKlingAIErrorBodyText(submitResp.StatusCode, submitResp.HTTPStatusText(), submitResp.Headers, submitResp.Body)
 	}
 
 	// TS createJsonResponseHandler reads response.text() (TextDecoder).

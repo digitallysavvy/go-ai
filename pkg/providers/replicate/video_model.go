@@ -462,7 +462,7 @@ func (m *VideoModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return replicateAPIError(statusErr.StatusCode, statusErr.Headers, statusErr.Body)
+		return replicateAPIErrorText(statusErr.StatusCode, statusErr.Text(), statusErr.Headers, statusErr.Body)
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.

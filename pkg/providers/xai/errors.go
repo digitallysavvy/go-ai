@@ -19,10 +19,17 @@ import (
 // matches none; the error keeps the status, response headers, body and
 // parsed data (TS APICallError), so retries honor retry-after headers.
 func newXAIProviderError(provider string, statusCode int, headers http.Header, body []byte) *providererrors.ProviderError {
-	body = []byte(textdecode.UTF8(body)) // TS response.text()
+	return newXAIProviderErrorFrom(provider, &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+}
+
+// newXAIProviderErrorFrom is newXAIProviderError for the failed response's
+// status error; an off-schema body gives its reason phrase (TS
+// response.statusText).
+func newXAIProviderErrorFrom(provider string, status *internalhttp.HTTPStatusError) *providererrors.ProviderError {
+	body := []byte(textdecode.UTF8(status.Body)) // TS response.text()
 	message, data, matched := xaiErrorMessageData(body)
 	if !matched {
-		message = http.StatusText(statusCode)
+		message = status.Text()
 	}
 	errorCode := ""
 	var responsesError struct {
@@ -48,8 +55,9 @@ func newXAIProviderError(provider string, statusCode int, headers http.Header, b
 			errorCode = parsed.Error.Type
 		}
 	}
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
-	pe := providererrors.NewProviderErrorFromResponse(provider, 0, errorCode, message, cause)
+	cause := *status
+	cause.Body = body
+	pe := providererrors.NewProviderErrorFromResponse(provider, 0, errorCode, message, &cause)
 	// TS APICallError.responseHeaders keys are lower case.
 	_, pe.ResponseHeaders, _ = cause.HTTPStatusDetails()
 	// TS APICallError.data: the matching xaiErrorDataSchema member's output,
@@ -65,7 +73,7 @@ func xaiStatusError(provider string, err error) (*providererrors.ProviderError, 
 	if !errors.As(err, &statusErr) || (statusErr.StatusCode >= 200 && statusErr.StatusCode < 300) {
 		return nil, false
 	}
-	return newXAIProviderError(provider, statusErr.StatusCode, statusErr.Headers, statusErr.Body), true
+	return newXAIProviderErrorFrom(provider, statusErr), true
 }
 
 func formatXAIResponseError(code string, message string) string {
