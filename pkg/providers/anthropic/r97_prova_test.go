@@ -41,9 +41,9 @@ func r97provaForbiddenCause(t *testing.T, err error) {
 func TestR97provaStreamForbiddenPrototypeFrame(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":1}}}\n\n")
-		fmt.Fprint(w, "data: {\"type\":\"ping\",\"__proto__\":{}}\n\n")
-		fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":1}}}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"ping\",\"__proto__\":{}}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer srv.Close()
 	model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), ClaudeSonnet4_5, nil)
