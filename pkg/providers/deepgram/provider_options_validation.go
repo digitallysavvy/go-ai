@@ -1,7 +1,6 @@
 package deepgram
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -126,17 +125,9 @@ var deepgramTranscriptionResponseNode = zodlite.Object(
 
 // validateTranscriptionResponse is createJsonResponseHandler(
 // deepgramTranscriptionResponseSchema): a body that does not match is an
-// APICallError "Invalid JSON response".
+// APICallError "Invalid JSON response". The body is parsed like JSON.parse (a
+// number past the double range reads as Infinity, ruling 4) with the
+// secureJsonParse prototype check.
 func validateTranscriptionResponse(statusCode int, headers http.Header, body []byte) error {
-	var value interface{}
-	err := json.Unmarshal(body, &value)
-	if err == nil {
-		if bad := zodlite.Validate(deepgramTranscriptionResponseNode, body, value); bad != nil {
-			err = bad
-		}
-	}
-	if err == nil {
-		return nil
-	}
-	return providerutils.InvalidJSONResponseError("deepgram", statusCode, headers, body, err)
+	return providerutils.NodeResponseValidator("deepgram", deepgramTranscriptionResponseNode)(statusCode, headers, body)
 }
