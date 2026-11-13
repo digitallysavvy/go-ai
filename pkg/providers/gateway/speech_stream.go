@@ -297,7 +297,17 @@ func (s *gatewaySpeechStream) run(cfg gatewaySpeechStreamConfig) {
 				return
 			}
 
-			part, ok := speechstream.ParsePart(res.Text)
+			part, ok, decodeErr := speechstream.ParsePartStrict(res.Text)
+			if decodeErr != nil {
+				// TS parseSpeechStreamPart keeps the audio part; streamSpeech's
+				// convertBase64ToUint8Array then throws atob's
+				// InvalidCharacterError, which errors the stream as is (not
+				// through finishWithError / asGatewayError) and cancels the
+				// socket (the deferred conn.Close and cancelText).
+				s.SetErr(decodeErr)
+				cancelText(decodeErr)
+				return
+			}
 			if !ok {
 				continue // malformed or unknown frames are ignored (envelope rule 6)
 			}
