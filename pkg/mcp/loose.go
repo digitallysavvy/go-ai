@@ -106,21 +106,11 @@ func marshalLoose(base interface{}, extra map[string]interface{}) ([]byte, error
 	return buf.Bytes(), nil
 }
 
-func encodeLooseExtra(extra map[string]interface{}) string {
-	if len(extra) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(extra)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-// looseExtraRaw is encodeLooseExtra(decodeLooseExtra(data, known)) on the
-// server's own JSON text: the undeclared members are kept as sent, so a
-// value that does not survive a Go re-encode (a number beyond the double
-// range, which JSON.parse reads as Infinity) is still there for Extra().
+// looseExtraRaw is the JSON object of the members decodeLooseExtra returns,
+// written from the server's own JSON text: the undeclared members are kept
+// as sent, so a value that does not survive a Go re-encode (a number beyond
+// the double range, which JSON.parse reads as Infinity) is still there for
+// Extra().
 func looseExtraRaw(data []byte, known interface{}) string {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
