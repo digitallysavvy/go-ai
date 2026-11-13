@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -638,15 +640,14 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 			if t.hasEndpoint() {
 				continue
 			}
-			endpoint, endpointErr := url.Parse(event.Data)
+			endpoint, endpointOrigin, baseOrigin, endpointErr := t.resolveEndpoint(event.Data)
 			if endpointErr != nil {
 				if !readySent {
 					ready <- endpointErr
 				}
 				return
 			}
-			endpoint = t.baseURL.ResolveReference(endpoint)
-			if origin(endpoint) != origin(t.baseURL) {
+			if endpointOrigin != baseOrigin {
 				t.mu.Lock()
 				if t.streamGen == gen {
 					t.connected = false
@@ -654,7 +655,7 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 				}
 				t.mu.Unlock()
 				if !readySent {
-					ready <- NewMCPClientError(0, fmt.Sprintf("MCP SSE Transport Error: Endpoint origin does not match connection origin: %s", origin(endpoint)), nil)
+					ready <- NewMCPClientError(0, fmt.Sprintf("MCP SSE Transport Error: Endpoint origin does not match connection origin: %s", endpointOrigin), nil)
 				}
 				return
 			}
@@ -695,6 +696,40 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 		t.queueReceivedMessages([]*MCPMessage{msg})
 		t.mu.Unlock()
 	}
+}
+
+// resolveEndpoint is TS `new URL(data, this.url)` with the origins TS
+// compares: the WHATWG parser for an absolute endpoint and for a
+// path-absolute or scheme-relative one (the usual "/messages?sessionId=…"),
+// so whitespace, tabs and newlines, backslashes and percent-encoding resolve
+// as in TS. Other relative forms fall back to net/url resolution.
+func (t *SSETransport) resolveEndpoint(data string) (endpoint *url.URL, endpointOrigin, baseOrigin string, err error) {
+	trimmed := strings.TrimFunc(data, func(r rune) bool { return r <= 0x20 })
+	if base, baseErr := urlnorm.Parse(t.url); baseErr == nil {
+		resolved, absErr := urlnorm.Parse(trimmed)
+		if absErr != nil {
+			isSlash := func(i int) bool {
+				return i < len(trimmed) && (trimmed[i] == '/' || (base.IsSpecial() && trimmed[i] == '\\'))
+			}
+			if isSlash(0) && isSlash(1) {
+				// A scheme-relative reference keeps only the base scheme.
+				resolved, absErr = urlnorm.Parse(base.Scheme + ":" + trimmed)
+			} else {
+				resolved, absErr = base.ResolvePath(trimmed)
+			}
+		}
+		if absErr == nil {
+			if parsed, parseErr := url.Parse(resolved.String()); parseErr == nil {
+				return parsed, resolved.Origin(), base.Origin(), nil
+			}
+		}
+	}
+	parsed, err := url.Parse(data)
+	if err != nil {
+		return nil, "", "", err
+	}
+	endpoint = t.baseURL.ResolveReference(parsed)
+	return endpoint, origin(endpoint), origin(t.baseURL), nil
 }
 
 // errSSEClosedDuringConnect is what Connect returns when Close ends the

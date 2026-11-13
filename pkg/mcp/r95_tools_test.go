@@ -142,3 +142,22 @@ func TestR95toolsResponseTargetsTagged(t *testing.T) {
 		t.Fatalf("response fields without a json tag: %v", bad)
 	}
 }
+
+// TS SseMCPTransport resolves the endpoint event with new URL(data, url)
+// and compares WHATWG origins (Node 24 outputs below).
+func TestR95toolsSSEEndpointResolvesLikeWHATWG(t *testing.T) {
+	st := NewSSETransport(SSETransportConfig{URL: "http://127.0.0.1:8080/sse"})
+	for data, want := range map[string][2]string{
+		"/messages?x='y'":    {"http://127.0.0.1:8080/messages?x=%27y%27", "http://127.0.0.1:8080"},
+		`\\evil.example/x`:   {"http://evil.example/x", "http://evil.example"},
+		"  /m\tsg  ":         {"http://127.0.0.1:8080/msg", "http://127.0.0.1:8080"},
+		"/a/../b c":          {"http://127.0.0.1:8080/b%20c", "http://127.0.0.1:8080"},
+		"http://other:1/x":   {"http://other:1/x", "http://other:1"},
+		"messages?session=1": {"http://127.0.0.1:8080/messages?session=1", "http://127.0.0.1:8080"},
+	} {
+		endpoint, gotOrigin, baseOrigin, err := st.resolveEndpoint(data)
+		if err != nil || endpoint.String() != want[0] || gotOrigin != want[1] || baseOrigin != "http://127.0.0.1:8080" {
+			t.Errorf("%q: %v %q %q %v, want %q %q", data, endpoint, gotOrigin, baseOrigin, err, want[0], want[1])
+		}
+	}
+}
