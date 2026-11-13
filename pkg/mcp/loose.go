@@ -158,9 +158,7 @@ func decodeLooseExtraJSON(s string) map[string]interface{} {
 	if s == "" {
 		return nil
 	}
-	var m map[string]interface{}
-	if err := jsonexact.Unmarshal([]byte(s), &m); err != nil {
-		return nil
-	}
-	return m
+	// Member by member, as decodeLooseExtra: one value that does not decode
+	// does not hide the others.
+	return decodeLooseExtra([]byte(s), struct{}{})
 }

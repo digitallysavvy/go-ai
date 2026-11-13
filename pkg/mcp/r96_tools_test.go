@@ -84,3 +84,13 @@ func TestR96toolsLooseCapabilityExtrasKeptRaw(t *testing.T) {
 		t.Fatalf("tools extras = %#v", caps.Tools)
 	}
 }
+
+func TestR96toolsLooseCapabilityExtraKeepsDecodableMembers(t *testing.T) {
+	var caps ServerCapabilities
+	if err := unmarshalSafeJSON([]byte(`{"tools":{"x-a":"<b>","x-n":1e400}}`), &caps); err != nil {
+		t.Fatal(err)
+	}
+	if got := caps.Tools.Extra(); got["x-a"] != "<b>" {
+		t.Fatalf("extra = %#v, want x-a kept", got)
+	}
+}
