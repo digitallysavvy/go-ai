@@ -3,8 +3,10 @@ package mistral
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -83,7 +85,9 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 					var parsed struct {
 						Arguments *string `json:"arguments"`
 					}
-					if json.Unmarshal([]byte(input), &parsed) == nil && parsed.Arguments != nil {
+					// TS reads part.input.arguments: the key matches exactly
+					// (an "Arguments" key is not it).
+					if json.Unmarshal(jsonexact.Filter([]byte(input), &parsed), &parsed) == nil && parsed.Arguments != nil {
 						args = *parsed.Arguments
 					}
 					// Replay built-in executions as calls and results. Entry
