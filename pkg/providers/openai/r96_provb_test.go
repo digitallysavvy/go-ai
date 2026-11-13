@@ -46,7 +46,7 @@ type r96provbFailingWritesConn struct {
 	read atomic.Bool
 }
 
-var r96provbWriteErr = errors.New("r96provb write failed")
+var errR96provbWrite = errors.New("r96provb write failed")
 
 func (c *r96provbFailingWritesConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
@@ -56,7 +56,7 @@ func (c *r96provbFailingWritesConn) Read(b []byte) (int, error) {
 
 func (c *r96provbFailingWritesConn) Write(b []byte) (int, error) {
 	if c.read.Load() {
-		return 0, r96provbWriteErr
+		return 0, errR96provbWrite
 	}
 	return c.Conn.Write(b)
 }
@@ -89,7 +89,7 @@ func TestR96provbSetupSendFailureAfterStreamStart(t *testing.T) {
 	for {
 		p, err := tr.Stream.Next()
 		if err != nil {
-			if !errors.Is(err, r96provbWriteErr) {
+			if !errors.Is(err, errR96provbWrite) {
 				t.Errorf("transcription: err = %v, want the send error", err)
 			}
 			break
@@ -109,7 +109,7 @@ func TestR96provbSetupSendFailureAfterStreamStart(t *testing.T) {
 	for {
 		p, err := st.Stream.Next()
 		if err != nil {
-			if !errors.Is(err, r96provbWriteErr) {
+			if !errors.Is(err, errR96provbWrite) {
 				t.Errorf("translation: err = %v, want the send error", err)
 			}
 			break

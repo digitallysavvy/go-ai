@@ -2781,15 +2781,6 @@ func responsesRawItemString(item json.RawMessage, key string) *string {
 	return str
 }
 
-// nonEmptyOrNil returns nil for an empty string so it marshals as JSON null
-// (matching TS's `encryptedContent ?? null`), or the string itself otherwise.
-func nonEmptyOrNil(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
 // escapeJSONDelta returns delta's JSON string-escaped form without the
 // surrounding quotes, for splicing into a hand-built JSON string during
 // progressive tool-input-delta streaming. Mirrors TS's escapeJSONDelta
