@@ -574,8 +574,9 @@ func decisionImageContent(part provider.DecisionStatePart) (map[string]interface
 			}
 		}
 	}
-	// Direct DoDecide calls can bypass core's media type detection.
-	if !strings.Contains(mediaType, "/") || strings.HasSuffix(mediaType, "/*") {
+	// Direct DoDecide calls can bypass core's media type detection. TS
+	// isFullMediaType: "image", "image/" and "image/*" are not full.
+	if !fileutil.IsFullMediaType(mediaType) {
 		if detected, ok := fileutil.DetectMediaTypeSignature(data, "image"); ok {
 			mediaType = detected
 		}
