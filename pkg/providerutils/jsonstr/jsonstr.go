@@ -15,7 +15,8 @@ import (
 // encoder always escapes them). A NaN or +-Inf float anywhere encoding/json
 // reaches (an interface{} or map value, a struct field, a slice element) is
 // written as null, as JSON.stringify writes it, where json.Marshal fails the
-// whole value with an UnsupportedValueError.
+// whole value with an UnsupportedValueError. A negative-zero float is
+// written as 0, as JSON.stringify writes -0.
 func Marshal(v interface{}) ([]byte, error) {
 	b, err := marshal(v)
 	if err == nil {
@@ -43,7 +44,22 @@ func marshal(v interface{}) ([]byte, error) {
 	if err := enc.Encode(v); err != nil {
 		return nil, err
 	}
-	return unescapeLineSeparators(bytes.TrimRight(buf.Bytes(), "\n")), nil
+	return positiveZero(unescapeLineSeparators(bytes.TrimRight(buf.Bytes(), "\n"))), nil
+}
+
+// positiveZero rewrites each number token `-0` (a negative-zero float, which
+// encoding/json writes with its sign) as `0`, as JSON.stringify writes -0.
+func positiveZero(b []byte) []byte {
+	if !bytes.Contains(b, []byte("-0")) {
+		return b
+	}
+	out, _ := rewriteNumberTokens(b, func(tok []byte) ([]byte, bool) {
+		if string(tok) == "-0" {
+			return []byte("0"), true
+		}
+		return nil, false
+	})
+	return out
 }
 
 var (
