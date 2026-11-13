@@ -347,6 +347,11 @@ func decodeGatewayLenient(data []byte, dst interface{}) error {
 	if err == nil {
 		return nil
 	}
+	// TS secureJsonParse: a forbidden prototype key fails the payload; the
+	// key-by-key fallback below must not swallow that.
+	if errors.Is(err, jsonexact.ErrForbiddenPrototype) {
+		return err
+	}
 	var fields map[string]json.RawMessage
 	if ferr := json.Unmarshal(data, &fields); ferr != nil {
 		var typeErr *json.UnmarshalTypeError

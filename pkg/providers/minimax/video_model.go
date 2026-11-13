@@ -132,7 +132,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		// only task_id (null/"" kept, absent omitted).
 		parsed := "{}"
 		var raw map[string]json.RawMessage
-		if json.Unmarshal(submitResp.Body, &raw) == nil {
+		if jsonexact.Unmarshal(submitResp.Body, &raw) == nil {
 			if v, ok := raw["task_id"]; ok {
 				parsed = `{"task_id":` + string(v) + `}`
 			}
