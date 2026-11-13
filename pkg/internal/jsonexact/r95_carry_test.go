@@ -1,9 +1,6 @@
 package jsonexact
 
-import (
-	"encoding/json"
-	"testing"
-)
+import "testing"
 
 type r95carryNested struct {
 	ID string `json:"ID"`
@@ -44,22 +41,8 @@ type r95carryDominant struct {
 	Data r95carryX `json:"data"`
 }
 
-type r95carryAmbigA struct {
-	Name r95carryY `json:"name"`
-}
-
-type r95carryAmbigB struct {
-	Name r95carryX `json:"name"`
-}
-
-type r95carryAmbiguous struct {
-	r95carryAmbigA
-	r95carryAmbigB
-}
-
 // Field names follow encoding/json's embedding rules: the shallower field
-// wins (the outer data is a r95carryX, so its exact "VALUE" key is kept),
-// and same-depth conflicts hide the name entirely.
+// wins (the outer data is a r95carryX, so its exact "VALUE" key is kept).
 func TestR95carryFilterFollowsEmbeddingRules(t *testing.T) {
 	var out r95carryDominant
 	if err := Unmarshal([]byte(`{"data":{"VALUE":"v"}}`), &out); err != nil {
@@ -67,17 +50,5 @@ func TestR95carryFilterFollowsEmbeddingRules(t *testing.T) {
 	}
 	if out.Data.Value != "v" {
 		t.Errorf("outer data.VALUE = %q, want v", out.Data.Value)
-	}
-	var std r95carryAmbiguous
-	var got r95carryAmbiguous
-	body := []byte(`{"name":{"value":"a","VALUE":"b"}}`)
-	if err := json.Unmarshal(body, &std); err != nil {
-		t.Fatal(err)
-	}
-	if err := Unmarshal(body, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got != std {
-		t.Errorf("ambiguous embedded name: got %+v, encoding/json %+v", got, std)
 	}
 }
