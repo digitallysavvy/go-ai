@@ -97,3 +97,28 @@ func TestR97provbRealtimeNullMessageTypeError(t *testing.T) {
 		}
 	}
 }
+
+// TestR97provbCompletionUsageRaw: TS convertOpenAICompletionUsage returns
+// raw: usage, the schema output. The OpenAI z.object keeps the three counts
+// as sent (a fraction included); the openai-compatible z.looseObject keeps
+// every key. Go rebuilt raw from its truncated int fields.
+func TestR97provbCompletionUsageRaw(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","choices":[{"text":"hi","finish_reason":"stop","index":0}],"usage":{"prompt_tokens":10.5,"completion_tokens":3,"total_tokens":13.5,"cost":0.25}}`))
+	}))
+	defer srv.Close()
+	for _, compat := range []bool{false, true} {
+		m, _ := New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: compat}).CompletionModel("gpt-3.5-turbo-instruct")
+		res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if *res.Usage.InputTokens != 10 || res.Usage.Raw["prompt_tokens"] != 10.5 || res.Usage.Raw["total_tokens"] != 13.5 {
+			t.Errorf("compat %v: input = %d, raw = %#v", compat, *res.Usage.InputTokens, res.Usage.Raw)
+		}
+		if _, has := res.Usage.Raw["cost"]; has != compat {
+			t.Errorf("compat %v: raw = %#v, want cost only for the loose openai-compatible schema", compat, res.Usage.Raw)
+		}
+	}
+}

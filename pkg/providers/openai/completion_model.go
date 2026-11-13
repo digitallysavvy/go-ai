@@ -344,7 +344,7 @@ func completionAssistantTextContent(parts []types.ContentPart) (string, error) {
 
 func (m *CompletionModel) convertCompletionResponse(response openAICompletionResponse, warnings []types.Warning) *types.GenerateResult {
 	result := &types.GenerateResult{
-		Usage:            convertOpenAICompletionUsage(response.Usage),
+		Usage:            convertOpenAICompletionUsage(response.Usage, m.provider.config.OpenAICompatible),
 		RawResponse:      response,
 		Warnings:         warnings,
 		ProviderMetadata: map[string]interface{}{"openai": map[string]interface{}{}},
@@ -392,9 +392,24 @@ func completionLogprobs(raw json.RawMessage) json.RawMessage {
 	return out
 }
 
-func convertOpenAICompletionUsage(usage *openAICompletionUsage) types.Usage {
+func convertOpenAICompletionUsage(usage *openAICompletionUsage, compat bool) types.Usage {
 	if usage == nil {
 		return types.Usage{}
+	}
+	// TS raw: usage, the schema output: the OpenAI z.object keeps the three
+	// counts, the openai-compatible z.looseObject every key, each number as
+	// sent (a fraction included).
+	raw := map[string]interface{}{
+		"prompt_tokens":     usage.PromptTokens,
+		"completion_tokens": usage.CompletionTokens,
+		"total_tokens":      usage.TotalTokens,
+	}
+	if usage.rawWire != nil {
+		if compat {
+			raw = usage.rawWire
+		} else {
+			raw = providerutils.PickSchemaKeys(usage.rawWire, "prompt_tokens", "completion_tokens", "total_tokens")
+		}
 	}
 
 	input := int64(usage.PromptTokens)
@@ -410,11 +425,7 @@ func convertOpenAICompletionUsage(usage *openAICompletionUsage) types.Usage {
 		OutputDetails: &types.OutputTokenDetails{
 			TextTokens: &output,
 		},
-		Raw: map[string]interface{}{
-			"prompt_tokens":     usage.PromptTokens,
-			"completion_tokens": usage.CompletionTokens,
-			"total_tokens":      usage.TotalTokens,
-		},
+		Raw: raw,
 	}
 }
 
@@ -469,6 +480,25 @@ type openAICompletionUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+
+	// rawWire is the usage object as sent (set by UnmarshalJSON).
+	rawWire map[string]interface{}
+}
+
+// UnmarshalJSON decodes the counts (a fraction truncated into the int
+// fields, TS z.number()) and keeps the wire object for Usage.Raw.
+func (u *openAICompletionUsage) UnmarshalJSON(b []byte) error {
+	type plain openAICompletionUsage
+	var p plain
+	if err := providerutils.UnmarshalChunk(b, &p); err != nil {
+		return err
+	}
+	*u = openAICompletionUsage(p)
+	var raw map[string]interface{}
+	if jsonexact.Unmarshal(b, &raw) == nil && raw != nil {
+		u.rawWire = raw
+	}
+	return nil
 }
 
 type completionStream struct {
@@ -627,7 +657,7 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			s.queueOrHold(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
 		}
 		if chunk.Usage != nil {
-			usage := convertOpenAICompletionUsage(chunk.Usage)
+			usage := convertOpenAICompletionUsage(chunk.Usage, s.compat)
 			s.usage = &usage
 		}
 		// TS isOpenAICompletionOutputChunk: any choice with text ends the
