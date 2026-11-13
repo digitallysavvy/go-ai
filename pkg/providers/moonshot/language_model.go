@@ -1144,35 +1144,49 @@ func (s *moonshotStream) buildProviderMetadata() json.RawMessage {
 // {"ttl5m": n, "ttl1h": n}. A missing or malformed header counts as 0 when the
 // other is present; neither present yields no metadata.
 func cacheWriteTokensByTTL(headers http.Header) (json.RawMessage, bool) {
-	ttl5m, ok5m := parseTokenCountHeader(providerutils.FetchHeaderText(headers, "msh-usage-cache-write-tokens-5m"))
-	ttl1h, ok1h := parseTokenCountHeader(providerutils.FetchHeaderText(headers, "msh-usage-cache-write-tokens-1h"))
+	ttl5m, ok5m := tokenCountHeader(providerutils.FetchHeaderText(headers, "msh-usage-cache-write-tokens-5m"))
+	ttl1h, ok1h := tokenCountHeader(providerutils.FetchHeaderText(headers, "msh-usage-cache-write-tokens-1h"))
 	if !ok5m && !ok1h {
 		return nil, false
 	}
-	raw, err := json.Marshal(map[string]int64{"ttl5m": ttl5m, "ttl1h": ttl1h})
+	if !ok5m {
+		ttl5m = int64(0)
+	}
+	if !ok1h {
+		ttl1h = int64(0)
+	}
+	raw, err := jsonstr.Marshal(map[string]interface{}{"ttl5m": ttl5m, "ttl1h": ttl1h})
 	if err != nil {
 		return nil, false
 	}
 	return raw, true
 }
 
-// parseTokenCountHeader accepts only a (JS-trimmed) run of ASCII digits (TS
-// /^\d+$/.test(value.trim())).
-func parseTokenCountHeader(value string) (int64, bool) {
+// tokenCountHeader is TS parseTokenCountHeader: only a (JS-trimmed) run of
+// ASCII digits is a count, read as Number(value.trim()) (an int64 when it
+// fits, else the float64 JS reads, such as 1e20).
+func tokenCountHeader(value string) (interface{}, bool) {
 	value = providerutils.JSTrim(value)
 	if value == "" {
-		return 0, false
+		return nil, false
 	}
 	for _, r := range value {
 		if r < '0' || r > '9' {
-			return 0, false
+			return nil, false
 		}
 	}
-	n, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return 0, false
+	if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return n, true
 	}
-	return n, true
+	f, _ := strconv.ParseFloat(value, 64) // a digit run beyond the double range is +Inf (JSON null)
+	return f, true
+}
+
+// parseTokenCountHeader is tokenCountHeader for a count that fits an int64.
+func parseTokenCountHeader(value string) (int64, bool) {
+	v, ok := tokenCountHeader(value)
+	n, isInt := v.(int64)
+	return n, ok && isInt
 }
 
 // Err returns any error that occurred during streaming
