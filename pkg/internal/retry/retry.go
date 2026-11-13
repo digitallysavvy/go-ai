@@ -129,8 +129,10 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			// TS delay() rejects with the abort reason, not the last error.
-			return context.Cause(ctx)
+			// TS delay() rejects with its own AbortError ("Delay was
+			// aborted"), not the abort reason and not the last error: the
+			// Go AbortError is the context's error, without its cause.
+			return ctx.Err()
 		case <-timer.C:
 			// Continue to next attempt
 		}

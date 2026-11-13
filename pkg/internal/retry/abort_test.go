@@ -48,7 +48,7 @@ func TestDoMaxRetriesExceededWinsOverNonRetryable(t *testing.T) {
 }
 
 // Cancelling during the backoff delay returns the abort error (TS delay()
-// rejects with the abort reason), not the last attempt's error.
+// rejects with its AbortError), not the last attempt's error.
 func TestDoCancelDuringDelayReturnsAbortError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(20 * time.Millisecond); cancel() }()

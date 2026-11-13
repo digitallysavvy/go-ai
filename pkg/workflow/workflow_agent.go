@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -997,7 +998,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		startGates[i] = make(chan struct{})
 	}
 	releaseStart := func(i int) { startOnce[i].Do(func() { close(startGates[i]) }) }
-	ordered.Run(ctx, len(outcomes), opts.toolCallConcurrency, func(i int) error {
+	started := ordered.Run(ctx, len(outcomes), opts.toolCallConcurrency, func(i int) error {
 		defer func() {
 			if i > 0 {
 				waitWorkflowToolStartGate(ctx, startGates[i-1])
@@ -1022,6 +1023,24 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		}
 		if o.chunk != nil {
 			prefixChunks = append(prefixChunks, *o.chunk)
+		}
+	}
+	// TS mapWithConcurrency over the non-provider-executed approvals: with a
+	// limit below their count each worker calls abortSignal.throwIfAborted()
+	// before it claims a call (also after its last one), so an abort during
+	// the resumed calls rejects with the reason; Promise.all (no limit, or one
+	// covering every call) never checks it. A call that never started is
+	// Go's sign of the same abort.
+	if ctx != nil && ctx.Err() != nil {
+		local := 0
+		for _, approval := range collected.ApprovedToolApprovals {
+			if !approval.ToolCall.ProviderExecuted {
+				local++
+			}
+		}
+		limit := opts.toolCallConcurrency
+		if slices.Contains(started, false) || (limit > 0 && limit < local) {
+			return nil, nil, context.Cause(ctx)
 		}
 	}
 
