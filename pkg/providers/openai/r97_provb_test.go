@@ -139,3 +139,17 @@ func TestR97provbLiveServerEventInfinity(t *testing.T) {
 		}
 	}
 }
+
+// TestR97provbApprovalRequestIDEmptyKey: TS
+// extractApprovalRequestIdToToolCallIdMapping maps every approvalRequestId
+// that is != null, a present "" included.
+func TestR97provbApprovalRequestIDEmptyKey(t *testing.T) {
+	m := extractApprovalRequestIDToToolCallIDFromPrompt(types.Prompt{Messages: []types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "tc1", ToolName: "mcp.x",
+			ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"approvalRequestId": ""}}}},
+	}}})
+	if m[""] != "tc1" {
+		t.Fatalf("mapping = %#v, want \"\" -> tc1", m)
+	}
+}

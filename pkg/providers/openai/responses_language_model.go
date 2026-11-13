@@ -1553,8 +1553,9 @@ func extractApprovalRequestIDToToolCallIDFromPrompt(prompt types.Prompt) map[str
 			if !ok {
 				continue
 			}
+			// TS approvalRequestId != null: a present "" is a key too.
 			approvalRequestID, ok := openaiOpts["approvalRequestId"].(string)
-			if !ok || approvalRequestID == "" {
+			if !ok {
 				continue
 			}
 			mapping[approvalRequestID] = toolCall.ToolCallID
