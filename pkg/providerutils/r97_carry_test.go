@@ -1,6 +1,9 @@
 package providerutils
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // TS openaiResponsesChunkSchema validates response.completed / incomplete /
 // failed `response.prompt_cache_diagnostics` (5a645e92d2). Node, OpenAI
@@ -46,5 +49,21 @@ func TestR97carryUnmarshalChunkPlain(t *testing.T) {
 	}
 	if err := UnmarshalChunk(body, &out); err == nil {
 		t.Fatal("UnmarshalChunk accepted a __proto__ key")
+	}
+}
+
+// z.number() accepts a count past the int64 range (1e20); the integer field
+// takes the nearest int64 instead of failing the frame. A number beyond the
+// double range (Infinity) still fails, as zod rejects it.
+func TestR97carryUnmarshalChunkClampsPastInt64(t *testing.T) {
+	var out struct {
+		A int64 `json:"a"`
+		B int64 `json:"b"`
+	}
+	if err := UnmarshalChunk([]byte(`{"a":1e20,"b":-1e20}`), &out); err != nil || out.A != math.MaxInt64 || out.B != math.MinInt64 {
+		t.Fatalf("UnmarshalChunk = %+v, %v", out, err)
+	}
+	if err := UnmarshalChunk([]byte(`{"a":1e400}`), &out); err == nil {
+		t.Fatal("UnmarshalChunk accepted 1e400 in an integer field")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
@@ -613,12 +614,18 @@ func truncateNumbersUnder(v interface{}, key string, hit bool) interface{} {
 		}
 		f, err := x.Float64()
 		if err != nil {
-			return x
+			return x // beyond the double range: z.number() rejects Infinity
 		}
-		if f >= -9.2e18 && f <= 9.2e18 {
-			return json.Number(strconv.FormatInt(int64(f), 10))
+		// z.number() keeps a count past the int64 range; an int64 field
+		// takes the nearest value it holds (known difference "Fractional
+		// counts in integer fields").
+		switch {
+		case f >= 9.2e18:
+			return json.Number(strconv.FormatInt(math.MaxInt64, 10))
+		case f <= -9.2e18:
+			return json.Number(strconv.FormatInt(math.MinInt64, 10))
 		}
-		return x
+		return json.Number(strconv.FormatInt(int64(f), 10))
 	case []interface{}:
 		for i := range x {
 			x[i] = truncateNumbersUnder(x[i], key, hit)
