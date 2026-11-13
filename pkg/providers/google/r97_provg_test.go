@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,5 +56,19 @@ func TestR97provgRealtimeClientSecretAcceptsPrototypeKey(t *testing.T) {
 	}
 	if res.Token != "auth_tokens/t1" {
 		t.Fatalf("token = %q", res.Token)
+	}
+}
+
+// TS convertToGoogleInteractionsInput parses a string tool input with
+// secureJsonParse, which reads a number beyond the double range as Infinity:
+// the input is still the parsed object, not {value: input}.
+func TestR97provgInteractionsToolArgsNonFiniteNumber(t *testing.T) {
+	args, raw := interactionToolArgs(nil, `{"a":1e400}`)
+	f, ok := args["a"].(float64)
+	if !ok || !math.IsInf(f, 1) || raw == "" {
+		t.Fatalf("args = %#v raw = %q, want {a: +Inf}", args, raw)
+	}
+	if args, _ := interactionToolArgs(nil, `{"__proto__":{}}`); args["value"] != `{"__proto__":{}}` {
+		t.Fatalf("prototype key: args = %#v", args)
 	}
 }
