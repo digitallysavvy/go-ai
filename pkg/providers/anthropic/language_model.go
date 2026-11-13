@@ -3079,7 +3079,10 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Data        json.RawMessage `json:"data"`
 				} `json:"error"`
 			}
-			if err := jsonexact.Unmarshal([]byte(event.Data), &errEvent); err != nil {
+			// TS statusCode z.number(): a fractional status code is truncated
+			// into the int (integer-fields known difference), not a skipped
+			// event.
+			if err := providerutils.UnmarshalChunk([]byte(event.Data), &errEvent); err != nil {
 				continue
 			}
 			// anthropicStreamErrorMetadata returns (0, false) for an

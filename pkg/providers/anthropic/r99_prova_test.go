@@ -109,3 +109,24 @@ func TestR99provaFractionalDeltaIndexTruncated(t *testing.T) {
 		t.Fatalf("text = %q, want hi", text)
 	}
 }
+
+// TS reads an error event's statusCode with z.number().nullish(): a
+// fractional status code is still an error part (Go truncates it, the
+// integer-fields known difference), never a dropped event.
+func TestR99provaErrorEventFractionalStatusCode(t *testing.T) {
+	sse := "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\",\"statusCode\":529.5}}\n\n"
+	s := newAnthropicStream(io.NopCloser(strings.NewReader(sse)), false)
+	found := false
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeError && c.Text == "busy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the error event was dropped")
+	}
+}
