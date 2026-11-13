@@ -191,7 +191,8 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		return nil, err
 	}
 	req.Header.Set("Content-Type", contentType)
-	for k, v := range internalhttp.MergeHeaders(headers, opts.Headers) {
+	// TS postFormDataToApi appends the runtime user-agent tag.
+	for k, v := range providerutils.WithUserAgentSuffix(internalhttp.MergeHeaders(headers, opts.Headers), providerutils.RuntimeEnvironmentUserAgent()) {
 		req.Header.Set(k, v)
 	}
 

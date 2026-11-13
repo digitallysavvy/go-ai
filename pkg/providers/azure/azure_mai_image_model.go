@@ -470,7 +470,8 @@ func (m *azureMaiImageModel) call(ctx context.Context, baseHeaders, extra map[st
 	if err != nil {
 		return azureMaiImageCallResult{}, err
 	}
-	for k, v := range internalhttp.MergeHeaders(baseHeaders, extra) {
+	// TS postJsonToApi / postFormDataToApi append the runtime user-agent tag.
+	for k, v := range providerutils.WithUserAgentSuffix(internalhttp.MergeHeaders(baseHeaders, extra), providerutils.RuntimeEnvironmentUserAgent()) {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Content-Type", contentType)
