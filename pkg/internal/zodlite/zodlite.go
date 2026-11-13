@@ -193,6 +193,16 @@ func JSType(v interface{}, present bool) string {
 	case string:
 		return "string"
 	case float64:
+		// zod 4 names a non-finite number by its value (JSON.parse reads a
+		// number beyond the double range as +-Infinity).
+		switch f := v.(float64); {
+		case math.IsInf(f, 1):
+			return "Infinity"
+		case math.IsInf(f, -1):
+			return "-Infinity"
+		case math.IsNaN(f):
+			return "NaN"
+		}
 		return "number"
 	case bool:
 		return "boolean"
@@ -217,9 +227,10 @@ func String(v interface{}, present bool, path []interface{}) *Issue {
 	return nil
 }
 
-// Number is z.number().
+// Number is z.number(): a finite number (zod 4 rejects +-Infinity and NaN
+// with invalid_type, "received Infinity").
 func Number(v interface{}, present bool, path []interface{}) *Issue {
-	if _, ok := v.(float64); !ok {
+	if f, ok := v.(float64); !ok || math.IsInf(f, 0) || math.IsNaN(f) {
 		return Invalid("number", v, present, path)
 	}
 	return nil
@@ -477,10 +488,10 @@ const maxSafeInteger int64 = 1<<53 - 1
 // check issue with zod's note).
 func Int(v interface{}, present bool, path []interface{}) *Issue {
 	f, ok := v.(float64)
-	if !ok {
+	if !ok || math.IsInf(f, 0) || math.IsNaN(f) {
 		return Invalid("number", v, present, path)
 	}
-	if math.IsInf(f, 0) || math.IsNaN(f) || math.Trunc(f) != f {
+	if math.Trunc(f) != f {
 		return &Issue{Path: path, Code: "invalid_type", Expected: "int", Format: "safeint", Message: "Invalid input: expected int, received number"}
 	}
 	const note = "Integers must be within the safe integer range."

@@ -1,8 +1,6 @@
 package providerutils
 
 import (
-	"encoding/json"
-
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 )
 
@@ -281,8 +279,8 @@ func isModeledResponsesChunk(m map[string]interface{}) bool {
 // openaiResponsesChunkSchema. nil means TS's safeParse succeeds (including the
 // unknown_chunk fallback for event types the schema does not model).
 func ValidateResponsesChunk(data []byte) error {
-	var value interface{}
-	if err := json.Unmarshal(data, &value); err != nil {
+	value, err := parseJSValue(data)
+	if err != nil {
 		return err
 	}
 	m, isObj := value.(map[string]interface{})

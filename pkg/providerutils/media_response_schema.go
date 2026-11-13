@@ -1,7 +1,6 @@
 package providerutils
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -545,8 +544,8 @@ func cohereEmbeddingNode(embeddingType string) zNode {
 // already-built schema node (TS createJsonResponseHandler(schema)).
 func NodeResponseValidator(providerName string, node zodlite.Node) func(statusCode int, headers http.Header, body []byte) error {
 	return responseValidator(providerName, func(body []byte) error {
-		var value interface{}
-		if err := json.Unmarshal(body, &value); err != nil {
+		value, err := parseJSValue(body)
+		if err != nil {
 			return err
 		}
 		if bad := node(value, true, nil); bad != nil {
@@ -575,8 +574,7 @@ func MediaSchemaParser(schema MediaResponseSchema) func(statusCode int, headers 
 		panic(fmt.Sprintf("providerutils: unknown media response schema %q", schema))
 	}
 	return func(_ int, _ http.Header, body []byte) error {
-		var value interface{}
-		cause := json.Unmarshal(body, &value)
+		value, cause := parseJSValue(body)
 		if cause == nil {
 			if bad := node(value, true, nil); bad != nil {
 				cause = bad

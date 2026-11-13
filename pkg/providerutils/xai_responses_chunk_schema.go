@@ -1,7 +1,6 @@
 package providerutils
 
 import (
-	"encoding/json"
 	"net/http"
 )
 
@@ -124,8 +123,8 @@ var (
 // ValidateXAIResponsesChunk checks an xAI Responses stream frame against TS
 // xaiResponsesChunkSchema.
 func ValidateXAIResponsesChunk(data []byte) error {
-	var value interface{}
-	if err := json.Unmarshal(data, &value); err != nil {
+	value, err := parseJSValue(data)
+	if err != nil {
 		return err
 	}
 	m, ok := value.(map[string]interface{})
@@ -160,8 +159,8 @@ func CheckXAIResponsesChunk(data string) (string, error) {
 // Responses API (xaiResponsesResponseSchema).
 func XAIResponsesResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
 	return responseValidator(providerName, func(body []byte) error {
-		var value interface{}
-		if err := json.Unmarshal(body, &value); err != nil {
+		value, err := parseJSValue(body)
+		if err != nil {
 			return err
 		}
 		if bad := zXaiResponseFields(false)(value, true, nil); bad != nil {

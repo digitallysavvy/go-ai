@@ -1,7 +1,6 @@
 package providerutils
 
 import (
-	"encoding/json"
 	"net/http"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -296,8 +295,8 @@ func (k ChatResponseKind) node() zNode {
 // error is a *ChunkSchemaError, or the JSON syntax error when body is not
 // valid JSON.
 func ValidateChatResponse(body []byte, kind ChatResponseKind) error {
-	var value interface{}
-	if err := json.Unmarshal(body, &value); err != nil {
+	value, err := parseJSValue(body)
+	if err != nil {
 		return err
 	}
 	if bad := kind.node()(value, true, nil); bad != nil {
@@ -438,8 +437,8 @@ var (
 // Responses API (openaiResponsesResponseSchema, also Azure).
 func ResponsesResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
 	return responseValidator(providerName, func(body []byte) error {
-		var value interface{}
-		if err := json.Unmarshal(body, &value); err != nil {
+		value, err := parseJSValue(body)
+		if err != nil {
 			return err
 		}
 		if bad := zOpenAIResponsesResponse(value, true, nil); bad != nil {
@@ -482,8 +481,8 @@ var zHuggingFaceResponse = zObj(
 // Hugging Face Responses API (huggingfaceResponsesResponseSchema).
 func HuggingFaceResponsesResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
 	return responseValidator(providerName, func(body []byte) error {
-		var value interface{}
-		if err := json.Unmarshal(body, &value); err != nil {
+		value, err := parseJSValue(body)
+		if err != nil {
 			return err
 		}
 		if bad := zHuggingFaceResponse(value, true, nil); bad != nil {
@@ -531,8 +530,8 @@ var (
 // Mistral Conversations API (mistralConversationResponseSchema).
 func MistralConversationResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
 	return responseValidator(providerName, func(body []byte) error {
-		var value interface{}
-		if err := json.Unmarshal(body, &value); err != nil {
+		value, err := parseJSValue(body)
+		if err != nil {
 			return err
 		}
 		if bad := zMistralConversationResponse(value, true, nil); bad != nil {
@@ -546,8 +545,8 @@ func MistralConversationResponseValidator(providerName string) func(statusCode i
 // message.output.delta `content` value (a string or one conversation content
 // chunk) fails the TS schema; nil when it is valid.
 func MistralConversationStreamContentError(raw []byte) error {
-	var value interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	value, err := parseJSValue(raw)
+	if err != nil {
 		return err
 	}
 	if _, ok := value.(string); ok {
@@ -562,8 +561,8 @@ func MistralConversationStreamContentError(raw []byte) error {
 // MistralConversationUsageError reports why a streamed
 // conversation.response.done `usage` value fails the TS schema.
 func MistralConversationUsageError(raw []byte) error {
-	var value interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	value, err := parseJSValue(raw)
+	if err != nil {
 		return err
 	}
 	if bad := zMistralConversationUsage(value, true, nil); bad != nil {
