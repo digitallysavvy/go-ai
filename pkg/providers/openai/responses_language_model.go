@@ -2713,7 +2713,7 @@ func responsesItemEncryptedContent(data []byte, event bool) interface{} {
 	if jsonexact.Unmarshal(data, &v) != nil {
 		return nil
 	}
-	enc := v.item.EncryptedContent
+	enc := v.EncryptedContent
 	if event {
 		enc = v.Item.EncryptedContent
 	}
