@@ -10,14 +10,14 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-var r94integAbortReason = errors.New("r94integ: caller reason")
+var errR94integAbortReason = errors.New("r94integ: caller reason")
 
 // TS abortSignal?.throwIfAborted() throws signal.reason: a context cancelled
 // with a cause reports the cause (context.Cause), not context.Canceled.
 func TestR94integThrowIfAbortedReason(t *testing.T) {
 	cancelled := func() context.Context {
 		ctx, cancel := context.WithCancelCause(context.Background())
-		cancel(r94integAbortReason)
+		cancel(errR94integAbortReason)
 		return ctx
 	}
 
@@ -28,7 +28,7 @@ func TestR94integThrowIfAbortedReason(t *testing.T) {
 			return &provider.DecisionResult{Answers: decisionAnswersFixture()}, nil
 		},
 	}
-	if _, err := ExperimentalDecide(cancelled(), DecideOptions{Model: decision, State: "refund", Questions: decisionQuestionsFixture()}); !errors.Is(err, r94integAbortReason) {
+	if _, err := ExperimentalDecide(cancelled(), DecideOptions{Model: decision, State: "refund", Questions: decisionQuestionsFixture()}); !errors.Is(err, errR94integAbortReason) {
 		t.Errorf("ExperimentalDecide before the call: err = %v, want the reason", err)
 	}
 	// After the model call.
@@ -37,12 +37,12 @@ func TestR94integThrowIfAbortedReason(t *testing.T) {
 		providerName: "test",
 		modelID:      "test-model",
 		doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
-			cancel(r94integAbortReason)
+			cancel(errR94integAbortReason)
 			return &provider.DecisionResult{Answers: decisionAnswersFixture()}, nil
 		},
 	}
 	retries := 0
-	if _, err := ExperimentalDecide(ctx, DecideOptions{Model: after, State: "refund", Questions: decisionQuestionsFixture(), MaxRetries: &retries}); !errors.Is(err, r94integAbortReason) {
+	if _, err := ExperimentalDecide(ctx, DecideOptions{Model: after, State: "refund", Questions: decisionQuestionsFixture(), MaxRetries: &retries}); !errors.Is(err, errR94integAbortReason) {
 		t.Errorf("ExperimentalDecide after the call: err = %v, want the reason", err)
 	}
 
@@ -55,12 +55,12 @@ func TestR94integThrowIfAbortedReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := provider.DecisionCallOptions{State: "x", Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "?"}}}
-	if _, err := lm.DoDecide(cancelled(), opts); !errors.Is(err, r94integAbortReason) {
+	if _, err := lm.DoDecide(cancelled(), opts); !errors.Is(err, errR94integAbortReason) {
 		t.Errorf("DecisionLanguageModel: err = %v, want the reason", err)
 	}
 
 	batch := &mockBatchV4{providerName: "mock.batch"}
-	if _, err := ExperimentalStartBatch(cancelled(), StartBatchOptions{Provider: batch, Requests: []BatchRequest{textBatchRequest("req-1", "m")}}); !errors.Is(err, r94integAbortReason) {
+	if _, err := ExperimentalStartBatch(cancelled(), StartBatchOptions{Provider: batch, Requests: []BatchRequest{textBatchRequest("req-1", "m")}}); !errors.Is(err, errR94integAbortReason) {
 		t.Errorf("ExperimentalStartBatch: err = %v, want the reason", err)
 	}
 }
@@ -73,22 +73,22 @@ func TestR94integToolAbortReasons(t *testing.T) {
 		Name:       "t",
 		Parameters: map[string]interface{}{"type": "object"},
 		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
-			cancel(r94integAbortReason)
+			cancel(errR94integAbortReason)
 			return "ok", nil
 		},
 	}}
 	calls := []types.ToolCall{{ID: "1", ToolName: "t"}, {ID: "2", ToolName: "t"}}
 	var usage types.Usage
-	if _, err := executeToolsLimited(ctx, calls, tools, nil, nil, nil, &usage, toolCallEventCallbacks{toolExecutionMs: map[string]int64{}}, 1); !errors.Is(err, r94integAbortReason) {
+	if _, err := executeToolsLimited(ctx, calls, tools, nil, nil, nil, &usage, toolCallEventCallbacks{toolExecutionMs: map[string]int64{}}, 1); !errors.Is(err, errR94integAbortReason) {
 		t.Errorf("queued calls after the abort: err = %v, want the reason", err)
 	}
 
 	ctx2, cancel2 := context.WithCancelCause(context.Background())
 	refiners := map[string]ToolInputRefiner{"t": func(context.Context, ToolInputRefinementOptions) (map[string]interface{}, error) {
-		cancel2(r94integAbortReason)
+		cancel2(errR94integAbortReason)
 		return nil, errors.New("refine failed")
 	}}
-	if _, err := RefineToolCalls(ctx2, []types.ToolCall{{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}}, tools, refiners, nil, nil); !errors.Is(err, r94integAbortReason) {
+	if _, err := RefineToolCalls(ctx2, []types.ToolCall{{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}}, tools, refiners, nil, nil); !errors.Is(err, errR94integAbortReason) {
 		t.Errorf("refine aborted: err = %v, want the reason", err)
 	}
 }
@@ -106,7 +106,7 @@ func TestR94integStreamTextAbortDuringToolsReason(t *testing.T) {
 		}), nil
 	}}
 	tool := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
-		cancel(r94integAbortReason)
+		cancel(errR94integAbortReason)
 		return "ok", nil
 	}}
 	r, err := StreamText(ctx, StreamTextOptions{Model: model, Prompt: "x", Tools: []types.Tool{tool}, OnError: func(context.Context, error) {}})
@@ -114,7 +114,7 @@ func TestR94integStreamTextAbortDuringToolsReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = r.Text()
-	if !errors.Is(r.Err(), r94integAbortReason) {
+	if !errors.Is(r.Err(), errR94integAbortReason) {
 		t.Fatalf("Err() = %v, want the abort reason", r.Err())
 	}
 }

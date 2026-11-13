@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -89,11 +88,8 @@ func TestR94integProviderResponsesDecodeCaseExact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goBin := filepath.Join(runtime.GOROOT(), "bin", "go")
-	if _, err := os.Stat(goBin); err != nil {
-		goBin = "go"
-	}
-	cmd := exec.Command(goBin, "list", "-export", "-deps", "-json", "./pkg/providers/...")
+	// go test puts GOROOT/bin first on the test binary's PATH.
+	cmd := exec.Command("go", "list", "-export", "-deps", "-json", "./pkg/providers/...")
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
