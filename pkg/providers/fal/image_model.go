@@ -565,6 +565,7 @@ func (m *ImageModel) convertBody(ctx context.Context, raw []byte) (*types.ImageR
 	}
 
 	falMeta := map[string]interface{}{"images": imagesMeta}
+	_, hasImages := top["images"]
 	for k, v := range top {
 		switch k {
 		case "images", "prompt", "has_nsfw_concepts", "nsfw_content_detected":
@@ -572,6 +573,12 @@ func (m *ImageModel) convertBody(ctx context.Context, raw []byte) (*types.ImageR
 		}
 		var decoded interface{}
 		if jsonexact.Unmarshal(v, &decoded) == nil {
+			if k == "image" && hasImages {
+				// The `images` branch of the union matched first, so the
+				// looseObject passes `image` through unparsed.
+				falMeta[k] = decoded
+				continue
+			}
 			falMeta[k] = stripFalNested(k, decoded)
 		}
 	}
@@ -611,7 +618,8 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, err
 // falNestedKeys are the keys the TS falImageResponseSchema declares for its
 // nested z.object schemas. Zod strips every other key of those objects (only
 // the top-level looseObject passes unknown keys through), so the metadata
-// carries just these.
+// carries just these. `image` is parsed (and stripped) only when the body has
+// no `images` (the second union branch).
 var falNestedKeys = map[string][]string{
 	"timings":                {"inference"},
 	"debug_latents":          {"url", "content_type", "file_name", "file_data", "file_size"},

@@ -430,6 +430,12 @@ func (s *deepgramTranscriptionStream) handleEvent(text string, cfg deepgramStrea
 	text = textdecode.UTF8([]byte(text))
 	var raw interface{}
 	if err := jsonexact.Unmarshal([]byte(text), &raw); err != nil {
+		// A forbidden prototype key already comes back as a JSONParseError:
+		// TS safeParseJSON gives one, caused by the SyntaxError.
+		var pe *providererrors.JSONParseError
+		if errors.As(err, &pe) {
+			err = pe.Cause
+		}
 		return false, &providererrors.JSONParseError{Text: text, Cause: err}
 	}
 	if err := deepgramValidate(deepgramEventTypeNode, text, raw); err != nil {
