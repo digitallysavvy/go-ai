@@ -303,13 +303,15 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 	hasAudioOutput := false
 
 	fail := func(err error) {
-		result.setFinalErr(err)
-		result.rejectAll(err)
 		// A nil Audio has no producer to cancel (and must not crash the
-		// pipe goroutine).
+		// pipe goroutine). The input is cancelled before the result
+		// promises reject, so a caller woken by the rejection sees it
+		// cancelled (TS settles both in one synchronous task).
 		if opts.Audio != nil {
 			opts.Audio.Cancel(err)
 		}
+		result.setFinalErr(err)
+		result.rejectAll(err)
 	}
 	// abortReason reports a failure caused by cancellation with the abort
 	// reason, as TS pipeTo rejects with the signal's reason: Close gives

@@ -401,18 +401,21 @@ func runSpeechStreamPipe(pipeCtx context.Context, streamer provider.SpeechStream
 	}
 
 	fail := func(err error) {
-		result.setFinalErr(err)
-		result.rejectAll(err)
 		// TS stream-speech.ts catch: the text stream is cancelled only while
 		// no model stream owns it (doStream rejected or is still pending);
 		// once the model returned its stream, the model's cleanup owns the
-		// text stream (a locked ReadableStream rejects the cancel).
+		// text stream (a locked ReadableStream rejects the cancel). The TS
+		// handler rejects the promises and cancels in one synchronous task,
+		// so an awaiting caller sees both; Go cancels first so a caller
+		// woken by the rejection never sees the text stream still live.
 		streamMu.Lock()
 		owned := stream != nil
 		streamMu.Unlock()
 		if !owned {
 			text.Cancel(err)
 		}
+		result.setFinalErr(err)
+		result.rejectAll(err)
 	}
 
 	// A cancellation settles the result and errors the output immediately,

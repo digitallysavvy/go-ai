@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,6 +179,7 @@ type r81streamLateTranscription struct {
 }
 
 func (s *r81streamLateTranscription) Next() (*provider.TranscriptionStreamPart, error) {
+	r81streamLateEntered.Add(1)
 	<-s.ctx.Done()
 	if s.sent {
 		return nil, s.ctx.Err()
@@ -194,6 +196,7 @@ type r81streamLateTranslation struct {
 }
 
 func (s *r81streamLateTranslation) Next() (*provider.SpeechTranslationStreamPart, error) {
+	r81streamLateEntered.Add(1)
 	<-s.ctx.Done()
 	if s.sent {
 		return nil, s.ctx.Err()
@@ -213,11 +216,13 @@ func r81streamWaitNext(t *testing.T, cancel func(), next func() (string, error))
 		err   error
 	}
 	ch := make(chan res, 1)
+	readerID := make(chan string, 1)
 	go func() {
+		readerID <- r81streamGoroutineID()
 		d, err := r81streamWaitingNext(next)
 		ch <- res{d, err}
 	}()
-	r81streamWaitBlocked(t)
+	r81streamWaitBlocked(t, <-readerID)
 	cancel()
 	select {
 	case r := <-ch:
@@ -242,13 +247,26 @@ func r81streamWaitingNext(next func() (string, error)) (string, error) {
 // pipe, as in TS where doStream has started before the caller can abort. A
 // fixed 2ms sleep raced both goroutines' start under load (round 93: one
 // failure in 20 -race runs, five with the machine loaded).
-func r81streamWaitBlocked(t *testing.T) {
+//
+// Round 94: the markers alone also matched goroutines left parked by earlier
+// tests of the same process (a late provider read whose ctx is never
+// cancelled), so the cancel could come before this run's pipe reached its
+// provider read (1 failure in 20 loaded -count runs over the r81 / r94
+// stream tests). The reader is now matched by its own goroutine ID, and the
+// provider read by r81streamLateEntered passing the value r81streamMarkRun
+// recorded before the run started.
+func r81streamWaitBlocked(t *testing.T, readerID string) {
 	t.Helper()
+	parkedHeader := func(header string) bool {
+		return !strings.Contains(header, "[running]") && !strings.Contains(header, "[runnable]") && !strings.Contains(header, "[sleep]")
+	}
 	parked := func(stacks []string, marker string) bool {
 		for _, g := range stacks {
 			header, _, _ := strings.Cut(g, "\n")
-			if strings.Contains(g, marker) && !strings.Contains(header, "[running]") &&
-				!strings.Contains(header, "[runnable]") && !strings.Contains(header, "[sleep]") {
+			if strings.Contains(g, marker) && parkedHeader(header) {
+				if marker == "r81streamWaitingNext" && !strings.HasPrefix(header, "goroutine "+readerID+" ") {
+					continue
+				}
 				return true
 			}
 		}
@@ -259,7 +277,8 @@ func r81streamWaitBlocked(t *testing.T) {
 	for time.Now().Before(deadline) {
 		n := runtime.Stack(buf, true)
 		stacks := strings.Split(string(buf[:n]), "\n\n")
-		if parked(stacks, "r81streamWaitingNext") && parked(stacks, ".(*r81streamLate") {
+		if parked(stacks, "r81streamWaitingNext") && parked(stacks, ".(*r81streamLate") &&
+			r81streamLateEntered.Load() > r81streamLateBase.Load() {
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -274,6 +293,7 @@ func r81streamTranscriptionRun(t *testing.T) (*StreamTranscriptionResult, interf
 	Close() error
 }, context.CancelFunc) {
 	t.Helper()
+	r81streamMarkRun()
 	ctx, cancel := context.WithCancel(context.Background())
 	model := &mockTranscriptionStreamerModel{doStreamFn: func(ctx context.Context, _ *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
 		return &provider.TranscriptionStreamResult{Stream: &r81streamLateTranscription{ctx: ctx}}, nil
@@ -331,6 +351,7 @@ func r81streamTranslationRun(t *testing.T, ctx context.Context, provide func(ctx
 	Close() error
 }) {
 	t.Helper()
+	r81streamMarkRun()
 	model := &mockSpeechTranslationModel{doStreamFn: func(ctx context.Context, _ *provider.SpeechTranslationStreamOptions) (*provider.SpeechTranslationStreamResult, error) {
 		return &provider.SpeechTranslationStreamResult{Stream: provide(ctx)}, nil
 	}}
@@ -415,6 +436,7 @@ func TestR81streamTranslationCancellation(t *testing.T) {
 type r81streamLateSpeech struct{ ctx context.Context }
 
 func (s *r81streamLateSpeech) Next() (*provider.SpeechStreamPart, error) {
+	r81streamLateEntered.Add(1)
 	<-s.ctx.Done()
 	p := audioPart("late")
 	return &p, nil
@@ -424,6 +446,7 @@ func (s *r81streamLateSpeech) Close() error { return nil }
 
 func TestR81streamSpeechCancelledCtxWinsOverReader(t *testing.T) {
 	for i := 0; i < 50; i++ {
+		r81streamMarkRun()
 		ctx, cancel := context.WithCancel(context.Background())
 		model := &mockStreamingSpeechModel{doStream: func(ctx context.Context, _ *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
 			return &provider.SpeechStreamResult{Stream: &r81streamLateSpeech{ctx: ctx}}, nil
@@ -1355,4 +1378,23 @@ func TestR81streamTSProgrammaticToolCallingDiceGame(t *testing.T) {
 	if got := r81streamJSON(t, endEvent.Usage); got != wantUsage {
 		t.Errorf("onFinish usage = %s, want %s", got, wantUsage)
 	}
+}
+
+// r81streamLateEntered counts provider reads that entered a r81streamLate*
+// Next; r81streamLateBase is its value when the current run started (the
+// r81 tests are not parallel).
+var (
+	r81streamLateEntered atomic.Int64
+	r81streamLateBase    atomic.Int64
+)
+
+// r81streamMarkRun records the provider reads entered before a run starts.
+func r81streamMarkRun() { r81streamLateBase.Store(r81streamLateEntered.Load()) }
+
+// r81streamGoroutineID is the calling goroutine's ID, from its stack header.
+func r81streamGoroutineID() string {
+	buf := make([]byte, 64)
+	n := runtime.Stack(buf, false)
+	id, _, _ := strings.Cut(strings.TrimPrefix(string(buf[:n]), "goroutine "), " ")
+	return id
 }
