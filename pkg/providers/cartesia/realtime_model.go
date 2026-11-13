@@ -3,6 +3,7 @@ package cartesia
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -58,6 +59,39 @@ type cartesiaRealtimeWireEvent struct {
 	Duration  *float64 `json:"duration"`
 	Message   *string  `json:"message"`
 	ErrorCode *string  `json:"error_code"`
+}
+
+// decodeCartesiaRealtimeEvent reads a server event as TS casts the parsed
+// value: a field of another type does not drop the event (string fields read
+// as the JS string of a scalar), is_final counts only when it is true and
+// duration only when it is a number.
+func decodeCartesiaRealtimeEvent(raw json.RawMessage) cartesiaRealtimeWireEvent {
+	var parsed interface{}
+	_ = jsonexact.Unmarshal(raw, &parsed)
+	fields, _ := parsed.(map[string]interface{})
+	str := func(key string) *string {
+		v, ok := fields[key]
+		if !ok || v == nil {
+			return nil
+		}
+		s := cartesiaJSString(v)
+		return &s
+	}
+	event := cartesiaRealtimeWireEvent{
+		Type:      cartesiaJSString(fields["type"]),
+		RequestID: str("request_id"),
+		Transcrip: str("transcript"),
+		Text:      str("text"),
+		Message:   str("message"),
+		ErrorCode: str("error_code"),
+	}
+	if b, ok := fields["is_final"].(bool); ok {
+		event.IsFinal = &b
+	}
+	if d, ok := fields["duration"].(float64); ok {
+		event.Duration = &d
+	}
+	return event
 }
 
 // NewRealtimeModel creates a Cartesia realtime Ink model.
@@ -134,13 +168,21 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
 		return provider.ClientSecretResult{}, providererrors.NewProviderError("cartesia", 0, "",
-			fmt.Sprintf("Cartesia realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body)), cause)
+			// TS response.text(): UTF-8 decoded, BOM dropped.
+			fmt.Sprintf("Cartesia realtime client secret request failed: %d %s", resp.StatusCode, textdecode.UTF8(resp.Body)), cause)
 	}
-	var data struct {
-		Token interface{} `json:"token"`
+	// TS (await response.json()).token: a body that is not JSON rejects with
+	// the parser's SyntaxError (Go's parser error here), and a null body
+	// throws reading its token.
+	var data interface{}
+	if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &data); err != nil {
+		return provider.ClientSecretResult{}, err
 	}
-	_ = jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &data)
-	token, _ := data.Token.(string)
+	if data == nil {
+		return provider.ClientSecretResult{}, errors.New("Cannot read properties of null (reading 'token')") //nolint:staticcheck // matches the TS runtime error text
+	}
+	fields, _ := data.(map[string]interface{})
+	token, _ := fields["token"].(string)
 	if token == "" {
 		return provider.ClientSecretResult{}, fmt.Errorf("Cartesia realtime client secret response did not include a token.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
@@ -268,8 +310,7 @@ func (m *RealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent)
 // ParseServerEvent maps a Cartesia STT event; the first event also yields a
 // session-created event when the server did not send "connected".
 func (m *RealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
-	var event cartesiaRealtimeWireEvent
-	_ = jsonexact.Unmarshal(raw, &event)
+	event := decodeCartesiaRealtimeEvent(raw)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
