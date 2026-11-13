@@ -555,7 +555,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 
 	conn, err := s.dial(cfg.url, cfg.headers)
 	if err != nil {
-		fail(err)
+		fail(socketOpenError(s.Context(), err, "ElevenLabs realtime transcription error."))
 		return
 	}
 	s.SetConn(conn)

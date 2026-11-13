@@ -268,7 +268,7 @@ func (s *elevenLabsSpeechStream) run(cfg speechStreamConfig) {
 	closeInfo := &wsutil.CloseInfo{}
 	conn, err := wsutil.Dial(s.Context(), cfg.url.String(), wsutil.DialOptions{Headers: cfg.headers, WrapConn: closeInfo.Wrap})
 	if err != nil {
-		fail(err)
+		fail(socketOpenError(s.Context(), err, "ElevenLabs speech stream error."))
 		return
 	}
 	s.SetConn(conn)
@@ -332,6 +332,28 @@ func (s *elevenLabsSpeechStream) run(cfg speechStreamConfig) {
 			}
 		}
 	}
+}
+
+// elevenLabsSocketError is the error TS onSocketError raises when the
+// WebSocket fails (a refused handshake or an unreachable host included); the
+// dial error stays reachable through Unwrap.
+type elevenLabsSocketError struct {
+	message string
+	cause   error
+}
+
+func (e *elevenLabsSocketError) Error() string { return e.message }
+func (e *elevenLabsSocketError) Unwrap() error { return e.cause }
+
+// socketOpenError maps a failed dial like TS connectToWebSocket: an abort
+// (already signalled or during the handshake) fails with the abort reason
+// (onAbort(abortSignal.reason)), any other failure with the provider's
+// socket error text (onSocketError).
+func socketOpenError(ctx context.Context, err error, message string) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return &elevenLabsSocketError{message: message, cause: err}
 }
 
 // handleMessage processes one server message. It reports done after emitting
