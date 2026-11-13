@@ -41,3 +41,29 @@ func TestR99provgOffSchemaErrorKeepsEmptyReasonPhrase(t *testing.T) {
 		t.Fatalf("message %q status %d body %q, want the empty reason phrase", perr.Message, perr.StatusCode, perr.ResponseBody)
 	}
 }
+
+// TS generate returns `warnings` (an empty array) for both the JSON and the
+// text response formats; Go left it nil.
+func TestR99provgTranscriptionWarningsEmptyArray(t *testing.T) {
+	for _, format := range []string{"json", "text"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if format == "text" {
+				_, _ = w.Write([]byte("hello"))
+				return
+			}
+			_, _ = w.Write([]byte(`{"text":"hello","x_groq":{"id":"x"}}`))
+		}))
+		model := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "whisper-large-v3")
+		res, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+			Audio: []byte{1, 2}, MimeType: "audio/wav",
+			ProviderOptions: map[string]interface{}{"groq": map[string]interface{}{"responseFormat": format}},
+		})
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Warnings == nil || len(res.Warnings) != 0 || res.Text != "hello" {
+			t.Fatalf("%s: warnings %#v text %q, want an empty array", format, res.Warnings, res.Text)
+		}
+	}
+}
