@@ -334,20 +334,14 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string, callHea
 	}
 	dlOpts := fileutil.TrustedOriginDownloadOptions(baseURL, trustedTransport)
 	if fileutil.IsSameOrigin(imageURL, baseURL) {
-		key := providerutils.APIKeyOrEnv(m.provider.config.APIKey, "FIREWORKS_API_KEY")
-		if m.provider.config.APIKeyFunc != nil {
-			resolved, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
-				APIKey: m.provider.config.APIKey, APIKeyFunc: m.provider.config.APIKeyFunc,
-				EnvVar: "FIREWORKS_API_KEY", Description: "Fireworks API key",
-			})
-			if err != nil {
-				return nil, err
-			}
-			key = resolved
+		// TS combineHeaders(await resolve(config.headers), headers): the
+		// provider's tagged headers (API key, custom headers and the
+		// ai-sdk-fireworks user-agent tag) with the call headers over them.
+		providerHeaders, err := m.provider.client.RequestHeadersCtx(ctx)
+		if err != nil {
+			return nil, err
 		}
-		dlOpts.Headers = internalhttp.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + key,
-		}, m.provider.config.Headers)
+		dlOpts.Headers = providerHeaders
 		for _, h := range callHeaders {
 			dlOpts.Headers = internalhttp.MergeHeaders(dlOpts.Headers, h)
 		}
