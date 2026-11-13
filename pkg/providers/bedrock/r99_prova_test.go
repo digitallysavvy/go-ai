@@ -65,3 +65,26 @@ func TestR99provaCallHeaderWinsOverConfigHeaderAnyCase(t *testing.T) {
 		mu.Unlock()
 	}
 }
+
+// TS getArgs: on a model that rejects disabled thinking, reasoning none falls
+// back to adaptive thinking with effort 'low' only when
+// additionalModelRequestFields.output_config.effort is null
+// (z.record(z.string(), z.any())): any other value, a number included, keeps
+// the caller's effort.
+func TestR99provaAdaptiveFallbackKeepsNonStringEffort(t *testing.T) {
+	none := types.ReasoningNone
+	args := r85provaArgs(t, "anthropic.claude-opus-5-5", &provider.GenerateOptions{
+		Reasoning: &none,
+		ProviderOptions: map[string]interface{}{"bedrock": map[string]interface{}{
+			"additionalModelRequestFields": map[string]interface{}{"output_config": map[string]interface{}{"effort": 5}},
+		}},
+	})
+	fields := r85provaFields(args)
+	oc, _ := fields["output_config"].(map[string]interface{})
+	if oc["effort"] != float64(5) {
+		t.Fatalf("output_config = %#v, want the caller's effort 5", fields["output_config"])
+	}
+	if th, _ := fields["thinking"].(map[string]interface{}); th["type"] != "adaptive" {
+		t.Fatalf("thinking = %#v", fields["thinking"])
+	}
+}
