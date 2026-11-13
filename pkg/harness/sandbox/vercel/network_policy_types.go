@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // NetworkPolicy is the Go equivalent of @vercel/sandbox's public `NetworkPolicy`
@@ -126,7 +127,7 @@ func (p NetworkPolicy) MarshalJSON() ([]byte, error) {
 	if p.Subnets != nil {
 		obj["subnets"] = p.Subnets
 	}
-	return json.Marshal(obj)
+	return jsonstr.Marshal(obj)
 }
 
 // apiNetworkPolicy is a NetworkPolicy as the Sandbox API request bodies
@@ -271,8 +272,8 @@ func isJSONNullOrEmpty(raw json.RawMessage) bool {
 // correct structural equality check (mirrors the TS stableSerialize/
 // areNetworkPoliciesEqual pair).
 func (p NetworkPolicy) Equal(other NetworkPolicy) bool {
-	a, errA := json.Marshal(p)
-	b, errB := json.Marshal(other)
+	a, errA := jsonstr.Marshal(p)
+	b, errB := jsonstr.Marshal(other)
 	if errA != nil || errB != nil {
 		return false
 	}
