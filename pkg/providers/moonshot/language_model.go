@@ -436,7 +436,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if responseFormat != nil {
 		body["response_format"] = responseFormat
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil { // TS != null: an empty array counts
 		body["stop"] = opts.StopSequences
 	}
 	if moonshotTools != nil {

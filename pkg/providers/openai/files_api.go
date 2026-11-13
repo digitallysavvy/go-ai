@@ -30,7 +30,7 @@ type FilesAPI struct {
 type openAIFilesResponse struct {
 	ID        string   `json:"id"`
 	Object    string   `json:"object"`
-	Bytes     *int64   `json:"bytes"`
+	Bytes     *float64 `json:"bytes"` // TS z.number(): a fraction is kept in the metadata
 	CreatedAt *float64 `json:"created_at"`
 	Filename  *string  `json:"filename"`
 	Purpose   *string  `json:"purpose"`
@@ -49,7 +49,7 @@ func (r openAIFilesResponse) toMetadata() map[string]interface{} {
 		meta["purpose"] = *r.Purpose
 	}
 	if r.Bytes != nil {
-		meta["bytes"] = *r.Bytes
+		meta["bytes"] = unixSecondsMetadataValue(*r.Bytes)
 	}
 	if r.CreatedAt != nil {
 		meta["createdAt"] = unixSecondsMetadataValue(*r.CreatedAt)
@@ -85,6 +85,16 @@ func unixSecondsTime(sec float64) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return time.UnixMilli(int64(ms)), true
+}
+
+// filesByteSize is the wire byte count as the int64 ByteSize field: a
+// fraction is truncated (the provider metadata keeps the exact number).
+func filesByteSize(v *float64) *int64 {
+	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) || math.Abs(*v) > 9e18 {
+		return nil
+	}
+	n := int64(*v)
+	return &n
 }
 
 // unixSecondsMetadataValue reports a wire number in provider metadata: an
@@ -214,7 +224,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Filename:          resultFilename,
 		ProviderMetadata:  map[string]interface{}{"openai": out.toMetadata()},
 		Warnings:          []types.Warning{},
-		ByteSize:          out.Bytes,
+		ByteSize:          filesByteSize(out.Bytes),
 		CreatedAt:         unixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         unixSecondsToTime(out.ExpiresAt),
 	}, nil
@@ -252,7 +262,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 	return &provider.FileMetadataResult{
 		ProviderReference: types.ProviderReference{"openai": out.ID},
 		Filename:          filesString(out.Filename),
-		ByteSize:          out.Bytes,
+		ByteSize:          filesByteSize(out.Bytes),
 		CreatedAt:         unixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         unixSecondsToTime(out.ExpiresAt),
 		ProviderMetadata:  map[string]interface{}{"openai": out.toMetadata()},

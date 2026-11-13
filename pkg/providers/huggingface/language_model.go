@@ -88,7 +88,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	if opts.FrequencyPenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil { // TS != null: an empty array counts
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences"})
 	}
 

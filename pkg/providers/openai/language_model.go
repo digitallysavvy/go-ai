@@ -710,7 +710,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.PresencePenalty != nil {
 		body["presence_penalty"] = *opts.PresencePenalty
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil { // TS != null: an empty array counts
 		body["stop"] = opts.StopSequences
 	}
 	if opts.Seed != nil {
