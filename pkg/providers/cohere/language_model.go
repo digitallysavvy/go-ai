@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -958,6 +959,12 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}})
 				var parsed interface{}
 				if err := securejson.Unmarshal([]byte(text), &parsed); err != nil { // TS parseJSON (secureJsonParse)
+					// One JSONParseError whose cause is the SyntaxError (securejson
+					// already returns a JSONParseError for a prototype key).
+					var parseErr *providererrors.JSONParseError
+					if errors.As(err, &parseErr) {
+						err = parseErr.Cause
+					}
 					s.err = providererrors.NewJSONParseError(text, err)
 				} else {
 					args, _ := parsed.(map[string]interface{})

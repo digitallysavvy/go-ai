@@ -3,13 +3,16 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -149,5 +152,15 @@ func TestR97provgInteractionsUsageRawKeepsFraction(t *testing.T) {
 	}
 	if wrapped.Usage.raw["total_input_tokens"] != 1.5 {
 		t.Fatalf("chunk raw = %#v", wrapped.Usage.raw)
+	}
+}
+
+// TS parses a responses-file line with safeParseJSON: one JSONParseError
+// whose cause is the SyntaxError (cr-r97-prova-to-provg class).
+func TestR97provgBatchLineSingleJSONParseError(t *testing.T) {
+	err := googleBatchLineError([]byte(`{"key":"k","__proto__":{}}`))
+	var parseErr *providererrors.JSONParseError
+	if !errors.As(err, &parseErr) || parseErr.Cause != jsonexact.ErrForbiddenPrototype {
+		t.Fatalf("err = %#v, want one JSONParseError caused by the SyntaxError", err)
 	}
 }
