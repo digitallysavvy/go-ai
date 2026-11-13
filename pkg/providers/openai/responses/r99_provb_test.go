@@ -3,6 +3,7 @@ package responses
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -34,5 +35,17 @@ func TestR99provbPartMetadataOutOfRange(t *testing.T) {
 	}
 	if got := toolResultContentProviderMetadata(types.ToolResultContent{ProviderMetadata: meta}); got["xai"] == nil {
 		t.Errorf("tool result metadata = %v, want the xai namespace", got)
+	}
+}
+
+// TestR99provbFunctionToolNonFiniteSchema: JSON.stringify writes a
+// non-finite number as null (ruling 4). jsonstr could not null one reached
+// through the unexported embedded alias, so a tool with empty
+// allowedCallers and such a schema failed to marshal.
+func TestR99provbFunctionToolNonFiniteSchema(t *testing.T) {
+	d := FunctionToolDef{Type: "function", Name: "f", Parameters: map[string]interface{}{"maximum": math.Inf(1)}, AllowedCallers: []string{}}
+	b, err := json.Marshal(d)
+	if err != nil || !strings.Contains(string(b), `"maximum":null`) || !strings.Contains(string(b), `"allowed_callers":[]`) {
+		t.Errorf("marshal = %s, %v", b, err)
 	}
 }
