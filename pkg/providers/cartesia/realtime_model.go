@@ -1,6 +1,7 @@
 package cartesia
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 const cartesiaDefaultRealtimeRequestID = "cartesia-realtime"
@@ -156,12 +158,7 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	if opts.ExpiresAfterSeconds != nil {
 		body.Set("expires_in", *opts.ExpiresAfterSeconds)
 	}
-	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/access-token",
-		Headers: map[string]string{"Content-Type": "application/json"},
-		Body:    body,
-	})
+	resp, err := m.postAccessToken(ctx, body)
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
@@ -236,6 +233,44 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 		result.ExpiresAt = &expiresAt
 	}
 	return result, nil
+}
+
+// postAccessToken is the TS client secret request: the fetch function called
+// directly (no postJsonToApi), with {...config headers, 'Content-Type':
+// 'application/json'} (no runtime user-agent tag). A fetch rejection
+// propagates as is instead of becoming the retryable "Cannot connect to API"
+// APICallError.
+func (m *RealtimeModel) postAccessToken(ctx context.Context, body *jsonorder.Object) (*internalhttp.Response, error) {
+	headers, err := m.provider.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return nil, err // TS: resolve(config.headers) throws as is (LoadAPIKeyError)
+	}
+	payload, err := jsonstr.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	tokenURL := m.provider.config.BaseURL + "/access-token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	httpResp, err := internalhttp.WithFetchRedirects(m.provider.client.HTTPClient()).Do(req)
+	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause
+		}
+		return nil, err
+	}
+	defer httpResp.Body.Close() //nolint:errcheck
+	respBody, err := fileutil.ReadResponseWithSizeLimit(httpResp, tokenURL, fileutil.DefaultMaxDownloadSize)
+	if err != nil {
+		return nil, err
+	}
+	return &internalhttp.Response{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: respBody}, nil
 }
 
 // GetWebSocketConfig adds the access token to the STT URL and records whether
