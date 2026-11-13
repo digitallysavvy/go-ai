@@ -233,12 +233,10 @@ func (p *Provider) applyRequestHeaders(req *stdhttp.Request, overrides map[strin
 			headers[k] = values[0]
 		}
 	}
-	for k, v := range p.config.Headers {
-		headers[k] = v
-	}
-	for k, v := range overrides {
-		headers[k] = v
-	}
+	// TS combineHeaders(getHeaders(), options.headers) then lower-cases the
+	// keys in insertion order (withUserAgentSuffix in postJsonToApi), so a
+	// later header replaces an earlier one whatever the spelling of either.
+	headers = internalhttp.MergeHeaders(headers, p.config.Headers, overrides)
 	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("amazon-bedrock"))
 	// TS postJsonToApi then appends getRuntimeEnvironmentUserAgent() (the
 	// internal client adds it for client requests; these go through the raw
