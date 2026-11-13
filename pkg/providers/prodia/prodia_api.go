@@ -380,12 +380,15 @@ func postMultipartToProdia(ctx context.Context, client *internalhttp.Client, bod
 	return resp.Body, resp.Headers, nil
 }
 
-// mediaTypeToExt returns the canonical file extension for a given MIME type.
+// mediaTypeToExt returns the file extension of the input part's filename
+// (TS getExtension in prodia-video-model.ts, and the png / jpeg / webp
+// ternary of prodia-language-model.ts, whose input is always an image): an
+// exact media type match, so "image/jpg" has none.
 func mediaTypeToExt(mimeType string) string {
 	switch mimeType {
 	case "image/png":
 		return ".png"
-	case "image/jpeg", "image/jpg":
+	case "image/jpeg":
 		return ".jpg"
 	case "image/webp":
 		return ".webp"
