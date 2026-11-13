@@ -494,12 +494,12 @@ func (m *ImageModel) convertBody(ctx context.Context, raw []byte) (*types.ImageR
 
 	var rawImages []map[string]interface{}
 	if imgs, ok := top["images"]; ok {
-		if err := json.Unmarshal(imgs, &rawImages); err != nil {
+		if err := jsonexact.Unmarshal(imgs, &rawImages); err != nil {
 			return nil, fmt.Errorf("failed to decode response images: %w", err)
 		}
 	} else if one, ok := top["image"]; ok {
 		var img map[string]interface{}
-		if err := json.Unmarshal(one, &img); err != nil {
+		if err := jsonexact.Unmarshal(one, &img); err != nil {
 			return nil, fmt.Errorf("failed to decode response image: %w", err)
 		}
 		rawImages = []map[string]interface{}{img}
