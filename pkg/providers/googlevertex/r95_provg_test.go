@@ -92,3 +92,13 @@ func TestR95provgLiveCloseWhileEmitPendingCancelsAudio(t *testing.T) {
 	}
 	t.Fatal("audio not cancelled after Close with a pending part")
 }
+
+// The Vertex Gemini transcription option fields are .optional(): an
+// explicit null is invalid.
+func TestR95provgTranscriptionOptionNullRejected(t *testing.T) {
+	for _, key := range []string{"languageCodes", "customVocabulary", "wordTimestamp", "diarization", "mode"} {
+		if _, err := parseVertexGeminiTranscriptionOptionsChecked(map[string]interface{}{"vertex": map[string]interface{}{key: nil}}); err == nil {
+			t.Errorf("%s: null accepted", key)
+		}
+	}
+}

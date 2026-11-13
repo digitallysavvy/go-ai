@@ -84,8 +84,9 @@ func parseTranscriptionModelOptionsChecked(providerOptions map[string]interface{
 		return out, invalidGoogleFilesOptions(fmt.Errorf("google: expected object, received %T", raw))
 	}
 	strList := func(key string) ([]string, error) {
+		// z.array(...).optional(): an explicit null fails.
 		v, present := google[key]
-		if !present || v == nil {
+		if !present {
 			return nil, nil
 		}
 		switch list := v.(type) {
@@ -113,7 +114,7 @@ func parseTranscriptionModelOptionsChecked(providerOptions map[string]interface{
 	}
 	for _, key := range []string{"wordTimestamp", "diarization"} {
 		v, present := google[key]
-		if !present || v == nil {
+		if !present {
 			continue
 		}
 		b, isBool := v.(bool)
@@ -126,7 +127,7 @@ func parseTranscriptionModelOptionsChecked(providerOptions map[string]interface{
 			out.Diarization = &b
 		}
 	}
-	if v, present := google["mode"]; present && v != nil {
+	if v, present := google["mode"]; present {
 		mode, isStr := v.(string)
 		if !isStr || (mode != "SMART" && mode != "VERBATIM") {
 			return out, invalidGoogleFilesOptions(fmt.Errorf("mode: invalid option %v, expected one of SMART, VERBATIM", v))

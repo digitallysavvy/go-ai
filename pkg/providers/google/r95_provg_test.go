@@ -216,3 +216,13 @@ func TestR95provgSpeechTranslationEchoNullRejected(t *testing.T) {
 		t.Fatalf("absent: %v %v", o, err)
 	}
 }
+
+// googleTranscriptionModelOptions fields are .optional(): an explicit null
+// is invalid (zod accepts undefined, not null).
+func TestR95provgTranscriptionOptionNullRejected(t *testing.T) {
+	for _, key := range []string{"languageCodes", "customVocabulary", "wordTimestamp", "diarization", "mode"} {
+		if _, err := parseTranscriptionModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{key: nil}}); err == nil {
+			t.Errorf("%s: null accepted", key)
+		}
+	}
+}
