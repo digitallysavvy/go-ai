@@ -768,7 +768,7 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 	}
 	if resp.Output == nil {
 		message := "OpenAI Responses returned no output."
-		if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
+		if resp.IncompleteDetails != nil { // TS detail != null: "" included
 			message = fmt.Sprintf("OpenAI Responses returned no output (%s).", resp.IncompleteDetails.Reason)
 		}
 		return nil, &provider.BatchError{Message: message, Code: "invalid_response"}

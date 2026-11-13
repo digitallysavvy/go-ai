@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
 func r95provbProvider(t *testing.T, h http.HandlerFunc) *Provider {
@@ -163,5 +164,46 @@ func TestR95provbBatchResultBodySchema(t *testing.T) {
 	}
 	if _, berr := convertOpenAIBatchResponseBodyBytes([]byte(`{"id":"r","created_at":1,"model":"m","output":[{"type":"message","role":"assistant","id":"m1","content":[{"type":"output_text","text":"hi","annotations":[]}]}]}`)); berr != nil {
 		t.Fatalf("valid body: %+v", berr)
+	}
+}
+
+// TestR95provbTranscriptionBase64Audio: TS getArgs decodes a string audio
+// with convertBase64ToUint8Array, so AudioBase64 is the uploaded file.
+func TestR95provbTranscriptionBase64Audio(t *testing.T) {
+	var got []byte
+	p := r95provbProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if f, _, err := r.FormFile("file"); err == nil {
+			got, _ = io.ReadAll(f)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hi"}`))
+	})
+	_, err := NewTranscriptionModel(p, "whisper-1").DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "aGVsbG8=", MimeType: "audio/wav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("uploaded file = %q, want hello", got)
+	}
+}
+
+// TestR95provbResponsesEmptyIncompleteReason: incomplete_details.reason is a
+// required string, so a present "" is an unknown reason: TS
+// mapOpenAIResponseFinishReason returns 'other' (tool-calls with a function
+// call), not 'stop'; response.failed keeps it as the raw reason; the batch
+// no-output message is "(<detail>)" for any non-null detail.
+func TestR95provbResponsesEmptyIncompleteReason(t *testing.T) {
+	if got := mapResponsesFinishReason(&responses.IncompleteDetails{}, false); got != types.FinishReasonOther {
+		t.Errorf("finish = %q, want other", got)
+	}
+	if got := mapResponsesFinishReason(&responses.IncompleteDetails{}, true); got != types.FinishReasonToolCalls {
+		t.Errorf("finish with a function call = %q, want tool-calls", got)
+	}
+	if got := mapResponsesFinishReason(nil, false); got != types.FinishReasonStop {
+		t.Errorf("no details = %q, want stop", got)
+	}
+	_, berr := convertOpenAIBatchResponseBodyBytes([]byte(`{"id":"r","incomplete_details":{"reason":""}}`))
+	if berr == nil || berr.Message != "OpenAI Responses returned no output ()." {
+		t.Errorf("batch = %+v", berr)
 	}
 }

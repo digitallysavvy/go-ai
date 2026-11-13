@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -274,7 +275,16 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create form file: %w", err)
 	}
-	if _, err := part.Write(opts.Audio); err != nil {
+	// TS getArgs: a string audio is base64 (convertBase64ToUint8Array).
+	audio := opts.Audio
+	if opts.AudioBase64 != "" {
+		decoded, err := fileutil.ConvertBase64ToBytes(opts.AudioBase64)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to decode base64 audio: %w", err)
+		}
+		audio = decoded
+	}
+	if _, err := part.Write(audio); err != nil {
 		return nil, "", fmt.Errorf("failed to write audio data: %w", err)
 	}
 

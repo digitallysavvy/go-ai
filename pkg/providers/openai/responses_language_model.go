@@ -2804,13 +2804,12 @@ func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming
 // "tool-calls" when the model called a client-side tool, else "other". With
 // no reason, a client tool call wins over a refusal (TS 6b97088662), and a
 // refusal is content-filter.
+//
+// The reason is present whenever incomplete_details is an object (its
+// reason is a required string), so a present "" is an unknown reason, not
+// a missing one.
 func mapResponsesFinishReason(details *responses.IncompleteDetails, hasFunctionCall bool, hasRefusal ...bool) types.FinishReason {
-	reason := ""
-	if details != nil {
-		reason = details.Reason
-	}
-	switch reason {
-	case "":
+	if details == nil {
 		if hasFunctionCall {
 			return types.FinishReasonToolCalls
 		}
@@ -2818,6 +2817,8 @@ func mapResponsesFinishReason(details *responses.IncompleteDetails, hasFunctionC
 			return types.FinishReasonContentFilter
 		}
 		return types.FinishReasonStop
+	}
+	switch details.Reason {
 	case "max_output_tokens":
 		return types.FinishReasonLength
 	case "content_filter":
@@ -4240,11 +4241,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if eventRawChunk != nil {
 				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
+			// TS: incompleteReason ? map(...) : 'error', raw incompleteReason ??
+			// 'error' (a present "" reason is kept raw).
 			s.finishReason = types.FinishReasonError
 			s.rawFinishReason = "error"
-			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
-				s.finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall, s.hasRefusal)
+			if e.Response.IncompleteDetails != nil {
 				s.rawFinishReason = e.Response.IncompleteDetails.Reason
+				if e.Response.IncompleteDetails.Reason != "" {
+					s.finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall, s.hasRefusal)
+				}
 			}
 			s.finishUsage = e.Response.Usage
 			if _, ctx := responsesEchoes([]byte(event.Data), true); ctx != nil {
