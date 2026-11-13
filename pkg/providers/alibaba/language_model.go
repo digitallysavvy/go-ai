@@ -372,6 +372,18 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 		}
 		if hasThinkingBudget {
 			body["thinking_budget"] = thinkingBudget
+			// TS z.number().positive(): a fractional budget is sent as given.
+			for _, key := range []string{"thinkingBudget", "thinking_budget", "thinking-budget"} {
+				if f, ok := alibabaOpts[key].(float64); ok {
+					if f != math.Trunc(f) {
+						body["thinking_budget"] = f
+					}
+					break
+				}
+				if _, ok := alibabaOpts[key]; ok {
+					break
+				}
+			}
 		}
 	} else if opts.Reasoning != nil {
 		switch *opts.Reasoning {
