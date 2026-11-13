@@ -41,3 +41,23 @@ func TestR96integMistralJSONValueSites(t *testing.T) {
 		}
 	}
 }
+
+// provg CR §2: the gateway speech / transcription usage is
+// z.optional(z.record(z.string(), z.json())): 1e400 there fails.
+func TestR96integGatewayMediaUsageJSONValue(t *testing.T) {
+	for _, c := range []struct {
+		schema  MediaResponseSchema
+		ok, bad string
+	}{
+		{SchemaGatewaySpeech, `{"audio":"a","usage":{"k":[1]}}`, `{"audio":"a","usage":{"k":[1e400]}}`},
+		{SchemaGatewayTranscription, `{"text":"t","usage":{"seconds":2}}`, `{"text":"t","usage":{"seconds":1e400}}`},
+	} {
+		v := r96integHTTPOK(MediaResponseValidator("gateway", c.schema))
+		if err := v(c.ok); err != nil {
+			t.Errorf("%s: finite: err = %v", c.schema, err)
+		}
+		if err := v(c.bad); err == nil {
+			t.Errorf("%s: 1e400: err = nil, want Invalid JSON response", c.schema)
+		}
+	}
+}

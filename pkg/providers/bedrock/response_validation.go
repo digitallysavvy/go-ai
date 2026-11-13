@@ -2,7 +2,11 @@ package bedrock
 
 import (
 	"fmt"
+	"math"
+	"slices"
+	"sort"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -65,10 +69,36 @@ func nullishString(m map[string]interface{}, k string, p schemaPath) *schemaIssu
 }
 
 func reqNumber(m map[string]interface{}, k string, p schemaPath) *schemaIssue {
-	if _, ok := m[k].(float64); !ok {
+	if !isFiniteNumber(m[k]) {
 		return issue(p.key(k), "expected number")
 	}
 	return nil
+}
+
+// catchallJSON is .catchall(z.json()): every key of o other than declared
+// holds a JSON value (a non-finite number fails, ruling 4). Keys are checked
+// in sorted order so the reported issue is deterministic.
+func catchallJSON(o map[string]interface{}, p schemaPath, declared ...string) *schemaIssue {
+	keys := make([]string, 0, len(o))
+	for k := range o {
+		if !slices.Contains(declared, k) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if zodlite.JSON(o[k], true, nil) != nil {
+			return issue(p.key(k), "Invalid input")
+		}
+	}
+	return nil
+}
+
+// isFiniteNumber is z.number(): zod rejects a non-finite number (JSON.parse
+// of 1e400, ruling 4).
+func isFiniteNumber(v interface{}) bool {
+	f, ok := v.(float64)
+	return ok && !math.IsInf(f, 0) && !math.IsNaN(f)
 }
 
 func nullishNumber(m map[string]interface{}, k string, p schemaPath) *schemaIssue {
@@ -76,7 +106,7 @@ func nullishNumber(m map[string]interface{}, k string, p schemaPath) *schemaIssu
 	if isNullish(v, present) {
 		return nil
 	}
-	if _, ok := v.(float64); !ok {
+	if !isFiniteNumber(v) {
 		return issue(p.key(k), "expected number")
 	}
 	return nil
@@ -142,6 +172,9 @@ func checkUsage(u map[string]interface{}, p schemaPath, totalRequired bool) *sch
 	if bad := firstIssue(nullishNumber(u, "cacheReadInputTokens", p), nullishNumber(u, "cacheWriteInputTokens", p)); bad != nil {
 		return bad
 	}
+	if bad := catchallJSON(u, p, "inputTokens", "outputTokens", "totalTokens", "cacheReadInputTokens", "cacheWriteInputTokens", "cacheDetails"); bad != nil {
+		return bad
+	}
 	cd, present := u["cacheDetails"]
 	if isNullish(cd, present) {
 		return nil
@@ -156,7 +189,7 @@ func checkUsage(u map[string]interface{}, p schemaPath, totalRequired bool) *sch
 		if bad != nil {
 			return bad
 		}
-		if bad := firstIssue(reqNumber(o, "inputTokens", ep), reqString(o, "ttl", ep)); bad != nil {
+		if bad := firstIssue(reqNumber(o, "inputTokens", ep), reqString(o, "ttl", ep), catchallJSON(o, ep, "inputTokens", "ttl")); bad != nil {
 			return bad
 		}
 	}
@@ -169,7 +202,7 @@ func nullishNumberOptional(m map[string]interface{}, k string, p schemaPath) *sc
 	if !present {
 		return nil
 	}
-	if _, ok := v.(float64); !ok {
+	if !isFiniteNumber(v) {
 		return issue(p.key(k), "expected number")
 	}
 	return nil

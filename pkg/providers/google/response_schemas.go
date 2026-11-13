@@ -45,7 +45,8 @@ var (
 		fl("candidates", zNullish(zArr(zObj(fl("content", zNullish(zObj(
 			fl("parts", zNullish(zArr(zObj(fl("inlineData", zNullish(zObj(fl("mimeType", nStr), fl("data", nStr)))))))),
 		))))))),
-		fl("usageMetadata", zNullish(zodlite.Record)),
+		// z.record(z.string(), z.json()): a non-finite number fails (ruling 4).
+		fl("usageMetadata", zNullish(zodlite.RecordOf(zodlite.JSON))),
 	)
 
 	// googleInteractionsTranscriptionResponseSchema (transcription/google-transcription-model.ts).
@@ -61,7 +62,8 @@ var (
 				)))),
 			)))),
 		)))),
-		fl("usage", zNullish(zodlite.Record)),
+		// z.record(z.string(), z.json()).
+		fl("usage", zNullish(zodlite.RecordOf(zodlite.JSON))),
 	)
 
 	// googleFileResponseSchema (google-files.ts), applied to the processing poll.

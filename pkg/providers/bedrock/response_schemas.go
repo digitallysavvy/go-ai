@@ -50,10 +50,11 @@ var (
 		zbF("trace", zodlite.Unknown),
 		zbF("performanceConfig", zbNullish(zbObj(zbF("latency", zbStr)))),
 		zbF("serviceTier", zbNullish(zbObj(zbF("type", zbStr)))),
-		zbF("usage", zbObj(
+		// usage and AmazonBedrockCacheDetailSchema are .catchall(z.json()).
+		zbF("usage", zodlite.ObjectCatchall(zodlite.JSON,
 			zbF("inputTokens", zbNum), zbF("outputTokens", zbNum), zbF("totalTokens", zbNum),
 			zbF("cacheReadInputTokens", zbNullish(zbNum)), zbF("cacheWriteInputTokens", zbNullish(zbNum)),
-			zbF("cacheDetails", zbNullish(zbArr(zbObj(zbF("inputTokens", zbNum), zbF("ttl", zbStr))))),
+			zbF("cacheDetails", zbNullish(zbArr(zodlite.ObjectCatchall(zodlite.JSON, zbF("inputTokens", zbNum), zbF("ttl", zbStr))))),
 		)),
 	)
 

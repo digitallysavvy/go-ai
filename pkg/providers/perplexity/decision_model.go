@@ -263,7 +263,7 @@ var perplexityDecisionResponseNode = func() zodlite.Node {
 				zodlite.F("choice", zodlite.String), zodlite.F("probabilities", probabilities), zodlite.F("confidence", nullishProbability)),
 			"score": zodlite.Typed("score",
 				zodlite.F("score", zodlite.Number), zodlite.F("probabilities", probabilities), zodlite.F("confidence", nullishProbability),
-				zodlite.F("legend", zodlite.Nullish(zodlite.RecordOf(zodlite.Unknown)))),
+				zodlite.F("legend", zodlite.Nullish(zodlite.RecordOf(zodlite.JSON)))),
 		}))),
 		zodlite.F("usage", zodlite.Nullish(zodlite.Object(
 			zodlite.F("input_tokens", nullishNumber), zodlite.F("output_tokens", nullishNumber)))),

@@ -58,3 +58,28 @@ func TestR96integRealtimeTranscriptionUsageJSONValue(t *testing.T) {
 		}
 	}
 }
+
+// Round 96 integrator sweep (ruling 4): transcription.segment start / end
+// are z.number(), which rejects a non-finite number (JSON.parse of 1e400).
+func TestR96integRealtimeSegmentNumberRejectsNonFinite(t *testing.T) {
+	for _, c := range []struct {
+		start   string
+		wantErr bool
+	}{{`1.5`, false}, {`1e400`, true}} {
+		start := c.start
+		rs := r87provaStartRealtime(t, true, func(send func(string), _ *websocket.Conn) {
+			send(`{"type":"transcription.segment","text":"a","start":` + start + `,"end":2}`)
+			send(`{"type":"transcription.done","text":"a"}`)
+		})
+		res, err := r87provaRealtimeModel(t, rs, Config{}).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio: &r87provaAudio{chunks: [][]byte{{1}}}, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = r87provaDrain(t, res.Stream)
+		if (err != nil) != c.wantErr {
+			t.Errorf("start %s: err = %v, wantErr %v", c.start, err, c.wantErr)
+		}
+	}
+}

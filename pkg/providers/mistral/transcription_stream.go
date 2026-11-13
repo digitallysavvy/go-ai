@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -243,7 +244,8 @@ func (e *mistralRealtimeEvent) validate(raw map[string]interface{}) error {
 	invalid := func(path string) error {
 		return fmt.Errorf("Type validation failed: invalid %s in %s event", path, e.Type) //nolint:staticcheck // TS TypeValidationError prefix
 	}
-	isNum := func(v interface{}) bool { _, ok := v.(float64); return ok }
+	// z.number() rejects a non-finite number (JSON.parse of 1e400).
+	isNum := func(v interface{}) bool { f, ok := v.(float64); return ok && !math.IsInf(f, 0) && !math.IsNaN(f) }
 	isStr := func(v interface{}) bool { _, ok := v.(string); return ok }
 	nullish := func(m map[string]interface{}, k string, ok func(interface{}) bool) bool {
 		v, present := m[k]

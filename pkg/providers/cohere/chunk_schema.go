@@ -3,6 +3,7 @@ package cohere
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -21,7 +22,8 @@ func validateCohereChunk(data []byte) error {
 		return errors.New("invalid input: expected object")
 	}
 	typ, _ := top["type"].(string)
-	num := func(v interface{}) bool { _, ok := v.(float64); return ok }
+	// z.number(): a non-finite number (JSON.parse of 1e400) is rejected.
+	num := func(v interface{}) bool { f, ok := v.(float64); return ok && !math.IsInf(f, 0) && !math.IsNaN(f) }
 	str := func(v interface{}) bool { _, ok := v.(string); return ok }
 	obj := func(v interface{}) map[string]interface{} { m, _ := v.(map[string]interface{}); return m }
 	// path walks nested objects and returns the value (nil when absent).
