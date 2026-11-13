@@ -367,7 +367,9 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 				}
 				select {
 				case <-ctx.Done():
-					return nil, nil, nil, ctx.Err()
+					// TS delay(pollIntervalMs) has no signal: the next
+					// getFromApi rejects with the abort reason.
+					return nil, nil, nil, context.Cause(ctx)
 				case <-time.After(falTranscriptionPollInterval):
 				}
 				continue

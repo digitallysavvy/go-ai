@@ -223,7 +223,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 	for i := 0; float64(i) < maxPollAttempts; i++ {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", context.Cause(ctx) // TS getFromApi rejects with the abort reason
 		default:
 		}
 
@@ -259,7 +259,9 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			// TS delay(pollIntervalMillis) has no signal: the next getFromApi
+			// rejects with the abort reason.
+			return "", context.Cause(ctx)
 		case <-time.After(time.Duration(pollIntervalMillis * float64(time.Millisecond))):
 		}
 	}

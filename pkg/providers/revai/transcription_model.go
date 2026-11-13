@@ -184,17 +184,19 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, submission revai
 	pollURL := m.provider.config.BaseURL + "/speechtotext/v1/jobs/" + providerutils.EncodePathSegment(jobID)
 	start := time.Now()
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
+		// TS checks the timeout first; getFromApi then rejects with the abort
+		// reason.
 		if time.Since(start) > pollTimeout {
 			// TS AISDKError TranscriptionJobPollingTimedOut (cause: the
 			// submission response).
 			timedOut := providererrors.NewProviderError("revai", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
 			timedOut.Data = submission
 			return nil, timedOut
+		}
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		default:
 		}
 
 		download, err := fileutil.DownloadWithMetadata(ctx, pollURL, pollOpts)
@@ -229,7 +231,9 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, submission revai
 
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// TS delay(pollingInterval) has no signal: the next getFromApi
+			// rejects with the abort reason.
+			return nil, context.Cause(ctx)
 		case <-time.After(pollInterval):
 		}
 	}
