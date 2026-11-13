@@ -618,7 +618,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 					Arguments:        args,
 					RawArguments:     string(argsJSON),
 					ProviderExecuted: true,
-					ProviderMetadata: providerMetaMap(block.Signature, interactionID),
+					// TS: a built-in tool call carries no providerMetadata.
 				})
 			}
 			if isBuiltinInteractionsToolResult(block.Type) {

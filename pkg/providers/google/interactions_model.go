@@ -759,8 +759,15 @@ func checkInteractionsOptionTypes(v map[string]interface{}) error {
 		}
 	}
 	if x, ok := v["responseModalities"]; ok && x != nil {
-		switch x.(type) {
-		case []string, []interface{}:
+		switch list := x.(type) {
+		case []string:
+		case []interface{}:
+			// TS z.array(z.enum(...)): every item must be one of the values.
+			for i, item := range list {
+				if _, isStr := item.(string); !isStr {
+					return fmt.Errorf("google.interactions: responseModalities[%d]: expected string, received %T", i, item)
+				}
+			}
 		default:
 			return fmt.Errorf("google.interactions: responseModalities: expected array, received %T", x)
 		}
@@ -791,11 +798,6 @@ func checkInteractionsOptionTypes(v map[string]interface{}) error {
 		}
 		if _, hasType := m["type"].(string); !hasType {
 			return fmt.Errorf("google.interactions: agentConfig.type: invalid input")
-		}
-		if c, ok := m["collaborativePlanning"]; ok && c != nil {
-			if _, isBool := c.(bool); !isBool {
-				return fmt.Errorf("google.interactions: agentConfig.collaborativePlanning: expected boolean, received %T", c)
-			}
 		}
 	}
 	if x, ok := v["responseFormat"]; ok && x != nil {
@@ -944,6 +946,24 @@ func checkInteractionsEnvironment(x interface{}) error {
 				if err := needStr(path, m, "domain", false); err != nil {
 					return err
 				}
+				// transform: z.array(z.record(z.string(), z.string())).nullish().
+				if tr, ok := m["transform"]; ok && tr != nil {
+					records, isList := tr.([]interface{})
+					if !isList {
+						return fmt.Errorf("google.interactions: %s.transform: expected array, received %T", path, tr)
+					}
+					for j, rec := range records {
+						rm, isMap := rec.(map[string]interface{})
+						if !isMap {
+							return fmt.Errorf("google.interactions: %s.transform[%d]: expected record of strings", path, j)
+						}
+						for _, val := range rm {
+							if _, isStr := val.(string); !isStr {
+								return fmt.Errorf("google.interactions: %s.transform[%d]: expected record of strings", path, j)
+							}
+						}
+					}
+				}
 			}
 		default:
 			return fmt.Errorf("google.interactions: environment.network: invalid input")
@@ -970,26 +990,50 @@ func validateInteractionsProviderOptions(opts GoogleInteractionsProviderOptions)
 			return fmt.Errorf("google.interactions: responseModalities value %q is not supported", modality)
 		}
 	}
-	if aspectRatio, _ := firstMapString(opts.ImageConfig, "aspectRatio", "aspect_ratio"); aspectRatio != "" && !containsString([]string{"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:8", "8:1", "1:4", "4:1"}, aspectRatio) {
-		return fmt.Errorf("google.interactions: imageConfig.aspectRatio %q is not supported", aspectRatio)
+	// TS z.enum(...).nullish(): a present, non-null value must be one of
+	// the values ("" and non-strings included).
+	if err := interactionsOptionEnum("imageConfig.aspectRatio", firstMapValue(opts.ImageConfig, "aspectRatio", "aspect_ratio"), "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "1:8", "8:1", "1:4", "4:1"); err != nil {
+		return err
 	}
-	if imageSize, _ := firstMapString(opts.ImageConfig, "imageSize", "image_size"); imageSize != "" && !containsString([]string{"1K", "2K", "4K", "512"}, imageSize) {
-		return fmt.Errorf("google.interactions: imageConfig.imageSize %q is not supported", imageSize)
+	if err := interactionsOptionEnum("imageConfig.imageSize", firstMapValue(opts.ImageConfig, "imageSize", "image_size"), "1K", "2K", "4K", "512"); err != nil {
+		return err
 	}
-	if typ, _ := opts.AgentConfig["type"].(string); typ != "" {
-		switch typ {
-		case "dynamic", "deep-research":
+	// TS agentConfig is a union of a loose {type: 'dynamic'} and a
+	// {type: 'deep-research', ...} object: any other type (an empty or
+	// missing one included) fails, and only the deep-research member checks
+	// its fields.
+	if opts.AgentConfig != nil {
+		switch typ, _ := opts.AgentConfig["type"].(string); typ {
+		case "dynamic":
+		case "deep-research":
+			if err := interactionsOptionEnum("agentConfig.thinkingSummaries", firstMapValue(opts.AgentConfig, "thinkingSummaries", "thinking_summaries"), "auto", "none"); err != nil {
+				return err
+			}
+			if err := interactionsOptionEnum("agentConfig.visualization", opts.AgentConfig["visualization"], "off", "auto"); err != nil {
+				return err
+			}
+			if c := firstMapValue(opts.AgentConfig, "collaborativePlanning", "collaborative_planning"); c != nil {
+				if _, isBool := c.(bool); !isBool {
+					return fmt.Errorf("google.interactions: agentConfig.collaborativePlanning: expected boolean, received %T", c)
+				}
+			}
 		default:
 			return fmt.Errorf("google.interactions: agentConfig.type %q is not supported", typ)
 		}
 	}
-	if summaries, _ := firstMapString(opts.AgentConfig, "thinkingSummaries", "thinking_summaries"); summaries != "" && !containsString([]string{"auto", "none"}, summaries) {
-		return fmt.Errorf("google.interactions: agentConfig.thinkingSummaries %q is not supported", summaries)
-	}
-	if visualization, _ := opts.AgentConfig["visualization"].(string); visualization != "" && !containsString([]string{"off", "auto"}, visualization) {
-		return fmt.Errorf("google.interactions: agentConfig.visualization %q is not supported", visualization)
-	}
 	return nil
+}
+
+// interactionsOptionEnum is a zod `z.enum(values).nullish()` check: nil
+// passes, anything else must be one of the string values.
+func interactionsOptionEnum(path string, v interface{}, values ...string) error {
+	if v == nil {
+		return nil
+	}
+	if s, ok := v.(string); ok && containsString(values, s) {
+		return nil
+	}
+	return fmt.Errorf("google.interactions: %s %v is not supported", path, v)
 }
 
 // dropNilValues is TS pruneUndefined: only nil values are dropped.
@@ -1102,16 +1146,6 @@ func firstMapValue(in map[string]interface{}, keys ...string) interface{} {
 		}
 	}
 	return nil
-}
-
-func firstMapString(in map[string]interface{}, keys ...string) (string, bool) {
-	for _, key := range keys {
-		if v, ok := in[key]; ok {
-			s, ok := v.(string)
-			return s, ok
-		}
-	}
-	return "", false
 }
 
 func droppedAgentGenerationFields(opts *provider.GenerateOptions, googleOpts GoogleInteractionsProviderOptions) []string {

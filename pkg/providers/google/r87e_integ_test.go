@@ -187,7 +187,10 @@ func TestR87eintegInteractionsCreatedEmptyIDResetsMetadataID(t *testing.T) {
 	if finish == nil || strings.Contains(string(finish.ProviderMetadata), "interactionId") {
 		t.Fatalf("finish = %+v", finish)
 	}
-	if id := st.(*interactionsStream).interactionID; id != "v1" {
-		t.Fatalf("reconnect id = %q, want v1", id)
+	// The reconnect / cancel id is the one the stream was opened with (TS
+	// streamGoogleInteractionEvents' interactionId parameter), never an
+	// event's (r95 provg).
+	if id := st.(*interactionsStream).interactionID; id != "" {
+		t.Fatalf("reconnect id = %q, want the opened id", id)
 	}
 }
