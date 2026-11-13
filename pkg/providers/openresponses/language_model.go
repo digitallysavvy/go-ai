@@ -1358,6 +1358,17 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 
+		// TS parseJsonEventStream parses each frame with safeParseJSON
+		// (secureJsonParse): a forbidden __proto__ / constructor.prototype key
+		// at any depth is a JSONParseError part, also for a frame that is not
+		// an object.
+		if perr := securejson.Check([]byte(eventData)); perr != nil {
+			parseErr := providererrors.NewJSONParseError(eventData, perr)
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = ""
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: parseErr.Error(), Err: parseErr}, nil
+		}
+
 		// TS validates each chunk with z.any(), so JSON that is not an object
 		// (a number, string, array or boolean) passes and matches no event
 		// type; null passes validation too but `chunk.type` then throws a

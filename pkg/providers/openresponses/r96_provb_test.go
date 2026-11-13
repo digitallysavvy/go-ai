@@ -1,9 +1,13 @@
 package openresponses
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -26,6 +30,42 @@ func TestR96provbMetadataJSONStringify(t *testing.T) {
 	} {
 		if !strings.Contains(string(raw), v) {
 			t.Errorf("%s: %s, want %q written literally", name, raw, v)
+		}
+	}
+}
+
+// TestR96provbStreamForbiddenPrototype: TS parseJsonEventStream fails a
+// frame with a __proto__ / constructor.prototype key (secureJsonParse) as a
+// JSONParseError part with finish reason error, also for a frame that is not
+// an object (Go skipped such an array frame and decoded such an object).
+func TestR96provbStreamForbiddenPrototype(t *testing.T) {
+	for _, frame := range []string{
+		`[{"__proto__":{}}]`,
+		`{"type":"response.output_text.delta","item_id":"m","delta":"x","constructor":{"prototype":{}}}`,
+	} {
+		s := newOpenResponsesStream(io.NopCloser(strings.NewReader("data: "+frame+"\n\n")), nil)
+		var sawErr bool
+		for {
+			c, err := s.Next()
+			if err != nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeText {
+				t.Errorf("%s: text delta emitted", frame)
+			}
+			if c.Type == provider.ChunkTypeError {
+				var pe *providererrors.JSONParseError
+				if !errors.As(c.Err, &pe) || !strings.Contains(c.Text, "forbidden prototype property") {
+					t.Errorf("%s: error = %v (%T), want the JSONParseError", frame, c.Err, c.Err)
+				}
+				sawErr = true
+			}
+			if c.Type == provider.ChunkTypeFinish && c.FinishReason != types.FinishReasonError {
+				t.Errorf("%s: finish = %s, want error", frame, c.FinishReason)
+			}
+		}
+		if !sawErr {
+			t.Errorf("%s: no error part", frame)
 		}
 	}
 }
