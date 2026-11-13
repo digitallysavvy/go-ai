@@ -69,7 +69,7 @@ func r98provcReasonPhrase(w http.ResponseWriter, status int, phrase, body string
 		panic(err)
 	}
 	defer conn.Close() //nolint:errcheck
-	_, _ = buf.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, phrase, len(body), body))
+	_, _ = fmt.Fprintf(buf, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, phrase, len(body), body)
 	_ = buf.Flush()
 }
 
