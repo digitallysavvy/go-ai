@@ -159,7 +159,7 @@ func syncRawArguments(call *types.ToolCall) {
 		return
 	}
 	var decoded map[string]interface{}
-	if err := jsonexact.Unmarshal([]byte(call.RawArguments), &decoded); err == nil && reflect.DeepEqual(decoded, call.Arguments) {
+	if err := jsonexact.UnmarshalPlain([]byte(call.RawArguments), &decoded); err == nil && reflect.DeepEqual(decoded, call.Arguments) {
 		return
 	}
 	if raw, err := jsonstr.Marshal(call.Arguments); err == nil {

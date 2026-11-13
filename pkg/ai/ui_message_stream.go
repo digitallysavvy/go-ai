@@ -3492,7 +3492,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			return
 		}
 		var providerMetadata map[string]interface{}
-		if err := jsonexact.Unmarshal(chunk.ProviderMetadata, &providerMetadata); err == nil && len(providerMetadata) > 0 {
+		// TS part.providerMetadata is the part's object as is (no second
+		// parse): a __proto__ key it holds stays (UnmarshalPlain).
+		if err := jsonexact.UnmarshalPlain(chunk.ProviderMetadata, &providerMetadata); err == nil && len(providerMetadata) > 0 {
 			part["providerMetadata"] = providerMetadata
 		}
 	}

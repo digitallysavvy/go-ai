@@ -698,7 +698,7 @@ consumeLoop:
 				}
 				if len(chunk.ProviderMetadata) > 0 {
 					var md map[string]interface{}
-					if jsonErr := jsonexact.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
+					if jsonErr := jsonexact.UnmarshalPlain(chunk.ProviderMetadata, &md); jsonErr == nil {
 						if raw, err := jsonstr.Marshal(md); err == nil {
 							r.providerMetadata = raw
 						}
@@ -716,7 +716,7 @@ consumeLoop:
 			step.rawFinishReason = chunk.RawFinishReason
 			if len(chunk.ProviderMetadata) > 0 {
 				var md map[string]interface{}
-				if jsonErr := jsonexact.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
+				if jsonErr := jsonexact.UnmarshalPlain(chunk.ProviderMetadata, &md); jsonErr == nil {
 					step.providerMetadata = md
 				}
 			}

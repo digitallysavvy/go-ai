@@ -409,8 +409,10 @@ func decodeProviderMetadataMap(raw json.RawMessage) map[string]interface{} {
 	}
 	var out map[string]interface{}
 	// jsonexact reads a number beyond the double range as +-Inf, as TS
-	// JSON.parse does (ruling 4).
-	if err := jsonexact.Unmarshal(raw, &out); err != nil {
+	// JSON.parse does (ruling 4). The metadata was decoded (and checked)
+	// where it came in; TS passes the object along without parsing it
+	// again, so a __proto__ key it holds is kept (UnmarshalPlain).
+	if err := jsonexact.UnmarshalPlain(raw, &out); err != nil {
 		return nil
 	}
 	return out
