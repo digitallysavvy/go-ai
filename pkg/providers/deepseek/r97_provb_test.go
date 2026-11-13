@@ -1,0 +1,32 @@
+package deepseek
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// TestR97provbLogprobsNullMember: TS providerMetadata.deepseek.logprobs is
+// choice.logprobs as parsed (content / reasoning_content are nullish), so a
+// null member is kept as null; Go dropped it.
+func TestR97provbLogprobsNullMember(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"logprobs":{"content":null,"reasoning_content":[]},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+	res, err := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "deepseek-chat").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lp := res.ProviderMetadata["deepseek"].(map[string]interface{})["logprobs"].(map[string]interface{})
+	want := map[string]interface{}{"content": nil, "reasoning_content": []deepseekLogprobEntry{}}
+	if !reflect.DeepEqual(lp, want) {
+		t.Fatalf("logprobs = %#v, want %#v", lp, want)
+	}
+}

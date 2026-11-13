@@ -530,12 +530,18 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 		meta["toolCallTypes"] = toolCallTypes
 	}
 	if choice.Logprobs != nil {
+		// TS logprobs: choice.logprobs, the parsed object (a null member
+		// is kept as null).
 		lp := map[string]interface{}{}
 		if choice.Logprobs.Content != nil {
 			lp["content"] = choice.Logprobs.Content
+		} else if choice.Logprobs.contentNull {
+			lp["content"] = nil
 		}
 		if choice.Logprobs.ReasoningContent != nil {
 			lp["reasoning_content"] = choice.Logprobs.ReasoningContent
+		} else if choice.Logprobs.reasoningNull {
+			lp["reasoning_content"] = nil
 		}
 		meta["logprobs"] = lp
 	}
@@ -689,6 +695,26 @@ type deepseekLogprobEntry struct {
 type deepseekLogprobs struct {
 	Content          []deepseekLogprobEntry `json:"content,omitempty"`
 	ReasoningContent []deepseekLogprobEntry `json:"reasoning_content,omitempty"`
+
+	// contentNull / reasoningNull record a present null member: TS keeps
+	// the parsed logprobs object (nullish members) in the provider metadata.
+	contentNull, reasoningNull bool
+}
+
+// UnmarshalJSON decodes the members and records which were null.
+func (l *deepseekLogprobs) UnmarshalJSON(b []byte) error {
+	type plain deepseekLogprobs
+	var p plain
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*l = deepseekLogprobs(p)
+	var keys map[string]json.RawMessage
+	if jsonexact.Unmarshal(b, &keys) == nil {
+		l.contentNull = string(keys["content"]) == "null"
+		l.reasoningNull = string(keys["reasoning_content"]) == "null"
+	}
+	return nil
 }
 
 type deepseekUsage struct {
