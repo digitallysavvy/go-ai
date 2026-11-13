@@ -557,9 +557,12 @@ func azureMaiErrorCodeValid(code json.RawMessage) bool {
 	if jsonexact.Unmarshal(code, &v) != nil {
 		return false
 	}
-	switch v.(type) {
-	case string, float64:
+	switch x := v.(type) {
+	case string:
 		return true
+	case float64:
+		// z.number() rejects the Infinity JSON.parse reads for 1e400.
+		return !math.IsInf(x, 0)
 	}
 	return false
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestR99provbMaiCallerHeaderCaseOverride: TS spreads the call headers over
@@ -56,5 +57,20 @@ func TestR99provbMaiCallerHeaderCaseOverride(t *testing.T) {
 		if v != "caller" {
 			t.Fatalf("api-key values = %q, want every handshake to send the caller's", got)
 		}
+	}
+}
+
+// TestR99provbMaiImageErrorInfiniteCode: TS maiErrorSchema's code is
+// z.union([z.string(), z.number()]).nullish() and z.number() rejects the
+// Infinity JSON.parse reads for 1e400, so the message is the status text.
+// Go took the body's message.
+func TestR99provbMaiImageErrorInfiniteCode(t *testing.T) {
+	err := azureMaiImageAPIErrorText(400, "Bad Request", nil, []byte(`{"error":{"code":1e400,"message":"m"}}`))
+	if pe, ok := err.(*providererrors.ProviderError); !ok || pe.Message != "Bad Request" || pe.Data != nil {
+		t.Errorf("err = %#v, want the status text and no data", err)
+	}
+	err = azureMaiImageAPIErrorText(400, "Bad Request", nil, []byte(`{"error":{"code":7,"message":"m"}}`))
+	if pe, ok := err.(*providererrors.ProviderError); !ok || pe.Message != "m" {
+		t.Errorf("err = %#v, want message m", err)
 	}
 }
