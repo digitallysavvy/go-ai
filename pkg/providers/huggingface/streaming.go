@@ -109,6 +109,8 @@ func (s *hfStream) Next() (*provider.StreamChunk, error) {
 
 		chunk, err := s.handleEvent(event.Data)
 		if err != nil {
+			s.finished = true
+			s.err = err
 			return nil, err
 		}
 		if chunk != nil {
@@ -168,6 +170,20 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 	var event hfStreamEvent
 	if err := jsonexact.Unmarshal([]byte(data), &event); err != nil {
 		return nil, nil //nolint:nilerr // malformed known-shape event: skip, matching TS's silent fallthrough
+	}
+
+	// TS reads value.response.* / value.item.* of a frame that matched the
+	// loose {type} fallback member: a missing or null member is a TypeError
+	// that errors the stream.
+	switch event.Type {
+	case "response.created", "response.completed":
+		if err := hfMemberTypeError(raw, "response", "id"); err != nil {
+			return nil, err
+		}
+	case "response.output_item.added", "response.output_item.done":
+		if err := hfMemberTypeError(raw, "item", "type"); err != nil {
+			return nil, err
+		}
 	}
 
 	switch event.Type {
@@ -284,6 +300,20 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 	default:
 		return nil, nil
 	}
+}
+
+// hfMemberTypeError is the TypeError TS raises reading property prop of a
+// missing (undefined) or null frame member key; nil when the member is set.
+func hfMemberTypeError(raw map[string]interface{}, key, prop string) error {
+	v, ok := raw[key]
+	if ok && v != nil {
+		return nil
+	}
+	what := "undefined"
+	if ok {
+		what = "null"
+	}
+	return fmt.Errorf("Cannot read properties of %s (reading '%s')", what, prop) //nolint:staticcheck // ST1005: TypeError text from TS
 }
 
 // buildFinishChunk mirrors TS's flush(): always exactly one terminal
