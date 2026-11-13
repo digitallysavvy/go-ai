@@ -104,15 +104,19 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []string, stream bool) (map[string]string, error) {
 	headers := map[string]string{}
+	callAccept := false
 	if opts != nil {
 		for k, v := range opts.Headers {
 			if strings.EqualFold(k, "anthropic-beta") {
 				continue
 			}
+			callAccept = callAccept || strings.EqualFold(k, "accept")
 			headers[k] = v
 		}
 	}
-	if stream {
+	// The stream's Accept is Go's own (the "Accept header" known
+	// difference); a caller's Accept, which TS sends as is, wins.
+	if stream && !callAccept {
 		headers["Accept"] = "text/event-stream"
 	}
 	if len(betas) > 0 {

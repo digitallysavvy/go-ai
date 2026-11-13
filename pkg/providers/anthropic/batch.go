@@ -415,10 +415,9 @@ func (b *Batch) rawRequestHeaders(ctx context.Context, extra map[string]string) 
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range extra {
-		headers[k] = v
-	}
-	return headers, nil
+	// TS combineHeaders(config headers, call headers), lower-cased in
+	// insertion order by getFromApi: a call header wins whatever its case.
+	return internalhttp.MergeHeaders(headers, extra), nil
 }
 
 // anthropicBatchResultsHeaders is TS getFromApi's request headers for the
