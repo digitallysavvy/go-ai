@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -308,7 +309,7 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 
 	// Parse JSON
 	var result interface{}
-	if err := json.Unmarshal([]byte(options.Text), &result); err != nil {
+	if err := securejson.Unmarshal([]byte(options.Text), &result); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
 			Cause:        providererrors.NewJSONParseError(options.Text, err),
@@ -594,7 +595,7 @@ func (o *arrayOutput[ELEMENT]) ResponseFormat(ctx context.Context) (*provider.Re
 
 func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options ParseCompleteOutputOptions) ([]ELEMENT, error) {
 	var outerValue interface{}
-	if err := json.Unmarshal([]byte(options.Text), &outerValue); err != nil {
+	if err := securejson.Unmarshal([]byte(options.Text), &outerValue); err != nil {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
 			Cause:        providererrors.NewJSONParseError(options.Text, err),
@@ -860,7 +861,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	var zero CHOICE
 
 	var outerValue interface{}
-	if err := json.Unmarshal([]byte(options.Text), &outerValue); err != nil {
+	if err := securejson.Unmarshal([]byte(options.Text), &outerValue); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
 			Cause:        providererrors.NewJSONParseError(options.Text, err),
@@ -1050,7 +1051,7 @@ func (o *jsonOutput) ResponseFormat(ctx context.Context) (*provider.ResponseForm
 func (o *jsonOutput) ParseCompleteOutput(ctx context.Context, options ParseCompleteOutputOptions) (interface{}, error) {
 	// Parse JSON
 	var result interface{}
-	if err := json.Unmarshal([]byte(options.Text), &result); err != nil {
+	if err := securejson.Unmarshal([]byte(options.Text), &result); err != nil {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
 			Cause:        providererrors.NewJSONParseError(options.Text, err),

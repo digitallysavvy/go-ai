@@ -2,13 +2,13 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -486,7 +486,7 @@ func toolCallInputArguments(call types.ToolCall) (map[string]interface{}, error)
 		return call.Arguments, nil
 	}
 	var value interface{}
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+	if err := securejson.Unmarshal([]byte(raw), &value); err != nil {
 		return nil, err
 	}
 	switch v := value.(type) {
