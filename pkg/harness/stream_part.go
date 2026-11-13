@@ -8,6 +8,7 @@ import (
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
@@ -375,7 +376,8 @@ func (p *ErrorPart) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var v any
-	if err := json.Unmarshal(aux.Error, &v); err != nil {
+	// error is z.unknown(): JSON.parse reads 1e400 as Infinity.
+	if err := jsonexact.UnmarshalPlain(aux.Error, &v); err != nil {
 		return err
 	}
 	p.Error = v
@@ -595,14 +597,17 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 			*toolCallAlias
 			StepToolCallCount json.RawMessage `json:"stepToolCallCount"`
 		}{toolCallAlias: (*toolCallAlias)(tc)}
-		if err := json.Unmarshal(data, &wire); err != nil {
+		if err := jsonexact.UnmarshalPlain(data, &wire); err != nil {
 			return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 		}
 		var n int
 		if json.Unmarshal(wire.StepToolCallCount, &n) == nil && n > 0 {
 			tc.StepToolCallCount = &n
 		}
-	} else if err := json.Unmarshal(data, part); err != nil {
+	} else if err := jsonexact.UnmarshalPlain(data, part); err != nil {
+		// zod matches keys exactly, and JSON.parse reads 1e400 as Infinity
+		// in a z.unknown() value (a tool result, a raw value). The caller
+		// runs the secureJsonParse check.
 		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 	}
 	if err := validateStreamPart(part); err != nil {

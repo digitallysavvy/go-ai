@@ -68,3 +68,27 @@ func TestR97carryMarshalTaggedNonFiniteAsNull(t *testing.T) {
 		t.Fatalf("MarshalTagged = %s, want %s", got, want)
 	}
 }
+
+// DecodeStreamPart is harnessV1StreamPartSchema over a JSON.parse'd frame:
+// 1e400 is Infinity in z.unknown() values (tool result, raw value, error),
+// and keys match exactly (a differently cased key is stripped, not read).
+func TestR97carryDecodeStreamPartLikeJSONParse(t *testing.T) {
+	part, err := DecodeStreamPart([]byte(`{"type":"tool-result","toolCallId":"c","toolName":"t","result":{"n":1e400}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := part.(*ToolResultPart).Result.(map[string]any)["n"].(float64); !math.IsInf(n, 1) {
+		t.Fatalf("result = %v, want n = +Inf", part.(*ToolResultPart).Result)
+	}
+	part, err = DecodeStreamPart([]byte(`{"type":"error","error":{"code":-1e400}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := part.(*ErrorPart).Error.(map[string]any)["code"].(float64); !math.IsInf(n, -1) {
+		t.Fatalf("error = %v, want code = -Inf", part.(*ErrorPart).Error)
+	}
+	part, err = DecodeStreamPart([]byte(`{"type":"text-delta","id":"a","delta":"x","DELTA":"y"}`))
+	if err != nil || part.(*TextDeltaPart).Delta != "x" {
+		t.Fatalf("text-delta = %+v, %v; want delta x (DELTA stripped)", part, err)
+	}
+}
