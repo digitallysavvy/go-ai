@@ -147,17 +147,18 @@ func (m *OpenAIRealtimeModel) GetServerConnection(ctx context.Context, opts prov
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}
-	intent, err := openAIRealtimeIntent(opts.Intent)
-	if err != nil {
-		return provider.WebSocketConfig{}, err
-	}
 	base := m.provider.config.BaseURL
 	if base == "" {
 		base = DefaultBaseURL
 	}
 	// TS buildServerUrl: new URL(baseURL), its WHATWG protocol, host (default
-	// port left out) and pathname.
+	// port left out) and pathname, before the intent switch rejects an
+	// unknown intent.
 	scheme, host, pathname, err := jsURLParts(base)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	intent, err := openAIRealtimeIntent(opts.Intent)
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}
