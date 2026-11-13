@@ -688,7 +688,7 @@ Anthropic client-side provider tool calls (bash, memory, text editor, computer) 
 Go skips a user block that converts to no content (TS sends `{role: user, content: []}`), sends a truthy non-object `cachePoint` as `{type: "default"}` (TS sends the raw value), and sends `anthropicBeta` only as `anthropic_beta` (TS also spreads it into the top-level command). Bedrock rejects each TS form (S7: copying TS would send a request the API rejects; review round 89).
 
 ## Bedrock and Anthropic null option values
-Bedrock option validators, and the Bedrock Converse / Anthropic file part option validators, accept an explicit `null` for an optional key, which TS zod `.optional()` rejects (S6: v0.5.2 accepted null values; review round 89). Round 90: Google / Vertex transcription and Google language-model options also treat an explicit `nil` like an absent key, as v0.5.2 did. Round 91: the Anthropic system message options `clearAt`, `effort` and `toolChanges` also accept an explicit `null` (S6).
+Bedrock option validators, and the Bedrock Converse / Anthropic file part option validators, accept an explicit `null` for an optional key, which TS zod `.optional()` rejects (S6: v0.5.2 accepted null values; review round 89). Round 90: Google / Vertex transcription and Google language-model options also treat an explicit `nil` like an absent key, as v0.5.2 did. Round 91: the Anthropic system message options `clearAt`, `effort` and `toolChanges` also accept an explicit `null` (S6). Round 94: Vertex embedding options (googleVertex / vertex / google) also treat an explicit null like an absent key, as v0.5.2 did (S6).
 
 ## Anthropic empty string option fields
 Anthropic `metadata.userId: ""`, `mcpServers[].authorizationToken: ""`, `container.id: ""`, skills `displayTitle: ""` and the batch list `cursor: ""` are omitted; TS sends the empty string (`!= null`) (S1: plain string fields; a presence flag per field is API sprawl; review round 89).
@@ -863,6 +863,21 @@ Gladia's `TranscriptionResult.Response.Body` carries the final poll response. TS
 
 ## OpenAI Responses image detail
 An OpenAI Responses image part sends `providerOptions.openai.imageDetail` (or `detail`) only when it is a non-empty string. TS forwards the value as given, so an empty string or a non-string value is sent as `detail`. Go builds the part as `responses.UserImageURLPart`, whose `Detail` is a v0.5.2 exported `string` field with `omitempty`, so it cannot carry `""` or a non-string (S6: changing the field type would break v0.5.2 code at compile time; review round 93).
+
+## LangGraph multimodal run stream messages
+A user message with image or file parts goes to a LangGraph deployment with `content` holding the content blocks. TS builds it with `new HumanMessage({ contentBlocks })`, and RemoteGraph serializes that as `content_blocks` with no `content` (`response_metadata: { output_version: "v1" }`). The server's message coercion then loses the content: `@langchain/core` `coerceMessageLikeToMessage` gives `content: []`, and Python `_convert_to_message` requires `content` (S7: the TS form drops the user's message; review round 94).
+
+## Streaming audio input is cancelled on failure
+When `ExperimentalStreamTranscribe` or `ExperimentalStreamTranslate` fails, Go calls `Cancel` on the caller's `Audio` stream, even after the model took the stream. TS cancels the input only while no model holds a reader: a locked `ReadableStream` rejects the cancel, and the model's cleanup owns the stream. v0.5.2 documented the Go behavior ("failures cancel the caller's Audio stream", the `ExperimentalStreamTranscribe` and `ExperimentalStreamTranslate` doc comments at a0f9d3f9, and `fail` calls `opts.Audio.Cancel(err)`), and a caller's audio producer may rely on that cancel to stop. Matching TS would leave that producer running when a provider does not cancel the input itself (S6: v0.5.2 runtime contract; review round 94). `ExperimentalStreamSpeech`, new in v0.6, follows TS.
+
+## Streaming transcription audio wrapper
+Unless telemetry is disabled (`IsEnabled: false`), `ExperimentalStreamTranscribe` passes the model a byte-counting wrapper around `Audio`, even when no telemetry integration is configured. TS passes the original stream when no integration handles the end event. v0.5.2 wrapped whenever telemetry was enabled (a0f9d3f9 `pkg/ai/stream_transcribe.go` 305-308) and published the end event, with `AudioByteLength`, to diagnostics-channel subscribers without any integration (`FireOnEnd` publishes before the integrations, `pkg/telemetry/registry.go` 2730). The [telemetry guide](../03-ai-sdk-core/60-telemetry.mdx) documents the `onEnd` diagnostics event for `ExperimentalStreamTranscribe`. Passing the original stream would give a v0.5.2 diagnostics subscriber no byte count. The wrapper only forwards `Next` and `Cancel` (S6: v0.5.2 runtime contract; review round 94).
+
+## Option keys match case-insensitively
+Provider options and other caller-built values that Go decodes into option structs with `encoding/json` match keys without regard to case, so `{"openai": {"Quality": "hd"}}` sets `quality`; TS's zod schemas ignore a differently cased key. v0.5.2 decoded them the same way (a0f9d3f9: `extractOpenAIImageProviderOptions` round-trips the map through `json.Marshal` / `json.Unmarshal` into `OpenAIImageModelOptions`, whose `Quality` is `json:"quality"`), so callers may rely on it (S6: v0.5.2 runtime contract). Provider responses are decoded with exact keys, as zod does (review round 94).
+
+## Azure Speech transcription phrases metadata
+`providerMetadata.azure.phrases` is a v0.5.2 exported `[]AzureSpeechPhrase` with `omitempty` fields. A phrase member that is null on the wire (`offsetMilliseconds`, `locale`, `speaker`, ...) or an empty `words: []` is left out, while TS reports the zod-parsed phrase with the null or empty array kept. Changing the type would break v0.5.2 callers that type-assert it (S6; review round 94).
 
 ## Features that are TypeScript-only (not ported)
 

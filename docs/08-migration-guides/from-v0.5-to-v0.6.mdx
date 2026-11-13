@@ -765,6 +765,17 @@ already, you can skip them.
 | gateway.serviceTier with another provider's serviceTier; empty gateway `ProviderOptions` | Other provider's tier option kept in the body; `{}` sent | wire/protocol change | None | [Gateway forwards provider options as given](#gateway-provider-options-as-given) |
 | Vertex transcription, Cloud TTS, embedding, video `ProviderError.Data` | No details; message read even with a non-array details | error text only | None | [Vertex errors follow the Vertex error schema](#vertex-error-schema) |
 | Deepgram transcription with `results.channels: []` or no alternative | The call fails with the TS TypeError text | silent behavior change | Handle the error | [Deepgram transcription without a channel or alternative fails](#deepgram-empty-channels-error) |
+| `ExperimentalStreamTranscribe` `Responses()[i].Body`; `TranscriptionStreamOptions.ProviderOptions` | No body; `{}` when unset | silent behavior change | Use `IncludeRawChunks` | [Streaming transcription responses carry no body](#stream-transcribe-response-body) |
+| `FullStream()` of `ExperimentalStreamTranscribe` / `ExperimentalStreamTranslate`, then an accessor before reading | Accessor waits for the reader | silent behavior change | Read `FullStream` to EOF first | [Streaming audio results wait for the FullStream reader](#stream-audio-fullstream-demand) |
+| `Transcribe` with an invalid `AudioBase64`, error text | TS InvalidDataContentError text | error text only | Use `errors.As` | [Transcribe reports undecodable base64 audio with the TS text](#transcribe-base64-error-text) |
+| `VideoPromptImage.DataString` holding an `http(s)://` URL | Sent as a URL file | silent behavior change | None | [Video image data strings with an http(s) URL are sent as URLs](#video-datastring-url) |
+| `RetryError` text with an apostrophe | Quotes not escaped | error text only | Match the plain text | [The non-retryable RetryError message keeps quotes as is](#retry-non-retryable-message-quotes) |
+| Provider responses with differently cased keys | Key ignored (exact match, as zod) | silent behavior change | Send the documented keys | [Provider responses are decoded with exact keys](#provider-response-keys-case-exact) |
+| Gateway decision answers, Gateway model `Warnings`; non-object `providerOptions.gateway` on decisions | Only the type's own fields; the call fails | silent behavior change | None | [Gateway decision answers and warnings keep only their own fields](#gateway-response-schema-keys) |
+| Google Files upload without `file`, Google / Vertex "No videos in response", Interactions file URIs | TS error texts, WHATWG URLs | error text only | None | [Google and Vertex error texts for malformed responses follow TS](#provg-r94-error-texts) |
+| Interactions `systemInstruction: ""`, `previousInteractionId: ""`, empty enum options | Sent; enum options fail | wire/protocol change | Leave them out | [Google Interactions sends empty string options](#google-interactions-empty-options) |
+| Custom `BaseURL` of realtime, live and streaming WebSocket models | WHATWG serialization; Invalid URL | wire/protocol change | None | [Realtime and live WebSocket URLs follow the WHATWG URL parser](#websocket-urls-whatwg) |
+| `context.WithCancelCause` with `ExperimentalStartBatch`, tool refinement / queued tools, `WorkflowAgent`, `StreamText` tools, WebSocket streams | The cause, not `context.Canceled` | silent behavior change | Check `errors.Is(err, cause)` | [Cancellations with a cause return the cause](#abort-cause-r94) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1284,6 +1295,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `errors.Is(err, myCause)` or `errors.As(err, &timeoutErr)`.
 - **Kind:** silent behavior change
 
+### Cancellations with a cause return the cause {#abort-cause-r94}
+
+- **What changed:** A context cancelled with `context.WithCancelCause` made `ExperimentalStartBatch`, the tool-input refinement of `GenerateText` (`ExperimentalRefineToolInput`), queued tool calls that were not started, a `WorkflowAgent` call cancelled before it starts, a `StreamText` run cancelled while its tools ran or during a step's end callbacks, and the realtime and live WebSocket streams return `context.Canceled`. v0.6 returns the cause (`context.Cause(ctx)`), as TS `abortSignal.throwIfAborted()` throws `signal.reason`. A plain `cancel()` still returns `context.Canceled`, and a timeout keeps its `*ai.TimeoutError` (review round 94).
+- **Am I affected?** Code that cancels with `context.WithCancelCause` and checks `errors.Is(err, context.Canceled)` on these calls.
+- **What to do:** Check `errors.Is(err, cause)` for your own cause, or `ctx.Err()` for the cancellation itself.
+- **Kind:** silent behavior change
+
 ### The per-step timeout starts before PrepareStep {#step-timeout-before-preparestep}
 
 - **What changed:** `GenerateText` and `StreamText` start the
@@ -1395,6 +1413,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   }
   ```
 
+- **Kind:** silent behavior change
+
+### Streaming transcription responses carry no body {#stream-transcribe-response-body}
+
+- **What changed:** In v0.5, `StreamTranscriptionResult.Responses()` copied the `Body` of a provider `response-metadata` part. In v0.6 it keeps only the timestamp, model ID and headers, as TS stream-transcribe.ts does. `TranscriptionStreamOptions.ProviderOptions` is now `{}` (not nil) when the caller sets none, as TS's `providerOptions = {}` default (review round 94).
+- **Am I affected?** You are affected if you read `Responses()[i].Body` from `ExperimentalStreamTranscribe`, or if your custom `provider.TranscriptionStreamer` checks `opts.ProviderOptions == nil`.
+- **What to do:** No action unless you relied on the streamed body. Read the raw provider messages with `IncludeRawChunks` instead.
+- **Kind:** silent behavior change
+
+### Streaming audio results wait for the FullStream reader {#stream-audio-fullstream-demand}
+
+- **What changed:** In v0.5, after `FullStream()` was claimed, `ExperimentalStreamTranscribe` and `ExperimentalStreamTranslate` processed provider parts that are not forwarded to the stream (stream-start, response-metadata, finish) without waiting for the reader, so an accessor could resolve before the stream was read. In v0.6 the pipe processes provider parts only while the stream's reader has a `Next` pending, as TS does (TransformStream high-water mark 0). An accessor called without `FullStream()` still drains the stream itself (review round 94).
+- **Am I affected?** You are affected if you call `FullStream()` and then wait on `Text()`, `TranslationText()` or another accessor before you read the stream to its end.
+- **What to do:** Read `FullStream()` to `io.EOF` (in another goroutine if needed) before you wait on an accessor, or use the accessors without `FullStream()`.
 - **Kind:** silent behavior change
 
 ### ExperimentalStreamTranslate reports the TS cancel reasons {#stream-translate-cancel-reason}
@@ -1896,11 +1928,25 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** Set `Download` to force the local download.
 - **Kind:** silent behavior change
 
+### Transcribe reports undecodable base64 audio with the TS text {#transcribe-base64-error-text}
+
+- **What changed:** `Transcribe` with an `AudioBase64` that does not decode returned "Invalid argument for parameter audio: invalid base64 audio data". v0.6 returns the TS InvalidDataContentError text "Invalid data content. Content string is not a base64-encoded media." The error is still a `*providererrors.InvalidArgumentError` with `Field` "audio" (TS data-content.ts; review round 94).
+- **Am I affected?** Code that matches the text of a `Transcribe` error for an invalid `TranscribeOptions.AudioBase64`.
+- **What to do:** No action unless you match that text. Use `errors.As(err, &invalidArgErr)` with a `*providererrors.InvalidArgumentError`.
+- **Kind:** error text only
+
 ### Uploaded videos are counted, not converted {#video-uploaded-outcome}
 
 - **What changed:** An `uploaded` video data part failed as an unknown type. v0.6 counts it in `GenerateVideoResult.UploadedVideos`; an upload-only result succeeds with `Video` nil and `Videos` empty (TS 2e44144812; TS throws from a `video` getter, see the known difference; review round 88).
 - **Am I affected?** Code that dereferences `result.Video` after an upload delivery.
 - **What to do:** Check `UploadedVideos` before reading `Video`.
+- **Kind:** silent behavior change
+
+### Video image data strings with an http(s) URL are sent as URLs {#video-datastring-url}
+
+- **What changed:** A `VideoPromptImage.DataString` that starts with `http://` or `https://` was base64-decoded, and the call failed. v0.6 sends it as a URL file, as TS normalizeImageData does (review round 94).
+- **Am I affected?** `VideoPromptImage{DataString: "https://..."}` in the `GenerateVideo` / `StartVideo` prompt image, frame images or input references.
+- **What to do:** No action.
 - **Kind:** silent behavior change
 
 ### GenerateText lists invalid tool call errors before executed results {#generate-text-invalid-tool-errors-first}
@@ -3997,7 +4043,7 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 
 ### LangSmithDeploymentTransport follows the TS LangGraph client {#langsmith-transport-ts-client}
 
-- **What changed:** `LangSmithDeploymentTransport` sent no `x-api-key` without `APIKey`, failed on an empty URL, trimmed every trailing slash, never retried, truncated HTTP error bodies and ignored `__interrupt__: null`. v0.6 matches langgraph-sdk 1.14.0: `x-api-key` from `LANGGRAPH_API_KEY` / `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY` (trimmed, one quote pair removed), an empty URL is `http://localhost:8123`, one trailing slash is trimmed, a connection failure is retried up to 4 times and then is a `*LangGraphConnectionError`, non-2xx is a `*LangGraphHTTPError` (`HTTP <status>: <body>`), a non-event-stream response fails, and `__interrupt__: null` is a `*GraphInterruptError` (review round 91). Round 93: the request goes to the URL's WHATWG serialization (`new URL(url + '/runs/stream')`: host lowercased, dot segments resolved, path percent-encoded), and a URL that does not parse (for example one without a scheme) fails with `Invalid URL` before any request instead of a `*LangGraphConnectionError`.
+- **What changed:** `LangSmithDeploymentTransport` sent no `x-api-key` without `APIKey`, failed on an empty URL, trimmed every trailing slash, never retried, truncated HTTP error bodies and ignored `__interrupt__: null`. v0.6 matches langgraph-sdk 1.14.0: `x-api-key` from `LANGGRAPH_API_KEY` / `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY` (trimmed, one quote pair removed), an empty URL is `http://localhost:8123`, one trailing slash is trimmed, a connection failure is retried up to 4 times and then is a `*LangGraphConnectionError`, non-2xx is a `*LangGraphHTTPError` (`HTTP <status>: <body>`), a non-event-stream response fails, and `__interrupt__: null` is a `*GraphInterruptError` (review round 91). Round 93: the request goes to the URL's WHATWG serialization (`new URL(url + '/runs/stream')`: host lowercased, dot segments resolved, path percent-encoded), and a URL that does not parse (for example one without a scheme) fails with `Invalid URL` before any request instead of a `*LangGraphConnectionError`. Round 94: the run stream body matches RemoteGraph. `config.recursion_limit` is 25, messages carry no `type` key (the type travels as `role`), and keys follow TS order. A configured `Accept` header is sent as given. A 204 or 205 response fails with `Expected response body from stream endpoint`.
 - **Am I affected?** `LangSmithDeploymentTransportOptions`, `HTTP <code>:` matching, those environment variables set in the process.
 - **What to do:** Set `APIKey` explicitly if the environment variables hold other keys; match the new error types with `errors.As`.
 - **Kind:** wire/protocol change
@@ -5550,6 +5596,20 @@ compile-time changes.
 - **What changed:** The retry delay read `retry-after-ms` and `retry-after` with `strconv.ParseFloat` and an HTTP date with `http.ParseTime`. v0.6 reads them as TS getRetryDelayInMs does: JS `parseFloat` (a numeric prefix such as `2s` is 2 seconds; an ISO date reads as its year in seconds and is ignored as too long) and `Date.parse` for dates, so a date with a numeric zone is honored (review round 92).
 - **Am I affected?** Servers that send `Retry-After` / `retry-after-ms` values that are not a plain number or an RFC 1123 date.
 - **What to do:** No action.
+- **Kind:** silent behavior change
+
+### The non-retryable RetryError message keeps quotes as is {#retry-non-retryable-message-quotes}
+
+- **What changed:** The `RetryError` message for a non-retryable error after earlier retries wrote embedded single quotes as `\'`. v0.6 writes the message as is, like TS: `Failed after 2 attempts with non-retryable error: 'can't do that'` (retry-with-exponential-backoff.ts; review round 94).
+- **Am I affected?** Code that matches `RetryError.Message` or `Error()` text that contains an apostrophe.
+- **What to do:** Match the unescaped text, or use `errors.As` and `RetryError.LastError`.
+- **Kind:** error text only
+
+### Provider responses are decoded with exact keys {#provider-response-keys-case-exact}
+
+- **What changed:** Provider response bodies, stream frames and error bodies were decoded with `encoding/json`, which also fills a field from a differently cased key (`"Message"` filled `message`). v0.6 decodes provider responses with exact keys, as the TS zod schemas do: a key that differs only in case is ignored (review round 94). Provider options and other values you build keep matching keys without regard to case, as in v0.5 (see the known difference "Option keys match case-insensitively").
+- **Am I affected?** Only if a provider, proxy or mock server sends response keys whose case differs from the provider's documented API (for example `"Choices"` or `"ID"`).
+- **What to do:** No action for real provider APIs. Fix mock servers and test fixtures to send the documented key names.
 - **Kind:** silent behavior change
 
 ## Providers {#providers}
@@ -8560,7 +8620,7 @@ compile-time changes.
 
 ### An unfollowed 3xx response is an HTTP error {#http-3xx-status-error}
 
-- **What changed:** The internal JSON and stream clients decoded the body of an unfollowed 3xx response. v0.6 returns an HTTP status error for any non-2xx status, as TS post-to-api.ts (`!response.ok`) (review round 91).
+- **What changed:** The internal JSON and stream clients decoded the body of an unfollowed 3xx response. v0.6 returns an HTTP status error for any non-2xx status, as TS post-to-api.ts (`!response.ok`) (review round 91). Round 94: the provider calls that check the status themselves do the same (TS fetch `response.ok`): Google Files and batch, Groq transcription, Mistral realtime sessions, speech and transcription, Perplexity, HeyGen, Vertex Cloud TTS, the Gateway metadata, credits, generation and spend calls; Anthropic Files, Skills and batch results; OpenAI Files, batch and Skills, xAI Files, batch, image, speech, transcription and video, DeepSeek Files; Deepgram, Cartesia, Hume and Fish Audio speech, the BFL image poll, the fal transcription poll, Luma, ByteDance image and video, the Replicate image download; Topaz, DeepInfra, MiniMax video creation and the Vercel Sandbox stdin upload. An unfollowed 3xx there fails with the provider API error and its status.
 - **Am I affected?** Endpoints that answer with a 3xx the client does not follow.
 - **What to do:** No action unless you relied on decoding such a body.
 - **Kind:** silent behavior change
@@ -8823,6 +8883,34 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What changed:** With `providerOptions.gateway.serviceTier` set, v0.5 removed `serviceTier` / `service_tier` from every other provider's options before sending, and it left out an empty `providerOptions` map (language and decision models). v0.6 forwards the options as given, as TS getArgs does: the Gateway applies `gateway.serviceTier` over a provider's own tier server-side, and an empty map is sent as `{}` (review round 93).
 - **Am I affected?** `providerOptions["gateway"]["serviceTier"]` combined with `providerOptions["openai"]["serviceTier"]` (or another provider's tier), or `ProviderOptions: map[string]interface{}{}` on gateway models.
 - **What to do:** No action unless you inspect the request body. The served tier is unchanged.
+- **Kind:** wire/protocol change
+
+### Gateway decision answers and warnings keep only their own fields {#gateway-response-schema-keys}
+
+- **What changed:** Gateway decision answers and the warnings of Gateway models kept every key of the wire object. v0.6 keeps only the fields of the answer's or warning's own type, as the TS discriminated-union schemas do: unsupported / compatibility warnings keep `feature` and `details`, deprecated warnings `setting` and `message`, other warnings `message`. A decision response `model: ""` is kept (TS `??`), and a non-object `providerOptions.gateway` on a decision call fails with "invalid gateway provider options" (review round 94).
+- **Am I affected?** Code that reads Gateway decision answers or `Warnings` of Gateway models for keys of another answer or warning type, or that passes a non-object `providerOptions["gateway"]` to a Gateway decision model.
+- **What to do:** No action unless you read those keys.
+- **Kind:** silent behavior change
+
+### Google and Vertex error texts for malformed responses follow TS {#provg-r94-error-texts}
+
+- **What changed:** A Google Files upload response without a `file` object returned an empty result; v0.6 fails with the V8 TypeError text TS throws reading `uploadResult.file.state`. The Google and Vertex video "No videos in response" error text is now TS `JSON.stringify` of the zod-parsed operation (unknown keys dropped, schema key order, present nulls and empty strings kept). A Google Interactions file URI that does not parse fails with "Invalid URL", and a parsed one is reported in its WHATWG form (`new URL(uri)`) (review round 94).
+- **Am I affected?** Code that matches these error texts or reads Interactions file URLs byte for byte.
+- **What to do:** No action unless you match them.
+- **Kind:** error text only
+
+### Google Interactions sends empty string options {#google-interactions-empty-options}
+
+- **What changed:** A present empty `systemInstruction` or `previousInteractionId` Interactions option was left out of the request. v0.6 sends it (TS `?? undefined` keeps `""`), and it drives the conflict warning and compaction. An empty `mediaResolution`, `serviceTier`, `thinkingLevel` or `thinkingSummaries` option now fails like `z.enum` (review round 94).
+- **Am I affected?** `providerOptions["google"]` with `systemInstruction: ""`, `previousInteractionId: ""` or an empty enum option on an Interactions model.
+- **What to do:** Leave out options you do not want sent.
+- **Kind:** wire/protocol change
+
+### Realtime and live WebSocket URLs follow the WHATWG URL parser {#websocket-urls-whatwg}
+
+- **What changed:** The WebSocket URLs of the OpenAI, Azure and xAI realtime transcription streams, OpenAI speech translation, ElevenLabs speech and transcription streams, Cartesia, Deepgram and Mistral streaming transcription, the Google realtime, live transcription and speech translation sockets, the Gateway realtime, speech and transcription sockets and Vertex Gemini live transcription were built with `net/url` and a scheme swap. v0.6 builds them like TS `toWebSocketUrl` / `new URL`: the host is lower-cased, a default port is left out, dot segments are resolved, the query uses the WHATWG special-query encoding (`'` is `%27`), and a base URL that does not parse fails with "Invalid URL" before any connection (review round 94).
+- **Am I affected?** Only with a custom `BaseURL` that has upper-case host letters, an explicit default port, dot segments or characters the WHATWG parser encodes, or that does not parse.
+- **What to do:** No action unless your proxy matches the URL byte for byte.
 - **Kind:** wire/protocol change
 
 ### Vertex errors follow the Vertex error schema {#vertex-error-schema}
