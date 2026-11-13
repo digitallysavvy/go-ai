@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
@@ -617,8 +618,10 @@ func Typed(t string, fields ...Field) Node {
 // best-effort rendering (path plus the zod v4 message of the first failing
 // field).
 func ValidationMessage(schema Node, data string) string {
+	// JSON.parse reads a number beyond the double range as +-Infinity,
+	// which z.number() then rejects; encoding/json fails the whole frame.
 	var value interface{}
-	if err := json.Unmarshal([]byte(data), &value); err != nil {
+	if err := jsonexact.Decode([]byte(data), &value); err != nil {
 		return ""
 	}
 	bad := schema(value, true, nil)

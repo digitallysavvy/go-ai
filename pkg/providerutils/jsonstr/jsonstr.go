@@ -6,12 +6,37 @@ package jsonstr
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"reflect"
 )
 
 // Marshal is json.Marshal without HTML escaping and without a trailing
 // newline. U+2028 and U+2029 are written as is, like JSON.stringify (Go's
-// encoder always escapes them).
+// encoder always escapes them). A NaN or +-Inf float anywhere encoding/json
+// reaches (an interface{} or map value, a struct field, a slice element) is
+// written as null, as JSON.stringify writes it, where json.Marshal fails the
+// whole value with an UnsupportedValueError.
 func Marshal(v interface{}) ([]byte, error) {
+	b, err := marshal(v)
+	if err == nil {
+		return b, nil
+	}
+	var unsupported *json.UnsupportedValueError
+	if !errors.As(err, &unsupported) || !unsupported.Value.IsValid() {
+		return nil, err
+	}
+	switch unsupported.Value.Kind() {
+	case reflect.Float32, reflect.Float64:
+	default:
+		return nil, err
+	}
+	if out, ok := marshalNullNonFinite(v); ok {
+		return out, nil
+	}
+	return nil, err
+}
+
+func marshal(v interface{}) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)

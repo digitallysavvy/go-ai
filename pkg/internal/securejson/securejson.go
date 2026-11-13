@@ -70,5 +70,5 @@ func Unmarshal(data []byte, v any) error {
 	if err := Check(data); err != nil {
 		return err
 	}
-	return json.Unmarshal(jsonexact.Filter(data, v), v)
+	return jsonexact.Unmarshal(data, v)
 }

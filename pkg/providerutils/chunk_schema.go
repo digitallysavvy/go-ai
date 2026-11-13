@@ -531,7 +531,7 @@ func UnmarshalChunk(data []byte, v interface{}) error {
 	// zod matches object keys exactly; drop the ones encoding/json would
 	// fill a field with only case-insensitively.
 	data = jsonexact.Filter(data, v)
-	err := json.Unmarshal(data, v)
+	err := jsonexact.Decode(data, v)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
 		return err
@@ -558,7 +558,7 @@ func UnmarshalChunk(data []byte, v interface{}) error {
 		if merr != nil {
 			return err
 		}
-		err = json.Unmarshal(normalized, v)
+		err = jsonexact.Decode(normalized, v)
 		if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
 			return err
 		}

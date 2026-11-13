@@ -539,7 +539,7 @@ func decodeJSONBody(body []byte, result interface{}) error {
 	// zod matches object keys exactly; drop the ones encoding/json would
 	// fill a field with only case-insensitively.
 	body = jsonexact.Filter(body, result)
-	err := json.Unmarshal(body, result)
+	err := jsonexact.Decode(body, result)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
 		return err
