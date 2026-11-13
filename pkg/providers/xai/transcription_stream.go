@@ -2,7 +2,6 @@ package xai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -423,7 +422,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 			// TS safeParseJSON: any JSON value is a message and is reported
 			// as a raw part; only an object with known fields is an event.
 			var rawValue interface{}
-			if jsonErr := json.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 			if cfg.includeRawChunks {

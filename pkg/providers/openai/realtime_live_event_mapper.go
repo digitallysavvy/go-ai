@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // openAILiveOptions is the parsed form of
@@ -467,7 +469,7 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 	for k, v := range eventID {
 		out[k] = v
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 var openAILiveKnownServerTypes = map[string]bool{
@@ -484,7 +486,7 @@ var openAILiveKnownServerTypes = map[string]bool{
 // unknown types, then strict per-type field validation).
 func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
 	var envelope map[string]interface{}
-	hasEnvelope := json.Unmarshal(raw, &envelope) == nil && envelope != nil
+	hasEnvelope := jsonexact.Unmarshal(raw, &envelope) == nil && envelope != nil
 	rawType, hasType := "", false
 	if hasEnvelope {
 		rawType, hasType = envelope["type"].(string)

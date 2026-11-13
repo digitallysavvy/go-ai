@@ -1,10 +1,9 @@
 package responses
 
 import (
-	"encoding/json"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // CompactionEventToChunk converts a Responses API compaction event into a
@@ -34,7 +33,7 @@ func CompactionEventToChunkForProvider(event CompactionEvent, providerName strin
 	if event.ItemID == "" {
 		event.ItemID = event.ID
 	}
-	metadata, _ := json.Marshal(map[string]interface{}{
+	metadata, _ := jsonstr.Marshal(map[string]interface{}{
 		providerName: map[string]interface{}{
 			"type":             "compaction",
 			"itemId":           event.ItemID,

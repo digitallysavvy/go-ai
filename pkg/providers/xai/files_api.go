@@ -20,6 +20,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // FilesAPI implements provider.FilesAPI (plus the optional
@@ -67,7 +68,7 @@ func extractXAIFilesOptions(providerOptions map[string]interface{}) (xaiFilesOpt
 			}
 		}
 	}
-	b, err := json.Marshal(raw)
+	b, err := jsonstr.Marshal(raw)
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}

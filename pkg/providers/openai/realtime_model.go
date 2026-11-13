@@ -10,11 +10,13 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 type OpenAIRealtimeModel struct {
@@ -430,7 +432,7 @@ func realtimeTools(tools []provider.RealtimeToolDefinition) []map[string]interfa
 
 func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) provider.RealtimeServerEvent {
 	var event map[string]interface{}
-	_ = json.Unmarshal(raw, &event)
+	_ = jsonexact.Unmarshal(raw, &event)
 	rawType, _ := event["type"].(string)
 	e := provider.RealtimeServerEvent{Raw: raw}
 	switch rawType {
@@ -672,7 +674,7 @@ func serializeOpenAICompatibleRealtimeClientEvent(event provider.RealtimeClientE
 	default:
 		return nil, nil
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 func openAIConversationItem(item provider.RealtimeConversationItem) (map[string]interface{}, error) {

@@ -127,7 +127,7 @@ func moonshotStreamErrorMetadata(errType string) (statusCode int, isRetryable bo
 func newMoonshotStreamProviderErrorChunk(payload moonshotErrorPayload, raw json.RawMessage) *providererrors.StreamProviderError {
 	var data interface{}
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &data)
+		_ = jsonexact.Unmarshal(raw, &data)
 	}
 	statusCode, isRetryable, matched := moonshotStreamErrorMetadata(payload.Type)
 	var statusPtr *int

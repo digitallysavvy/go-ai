@@ -12,6 +12,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -124,7 +125,7 @@ func (s *hfStream) Next() (*provider.StreamChunk, error) {
 // chunks beyond the first are queued on s.pending.
 func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(data), &raw); err != nil {
 		// Mirrors TS's `if (!chunk.success) { ... enqueue({type:'error', error: chunk.error}); return; }`
 		s.finishReason = types.FinishReasonError
 		s.rawFinishReason = ""
@@ -223,7 +224,7 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 			}
 		case "function_call":
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(event.Item.Arguments), &args) //nolint:errcheck
+			_ = jsonexact.Unmarshal([]byte(event.Item.Arguments), &args) //nolint:errcheck
 
 			extra := []*provider.StreamChunk{
 				{
@@ -293,7 +294,7 @@ func (s *hfStream) buildFinishChunk() *provider.StreamChunk {
 	if s.responseID != "" {
 		responseID = s.responseID
 	}
-	meta, _ := json.Marshal(map[string]interface{}{
+	meta, _ := jsonstr.Marshal(map[string]interface{}{
 		hfProviderOptionsKey: map[string]interface{}{"responseId": responseID},
 	})
 	usage := convertHuggingFaceResponsesUsage(s.usage)

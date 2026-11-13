@@ -11,6 +11,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -456,7 +457,7 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 			rawArgs := providerutils.ToolArgumentsString(tc.Function.Arguments)
 			var args map[string]interface{}
 			if rawArgs != "" {
-				if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+				if err := jsonexact.Unmarshal([]byte(rawArgs), &args); err != nil {
 					// If unmarshal fails, use empty args
 					args = make(map[string]interface{})
 				}

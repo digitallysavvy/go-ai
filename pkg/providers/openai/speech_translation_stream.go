@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -156,7 +157,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 			// TS safeParseJSON: any JSON value (not only an object) is a
 			// message; the raw part carries it as parsed.
 			var rawValue interface{}
-			if jsonErr := json.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 			if cfg.includeRawChunks {

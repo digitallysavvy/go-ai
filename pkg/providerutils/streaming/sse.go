@@ -3,13 +3,13 @@ package streaming
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 )
 
@@ -333,7 +333,7 @@ func (w *SSEWriter) WriteDone() error {
 // but fails the chunk schema keeps its parsed value.
 func RawChunkValue(data string) interface{} {
 	var raw interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(data), &raw); err != nil {
 		return nil
 	}
 	return raw

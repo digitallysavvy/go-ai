@@ -14,6 +14,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
@@ -287,7 +288,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 				arguments = *item.Arguments
 			}
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(arguments), &args)
+			_ = jsonexact.Unmarshal([]byte(arguments), &args)
 			tc := types.ToolCall{ID: item.CallID, ToolName: item.Name, Arguments: args, RawArguments: arguments}
 			result.ToolCalls = append(result.ToolCalls, tc)
 			result.Content = append(result.Content, types.ToolCallContent{ToolCallID: item.CallID, ToolName: item.Name, Input: arguments, Arguments: args})
@@ -466,7 +467,7 @@ func convertDeepSeekResponsesUsage(raw json.RawMessage) types.Usage {
 	// TS raw is the createUsageSchema output: z.object keeps only the declared
 	// keys (null values included), at the top level and in each nested object.
 	var full map[string]interface{}
-	_ = json.Unmarshal(raw, &full)
+	_ = jsonexact.Unmarshal(raw, &full)
 	rawMap := providerutils.PickSchemaKeys(full, "input_tokens", "input_tokens_details", "output_tokens", "output_tokens_details", "total_tokens", "server_tool_use")
 	for key, nested := range map[string][]string{
 		"input_tokens_details":  {"cached_tokens"},
@@ -518,13 +519,13 @@ func deepseekResponsesProviderMetadata(name string, responseID *string, usageRaw
 
 // deepseekItemIDMetadata is {[name]: {itemId}}.
 func deepseekItemIDMetadata(name, itemID string) json.RawMessage {
-	b, _ := json.Marshal(map[string]interface{}{name: map[string]interface{}{"itemId": itemID}})
+	b, _ := jsonstr.Marshal(map[string]interface{}{name: map[string]interface{}{"itemId": itemID}})
 	return b
 }
 
 func deepseekRawMetadataMap(raw json.RawMessage) map[string]interface{} {
 	var out map[string]interface{}
-	_ = json.Unmarshal(raw, &out)
+	_ = jsonexact.Unmarshal(raw, &out)
 	return out
 }
 
@@ -544,9 +545,9 @@ func deepseekJoinText(parts []deepseekResponsesContentPart) string {
 // tool result {status?, action?}.
 func deepseekWebSearchCallContent(rawItem json.RawMessage, toolName, name string) (types.ToolCallContent, types.ToolResultContent) {
 	var item map[string]interface{}
-	_ = json.Unmarshal(rawItem, &item)
+	_ = jsonexact.Unmarshal(rawItem, &item)
 	id, _ := item["id"].(string)
-	meta, _ := json.Marshal(map[string]interface{}{name: map[string]interface{}{"webSearchCall": item}})
+	meta, _ := jsonstr.Marshal(map[string]interface{}{name: map[string]interface{}{"webSearchCall": item}})
 	result := map[string]interface{}{}
 	if v, ok := item["status"]; ok && v != nil {
 		result["status"] = v
@@ -639,7 +640,7 @@ func deepseekResponsesLogprobs(items []json.RawMessage) []json.RawMessage {
 			continue // the response schema check rejects this shape first
 		}
 		if tl, ok := probe["top_logprobs"]; ok && string(tl) == "null" {
-			if b, err := json.Marshal(struct {
+			if b, err := jsonstr.Marshal(struct {
 				entry
 				TopLogprobs json.RawMessage `json:"top_logprobs"`
 			}{entry: e, TopLogprobs: tl}); err == nil {
@@ -647,7 +648,7 @@ func deepseekResponsesLogprobs(items []json.RawMessage) []json.RawMessage {
 			}
 			continue
 		}
-		if b, err := json.Marshal(e); err == nil {
+		if b, err := jsonstr.Marshal(e); err == nil {
 			out[i] = b
 		}
 	}
@@ -773,7 +774,7 @@ func (s *deepseekResponsesStream) transform(data string) {
 		s.push(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: streaming.RawChunkValue(data)})
 	}
 	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(data), &raw); err != nil {
 		s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 		msg, perr := providerutils.ChunkParseFailure(data, err)
 		s.push(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
@@ -891,7 +892,7 @@ func (s *deepseekResponsesStream) transform(data string) {
 				arguments = tracked.arguments
 			}
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(arguments), &args)
+			_ = jsonexact.Unmarshal([]byte(arguments), &args)
 			s.push(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: item.CallID, ToolName: item.Name, Arguments: args, RawArguments: arguments}})
 		case item.Type == "web_search_call":
 			call, res := deepseekWebSearchCallContent(ev.Item, s.webSearchToolName, s.optionsName)
@@ -995,7 +996,7 @@ func (s *deepseekResponsesStream) flush() {
 		s.push(&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: id})
 	}
 	usage := convertDeepSeekResponsesUsage(s.usage)
-	meta, _ := json.Marshal(deepseekResponsesProviderMetadata(s.optionsName, s.responseID, s.usage, s.logprobs))
+	meta, _ := jsonstr.Marshal(deepseekResponsesProviderMetadata(s.optionsName, s.responseID, s.usage, s.logprobs))
 	s.push(&provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     s.finishReason,

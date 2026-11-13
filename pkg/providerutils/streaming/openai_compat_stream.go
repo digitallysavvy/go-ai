@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // OpenAICompatStream implements the accumulate-and-flush streaming pattern for
@@ -678,7 +679,7 @@ func (u *openAICompatStreamUsage) UnmarshalJSON(b []byte) error {
 	}
 	*u = openAICompatStreamUsage(p)
 	var raw map[string]interface{}
-	if json.Unmarshal(b, &raw) == nil {
+	if jsonexact.Unmarshal(b, &raw) == nil {
 		u.rawWire = raw
 	}
 	return nil
@@ -757,7 +758,7 @@ func (s *OpenAICompatStream) finishMetadata(usage *openAICompatStreamUsage) json
 			meta["rejectedPredictionTokens"] = *v
 		}
 	}
-	raw, err := json.Marshal(map[string]interface{}{s.MetadataKey: meta})
+	raw, err := jsonstr.Marshal(map[string]interface{}{s.MetadataKey: meta})
 	if err != nil {
 		return nil
 	}

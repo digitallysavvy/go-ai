@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -69,7 +70,7 @@ func getParallelToolCallMetadata(metadata map[string]interface{}, providerName s
 	// raw may already be a ParallelToolCallMetadata value (set in-process by
 	// ExpandParallelToolCall) or a generic map[string]interface{} (decoded
 	// from JSON on a later turn); round-trip through JSON to normalize.
-	data, err := json.Marshal(raw)
+	data, err := jsonstr.Marshal(raw)
 	if err != nil {
 		return ParallelToolCallMetadata{}, false, false
 	}
@@ -145,7 +146,7 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 	}
 
 	var parsed map[string]interface{}
-	if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+	if err := jsonexact.Unmarshal([]byte(input), &parsed); err != nil {
 		return nil, false
 	}
 

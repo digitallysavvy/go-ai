@@ -19,6 +19,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
@@ -547,7 +548,7 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 			rawArgs := providerutils.ToolArgumentsString(tc.Function.Arguments)
 			var args map[string]interface{}
 			if rawArgs != "" {
-				_ = json.Unmarshal([]byte(rawArgs), &args)
+				_ = jsonexact.Unmarshal([]byte(rawArgs), &args)
 			}
 			if args == nil {
 				args = map[string]interface{}{}
@@ -583,17 +584,17 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 		meta["logprobs"] = moonshotLogprobsObject(choice.Logprobs)
 	}
 	if resp.Object != "" {
-		if b, err := json.Marshal(resp.Object); err == nil {
+		if b, err := jsonstr.Marshal(resp.Object); err == nil {
 			meta["responseObject"] = b
 		}
 	}
 	if choice.Index != nil {
-		if b, err := json.Marshal(*choice.Index); err == nil {
+		if b, err := jsonstr.Marshal(*choice.Index); err == nil {
 			meta["choiceIndex"] = b
 		}
 	}
 	if choice.Message.Role != "" {
-		if b, err := json.Marshal(choice.Message.Role); err == nil {
+		if b, err := jsonstr.Marshal(choice.Message.Role); err == nil {
 			meta["messageRole"] = b
 		}
 	}
@@ -605,7 +606,7 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 				toolCallTypes = append(toolCallTypes, tc.Type)
 			}
 		}
-		if b, err := json.Marshal(toolCallTypes); err == nil {
+		if b, err := jsonstr.Marshal(toolCallTypes); err == nil {
 			meta["toolCallTypes"] = b
 		}
 	}
@@ -758,7 +759,7 @@ func moonshotLogprobEntry(raw json.RawMessage) json.RawMessage {
 			return raw
 		}
 	}
-	out, err := json.Marshal(entry)
+	out, err := jsonstr.Marshal(entry)
 	if err != nil {
 		return raw
 	}
@@ -784,13 +785,13 @@ func moonshotLogprobsObject(raw json.RawMessage) json.RawMessage {
 		for i := range items {
 			items[i] = moonshotLogprobEntry(items[i])
 		}
-		b, err := json.Marshal(items)
+		b, err := jsonstr.Marshal(items)
 		if err != nil {
 			return raw
 		}
 		content = b
 	}
-	out, err := json.Marshal(map[string]json.RawMessage{"content": content})
+	out, err := jsonstr.Marshal(map[string]json.RawMessage{"content": content})
 	if err != nil {
 		return raw
 	}
@@ -1098,22 +1099,22 @@ func (s *moonshotStream) buildFlushChunks() []*provider.StreamChunk {
 func (s *moonshotStream) buildProviderMetadata() json.RawMessage {
 	meta := map[string]json.RawMessage{}
 	if len(s.contentLogprobs) > 0 {
-		if b, err := json.Marshal(map[string]interface{}{"content": s.contentLogprobs}); err == nil {
+		if b, err := jsonstr.Marshal(map[string]interface{}{"content": s.contentLogprobs}); err == nil {
 			meta["logprobs"] = b
 		}
 	}
 	if s.responseObject != "" {
-		if b, err := json.Marshal(s.responseObject); err == nil {
+		if b, err := jsonstr.Marshal(s.responseObject); err == nil {
 			meta["responseObject"] = b
 		}
 	}
 	if s.choiceIndex != nil {
-		if b, err := json.Marshal(*s.choiceIndex); err == nil {
+		if b, err := jsonstr.Marshal(*s.choiceIndex); err == nil {
 			meta["choiceIndex"] = b
 		}
 	}
 	if s.messageRole != "" {
-		if b, err := json.Marshal(s.messageRole); err == nil {
+		if b, err := jsonstr.Marshal(s.messageRole); err == nil {
 			meta["messageRole"] = b
 		}
 	}
@@ -1127,14 +1128,14 @@ func (s *moonshotStream) buildProviderMetadata() json.RawMessage {
 		for _, k := range keys {
 			types_ = append(types_, s.toolCallTypes[k])
 		}
-		if b, err := json.Marshal(types_); err == nil {
+		if b, err := jsonstr.Marshal(types_); err == nil {
 			meta["toolCallTypes"] = b
 		}
 	}
 	if raw, ok := cacheWriteTokensByTTL(s.responseHeaders); ok {
 		meta["cacheWriteTokens"] = raw
 	}
-	raw, _ := json.Marshal(map[string]interface{}{"moonshotai": meta})
+	raw, _ := jsonstr.Marshal(map[string]interface{}{"moonshotai": meta})
 	return raw
 }
 

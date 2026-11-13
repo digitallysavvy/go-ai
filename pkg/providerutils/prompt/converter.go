@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -663,7 +664,7 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 					}
 				} else {
 					var probe interface{}
-					if err := json.Unmarshal([]byte(arguments), &probe); err != nil {
+					if err := jsonexact.Unmarshal([]byte(arguments), &probe); err != nil {
 						arguments = "{}"
 					} else if _, isObject := probe.(map[string]interface{}); !isObject {
 						arguments = "{}"

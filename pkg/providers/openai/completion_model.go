@@ -14,6 +14,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -384,7 +385,7 @@ func completionLogprobs(raw json.RawMessage) json.RawMessage {
 	if jsonexact.Unmarshal(raw, &picked) != nil || len(picked.Tokens) == 0 || len(picked.TokenLogprobs) == 0 {
 		return raw // the response schema check rejects this shape first
 	}
-	out, err := json.Marshal(picked)
+	out, err := jsonstr.Marshal(picked)
 	if err != nil {
 		return raw
 	}
@@ -741,7 +742,7 @@ func (s *completionStream) rawChunk(data string) *provider.StreamChunk {
 }
 
 func mustMarshalCompletionProviderMetadata(metadata map[string]interface{}) json.RawMessage {
-	raw, err := json.Marshal(metadata)
+	raw, err := jsonstr.Marshal(metadata)
 	if err != nil {
 		return nil
 	}

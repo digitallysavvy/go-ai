@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -277,7 +278,7 @@ func extractXAISpeechProviderOptions(providerOptions map[string]interface{}) (XA
 	if !ok || raw == nil {
 		return opts, nil
 	}
-	b, err := json.Marshal(raw)
+	b, err := jsonstr.Marshal(raw)
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}

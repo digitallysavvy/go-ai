@@ -145,7 +145,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 	result.RawRequest = body
 	var rawResponse interface{}
-	if json.Unmarshal(httpResp.Body, &rawResponse) == nil {
+	if jsonexact.Unmarshal(httpResp.Body, &rawResponse) == nil {
 		result.RawResponse = rawResponse
 	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
@@ -1655,7 +1655,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					text := types.TextContent{Text: part.Refusal}
 					if meta := openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, nil); meta != nil {
 						text.ProviderOptions = meta
-						text.ProviderMetadata, _ = json.Marshal(meta)
+						text.ProviderMetadata, _ = jsonstr.Marshal(meta)
 					}
 					result.Content = append(result.Content, text)
 					continue
@@ -1669,7 +1669,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				}
 				// TS exposes the same data as the part's providerMetadata.
 				if msgMeta != nil {
-					text.ProviderMetadata, _ = json.Marshal(msgMeta)
+					text.ProviderMetadata, _ = jsonstr.Marshal(msgMeta)
 				}
 				result.Content = append(result.Content, text)
 				for _, ann := range part.Annotations {
@@ -1699,7 +1699,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			var args map[string]interface{}
-			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			tc := types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
@@ -1721,7 +1721,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				"operation": item.Operation,
 			})
 			var args map[string]interface{}
-			json.Unmarshal(rawArgs, &args) //nolint:errcheck
+			jsonexact.Unmarshal(rawArgs, &args) //nolint:errcheck
 			itemID := ""
 			if item.ID != nil {
 				itemID = *item.ID
@@ -2015,7 +2015,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				RawArguments:     string(inputRaw),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil),
 			}
-			json.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
+			jsonexact.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
 			if isHosted {
 				tc.ProviderExecuted = true
 			}
@@ -2036,7 +2036,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			matchedTools := make([]interface{}, 0, len(item.Tools))
 			for _, t := range item.Tools {
 				var v interface{}
-				json.Unmarshal(t, &v) //nolint:errcheck
+				jsonexact.Unmarshal(t, &v) //nolint:errcheck
 				matchedTools = append(matchedTools, v)
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
@@ -2166,7 +2166,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolName := "mcp." + item.Name
 			var args map[string]interface{}
-			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			mcpResult := map[string]interface{}{
 				"type":        "call",
 				"serverLabel": item.ServerLabel,
@@ -2223,7 +2223,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			dummyToolCallID := streaming.GenerateID()
 			toolName := "mcp." + item.Name
 			var args map[string]interface{}
-			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               dummyToolCallID,
 				ToolName:         toolName,
@@ -2305,7 +2305,7 @@ func normalizeResponsesLogprobs(raw json.RawMessage) json.RawMessage {
 	if err := jsonexact.Unmarshal(raw, &items); err != nil {
 		return raw
 	}
-	out, err := json.Marshal(items)
+	out, err := jsonstr.Marshal(items)
 	if err != nil {
 		return raw
 	}
@@ -2493,7 +2493,7 @@ func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID string, 
 	if encrypted != nil {
 		enc = *encrypted
 	}
-	raw, _ := json.Marshal(map[string]interface{}{
+	raw, _ := jsonstr.Marshal(map[string]interface{}{
 		providerName: map[string]interface{}{"itemId": itemID, "reasoningEncryptedContent": enc},
 	})
 	return raw
@@ -2529,7 +2529,7 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation,
 			Title:      ann.Title,
 		}, true
 	case "file_citation":
-		meta, _ := json.Marshal(map[string]interface{}{
+		meta, _ := jsonstr.Marshal(map[string]interface{}{
 			providerName: map[string]interface{}{
 				"type":   ann.Type,
 				"fileId": ann.FileID,
@@ -2545,7 +2545,7 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation,
 			ProviderMetadata: meta,
 		}, true
 	case "container_file_citation":
-		meta, _ := json.Marshal(map[string]interface{}{
+		meta, _ := jsonstr.Marshal(map[string]interface{}{
 			providerName: map[string]interface{}{
 				"type":        ann.Type,
 				"fileId":      ann.FileID,
@@ -2561,7 +2561,7 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation,
 			ProviderMetadata: meta,
 		}, true
 	case "file_path":
-		meta, _ := json.Marshal(map[string]interface{}{
+		meta, _ := jsonstr.Marshal(map[string]interface{}{
 			providerName: map[string]interface{}{
 				"type":   ann.Type,
 				"fileId": ann.FileID,
@@ -2669,7 +2669,7 @@ func openAIFileSearchResultSource(providerName string, r responses.FileSearchRes
 		return types.SourceContent{}, false
 	}
 	seen[r.FileID] = true
-	meta, _ := json.Marshal(map[string]interface{}{
+	meta, _ := jsonstr.Marshal(map[string]interface{}{
 		providerName: map[string]interface{}{"type": "file_search", "fileId": r.FileID},
 	})
 	return types.SourceContent{
@@ -2689,7 +2689,7 @@ func toRawMetadata(m map[string]interface{}) json.RawMessage {
 	if len(m) == 0 {
 		return nil
 	}
-	raw, _ := json.Marshal(m)
+	raw, _ := jsonstr.Marshal(m)
 	return raw
 }
 
@@ -3321,7 +3321,7 @@ func (s *responsesStream) queueEOFFinish() {
 	if s.promptCacheDiagnostics != nil {
 		fields["promptCacheDiagnostics"] = s.promptCacheDiagnostics
 	}
-	meta, _ := json.Marshal(map[string]interface{}{s.providerName: fields})
+	meta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: fields})
 	usage := convertResponsesUsage(s.finishUsage)
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
@@ -3653,7 +3653,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.activeMessagePhase = e.Item.Phase
 				var meta json.RawMessage
 				if m := openAIResponsesMessageProviderOptions(s.providerName, e.Item.ID, e.Item.Phase, nil); m != nil {
-					meta, _ = json.Marshal(m)
+					meta, _ = jsonstr.Marshal(m)
 				}
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type:             provider.ChunkTypeTextStart,
@@ -3669,7 +3669,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					summaryParts:     map[int]string{0: "active"},
 				}
 				s.reasoningAccum[e.Item.ID] = accum
-				meta, _ := json.Marshal(map[string]interface{}{
+				meta, _ := jsonstr.Marshal(map[string]interface{}{
 					s.providerName: map[string]interface{}{
 						"itemId":                    e.Item.ID,
 						"reasoningEncryptedContent": encMeta,
@@ -3931,7 +3931,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// TS unconditionally enqueues reasoning-delta here, even for an
 			// empty-string delta -- no guard.
 			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
-			meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+			meta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoning,
 				ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
@@ -3973,7 +3973,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					}
 					sort.Ints(canConclude)
 					for _, idx := range canConclude {
-						endMeta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+						endMeta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 							Type:             provider.ChunkTypeReasoningEnd,
 							ID:               fmt.Sprintf("%s:%d", itemID, idx),
@@ -3981,7 +3981,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						})
 						accum.summaryParts[idx] = "concluded"
 					}
-					startMeta, _ := json.Marshal(map[string]interface{}{
+					startMeta, _ := jsonstr.Marshal(map[string]interface{}{
 						s.providerName: map[string]interface{}{
 							"itemId":                    itemID,
 							"reasoningEncryptedContent": accum.encryptedContent,
@@ -4011,7 +4011,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				if s.store {
 					// The response is stored server-side, so no encrypted_content
 					// needs to be attached: the reasoning block can close now.
-					meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+					meta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 					accum.summaryParts[e.SummaryIndex] = "concluded"
 					chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 						Type:             provider.ChunkTypeReasoningEnd,
@@ -4465,7 +4465,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		newToolCall := func(id, toolName, input string, metadata map[string]interface{}) *provider.StreamChunk {
 			var args map[string]interface{}
 			if input != "" {
-				json.Unmarshal([]byte(input), &args) //nolint:errcheck
+				jsonexact.Unmarshal([]byte(input), &args) //nolint:errcheck
 			}
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
@@ -4496,7 +4496,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			var namespace *string
 			if accum.namespaceSet || accum.namespace != "" {
 				namespace = &accum.namespace
-				end.ProviderMetadata, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"namespace": accum.namespace}})
+				end.ProviderMetadata, _ = jsonstr.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"namespace": accum.namespace}})
 			}
 			s.flushQueue = append(s.flushQueue, end,
 				newToolCall(callID, name, rawArguments, openAIResponsesToolCallMetadata(s.providerName, accum.itemID, namespace, async, item.Caller)))
@@ -4585,7 +4585,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		s.activeMessagePhase = nil
 		var meta json.RawMessage
 		if m := openAIResponsesMessageProviderOptions(s.providerName, itemID, phase, annotations); m != nil {
-			meta, _ = json.Marshal(m)
+			meta, _ = jsonstr.Marshal(m)
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeTextEnd,
@@ -4626,7 +4626,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// other two reasoning-end sites in this file (output_item.added and
 		// reasoning_summary_part.added).
 		meta := map[string]interface{}{"itemId": id, "reasoningEncryptedContent": responsesItemEncryptedContent(e.Item, false)}
-		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
+		providerMeta, _ := jsonstr.Marshal(map[string]interface{}{s.providerName: meta})
 
 		// Row 3b9f025/6fe187f: close every summary part that is still open
 		// (active, i.e. never got its own response.reasoning_summary_part.done,
@@ -4694,7 +4694,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			"operation": item.Operation,
 		})
 		var args map[string]interface{}
-		json.Unmarshal(rawArgs, &args) //nolint:errcheck
+		jsonexact.Unmarshal(rawArgs, &args) //nolint:errcheck
 		itemID := ""
 		if item.ID != nil {
 			itemID = *item.ID
@@ -5003,7 +5003,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			ProviderExecuted: isHosted,
 			ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, nil, nil),
 		}
-		json.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
+		jsonexact.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
 		return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc})
 
 	case "tool_search_output":
@@ -5022,7 +5022,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		matchedTools := make([]interface{}, 0, len(item.Tools))
 		for _, t := range item.Tools {
 			var v interface{}
-			json.Unmarshal(t, &v) //nolint:errcheck
+			jsonexact.Unmarshal(t, &v) //nolint:errcheck
 			matchedTools = append(matchedTools, v)
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
@@ -5055,7 +5055,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		}
 		toolName := "mcp." + item.Name
 		var args map[string]interface{}
-		json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+		jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 		mcpResult := map[string]interface{}{
 			"type":        "call",
 			"serverLabel": item.ServerLabel,
@@ -5111,7 +5111,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		s.mcpApprovalAlias[approvalRequestID] = dummyToolCallID
 		toolName := "mcp." + item.Name
 		var args map[string]interface{}
-		json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+		jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
@@ -5240,7 +5240,7 @@ func responsesFailedErrorFrame(data string) json.RawMessage {
 		}
 	}
 	out.Set("response", resp)
-	b, err := json.Marshal(out)
+	b, err := jsonstr.Marshal(out)
 	if err != nil {
 		return json.RawMessage(data)
 	}
@@ -5256,7 +5256,7 @@ func responsesPromptCacheDiagnostics(raw json.RawMessage) interface{} {
 		return nil
 	}
 	var v interface{}
-	if json.Unmarshal(raw, &v) != nil {
+	if jsonexact.Unmarshal(raw, &v) != nil {
 		return nil
 	}
 	if picked := providerutils.PickSchemaKeys(v, "type", "reason", "cache_missed_tokens", "comparison_reusable_tokens"); picked != nil {

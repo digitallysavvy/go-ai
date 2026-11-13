@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"io"
 	"math"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -944,7 +945,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 
 			var args map[string]interface{}
 			if item.Arguments != "" {
-				_ = json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			}
 
 			pushOpenResponsesCall(&toolCalls, &result.Content, types.ToolCall{
@@ -1043,7 +1044,7 @@ func pushOpenResponsesCall(calls *[]types.ToolCall, content *[]types.ContentPart
 	*calls = append(*calls, tc)
 	var meta json.RawMessage
 	if len(tc.ProviderMetadata) > 0 {
-		meta, _ = json.Marshal(tc.ProviderMetadata)
+		meta, _ = jsonstr.Marshal(tc.ProviderMetadata)
 	}
 	*content = append(*content, types.ToolCallContent{
 		ToolCallID:       tc.ID,
@@ -1363,7 +1364,7 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 		// TypeError that errors the whole stream.
 		if trimmed := strings.TrimLeft(eventData, " \t\r\n"); trimmed != "" && trimmed[0] != '{' {
 			var probe interface{}
-			if json.Unmarshal([]byte(eventData), &probe) == nil {
+			if jsonexact.Unmarshal([]byte(eventData), &probe) == nil {
 				if probe == nil {
 					s.err = errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
 					return nil, s.err
@@ -1599,7 +1600,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			providerMetadata := openResponsesItemToolCallMetadata(s.providerName, event.Item, namespace)
 			var args map[string]interface{}
 			if argsJSON != "" {
-				_ = json.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
 			}
 			// TS toolCallsByItemId.delete(item.id): a repeated done event for
 			// the same item must not reuse the accumulated arguments.
@@ -1887,7 +1888,7 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 	if _, ok := item.rawField("encrypted_content", item.EncryptedContent); ok {
 		payload["reasoningEncryptedContent"] = item.EncryptedContent
 	}
-	raw, err := json.Marshal(map[string]interface{}{providerName: payload})
+	raw, err := jsonstr.Marshal(map[string]interface{}{providerName: payload})
 	if err != nil {
 		return nil
 	}
@@ -1909,7 +1910,7 @@ func openResponsesTextMetadataPayload(providerName string, item *OutputItem, ann
 	if len(annotations) > 0 {
 		payload["annotations"] = annotations
 	}
-	raw, err := json.Marshal(map[string]interface{}{providerName: payload})
+	raw, err := jsonstr.Marshal(map[string]interface{}{providerName: payload})
 	if err != nil {
 		return nil
 	}
@@ -1962,7 +1963,7 @@ func openResponsesOutputTextAnnotations(rawItem json.RawMessage, content []Conte
 	}
 	for i, rawPart := range rawParts {
 		var entries []map[string]interface{}
-		if len(rawPart.Annotations) == 0 || json.Unmarshal(rawPart.Annotations, &entries) != nil {
+		if len(rawPart.Annotations) == 0 || jsonexact.Unmarshal(rawPart.Annotations, &entries) != nil {
 			continue
 		}
 		valid := make([]Annotation, 0, len(entries))
@@ -2047,7 +2048,7 @@ func (s *openResponsesStream) streamProviderError(event *StreamEvent, respErr *R
 	var code interface{} = respErr.Code
 	if len(event.Raw) > 0 {
 		var chunk interface{}
-		if json.Unmarshal(event.Raw, &chunk) == nil {
+		if jsonexact.Unmarshal(event.Raw, &chunk) == nil {
 			data = chunk
 			errObj := chunk
 			if event.Type == "response.failed" {

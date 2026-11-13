@@ -2,11 +2,11 @@ package together
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -165,7 +165,7 @@ func togetherRerankDocuments(docs interface{}) interface{} {
 // response, not the fields captured by togetherRerankingResponse).
 func rawTogetherJSONBody(body []byte) interface{} {
 	var raw interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return nil
 	}
 	return raw

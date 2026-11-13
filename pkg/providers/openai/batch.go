@@ -22,6 +22,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // openaiBatchEndpoint is the sub-request URL embedded in each JSONL line of
@@ -528,7 +529,7 @@ var openaiBatchResultLineNode = zodlite.Object(
 // TypeValidationError TS's JSON-lines handler fails the stream with.
 func openaiBatchResultLineValid(line []byte) error {
 	var value interface{}
-	cause := json.Unmarshal(line, &value)
+	cause := jsonexact.Unmarshal(line, &value)
 	if cause == nil {
 		if bad := openaiBatchResultLineNode(value, true, nil); bad != nil {
 			cause = bad
@@ -561,7 +562,7 @@ func openaiBatchResponseError(raw json.RawMessage) (batchErr *provider.BatchErro
 		return nil, true
 	}
 	var obj map[string]interface{}
-	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+	if jsonexact.Unmarshal(raw, &obj) != nil || obj == nil {
 		return nil, false
 	}
 	message, mOK := obj["message"].(string)
@@ -955,12 +956,12 @@ func withoutBatchAsyncRaw(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	delete(openaiMeta, "async")
-	b, err := json.Marshal(openaiMeta)
+	b, err := jsonstr.Marshal(openaiMeta)
 	if err != nil {
 		return raw
 	}
 	meta["openai"] = b
-	out, err := json.Marshal(meta)
+	out, err := jsonstr.Marshal(meta)
 	if err != nil {
 		return raw
 	}

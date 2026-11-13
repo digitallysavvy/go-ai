@@ -10,10 +10,12 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -271,7 +273,7 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 
 		case "mcp_call":
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			_ = jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			content = append(content, types.ToolCallContent{
 				ToolCallID:       item.ID,
 				ToolName:         item.Name,
@@ -294,7 +296,7 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 			}
 
 		case "mcp_list_tools":
-			inputJSON, _ := json.Marshal(map[string]interface{}{"server_label": item.ServerLabel})
+			inputJSON, _ := jsonstr.Marshal(map[string]interface{}{"server_label": item.ServerLabel})
 			content = append(content, types.ToolCallContent{
 				ToolCallID:       item.ID,
 				ToolName:         "list_tools",
@@ -318,7 +320,7 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 
 		case "function_call":
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			_ = jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			content = append(content, types.ToolCallContent{
 				ToolCallID: item.CallID,
 				ToolName:   item.Name,
@@ -362,7 +364,7 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 // hfItemMetadata builds the {huggingface: {itemId}} provider metadata carried
 // on text/reasoning content parts.
 func hfItemMetadata(itemID string) json.RawMessage {
-	raw, err := json.Marshal(map[string]interface{}{
+	raw, err := jsonstr.Marshal(map[string]interface{}{
 		hfProviderOptionsKey: map[string]interface{}{"itemId": itemID},
 	})
 	if err != nil {
