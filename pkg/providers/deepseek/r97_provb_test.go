@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // TestR97provbLogprobsNullMember: TS providerMetadata.deepseek.logprobs is
@@ -81,6 +82,36 @@ func TestR97provbEmptySystemFingerprint(t *testing.T) {
 				t.Fatalf("stream metadata = %s", c.ProviderMetadata)
 			}
 			return
+		}
+	}
+}
+
+// TestR97provbResponsesStreamMissingMemberTypeError: a frame without its
+// response / item matches the loose {type} member of TS's chunk schema,
+// and transform then reads a property of undefined or null; the TypeError
+// errors the stream (no finish part). Go skipped the frame.
+func TestR97provbResponsesStreamMissingMemberTypeError(t *testing.T) {
+	for frame, want := range map[string]string{
+		`{"type":"response.created"}`:                     "Cannot read properties of undefined (reading 'id')",
+		`{"type":"response.completed","response":null}`:   "Cannot read properties of null (reading 'usage')",
+		`{"type":"response.output_item.added"}`:           "Cannot use 'in' operator to search for 'id' in undefined",
+		`{"type":"response.output_item.done","item":"x"}`: "Cannot use 'in' operator to search for 'id' in x",
+	} {
+		s := &deepseekResponsesStream{
+			reader: io.NopCloser(strings.NewReader("data: " + frame + "\n\n")), finishReason: types.FinishReasonInterrupted,
+			openText: map[string]bool{}, openReasoning: map[string]bool{}, functionCalls: map[string]*deepseekResponsesCallState{},
+		}
+		s.parser = streaming.NewSSEParser(s.reader)
+		var err error
+		for err == nil {
+			var c *provider.StreamChunk
+			c, err = s.Next()
+			if c != nil && c.Type == provider.ChunkTypeFinish {
+				t.Errorf("%s: finish part, want the TypeError", frame)
+			}
+		}
+		if err.Error() != want {
+			t.Errorf("%s: err = %v, want %q", frame, err, want)
 		}
 	}
 }

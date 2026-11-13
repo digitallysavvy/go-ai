@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -750,6 +751,9 @@ func (s *deepseekResponsesStream) Next() (*provider.StreamChunk, error) {
 			s.pending = s.pending[1:]
 			return c, nil
 		}
+		if s.err != nil {
+			return nil, s.err
+		}
 		if s.finished {
 			return nil, io.EOF
 		}
@@ -801,6 +805,7 @@ func (s *deepseekResponsesStream) transform(data string) {
 	switch ev.Type {
 	case "response.created":
 		if ev.Response == nil {
+			s.typeError(raw, "response", "Cannot read properties of %s (reading 'id')")
 			return
 		}
 		s.responseID = ev.Response.ID
@@ -817,6 +822,9 @@ func (s *deepseekResponsesStream) transform(data string) {
 		s.push(&provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})
 
 	case "response.output_item.added":
+		if s.itemTypeError(raw) {
+			return
+		}
 		var item deepseekResponsesOutputItem
 		if jsonexact.Unmarshal(ev.Item, &item) != nil {
 			return
@@ -857,6 +865,9 @@ func (s *deepseekResponsesStream) transform(data string) {
 		s.push(&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: call.callID, Text: ev.Delta})
 
 	case "response.output_item.done":
+		if s.itemTypeError(raw) {
+			return
+		}
 		var item deepseekResponsesOutputItem
 		if jsonexact.Unmarshal(ev.Item, &item) != nil {
 			return
@@ -905,6 +916,7 @@ func (s *deepseekResponsesStream) transform(data string) {
 
 	case "response.completed", "response.incomplete", "response.failed":
 		if ev.Response == nil {
+			s.typeError(raw, "response", "Cannot read properties of %s (reading 'usage')")
 			return
 		}
 		done := ev.Response
@@ -945,6 +957,33 @@ func (s *deepseekResponsesStream) transform(data string) {
 		s.push(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: message,
 			Err: providererrors.NewStreamProviderError(message, s.providerName, "error", code, nil, nil, raw)})
 	}
+}
+
+// typeError ends the stream with the TypeError TS throws in transform when
+// it reads a property of a missing or null frame member (the chunk then
+// matched the loose {type} fallback member of the schema).
+func (s *deepseekResponsesStream) typeError(raw map[string]interface{}, key, format string) {
+	what := "undefined"
+	if v, ok := raw[key]; ok && v == nil {
+		what = "null"
+	}
+	s.err = fmt.Errorf(format, what) //nolint:staticcheck // ST1005: TypeError text from TS
+}
+
+// itemTypeError is TS getItemId's `'id' in item` on an item that is not an
+// object: the TypeError ends the stream.
+func (s *deepseekResponsesStream) itemTypeError(raw map[string]interface{}) bool {
+	v, ok := raw["item"]
+	switch v.(type) {
+	case map[string]interface{}, []interface{}:
+		return false
+	}
+	what := "undefined"
+	if ok {
+		what = providerutils.JSString(v)
+	}
+	s.err = errors.New("Cannot use 'in' operator to search for 'id' in " + what) //nolint:staticcheck // ST1005: TypeError text from TS
+	return true
 }
 
 func (s *deepseekResponsesStream) openTextPart(id string) {
