@@ -47,3 +47,20 @@ func TestR97provbImageOptionsNullInvalid(t *testing.T) {
 		t.Errorf("an undeclared key is stripped (non-strict object): %v", err)
 	}
 }
+
+// TestR97provbMaiImageEditUppercaseJpegName: TS toFormData names an image
+// by blob.type, which the Blob constructor lowercases, so "IMAGE/JPEG" is
+// image-1.jpg (Go compared the raw media type and wrote image-1.png).
+func TestR97provbMaiImageEditUppercaseJpegName(t *testing.T) {
+	server, c := newMaiServer(t, nil)
+	_, err := maiImageModel(t, server, "MAI-Image-2.6").DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "p",
+		Files:  []provider.ImageFile{{Type: "file", Data: []byte{1}, MediaType: "IMAGE/JPEG"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.files) != 1 || c.files[0] != "image-1.jpg" || c.fileType[0] != "image/jpeg" {
+		t.Fatalf("files = %v, types = %v", c.files, c.fileType)
+	}
+}

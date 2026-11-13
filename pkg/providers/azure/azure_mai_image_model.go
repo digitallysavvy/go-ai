@@ -416,7 +416,8 @@ func (m *azureMaiImageModel) fileToImage(ctx context.Context, file provider.Imag
 		data = file.Data
 	}
 	ext := "png"
-	if mediaType == "image/jpeg" {
+	// TS checks blob.type, which the Blob constructor ASCII-lowercases.
+	if providerutils.FormDataBlobType(mediaType) == "image/jpeg" {
 		ext = "jpg"
 	}
 	return azureMaiImageFile{data: data, mediaType: mediaType, name: fmt.Sprintf("image-%d.%s", index, ext)}, nil
