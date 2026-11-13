@@ -310,7 +310,7 @@ func ValidateResponsesChunk(data []byte) error {
 		}
 		return &ChunkSchemaError{Code: "custom", Message: "Known response chunk failed schema validation"}
 	}
-	if bad := zRespModeled[t](value, true, nil); bad != nil {
+	if bad := zodlite.Validate(zRespModeled[t], data, value); bad != nil {
 		return bad
 	}
 	return nil

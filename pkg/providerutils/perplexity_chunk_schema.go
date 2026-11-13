@@ -2,6 +2,7 @@ package providerutils
 
 import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/pplxschema"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 )
 
 // CheckPerplexityAgentChunk validates a Perplexity agent stream frame against
@@ -12,7 +13,7 @@ func CheckPerplexityAgentChunk(data string) (string, error) {
 	if err != nil {
 		return ChunkParseFailure(data, nil)
 	}
-	if bad := pplxschema.Chunk(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(pplxschema.Chunk, []byte(data), value); bad != nil {
 		return ChunkParseFailure(data, bad)
 	}
 	return "", nil

@@ -2,6 +2,7 @@ package providerutils
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +66,16 @@ func TestR97carryUnmarshalChunkClampsPastInt64(t *testing.T) {
 	}
 	if err := UnmarshalChunk([]byte(`{"a":1e400}`), &out); err == nil {
 		t.Fatal("UnmarshalChunk accepted 1e400 in an integer field")
+	}
+}
+
+// zod reports catchall issues in the object's key order, and the chunk
+// error names the first one: for two out-of-range usage extras that is the
+// first on the wire (z_x), not the first sorted (b_y).
+func TestR97carryChunkIssueInJSKeyOrder(t *testing.T) {
+	frame := `{"choices":[{"delta":{"content":"x"},"index":0}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"z_x":1e400,"b_y":1e400}}`
+	msg, err := CheckChatChunk(frame, ChatChunkShape{Kind: ChunkKindMistral})
+	if err == nil || !strings.Contains(msg, `"path":["usage","z_x"]`) {
+		t.Fatalf("CheckChatChunk = %q, want the issue for usage.z_x", msg)
 	}
 }

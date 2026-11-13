@@ -387,11 +387,11 @@ func ValidateChatChunk(data []byte, shape ChatChunkShape) error {
 	// The union's failure is reported at the root; for the single-schema kinds
 	// the first failing member path is more useful, so re-run the object node.
 	node := shape.node()
-	if bad := node(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(node, data, value); bad != nil {
 		if shape.Kind == ChunkKindMistral || shape.Kind == ChunkKindAlibaba {
 			return bad
 		}
-		if inner := shape.dataNode()(value, true, nil); inner != nil {
+		if inner := zodlite.Validate(shape.dataNode(), data, value); inner != nil {
 			return inner
 		}
 		return bad

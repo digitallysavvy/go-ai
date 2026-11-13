@@ -110,7 +110,7 @@ func TestAllIssuesReported(t *testing.T) {
 		b, _ := json.Marshal(i.Path)
 		paths = append(paths, string(b))
 	}
-	want := `["a"] ["b"] ["c",1] ["c",2] ["r","y"] ["r","z"]`
+	want := `["a"] ["b"] ["c",1] ["c",2] ["r","z"] ["r","y"]` // record keys in wire order (zod)
 	if strings.Join(paths, " ") != want {
 		t.Fatalf("paths = %s, want %s", strings.Join(paths, " "), want)
 	}
