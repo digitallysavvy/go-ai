@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func r95provgFirstErr(t *testing.T, next func() error) error {
@@ -118,5 +119,17 @@ func TestR95provgLiveEmptyInteractionStatusDoesNotFinish(t *testing.T) {
 	last := parts[len(parts)-1]
 	if last.Type != provider.TranscriptionStreamPartTypeFinish || last.FinishText != "late" {
 		t.Fatalf("finish = %+v, want text \"late\"", last)
+	}
+}
+
+// cr-r95-tools-to-provg: TS isFullMediaType treats "image/" (empty subtype)
+// as not full, so a URL file takes its media type from the URL path.
+func TestR95provgImageURLFileEmptySubtype(t *testing.T) {
+	parts := vertexGeminiImageContent(&provider.ImageGenerateOptions{
+		Files: []provider.ImageFile{{Type: "url", URL: "https://example.com/y.png?sig=1", MediaType: "image/"}},
+	})
+	fc, ok := parts[0].(types.FileContent)
+	if !ok || fc.MediaType != "image/png" {
+		t.Fatalf("parts = %+v, want image/png", parts)
 	}
 }
