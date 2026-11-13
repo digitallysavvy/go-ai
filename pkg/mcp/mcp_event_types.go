@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // This file ports the experimental MCP events types (TS mcp-event-types.ts,
@@ -46,7 +48,7 @@ func (n *Nullable[T]) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var v T
-	if err := json.Unmarshal(data, &v); err != nil {
+	if err := jsonexact.Unmarshal(data, &v); err != nil {
 		return err
 	}
 	n.Value = &v
@@ -107,7 +109,7 @@ type ListEventsResult struct {
 func (r *ListEventsResult) UnmarshalJSON(data []byte) error {
 	type alias ListEventsResult
 	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	if err := jsonexact.Unmarshal(data, &a); err != nil {
 		return err
 	}
 	if a.Events == nil {

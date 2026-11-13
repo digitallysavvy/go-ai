@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 type oauthFieldKind int
@@ -193,5 +195,5 @@ func decodeOAuthFields(fields map[string]json.RawMessage, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, v)
+	return jsonexact.Unmarshal(data, v)
 }

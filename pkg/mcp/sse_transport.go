@@ -435,6 +435,11 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		}
 		resp, err = client.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				// TS: the aborted fetch rejects with options.signal.reason,
+				// which send() rethrows unreported.
+				return context.Cause(ctx)
+			}
 			return t.sendFailed(ctx, NewTransportError("failed to send request", err))
 		}
 		if resp == nil {

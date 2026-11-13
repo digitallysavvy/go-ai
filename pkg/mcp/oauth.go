@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -309,7 +310,7 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 		return OAuthProtectedResourceMetadata{}, fmt.Errorf("invalid OAuth protected resource metadata: %w", err)
 	}
 	var metadata OAuthProtectedResourceMetadata
-	if err := json.Unmarshal(rawBody, &metadata); err != nil {
+	if err := jsonexact.Unmarshal(rawBody, &metadata); err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
 	if err := validateOAuthProtectedResourceMetadata(metadata); err != nil {
@@ -407,7 +408,7 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 			return nil, fmt.Errorf("invalid authorization server metadata: %w", err)
 		}
 		var metadata OAuthAuthorizationServerMetadata
-		if err := json.Unmarshal(rawBody, &metadata); err != nil {
+		if err := jsonexact.Unmarshal(rawBody, &metadata); err != nil {
 			return nil, err
 		}
 		// TS issuer is z.string(): present-but-empty passes the schema and is
