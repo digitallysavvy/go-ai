@@ -175,6 +175,11 @@ var (
 
 	zRespItemDone = zDiscType(zRespItemDoneMembers)
 
+	// openaiResponsesPromptCacheDiagnosticsSchema (TS 5a645e92d2), the first
+	// member of the response.completed / incomplete / failed response.
+	zRespPromptCacheDiagnostics = fl("prompt_cache_diagnostics", zNullish(zObj(
+		fl("type", zStr), fl("reason", nStr), fl("cache_missed_tokens", nNum), fl("comparison_reusable_tokens", nNum))))
+
 	zRespCommonResponse = []zFld{
 		fl("incomplete_details", zNullish(zObj(fl("reason", zStr)))),
 		fl("usage", zNullish(zRespUsage)),
@@ -204,9 +209,9 @@ var (
 			fl("content_index", nNum), fl("delta", zStr)),
 		"response.refusal.done": zObj(fl("type", zLit("response.refusal.done")), fl("item_id", zStr), fl("output_index", nNum),
 			fl("content_index", nNum), fl("refusal", zStr)),
-		"response.completed":  zObj(fl("type", zEnum("response.completed", "response.incomplete")), fl("response", zObj(zRespCommonResponse...))),
-		"response.incomplete": zObj(fl("type", zEnum("response.completed", "response.incomplete")), fl("response", zObj(zRespCommonResponse...))),
-		"response.failed": zObj(fl("type", zLit("response.failed")), fl("sequence_number", zNum), fl("response", zObj(append([]zFld{
+		"response.completed":  zObj(fl("type", zEnum("response.completed", "response.incomplete")), fl("response", zObj(append([]zFld{zRespPromptCacheDiagnostics}, zRespCommonResponse...)...))),
+		"response.incomplete": zObj(fl("type", zEnum("response.completed", "response.incomplete")), fl("response", zObj(append([]zFld{zRespPromptCacheDiagnostics}, zRespCommonResponse...)...))),
+		"response.failed": zObj(fl("type", zLit("response.failed")), fl("sequence_number", zNum), fl("response", zObj(append([]zFld{zRespPromptCacheDiagnostics,
 			fl("error", zNullish(zObj(fl("code", nStr), fl("message", zStr))))}, zRespCommonResponse...)...))),
 		"response.created":                       zObj(fl("type", zLit("response.created")), fl("response", zRespCreated)),
 		"response.in_progress":                   zObj(fl("type", zLit("response.in_progress")), fl("response", zRespCreated)),
