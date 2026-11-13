@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -116,12 +117,28 @@ type Config struct {
 }
 
 // MergeHeaders returns a new map containing each header map in order. Later
-// maps override earlier maps, matching the TypeScript SDK combineHeaders helper.
+// maps override earlier maps, matching the TypeScript SDK combineHeaders
+// helper as the request sees it: header names are case-insensitive (TS
+// postToApi / getFromApi lower-case the combined record in entry order, so
+// the later of two spellings wins), so a later key replaces an earlier key
+// that differs only in case and keeps its own spelling. Within one map, keys
+// that differ only in case resolve in sorted key order (a Go map has no entry
+// order).
 func MergeHeaders(headers ...map[string]string) map[string]string {
 	merged := make(map[string]string)
 	for _, h := range headers {
-		for k, v := range h {
-			merged[k] = v
+		keys := make([]string, 0, len(h))
+		for k := range h {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			for existing := range merged {
+				if existing != k && strings.EqualFold(existing, k) {
+					delete(merged, existing)
+				}
+			}
+			merged[k] = h[k]
 		}
 	}
 	return merged
@@ -202,6 +219,10 @@ type Request struct {
 // Response represents an HTTP response
 type Response struct {
 	StatusCode int
+	// StatusText is the status line's reason phrase (TS response.statusText),
+	// for example "Custom Phrase" for "HTTP/1.1 418 Custom Phrase". It is the
+	// standard text for the code when the line carries none Go can split.
+	StatusText string
 	Headers    http.Header
 	Body       []byte
 }
@@ -210,6 +231,11 @@ type Response struct {
 // adapters while keeping the historical error string stable.
 type HTTPStatusError struct {
 	StatusCode int
+	// StatusText is the response's reason phrase (TS response.statusText),
+	// the fallback message of TS createJsonErrorResponseHandler /
+	// createStatusCodeErrorResponseHandler. Empty when the error was not
+	// built from a response (see Response.StatusText).
+	StatusText string
 	Headers    http.Header
 	Body       []byte
 }
@@ -473,6 +499,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 
 	return &Response{
 		StatusCode: httpResp.StatusCode,
+		StatusText: httpStatusText(httpResp),
 		Headers:    httpResp.Header,
 		Body:       respBody,
 	}, nil
@@ -490,6 +517,7 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 	if !statusOK(resp.StatusCode) {
 		return &HTTPStatusError{
 			StatusCode: resp.StatusCode,
+			StatusText: resp.StatusText,
 			Headers:    resp.Headers,
 			Body:       resp.Body,
 		}
@@ -530,6 +558,7 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 	if !statusOK(resp.StatusCode) {
 		return nil, &HTTPStatusError{
 			StatusCode: resp.StatusCode,
+			StatusText: resp.StatusText,
 			Headers:    resp.Headers,
 			Body:       resp.Body,
 		}
@@ -621,6 +650,20 @@ func (c *Client) streamClient() *http.Client {
 		return &clone
 	}
 	return c.client
+}
+
+// httpStatusText is TS response.statusText: the reason phrase of the status
+// line ("" for a line that ends after the code and a space), else the
+// standard text for the code. The same rule as fileutil.ResponseStatusText.
+func httpStatusText(resp *http.Response) string {
+	if resp == nil {
+		return ""
+	}
+	prefix := strconv.Itoa(resp.StatusCode) + " "
+	if strings.HasPrefix(resp.Status, prefix) {
+		return strings.TrimPrefix(resp.Status, prefix)
+	}
+	return http.StatusText(resp.StatusCode)
 }
 
 // statusOK is fetch's response.ok: a 2xx status. TS postToApi / getFromApi
@@ -747,6 +790,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		errBody, _ := fileutil.ReadResponseWithSizeLimit(httpResp, url, c.maxResponseBytes())
 		return nil, &HTTPStatusError{
 			StatusCode: httpResp.StatusCode,
+			StatusText: httpStatusText(httpResp),
 			Headers:    httpResp.Header,
 			Body:       responseText(errBody),
 		}
