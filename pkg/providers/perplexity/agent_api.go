@@ -7,6 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/pplxschema"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // This file mirrors the TS SDK's perplexity-agent-api.ts: the wire shapes for
@@ -246,6 +247,11 @@ func perplexityErrorToMessage(data perplexityErrorEnvelope) string {
 // response" for the top-level response, or a thrown validation error for a
 // malformed handled output item).
 func validatePerplexityAgentResponse(raw []byte) error {
+	// TS secureJsonParse: a __proto__ key or a constructor.prototype is a
+	// JSONParseError (the cause of "Invalid JSON response").
+	if err := securejson.Check(raw); err != nil {
+		return providererrors.NewJSONParseError(string(raw), err)
+	}
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return fmt.Errorf("perplexity: invalid JSON response: %w", err)
@@ -271,7 +277,7 @@ func validatePerplexityAgentResponse(raw []byte) error {
 	// The full zod schema: member types, the required usage counts, a message
 	// content part's type, and the error message.
 	var value interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := jsonexact.Unmarshal(raw, &value); err != nil {
 		return err
 	}
 	if bad := pplxschema.Response(value, true, nil); bad != nil {

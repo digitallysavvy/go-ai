@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -568,7 +569,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			hasFunctionCall = true
 			var args map[string]interface{}
 			if len(block.Arguments) > 0 {
-				_ = json.Unmarshal(block.Arguments, &args)
+				_ = jsonexact.Unmarshal(block.Arguments, &args)
 			}
 			if args == nil {
 				args = map[string]interface{}{}
@@ -598,7 +599,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			if isBuiltinInteractionsToolCall(block.Type) {
 				var args map[string]interface{}
 				if len(block.Arguments) > 0 {
-					_ = json.Unmarshal(block.Arguments, &args)
+					_ = jsonexact.Unmarshal(block.Arguments, &args)
 				}
 				if args == nil {
 					args = map[string]interface{}{}

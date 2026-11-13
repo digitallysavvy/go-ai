@@ -368,7 +368,7 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 				}
 			}
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(argStr), &args)
+			_ = jsonexact.Unmarshal([]byte(argStr), &args)
 			call := types.ToolCall{ID: out.ToolCallID, ToolName: out.Name, Arguments: args, RawArguments: argStr}
 			result.ToolCalls = append(result.ToolCalls, call)
 			result.Content = append(result.Content, types.ToolCallContent{ToolCallID: call.ID, ToolName: call.ToolName, Input: argStr, Arguments: args})
@@ -580,7 +580,7 @@ func (s *conversationStream) handle(data string) {
 		// type, the numeric code (also an HTTP status when it is one) and
 		// the event as data.
 		var event map[string]interface{}
-		_ = json.Unmarshal([]byte(data), &event)
+		_ = jsonexact.Unmarshal([]byte(data), &event)
 		s.queue = append(s.queue, &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: ev.Message,

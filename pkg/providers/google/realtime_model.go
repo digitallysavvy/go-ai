@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"math"
 	"net/http"
@@ -16,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -642,7 +643,7 @@ func mapGoogleRealtimeUsage(u *googleRealtimeUsageMetadata) *provider.RealtimeUs
 
 func (m *googleRealtimeEventMapper) parseEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
 	var data map[string]interface{}
-	_ = json.Unmarshal(raw, &data)
+	_ = jsonexact.Unmarshal(raw, &data)
 	if value, ok := data["setupComplete"]; ok && value != nil {
 		return []provider.RealtimeServerEvent{{Type: "session-created", Raw: raw}}
 	}

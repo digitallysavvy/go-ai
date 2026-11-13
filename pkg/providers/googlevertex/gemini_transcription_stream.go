@@ -330,7 +330,13 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		fail(err)
 		return
 	}
+	streamStart := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}
 	if err := s.send(conn, payload); err != nil {
+		// TS onOpen enqueues stream-start before it sends the setup, so a
+		// failed send errors the stream after that part.
+		if !s.Emit(streamStart) {
+			err = context.Cause(s.Context())
+		}
 		fail(err)
 		return
 	}
@@ -343,7 +349,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
 
-	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(streamStart) {
 		return
 	}
 
@@ -566,7 +572,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 }
 
 func (s *geminiLiveTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: closeInfo.Wrap})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: liveWrapConn(closeInfo.Wrap)})
 }
 
 func (s *geminiLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {

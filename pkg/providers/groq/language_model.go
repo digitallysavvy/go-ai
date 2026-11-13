@@ -362,7 +362,7 @@ func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateR
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
 			id := tc.ID
 			if id == "" {
@@ -541,7 +541,7 @@ func (u *groqUsage) UnmarshalJSON(b []byte) error {
 	}
 	*u = groqUsage(p)
 	var raw map[string]interface{}
-	if json.Unmarshal(b, &raw) == nil && raw != nil {
+	if jsonexact.Unmarshal(b, &raw) == nil && raw != nil {
 		u.rawWire = raw
 	}
 	return nil

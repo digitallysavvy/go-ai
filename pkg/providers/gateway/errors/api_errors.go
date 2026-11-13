@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 )
 
@@ -370,7 +371,7 @@ func rawJSONValue(raw json.RawMessage) interface{} {
 		return nil
 	}
 	var value interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := jsonexact.Unmarshal(raw, &value); err != nil {
 		return nil
 	}
 	return value

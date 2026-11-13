@@ -9,6 +9,7 @@ import (
 	"reflect"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -196,7 +197,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	// TS response.body is the raw parsed JSON, not the schema-filtered value.
 	var rawBody interface{}
-	if err := json.Unmarshal(httpResp.Body, &rawBody); err != nil {
+	if err := jsonexact.Unmarshal(httpResp.Body, &rawBody); err != nil {
 		rawBody = response
 	}
 	return &types.EmbeddingsResult{

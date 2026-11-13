@@ -133,7 +133,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 
 	var rawBody interface{}
-	_ = json.Unmarshal(httpResp.Body, &rawBody)
+	_ = jsonexact.Unmarshal(httpResp.Body, &rawBody)
 
 	if len(response.Answers) != len(ids) {
 		return nil, providererrors.NewInvalidResponseDataError(rawBody, "Perplexity Decisions must return exactly one answer for every question.")
@@ -275,7 +275,7 @@ var perplexityDecisionResponseNode = func() zodlite.Node {
 // APICallError "Invalid JSON response".
 func validatePerplexityDecisionResponse(statusCode int, headers http.Header, body []byte) error {
 	var value interface{}
-	err := json.Unmarshal(body, &value)
+	err := jsonexact.Unmarshal(body, &value)
 	if err == nil {
 		if bad := perplexityDecisionResponseNode(value, true, nil); bad != nil {
 			err = bad

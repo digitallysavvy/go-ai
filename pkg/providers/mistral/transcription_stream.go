@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
@@ -371,8 +373,8 @@ func (s *mistralRealtimeTranscriptionStream) run(cfg mistralRealtimeTranscriptio
 			}
 
 			var raw map[string]interface{}
-			if err := json.Unmarshal([]byte(res.Text), &raw); err != nil {
-				fail(fmt.Errorf("JSON parsing failed: Text: %s.\nError message: %w", res.Text, err))
+			if err := securejson.Unmarshal([]byte(res.Text), &raw); err != nil { // TS safeParseJSON (secureJsonParse)
+				fail(providererrors.NewJSONParseError(res.Text, err)) // TS safeParseJSON JSONParseError
 				return
 			}
 			eventType, ok := raw["type"].(string)

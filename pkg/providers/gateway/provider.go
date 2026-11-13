@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/internal/verceloidc"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -918,7 +919,7 @@ func gatewayErrorMessage(body []byte, statusCode int) string {
 	if ordered, ok := jsonorder.Parse(body); ok {
 		return jsonorder.Stringify(ordered)
 	}
-	serialized, err := json.Marshal(value)
+	serialized, err := jsonstr.Marshal(value)
 	if err != nil {
 		return gatewayStatusTextFallback(statusCode)
 	}

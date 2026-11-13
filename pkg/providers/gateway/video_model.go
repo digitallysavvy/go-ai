@@ -19,6 +19,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -411,7 +412,7 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 			if event.StatusCode != nil {
 				statusCode = *event.StatusCode
 			}
-			errBody, _ := json.Marshal(map[string]interface{}{
+			errBody, _ := jsonstr.Marshal(map[string]interface{}{
 				"error": map[string]interface{}{"message": event.Message, "type": event.ErrorType, "param": event.Param},
 			})
 			// TS responseBody: JSON.stringify(event), the parsed error event

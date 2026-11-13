@@ -5,18 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
@@ -295,7 +298,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.RawRequest = body
 
 	var bodyGeneric interface{}
-	_ = json.Unmarshal(resp.Body, &bodyGeneric)
+	_ = jsonexact.Unmarshal(resp.Body, &bodyGeneric)
 	result.ResponseMetadata = &types.ResponseMetadata{
 		ID:        response.ID,
 		Timestamp: perplexityCreatedAt(response.CreatedAt),
@@ -438,7 +441,7 @@ func (m *LanguageModel) convertResponse(response *perplexityAgentResponse, rawBo
 				name := *item.Name
 				args := *item.Arguments
 				var parsedArgs map[string]interface{}
-				_ = json.Unmarshal([]byte(args), &parsedArgs)
+				_ = jsonexact.Unmarshal([]byte(args), &parsedArgs)
 				content = append(content, types.ToolCallContent{
 					ToolCallID:       callID,
 					ToolName:         name,
@@ -517,7 +520,7 @@ func perplexitySearchResultSource(result perplexitySearchResult) types.SourceCon
 	if result.ID != nil {
 		id = providerutils.JSNumberString(*result.ID) // TS String(result.id)
 	}
-	meta, _ := json.Marshal(map[string]interface{}{
+	meta, _ := jsonstr.Marshal(map[string]interface{}{
 		"perplexity": perplexitySearchSourceMeta{
 			ResultID:    result.ID,
 			Snippet:     result.Snippet,
@@ -536,7 +539,7 @@ func perplexitySearchResultSource(result perplexitySearchResult) types.SourceCon
 }
 
 func perplexityFetchedContentSource(fc perplexityFetchedContent) types.SourceContent {
-	meta, _ := json.Marshal(map[string]interface{}{
+	meta, _ := jsonstr.Marshal(map[string]interface{}{
 		"perplexity": perplexityFetchedSourceMeta{Snippet: fc.Snippet},
 	})
 	return types.SourceContent{
@@ -556,7 +559,7 @@ type perplexityToolCallMeta struct {
 func perplexityToolCallMetadata(item perplexityOutputItem) json.RawMessage {
 	// TS spreads thoughtSignature whenever it is not null, so "" stays.
 	m := perplexityToolCallMeta{ItemID: item.ID, ThoughtSignature: item.ThoughtSignature}
-	raw, _ := json.Marshal(map[string]interface{}{"perplexity": m})
+	raw, _ := jsonstr.Marshal(map[string]interface{}{"perplexity": m})
 	return raw
 }
 
@@ -712,7 +715,7 @@ func (s *perplexityAgentStream) processEvent(data string) {
 		// TS enqueues the raw part for every frame; rawValue is undefined
 		// when the frame is not JSON.
 		var rawValue interface{}
-		if err := json.Unmarshal([]byte(data), &rawValue); err != nil {
+		if err := securejson.Unmarshal([]byte(data), &rawValue); err != nil { // TS rawValue undefined on a failed safeParseJSON
 			rawValue = nil
 		}
 		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawValue})
@@ -953,7 +956,7 @@ func (s *perplexityAgentStream) emitFunctionCall(item *perplexityOutputItem) {
 	)
 
 	var parsedArgs map[string]interface{}
-	_ = json.Unmarshal([]byte(args), &parsedArgs)
+	_ = jsonexact.Unmarshal([]byte(args), &parsedArgs)
 	s.pending = append(s.pending, &provider.StreamChunk{
 		Type: provider.ChunkTypeToolCall,
 		ToolCall: &types.ToolCall{
@@ -1023,7 +1026,7 @@ func (s *perplexityAgentStream) flush() {
 	}
 
 	usage := convertPerplexityUsage(s.usage, s.usageRawBytes)
-	metaRaw, _ := json.Marshal(getPerplexityProviderMetadata(s.usage, s.searchQueries))
+	metaRaw, _ := jsonstr.Marshal(getPerplexityProviderMetadata(s.usage, s.searchQueries))
 	s.pending = append(s.pending, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     s.finishReason,

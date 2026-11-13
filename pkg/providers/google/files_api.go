@@ -6,14 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"math"
 	"net/http"
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -276,7 +277,7 @@ func googleFilesStatusOK(code int) bool {
 // body fails on `.file`, a missing or null file on `.state`.
 func googleFilesUploadResultShape(body []byte) error {
 	var top interface{}
-	if err := json.Unmarshal(body, &top); err != nil {
+	if err := jsonexact.Unmarshal(body, &top); err != nil {
 		return err
 	}
 	if top == nil {

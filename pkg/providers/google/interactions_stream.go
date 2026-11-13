@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -383,8 +385,13 @@ restart:
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 		var payload interactionsEvent
+		// TS secureJsonParse: a __proto__ key or a constructor.prototype is a
+		// JSON parse failure, never the loose unknownEvent dispatch.
+		forbidden := securejson.Check([]byte(event.Data))
 		err = jsonexact.Unmarshal([]byte(event.Data), &payload)
-		if err == nil && !hasStringEventType(event.Data) {
+		if forbidden != nil {
+			err = forbidden
+		} else if err == nil && !hasStringEventType(event.Data) {
 			// Every member of TS googleInteractionsEventSchema (including the
 			// unknownEvent fallback) requires a string event_type, so null,
 			// non-object JSON and objects without it fail validation.
@@ -401,7 +408,9 @@ restart:
 			// TS: an unparsable chunk marks the interaction failed, is
 			// surfaced as an error part and reading continues.
 			var chunkErr error
-			if !json.Valid([]byte(event.Data)) {
+			if forbidden != nil {
+				chunkErr = providererrors.NewJSONParseError(event.Data, forbidden)
+			} else if !json.Valid([]byte(event.Data)) {
 				var probe interface{}
 				chunkErr = providererrors.NewJSONParseError(event.Data, json.Unmarshal([]byte(event.Data), &probe))
 			} else {
@@ -866,7 +875,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			}
 		}
 		var data interface{}
-		if json.Unmarshal([]byte(s.currentEventData), &data) != nil {
+		if jsonexact.Unmarshal([]byte(s.currentEventData), &data) != nil {
 			data = nil
 		}
 		s.completed = true
@@ -896,7 +905,7 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 	case "function_call":
 		var args map[string]interface{}
 		if open.argsString != "" {
-			_ = json.Unmarshal([]byte(open.argsString), &args)
+			_ = jsonexact.Unmarshal([]byte(open.argsString), &args)
 		}
 		if args == nil {
 			args = map[string]interface{}{}
@@ -1013,7 +1022,7 @@ func (s *sliceTextStream) Close() error { return nil }
 // && typeof arguments === 'object') and decodes it.
 func objectArguments(raw json.RawMessage) (map[string]interface{}, bool) {
 	var args map[string]interface{}
-	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil || args == nil {
+	if len(raw) == 0 || jsonexact.Unmarshal(raw, &args) != nil || args == nil {
 		return nil, false
 	}
 	return args, true

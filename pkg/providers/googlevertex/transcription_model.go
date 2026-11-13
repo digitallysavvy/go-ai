@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -285,7 +284,7 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 	}
 	var responseBody interface{}
 	if len(rawBody) > 0 {
-		if err := json.Unmarshal(rawBody, &responseBody); err != nil {
+		if err := jsonexact.Unmarshal(rawBody, &responseBody); err != nil {
 			responseBody = string(rawBody)
 		}
 	}

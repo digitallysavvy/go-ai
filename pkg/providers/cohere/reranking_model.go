@@ -2,11 +2,12 @@ package cohere
 
 import (
 	"context"
-	"encoding/json"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"reflect"
 	"time"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -73,7 +74,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	result.Warnings = warnings
 	result.Response.Headers = map[string][]string(httpResp.Headers)
 	var raw interface{}
-	if json.Unmarshal(httpResp.Body, &raw) == nil {
+	if jsonexact.Unmarshal(httpResp.Body, &raw) == nil {
 		result.Response.Body = raw
 	}
 	return result, nil
