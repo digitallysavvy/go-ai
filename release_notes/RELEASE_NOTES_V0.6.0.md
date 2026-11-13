@@ -369,6 +369,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Video image data strings with an http(s) URL are sent as URLs** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#video-datastring-url)
 - **Cancellations with a cause return the cause** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#abort-cause-r94)
 - **Numbers beyond the double range read as Infinity and are written as null** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#out-of-range-numbers)
+- **Output and LangGraph round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gen-r97-details)
 
 #### Prompts and validation
 
@@ -536,6 +537,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI MessageMetadata part types match TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-message-metadata-tool-error)
 - **Invalid tool calls produce one UI error chunk and one OnError call** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-invalid-tool-call-once)
 - **ValidateUIMessages part type, state and invalid-value errors match TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#validate-ui-messages-selector)
+- **UI message stream round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-r97-details)
 
 #### Telemetry and events
 
@@ -619,6 +621,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Provider responses are decoded with exact keys** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-response-keys-case-exact)
 - **A cancel during a retry backoff returns the context error** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#retry-abort-during-backoff)
 - **JSON payloads with `__proto__` keys fail like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-proto-payloads-fail)
+- **One JSONParseError with the SyntaxError cause text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-parse-error-single)
 
 #### Providers
 
@@ -944,6 +947,11 @@ search for and ends with a checklist for coding agents. Entries marked
 - **stream-start comes before a failed setup message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-start-before-setup-failure)
 - **OpenAI and xAI round 96 details** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provb-r96-details)
 - **Media provider round 96 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provc-r96-details)
+- **Raw-fetch requests carry no runtime user-agent tag** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#raw-fetch-no-runtime-user-agent)
+- **Anthropic and Bedrock round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#prova-r97-details)
+- **OpenAI, Azure, xAI and OpenAI-compatible round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provb-r97-details)
+- **Media provider round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provc-r97-details)
+- **Google, Gateway, Mistral, Groq and Cohere round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provg-r97-details)
 
 #### MCP
 
@@ -965,6 +973,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **MCP does not fall back to initialize after a discover network error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-discover-network-error)
 - **MCP Apps: a non-array tool visibility follows TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-app-visibility-raw)
 - **MCP and sandbox round 96 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-r96-details)
+- **MCP, harness adapter and tools-provider round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-r97-details)
 
 #### Code mode
 
@@ -1048,6 +1057,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Harness bridges authenticate with a per-session public key** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bridge-public-key-auth)
 - **Harness turns with an output follow the TS output stage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-output-stage)
 - **askUserQuestions input and output follow the TS schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-questions-tool-schema)
+- **Workflow, harness and schema round 97 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#carry-r97-details)
 
 #### Policy
 
@@ -1570,6 +1580,7 @@ in v0.5.3.
 - Round 94 (review round 94; TS 2ebc78b654, ai@7.0.170): provider response bodies, stream frames and error bodies decode with exact keys, as the TS zod schemas match them (`jsonexact` at every direct decode, with a type-checked source guard; provider options keep case-insensitive keys, a known difference); provider calls that check the status themselves fail on any non-2xx response, as TS `response.ok` (Google, Groq, Mistral, Perplexity, HeyGen, Vertex, Gateway metadata, Anthropic, OpenAI, xAI, DeepSeek, Deepgram, Cartesia, Hume, Fish Audio, BFL, fal, Luma, ByteDance, Replicate, Topaz, DeepInfra, MiniMax, Vercel Sandbox); realtime and live WebSocket URLs follow the WHATWG parser (`toWebSocketUrl` / `new URL`) for OpenAI, Azure, xAI, ElevenLabs, Cartesia, Deepgram, Mistral, Google, Vertex and the Gateway; an abort with a cause reports the cause (`context.Cause`, TS `abortSignal.reason`) in Decide, the decision language model, Google decisions, StartBatch, tool execution and refinement, WorkflowAgent, StreamText and the WebSocket streams; Date#toISOString years outside 0..9999 use the expanded form (OpenAI and xAI batch, Google realtime tokens, code mode, telemetry timestamps); the LangSmith run stream body matches RemoteGraph (`recursion_limit` 25, no `type` key, TS key order); StreamTranscribe telemetry events carry the TS fields and its `Responses()` no body; streaming audio results wait for the FullStream reader; StreamSpeech leaves a model-owned text stream to the model; speech stream envelopes are JSON.stringify text; the non-retryable RetryError keeps quotes; Transcribe's invalid base64 text and video `http(s)` data strings follow TS; Gateway decision answers and warnings keep only their own fields; Google Interactions, HeyGen, Google Files and batch, Anthropic Files and Skills, Bedrock reasoning metadata and rerank, ElevenLabs frames, OpenAI Files / batch / stream errors, xAI and DeepSeek Files, MCP `CallToolResult`, DeepInfra, MiniMax and Prodia edge inputs follow TS.
 - Round 95 (review round 95; TS 2ebc78b654, ai@7.0.170): the Open Responses finish reason follows TS `mapOpenResponsesFinishReason` (length and content-filter with tool calls); Google Interactions built-in tool calls carry no provider metadata; StreamText reports the abort cause at every abort point, and an abort during limited tool concurrency, in a WorkflowAgent approved resume, in media polls, in the Gateway streams, the Vercel sandbox stdin, the MCP transports, the ACP and Grok Build sandbox preparation and the bash tool returns the cause, while a retry backoff wait returns the context error (TS `delay`); streaming WebSocket models that fail to open report the provider's TS socket error, and a cancel during the handshake the cause; the case-exact source guard follows `interface{}` decode helpers and covers MCP server messages, the Vercel sandbox API and the shared provider code (Gateway and Interactions lenient decoders, Open Responses bodies, compat stream usage and errors, the network policy, OpenAI Responses prompt tool arguments); the zod validators read numbers beyond the double range as JSON.parse does and `z.number()` rejects non-finite values; the Gateway speech stream fails on undecodable audio with atob's `InvalidCharacterError`; a stopped UI SSE writer writes nothing more (a keep-alive could follow the stop under load); empty stop sequences are sent by the OpenAI-compatible chat providers; present empty strings are kept by OpenAI, xAI and Open Responses; DeepSeek Responses and OpenAI batch bodies are validated; `jsonexact` follows Go's field dominance rules; urlnorm setters, the speech stream rate clamp, Moonshot `cache_write_tokens`, the decision language model's content text, batch providers returning no result, ToolLoopAgent step timeouts during tools, Anthropic Skills stream uploads and citation media types, Prodia, Google, Vertex image, Alibaba, Open Responses and OpenAI decision media types, Topaz prompt warnings, Vercel sandbox paths, MCP SSE endpoint URLs, ByteDance and Cartesia request key order, Replicate prediction ID encoding, Gateway metadata pricing and video headers, Interactions options and stream edges follow TS.
 - Round 96 (review round 96; TS 2ebc78b654, ai@7.0.170): main ruling 4 for numbers beyond the double range (the central decoders read `1e400` as ±Inf like `JSON.parse`, every SDK serialization of provider values writes NaN and ±Inf as `null` like `JSON.stringify` through `jsonstr.Marshal`, and the zod-style validators reject them at `z.number()` / `z.json()` sites with the zod issue text); the known difference "JSON payloads with `__proto__`" is retired: provider responses, stream chunks, WebSocket events, tool-call inputs, generated objects, partial JSON and decision answers with a `__proto__` key or `constructor.prototype` fail with TS's JSONParseError, with a type-checked source guard; WorkflowAgent `OnAbort` gets the full step results (medium); `SplitMCPAppTools` reads a non-array visibility like TS; streaming models emit `stream-start` before a failed setup message; OpenAI Responses `""` reasoning options and fractional number options are sent as given; Deepgram and AssemblyAI upload `AudioBase64`; Cartesia realtime events are read leniently.
+- Round 97 (review round 97; TS 2ebc78b654, ai@7.0.170): raw-fetch requests (Cartesia, OpenAI and xAI realtime client secrets, the AssemblyAI poll, Topaz cancels, Prodia URL images) carry no runtime user-agent tag and return transport failures as is (medium); bodies TS reads with plain `response.json()` keep `__proto__` keys (shared `jsonexact.UnmarshalPlain`, with a source guard listing every such site); a forbidden-prototype payload gives one JSONParseError with TS's `SyntaxError:` cause text; zod-style issues come in JS key order; `Usage.Raw` keeps fractional counts across providers; JSON `null` realtime and streaming transcription messages fail like TS; OpenAI Responses tool calls follow TS `ongoingToolCalls` and the tool-name mapping; LangGraph HITL matching uses wire key order; provider metadata holding ±Inf is kept in tool results and rerank events.
 - Step-end events carry the step (review round 72). `OnStepFinishEvent`
   has `Content` and `Performance`, and `GenerateStepRequest` has `Messages`
   (additive fields), filled by `GenerateText`, `StreamText`, the legacy
@@ -2065,7 +2076,6 @@ Notable ones:
 - **WorkflowAgent missing provider result warning**: reported through `LogWarnings` (S3) (round 90).
 - **Google Interactions warnings**: both `Message` and `Details` are set (S6) (round 90).
 - **Fractional counts in integer fields**: truncated into the integer fields (S1) (round 90).
-- **Gemini non-streaming string functionCall args**: used verbatim (S7) (round 90).
 - **Invalid video operation references**: a plain decode error (S1) (round 90).
 - **Gemini streamed tool arguments with conflicting paths**: the stream fails at the conflicting entry (S7) (round 90).
 - **Z.AI PrepareRequest / ConvertResponse**: not exposed (S7) (round 90).
@@ -2127,6 +2137,10 @@ Notable ones:
 - **Infinity in provider values**: a provider number beyond the double range reads as ±Inf and the SDK writes it as `null`; `encoding/json.Marshal` on it fails (Go standard library), so use `jsonstr.Marshal` (S3, informational) (round 96).
 - **Cartesia realtime `turnDetection: null`**: the typed `TurnDetection` pointer cannot tell `null` from absent; set `Type: "disabled"` (S1) (round 96).
 - **Gemini prompt custom parts**: a `CustomContent` part with `ProviderOptions["google"]` is sent as a raw Gemini part, as v0.5.2; TS drops it (S6) (round 96).
+- **LangChain content blocks in plain JSON**: reasoning is read from `contentBlocks`, `content_blocks` or `content`, citations in camelCase or snake_case, since Go receives plain JSON (informational) (round 97).
+- **LangGraph values with malformed fields**: a numeric tool call id, name or args is sent as text; TS forwards chunks its client schema rejects (S7) (round 97).
+- **Fractional counts in integer fields**: also the Anthropic content block `index`, Bedrock `contentBlockIndex` and Open Responses `url_citation` indexes; a count past int64 takes the nearest int64 (S1) (round 97).
+- **UI message chunk validation on client reads**: a chunk that is not a JSON object (`null` included) is rejected with Go's issue text (S3) (round 97).
 - **Realtime transcription WebSocket hint**: widened to ElevenLabs, xAI, Vertex Gemini and the AI Gateway (S3) (round 91).
 - **TS test replays skipped in round 91**: the Google Decisions warnings order (Go map order) and the Vertex caller-fetch download tests (DNS protection stays on) (round 91).
 - **TS test replays skipped in round 88**: Replicate cancel timing, a Gladia pre-aborted call, DeepInfra and Google tests with injected functions (round 88).
