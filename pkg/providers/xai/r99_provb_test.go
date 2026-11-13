@@ -37,3 +37,19 @@ func TestR99provbErrorInfiniteCode(t *testing.T) {
 		t.Errorf("finite code: %q, %v", msg, ok)
 	}
 }
+
+// TestR99provbVideoProgressPlatformInt: a whole-number progress beyond the
+// platform int stays the float64 TS reports instead of an
+// implementation-defined int conversion.
+func TestR99provbVideoProgressPlatformInt(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want interface{}
+	}{{1e19, 1e19}, {42, 42}, {12.5, 12.5}} {
+		p := tc.in
+		meta := buildXAIVideoMetadata("r", &xaiVideoStatusResponse{Progress: &p})
+		if meta["progress"] != tc.want {
+			t.Errorf("progress(%v) = %#v, want %#v", tc.in, meta["progress"], tc.want)
+		}
+	}
+}
