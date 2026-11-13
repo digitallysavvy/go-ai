@@ -233,7 +233,11 @@ func (p *Provider) postTencentCloudAPI(ctx context.Context, service, action, api
 	}
 	requestHeaders := make(map[string]string, len(headers)+len(protocolHeaders))
 	for name, value := range headers {
-		if _, signed := protocolHeaders[strings.ToLower(name)]; !signed {
+		lower := strings.ToLower(name)
+		// TS `name.toLowerCase() in protocolHeaders` also matches the
+		// object's inherited keys, so a "constructor" or "__proto__" header
+		// is dropped too.
+		if _, signed := protocolHeaders[lower]; !signed && lower != "constructor" && lower != "__proto__" {
 			requestHeaders[name] = value
 		}
 	}
