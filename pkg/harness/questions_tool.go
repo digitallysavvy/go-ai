@@ -103,10 +103,55 @@ func ParseQuestionsToolInput(data []byte) (*QuestionsToolInput, error) {
 	if err := jsonexact.Unmarshal(data, &input); err != nil {
 		return nil, fmt.Errorf("invalid askUserQuestions input: %w", err)
 	}
+	if err := checkQuestionsOptionalKeys(fields["questions"]); err != nil {
+		return nil, err
+	}
 	if err := input.Validate(); err != nil {
 		return nil, err
 	}
 	return &input, nil
+}
+
+// checkQuestionsOptionalKeys applies what the struct decode cannot see:
+// the schema's optional keys (header, options, allowMultiple,
+// allowFreeForm; an option's description and preview) are `.optional()`,
+// so a present null fails as in zod, and the allowFreeForm object form
+// needs its `secret` key spelled exactly.
+func checkQuestionsOptionalKeys(raw json.RawMessage) error {
+	var questions []map[string]json.RawMessage
+	if json.Unmarshal(raw, &questions) != nil {
+		return nil // the struct decode reported any shape error
+	}
+	isNull := func(m map[string]json.RawMessage, key string) bool {
+		v, ok := m[key]
+		return ok && string(v) == "null"
+	}
+	for i, q := range questions {
+		for _, key := range []string{"header", "options", "allowMultiple", "allowFreeForm"} {
+			if isNull(q, key) {
+				return fmt.Errorf("invalid askUserQuestions input: question %d %s must not be null", i, key)
+			}
+		}
+		var form map[string]json.RawMessage
+		if json.Unmarshal(q["allowFreeForm"], &form) == nil && form != nil {
+			var secret bool
+			if v, ok := form["secret"]; !ok || json.Unmarshal(v, &secret) != nil {
+				return errors.New("invalid askUserQuestions input: allowFreeForm must be a boolean or { secret: boolean }")
+			}
+		}
+		var options []map[string]json.RawMessage
+		if json.Unmarshal(q["options"], &options) != nil {
+			continue
+		}
+		for j, o := range options {
+			for _, key := range []string{"description", "preview"} {
+				if isNull(o, key) {
+					return fmt.Errorf("invalid askUserQuestions input: question %d option %d %s must not be null", i, j, key)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // Validate applies the zod min-length constraints.
@@ -185,7 +230,8 @@ func ParseQuestionsToolOutput(data []byte) (*QuestionsToolOutput, error) {
 		return nil, fmt.Errorf("invalid askUserQuestions output: %w", err)
 	}
 	var out QuestionsToolOutput
-	if err := json.Unmarshal(data, &out); err != nil {
+	// zod matches the discriminator and keys exactly (jsonexact).
+	if err := jsonexact.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("invalid askUserQuestions output: %w", err)
 	}
 	switch out.Action {
@@ -193,9 +239,17 @@ func ParseQuestionsToolOutput(data []byte) (*QuestionsToolOutput, error) {
 		if raw, ok := fields["answers"]; !ok || string(raw) == "null" {
 			return nil, errors.New("invalid askUserQuestions output: answers is required")
 		}
+		// zod matches keys exactly, and freeform is .optional() (a null
+		// fails).
+		var answers map[string]map[string]json.RawMessage
+		_ = json.Unmarshal(fields["answers"], &answers)
 		for id, answer := range out.Answers {
-			if answer.OptionIDs == nil {
+			raw := answers[id]
+			if v, ok := raw["optionIds"]; answer.OptionIDs == nil || !ok || string(v) == "null" {
 				return nil, fmt.Errorf("invalid askUserQuestions output: answer %q requires optionIds", id)
+			}
+			if v, ok := raw["freeform"]; ok && string(v) == "null" {
+				return nil, fmt.Errorf("invalid askUserQuestions output: answer %q freeform must not be null", id)
 			}
 		}
 	case QuestionsActionDeclined, QuestionsActionCancelled:
