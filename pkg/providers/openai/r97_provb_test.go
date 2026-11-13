@@ -153,3 +153,13 @@ func TestR97provbApprovalRequestIDEmptyKey(t *testing.T) {
 		t.Fatalf("mapping = %#v, want \"\" -> tc1", m)
 	}
 }
+
+// TestR97provbRealtimeParseNullEvent: TS parseOpenAIRealtimeServerEvent
+// reads event.type of the parsed message, so a JSON null throws a TypeError
+// (Go returned a custom event).
+func TestR97provbRealtimeParseNullEvent(t *testing.T) {
+	_, err := NewRealtimeModel(New(Config{APIKey: "k"}), "gpt-realtime").ParseServerEvent([]byte("null"))
+	if err == nil || err.Error() != "Cannot read properties of null (reading 'type')" {
+		t.Fatalf("err = %v, want the TypeError", err)
+	}
+}

@@ -54,3 +54,13 @@ func TestR97provbStreamingNullMessageTypeError(t *testing.T) {
 		t.Fatalf("err = %v, want the TypeError", err)
 	}
 }
+
+// TestR97provbRealtimeParseNullEvent: TS parseXaiRealtimeServerEvent reads
+// event.type of the parsed message, so a JSON null throws a TypeError (Go
+// returned a custom event).
+func TestR97provbRealtimeParseNullEvent(t *testing.T) {
+	_, err := NewRealtimeModel(New(Config{APIKey: "k"}), "grok-voice").ParseServerEvent([]byte("null"))
+	if err == nil || err.Error() != "Cannot read properties of null (reading 'type')" {
+		t.Fatalf("err = %v, want the TypeError", err)
+	}
+}
