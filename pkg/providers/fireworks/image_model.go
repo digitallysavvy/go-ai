@@ -150,8 +150,10 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 		return nil, providererrors.NewSchemaProviderError("fireworks", resp.StatusError(resp.Body), nil) // TS createStatusCodeErrorResponseHandler
 	}
 
-	// TS createBinaryResponseHandler: an empty body is an error.
-	if len(resp.Body) == 0 {
+	// TS createBinaryResponseHandler: only a null body fails ("Response
+	// body is empty"); fetch gives a 204 / 205 reply a null body, while a
+	// 200 with an empty body is an empty image.
+	if providerutils.NullBodyStatus(resp.StatusCode) {
 		empty := providererrors.NewProviderError("fireworks", resp.StatusCode, "", "Response body is empty", nil)
 		_, empty.ResponseHeaders, _ = (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails() // TS APICallError responseHeaders
 		return nil, empty

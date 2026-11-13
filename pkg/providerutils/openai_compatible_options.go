@@ -461,3 +461,15 @@ func WireInt64(f float64) int64 {
 	}
 	return int64(f)
 }
+
+// NullBodyStatus reports a fetch null-body status (101, 103, 204, 205,
+// 304): the Response has `body === null`, which TS
+// createBinaryResponseHandler rejects as "Response body is empty". Any other
+// status has a body stream, empty or not.
+func NullBodyStatus(status int) bool {
+	switch status {
+	case 101, 103, 204, 205, 304:
+		return true
+	}
+	return false
+}

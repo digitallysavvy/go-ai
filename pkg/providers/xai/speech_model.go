@@ -99,6 +99,14 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, newXAIProviderErrorFrom(m.Provider(), resp.StatusError(resp.Body))
 	}
 
+	// TS createBinaryResponseHandler: a null body (fetch gives a 204 / 205
+	// reply one) is "Response body is empty"; an empty 200 is empty audio.
+	if !(xaiOpts.WithTimestamps != nil && *xaiOpts.WithTimestamps) && providerutils.NullBodyStatus(resp.StatusCode) {
+		empty := providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", "Response body is empty", nil)
+		_, empty.ResponseHeaders, _ = (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails()
+		return nil, empty
+	}
+
 	requestBytes := []byte(requestText)
 
 	// With `with_timestamps` the API returns a JSON envelope carrying

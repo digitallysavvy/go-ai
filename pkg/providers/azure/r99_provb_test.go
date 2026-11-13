@@ -5,6 +5,7 @@ import (
 	"math"
 	stdhttp "net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -83,6 +84,27 @@ func TestR99provbMaiTokenSumPlatformInt(t *testing.T) {
 	for _, tc := range []struct{ in, want float64 }{{1e19, math.MaxInt}, {-1e19, math.MinInt}, {7.5, 7}} {
 		if got := providerutils.WireInt(tc.in); float64(got) != tc.want {
 			t.Errorf("WireInt(%v) = %d, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestR99provbSpeechNullBody: TS createBinaryResponseHandler fails a null
+// body ("Response body is empty", the 204 / 205 reply fetch gives one) and
+// returns an empty 200 as empty audio. Go returned empty audio for both.
+func TestR99provbSpeechNullBody(t *testing.T) {
+	for _, status := range []int{200, 204} {
+		server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+			w.WriteHeader(status)
+		}))
+		p, err := New(Config{APIKey: "k", ResourceName: "r", SpeechBaseURL: server.URL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		speech, _ := p.SpeechModel("mai-voice-2.1")
+		_, err = speech.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"})
+		server.Close()
+		if (status == 204) != (err != nil && strings.Contains(err.Error(), "Response body is empty")) {
+			t.Errorf("%d: err = %v", status, err)
 		}
 	}
 }

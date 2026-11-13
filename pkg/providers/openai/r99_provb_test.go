@@ -1,7 +1,11 @@
 package openai
 
 import (
+	"context"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -56,6 +60,21 @@ func TestR99provbDecisionUsagePlatformInt(t *testing.T) {
 	if big := 3e9; float64(math.MaxInt) < big {
 		if got := floatToIntPtr(&big); *got != math.MaxInt {
 			t.Errorf("floatToIntPtr(3e9) = %d on a 32-bit int", *got)
+		}
+	}
+}
+
+// TestR99provbSpeechNullBody: TS createBinaryResponseHandler fails a null
+// body ("Response body is empty", a 204 / 205 reply); an empty 200 is empty
+// audio. Go returned empty audio for both.
+func TestR99provbSpeechNullBody(t *testing.T) {
+	for _, status := range []int{200, 205} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) }))
+		m, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).SpeechModel("tts-1")
+		_, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"})
+		srv.Close()
+		if (status == 205) != (err != nil && strings.Contains(err.Error(), "Response body is empty")) {
+			t.Errorf("%d: err = %v", status, err)
 		}
 	}
 }
