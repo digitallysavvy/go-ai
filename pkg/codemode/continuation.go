@@ -242,7 +242,7 @@ func randomHex(n int) (string, error) {
 // map[string]interface{} and every numeric Go type collapses to float64,
 // matching JavaScript's single Number type.
 func canonicalJSON(value interface{}) (string, error) {
-	raw, err := json.Marshal(value)
+	raw, err := jsonstr.Marshal(value)
 	if err != nil {
 		return "", err
 	}

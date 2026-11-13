@@ -2,9 +2,9 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 
@@ -159,7 +159,7 @@ func syncRawArguments(call *types.ToolCall) {
 		return
 	}
 	var decoded map[string]interface{}
-	if err := json.Unmarshal([]byte(call.RawArguments), &decoded); err == nil && reflect.DeepEqual(decoded, call.Arguments) {
+	if err := jsonexact.Unmarshal([]byte(call.RawArguments), &decoded); err == nil && reflect.DeepEqual(decoded, call.Arguments) {
 		return
 	}
 	if raw, err := jsonstr.Marshal(call.Arguments); err == nil {
