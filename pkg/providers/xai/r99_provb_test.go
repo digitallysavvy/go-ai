@@ -24,3 +24,16 @@ func TestR99provbSpeechNullBody(t *testing.T) {
 		}
 	}
 }
+
+// TestR99provbErrorInfiniteCode: TS apiErrorSchema's code is
+// z.union([z.string(), z.number()]).nullish() and z.number() rejects the
+// Infinity JSON.parse reads for 1e400; no union member then matches, so
+// the message is the status text. Go took the body's message.
+func TestR99provbErrorInfiniteCode(t *testing.T) {
+	if _, ok := xaiErrorMessage([]byte(`{"error":{"message":"m","code":1e400}}`)); ok {
+		t.Error("an infinite code matched the error schema")
+	}
+	if msg, ok := xaiErrorMessage([]byte(`{"error":{"message":"m","code":400}}`)); !ok || msg != "m" {
+		t.Errorf("finite code: %q, %v", msg, ok)
+	}
+}
