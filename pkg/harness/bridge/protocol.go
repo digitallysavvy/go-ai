@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // Outbound transport/control frame discriminators.
@@ -201,7 +202,9 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 	if err := harness.RejectNullKeys(typ, fields, controlFrameOptionalKeys[typ]); err != nil {
 		return nil, seq, err
 	}
-	if err := json.Unmarshal(data, target); err != nil {
+	// zod matches keys exactly; JSON.parse reads 1e400 as Infinity in an
+	// unknown value (secureJsonParse ran in DecodeOutbound).
+	if err := jsonexact.UnmarshalPlain(data, target); err != nil {
 		return nil, seq, fmt.Errorf("harness bridge: invalid %s frame: %w", typ, err)
 	}
 	switch m := target.(type) {
@@ -518,7 +521,7 @@ func DecodeInbound(data []byte) (InboundCommand, error) {
 	if err := harness.RequireKeys(typ, fields, required); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, cmd); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, cmd); err != nil { // zod: exact keys
 		return nil, fmt.Errorf("harness bridge: invalid %s command: %w", typ, err)
 	}
 	return cmd, nil
