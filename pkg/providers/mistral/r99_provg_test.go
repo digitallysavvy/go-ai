@@ -1,8 +1,12 @@
 package mistral
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -22,5 +26,23 @@ func TestR99provgConversationReplayMetadataOutOfRange(t *testing.T) {
 	}
 	if len(inputs) == 0 || inputs[0]["name"] != "web_search_premium" {
 		t.Fatalf("inputs = %#v, want the metadata wire name", inputs)
+	}
+}
+
+// TS returns usage: response.usage, the zod-parsed object: a nullish key the
+// API sent as null stays null, an absent key stays absent.
+func TestR99provgTranscriptionUsageKeepsNull(t *testing.T) {
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		return mistralJSONResponse(`{"model":"voxtral-mini-latest","text":"hi","usage":{"prompt_tokens":5,"completion_tokens":null}}`), nil
+	})
+	res, err := NewTranscriptionModel(p, "voxtral-mini-latest").DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := res.ProviderUsage
+	v, present := usage["completion_tokens"]
+	_, totalPresent := usage["total_tokens"]
+	if !present || v != nil || usage["prompt_tokens"] != 5 || totalPresent {
+		t.Fatalf("usage = %#v, want completion_tokens null and total_tokens absent", usage)
 	}
 }
