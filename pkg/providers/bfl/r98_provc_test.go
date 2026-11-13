@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TS createJsonResponseHandler: JSON.parse reads 1e999 as Infinity and zod
@@ -84,5 +85,34 @@ func TestR98provcBFLReasonPhrase(t *testing.T) {
 	_, _, err = m.downloadImage(context.Background(), "https://delivery-us1.bfl.ai/img.png", nil)
 	if !errors.As(err, &pe) || pe.Message != "Custom Phrase" {
 		t.Errorf("image download: got %T %v", err, err)
+	}
+}
+
+// TS getFromApi appends getRuntimeEnvironmentUserAgent() to the poll and
+// image download user agent (cr-r98-provg-to-provc).
+func TestR98provcBFLRawRequestsCarryRuntimeUserAgent(t *testing.T) {
+	var got []string
+	oldDefault := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = append(got, r.Header.Get("User-Agent"))
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"status":"Pending"}`)), Request: r}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = oldDefault })
+	oldDownload := downloadTransport
+	downloadTransport = func() http.RoundTripper { return http.DefaultTransport }
+	t.Cleanup(func() { downloadTransport = oldDownload })
+
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: "https://api.bfl.ai"}), "flux-pro")
+	ua := map[string]string{"user-agent": "app/1 ai-sdk-black-forest-labs/9"}
+	if _, err := m.getPollBody(context.Background(), "https://api.bfl.ai/v1/get_result?id=1", ua); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.downloadImage(context.Background(), "https://delivery-us1.bfl.ai/img.png", ua); err != nil {
+		t.Fatal(err)
+	}
+	want := "app/1 ai-sdk-black-forest-labs/9 " + providerutils.RuntimeEnvironmentUserAgent()
+	if len(got) != 2 || got[0] != want || got[1] != want {
+		t.Fatalf("user agents = %q, want %q", got, want)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TS sends {'user-agent': combinedHeaders['user-agent']} to a delivery host,
@@ -35,7 +37,8 @@ func TestR46_DeliveryDownloadSendsCombinedUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Get("User-Agent") != "my-app/1 ai-sdk/black-forest-labs/9" {
+	// TS getFromApi then appends the runtime tag (r98).
+	if got.Get("User-Agent") != "my-app/1 ai-sdk/black-forest-labs/9 "+providerutils.RuntimeEnvironmentUserAgent() {
 		t.Fatalf("user agent = %q", got.Get("User-Agent"))
 	}
 	if got.Get("X-Key") != "" {
