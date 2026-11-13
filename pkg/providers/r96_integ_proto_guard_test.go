@@ -91,6 +91,10 @@ var r97integResponseJSONDecodes = map[string]struct {
 	"pkg/harness/sandbox/vercel/ndjson.go|parseLogLine":              {2, "@vercel/sandbox 3.9.0 api-client.js:242 / 563 jsonlines (plain JSON.parse per line), then LogLine.parse"},
 	"pkg/harness/sandbox/vercel/stdin.go|parseStdinResponse":         {1, "@vercel/sandbox 3.9.0 api-client.js:50 parseOrThrow(CommandStdinResponse) -> base-client.js:102 JSON.parse(text || \"{}\")"},
 	"pkg/harness/sandbox/vercel/stdin.go|stdinTimeoutBytesWritten":   {1, "@vercel/sandbox 3.9.0 api-client.js:60 readStdinTimeout JSON.parse(text)"},
+	// Round 98 (provg CR): caller-value validations (schema.parse on objects
+	// TS already holds).
+	"pkg/providerutils/prompt/google.go|*googleConverter.googleVideoMetadata": {1, "convert-to-google-messages.ts:381 googleVideoMetadataSchema.parse of the caller's providerOptions object (no JSON parse, no secureJsonParse)"},
+	"pkg/providerutils/prompt/google.go|googleParseCodeExecution":             {1, "convert-to-google-messages.ts:576 / 644 codeExecutionInput/OutputSchema.parse of the prompt's tool input / output value (no JSON parse)"},
 }
 
 // TestR96integNetworkDecodesRejectForbiddenPrototype is the class guard for
