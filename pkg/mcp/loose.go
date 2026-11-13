@@ -117,12 +117,49 @@ func encodeLooseExtra(extra map[string]interface{}) string {
 	return string(b)
 }
 
+// looseExtraRaw is encodeLooseExtra(decodeLooseExtra(data, known)) on the
+// server's own JSON text: the undeclared members are kept as sent, so a
+// value that does not survive a Go re-encode (a number beyond the double
+// range, which JSON.parse reads as Infinity) is still there for Extra().
+func looseExtraRaw(data []byte, known interface{}) string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return ""
+	}
+	names := jsonFieldNames(reflect.TypeOf(known))
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		if !names[k] {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		kb, _ := jsonstr.Marshal(k)
+		buf.Write(kb)
+		buf.WriteByte(':')
+		if json.Compact(&buf, raw[k]) != nil {
+			return ""
+		}
+	}
+	buf.WriteByte('}')
+	return buf.String()
+}
+
 func decodeLooseExtraJSON(s string) map[string]interface{} {
 	if s == "" {
 		return nil
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(s), &m); err != nil {
+	if err := jsonexact.Unmarshal([]byte(s), &m); err != nil {
 		return nil
 	}
 	return m

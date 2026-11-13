@@ -71,3 +71,16 @@ func TestR96toolsLooseExtraKeysKeepHTMLLiteral(t *testing.T) {
 		t.Fatalf("loose = %s, want %s", out, want)
 	}
 }
+
+// The undeclared keys of a loose capability are kept as the server sent
+// them: a member Go cannot re-encode (TS JSON.parse reads 1e400 as
+// Infinity) no longer drops every extra key.
+func TestR96toolsLooseCapabilityExtrasKeptRaw(t *testing.T) {
+	var caps ServerCapabilities
+	if err := unmarshalSafeJSON([]byte(`{"tools":{"listChanged":true,"x-a":"<b>","x-n":1e400}}`), &caps); err != nil {
+		t.Fatal(err)
+	}
+	if caps.Tools == nil || caps.Tools.extraJSON != `{"x-a":"<b>","x-n":1e400}` {
+		t.Fatalf("tools extras = %#v", caps.Tools)
+	}
+}
