@@ -32,3 +32,18 @@ func TestR97provbMaiImageFractionalTokenMetadata(t *testing.T) {
 		t.Fatalf("usage = %#v", result.Usage)
 	}
 }
+
+// TestR97provbImageOptionsNullInvalid: TS azureImageModelOptions keys are
+// z.enum / z.boolean().optional(), not nullish, so a present null throws
+// "invalid azure provider options" (Go skipped it like an absent key).
+func TestR97provbImageOptionsNullInvalid(t *testing.T) {
+	for _, key := range []string{"api", "autoAspectRatio", "webGrounding"} {
+		_, err := parseAzureImageProviderOptions(map[string]interface{}{"azure": map[string]interface{}{key: nil}})
+		if err == nil {
+			t.Errorf("%s: null accepted, want invalid azure provider options", key)
+		}
+	}
+	if _, err := parseAzureImageProviderOptions(map[string]interface{}{"azure": map[string]interface{}{"other": nil}}); err != nil {
+		t.Errorf("an undeclared key is stripped (non-strict object): %v", err)
+	}
+}

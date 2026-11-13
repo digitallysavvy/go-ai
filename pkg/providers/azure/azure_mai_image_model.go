@@ -63,6 +63,7 @@ type AzureImageModelOptions struct {
 
 // parseAzureImageProviderOptions parses providerOptions["azure"] for
 // azure.Image, mirroring TS azureImageModelOptions (a non-strict object).
+// Each key is `.optional()`, not nullish: a present null is invalid.
 func parseAzureImageProviderOptions(providerOptions map[string]interface{}) (AzureImageModelOptions, error) {
 	var result AzureImageModelOptions
 	raw, ok := providerOptions["azure"]
@@ -73,7 +74,7 @@ func parseAzureImageProviderOptions(providerOptions map[string]interface{}) (Azu
 	if !ok {
 		return result, invalidAzureOption("providerOptions.azure", "must be an object")
 	}
-	if v, ok := m["api"]; ok && v != nil {
+	if v, ok := m["api"]; ok {
 		s, ok := v.(string)
 		if !ok || (s != "openai" && s != "mai") {
 			return result, invalidAzureOption("providerOptions.azure.api", `must be "openai" or "mai"`)
@@ -82,7 +83,7 @@ func parseAzureImageProviderOptions(providerOptions map[string]interface{}) (Azu
 	}
 	for _, key := range []string{"autoAspectRatio", "webGrounding"} {
 		v, ok := m[key]
-		if !ok || v == nil {
+		if !ok {
 			continue
 		}
 		b, ok := v.(bool)
