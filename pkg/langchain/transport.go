@@ -17,9 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 

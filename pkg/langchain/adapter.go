@@ -13,10 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )

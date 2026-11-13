@@ -6,9 +6,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-
 	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )

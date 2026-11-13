@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -369,7 +369,7 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 		var syntaxErr *json.SyntaxError
 		var unmarshalTypeErr *json.UnmarshalTypeError
 		switch {
-		case errors.As(err, &syntaxErr), errors.As(err, &unmarshalTypeErr), errors.Is(err, io.ErrUnexpectedEOF):
+		case errors.As(err, &syntaxErr), errors.As(err, &unmarshalTypeErr), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, securejson.ErrForbiddenPrototype):
 			message = "No object generated: could not parse the response."
 			// TS: the cause (and the error repairText gets) is a
 			// JSONParseError; the parser error stays reachable through
@@ -588,7 +588,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 	switch mode {
 	case ObjectModeObject:
 		var obj interface{}
-		if err := jsonexact.Unmarshal([]byte(text), &obj); err != nil {
+		if err := securejson.Unmarshal([]byte(text), &obj); err != nil {
 			return nil, nil, "", err
 		}
 		obj = schema.ApplyDefaults(obj, s)
@@ -598,7 +598,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		return obj, nil, "", nil
 	case ObjectModeArray:
 		var root interface{}
-		if err := jsonexact.Unmarshal([]byte(text), &root); err != nil {
+		if err := securejson.Unmarshal([]byte(text), &root); err != nil {
 			return nil, nil, "", err
 		}
 		// Mirrors TS arrayOutputStrategy.validateFinalResult: the value must
@@ -619,7 +619,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		return resultArray, resultArray, "", nil
 	case ObjectModeEnum:
 		var root interface{}
-		if err := jsonexact.Unmarshal([]byte(text), &root); err != nil {
+		if err := securejson.Unmarshal([]byte(text), &root); err != nil {
 			return nil, nil, "", err
 		}
 		// Mirrors TS enumOutputStrategy.validateFinalResult.
@@ -636,7 +636,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		return nil, nil, "", objectTypeValidationError(root, "value must be a string in the enum", nil)
 	case ObjectModeNoSchema:
 		var obj interface{}
-		if err := jsonexact.Unmarshal([]byte(text), &obj); err != nil {
+		if err := securejson.Unmarshal([]byte(text), &obj); err != nil {
 			return nil, nil, "", err
 		}
 		return obj, nil, "", nil

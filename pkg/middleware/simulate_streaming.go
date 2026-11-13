@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
