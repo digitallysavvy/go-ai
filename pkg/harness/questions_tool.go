@@ -248,6 +248,15 @@ func ParseQuestionsToolOutput(data []byte) (*QuestionsToolOutput, error) {
 			if v, ok := raw["optionIds"]; answer.OptionIDs == nil || !ok || string(v) == "null" {
 				return nil, fmt.Errorf("invalid askUserQuestions output: answer %q requires optionIds", id)
 			}
+			// z.array(z.string()): a null element fails (encoding/json
+			// leaves it "").
+			var ids []json.RawMessage
+			_ = json.Unmarshal(raw["optionIds"], &ids)
+			for _, v := range ids {
+				if string(v) == "null" {
+					return nil, fmt.Errorf("invalid askUserQuestions output: answer %q optionIds must be strings", id)
+				}
+			}
 			if v, ok := raw["freeform"]; ok && string(v) == "null" {
 				return nil, fmt.Errorf("invalid askUserQuestions output: answer %q freeform must not be null", id)
 			}
@@ -327,7 +336,7 @@ func QuestionsToolOutputJSONSchema() map[string]any {
 			"type": "object",
 			"properties": map[string]any{
 				"action":  map[string]any{"type": "string", "const": action},
-				"answers": map[string]any{"type": "object", "additionalProperties": answer},
+				"answers": map[string]any{"type": "object", "propertyNames": map[string]any{"type": "string"}, "additionalProperties": answer},
 			},
 			"required":             []any{"action", "answers"},
 			"additionalProperties": false,
