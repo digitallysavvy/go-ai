@@ -3,6 +3,7 @@ package providerutils
 import (
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -195,12 +196,14 @@ var (
 		))),
 		fl("object", zLit("chat.completion")),
 		// mistralUsageSchema is required in the response (nullish only in chunks).
-		fl("usage", zObj(
+		// .catchall(z.json()): an extra key holding a non-finite number
+		// fails (ruling 4).
+		fl("usage", zodlite.ObjectCatchall(zodlite.JSON,
 			fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum),
 			fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
 			fl("prompt_tokens_details", zNullish(zMistralDetails)),
 			fl("prompt_token_details", zNullish(zMistralDetails)),
-			fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
+			fl("completion_tokens_details", zNullish(zodlite.ObjectCatchall(zodlite.JSON, fl("reasoning_tokens", nNum)))),
 		)),
 	)
 
@@ -503,12 +506,12 @@ var (
 
 	// mistralConversationUsageSchema: mistralUsageSchema with the three token
 	// counts defaulting to 0.
-	zMistralConversationUsage = zObj(
+	zMistralConversationUsage = zodlite.ObjectCatchall(zodlite.JSON,
 		fl("prompt_tokens", zOptional(zNum)), fl("completion_tokens", zOptional(zNum)), fl("total_tokens", zOptional(zNum)),
 		fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
 		fl("prompt_tokens_details", zNullish(zMistralDetails)),
 		fl("prompt_token_details", zNullish(zMistralDetails)),
-		fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
+		fl("completion_tokens_details", zNullish(zodlite.ObjectCatchall(zodlite.JSON, fl("reasoning_tokens", nNum)))),
 	)
 
 	// mistralConversationResponseSchema.
@@ -516,9 +519,9 @@ var (
 		fl("conversation_id", zStr),
 		fl("outputs", zArr(zDiscType(map[string]zNode{
 			"tool.execution": zObj(fl("type", zLit("tool.execution")), fl("id", zStr), fl("name", zStr), fl("arguments", zStr),
-				fl("function", nStr), fl("info", zNullish(zRec(zAny)))),
+				fl("function", nStr), fl("info", zNullish(zRec(zodlite.JSON)))),
 			"function.call": zObj(fl("type", zLit("function.call")), fl("tool_call_id", zStr), fl("name", zStr),
-				fl("arguments", zUnionOf(zStr, zRec(zAny)))),
+				fl("arguments", zUnionOf(zStr, zRec(zodlite.JSON)))),
 			"message.output": zObj(fl("type", zLit("message.output")),
 				fl("content", zUnionOf(zStr, zArr(zMistralConversationContent))), fl("model", nStr)),
 		}))),

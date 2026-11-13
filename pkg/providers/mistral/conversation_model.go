@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -550,6 +551,16 @@ func (s *conversationStream) handle(data string) {
 		msg, perr := providerutils.ChunkParseFailure(data, fmt.Errorf("%s: Invalid input for %s event", field, ev.Type))
 		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 		return
+	}
+	// tool.execution.done info is z.record(z.string(), z.json()).nullish():
+	// a non-finite number in it (1e400, ruling 4) fails the event.
+	if ev.Type == "tool.execution.done" && ev.Info != nil {
+		if bad := zodlite.RecordOf(zodlite.JSON)(ev.Info, true, []interface{}{"info"}); bad != nil {
+			s.hasError = true
+			msg, perr := providerutils.ChunkParseFailure(data, bad)
+			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
+			return
+		}
 	}
 	switch ev.Type {
 	case "conversation.response.started":

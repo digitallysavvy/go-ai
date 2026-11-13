@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -293,8 +294,10 @@ func (e *mistralRealtimeEvent) validate(raw map[string]interface{}) error {
 				}
 			}
 		}
+		// usage: z.record(z.string(), z.json()).nullish(); a non-finite
+		// number in it (1e400, ruling 4) fails like zod.
 		if v, present := raw["usage"]; present && v != nil {
-			if _, ok := v.(map[string]interface{}); !ok {
+			if zodlite.RecordOf(zodlite.JSON)(v, true, nil) != nil {
 				return invalid("usage")
 			}
 		}
