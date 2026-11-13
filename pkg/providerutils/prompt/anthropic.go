@@ -1485,7 +1485,13 @@ func (c *anthropicConverter) convertToolResultContentBlock(block types.ToolResul
 	case types.CustomContentBlock:
 		opts := anthropicOptions(b.ProviderOptions)
 		if opts["type"] == "tool-reference" {
-			return map[string]interface{}{"type": "tool_reference", "tool_name": opts["toolName"]}, nil
+			// TS tool_name: anthropicOptions.toolName! -- an absent (or null)
+			// toolName is undefined, which JSON.stringify leaves out.
+			ref := map[string]interface{}{"type": "tool_reference"}
+			if name, ok := opts["toolName"]; ok && name != nil {
+				ref["tool_name"] = name
+			}
+			return ref, nil
 		}
 		c.warn("unsupported custom tool content part")
 		return nil, nil
