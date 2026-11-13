@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"golang.org/x/net/websocket"
 )
 
@@ -130,5 +131,42 @@ func TestR96provbFilesExpiresAfterInfinity(t *testing.T) {
 	}
 	if _, err := parseOpenAIFilesOptions(map[string]interface{}{"openai": map[string]interface{}{"expiresAfter": 3600.0}}); err != nil {
 		t.Errorf("expiresAfter 3600: %v", err)
+	}
+}
+
+// TestR96provbResponsesEmptyReasoningOptions: reasoningEffort and
+// reasoningSummary are z.string() Responses options, so a present "" is
+// sent (TS resolvedReasoningEffort / resolvedReasoningSummary `!= null`):
+// effort "" also defaults the summary to "detailed", and a non-reasoning
+// model warns for each.
+func TestR96provbResponsesEmptyReasoningOptions(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "o3")
+	body, _, err := m.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningEffort": ""}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := body["reasoning"].(map[string]interface{}); r == nil || r["effort"] != "" || r["summary"] != "detailed" {
+		t.Errorf("effort \"\": reasoning = %#v, want {effort: \"\", summary: detailed}", body["reasoning"])
+	}
+	body, _, err = m.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningSummary": ""}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := body["reasoning"].(map[string]interface{}); r == nil || r["summary"] != "" {
+		t.Errorf("summary \"\": reasoning = %#v, want {summary: \"\"}", body["reasoning"])
+	}
+	_, _, warnings, err := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-4o").buildRequest(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningEffort": "", "reasoningSummary": ""}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, w := range warnings {
+		got[w.Feature] = true
+	}
+	if !got["reasoningEffort"] || !got["reasoningSummary"] {
+		t.Errorf("non-reasoning model warnings = %+v, want reasoningEffort and reasoningSummary", warnings)
 	}
 }

@@ -367,6 +367,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// TS sends these string options as given (`openaiOptions?.x`), so a
 	// present "" is sent and counts as set (`!= null`).
 	var conversationSet, previousResponseIDSet, promptCacheKeySet, userSet, instructionsSet, safetyIdentifierSet bool
+	// reasoningEffortSet / reasoningSummaryString: reasoningEffort and
+	// reasoningSummary are z.string() options, so a present "" is sent
+	// (TS `!= null`).
+	var reasoningEffortSet, reasoningSummaryString bool
 
 	if opts.ProviderOptions != nil {
 		var ok bool
@@ -418,7 +422,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				promptCacheKey, promptCacheKeySet = v, true
 			}
 			if v, ok := openaiOpts["reasoningEffort"].(string); ok {
-				reasoningEffort = v
+				reasoningEffort, reasoningEffortSet = v, true
 			}
 			if v, ok := openaiOpts["reasoningEffortUpdate"].(string); ok {
 				// TS validates reasoningEffortUpdate against a fixed schema
@@ -446,7 +450,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			if v, ok := openaiOpts["reasoningSummary"]; ok {
 				reasoningSummarySet = true
 				if summary, ok := v.(string); ok {
-					reasoningSummary = summary
+					reasoningSummary, reasoningSummaryString = summary, true
 				}
 			}
 			if v, ok := openaiOpts["strictJsonSchema"].(bool); ok {
@@ -564,10 +568,13 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// a "compatibility" warning when the effort sent differs.
 	reasoningEffortOption := reasoningEffort
 	var providerReasoningEffort *string
-	if reasoningEffortOption != "" {
+	if reasoningEffortSet {
 		providerReasoningEffort = &reasoningEffortOption
 	}
 	reasoningEffort = resolveOpenAIReasoningEffort(providerReasoningEffort, opts.Reasoning, modelCapabilities.SupportedReasoningEfforts, &warnings)
+	// TS resolvedReasoningEffort != null: a provider option ("" included)
+	// or a mapped top-level reasoning value.
+	effortResolved := reasoningEffortSet || reasoningEffort != ""
 	// TS reports this after the reasoningEffort check above.
 	if conversation != "" && previousResponseID != "" {
 		warnings = append(warnings, types.Warning{
@@ -762,16 +769,19 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	effort := reasoningEffort
+	// TS resolvedReasoningSummary: the option when present (null included),
+	// else "detailed" for a resolved effort other than none.
 	resolvedReasoningSummary := reasoningSummary
-	if !reasoningSummarySet && resolvedReasoningSummary == "" && effort != "" && effort != "none" {
-		resolvedReasoningSummary = "detailed"
+	summaryResolved := reasoningSummaryString
+	if !reasoningSummarySet && effortResolved && effort != "none" {
+		resolvedReasoningSummary, summaryResolved = "detailed", true
 	}
-	if isReasoning && (effort != "" || resolvedReasoningSummary != "" || reasoningMode != "" || reasoningContext != "") {
+	if isReasoning && (effortResolved || summaryResolved || reasoningMode != "" || reasoningContext != "") {
 		reasoning := map[string]interface{}{}
-		if effort != "" {
+		if effortResolved {
 			reasoning["effort"] = effort
 		}
-		if resolvedReasoningSummary != "" {
+		if summaryResolved {
 			reasoning["summary"] = resolvedReasoningSummary
 		}
 		// Row b2b1bb9 (Responses half): GPT-5.6 reasoningMode ("standard"/
@@ -817,14 +827,14 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 	}
 	if !isReasoning {
-		if reasoningEffortOption != "" {
+		if reasoningEffortSet {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoningEffort",
 				Details: "reasoningEffort is not supported for non-reasoning models",
 			})
 		}
-		if reasoningSummary != "" {
+		if reasoningSummaryString {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoningSummary",
