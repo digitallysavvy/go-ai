@@ -5,11 +5,13 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TS WorkflowChatTransport reads frames with parseJsonEventStream
@@ -86,5 +88,33 @@ func TestR97carryToUIMessageChunkMetadataInfinity(t *testing.T) {
 	p, _ := md["p"].(map[string]interface{})
 	if n, _ := p["n"].(float64); !math.IsInf(n, 1) {
 		t.Fatalf("providerMetadata = %v, want p.n = +Inf", c["providerMetadata"])
+	}
+}
+
+// OnAbort steps carry the deprecated ResponseMessages alias like the run's
+// own step results (agent step loop sets it to Response.Messages).
+func TestR97carryOnAbortStepsKeepResponseMessagesAlias(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var steps []types.StepResult
+	a, err := NewWorkflowAgent(WorkflowAgent{
+		Model: &r96carryAbortModel{},
+		Tools: []types.Tool{{Name: "t1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			cancel()
+			return "done", nil
+		}}},
+		OnAbort: func(_ context.Context, s []types.StepResult) { mu.Lock(); steps = s; mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.GenerateWithOptions(ctx, WorkflowGenerateOptions{Prompt: "p"}); err == nil {
+		t.Fatal("want an abort error")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(steps) != 1 || len(steps[0].Response.Messages) == 0 || len(steps[0].ResponseMessages) != len(steps[0].Response.Messages) { //nolint:staticcheck // the deprecated alias under test
+		t.Fatalf("steps = %+v", steps)
 	}
 }

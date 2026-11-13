@@ -2844,6 +2844,9 @@ func stepResultFromFinishEvent(e ai.OnStepFinishEvent) types.StepResult {
 			ID: e.Response.ID, Timestamp: e.Response.Timestamp, ModelID: e.Response.ModelID,
 			Headers: e.Response.Headers, Messages: e.Response.Messages, Body: e.Response.Body,
 		},
+		// The deprecated alias the run's own step results carry
+		// (agent step loop: ResponseMessages = Response.Messages).
+		ResponseMessages: e.Response.Messages,
 		ProviderMetadata: e.ProviderMetadata,
 		ToolsContext:     e.ToolsContext,
 		RuntimeContext:   e.RuntimeContext,
