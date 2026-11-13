@@ -122,3 +122,20 @@ func TestR97provbCompletionUsageRaw(t *testing.T) {
 		}
 	}
 }
+
+// TestR97provbLiveServerEventInfinity: the OpenAI Live server event schemas
+// use z.number() (nonnegative), which rejects Infinity; a number beyond the
+// double range reads as +Inf (main ruling 4), so the event is the
+// invalid_server_event error (Go accepted it).
+func TestR97provbLiveServerEventInfinity(t *testing.T) {
+	for _, frame := range []string{
+		`{"type":"session.usage.updated","usage":{"seconds":1e400}}`,
+		`{"type":"session.output_transcript.delta","delta":"x","start_ms":0,"end_ms":1e400}`,
+		`{"type":"session.delegation.created","delegation":{"id":"d"},"offset_ms":1e400}`,
+	} {
+		events := parseOpenAILiveServerEvent([]byte(frame))
+		if len(events) != 1 || events[0].Type != "error" || events[0].Code != "invalid_server_event" {
+			t.Errorf("%s: events = %+v, want invalid_server_event", frame, events)
+		}
+	}
+}
