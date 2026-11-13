@@ -90,9 +90,8 @@ func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]int
 		}
 		var out vertexGeminiTranscriptionOptions
 		strList := func(name string) ([]string, error) {
-			// z.array(...).optional(): an explicit null fails.
 			v, has := raw[name]
-			if !has {
+			if !has || v == nil {
 				return nil, nil
 			}
 			switch list := v.(type) {
@@ -120,7 +119,7 @@ func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]int
 		}
 		for _, name := range []string{"wordTimestamp", "diarization"} {
 			v, has := raw[name]
-			if !has {
+			if !has || v == nil {
 				continue
 			}
 			b, isBool := v.(bool)
@@ -133,7 +132,7 @@ func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]int
 				out.Diarization = &b
 			}
 		}
-		if v, has := raw["mode"]; has {
+		if v, has := raw["mode"]; has && v != nil {
 			mode, isStr := v.(string)
 			if !isStr || (mode != "SMART" && mode != "VERBATIM") {
 				return out, invalid(key, fmt.Errorf("mode: invalid option %v, expected one of SMART, VERBATIM", v))

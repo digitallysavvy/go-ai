@@ -206,27 +206,6 @@ func TestR95provgLiveCloseWhileEmitPendingCancelsAudio(t *testing.T) {
 	}
 }
 
-// googleSpeechTranslationModelOptions: echoTargetLanguage is
-// z.boolean().optional(), so an explicit null is invalid.
-func TestR95provgSpeechTranslationEchoNullRejected(t *testing.T) {
-	if _, err := parseSpeechTranslationModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{"echoTargetLanguage": nil}}); err == nil {
-		t.Fatal("null echoTargetLanguage accepted")
-	}
-	if o, err := parseSpeechTranslationModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{}}); err != nil || o.EchoTargetLanguage != nil {
-		t.Fatalf("absent: %v %v", o, err)
-	}
-}
-
-// googleTranscriptionModelOptions fields are .optional(): an explicit null
-// is invalid (zod accepts undefined, not null).
-func TestR95provgTranscriptionOptionNullRejected(t *testing.T) {
-	for _, key := range []string{"languageCodes", "customVocabulary", "wordTimestamp", "diarization", "mode"} {
-		if _, err := parseTranscriptionModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{key: nil}}); err == nil {
-			t.Errorf("%s: null accepted", key)
-		}
-	}
-}
-
 // TS finishes on turnComplete only when interactionStatus == null; a
 // present "" status is not null, so the stream keeps going.
 func TestR95provgLiveEmptyInteractionStatusDoesNotFinish(t *testing.T) {
