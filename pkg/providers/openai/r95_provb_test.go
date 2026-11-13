@@ -207,3 +207,22 @@ func TestR95provbResponsesEmptyIncompleteReason(t *testing.T) {
 		t.Errorf("batch = %+v", berr)
 	}
 }
+
+// TestR95provbResponsesEmptyStringOptionsSent: TS getArgs sends
+// conversation, previous_response_id, user, instructions, prompt_cache_key
+// and safety_identifier as given (z.string().nullish()), so a present ""
+// is sent; Go dropped it.
+func TestR95provbResponsesEmptyStringOptionsSent(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-4o")
+	body, _, _, err := m.buildRequest(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{
+		"conversation": "", "previousResponseId": "", "user": "", "instructions": "", "promptCacheKey": "", "safetyIdentifier": "",
+	}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"conversation", "previous_response_id", "user", "instructions", "prompt_cache_key", "safety_identifier"} {
+		if v, ok := body[k]; !ok || v != "" {
+			t.Errorf("%s = %#v (present %v), want \"\"", k, v, ok)
+		}
+	}
+}

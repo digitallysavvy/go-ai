@@ -364,6 +364,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	var allowedToolsMode string
 	providerOptionsName := m.provider.responsesProviderOptionsName()
 	var openaiOpts map[string]interface{}
+	// TS sends these string options as given (`openaiOptions?.x`), so a
+	// present "" is sent and counts as set (`!= null`).
+	var conversationSet, previousResponseIDSet, promptCacheKeySet, userSet, instructionsSet, safetyIdentifierSet bool
 
 	if opts.ProviderOptions != nil {
 		var ok bool
@@ -377,10 +380,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				storeExplicit = true
 			}
 			if v, ok := openaiOpts["conversation"].(string); ok {
-				conversation = v
+				conversation, conversationSet = v, true
 			}
 			if v, ok := openaiOpts["previousResponseId"].(string); ok {
-				previousResponseID = v
+				previousResponseID, previousResponseIDSet = v, true
 			}
 			if v, ok := openaiOpts["promptCacheRetention"].(string); ok {
 				promptCacheRetention = v
@@ -412,7 +415,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				requestTextFormat = parsed
 			}
 			if v, ok := openaiOpts["promptCacheKey"].(string); ok {
-				promptCacheKey = v
+				promptCacheKey, promptCacheKeySet = v, true
 			}
 			if v, ok := openaiOpts["reasoningEffort"].(string); ok {
 				reasoningEffort = v
@@ -456,13 +459,13 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				serviceTier = v
 			}
 			if v, ok := openaiOpts["user"].(string); ok {
-				user = v
+				user, userSet = v, true
 			}
 			if v, ok := openaiOpts["instructions"].(string); ok {
-				instructions = v
+				instructions, instructionsSet = v, true
 			}
 			if v, ok := openaiOpts["safetyIdentifier"].(string); ok {
-				safetyIdentifier = v
+				safetyIdentifier, safetyIdentifierSet = v, true
 			}
 			if v, ok := openaiOpts["passThroughUnsupportedFiles"].(bool); ok {
 				passThroughUnsupportedFiles = v
@@ -604,8 +607,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// Convert prompt to Responses API input format.
 	input, inputWarnings, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
 		PassThroughUnsupportedFiles:          passThroughUnsupportedFiles,
-		HasPreviousResponseID:                previousResponseID != "",
-		HasConversation:                      conversation != "",
+		HasPreviousResponseID:                previousResponseIDSet,
+		HasConversation:                      conversationSet,
 		Store:                                store,
 		CustomToolNames:                      customToolNames(opts.Tools),
 		HasLocalShellTool:                    hasTool(opts.Tools, "openai.local_shell"),
@@ -974,7 +977,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	// Provider options fields.
-	if conversation != "" {
+	if conversationSet {
 		body["conversation"] = conversation
 	} else if hasNilProviderOption(openaiOpts, "conversation") {
 		body["conversation"] = nil
@@ -987,7 +990,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	} else if hasNilProviderOption(openaiOpts, "store") {
 		body["store"] = nil
 	}
-	if previousResponseID != "" {
+	if previousResponseIDSet {
 		body["previous_response_id"] = previousResponseID
 	} else if hasNilProviderOption(openaiOpts, "previousResponseId") {
 		body["previous_response_id"] = nil
@@ -1000,7 +1003,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	} else if hasNilProviderOption(openaiOpts, "promptCacheRetention") {
 		body["prompt_cache_retention"] = nil
 	}
-	if promptCacheKey != "" {
+	if promptCacheKeySet {
 		body["prompt_cache_key"] = promptCacheKey
 	} else if hasNilProviderOption(openaiOpts, "promptCacheKey") {
 		body["prompt_cache_key"] = nil
@@ -1038,17 +1041,17 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	} else if hasNilProviderOption(openaiOpts, "serviceTier") {
 		body["service_tier"] = nil
 	}
-	if user != "" {
+	if userSet {
 		body["user"] = user
 	} else if hasNilProviderOption(openaiOpts, "user") {
 		body["user"] = nil
 	}
-	if instructions != "" {
+	if instructionsSet {
 		body["instructions"] = instructions
 	} else if hasNilProviderOption(openaiOpts, "instructions") {
 		body["instructions"] = nil
 	}
-	if safetyIdentifier != "" {
+	if safetyIdentifierSet {
 		body["safety_identifier"] = safetyIdentifier
 	} else if hasNilProviderOption(openaiOpts, "safetyIdentifier") {
 		body["safety_identifier"] = nil
