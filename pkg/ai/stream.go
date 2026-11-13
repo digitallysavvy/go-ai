@@ -3778,12 +3778,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.mu.Unlock()
 		// Decode provider metadata for this step: the finish chunk's only,
 		// so a step without any does not report an earlier chunk's or step's.
+		// The provider's own decode checked it; TS keeps the object as is,
+		// so this decode and the ones below keep a __proto__ key
+		// (UnmarshalPlain).
 		r.mu.Lock()
 		r.providerMetadata = stepProviderMetadataRaw
 		r.mu.Unlock()
 		var stepProviderMeta map[string]interface{}
 		if len(stepProviderMetadataRaw) > 0 {
-			_ = jsonexact.Unmarshal(stepProviderMetadataRaw, &stepProviderMeta)
+			_ = jsonexact.UnmarshalPlain(stepProviderMetadataRaw, &stepProviderMeta)
 		}
 
 		// Build reasoning content from deltas accumulated during this step.
@@ -3947,7 +3950,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			stepResult.ProviderMetadata = nil
 			if len(fs.ProviderMetadata) > 0 {
 				var meta map[string]interface{}
-				if jsonexact.Unmarshal(fs.ProviderMetadata, &meta) == nil {
+				if jsonexact.UnmarshalPlain(fs.ProviderMetadata, &meta) == nil {
 					stepResult.ProviderMetadata = meta
 				}
 			}
@@ -4753,7 +4756,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	var streamProviderMeta map[string]interface{}
 	if len(r.providerMetadata) > 0 {
-		_ = jsonexact.Unmarshal(r.providerMetadata, &streamProviderMeta)
+		_ = jsonexact.UnmarshalPlain(r.providerMetadata, &streamProviderMeta)
 	}
 	r.mu.Unlock()
 	endProvider, endModelID := finalStepModel(allSteps, r.cbModelProvider, r.cbModelID)
@@ -4821,7 +4824,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	r.mu.Lock()
 	var finalProviderMeta map[string]interface{}
 	if len(r.providerMetadata) > 0 {
-		_ = jsonexact.Unmarshal(r.providerMetadata, &finalProviderMeta)
+		_ = jsonexact.UnmarshalPlain(r.providerMetadata, &finalProviderMeta)
 	}
 	r.mu.Unlock()
 
@@ -5919,7 +5922,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	readAllFiles := r.files
 	var readAllProviderMeta map[string]interface{}
 	if len(r.providerMetadata) > 0 {
-		_ = jsonexact.Unmarshal(r.providerMetadata, &readAllProviderMeta)
+		_ = jsonexact.UnmarshalPlain(r.providerMetadata, &readAllProviderMeta)
 	}
 	r.mu.Unlock()
 	endProvider, endModelID := finalStepModel([]types.StepResult{step}, r.cbModelProvider, r.cbModelID)
