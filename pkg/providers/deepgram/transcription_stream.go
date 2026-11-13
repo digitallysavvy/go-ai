@@ -427,7 +427,7 @@ func (s *deepgramTranscriptionStream) run(cfg deepgramStreamConfig) {
 func (s *deepgramTranscriptionStream) handleEvent(text string, cfg deepgramStreamConfig, duration, reportedDuration **float64, language *string, finalTexts *[]deepgramFinalText, segments *[]provider.TranscriptSegment) (bool, error) {
 	text = textdecode.UTF8([]byte(text))
 	var raw interface{}
-	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(text), &raw); err != nil {
 		return false, &providererrors.JSONParseError{Text: text, Cause: err}
 	}
 	if err := deepgramValidate(deepgramEventTypeNode, text, raw); err != nil {

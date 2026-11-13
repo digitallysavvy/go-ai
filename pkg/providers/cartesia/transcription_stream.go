@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -494,7 +495,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 			// TS safeParseJSON then a cast: any parsed JSON value is used as
 			// is, so a field of another type does not drop the event.
 			var parsed interface{}
-			if jsonErr := json.Unmarshal([]byte(res.Text), &parsed); jsonErr != nil {
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &parsed); jsonErr != nil {
 				continue
 			}
 

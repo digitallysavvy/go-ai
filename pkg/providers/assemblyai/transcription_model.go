@@ -16,6 +16,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // docsURL is linked from deprecation/nudge warnings about model selection.
@@ -454,7 +455,7 @@ func orderedTranscriptBody(body map[string]interface{}) *jsonorder.Object {
 // convertResponse maps a raw completed transcript response into a
 // TranscriptionResult, mirroring AssemblyAITranscriptionModel.doGenerate.
 func (m *TranscriptionModel) convertResponse(raw map[string]interface{}, currentDate time.Time, headers http.Header, warnings []types.Warning) *types.TranscriptionResult {
-	b, _ := json.Marshal(raw)
+	b, _ := jsonstr.Marshal(raw) // a provider ±Inf writes null (JSON.stringify)
 	var transcript struct {
 		Text          string   `json:"text"`
 		LanguageCode  string   `json:"language_code"`

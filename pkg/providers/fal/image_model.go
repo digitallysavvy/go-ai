@@ -571,7 +571,7 @@ func (m *ImageModel) convertBody(ctx context.Context, raw []byte) (*types.ImageR
 			continue
 		}
 		var decoded interface{}
-		if json.Unmarshal(v, &decoded) == nil {
+		if jsonexact.Unmarshal(v, &decoded) == nil {
 			falMeta[k] = stripFalNested(k, decoded)
 		}
 	}

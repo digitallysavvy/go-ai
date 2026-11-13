@@ -305,7 +305,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	var rawValue interface{}
-	_ = json.Unmarshal(rawBody, &rawValue)
+	_ = jsonexact.Unmarshal(rawBody, &rawValue)
 
 	return &types.TranscriptionResult{
 		Text:              result.Text,

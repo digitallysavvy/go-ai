@@ -1,9 +1,9 @@
 package typesafeai
 
 import (
-	"encoding/json"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -35,7 +35,7 @@ var typesafeResponseNode = func() zodlite.Node {
 // APICallError "Invalid JSON response".
 func validateDecisionResponse(statusCode int, headers http.Header, body []byte) error {
 	var value interface{}
-	err := json.Unmarshal(body, &value)
+	err := jsonexact.Unmarshal(body, &value)
 	if err == nil {
 		if bad := typesafeResponseNode(value, true, nil); bad != nil {
 			err = bad

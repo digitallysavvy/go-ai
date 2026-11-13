@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -583,7 +584,7 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 			return nil, nil, err
 		}
 		var raw map[string]interface{}
-		if err := json.Unmarshal(result.Data, &raw); err != nil {
+		if err := jsonexact.Unmarshal(result.Data, &raw); err != nil {
 			return nil, nil, fmt.Errorf("gladia: failed to decode poll response: %w", err)
 		}
 		last = raw
@@ -713,7 +714,7 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 	if warnings == nil {
 		warnings = []types.Warning{}
 	}
-	b, _ := json.Marshal(raw)
+	b, _ := jsonstr.Marshal(raw) // a provider ±Inf writes null (JSON.stringify)
 	var typed struct {
 		Result *struct {
 			Metadata struct {
