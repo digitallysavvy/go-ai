@@ -144,14 +144,16 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
-		payloadType := ""
+		// TS `payloadType == null`: only a missing header skips the frame;
+		// an empty event or exception type is still a payload key.
+		payloadType, hasPayloadType := "", false
 		switch event.MessageType {
 		case "event":
-			payloadType = event.EventType
+			payloadType, hasPayloadType = event.EventType, event.HasEventType
 		case "exception":
-			payloadType = event.ExceptionType
+			payloadType, hasPayloadType = event.ExceptionType, event.HasExceptionType
 		}
-		if payloadType == "" {
+		if !hasPayloadType {
 			continue
 		}
 

@@ -64,8 +64,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if err != nil {
 		return nil, err
 	}
+	// TS postJsonToApi sets only Content-Type (no Accept; the "Accept
+	// header" known difference).
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 	requestHeaders := map[string]string{}
 	for k, v := range opts.Headers {
 		requestHeaders[k] = v

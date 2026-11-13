@@ -101,8 +101,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	req.URL = invokeURL
 	req.Host = invokeURL.Host
 
+	// TS postJsonToApi sets only Content-Type (no Accept; the "Accept
+	// header" known difference).
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 	requestHeaders := map[string]string{}
 	if opts != nil {
 		for k, v := range opts.Headers {

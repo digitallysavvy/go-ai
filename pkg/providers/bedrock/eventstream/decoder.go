@@ -33,6 +33,13 @@ type Event struct {
 	// when MessageType == "exception".
 	ExceptionType string
 
+	// HasEventType and HasExceptionType report whether the frame carried
+	// the ":event-type" / ":exception-type" header at all, so an empty
+	// value can be told from a missing header (TS reads the header value,
+	// and only a missing one is undefined).
+	HasEventType     bool
+	HasExceptionType bool
+
 	// Data is the raw message payload (JSON-encoded).
 	Data []byte
 }
@@ -147,11 +154,15 @@ func decodeFrame(frame []byte) (*Event, error) {
 	data := make([]byte, len(payload))
 	copy(data, payload)
 
+	eventType, hasEventType := headers[":event-type"]
+	exceptionType, hasExceptionType := headers[":exception-type"]
 	return &Event{
-		MessageType:   headers[":message-type"],
-		EventType:     headers[":event-type"],
-		ExceptionType: headers[":exception-type"],
-		Data:          data,
+		MessageType:      headers[":message-type"],
+		EventType:        eventType,
+		ExceptionType:    exceptionType,
+		HasEventType:     hasEventType,
+		HasExceptionType: hasExceptionType,
+		Data:             data,
 	}, nil
 }
 
