@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -122,5 +123,32 @@ func TestR95provbEmptyStopSequencesSent(t *testing.T) {
 	}
 	if stop, ok := body["stop"].([]string); !ok || len(stop) != 0 {
 		t.Fatalf("stop = %#v, want []", body["stop"])
+	}
+}
+
+// TestR95provbCompletionOutputOnAnyChoice: TS isOpenAICompletionOutputChunk
+// checks every choice, so text on a later choice ends the early-error peek
+// and a following error frame is an error part, not a failed call.
+func TestR95provbCompletionOutputOnAnyChoice(t *testing.T) {
+	s := newCompletionStream(io.NopCloser(strings.NewReader(`data: {"id":"c","created":1,"model":"m","choices":[{"text":"","index":0,"finish_reason":null},{"text":"hi","index":1,"finish_reason":null}]}
+
+data: {"error":{"message":"boom","type":"server_error","param":null,"code":null}}
+
+`)), false)
+	sawError := false
+	for {
+		c, err := s.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v (want an error part, not a failed call)", err)
+		}
+		if c.Type == provider.ChunkTypeError {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatal("no error part")
 	}
 }
