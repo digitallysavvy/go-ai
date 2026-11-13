@@ -857,7 +857,8 @@ func parseGladiaErrorBody(statusCode int, body []byte) (message string, code str
 		} `json:"error"`
 	}
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
-		payload.Error.Message != nil && payload.Error.Code != nil {
+		payload.Error.Message != nil && payload.Error.Code != nil &&
+		!math.IsInf(*payload.Error.Code, 0) && !math.IsNaN(*payload.Error.Code) { // z.number() rejects Infinity
 		return *payload.Error.Message, providerutils.JSNumberString(*payload.Error.Code)
 	}
 	return http.StatusText(statusCode), ""

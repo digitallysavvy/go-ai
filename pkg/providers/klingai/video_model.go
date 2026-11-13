@@ -374,7 +374,8 @@ func parseKlingAIErrorBody(statusCode int, headers http.Header, body []byte) err
 		Code    *float64 `json:"code"`
 		Message *string  `json:"message"`
 	}
-	if jsonErr := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil {
+	if jsonErr := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil &&
+		!math.IsInf(*envelope.Code, 0) && !math.IsNaN(*envelope.Code) { // z.number() rejects Infinity
 		e := NewError(int(*envelope.Code), *envelope.Message, "")
 		e.httpStatus, e.httpBody, e.httpHeaders = statusCode, body, providerutils.ExtractHeaders(headers)
 		return e

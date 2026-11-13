@@ -3,6 +3,7 @@ package fishaudio
 import (
 	"bytes"
 	"errors"
+	"math"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -47,7 +48,8 @@ func handleError(err error) error {
 		// TS APICallError.data: the schema output ({status?, message?},
 		// only the keys present) for a matching body, else undefined.
 		var data interface{}
-		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil && isJSONObject(statusErr.Body) {
+		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil && isJSONObject(statusErr.Body) &&
+			(payload.Status == nil || (!math.IsInf(*payload.Status, 0) && !math.IsNaN(*payload.Status))) { // z.number() rejects Infinity
 			if payload.Message != nil {
 				message = *payload.Message
 			} else {

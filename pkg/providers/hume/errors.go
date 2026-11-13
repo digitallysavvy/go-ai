@@ -3,6 +3,7 @@ package hume
 import (
 	"errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"math"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -49,7 +50,7 @@ func handleError(err error) error {
 func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
 	var payload humeErrorPayload
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
-		payload.Error.Message != nil && payload.Error.Code != nil {
+		payload.Error.Message != nil && payload.Error.Code != nil && !math.IsInf(*payload.Error.Code, 0) && !math.IsNaN(*payload.Error.Code) { // z.number() rejects Infinity
 		return *payload.Error.Message, providerutils.JSNumberString(*payload.Error.Code)
 	}
 	return http.StatusText(statusCode), ""
@@ -60,7 +61,7 @@ func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
 func humeErrorData(body []byte) interface{} {
 	var payload humeErrorPayload
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
-		payload.Error.Message != nil && payload.Error.Code != nil {
+		payload.Error.Message != nil && payload.Error.Code != nil && !math.IsInf(*payload.Error.Code, 0) && !math.IsNaN(*payload.Error.Code) { // z.number() rejects Infinity
 		return map[string]interface{}{"error": map[string]interface{}{"message": *payload.Error.Message, "code": *payload.Error.Code}}
 	}
 	return nil

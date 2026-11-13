@@ -2,6 +2,7 @@ package klingai
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -67,7 +68,7 @@ func klingaiErrorData(body []byte) interface{} {
 	}
 	code, okCode := obj["code"].(float64)
 	message, okMessage := obj["message"].(string)
-	if !okCode || !okMessage {
+	if !okCode || !okMessage || math.IsInf(code, 0) || math.IsNaN(code) { // z.number() rejects Infinity
 		return nil
 	}
 	return map[string]interface{}{"code": code, "message": message}
