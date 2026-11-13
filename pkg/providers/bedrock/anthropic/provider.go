@@ -190,7 +190,7 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 			return fmt.Sprintf("/model/%s/%s", encodeURIComponent(id), action)
 		},
 		TransformRequestBodyWithBetas: transformRequestBodyWithBetas,
-		TransformStreamBody:           transformEventStreamToSSE,
+		TransformStreamBody:           transformStreamBody,
 		TransformErrorBody:            transformErrorBody,
 	})
 
