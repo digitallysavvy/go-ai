@@ -2,11 +2,11 @@ package elevenlabs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -20,6 +20,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -41,6 +42,10 @@ const (
 
 // speechKeepaliveInterval is a variable so tests can shorten it.
 var speechKeepaliveInterval = defaultSpeechKeepaliveInterval
+
+// speechStreamWrapConn wraps the raw network connection; tests replace it to
+// fail socket writes.
+var speechStreamWrapConn = func(conn net.Conn) net.Conn { return conn }
 
 // countCodePoints counts Unicode code points, the unit ElevenLabs bills
 // text-to-speech in.
@@ -208,7 +213,7 @@ func newElevenLabsSpeechStream(parentCtx context.Context, cfg speechStreamConfig
 // producer (for example a reasoning model) would otherwise hit the server's
 // inactivity timeout. No keepalive follows the end of input.
 func (s *elevenLabsSpeechStream) send(conn *websocket.Conn, cfg speechStreamConfig, errCh chan<- error, message map[string]interface{}) error {
-	data, err := json.Marshal(message)
+	data, err := jsonstr.Marshal(message)
 	if err != nil {
 		return err
 	}
@@ -266,7 +271,8 @@ func (s *elevenLabsSpeechStream) run(cfg speechStreamConfig) {
 	}
 
 	closeInfo := &wsutil.CloseInfo{}
-	conn, err := wsutil.Dial(s.Context(), cfg.url.String(), wsutil.DialOptions{Headers: cfg.headers, WrapConn: closeInfo.Wrap})
+	wrap := func(c net.Conn) net.Conn { return closeInfo.Wrap(speechStreamWrapConn(c)) }
+	conn, err := wsutil.Dial(s.Context(), cfg.url.String(), wsutil.DialOptions{Headers: cfg.headers, WrapConn: wrap})
 	if err != nil {
 		fail(socketOpenError(s.Context(), err, "ElevenLabs speech stream error."))
 		return
@@ -288,7 +294,13 @@ func (s *elevenLabsSpeechStream) run(cfg speechStreamConfig) {
 			initMsg[k] = v
 		}
 	}
+	streamStart := provider.SpeechStreamPart{Type: provider.SpeechStreamPartTypeStreamStart, Warnings: cfg.warnings}
 	if err := s.send(conn, cfg, errCh, initMsg); err != nil {
+		// TS onOpen enqueues stream-start before it sends the init
+		// message, so a failed send errors the stream after that part.
+		if !s.Emit(streamStart) {
+			err = context.Cause(s.Context())
+		}
 		fail(err)
 		return
 	}
@@ -297,7 +309,7 @@ func (s *elevenLabsSpeechStream) run(cfg speechStreamConfig) {
 	msgCh := make(chan wsutil.Message)
 	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 
-	if !s.Emit(provider.SpeechStreamPart{Type: provider.SpeechStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(streamStart) {
 		fail(context.Cause(s.Context()))
 		return
 	}

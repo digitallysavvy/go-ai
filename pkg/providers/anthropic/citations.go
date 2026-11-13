@@ -7,6 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -100,7 +101,7 @@ func citationsProviderMetadata(citations []map[string]interface{}) json.RawMessa
 	for i, c := range citations {
 		stripped[i] = stripAnthropicCitation(c)
 	}
-	meta, err := json.Marshal(map[string]interface{}{
+	meta, err := jsonstr.Marshal(map[string]interface{}{
 		"anthropic": map[string]interface{}{"citations": stripped},
 	})
 	if err != nil {
@@ -203,7 +204,7 @@ func createCitationSource(citation map[string]interface{}, citationDocuments []c
 				"endCharIndex":   citation["end_char_index"],
 			}
 		}
-		meta, _ := json.Marshal(map[string]interface{}{"anthropic": anthMeta})
+		meta, _ := jsonstr.Marshal(map[string]interface{}{"anthropic": anthMeta})
 
 		return types.SourceContent{
 			SourceType:       "document",
@@ -271,7 +272,7 @@ func mapAnthropicCitations(citations []map[string]interface{}, documents []citat
 // other kind becomes a document source whose id is the file_id or the
 // document index. The full raw citation is kept under providerMetadata.anthropic.
 func mapAnthropicCitation(citation map[string]interface{}, documents []citationDocument) types.Citation {
-	meta, _ := json.Marshal(map[string]interface{}{"anthropic": stripAnthropicCitation(citation)})
+	meta, _ := jsonstr.Marshal(map[string]interface{}{"anthropic": stripAnthropicCitation(citation)})
 	citedText := citationString(citation, "cited_text")
 
 	switch citationType(citation) {

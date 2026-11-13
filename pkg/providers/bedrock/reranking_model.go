@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -103,7 +104,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		ranking[i] = types.RerankItem{Index: r.Index, RelevanceScore: r.RelevanceScore}
 	}
 	var raw interface{}
-	_ = json.Unmarshal(respBody, &raw)
+	_ = jsonexact.Unmarshal(respBody, &raw)
 	return &types.RerankResult{
 		Ranking: ranking,
 		Response: types.RerankResponse{

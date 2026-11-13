@@ -21,6 +21,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
@@ -292,7 +293,7 @@ func (m *LanguageModel) streamStartError(chunk *provider.StreamChunk, headers ht
 	data = streamErr.Data
 	pe := providererrors.NewProviderError(m.provider.Name(), status, "", chunk.Text, chunk.Err)
 	pe.ResponseHeaders = providerutils.ExtractHeaders(headers)
-	if b, err := json.Marshal(data); err == nil {
+	if b, err := jsonstr.Marshal(data); err == nil {
 		pe.ResponseBody = string(b)
 	}
 	pe.Data = data
@@ -787,13 +788,13 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				Dynamic:    true,
 			}
 			if call.providerMetadata != nil {
-				if meta, err := json.Marshal(call.providerMetadata); err == nil {
+				if meta, err := jsonstr.Marshal(call.providerMetadata); err == nil {
 					trc.ProviderMetadata = meta
 				}
 			}
 			var parsed interface{}
 			if len(content.Content) > 0 {
-				json.Unmarshal(content.Content, &parsed) //nolint:errcheck
+				jsonexact.Unmarshal(content.Content, &parsed) //nolint:errcheck
 			}
 			// TS: isError: part.is_error, result: part.content (both kept).
 			trc.IsError = content.IsError
@@ -1104,7 +1105,7 @@ func withCustomProviderKeyMetadata(meta map[string]interface{}, providerOptionsN
 
 func anthropicProviderMetadataRaw(usage anthropicUsage, stopSequence *string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, providerOptionsName string, usedCustomProviderKey bool, extras ...metadataExtras) json.RawMessage {
 	meta := withCustomProviderKeyMetadata(anthropicProviderMetadata(usage, stopSequence, stopDetails, container, contextManagement, extras...), providerOptionsName, usedCustomProviderKey)
-	raw, err := json.Marshal(meta)
+	raw, err := jsonstr.Marshal(meta)
 	if err != nil {
 		return nil
 	}
@@ -1449,7 +1450,7 @@ func (d *anthropicStopDetails) UnmarshalJSON(data []byte) error {
 	}
 	*d = anthropicStopDetails(p)
 	var raw map[string]interface{}
-	if json.Unmarshal(data, &raw) == nil {
+	if jsonexact.Unmarshal(data, &raw) == nil {
 		for _, key := range []string{"category", "explanation", "recommended_model"} {
 			if _, ok := raw[key].(string); ok {
 				if d.present == nil {
@@ -1514,7 +1515,7 @@ func (u *anthropicUsage) UnmarshalJSON(data []byte) error {
 	}
 	*u = anthropicUsage(p)
 	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err == nil {
+	if err := jsonexact.Unmarshal(data, &raw); err == nil {
 		stripUsageRawToSchema(raw)
 		u.Raw = raw
 	}
@@ -2209,7 +2210,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// Emit immediately as a tool call chunk (no input_json_delta accumulation needed).
 				input := map[string]interface{}{}
 				if len(start.ContentBlock.Input) > 0 {
-					_ = json.Unmarshal(start.ContentBlock.Input, &input)
+					_ = jsonexact.Unmarshal(start.ContentBlock.Input, &input)
 					if input == nil {
 						input = map[string]interface{}{}
 					}
@@ -2256,7 +2257,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				}
 				var mcpResultContent interface{}
 				if len(start.ContentBlock.Content) > 0 {
-					json.Unmarshal(start.ContentBlock.Content, &mcpResultContent) //nolint:errcheck
+					jsonexact.Unmarshal(start.ContentBlock.Content, &mcpResultContent) //nolint:errcheck
 				}
 				// TS: isError: part.is_error, result: part.content (both kept).
 				tr.IsError = start.ContentBlock.IsError
@@ -2504,7 +2505,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					// TS carries an InvalidResponseDataError whose data is the
 					// offending event; callers match it with errors.As.
 					var eventData interface{}
-					if json.Unmarshal([]byte(event.Data), &eventData) != nil {
+					if jsonexact.Unmarshal([]byte(event.Data), &eventData) != nil {
 						eventData = event.Data
 					}
 					return &provider.StreamChunk{
@@ -2797,7 +2798,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				inputStr := block.inputBuf.String()
 				invalidInput := ""
 				if inputStr != "" {
-					if err := json.Unmarshal([]byte(inputStr), &args); err != nil {
+					if err := jsonexact.Unmarshal([]byte(inputStr), &args); err != nil {
 						// Malformed or truncated input (e.g. max_tokens hit
 						// mid-call): TS emits the tool-call with the raw input
 						// text and lets the core mark it invalid / repair it,
@@ -3077,14 +3078,14 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			}
 			var code interface{}
 			if len(errEvent.Error.Code) > 0 {
-				json.Unmarshal(errEvent.Error.Code, &code) //nolint:errcheck
+				jsonexact.Unmarshal(errEvent.Error.Code, &code) //nolint:errcheck
 			}
 			// TS `'data' in error ? error.data : error`: an explicit data key
 			// (even null) is the data; otherwise it is the parsed error object,
 			// which keeps only the keys the event carried.
 			var data interface{}
 			if len(errEvent.Error.Data) > 0 {
-				_ = json.Unmarshal(errEvent.Error.Data, &data)
+				_ = jsonexact.Unmarshal(errEvent.Error.Data, &data)
 			} else {
 				var present map[string]json.RawMessage
 				_ = jsonexact.Unmarshal([]byte(event.Data), &struct {
@@ -3224,7 +3225,7 @@ func (s *anthropicStream) finalizeFinish() *provider.StreamChunk {
 			for _, m := range meta {
 				m["usage"] = nil
 			}
-			if raw, err := json.Marshal(meta); err == nil {
+			if raw, err := jsonstr.Marshal(meta); err == nil {
 				chunk.ProviderMetadata = raw
 			}
 		}
@@ -3296,7 +3297,7 @@ func convertWebSearchToolResult(raw json.RawMessage, generateID func() string) (
 	if err := jsonexact.Unmarshal(raw, &wireResults); err != nil {
 		// Fallback: return raw data as-is.
 		var fallback interface{}
-		json.Unmarshal(raw, &fallback) //nolint:errcheck
+		jsonexact.Unmarshal(raw, &fallback) //nolint:errcheck
 		return fallback, nil
 	}
 	mapped := make([]map[string]interface{}, 0, len(wireResults))
@@ -3367,13 +3368,13 @@ func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 	var wire webFetchResultWire
 	if err := jsonexact.Unmarshal(raw, &wire); err != nil {
 		var fallback interface{}
-		json.Unmarshal(raw, &fallback) //nolint:errcheck
+		jsonexact.Unmarshal(raw, &fallback) //nolint:errcheck
 		return fallback
 	}
 	if wire.Type != "web_fetch_result" {
 		// Error or unknown type — pass through unchanged.
 		var fallback interface{}
-		json.Unmarshal(raw, &fallback) //nolint:errcheck
+		jsonexact.Unmarshal(raw, &fallback) //nolint:errcheck
 		return fallback
 	}
 	var title interface{}
@@ -3423,7 +3424,7 @@ func messageStartChunk(data string) *provider.StreamChunk {
 	if raw.Message.Usage != nil {
 		usage = raw.Message.Usage
 	}
-	metadata, _ := json.Marshal(map[string]interface{}{
+	metadata, _ := jsonstr.Marshal(map[string]interface{}{
 		"anthropic": map[string]interface{}{
 			"id":    raw.Message.ID,
 			"model": raw.Message.Model,
@@ -3544,7 +3545,7 @@ func anthropicErrorDetails(raw json.RawMessage) (interface{}, bool) {
 		return nil, true
 	}
 	var obj map[string]json.RawMessage
-	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+	if jsonexact.Unmarshal(raw, &obj) != nil || obj == nil {
 		return nil, false
 	}
 	out := map[string]interface{}{}

@@ -23,6 +23,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	tool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
@@ -972,7 +973,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, err
 	}
-	bodyBytes, err := json.Marshal(args.Body)
+	bodyBytes, err := jsonstr.Marshal(args.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -1199,7 +1200,7 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				continue
 			}
 			var args map[string]interface{}
-			_ = json.Unmarshal(part.ToolUse.Input, &args)
+			_ = jsonexact.Unmarshal(part.ToolUse.Input, &args)
 			if args == nil {
 				args = map[string]interface{}{}
 			}
@@ -1237,7 +1238,7 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	}
 
 	var usageMap map[string]interface{}
-	_ = json.Unmarshal(resp.Usage, &usageMap)
+	_ = jsonexact.Unmarshal(resp.Usage, &usageMap)
 	result.Usage = convertBedrockConverseUsage(resp.Usage)
 
 	result.FinishReason = mapBedrockFinishReason(resp.StopReason, isJSONResponseFromTool)
@@ -1247,7 +1248,7 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	if len(resp.Trace) > 0 && string(resp.Trace) != "null" {
 		// TS: `response.trace && typeof response.trace === 'object'`.
 		var trace interface{}
-		if json.Unmarshal(resp.Trace, &trace) == nil {
+		if jsonexact.Unmarshal(resp.Trace, &trace) == nil {
 			switch trace.(type) {
 			case map[string]interface{}, []interface{}:
 				metadataPayload["trace"] = trace
@@ -1323,7 +1324,7 @@ func schemaKeys(v interface{}, keys ...string) interface{} {
 }
 
 func mustMarshalProviderMetadata(v interface{}) json.RawMessage {
-	data, err := json.Marshal(v)
+	data, err := jsonstr.Marshal(v)
 	if err != nil {
 		return nil
 	}
@@ -1387,7 +1388,7 @@ func convertBedrockConverseUsage(raw json.RawMessage) types.Usage {
 	}
 
 	var rawMap map[string]interface{}
-	if json.Unmarshal(raw, &rawMap) == nil {
+	if jsonexact.Unmarshal(raw, &rawMap) == nil {
 		result.Raw = rawMap
 	}
 
@@ -1401,7 +1402,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, err
 	}
-	bodyBytes, err := json.Marshal(args.Body)
+	bodyBytes, err := jsonstr.Marshal(args.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}

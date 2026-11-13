@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // anthropicCallerInfo maps a wire caller ({type, tool_id?}) to the metadata
@@ -38,7 +39,7 @@ func callerMetadataJSON(caller map[string]interface{}) json.RawMessage {
 	if meta == nil {
 		return nil
 	}
-	b, err := json.Marshal(meta)
+	b, err := jsonstr.Marshal(meta)
 	if err != nil {
 		return nil
 	}
@@ -208,7 +209,7 @@ func rawJSONValue(raw json.RawMessage) interface{} {
 		return nil
 	}
 	var v interface{}
-	if err := json.Unmarshal(raw, &v); err != nil {
+	if err := jsonexact.Unmarshal(raw, &v); err != nil {
 		return nil
 	}
 	return v
@@ -336,7 +337,7 @@ func safeguardResultsValue(raw json.RawMessage) interface{} {
 func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 	var meta json.RawMessage
 	if len(tc.ProviderMetadata) > 0 {
-		meta, _ = json.Marshal(tc.ProviderMetadata)
+		meta, _ = jsonstr.Marshal(tc.ProviderMetadata)
 	}
 	return types.ToolCallContent{
 		ToolCallID:       tc.ID,
@@ -369,7 +370,7 @@ type deferredToolResult struct {
 // TS emits nothing for (an unrecognised code_execution_tool_result payload).
 func convertDeferredToolResult(blockType string, raw json.RawMessage, toolNameMap map[string]string, serverToolName string) (deferredToolResult, bool) {
 	var content map[string]interface{}
-	_ = json.Unmarshal(raw, &content)
+	_ = jsonexact.Unmarshal(raw, &content)
 	str := func(k string) interface{} { return content[k] }
 	orEmptyList := func(k string) interface{} {
 		if v, ok := content[k]; ok && v != nil {
@@ -400,7 +401,7 @@ func convertDeferredToolResult(blockType string, raw json.RawMessage, toolNameMa
 		return deferredToolResult{}, false
 	case "bash_code_execution_tool_result", "text_editor_code_execution_tool_result":
 		var passthrough interface{}
-		_ = json.Unmarshal(raw, &passthrough)
+		_ = jsonexact.Unmarshal(raw, &passthrough)
 		return deferredToolResult{ToolName: mapAnthropicToolName("code_execution", toolNameMap), Result: codeExecution20250825ResultValue(passthrough)}, true
 	case "tool_search_tool_result":
 		provider := serverToolName

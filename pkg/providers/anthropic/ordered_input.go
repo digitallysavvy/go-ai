@@ -51,7 +51,7 @@ func (c *anthropicContent) UnmarshalJSON(b []byte) error {
 		// "null" for it.
 		c.RawInput = p.Input
 		var obj map[string]interface{}
-		if string(p.Input) != "null" && json.Unmarshal(p.Input, &obj) == nil {
+		if string(p.Input) != "null" && jsonexact.Unmarshal(p.Input, &obj) == nil {
 			c.Input = obj
 		}
 	}
@@ -68,7 +68,7 @@ func (c *anthropicContent) rawInputValue() interface{} {
 		return nil
 	}
 	var v interface{}
-	if json.Unmarshal(c.RawInput, &v) != nil {
+	if jsonexact.Unmarshal(c.RawInput, &v) != nil {
 		return nil
 	}
 	return v

@@ -3,7 +3,6 @@ package elevenlabs
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"mime/multipart"
@@ -265,7 +264,7 @@ func (w *elevenlabsWord) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*w = elevenlabsWord(p)
-	return json.Unmarshal(data, &w.Raw)
+	return jsonexact.Unmarshal(data, &w.Raw)
 }
 
 // elevenlabsErrorDataSchema mirrors TS elevenlabsErrorDataSchema

@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -2595,7 +2596,7 @@ func toAnthropicToolInput(input interface{}) (out map[string]interface{}, hint s
 // key. Invalid JSON is ok=false too.
 func SecureJSONParse(text string) (interface{}, bool) {
 	var v interface{}
-	if err := json.Unmarshal([]byte(text), &v); err != nil {
+	if err := jsonexact.Unmarshal([]byte(text), &v); err != nil {
 		return nil, false
 	}
 	next := []interface{}{v}
