@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -427,7 +428,20 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	}
 	var out callToolResultJSON
 	looseArm := false
-	if err := jsonexact.Unmarshal(data, &out); err != nil {
+	err := jsonexact.Unmarshal(data, &out)
+	if err == nil {
+		// CallToolResultWithStructuredContentSchema: without content,
+		// structuredContent is z.json(), so a non-finite number in it
+		// (JSON.parse of 1e400, ruling 4) fails that arm too.
+		_, hasContent := raw["content"]
+		_, hasStructured := raw["structuredContent"]
+		if !hasContent && hasStructured {
+			if bad := zodlite.JSON(out.StructuredContent, true, []interface{}{"structuredContent"}); bad != nil {
+				err = bad
+			}
+		}
+	}
+	if err != nil {
 		if _, hasToolResult := raw["toolResult"]; !hasToolResult {
 			return err
 		}

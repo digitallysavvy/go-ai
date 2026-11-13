@@ -61,3 +61,15 @@ func TestR96integGatewayMediaUsageJSONValue(t *testing.T) {
 		}
 	}
 }
+
+// carry CR §2 (provb site): openai transcription usage is
+// z.record(z.string(), z.json()).nullish(): 1e400 there fails.
+func TestR96integOpenAITranscriptionUsageJSONValue(t *testing.T) {
+	v := r96integHTTPOK(MediaResponseValidator("openai.transcription", SchemaOpenAITranscr))
+	if err := v(`{"text":"t","usage":{"type":"duration","seconds":2}}`); err != nil {
+		t.Fatalf("finite: err = %v", err)
+	}
+	if err := v(`{"text":"t","usage":{"type":"duration","seconds":1e400}}`); err == nil {
+		t.Fatal("1e400: err = nil, want Invalid JSON response")
+	}
+}

@@ -339,7 +339,7 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("words", zNullish(zArr(word))),
 			fl("segments", zNullish(zArr(zUnionOf(segmentOpenAI, zObj(fl("type", zodlite.Literal("transcript.text.segment")),
 				fl("id", zStr), fl("start", zNum), fl("end", zNum), fl("text", zStr), fl("speaker", zStr)))))),
-			fl("usage", zNullish(zRec(zAny)))),
+			fl("usage", zNullish(zRec(zodlite.JSON)))),
 		SchemaGroqTranscr: zObj(fl("text", zStr), fl("x_groq", zObj(fl("id", zStr))), fl("task", nStr), fl("language", nStr), fl("duration", nNum),
 			fl("segments", zNullish(zArr(segmentOpenAI))), fl("words", zNullish(zArr(word)))),
 		SchemaMistralTranscr: zObj(fl("model", zStr), fl("text", zStr), fl("language", nStr),

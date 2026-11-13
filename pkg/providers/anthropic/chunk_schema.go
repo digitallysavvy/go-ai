@@ -43,7 +43,8 @@ var (
 		zString,
 		zArray(zUnion(
 			zString,
-			typed("text", f("text", zString), f("citations", zOptional(zNullable(zArray(zUnknown))))),
+			// citations: z.array(z.json()) (a non-finite number fails, ruling 4).
+			typed("text", f("text", zString), f("citations", zOptional(zNullable(zArray(zodlite.JSON))))),
 		)),
 	)
 
