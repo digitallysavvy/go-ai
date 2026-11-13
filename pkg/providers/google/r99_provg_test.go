@@ -1,6 +1,7 @@
 package google
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -68,5 +69,22 @@ func TestR99provgRealtimeCustomRawTypeIsFirstJSKey(t *testing.T) {
 		if len(events) != 1 || events[0].Type != "custom" || events[0].RawType != want {
 			t.Fatalf("%s: events = %+v, want custom rawType %q", raw, events, want)
 		}
+	}
+}
+
+// TS doStatus reads options.operation.operationName with an exact key; Go's
+// encoding/json matched "OperationName" case-insensitively and polled that
+// operation.
+func TestR99provgVideoStatusOperationNameKeyExact(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_, _ = w.Write([]byte(`{"name":"x","done":false}`))
+	}))
+	defer srv.Close()
+	model := NewVideoModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "veo-3.1-generate-preview")
+	_, _ = model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: json.RawMessage(`{"OperationName":"operations/x"}`)})
+	if strings.Contains(path, "operations/x") {
+		t.Fatalf("polled %q, want the case-variant key ignored", path)
 	}
 }

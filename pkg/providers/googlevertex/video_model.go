@@ -10,6 +10,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -378,7 +379,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	currentDate := time.Now()
 
 	var op vertexVideoOperation
-	if err := json.Unmarshal(opts.Operation, &op); err != nil {
+	// TS reads options.operation.operationName: the key matches exactly.
+	if err := jsonexact.UnmarshalPlain(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("google-vertex: invalid operation reference: %w", err)
 	}
 

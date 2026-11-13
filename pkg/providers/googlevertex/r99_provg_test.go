@@ -2,6 +2,9 @@ package googlevertex
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -89,5 +92,19 @@ func TestR99provgVertexLiveConfigAuthorizationWins(t *testing.T) {
 		if got != "Bearer proxy-token" {
 			t.Fatalf("run %d: Authorization = %q, want the config header", i, got)
 		}
+	}
+}
+
+// TS doStatus reads options.operation.operationName with an exact key.
+func TestR99provgVertexVideoStatusOperationNameKeyExact(t *testing.T) {
+	var body string
+	model, _ := newTestVertexVideoModel(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		_, _ = w.Write([]byte(`{"name":"x","done":false}`))
+	})
+	_, _ = model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: json.RawMessage(`{"OperationName":"operations/x"}`)})
+	if strings.Contains(body, "operations/x") {
+		t.Fatalf("body %q, want the case-variant key ignored", body)
 	}
 }
