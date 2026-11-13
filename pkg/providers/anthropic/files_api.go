@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"math"
 	"mime/multipart"
 	"strings"
@@ -25,14 +24,8 @@ type FilesAPI struct {
 }
 
 func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions) (*types.UploadFileResult, error) {
-	if opts.Data.Type == types.FileDataTypeStream {
-		// TS convertInlineFileDataToUint8Array: streaming upload is not
-		// supported; the stream is released and never read.
-		if closer, ok := opts.Data.Stream.(io.Closer); ok {
-			_ = closer.Close()
-		}
-		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming file upload"}
-	}
+	// TS convertInlineFileDataToUint8Array: stream data is released unread
+	// and rejected.
 	content, err := inlineFileBytes(opts.Data)
 	if err != nil {
 		return nil, err
