@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -403,7 +404,9 @@ func decodeProviderMetadataMap(raw json.RawMessage) map[string]interface{} {
 		return nil
 	}
 	var out map[string]interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	// jsonexact reads a number beyond the double range as +-Inf, as TS
+	// JSON.parse does (ruling 4).
+	if err := jsonexact.Unmarshal(raw, &out); err != nil {
 		return nil
 	}
 	return out
