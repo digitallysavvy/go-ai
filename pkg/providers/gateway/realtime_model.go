@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -86,6 +88,11 @@ func (m *RealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSock
 // other realtime model's convention (OpenAI/Google/xAI) of attaching the
 // entire received frame.
 func (m *RealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	// TS returns the null as the event, and the session's handleServerEvent
+	// then throws reading event.type, which fails the session.
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return nil, errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // TS V8 TypeError text
+	}
 	var event provider.RealtimeServerEvent
 	if err := jsonexact.Unmarshal(raw, &event); err != nil {
 		return nil, err

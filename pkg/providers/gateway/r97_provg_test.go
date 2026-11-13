@@ -30,3 +30,15 @@ func TestR97provgV4UsageFractionalCounts(t *testing.T) {
 		t.Fatalf("flat usage = %+v", flat.usage)
 	}
 }
+
+// TS parseServerEvent returns a JSON null message as the event and the
+// session's handleServerEvent throws reading event.type (cr-r97-provb-to-provg 3).
+func TestR97provgRealtimeParseNullEvent(t *testing.T) {
+	_, err := (&RealtimeModel{}).ParseServerEvent(json.RawMessage(` null `))
+	if err == nil || err.Error() != "Cannot read properties of null (reading 'type')" {
+		t.Fatalf("err = %v, want the TypeError", err)
+	}
+	if events, err := (&RealtimeModel{}).ParseServerEvent(json.RawMessage(`{"type":"session-created"}`)); err != nil || len(events) != 1 {
+		t.Fatalf("events = %v, %v", events, err)
+	}
+}

@@ -164,3 +164,20 @@ func TestR97provgBatchLineSingleJSONParseError(t *testing.T) {
 		t.Fatalf("err = %#v, want one JSONParseError caused by the SyntaxError", err)
 	}
 }
+
+// TS parseEvent reads data.setupComplete of the parsed message: a JSON null
+// throws a TypeError, which the realtime event channel treats as fatal
+// (cr-r97-provb-to-provg 3).
+func TestR97provgRealtimeParseNullEvent(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-live-2.5-flash")
+	const want = "Cannot read properties of null (reading 'setupComplete')"
+	if _, err := m.ParseServerEvent(json.RawMessage(`null`)); err == nil || err.Error() != want {
+		t.Fatalf("ParseServerEvent err = %v", err)
+	}
+	if _, err := m.NewServerEventParser()(json.RawMessage(`null`)); err == nil || err.Error() != want {
+		t.Fatalf("NewServerEventParser err = %v", err)
+	}
+	if events, err := m.ParseServerEvent(json.RawMessage(`{"setupComplete":{}}`)); err != nil || len(events) != 1 || events[0].Type != "session-created" {
+		t.Fatalf("events = %v, %v", events, err)
+	}
+}
