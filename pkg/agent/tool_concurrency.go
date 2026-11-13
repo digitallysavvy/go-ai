@@ -116,8 +116,13 @@ func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.Tool
 			return results, err
 		}
 	}
-	if notStarted && ctx != nil && ctx.Err() != nil {
-		return results, ctx.Err()
+	// TS mapWithConcurrency: abortSignal.throwIfAborted() throws
+	// signal.reason (context.Cause). The limited workers check it before
+	// every claim, also after their last call, so an abort while the last
+	// calls run rejects too; Promise.all (no limit, or one covering every
+	// call) never checks it.
+	if ctx != nil && ctx.Err() != nil && (notStarted || (limit > 0 && limit < len(toolCalls))) {
+		return results, context.Cause(ctx)
 	}
 	return results, nil
 }

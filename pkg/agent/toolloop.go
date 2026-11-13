@@ -1176,7 +1176,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// the run (checked below, once the step is recorded).
 		var stepTimeoutErr error
 		if errors.Is(stepCtx.Err(), context.DeadlineExceeded) {
-			stepTimeoutErr = stepCtx.Err()
+			// TS throwIfAborted throws signal.reason: the step TimeoutError
+			// ("Step timeout of <ms>ms exceeded"), the deadline's cause.
+			stepTimeoutErr = context.Cause(stepCtx)
 		}
 		cancelStepTimeout()
 		// TS stepTimeMs spans the model call and the tool execution.

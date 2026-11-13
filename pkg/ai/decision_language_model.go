@@ -241,13 +241,23 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 	if err := context.Cause(ctx); err != nil {
 		return nil, err
 	}
+	if genResult == nil {
+		// TS reads result.finishReason right here: a model that resolves
+		// without a result fails the call instead of crashing it.
+		return nil, fmt.Errorf("language model %s/%s returned no result", e.model.Provider(), e.model.ModelID())
+	}
 	if genResult.FinishReason != types.FinishReasonStop {
 		return nil, providererrors.NewInvalidResponseDataError(genResult, fmt.Sprintf("Decision did not complete: %s.", genResult.FinishReason))
 	}
 
+	// TS joins the text parts of result.content; a model may report its
+	// text in Text or only as content text parts (normalizeGenerateResultText).
+	textResult := *genResult
+	normalizeGenerateResultText(&textResult)
+	text := textResult.Text
 	var rawValues interface{}
-	if err := json.Unmarshal([]byte(genResult.Text), &rawValues); err != nil {
-		return nil, providererrors.NewInvalidResponseDataError(genResult.Text, "Decision did not return valid JSON.")
+	if err := json.Unmarshal([]byte(text), &rawValues); err != nil {
+		return nil, providererrors.NewInvalidResponseDataError(text, "Decision did not return valid JSON.")
 	}
 	values, ok := rawValues.(map[string]interface{})
 	if !ok || len(values) != len(entries) {
