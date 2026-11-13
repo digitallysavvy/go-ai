@@ -178,7 +178,7 @@ func unmarshalNonNullJSON(raw json.RawMessage, v interface{}) error {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return fmt.Errorf("unexpected null")
 	}
-	return json.Unmarshal(raw, v)
+	return jsonexact.Unmarshal(raw, v)
 }
 
 func isISODatetimeWithOffset(s string) bool {
@@ -298,7 +298,7 @@ func parseMCPEventControl(raw map[string]json.RawMessage) (*MCPEventGap, *MCPEve
 		}
 		term := &MCPEventTermination{Type: "terminated", Error: MCPEventTerminationError{Code: int(codeInt), Message: message}}
 		if d, ok := errObj["data"]; ok {
-			if err := json.Unmarshal(d, &term.Error.Data); err != nil {
+			if err := jsonexact.Unmarshal(d, &term.Error.Data); err != nil {
 				return nil, nil, err
 			}
 		}

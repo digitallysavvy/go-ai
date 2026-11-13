@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -54,7 +55,7 @@ func decodeLooseExtra(data []byte, known interface{}) map[string]interface{} {
 			continue
 		}
 		var val interface{}
-		if err := json.Unmarshal(v, &val); err != nil {
+		if err := jsonexact.Unmarshal(v, &val); err != nil {
 			continue
 		}
 		if extra == nil {

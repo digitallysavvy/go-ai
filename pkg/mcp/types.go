@@ -591,12 +591,12 @@ func (c *ToolResultContent) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if rawMetadata, ok := raw["metadata"]; ok && string(rawMetadata) != "null" {
-		if err := json.Unmarshal(rawMetadata, &c.Metadata); err != nil {
+		if err := jsonexact.Unmarshal(rawMetadata, &c.Metadata); err != nil {
 			return err
 		}
 	}
 	if rawMeta, ok := raw["_meta"]; ok && string(rawMeta) != "null" {
-		if err := json.Unmarshal(rawMeta, &c.Meta); err != nil {
+		if err := jsonexact.Unmarshal(rawMeta, &c.Meta); err != nil {
 			return err
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -160,7 +161,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 
 	var rawBody interface{}
-	_ = json.Unmarshal(httpResp.Body, &rawBody)
+	_ = jsonexact.Unmarshal(httpResp.Body, &rawBody)
 
 	if len(response.Answers) != len(ids) {
 		return nil, providererrors.NewInvalidResponseDataError(rawBody, "Parallel Decisions must return exactly one answer for every question.")
@@ -289,7 +290,7 @@ func (r parallelDecisionResponse) citations() []interface{} {
 		for _, key := range []string{"url", "title", "excerpts"} {
 			if raw, ok := c[key]; ok {
 				var v interface{}
-				_ = json.Unmarshal(raw, &v)
+				_ = jsonexact.Unmarshal(raw, &v)
 				entry[key] = v
 			}
 		}
@@ -337,7 +338,7 @@ var parallelDecisionResponseNode = func() zodlite.Node {
 // APICallError "Invalid JSON response".
 func validateParallelDecisionResponse(statusCode int, headers http.Header, body []byte) error {
 	var value interface{}
-	err := json.Unmarshal(body, &value)
+	err := jsonexact.Unmarshal(body, &value)
 	if err == nil {
 		if bad := parallelDecisionResponseNode(value, true, nil); bad != nil {
 			err = bad

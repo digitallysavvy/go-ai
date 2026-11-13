@@ -60,7 +60,7 @@ func DetectMCPAppResourceDrift(current, baseline string) bool {
 // []string) and already-JSON-decoded values (map[string]interface{} with
 // []interface{}) normalize the same way.
 func canonicalMCPAppJSON(value interface{}) string {
-	data, err := json.Marshal(value)
+	data, err := jsonstr.Marshal(value)
 	if err != nil {
 		data = []byte("null")
 	}

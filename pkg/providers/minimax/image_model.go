@@ -263,7 +263,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	var usageMeta interface{}
 	if len(raw.Usage) > 0 && string(raw.Usage) != "null" {
 		var u interface{}
-		if json.Unmarshal(raw.Usage, &u) == nil {
+		if jsonexact.Unmarshal(raw.Usage, &u) == nil {
 			usageMeta = pickKeys(u, "", minimaxImageUsageKeys)
 		}
 	}

@@ -1575,7 +1575,7 @@ func zodIssues(schema zodlite.Node, value []byte) (string, interface{}) {
 func parseElicitationRequestParams(raw json.RawMessage) (ElicitationRequest, string, interface{}) {
 	var params interface{}
 	present := len(raw) > 0
-	if present && json.Unmarshal(raw, &params) != nil {
+	if present && jsonexact.Unmarshal(raw, &params) != nil {
 		return ElicitationRequest{}, "params must be JSON", nil
 	}
 	if issues := elicitationRequestIssues(params, present); issues != nil {

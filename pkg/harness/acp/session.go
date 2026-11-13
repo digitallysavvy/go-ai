@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -319,7 +320,7 @@ func classifyToolCallCandidate(askUserQuestions *AskUserQuestionsSettings, isMcp
 
 func rawJSONToAny(raw json.RawMessage) any {
 	var v any
-	_ = json.Unmarshal(raw, &v)
+	_ = jsonexact.Unmarshal(raw, &v)
 	return v
 }
 

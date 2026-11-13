@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -338,7 +339,7 @@ func extractMCPStructuredOutput(result CallToolResult, outputSchema schema.Schem
 			break
 		}
 		var parsed interface{}
-		if err := json.Unmarshal([]byte(part.Text), &parsed); err != nil {
+		if err := jsonexact.Unmarshal([]byte(part.Text), &parsed); err != nil {
 			return nil, &MCPClientError{Message: "Tool \"" + toolName + "\" returned content that does not match the expected outputSchema", Cause: err}
 		}
 		defaulted := schema.ApplyDefaults(parsed, outputSchema)

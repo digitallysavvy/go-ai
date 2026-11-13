@@ -6,7 +6,6 @@ package youcom
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"net/url"
 	"os"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -510,7 +510,7 @@ func decodeYouJSON(r io.Reader, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal([]byte(textdecode.UTF8(data)), v)
+	return jsonexact.Unmarshal([]byte(textdecode.UTF8(data)), v)
 }
 
 func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {

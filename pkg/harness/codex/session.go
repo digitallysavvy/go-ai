@@ -20,6 +20,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -383,7 +384,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 	s.opts.channel.Close()
 
 	var lifecycleData map[string]any
-	_ = json.Unmarshal(data, &lifecycleData)
+	_ = jsonexact.Unmarshal(data, &lifecycleData)
 	if lifecycleData == nil {
 		lifecycleData = map[string]any{}
 	}

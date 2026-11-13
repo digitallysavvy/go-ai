@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -306,7 +307,7 @@ func parseJSONRPCErrorObject(raw json.RawMessage) (*MCPError, error) {
 	}
 	out := &MCPError{Code: int(code), Message: message}
 	if d, ok := fields["data"]; ok {
-		if err := json.Unmarshal(d, &out.Data); err != nil {
+		if err := jsonexact.Unmarshal(d, &out.Data); err != nil {
 			return nil, fmt.Errorf("invalid JSON-RPC message: invalid error.data: %w", err)
 		}
 	}

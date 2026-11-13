@@ -1,12 +1,12 @@
 package vercel
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/verceloidc"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
@@ -137,7 +137,7 @@ func decodeOIDCClaims(token string) (ownerID, projectID string, err error) {
 	}
 	text := textdecode.ReplaceInvalid(decoded)
 	var payload interface{}
-	if err := json.Unmarshal(text, &payload); err != nil {
+	if err := jsonexact.Unmarshal(text, &payload); err != nil {
 		// Go's parse error text, not V8's SyntaxError text.
 		return "", "", invalid(err.Error())
 	}
