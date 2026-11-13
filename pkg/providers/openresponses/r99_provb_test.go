@@ -32,3 +32,13 @@ func TestR99provbMessageItemNonFiniteContent(t *testing.T) {
 		t.Errorf("marshal = %s, %v", b, err)
 	}
 }
+
+// TestR99provbProviderDataOutOfRange: TS getProviderData reads part
+// provider metadata as an object (a 1e400 value reads as Infinity, ruling
+// 4). Go's nested encoding/json decode failed on 1e400 and lost the item id.
+func TestR99provbProviderDataOutOfRange(t *testing.T) {
+	meta := json.RawMessage(`{"openai":{"itemId":"msg_1","n":1e400}}`)
+	if got := openResponsesProviderData(nil, meta, "openai"); got == nil || got["itemId"] != "msg_1" {
+		t.Errorf("provider data = %v, want itemId msg_1", got)
+	}
+}

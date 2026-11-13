@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -766,7 +767,8 @@ func openResponsesProviderData(providerOptions map[string]interface{}, providerM
 					continue
 				}
 				var nested map[string]interface{}
-				if err := json.Unmarshal(raw, &nested); err == nil {
+				// ruling 4: a 1e400 value reads as Infinity, not a failure.
+				if err := jsonexact.UnmarshalPlain(raw, &nested); err == nil {
 					return nested
 				}
 			}
@@ -1186,7 +1188,7 @@ func extensionReplay(part types.ContentPart, providerName string, opts openRespo
 	} else if len(pm) > 0 {
 		var meta map[string]json.RawMessage
 		if json.Unmarshal(pm, &meta) == nil {
-			_ = json.Unmarshal(meta[providerName], &data)
+			_ = jsonexact.UnmarshalPlain(meta[providerName], &data) // ruling 4: 1e400 reads as Infinity
 		}
 	}
 	ext, ok := asStringMap(data["openResponsesExtension"])
