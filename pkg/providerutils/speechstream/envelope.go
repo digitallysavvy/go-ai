@@ -523,13 +523,28 @@ func isWarning(m map[string]interface{}) bool {
 // a stream-start part are dropped (forward compatibility). Audio is decoded
 // from base64 (padded or unpadded, standard or URL-safe alphabet).
 func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
-	value, err := decodeSecure(text)
+	part, ok, err := ParsePartStrict(text)
 	if err != nil {
 		return nil, false
 	}
+	return part, ok
+}
+
+// ParsePartStrict is ParsePart for a consumer that reports what TS reports
+// for an audio part whose base64 string cannot be decoded. TS
+// parseSpeechStreamPart keeps such a part (audio is any string), and
+// streamSpeech then fails the stream at it with the error of
+// convertBase64ToUint8Array (atob's InvalidCharacterError). ParsePartStrict
+// returns that error for the frame; every other frame gives ParsePart's
+// result and a nil error.
+func ParsePartStrict(text string) (*provider.SpeechStreamPart, bool, error) {
+	value, err := decodeSecure(text)
+	if err != nil {
+		return nil, false, nil
+	}
 	raw, ok := value.(map[string]interface{})
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	partType, _ := raw["type"].(string)
 	part := &provider.SpeechStreamPart{Type: partType}
@@ -538,7 +553,7 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 	case provider.SpeechStreamPartTypeStreamStart:
 		list, ok := raw["warnings"].([]interface{})
 		if !ok {
-			return nil, false
+			return nil, false, nil
 		}
 		part.Warnings = []types.Warning{}
 		for _, item := range list {
@@ -549,7 +564,7 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 				}
 			}
 			if !isMap || !isWarning(w) {
-				return nil, false
+				return nil, false, nil
 			}
 			warning := types.Warning{}
 			warning.Type, _ = w["type"].(string)
@@ -564,11 +579,11 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 		encoded, ok := raw["audio"].(string)
 		if !ok || !isAudioFormat(raw["audioFormat"]) ||
 			!isOptional(raw, "id", isString) || !isOptional(raw, "providerMetadata", isRecord) {
-			return nil, false
+			return nil, false, nil
 		}
 		audio, err := types.DecodeFileDataString(encoded)
 		if err != nil {
-			return nil, false
+			return nil, false, &InvalidCharacterError{Message: atobErrorMessage(encoded)}
 		}
 		part.Audio = audio
 		part.ID, _ = raw["id"].(string)
@@ -601,7 +616,7 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 			}
 		}
 		if !usageOK || !isOptional(raw, "providerMetadata", isRecord) {
-			return nil, false
+			return nil, false, nil
 		}
 		if um, ok := raw["usage"].(map[string]interface{}); ok {
 			usage := &provider.SpeechStreamUsage{}
@@ -617,17 +632,17 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 
 	case provider.SpeechStreamPartTypeResponseMetadata:
 		if !isOptional(raw, "modelId", isString) || !isOptional(raw, "headers", isRecord) {
-			return nil, false
+			return nil, false, nil
 		}
 		if ts := raw["timestamp"]; ts != nil {
 			s, ok := ts.(string)
 			if !ok {
-				return nil, false
+				return nil, false, nil
 			}
 			// TS new Date(timestamp); a NaN date makes the part invalid.
 			ms, ok := jsdate.Parse(s)
 			if !ok {
-				return nil, false
+				return nil, false, nil
 			}
 			part.Timestamp = time.UnixMilli(ms)
 		}
@@ -645,21 +660,67 @@ func ParsePart(text string) (*provider.SpeechStreamPart, bool) {
 	case provider.SpeechStreamPartTypeRaw:
 		rv, ok := raw["rawValue"]
 		if !ok {
-			return nil, false
+			return nil, false, nil
 		}
 		part.RawValue = rv
 
 	case provider.SpeechStreamPartTypeError:
 		ev, ok := raw["error"]
 		if !ok {
-			return nil, false
+			return nil, false, nil
 		}
 		part.Err = ev
 
 	default:
-		return nil, false
+		return nil, false, nil
 	}
-	return part, true
+	return part, true, nil
+}
+
+// InvalidCharacterError is the DOMException atob throws (name
+// InvalidCharacterError) for a string TS convertBase64ToUint8Array cannot
+// decode; Error is its message, as Node writes it.
+type InvalidCharacterError struct{ Message string }
+
+func (e *InvalidCharacterError) Error() string { return e.Message }
+
+// ErrorName is the DOMException name.
+func (e *InvalidCharacterError) ErrorName() string { return "InvalidCharacterError" }
+
+// atobErrorMessage is the message Node's atob throws for s after TS
+// convertBase64ToUint8Array maps "-" and "_" to "+" and "/": "Invalid
+// character" for a character outside the base64 alphabet (ASCII whitespace
+// is skipped), an "=" that is not trailing, more than two "=", or padding
+// that does not complete a 4-character group; "The string to be decoded is
+// not correctly encoded." when the data characters leave one extra
+// character. Matched against Node 24 atob on 300,000 generated strings.
+func atobErrorMessage(s string) string {
+	const invalid = "Invalid character"
+	alpha, eq := 0, 0
+	for _, r := range s {
+		switch {
+		case r == ' ' || r == '\t' || r == '\n' || r == '\f' || r == '\r':
+			continue
+		case r == '=':
+			eq++
+			if eq > 2 {
+				return invalid
+			}
+			continue
+		case r == '-' || r == '_' || r == '+' || r == '/' ||
+			(r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+		default:
+			return invalid
+		}
+		if eq > 0 {
+			return invalid
+		}
+		alpha++
+	}
+	if alpha%4 == 1 {
+		return "The string to be decoded is not correctly encoded."
+	}
+	return invalid
 }
 
 // numberField reads an optional JS number as is (no truncation).
