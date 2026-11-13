@@ -62,3 +62,13 @@ func TestR97toolsMarshalJSONLikeJSONStringify(t *testing.T) {
 		t.Fatalf("completion params = %s, %v", msg.Params, err)
 	}
 }
+
+// TS ElicitationRequestSchema (zod 4) names a non-finite number by its value:
+// "received Infinity" for message: 1e400 (Go said "received number";
+// ruling 4, review round 97).
+func TestR97toolsElicitationIssueNonFinite(t *testing.T) {
+	_, msg, _ := parseElicitationRequestParams(json.RawMessage(`{"message":1e400,"requestedSchema":{}}`))
+	if !strings.Contains(msg, "expected string, received Infinity") {
+		t.Fatalf("message = %s", msg)
+	}
+}

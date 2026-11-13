@@ -1478,24 +1478,8 @@ func (c *MCPClient) handleElicitationRequest(msg *MCPMessage) {
 // anything but must be present (z.unknown() is non-optional in a zod 4
 // object). It returns the zod issues in zod's key order, nil when valid.
 func elicitationRequestIssues(params interface{}, present bool) []interface{} {
-	jsType := func(v interface{}, present bool) string {
-		if !present {
-			return "undefined"
-		}
-		switch v.(type) {
-		case nil:
-			return "null"
-		case string:
-			return "string"
-		case bool:
-			return "boolean"
-		case float64:
-			return "number"
-		case []interface{}:
-			return "array"
-		}
-		return "object"
-	}
+	// zod 4 names a non-finite number by its value ("received Infinity").
+	jsType := zodlite.JSType
 	issue := func(expected string, v interface{}, present bool, path ...string) interface{} {
 		o := jsonorder.New()
 		o.Set("expected", expected)
