@@ -223,7 +223,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil { // TS != null: an empty array counts
 		body["stop"] = opts.StopSequences
 	}
 	var toolWarnings []types.Warning

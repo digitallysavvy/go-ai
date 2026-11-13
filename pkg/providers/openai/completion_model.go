@@ -629,6 +629,15 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			usage := convertOpenAICompletionUsage(chunk.Usage)
 			s.usage = &usage
 		}
+		// TS isOpenAICompletionOutputChunk: any choice with text ends the
+		// early-error peek.
+		for _, c := range chunk.Choices {
+			if c.Text != "" {
+				s.outputStarted = true
+				s.flushPendingMetadata()
+				break
+			}
+		}
 		if len(chunk.Choices) > 0 {
 			choice := chunk.Choices[0]
 			if choice.FinishReason != nil {

@@ -722,7 +722,9 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 	s.queueFlush()
 	finishChunk := s.pending[len(s.pending)-1]
 	s.pending, s.err = nil, nil
-	if finishChunk.Type != provider.ChunkTypeFinish || finishChunk.Usage == nil || finishChunk.FinishReason != types.FinishReasonToolCalls {
+	// TS mapOpenResponsesFinishReason: max_output_tokens is length even
+	// with tool calls (review round 95).
+	if finishChunk.Type != provider.ChunkTypeFinish || finishChunk.Usage == nil || finishChunk.FinishReason != types.FinishReasonLength {
 		t.Fatalf("finish chunk failed: chunk=%+v", finishChunk)
 	}
 

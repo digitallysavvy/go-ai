@@ -94,7 +94,7 @@ func openAIShellToolCall(providerName string, tools []types.Tool, raw json.RawMe
 		Arguments:        args,
 		RawArguments:     string(input),
 		ProviderExecuted: isOpenAIShellProviderExecuted(tools),
-		ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil),
+		ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil),
 	}, true
 }
 
@@ -163,7 +163,7 @@ func openAILocalShellToolCall(providerName string, tools []types.Tool, raw json.
 		ToolName:         openAIDeclaredToolName(tools, "openai.local_shell", "local_shell"),
 		Arguments:        args,
 		RawArguments:     string(input),
-		ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil),
+		ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil),
 	}, true
 }
 

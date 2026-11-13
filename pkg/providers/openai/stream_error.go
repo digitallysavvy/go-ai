@@ -68,14 +68,21 @@ func parseOpenAIStreamError(raw json.RawMessage) *openAIStreamErrorFrame {
 		}
 		return &openAIStreamErrorFrame{
 			Message: message,
-			Code:    responseError["code"],
+			Code:    openAIStreamErrorStringOrNumber(responseError["code"]),
 			Type:    "response.failed",
 			Frame:   value,
 		}
 	}
 
-	errorValue, _ := value["error"].(map[string]interface{})
-	if errorValue == nil {
+	// TS asRecord(value.error) ?? value: an array error member is a record
+	// too (typeof 'object'), and it has no string message.
+	var errorValue map[string]interface{}
+	switch e := value["error"].(type) {
+	case map[string]interface{}:
+		errorValue = e
+	case []interface{}:
+		return nil
+	default:
 		errorValue = value
 	}
 	message, ok := errorValue["message"].(string)
@@ -93,9 +100,20 @@ func parseOpenAIStreamError(raw json.RawMessage) *openAIStreamErrorFrame {
 	errorType, _ := errorValue["type"].(string)
 	return &openAIStreamErrorFrame{
 		Message: message,
-		Code:    errorValue["code"],
+		Code:    openAIStreamErrorStringOrNumber(errorValue["code"]),
 		Type:    errorType,
 		Frame:   value,
+	}
+}
+
+// openAIStreamErrorStringOrNumber is TS getStringOrNumber: a code that is not
+// a string or a number is undefined.
+func openAIStreamErrorStringOrNumber(v interface{}) interface{} {
+	switch v.(type) {
+	case string, float64:
+		return v
+	default:
+		return nil
 	}
 }
 

@@ -159,6 +159,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result.Warnings = warnings
+	if response.IncompleteDetails == nil || response.IncompleteDetails.Reason == "" {
+		// TS incomplete_details?.reason: a present "" (or non-string) reason
+		// is an unknown reason, not a missing one.
+		result.FinishReason = mapOpenResponsesFinishReasonTS("", openResponsesHasIncompleteReason(httpResp.Body), len(result.ToolCalls) > 0)
+	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
 	// TS result.request.body: the request as sent.
 	result.RawRequest = reqBody
@@ -267,8 +272,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream"] = true
 	}
 
-	// Add instructions if present
-	if instructions != "" {
+	// TS instructions: systemMessages.join('\n') whenever the prompt has a
+	// system message, so a system message of "" sends instructions: "".
+	if instructions != "" || openResponsesHasSystemMessage(promptMessages) {
 		body["instructions"] = instructions
 	}
 
@@ -1022,7 +1028,9 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 	if response.IncompleteDetails != nil {
 		finishReason = response.IncompleteDetails.Reason
 	}
-	result.FinishReason = MapOpenResponsesFinishReason(finishReason, hasToolCalls)
+	// DoGenerate corrects the presence of a "" or non-string reason from
+	// the body (openResponsesHasIncompleteReason).
+	result.FinishReason = mapOpenResponsesFinishReasonTS(finishReason, finishReason != "", hasToolCalls)
 	result.RawFinishReason = finishReason
 
 	return result, nil
@@ -1768,7 +1776,8 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		if event.Response != nil && event.Response.IncompleteDetails != nil {
 			finishReason = event.Response.IncompleteDetails.Reason
 		}
-		s.finishReason = MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
+		present := finishReason != "" || openResponsesEventHasIncompleteReason(event.Raw)
+		s.finishReason = mapOpenResponsesFinishReasonTS(finishReason, present, s.hasToolCalls)
 		s.rawFinishReason = finishReason
 		if event.Response != nil && event.Response.Usage != nil {
 			u := convertOpenResponsesUsage(event.Response.Usage)
@@ -2099,6 +2108,18 @@ func openResponsesHasIncompleteReason(body []byte) bool {
 	return len(w.IncompleteDetails.Reason) > 0 && string(w.IncompleteDetails.Reason) != "null"
 }
 
+// openResponsesEventHasIncompleteReason is openResponsesHasIncompleteReason
+// for a stream event's response member.
+func openResponsesEventHasIncompleteReason(raw json.RawMessage) bool {
+	var w struct {
+		Response json.RawMessage `json:"response"`
+	}
+	if jsonexact.Unmarshal(raw, &w) != nil || len(w.Response) == 0 {
+		return false
+	}
+	return openResponsesHasIncompleteReason(w.Response)
+}
+
 // responseFailedHasCode reports whether a response.failed event carries a
 // non-null response.error.code.
 func responseFailedHasCode(raw json.RawMessage) bool {
@@ -2179,4 +2200,15 @@ func openResponsesErrorResponse(resp *internalhttp.Response) (map[string]string,
 	}
 	_, headers, _ := (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails()
 	return headers, string(resp.Body)
+}
+
+// openResponsesHasSystemMessage reports whether the prompt has a system
+// message (TS pushes each one's content, even "", into the instructions).
+func openResponsesHasSystemMessage(messages []types.Message) bool {
+	for _, msg := range messages {
+		if msg.Role == types.RoleSystem {
+			return true
+		}
+	}
+	return false
 }

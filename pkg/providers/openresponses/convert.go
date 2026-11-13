@@ -217,7 +217,10 @@ func convertFileToImageURL(file types.FileContent, warnings *[]types.Warning) st
 	if mediaType == "" {
 		mediaType = file.MimeType
 	}
-	if mediaType == "" || mediaType == "image/*" {
+	// Inline bytes arrive with their full media type already resolved (TS
+	// resolveFullMediaType, convertUserContent); only a Go part without any
+	// media type gets the image/jpeg default.
+	if mediaType == "" {
 		mediaType = "image/jpeg"
 	}
 
