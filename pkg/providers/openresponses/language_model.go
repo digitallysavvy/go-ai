@@ -993,12 +993,17 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 						continue
 					}
 					hasToolCalls = true
+					// Core rebuilds the content's tool-call part from this
+					// call, so it keeps every field of the decoded part (TS
+					// pushes the part as is).
 					toolCalls = append(toolCalls, types.ToolCall{
 						ID:               tc.ToolCallID,
 						ToolName:         tc.ToolName,
+						Title:            tc.Title,
 						Arguments:        tc.Arguments,
 						RawArguments:     tc.Input,
 						ProviderExecuted: tc.ProviderExecuted,
+						Dynamic:          tc.Dynamic,
 						ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
 					})
 				}
