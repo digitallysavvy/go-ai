@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"sort"
@@ -221,8 +222,8 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	var usage *provider.DecisionUsage
 	if response.Usage != nil {
 		usage = &provider.DecisionUsage{
-			InputTokens:  response.Usage.InputTokens,
-			OutputTokens: response.Usage.OutputTokens,
+			InputTokens:  typesafeTokenCount(response.Usage.InputTokens),
+			OutputTokens: typesafeTokenCount(response.Usage.OutputTokens),
 		}
 	} else {
 		usage = &provider.DecisionUsage{}
@@ -527,9 +528,31 @@ type typesafeResponseWire struct {
 	Usage   *typesafeUsageWire         `json:"usage"`
 }
 
+// typesafeUsageWire holds the usage counts as zod's z.number() accepts them,
+// values past the int range included (an int field failed the decode).
 type typesafeUsageWire struct {
-	InputTokens  *int `json:"input_tokens"`
-	OutputTokens *int `json:"output_tokens"`
+	InputTokens  *float64 `json:"input_tokens"`
+	OutputTokens *float64 `json:"output_tokens"`
+}
+
+// typesafeTokenCount maps a usage count to the integral Go usage field:
+// truncated toward zero and clamped to the int range (the schema already
+// rejected a non-finite value).
+func typesafeTokenCount(v *float64) *int {
+	if v == nil {
+		return nil
+	}
+	f := math.Trunc(*v)
+	var n int
+	switch {
+	case f >= math.MaxInt:
+		n = math.MaxInt
+	case f <= math.MinInt:
+		n = math.MinInt
+	default:
+		n = int(f)
+	}
+	return &n
 }
 
 // DoEvaluate is the deprecated form of DoDecide.
