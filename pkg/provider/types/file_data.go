@@ -2,9 +2,10 @@ package types
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"io"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ProviderReference maps provider names to provider-specific file identifiers.
@@ -91,7 +92,7 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 		} else if f.Data != nil {
 			value = f.Data
 		}
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			fileDataBase
 			Data interface{} `json:"data"`
 		}{
@@ -99,7 +100,7 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 			Data:         value,
 		})
 	case FileDataTypeURL:
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			fileDataBase
 			URL         string `json:"url"`
 			OriginalURL string `json:"originalUrl,omitempty"`
@@ -113,7 +114,7 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 		if reference == nil {
 			reference = ProviderReference{}
 		}
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			fileDataBase
 			Reference ProviderReference `json:"reference"`
 		}{
@@ -121,7 +122,7 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 			Reference:    reference,
 		})
 	case FileDataTypeText:
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			fileDataBase
 			Text string `json:"text"`
 		}{
@@ -147,7 +148,7 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 		} else if len(f.Data) > 0 {
 			out.Data = f.Data
 		}
-		return json.Marshal(out)
+		return jsonstr.Marshal(out)
 	}
 }
 

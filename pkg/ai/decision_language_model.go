@@ -2,9 +2,10 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -256,7 +257,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 	normalizeGenerateResultText(&textResult)
 	text := textResult.Text
 	var rawValues interface{}
-	if err := json.Unmarshal([]byte(text), &rawValues); err != nil {
+	if err := jsonexact.Unmarshal([]byte(text), &rawValues); err != nil {
 		return nil, providererrors.NewInvalidResponseDataError(text, "Decision did not return valid JSON.")
 	}
 	values, ok := rawValues.(map[string]interface{})

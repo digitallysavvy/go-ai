@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
@@ -17,6 +19,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -585,7 +588,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 	switch mode {
 	case ObjectModeObject:
 		var obj interface{}
-		if err := json.Unmarshal([]byte(text), &obj); err != nil {
+		if err := jsonexact.Unmarshal([]byte(text), &obj); err != nil {
 			return nil, nil, "", err
 		}
 		obj = schema.ApplyDefaults(obj, s)
@@ -595,7 +598,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		return obj, nil, "", nil
 	case ObjectModeArray:
 		var root interface{}
-		if err := json.Unmarshal([]byte(text), &root); err != nil {
+		if err := jsonexact.Unmarshal([]byte(text), &root); err != nil {
 			return nil, nil, "", err
 		}
 		// Mirrors TS arrayOutputStrategy.validateFinalResult: the value must
@@ -616,7 +619,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		return resultArray, resultArray, "", nil
 	case ObjectModeEnum:
 		var root interface{}
-		if err := json.Unmarshal([]byte(text), &root); err != nil {
+		if err := jsonexact.Unmarshal([]byte(text), &root); err != nil {
 			return nil, nil, "", err
 		}
 		// Mirrors TS enumOutputStrategy.validateFinalResult.
@@ -633,7 +636,7 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		return nil, nil, "", objectTypeValidationError(root, "value must be a string in the enum", nil)
 	case ObjectModeNoSchema:
 		var obj interface{}
-		if err := json.Unmarshal([]byte(text), &obj); err != nil {
+		if err := jsonexact.Unmarshal([]byte(text), &obj); err != nil {
 			return nil, nil, "", err
 		}
 		return obj, nil, "", nil
@@ -1709,7 +1712,7 @@ func GenerateObjectInto(ctx context.Context, opts GenerateObjectOptions, target 
 	}
 
 	// Unmarshal into target
-	jsonBytes, err := json.Marshal(result.Object)
+	jsonBytes, err := jsonstr.Marshal(result.Object)
 	if err != nil {
 		return fmt.Errorf("failed to marshal result: %w", err)
 	}
@@ -2185,7 +2188,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			streamProviderMetadata = nil
 			if len(chunk.ProviderMetadata) > 0 {
 				var pm map[string]interface{}
-				if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &pm); jsonErr == nil {
+				if jsonErr := jsonexact.Unmarshal(chunk.ProviderMetadata, &pm); jsonErr == nil {
 					streamProviderMetadata = pm
 				}
 			}

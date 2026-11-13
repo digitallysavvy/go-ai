@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -2104,7 +2106,7 @@ func parseArgs(raw interface{}) interface{} {
 		// secureJsonParse (TS #16320), so a payload carrying `__proto__` or
 		// `constructor.prototype` keys falls back to {} like invalid JSON.
 		var decoded interface{}
-		if err := json.Unmarshal([]byte(v), &decoded); err == nil && !hasForbiddenPrototypeKey(decoded) {
+		if err := jsonexact.Unmarshal([]byte(v), &decoded); err == nil && !hasForbiddenPrototypeKey(decoded) {
 			return decoded
 		}
 		return map[string]interface{}{}

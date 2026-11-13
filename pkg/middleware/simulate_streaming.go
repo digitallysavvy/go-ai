@@ -7,8 +7,11 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // providerMetadataRawJSON marshals a provider-metadata map into the
@@ -19,7 +22,7 @@ func providerMetadataRawJSON(metadata map[string]interface{}) json.RawMessage {
 	if len(metadata) == 0 {
 		return nil
 	}
-	data, err := json.Marshal(metadata)
+	data, err := jsonstr.Marshal(metadata)
 	if err != nil {
 		return nil
 	}
@@ -77,7 +80,7 @@ func toolResultFromResultContent(rc types.ToolResultContent) types.ToolResult {
 	}
 	var providerMetadata map[string]interface{}
 	if len(rc.ProviderMetadata) > 0 {
-		_ = json.Unmarshal(rc.ProviderMetadata, &providerMetadata)
+		_ = jsonexact.Unmarshal(rc.ProviderMetadata, &providerMetadata)
 	}
 	return types.ToolResult{
 		ToolCallID:       rc.ToolCallID,
@@ -102,13 +105,13 @@ func toolCallFromCallContent(part types.ToolCallContent) types.ToolCall {
 	args := part.Arguments
 	if args == nil && part.Input != "" {
 		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(part.Input), &parsed); err == nil {
+		if err := jsonexact.Unmarshal([]byte(part.Input), &parsed); err == nil {
 			args = parsed
 		}
 	}
 	var providerMetadata map[string]interface{}
 	if len(part.ProviderMetadata) > 0 {
-		_ = json.Unmarshal(part.ProviderMetadata, &providerMetadata)
+		_ = jsonexact.Unmarshal(part.ProviderMetadata, &providerMetadata)
 	}
 	return types.ToolCall{
 		ID:                  part.ToolCallID,

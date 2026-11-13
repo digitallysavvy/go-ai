@@ -2,8 +2,9 @@ package types
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // StepModel identifies the model that produced a generation step.
@@ -287,7 +288,7 @@ func (r SpeechResult) MarshalJSON() ([]byte, error) {
 	if out.Warnings == nil {
 		out.Warnings = []Warning{}
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // TranscriptionResult contains the result of a speech-to-text operation
