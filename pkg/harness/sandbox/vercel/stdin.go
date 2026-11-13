@@ -12,6 +12,7 @@ import (
 	"time"
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -162,7 +163,7 @@ func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64,
 	var out struct {
 		BytesWritten json.RawMessage `json:"bytesWritten"`
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, &stdinWriteError{err: err, maybeApplied: maybeApplied}
 	}
 	if out.BytesWritten == nil {
@@ -186,7 +187,7 @@ func stdinTimeoutBytesWritten(body []byte) (int64, bool) {
 			BytesWritten *float64 `json:"bytesWritten"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &out) != nil || out.Error.BytesWritten == nil {
+	if jsonexact.Unmarshal(body, &out) != nil || out.Error.BytesWritten == nil {
 		return 0, false
 	}
 	v := *out.Error.BytesWritten

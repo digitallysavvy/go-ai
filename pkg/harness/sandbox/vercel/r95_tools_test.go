@@ -2,6 +2,7 @@ package vercel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // TS VercelSandboxSession.writeBinaryFile mkdir -p's posix.dirname(path):
@@ -100,5 +104,27 @@ func TestR95toolsVercelStdinAbortCause(t *testing.T) {
 	zero := int64(0)
 	if _, err := c.writeCommandStdin(ctx3, "s", "c", writeStdinParams{data: []byte("x"), offset: &zero}); err != cause { //nolint:errorlint // TS rethrows the reason itself
 		t.Fatalf("aborted writeCommandStdin = %v, want the cause", err)
+	}
+}
+
+// @vercel/sandbox parses responses with zod: keys match exactly, so a
+// differently cased key is not the field.
+func TestR95toolsVercelResponsesDecodeCaseExact(t *testing.T) {
+	got, err := parseStdinResponse(&httpinternal.Response{StatusCode: 200, Body: []byte(`{"BytesWritten":5}`)}, false)
+	if err != nil || got != nil {
+		t.Fatalf("parseStdinResponse = %v, %v; want no bytesWritten", got, err)
+	}
+	if _, err := parseLogLine([]byte(`{"Stream":"stdout","data":"x"}`), "s"); err == nil {
+		t.Fatal("parseLogLine accepted a differently cased stream key")
+	}
+	if n, ok := stdinTimeoutBytesWritten([]byte(`{"error":{"BytesWritten":3}}`)); ok {
+		t.Fatalf("stdinTimeoutBytesWritten = %d from a differently cased key", n)
+	}
+	var s sessionWire
+	if err := json.Unmarshal([]byte(`{"id":"a","CWD":"/x"}`), &s); err != nil || s.CWD != "" {
+		t.Fatalf("session = %+v, %v", s, err)
+	}
+	if bad := jsonexact.UntaggedFields(&sessionWire{}, &commandWire{}, &sandboxAndSessionResponse{}, &commandResponse{}); len(bad) > 0 {
+		t.Fatalf("response fields without a json tag: %v", bad)
 	}
 }
