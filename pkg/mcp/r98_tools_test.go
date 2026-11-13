@@ -70,7 +70,7 @@ func TestR98toolsModernJSONResultWithProtoKey(t *testing.T) {
 	if err := client.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	result, err := client.CallTool(context.Background(), "search", nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
@@ -104,7 +104,7 @@ func TestR98toolsInputRequiredWithProtoKey(t *testing.T) {
 	if err := client.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	var seen ElicitationRequest
 	client.OnElicitationRequest(func(_ context.Context, req ElicitationRequest) (ElicitResult, error) {
 		seen = req
@@ -148,7 +148,7 @@ func TestR98toolsElicitResultNonFiniteAndProtoContent(t *testing.T) {
 	if err := client.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	client.OnElicitationRequest(func(context.Context, ElicitationRequest) (ElicitResult, error) {
 		return ElicitResult{Action: "accept", Content: map[string]interface{}{"n": math.Inf(1), "__proto__": "v"}}, nil
 	})

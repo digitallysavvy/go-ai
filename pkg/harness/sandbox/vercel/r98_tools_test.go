@@ -15,10 +15,10 @@ import (
 // JSONParseError (review round 98; ruling 4).
 func TestR98toolsAPIResponsesKeepProtoKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet:
+		switch r.Method {
+		case http.MethodGet:
 			_, _ = w.Write([]byte(`{"sandbox":{"name":"sbx","__proto__":{"x":1}},"session":{"id":"s1","networkPolicy":{"constructor":{"prototype":{}}}},"routes":[]}`))
-		case r.Method == http.MethodPost:
+		case http.MethodPost:
 			w.Header().Set("Content-Type", "application/x-ndjson")
 			_, _ = w.Write([]byte(`{"command":{"id":"cmd1","__proto__":{}}}` + "\n" +
 				`{"stream":"stdout","data":"hi","__proto__":{}}` + "\n" +
