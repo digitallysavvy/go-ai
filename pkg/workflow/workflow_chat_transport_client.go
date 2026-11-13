@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -182,7 +183,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 			headers[k] = v
 		}
 	}
-	raw, err := json.Marshal(body)
+	raw, err := jsonstr.Marshal(body) // JSON.stringify: NaN/Infinity as null, no HTML escaping
 	if err != nil {
 		errs <- err
 		return
