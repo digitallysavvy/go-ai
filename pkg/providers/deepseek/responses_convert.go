@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -145,7 +146,7 @@ func deepseekResponsesPartOption(providerOptions map[string]interface{}, provide
 	}
 	if len(providerMetadata) > 0 {
 		var meta map[string]map[string]interface{}
-		if json.Unmarshal(providerMetadata, &meta) == nil {
+		if jsonexact.UnmarshalPlain(providerMetadata, &meta) == nil { // ruling 4: 1e400 reads as +Inf
 			return meta[name][key]
 		}
 	}

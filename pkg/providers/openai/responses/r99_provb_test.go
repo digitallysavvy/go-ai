@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"math"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TestR99provbUsagePlatformInt: a fractional-path Responses usage count
@@ -16,5 +18,21 @@ func TestR99provbUsagePlatformInt(t *testing.T) {
 	}
 	if u.InputTokens != math.MaxInt || u.OutputTokens != 2 || u.InputTokensDetails == nil || u.InputTokensDetails.CachedTokens != math.MaxInt {
 		t.Errorf("usage = %+v", u)
+	}
+}
+
+// TestR99provbPartMetadataOutOfRange: TS holds part provider metadata as an
+// object (a 1e400 value reads as Infinity, ruling 4). Go decoded it with
+// encoding/json, which fails on 1e400 and dropped the metadata.
+func TestR99provbPartMetadataOutOfRange(t *testing.T) {
+	meta := json.RawMessage(`{"xai":{"itemId":"i1","n":1e400}}`)
+	if v, ok := xaiPartString(nil, meta, "itemId"); !ok || v != "i1" {
+		t.Errorf("xaiPartString = %q, %v, want i1", v, ok)
+	}
+	if got := toolCallContentProviderMetadata(types.ToolCallContent{ProviderMetadata: meta}); got["xai"] == nil {
+		t.Errorf("tool call metadata = %v, want the xai namespace", got)
+	}
+	if got := toolResultContentProviderMetadata(types.ToolResultContent{ProviderMetadata: meta}); got["xai"] == nil {
+		t.Errorf("tool result metadata = %v, want the xai namespace", got)
 	}
 }

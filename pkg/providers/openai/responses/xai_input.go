@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -86,7 +87,7 @@ func xaiPartString(options map[string]interface{}, metadata json.RawMessage, key
 	}
 	if len(metadata) > 0 {
 		var raw map[string]interface{}
-		if json.Unmarshal(metadata, &raw) == nil {
+		if jsonexact.UnmarshalPlain(metadata, &raw) == nil { // ruling 4: 1e400 reads as +Inf
 			if opts, ok := raw["xai"].(map[string]interface{}); ok {
 				if v, ok := opts[key].(string); ok {
 					return v, true

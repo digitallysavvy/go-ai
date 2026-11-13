@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
@@ -1600,7 +1601,7 @@ func toolCallContentProviderMetadata(part types.ToolCallContent) map[string]inte
 		return metadata
 	}
 	var raw map[string]interface{}
-	if err := json.Unmarshal(part.ProviderMetadata, &raw); err != nil {
+	if err := jsonexact.UnmarshalPlain(part.ProviderMetadata, &raw); err != nil { // ruling 4: 1e400 reads as +Inf
 		return metadata
 	}
 	for key, value := range raw {
@@ -1936,7 +1937,7 @@ func toolResultContentProviderMetadata(part types.ToolResultContent) map[string]
 		return metadata
 	}
 	var raw map[string]interface{}
-	if err := json.Unmarshal(part.ProviderMetadata, &raw); err != nil {
+	if err := jsonexact.UnmarshalPlain(part.ProviderMetadata, &raw); err != nil { // ruling 4: 1e400 reads as +Inf
 		return metadata
 	}
 	for key, value := range raw {
