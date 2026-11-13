@@ -3,7 +3,6 @@ package workflow
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,11 +12,15 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -365,9 +368,13 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		// error.toString(): "Error: <message>".
 		lastErr := "Error: Reconnect stream ended without receiving chunks."
 		var parseErr *uiChunkJSONParseError
+		var typeErr *uiChunkTypeError
 		if errors.As(streamErr, &parseErr) {
 			// TS throws chunk.error, an AI_JSONParseError.
 			lastErr = parseErr.toString()
+		} else if errors.As(streamErr, &typeErr) {
+			// TS throws chunk.error, an AI_TypeValidationError.
+			lastErr = typeErr.toString()
 		} else if streamErr != nil {
 			lastErr = "Error: " + streamErr.Error()
 		}
@@ -448,12 +455,19 @@ func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Rea
 		// TS parseJsonEventStream skips only an exact "[DONE]"; any other
 		// data, an empty one included, is parsed as JSON (JSON.parse
 		// whitespace is Go's JSON whitespace).
+		// The body is read through TextDecoderStream: invalid UTF-8 becomes
+		// U+FFFD per maximal subpart.
 		data := event.Data
+		if !utf8.ValidString(data) {
+			data = prompt.DecodeUTF8Text(append([]byte{' '}, data...))[1:]
+		}
 		if data == "[DONE]" {
 			continue
 		}
-		var chunk ai.UIMessageChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		// safeParseJSON: secureJsonParse rejects a forbidden prototype key,
+		// and a number beyond the double range reads as +-Infinity.
+		var value interface{}
+		if err := jsonexact.Unmarshal([]byte(data), &value); err != nil {
 			// TS's parseJsonEventStream runs safeParseJSON with schema
 			// validation and, on failure, `throw chunk.error` — caught by the
 			// enclosing try/catch, which logs and falls through exactly as if
@@ -462,8 +476,19 @@ func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Rea
 			// silently skipped: stop the pump so the caller's reconnect path
 			// runs, matching TS instead of dropping one frame and continuing
 			// on the same (possibly desynced) connection.
+			var parseErr *jsonexact.JSONParseError
+			if errors.As(err, &parseErr) {
+				err = parseErr.Cause
+			}
 			return read, gotFinish, &uiChunkJSONParseError{text: data, cause: err}
 		}
+		obj, isObject := value.(map[string]interface{})
+		if !isObject {
+			// uiMessageChunkSchema accepts only objects (null included in
+			// the failure): TS throws its TypeValidationError the same way.
+			return read, gotFinish, &uiChunkTypeError{text: data, value: value}
+		}
+		chunk := ai.UIMessageChunk(obj)
 		read++
 		// The orphan filter runs on the raw chunk, before framing repair —
 		// matching TS, where reconnectToStreamIterator's orphan filter
@@ -702,4 +727,28 @@ func (e *uiChunkJSONParseError) Unwrap() error { return e.cause }
 // (known difference, S3).
 func (e *uiChunkJSONParseError) toString() string {
 	return "AI_JSONParseError: JSON parsing failed: Text: " + e.text + ".\nError message: SyntaxError: " + e.cause.Error()
+}
+
+// uiChunkTypeError is the AI_TypeValidationError TS parseJsonEventStream
+// returns for a frame whose JSON value is not an object (null, a number, a
+// string, an array): uiMessageChunkSchema is a union of objects.
+type uiChunkTypeError struct {
+	text  string
+	value interface{}
+}
+
+func (e *uiChunkTypeError) Error() string {
+	return "invalid UI message chunk: " + e.message()
+}
+
+func (e *uiChunkTypeError) message() string {
+	return "Invalid input: expected object, received " + zodlite.JSType(e.value, true)
+}
+
+// toString is TS getErrorMessage(error) for the AI_TypeValidationError:
+// "AI_TypeValidationError: Type validation failed: Value: <JSON>.\nError
+// message: <issues>". The issue text is Go's, not zod's issue list (known
+// difference, S3).
+func (e *uiChunkTypeError) toString() string {
+	return "AI_TypeValidationError: Type validation failed: Value: " + zodlite.CompactJSON(e.text) + ".\nError message: " + e.message()
 }
