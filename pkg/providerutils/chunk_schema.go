@@ -441,6 +441,25 @@ func ChunkParseFailure(data string, cause error) (string, error) {
 		err := providererrors.NewJSONParseError(data, jsonexact.ErrForbiddenPrototype)
 		return err.Error(), err
 	}
+	return validationFailure(data, cause)
+}
+
+// ChunkParseFailurePlain is ChunkParseFailure for a body TS reads with plain
+// JSON.parse (`await response.json()`) and then validates: a `__proto__` key
+// or a `constructor.prototype` is an ordinary property there, so a body that
+// carries one and fails the schema is the TypeValidationError, not a
+// JSONParseError. Only text that is not JSON is a JSONParseError.
+func ChunkParseFailurePlain(data string, cause error) (string, error) {
+	if _, syntax := parseJSValuePlain([]byte(data)); syntax != nil {
+		err := providererrors.NewJSONParseError(data, syntax)
+		return err.Error(), err
+	}
+	return validationFailure(data, cause)
+}
+
+// validationFailure is the TypeValidationError of ChunkParseFailure for data
+// that parsed.
+func validationFailure(data string, cause error) (string, error) {
 	compact := data
 	var b bytes.Buffer
 	if err := json.Compact(&b, []byte(data)); err == nil {
