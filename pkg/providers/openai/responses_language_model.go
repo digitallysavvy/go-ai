@@ -2833,34 +2833,50 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 		if action.Sources != nil {
 			sources := make([]map[string]interface{}, 0, len(action.Sources))
 			for _, source := range action.Sources {
+				// TS passes the parsed sources through: {type: 'url', url}
+				// or {type: 'api', name}, the string required ("" kept).
 				mapped := map[string]interface{}{"type": source.Type}
-				if source.URL != "" {
+				switch source.Type {
+				case "url":
 					mapped["url"] = source.URL
-				}
-				if source.Name != "" {
+				case "api":
 					mapped["name"] = source.Name
+				default:
+					if source.URL != "" {
+						mapped["url"] = source.URL
+					}
+					if source.Name != "" {
+						mapped["name"] = source.Name
+					}
 				}
 				sources = append(sources, mapped)
 			}
 			result["sources"] = sources
 		}
 	case "open_page":
-		mapped := map[string]interface{}{"type": "openPage", "url": nil}
-		if action.URL != nil {
-			mapped["url"] = *action.URL
-		}
+		// TS {type, url: action.url}: an absent url is undefined (left
+		// out), a null one null.
+		mapped := map[string]interface{}{"type": "openPage"}
+		webSearchActionField(mapped, "url", action.URL, action.urlPresent)
 		result["action"] = mapped
 	case "find_in_page":
-		mapped := map[string]interface{}{"type": "findInPage", "url": nil, "pattern": nil}
-		if action.URL != nil {
-			mapped["url"] = *action.URL
-		}
-		if action.Pattern != nil {
-			mapped["pattern"] = *action.Pattern
-		}
+		mapped := map[string]interface{}{"type": "findInPage"}
+		webSearchActionField(mapped, "url", action.URL, action.urlPresent)
+		webSearchActionField(mapped, "pattern", action.Pattern, action.patternPresent)
 		result["action"] = mapped
 	}
 	return result
+}
+
+// webSearchActionField sets key to the action's value: the string when set,
+// null when the wire key was present but null, else nothing (TS undefined).
+func webSearchActionField(mapped map[string]interface{}, key string, value *string, present bool) {
+	switch {
+	case value != nil:
+		mapped[key] = *value
+	case present:
+		mapped[key] = nil
+	}
 }
 
 // responsesItemIsFunctionCall reports whether a Responses output item is a

@@ -594,7 +594,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
 	currentDate := time.Now() // TS: taken before the status request
 	var operation alibabaOperation
-	if err := json.Unmarshal(opts.Operation, &operation); err != nil {
+	if err := jsonexact.UnmarshalPlain(opts.Operation, &operation); err != nil {
 		return nil, fmt.Errorf("alibaba: invalid operation reference: %w", err)
 	}
 

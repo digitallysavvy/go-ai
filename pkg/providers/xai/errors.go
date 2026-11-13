@@ -3,6 +3,7 @@ package xai
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -279,9 +280,12 @@ func xaiErrorMessageData(body []byte) (message string, data interface{}, matched
 // xaiStringOrNumber reports whether a decoded value is absent, null, a
 // string or a number.
 func xaiStringOrNumber(v interface{}) bool {
-	switch v.(type) {
-	case nil, string, float64:
+	switch x := v.(type) {
+	case nil, string:
 		return true
+	case float64:
+		// z.number() rejects the Infinity JSON.parse reads for 1e400.
+		return !math.IsInf(x, 0)
 	default:
 		return false
 	}

@@ -156,7 +156,8 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 	if streamErr := createHFStreamError(raw, s.providerName); streamErr != nil {
 		s.finishReason = types.FinishReasonError
 		if streamErr.Code != nil {
-			s.rawFinishReason = fmt.Sprintf("%v", streamErr.Code)
+			// TS String(streamError.code): JS number text (1000000, not 1e+06).
+			s.rawFinishReason = providerutils.JSString(streamErr.Code)
 		} else {
 			s.rawFinishReason = streamErr.Type
 		}

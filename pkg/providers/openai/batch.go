@@ -729,7 +729,8 @@ func convertOpenAIBatchErrorResponse(body json.RawMessage, statusCode int) *prov
 		case string:
 			code = c
 		case float64:
-			code = providerutils.JSNumberString(c)
+			// z.number() rejects the Infinity JSON.parse reads for 1e400.
+			code, codeOK = providerutils.JSNumberString(c), !math.IsInf(c, 0)
 		default:
 			codeOK = false
 		}

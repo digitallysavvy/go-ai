@@ -252,7 +252,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	currentDate := time.Now()
 
 	var op xaiVideoOperation
-	if err := json.Unmarshal(opts.Operation, &op); err != nil {
+	if err := jsonexact.UnmarshalPlain(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("xai: invalid operation reference: %w", err)
 	}
 
@@ -377,8 +377,11 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 		meta["costInUsdTicks"] = *status.Usage.CostInUsdTicks
 	}
 	if status.Progress != nil {
-		// Whole-number progress stays an int (the pre-existing metadata type).
-		if p := *status.Progress; p == math.Trunc(p) {
+		// Whole-number progress stays an int (the pre-existing metadata type)
+		// when it fits the platform int; a larger one stays the float64
+		// TS reports (a Go conversion beyond the int range is
+		// implementation-defined).
+		if p := *status.Progress; p == math.Trunc(p) && p >= math.MinInt && p <= math.MaxInt {
 			meta["progress"] = int(p)
 		} else {
 			meta["progress"] = p

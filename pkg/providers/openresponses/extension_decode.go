@@ -119,7 +119,7 @@ func attachExtensionItemReference(part types.ContentPart, extensionID, itemID, p
 func mergeExtensionReference(existing json.RawMessage, providerName string, reference map[string]interface{}) json.RawMessage {
 	metadata := map[string]interface{}{}
 	if len(existing) > 0 {
-		_ = json.Unmarshal(existing, &metadata) //nolint:errcheck
+		_ = jsonexact.UnmarshalPlain(existing, &metadata) // ruling 4: 1e400 reads as +Inf
 	}
 	providerMeta, ok := metadata[providerName].(map[string]interface{})
 	if !ok {
@@ -142,7 +142,7 @@ func extensionToolCallProviderMetadata(raw json.RawMessage) map[string]interface
 		return nil
 	}
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(raw, &metadata); err != nil {
+	if err := jsonexact.UnmarshalPlain(raw, &metadata); err != nil {
 		return nil
 	}
 	return metadata

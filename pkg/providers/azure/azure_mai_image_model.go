@@ -333,13 +333,13 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 	usage.ImageCount = len(allImages)
 	if hasUsage {
 		if inputSeen {
-			usage.InputTokens = int(inTotal)
+			usage.InputTokens = providerutils.WireInt(inTotal)
 		}
 		if outputSeen {
-			usage.OutputTokens = int(outTotal)
+			usage.OutputTokens = providerutils.WireInt(outTotal)
 		}
 		if totalSeen {
-			usage.TotalTokens = int(totalTotal)
+			usage.TotalTokens = providerutils.WireInt(totalTotal)
 		}
 	}
 
@@ -557,9 +557,12 @@ func azureMaiErrorCodeValid(code json.RawMessage) bool {
 	if jsonexact.Unmarshal(code, &v) != nil {
 		return false
 	}
-	switch v.(type) {
-	case string, float64:
+	switch x := v.(type) {
+	case string:
 		return true
+	case float64:
+		// z.number() rejects the Infinity JSON.parse reads for 1e400.
+		return !math.IsInf(x, 0)
 	}
 	return false
 }

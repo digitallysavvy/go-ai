@@ -150,8 +150,10 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 		return nil, providererrors.NewSchemaProviderError("fireworks", resp.StatusError(resp.Body), nil) // TS createStatusCodeErrorResponseHandler
 	}
 
-	// TS createBinaryResponseHandler: an empty body is an error.
-	if len(resp.Body) == 0 {
+	// TS createBinaryResponseHandler: only a null body fails ("Response
+	// body is empty"); fetch gives a 204 / 205 reply a null body, while a
+	// 200 with an empty body is an empty image.
+	if providerutils.NullBodyStatus(resp.StatusCode) {
 		empty := providererrors.NewProviderError("fireworks", resp.StatusCode, "", "Response body is empty", nil)
 		_, empty.ResponseHeaders, _ = (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails() // TS APICallError responseHeaders
 		return nil, empty
@@ -334,20 +336,14 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string, callHea
 	}
 	dlOpts := fileutil.TrustedOriginDownloadOptions(baseURL, trustedTransport)
 	if fileutil.IsSameOrigin(imageURL, baseURL) {
-		key := providerutils.APIKeyOrEnv(m.provider.config.APIKey, "FIREWORKS_API_KEY")
-		if m.provider.config.APIKeyFunc != nil {
-			resolved, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
-				APIKey: m.provider.config.APIKey, APIKeyFunc: m.provider.config.APIKeyFunc,
-				EnvVar: "FIREWORKS_API_KEY", Description: "Fireworks API key",
-			})
-			if err != nil {
-				return nil, err
-			}
-			key = resolved
+		// TS combineHeaders(await resolve(config.headers), headers): the
+		// provider's tagged headers (API key, custom headers and the
+		// ai-sdk-fireworks user-agent tag) with the call headers over them.
+		providerHeaders, err := m.provider.client.RequestHeadersCtx(ctx)
+		if err != nil {
+			return nil, err
 		}
-		dlOpts.Headers = internalhttp.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + key,
-		}, m.provider.config.Headers)
+		dlOpts.Headers = providerHeaders
 		for _, h := range callHeaders {
 			dlOpts.Headers = internalhttp.MergeHeaders(dlOpts.Headers, h)
 		}

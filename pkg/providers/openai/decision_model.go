@@ -345,11 +345,13 @@ func (m *DecisionModel) handleError(err error) error {
 	return pe
 }
 
+// floatToIntPtr is a wire token count in the v0.5.2 int field, clamped to
+// the platform int (providerutils.WireInt).
 func floatToIntPtr(v *float64) *int {
 	if v == nil {
 		return nil
 	}
-	i := int(*v)
+	i := providerutils.WireInt(*v)
 	return &i
 }
 

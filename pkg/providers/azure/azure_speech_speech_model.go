@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -187,6 +188,14 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, azureSpeechAPIErrorText(m.Provider(), resp.StatusCode, fileutil.ResponseStatusText(resp), resp.Header, respBody, true)
+	}
+
+	// TS createBinaryResponseHandler: a null body (fetch gives a 204 / 205
+	// reply one) is "Response body is empty"; an empty 200 is empty audio.
+	if providerutils.NullBodyStatus(resp.StatusCode) {
+		empty := providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", "Response body is empty", nil)
+		_, empty.ResponseHeaders, _ = (&internalhttp.HTTPStatusError{Headers: resp.Header}).HTTPStatusDetails()
+		return nil, empty
 	}
 
 	if warnings == nil {

@@ -484,6 +484,10 @@ var openAILiveClientEventOrder = map[string][]string{
 	"session.audio.output":       {"voice"},
 	"session.audio.output.voice": {"id"},
 	"session.delegation":         {"type"},
+	// providerOptions.openai.input as the strict zod schema outputs it
+	// (shape order, not the caller's).
+	"session.input":         {"type", "role", "content"},
+	"session.input.content": {"type", "text"},
 }
 
 var openAILiveKnownServerTypes = map[string]bool{
