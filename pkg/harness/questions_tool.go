@@ -47,7 +47,8 @@ func (a *AllowFreeForm) UnmarshalJSON(data []byte) error {
 	var obj struct {
 		Secret *bool `json:"secret"`
 	}
-	if err := json.Unmarshal(data, &obj); err != nil || obj.Secret == nil {
+	// zod matches keys exactly: a "Secret" key is stripped, not read.
+	if err := jsonexact.UnmarshalPlain(data, &obj); err != nil || obj.Secret == nil {
 		return errors.New("allowFreeForm must be a boolean or { secret: boolean }")
 	}
 	*a = AllowFreeForm{Enabled: true, Secret: obj.Secret}

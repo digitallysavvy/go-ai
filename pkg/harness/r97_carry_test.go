@@ -70,15 +70,16 @@ func TestR97carryMarshalTaggedNonFiniteAsNull(t *testing.T) {
 }
 
 // DecodeStreamPart is harnessV1StreamPartSchema over a JSON.parse'd frame:
-// 1e400 is Infinity in z.unknown() values (tool result, raw value, error),
+// 1e400 is Infinity in z.unknown() values (raw value, error; a tool result is
+// a JSON value, which rejects it: TestR98carryDecodeStreamPartRejectsNonFiniteJSONValues),
 // and keys match exactly (a differently cased key is stripped, not read).
 func TestR97carryDecodeStreamPartLikeJSONParse(t *testing.T) {
-	part, err := DecodeStreamPart([]byte(`{"type":"tool-result","toolCallId":"c","toolName":"t","result":{"n":1e400}}`))
+	part, err := DecodeStreamPart([]byte(`{"type":"raw","rawValue":{"n":1e400}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := part.(*ToolResultPart).Result.(map[string]any)["n"].(float64); !math.IsInf(n, 1) {
-		t.Fatalf("result = %v, want n = +Inf", part.(*ToolResultPart).Result)
+	if n, _ := part.(*RawPart).RawValue.(map[string]any)["n"].(float64); !math.IsInf(n, 1) {
+		t.Fatalf("rawValue = %v, want n = +Inf", part.(*RawPart).RawValue)
 	}
 	part, err = DecodeStreamPart([]byte(`{"type":"error","error":{"code":-1e400}}`))
 	if err != nil {
