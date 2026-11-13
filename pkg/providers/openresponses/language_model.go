@@ -1432,6 +1432,26 @@ func openResponsesConcatDelta(event *StreamEvent) string {
 
 // handleStreamEvent processes a stream event and returns appropriate chunk
 func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, bool) {
+	// TS validates chunks with z.any() and then reads chunk.item.type,
+	// chunk.response.* or chunk.error.code: a missing or null member is a
+	// TypeError that errors the stream.
+	member, prop := "", ""
+	switch event.Type {
+	case "response.output_item.added", "response.output_item.done":
+		member, prop = "item", "type"
+	case "response.completed", "response.incomplete":
+		member, prop = "response", "incomplete_details"
+	case "response.failed":
+		member, prop = "response", "error"
+	case "error":
+		member, prop = "error", "code"
+	}
+	if member != "" {
+		if what, missing := openResponsesMissingMember(event.Raw, member); missing {
+			s.err = fmt.Errorf("Cannot read properties of %s (reading '%s')", what, prop) //nolint:staticcheck // ST1005: TypeError text from TS
+			return nil, false
+		}
+	}
 	switch event.Type {
 	case "response.created":
 		// TS 4b16915083: {type: 'response-metadata', id: chunk.response.id,
@@ -2146,6 +2166,24 @@ func responseFailedHasCode(raw json.RawMessage) bool {
 		return false
 	}
 	return len(w.Response.Error.Code) > 0 && string(w.Response.Error.Code) != "null"
+}
+
+// openResponsesMissingMember reports whether raw (a JSON object) has no key
+// member ("undefined") or a null one ("null"), the values whose property
+// read throws in JS.
+func openResponsesMissingMember(raw json.RawMessage, member string) (string, bool) {
+	var fields map[string]json.RawMessage
+	if len(raw) == 0 || jsonexact.Unmarshal(raw, &fields) != nil {
+		return "", false
+	}
+	v, ok := fields[member]
+	if !ok {
+		return "undefined", true
+	}
+	if string(v) == "null" {
+		return "null", true
+	}
+	return "", false
 }
 
 // responseCreatedMetadata maps a response.created event to the
