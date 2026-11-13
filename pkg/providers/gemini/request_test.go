@@ -40,6 +40,8 @@ func TestGetModelCapabilities(t *testing.T) {
 		{"gemini-robotics-er-1.5-preview", false, false, false},
 		{"gemini-2.0-flash", true, false, false},
 		{"gemini-2.5-flash", true, true, false},
+		{"eu.gemini-2.5-flash", true, true, false},
+		{"au.gemini-3.5-flash", true, true, true},
 		{"gemini-3.1-pro-preview", true, true, true},
 		{"gemini-99-pro-preview", true, true, true},
 		{"gemini-ultra-latest", true, true, true},
@@ -171,10 +173,10 @@ func TestBuildRequest_ThresholdSafetySettings(t *testing.T) {
 	body, _ = buildReq(t, makeTestModel("gemini-2.5-flash"), &provider.GenerateOptions{
 		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
 			"threshold":      "BLOCK_LOW_AND_ABOVE",
-			"safetySettings": []interface{}{map[string]interface{}{"category": "X", "threshold": "Y"}},
+			"safetySettings": []interface{}{map[string]interface{}{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}},
 		}},
 	}, false)
-	if got := jsonString(t, body["safetySettings"]); got != `[{"category":"X","threshold":"Y"}]` {
+	if got := jsonString(t, body["safetySettings"]); got != `[{"category":"HARM_CATEGORY_HATE_SPEECH","threshold":"BLOCK_NONE"}]` {
 		t.Errorf("explicit safetySettings must win: %s", got)
 	}
 }
@@ -213,5 +215,21 @@ func TestBuildRequest_VertexOmitsFunctionCallIDs(t *testing.T) {
 	body, _ = buildReq(t, makeTestModel("gemini-2.5-flash"), opts, false)
 	if !strings.Contains(jsonString(t, body["contents"]), `"id":"c1"`) {
 		t.Errorf("google contents missing id: %s", jsonString(t, body["contents"]))
+	}
+}
+
+// TS sends stopSequences as given: an explicitly empty array is on the wire.
+func TestBuildRequest_EmptyStopSequencesSent(t *testing.T) {
+	m := makeTestModel("gemini-2.5-flash")
+	body, _ := buildReq(t, m, &provider.GenerateOptions{StopSequences: []string{}}, false)
+	gc := body["generationConfig"].(map[string]interface{})
+	if jsonString(t, gc["stopSequences"]) != "[]" {
+		t.Errorf("stopSequences = %s, want []", jsonString(t, gc["stopSequences"]))
+	}
+	body, _ = buildReq(t, m, &provider.GenerateOptions{}, false)
+	if gc, ok := body["generationConfig"].(map[string]interface{}); ok {
+		if _, has := gc["stopSequences"]; has {
+			t.Error("nil StopSequences must be omitted")
+		}
 	}
 }

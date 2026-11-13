@@ -110,6 +110,8 @@ func TestGetLanguageModelCapabilitiesSupportsNonReasoningParameters(t *testing.T
 		{"gpt-5.6-terra", true},
 		{"gpt-5.99", true},
 		{"gpt-5.100", true},
+		{"gpt-6-sol", true},
+		{"gpt-6-luna", true},
 		{"gpt-6-astra", false},
 		{"gpt-99", false},
 		{"gpt-5", false},
@@ -174,8 +176,24 @@ func TestGetLanguageModelCapabilitiesGpt6AndLater(t *testing.T) {
 		modelID string
 		want    []string
 	}{
-		{"gpt-5.6", nil},
+		// TS d07b475bc8: standard GPT-5.x models have known efforts.
+		{"gpt-5", []string{"minimal", "low", "medium", "high"}},
+		{"gpt-5-nano-2025-08-07", []string{"minimal", "low", "medium", "high"}},
+		{"gpt-5-2025-08-07", []string{"minimal", "low", "medium", "high"}},
+		{"gpt-5.1", []string{"none", "low", "medium", "high"}},
+		{"gpt-5.5", []string{"none", "low", "medium", "high", "xhigh"}},
+		{"gpt-5.4-mini", []string{"none", "low", "medium", "high", "xhigh"}},
+		{"gpt-5.6", []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{"gpt-5.6-terra", []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		// pro, codex and chat variants: efforts unknown.
+		{"gpt-5-pro", nil},
+		{"gpt-5.1-codex", nil},
+		{"gpt-5.2-chat-latest", nil},
+		{"gpt-5-chat-latest", nil},
+		{"gpt-4o", nil},
+		{"o3", nil},
 		{"gpt-6-astra", []string{"low", "medium", "high", "xhigh", "max"}},
+		{"gpt-6.1-terra", []string{"none", "low", "medium", "high", "xhigh", "max"}},
 		{"gpt-99", []string{"low", "medium", "high", "xhigh", "max"}},
 	}
 	for _, tt := range effortTests {

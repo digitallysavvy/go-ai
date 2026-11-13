@@ -5,8 +5,10 @@ package gmicloud
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	stdhttp "net/http"
 	"os"
@@ -31,6 +33,13 @@ type Config struct {
 	// environment variable (matching GMI's own SDK package).
 	APIKey string
 
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for API calls. Defaults to
 	// https://api.gmi-serving.com/v1.
 	BaseURL string
@@ -46,13 +55,15 @@ type Config struct {
 // Config.APIKey is empty, the API key is loaded from the GMI_CLOUD_APIKEY
 // environment variable.
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("GMI_CLOUD_APIKEY")
 	}
 
@@ -63,6 +74,15 @@ func New(cfg Config) *Provider {
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("gmicloud")),
 		HTTPClient: withGmicloudIncludeUsage(cfg.HTTPClient),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "GMI_CLOUD_APIKEY", Description: "GMI Cloud API key",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "GMI_CLOUD_APIKEY", "GMI Cloud API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -97,29 +117,29 @@ func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 // EmbeddingModel returns an error: GMI Cloud does not support embeddings
 // (TS createGmicloud throws NoSuchModelError for embeddingModel).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support embedding models (no such model: %q)", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an error: GMI Cloud does not support image generation
 // (TS createGmicloud throws NoSuchModelError for imageModel).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support image models (no such model: %q)", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns an error: GMI Cloud does not support speech synthesis.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns an error: GMI Cloud does not support
 // transcription.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns an error: GMI Cloud does not support reranking.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client used for API requests.
@@ -154,17 +174,34 @@ type gmicloudIncludeUsageTransport struct {
 	base stdhttp.RoundTripper
 }
 
+// RoundTrip closes the request body on every error, as the
+// http.RoundTripper contract requires (also before the base transport runs).
 func (t gmicloudIncludeUsageTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	resp, err := t.roundTrip(req)
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t gmicloudIncludeUsageTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	if req.Body == nil {
 		return t.base.RoundTrip(req)
 	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	_ = req.Body.Close()
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err == nil {
+		// buildRequestBody already sends stream_options.include_usage, so a
+		// streaming body that carries stream_options is passed through
+		// byte for byte: re-marshaling HTML-escaped <, > and & and sorted
+		// ordered objects (TS JSON.stringify keeps both, gmicloud-provider.ts:87).
+		if _, has := payload["stream_options"]; has {
+			payload = nil
+		}
 		if stream, _ := payload["stream"].(bool); stream {
 			payload["stream_options"] = map[string]interface{}{"include_usage": true}
 			if transformed, err := json.Marshal(payload); err == nil {

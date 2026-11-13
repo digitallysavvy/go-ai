@@ -72,6 +72,24 @@ type TakoSearchConfig struct {
 	OutputSettings *TakoSearchOutputSettings
 	// IncludeRelated is the maximum related search suggestions to include (1-20).
 	IncludeRelated *int
+	// VariableCost serves per-unit-priced data, such as web traffic and SEO.
+	// Each such card adds a charge, capped by MaxVariableCostUSD. On by
+	// default (nil); set false to opt out, and those cards come back as
+	// placeholders.
+	VariableCost *bool
+	// MaxVariableCostUSD is the most one call can be charged in variable
+	// cost, in USD. Nil leaves the Tako default (0.25). Cards that don't fit
+	// come back as placeholders with reason "over_cap". Can't be combined
+	// with VariableCost false.
+	MaxVariableCostUSD *float64
+	// NoMaxVariableCost sends maxVariableCostUsd as null, which removes the
+	// cap (TS `maxVariableCostUsd: null`). MaxVariableCostUSD wins when both
+	// are set.
+	NoMaxVariableCost bool
+	// ExtraBody holds extra Tako request fields in snake_case, deep-merged
+	// into the body last. It can't set fields this tool models; Tako rejects
+	// unknown keys (api_error).
+	ExtraBody map[string]interface{}
 }
 
 // TakoSearchTool is the gateway.tako_search provider-defined tool.
@@ -144,7 +162,6 @@ func NewTakoSearch(config TakoSearchConfig) TakoSearchTool {
 		Name: "tako_search",
 		Description: "Search Tako's curated Data Graph and the web for entities, metrics, and time series, returning rendered " +
 			"data cards and web results. Supports search effort, source selection, data/web filtering, and localization controls.",
-		Title:            "Tako Search",
 		Parameters:       map[string]interface{}{"type": "object", "properties": properties, "required": []string{"query"}},
 		OutputSchema:     takoSearchOutputSchema(),
 		ProviderExecuted: true,
@@ -254,96 +271,1423 @@ func takoWebSourceSchema() map[string]interface{} {
 }
 
 // takoSearchOutputSchema mirrors takoSearchOutputSchema in tako-search.ts.
-// TS parity (5533946): the internal-only relevance_score and
-// citation_number fields were dropped from the public output schema; they
-// must never appear here even as passthrough hints.
-func takoSearchOutputSchema() map[string]interface{} {
-	cardProperties := map[string]interface{}{
-		"card_id":              map[string]interface{}{"type": "string", "nullable": true},
-		"title":                map[string]interface{}{"type": "string", "nullable": true},
-		"description":          map[string]interface{}{"type": "string", "nullable": true},
-		"semantic_description": map[string]interface{}{"type": "string", "nullable": true},
-		"webpage_url":          map[string]interface{}{"type": "string", "nullable": true},
-		"image_url":            map[string]interface{}{"type": "string", "nullable": true},
-		"embed_url":            map[string]interface{}{"type": "string", "nullable": true},
-		"card_type":            map[string]interface{}{"type": "string", "nullable": true},
-		"relevance":            map[string]interface{}{"type": "string", "enum": []string{"High", "Low", "Medium"}, "nullable": true},
-		"exportable":           map[string]interface{}{"type": "boolean"},
-		"source_indexes":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string", "enum": []string{"data", "web"}}, "nullable": true},
-		"sources":              map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object", "additionalProperties": true}, "nullable": true},
-		"methodologies":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object", "additionalProperties": true}, "nullable": true},
-		"content":              takoResultContentSchema(),
-		"nodes":                map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object", "additionalProperties": true}, "nullable": true},
-		"metric_definitions":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object", "additionalProperties": true}, "nullable": true},
-		"data_freshness":       map[string]interface{}{"type": "object", "additionalProperties": true, "nullable": true},
-	}
-	webResultProperties := map[string]interface{}{
-		"title":        map[string]interface{}{"type": "string"},
-		"url":          map[string]interface{}{"type": "string"},
-		"snippet":      map[string]interface{}{"type": "string", "nullable": true},
-		"source_name":  map[string]interface{}{"type": "string", "nullable": true},
-		"publish_date": map[string]interface{}{"type": "string", "nullable": true},
-		"content":      takoResultContentSchema(),
-	}
-
-	return map[string]interface{}{
-		"oneOf": []interface{}{
-			map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"request_id": map[string]interface{}{"type": "string"},
-					"cards": map[string]interface{}{
-						"type":  "array",
-						"items": map[string]interface{}{"type": "object", "properties": cardProperties, "additionalProperties": true},
-					},
-					"web_results": map[string]interface{}{
-						"type":  "array",
-						"items": map[string]interface{}{"type": "object", "properties": webResultProperties, "additionalProperties": true},
-					},
-					"usage": map[string]interface{}{
-						"type":     "object",
-						"nullable": true,
-						"properties": map[string]interface{}{
-							"total_cost_usd": map[string]interface{}{"type": "number"},
-							"compute":        map[string]interface{}{"type": "object", "nullable": true, "properties": map[string]interface{}{"cost_usd": map[string]interface{}{"type": "number"}}},
-							"data":           map[string]interface{}{"type": "object", "nullable": true, "properties": map[string]interface{}{"cost_usd": map[string]interface{}{"type": "number"}, "datasets": map[string]interface{}{"type": "number"}}},
-						},
-					},
-					"related": map[string]interface{}{
-						"type":     "array",
-						"nullable": true,
-						"items":    map[string]interface{}{"type": "object", "additionalProperties": true},
-					},
+// TS parity (5533946, 0e869b40fa): citation_number is not in the public
+// output schema; relevance_score is again (TS 0e869b40fa), with the
+// variable-cost fields (premium_rows, redacted_cells, total_matching,
+// export_pricing premium_row_cpm_usd / variable_cost_max_usd, placeholder,
+// usage data_points / variable_cost). free_rows is declared again as an
+// optional number (deprecated, always 0; TS 838dd53c25).
+// takoSearchOutputSchemaJSON is the TS output schema (packages/gateway/src/tool/tako-search.ts) as zod's
+// toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
+// tool outputs against it, so nullable fields are anyOf [T, null] and the
+// required lists match zod's non-optional fields.
+var takoSearchOutputSchemaJSON = `{
+	"anyOf": [
+		{
+			"type": "object",
+			"properties": {
+				"request_id": {
+					"type": "string"
 				},
-				"required":             []string{"request_id"},
-				"additionalProperties": true,
+				"cards": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"card_id": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"title": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"description": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"semantic_description": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"webpage_url": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"image_url": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"embed_url": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"sources": {
+								"anyOf": [
+									{
+										"type": "array",
+										"items": {
+											"type": "object",
+											"properties": {
+												"source_name": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												},
+												"source_description": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												},
+												"source_index": {
+													"type": "string",
+													"enum": [
+														"data",
+														"web"
+													]
+												},
+												"source_text": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												},
+												"url": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												}
+											},
+											"required": [
+												"source_index"
+											]
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"methodologies": {
+								"anyOf": [
+									{
+										"type": "array",
+										"items": {
+											"type": "object",
+											"properties": {
+												"methodology_name": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												},
+												"methodology_description": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												}
+											},
+											"required": [
+												"methodology_name",
+												"methodology_description"
+											]
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"source_indexes": {
+								"anyOf": [
+									{
+										"type": "array",
+										"items": {
+											"type": "string",
+											"enum": [
+												"data",
+												"web"
+											]
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"card_type": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"relevance": {
+								"anyOf": [
+									{
+										"type": "string",
+										"enum": [
+											"High",
+											"Low",
+											"Medium"
+										]
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"relevance_score": {
+								"anyOf": [
+									{
+										"type": "number"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"content": {
+								"anyOf": [
+									{
+										"type": "object",
+										"properties": {
+											"content_format": {
+												"anyOf": [
+													{
+														"type": "string",
+														"enum": [
+															"card_json",
+															"csv",
+															"json_compact",
+															"json_records"
+														]
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"cost": {
+												"type": "number"
+											},
+											"data": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"records": {
+												"anyOf": [
+													{
+														"type": "array",
+														"items": {
+															"type": "object",
+															"propertyNames": {
+																"type": "string"
+															},
+															"additionalProperties": {
+																"anyOf": [
+																	{
+																		"anyOf": [
+																			{
+																				"type": "boolean"
+																			},
+																			{
+																				"type": "number"
+																			},
+																			{
+																				"type": "string"
+																			}
+																		]
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															}
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"dataset": {
+												"anyOf": [
+													{
+														"type": "object",
+														"properties": {
+															"columns": {
+																"type": "array",
+																"items": {
+																	"type": "object",
+																	"properties": {
+																		"name": {
+																			"type": "string"
+																		},
+																		"type": {
+																			"type": "string",
+																			"enum": [
+																				"boolean",
+																				"date",
+																				"datetime",
+																				"number",
+																				"string"
+																			]
+																		},
+																		"unit": {
+																			"anyOf": [
+																				{
+																					"type": "string"
+																				},
+																				{
+																					"type": "null"
+																				}
+																			]
+																		}
+																	},
+																	"required": [
+																		"name",
+																		"type"
+																	]
+																}
+															},
+															"rows": {
+																"type": "array",
+																"items": {
+																	"type": "array",
+																	"items": {
+																		"anyOf": [
+																			{
+																				"anyOf": [
+																					{
+																						"type": "boolean"
+																					},
+																					{
+																						"type": "number"
+																					},
+																					{
+																						"type": "string"
+																					}
+																				]
+																			},
+																			{
+																				"type": "null"
+																			}
+																		]
+																	}
+																}
+															},
+															"total_rows": {
+																"type": "number"
+															},
+															"truncated": {
+																"type": "boolean"
+															},
+															"ref": {
+																"type": "string"
+															},
+															"sources": {
+																"type": "array",
+																"items": {
+																	"type": "object",
+																	"properties": {
+																		"name": {
+																			"type": "string"
+																		},
+																		"index": {
+																			"type": "string",
+																			"enum": [
+																				"data",
+																				"web"
+																			]
+																		}
+																	},
+																	"required": [
+																		"name"
+																	]
+																}
+															},
+															"provenance": {
+																"type": "string",
+																"enum": [
+																	"query",
+																	"web_extraction"
+																]
+															}
+														},
+														"required": [
+															"columns",
+															"rows",
+															"total_rows",
+															"truncated",
+															"ref",
+															"sources"
+														]
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"card_data": {
+												"anyOf": [
+													{
+														"type": "object",
+														"properties": {},
+														"additionalProperties": {}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"card_data_schema": {
+												"anyOf": [
+													{
+														"type": "object",
+														"properties": {},
+														"additionalProperties": {}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"url": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"expires_at": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"total_rows": {
+												"anyOf": [
+													{
+														"type": "number"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"truncated": {
+												"type": "boolean"
+											},
+											"premium_rows": {
+												"anyOf": [
+													{
+														"type": "object",
+														"propertyNames": {
+															"type": "string"
+														},
+														"additionalProperties": {
+															"type": "number"
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"redacted_cells": {
+												"anyOf": [
+													{
+														"type": "object",
+														"propertyNames": {
+															"type": "string"
+														},
+														"additionalProperties": {
+															"type": "array",
+															"items": {
+																"type": "number"
+															}
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"total_matching": {
+												"anyOf": [
+													{
+														"type": "number"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"export_pricing": {
+												"anyOf": [
+													{
+														"type": "object",
+														"properties": {
+															"baseline_usd": {
+																"type": "number"
+															},
+															"free_rows": {
+																"type": "number"
+															},
+															"max_rows_ceiling": {
+																"type": "number"
+															},
+															"row_cpm_usd": {
+																"type": "number"
+															},
+															"premium_row_cpm_usd": {
+																"anyOf": [
+																	{
+																		"type": "object",
+																		"propertyNames": {
+																			"type": "string"
+																		},
+																		"additionalProperties": {
+																			"type": "number"
+																		}
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															},
+															"variable_cost_max_usd": {
+																"anyOf": [
+																	{
+																		"type": "number"
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															}
+														},
+														"required": [
+															"baseline_usd",
+															"max_rows_ceiling",
+															"row_cpm_usd"
+														],
+														"additionalProperties": {}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"manifest": {
+												"anyOf": [
+													{
+														"type": "array",
+														"items": {
+															"type": "object",
+															"properties": {
+																"dtype": {
+																	"anyOf": [
+																		{
+																			"type": "string",
+																			"enum": [
+																				"boolean",
+																				"date",
+																				"datetime",
+																				"number",
+																				"string"
+																			]
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																},
+																"entity": {
+																	"anyOf": [
+																		{
+																			"type": "string"
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																},
+																"metric": {
+																	"anyOf": [
+																		{
+																			"type": "string"
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																},
+																"name": {
+																	"anyOf": [
+																		{
+																			"type": "string"
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																},
+																"unit": {
+																	"anyOf": [
+																		{
+																			"type": "string"
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																}
+															}
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											}
+										},
+										"additionalProperties": {}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"exportable": {
+								"type": "boolean"
+							},
+							"nodes": {
+								"anyOf": [
+									{
+										"type": "array",
+										"items": {
+											"type": "object",
+											"properties": {
+												"id": {
+													"type": "string"
+												},
+												"type": {
+													"type": "string",
+													"enum": [
+														"entity",
+														"metric"
+													]
+												},
+												"name": {
+													"type": "string"
+												},
+												"description": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												}
+											},
+											"required": [
+												"id",
+												"type",
+												"name"
+											]
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"metric_definitions": {
+								"anyOf": [
+									{
+										"type": "array",
+										"items": {
+											"type": "object",
+											"properties": {
+												"name": {
+													"type": "string"
+												},
+												"definition": {
+													"type": "string"
+												}
+											},
+											"required": [
+												"name",
+												"definition"
+											]
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"data_freshness": {
+								"anyOf": [
+									{
+										"type": "object",
+										"properties": {
+											"coverage_end": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"data_as_of": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"last_updated": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											}
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"placeholder": {
+								"anyOf": [
+									{
+										"type": "object",
+										"properties": {
+											"withheld_source": {
+												"type": "string"
+											},
+											"reason": {
+												"anyOf": [
+													{
+														"type": "string",
+														"enum": [
+															"not_served",
+															"over_cap"
+														]
+													},
+													{
+														"type": "null"
+													}
+												]
+											}
+										},
+										"required": [
+											"withheld_source"
+										],
+										"additionalProperties": {}
+									},
+									{
+										"type": "null"
+									}
+								]
+							}
+						},
+						"additionalProperties": {}
+					}
+				},
+				"web_results": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"title": {
+								"type": "string"
+							},
+							"url": {
+								"type": "string"
+							},
+							"snippet": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"source_name": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"publish_date": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"content": {
+								"anyOf": [
+									{
+										"type": "object",
+										"properties": {
+											"content_format": {
+												"anyOf": [
+													{
+														"type": "string",
+														"enum": [
+															"card_json",
+															"csv",
+															"json_compact",
+															"json_records"
+														]
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"cost": {
+												"type": "number"
+											},
+											"data": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"records": {
+												"anyOf": [
+													{
+														"type": "array",
+														"items": {
+															"type": "object",
+															"propertyNames": {
+																"type": "string"
+															},
+															"additionalProperties": {
+																"anyOf": [
+																	{
+																		"anyOf": [
+																			{
+																				"type": "boolean"
+																			},
+																			{
+																				"type": "number"
+																			},
+																			{
+																				"type": "string"
+																			}
+																		]
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															}
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"dataset": {
+												"anyOf": [
+													{
+														"type": "object",
+														"properties": {
+															"columns": {
+																"type": "array",
+																"items": {
+																	"type": "object",
+																	"properties": {
+																		"name": {
+																			"type": "string"
+																		},
+																		"type": {
+																			"type": "string",
+																			"enum": [
+																				"boolean",
+																				"date",
+																				"datetime",
+																				"number",
+																				"string"
+																			]
+																		},
+																		"unit": {
+																			"anyOf": [
+																				{
+																					"type": "string"
+																				},
+																				{
+																					"type": "null"
+																				}
+																			]
+																		}
+																	},
+																	"required": [
+																		"name",
+																		"type"
+																	]
+																}
+															},
+															"rows": {
+																"type": "array",
+																"items": {
+																	"type": "array",
+																	"items": {
+																		"anyOf": [
+																			{
+																				"anyOf": [
+																					{
+																						"type": "boolean"
+																					},
+																					{
+																						"type": "number"
+																					},
+																					{
+																						"type": "string"
+																					}
+																				]
+																			},
+																			{
+																				"type": "null"
+																			}
+																		]
+																	}
+																}
+															},
+															"total_rows": {
+																"type": "number"
+															},
+															"truncated": {
+																"type": "boolean"
+															},
+															"ref": {
+																"type": "string"
+															},
+															"sources": {
+																"type": "array",
+																"items": {
+																	"type": "object",
+																	"properties": {
+																		"name": {
+																			"type": "string"
+																		},
+																		"index": {
+																			"type": "string",
+																			"enum": [
+																				"data",
+																				"web"
+																			]
+																		}
+																	},
+																	"required": [
+																		"name"
+																	]
+																}
+															},
+															"provenance": {
+																"type": "string",
+																"enum": [
+																	"query",
+																	"web_extraction"
+																]
+															}
+														},
+														"required": [
+															"columns",
+															"rows",
+															"total_rows",
+															"truncated",
+															"ref",
+															"sources"
+														]
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"card_data": {
+												"anyOf": [
+													{
+														"type": "object",
+														"properties": {},
+														"additionalProperties": {}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"card_data_schema": {
+												"anyOf": [
+													{
+														"type": "object",
+														"properties": {},
+														"additionalProperties": {}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"url": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"expires_at": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"total_rows": {
+												"anyOf": [
+													{
+														"type": "number"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"truncated": {
+												"type": "boolean"
+											},
+											"premium_rows": {
+												"anyOf": [
+													{
+														"type": "object",
+														"propertyNames": {
+															"type": "string"
+														},
+														"additionalProperties": {
+															"type": "number"
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"redacted_cells": {
+												"anyOf": [
+													{
+														"type": "object",
+														"propertyNames": {
+															"type": "string"
+														},
+														"additionalProperties": {
+															"type": "array",
+															"items": {
+																"type": "number"
+															}
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"total_matching": {
+												"anyOf": [
+													{
+														"type": "number"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"export_pricing": {
+												"anyOf": [
+													{
+														"type": "object",
+														"properties": {
+															"baseline_usd": {
+																"type": "number"
+															},
+															"free_rows": {
+																"type": "number"
+															},
+															"max_rows_ceiling": {
+																"type": "number"
+															},
+															"row_cpm_usd": {
+																"type": "number"
+															},
+															"premium_row_cpm_usd": {
+																"anyOf": [
+																	{
+																		"type": "object",
+																		"propertyNames": {
+																			"type": "string"
+																		},
+																		"additionalProperties": {
+																			"type": "number"
+																		}
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															},
+															"variable_cost_max_usd": {
+																"anyOf": [
+																	{
+																		"type": "number"
+																	},
+																	{
+																		"type": "null"
+																	}
+																]
+															}
+														},
+														"required": [
+															"baseline_usd",
+															"max_rows_ceiling",
+															"row_cpm_usd"
+														],
+														"additionalProperties": {}
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"manifest": {
+												"anyOf": [
+													{
+														"type": "array",
+														"items": {
+															"type": "object",
+															"properties": {
+																"dtype": {
+																	"anyOf": [
+																		{
+																			"type": "string",
+																			"enum": [
+																				"boolean",
+																				"date",
+																				"datetime",
+																				"number",
+																				"string"
+																			]
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																},
+																"entity": {
+																	"anyOf": [
+																		{
+																			"type": "string"
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																},
+																"metric": {
+																	"anyOf": [
+																		{
+																			"type": "string"
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																},
+																"name": {
+																	"anyOf": [
+																		{
+																			"type": "string"
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																},
+																"unit": {
+																	"anyOf": [
+																		{
+																			"type": "string"
+																		},
+																		{
+																			"type": "null"
+																		}
+																	]
+																}
+															}
+														}
+													},
+													{
+														"type": "null"
+													}
+												]
+											}
+										},
+										"additionalProperties": {}
+									},
+									{
+										"type": "null"
+									}
+								]
+							}
+						},
+						"required": [
+							"title",
+							"url"
+						],
+						"additionalProperties": {}
+					}
+				},
+				"usage": {
+					"anyOf": [
+						{
+							"type": "object",
+							"properties": {
+								"total_cost_usd": {
+									"type": "number"
+								},
+								"compute": {
+									"anyOf": [
+										{
+											"type": "object",
+											"properties": {
+												"cost_usd": {
+													"type": "number"
+												}
+											},
+											"required": [
+												"cost_usd"
+											],
+											"additionalProperties": {}
+										},
+										{
+											"type": "null"
+										}
+									]
+								},
+								"data": {
+									"anyOf": [
+										{
+											"type": "object",
+											"properties": {
+												"cost_usd": {
+													"type": "number"
+												},
+												"datasets": {
+													"type": "number"
+												},
+												"data_points": {
+													"anyOf": [
+														{
+															"type": "number"
+														},
+														{
+															"type": "null"
+														}
+													]
+												}
+											},
+											"required": [
+												"cost_usd",
+												"datasets"
+											],
+											"additionalProperties": {}
+										},
+										{
+											"type": "null"
+										}
+									]
+								},
+								"variable_cost": {
+									"anyOf": [
+										{
+											"type": "object",
+											"properties": {
+												"cost_usd": {
+													"type": "number"
+												}
+											},
+											"required": [
+												"cost_usd"
+											],
+											"additionalProperties": {}
+										},
+										{
+											"type": "null"
+										}
+									]
+								}
+							},
+							"required": [
+								"total_cost_usd"
+							],
+							"additionalProperties": {}
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"related": {
+					"anyOf": [
+						{
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {},
+								"additionalProperties": {}
+							}
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
 			},
-			searchErrorSchema([]string{"api_error", "configuration_error", "execution_error", "invalid_input", "rate_limit", "timeout", "unknown_tool"}),
+			"required": [
+				"request_id"
+			],
+			"additionalProperties": {}
 		},
-	}
-}
+		` + gatewayToolErrorSchemaJSON + `
+	]
+}`
 
-func takoResultContentSchema() map[string]interface{} {
-	return map[string]interface{}{
-		"type":     "object",
-		"nullable": true,
-		"properties": map[string]interface{}{
-			"content_format":   map[string]interface{}{"type": "string", "enum": []string{"card_json", "csv", "json_compact", "json_records"}, "nullable": true},
-			"cost":             map[string]interface{}{"type": "number"},
-			"data":             map[string]interface{}{"type": "string", "nullable": true},
-			"records":          map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object", "additionalProperties": true}, "nullable": true},
-			"dataset":          map[string]interface{}{"type": "object", "additionalProperties": true, "nullable": true},
-			"card_data":        map[string]interface{}{"type": "object", "additionalProperties": true, "nullable": true},
-			"card_data_schema": map[string]interface{}{"type": "object", "additionalProperties": true, "nullable": true},
-			"url":              map[string]interface{}{"type": "string", "nullable": true},
-			"expires_at":       map[string]interface{}{"type": "string", "nullable": true},
-			"total_rows":       map[string]interface{}{"type": "number", "nullable": true},
-			"truncated":        map[string]interface{}{"type": "boolean"},
-			"export_pricing":   map[string]interface{}{"type": "object", "additionalProperties": true, "nullable": true},
-			"manifest":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object", "additionalProperties": true}, "nullable": true},
-		},
-		"additionalProperties": true,
-	}
+func takoSearchOutputSchema() map[string]interface{} {
+	return mustDecodeToolSchema(takoSearchOutputSchemaJSON)
 }
 
 func takoSearchArgs(config TakoSearchConfig) map[string]interface{} {
@@ -389,6 +1733,19 @@ func takoSearchArgs(config TakoSearchConfig) map[string]interface{} {
 	if config.IncludeRelated != nil {
 		args["includeRelated"] = *config.IncludeRelated
 	}
+	// TS 0e869b40fa: developer-only configuration, passed through as
+	// camelCase args (never in the input schema).
+	if config.VariableCost != nil {
+		args["variableCost"] = *config.VariableCost
+	}
+	if config.MaxVariableCostUSD != nil {
+		args["maxVariableCostUsd"] = *config.MaxVariableCostUSD
+	} else if config.NoMaxVariableCost {
+		args["maxVariableCostUsd"] = nil
+	}
+	if config.ExtraBody != nil {
+		args["extraBody"] = config.ExtraBody
+	}
 	return args
 }
 
@@ -409,7 +1766,7 @@ func takoDataSourceArgs(config TakoDataSourceConfig) map[string]interface{} {
 	if config.MaxRows != nil {
 		args["maxRows"] = *config.MaxRows
 	}
-	if len(config.NodeIDs) > 0 {
+	if config.NodeIDs != nil {
 		args["nodeIds"] = config.NodeIDs
 	}
 	if config.Strict != nil {
@@ -429,10 +1786,10 @@ func takoWebSourceArgs(config TakoWebSourceConfig) map[string]interface{} {
 	if config.Category != "" {
 		args["category"] = config.Category
 	}
-	if len(config.IncludeDomains) > 0 {
+	if config.IncludeDomains != nil {
 		args["includeDomains"] = config.IncludeDomains
 	}
-	if len(config.ExcludeDomains) > 0 {
+	if config.ExcludeDomains != nil {
 		args["excludeDomains"] = config.ExcludeDomains
 	}
 	if config.SnippetMaxChars != nil {

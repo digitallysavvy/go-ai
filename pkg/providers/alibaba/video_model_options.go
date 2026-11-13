@@ -1,5 +1,7 @@
 package alibaba
 
+import "github.com/digitallysavvy/go-ai/pkg/providerutils"
+
 // AlibabaVideoMediaItem is one entry of the explicit `media` array
 // (wan2.7 and wan3 models). It overrides the automatic mapping from
 // InputReferences and FrameImages (TS AlibabaVideoModelOptions.media).
@@ -9,14 +11,14 @@ type AlibabaVideoMediaItem struct {
 	//
 	// reference_audio, file, and link are wan3-only and have no top-level
 	// call option, so they can only be set here.
-	Type string
+	Type string `json:"type"`
 
 	// URL is a public URL, or a `data:{mime};base64,{data}` URI for images.
-	URL string
+	URL string `json:"url"`
 
 	// ReferenceVoice is a URL to an audio file used as voice reference for
 	// this media item.
-	ReferenceVoice *string
+	ReferenceVoice *string `json:"referenceVoice,omitempty"`
 }
 
 // AlibabaVideoModelOptions carries Alibaba-specific video generation
@@ -24,32 +26,32 @@ type AlibabaVideoMediaItem struct {
 // (TS AlibabaVideoModelOptions).
 type AlibabaVideoModelOptions struct {
 	// NegativePrompt specifies what to avoid (max 500 chars).
-	NegativePrompt *string
+	NegativePrompt *string `json:"negativePrompt,omitempty"`
 	// AudioURL is a URL to an audio file for audio-video sync (WAV/MP3,
 	// 3-30s, max 15MB).
-	AudioURL *string
+	AudioURL *string `json:"audioUrl,omitempty"`
 	// PromptExtend enables prompt extension/rewriting. Defaults to true.
-	PromptExtend *bool
+	PromptExtend *bool `json:"promptExtend,omitempty"`
 	// ShotType is "single" or "multi" (wan2.6 and earlier only).
-	ShotType *string
+	ShotType *string `json:"shotType,omitempty"`
 	// Watermark adds a watermark to the generated video. Defaults to false.
-	Watermark *bool
+	Watermark *bool `json:"watermark,omitempty"`
 	// Audio enables audio generation (wan2.6 I2V/R2V and wan3 models).
 	// Defaults to true on wan3.
-	Audio *bool
+	Audio *bool `json:"audio,omitempty"`
 	// ReferenceURLs are URLs for reference-to-video mode (wan2.6 models).
-	ReferenceURLs []string
+	ReferenceURLs []string `json:"referenceUrls,omitempty"`
 	// Media is the explicit media array override (wan2.7 and wan3 models).
-	Media []AlibabaVideoMediaItem
+	Media []AlibabaVideoMediaItem `json:"media,omitempty"`
 	// Ratio is the aspect ratio: adaptive, 16:9, 9:16, 1:1, 4:3, or 3:4.
 	// "adaptive" is wan3-only and is its default.
-	Ratio *string
+	Ratio *string `json:"ratio,omitempty"`
 	// PollIntervalMs is the polling interval in milliseconds.
 	// Defaults to 5000 (5 seconds).
-	PollIntervalMs *int
+	PollIntervalMs *int `json:"pollIntervalMs,omitempty"`
 	// PollTimeoutMs is the maximum wait time in milliseconds for video
 	// generation. Defaults to 600000 (10 minutes).
-	PollTimeoutMs *int
+	PollTimeoutMs *int `json:"pollTimeoutMs,omitempty"`
 }
 
 // parseAlibabaVideoModelOptions extracts AlibabaVideoModelOptions from the
@@ -58,7 +60,9 @@ func parseAlibabaVideoModelOptions(providerOptions map[string]interface{}) *Alib
 	if providerOptions == nil {
 		return nil
 	}
-	raw, ok := providerOptions["alibaba"].(map[string]interface{})
+	// Read through the JSON form (TS options are JSON objects), so a Go-typed
+	// literal such as map[string]string or []map[string]string is read too.
+	raw, ok := providerutils.NormalizeProviderOptionsObject(providerOptions["alibaba"])
 	if !ok {
 		return nil
 	}
@@ -162,14 +166,5 @@ func mediaItemFromMap(m map[string]interface{}) AlibabaVideoMediaItem {
 }
 
 func intFromInterfaceAlibaba(v interface{}) (int, bool) {
-	switch vv := v.(type) {
-	case int:
-		return vv, true
-	case int64:
-		return int(vv), true
-	case float64:
-		return int(vv), true
-	default:
-		return 0, false
-	}
+	return providerutils.OpenAICompatibleIntOption(map[string]interface{}{"v": v}, "v")
 }

@@ -5,6 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // MessageRole represents the role of a message sender in a conversation
@@ -59,6 +64,10 @@ type TextContent struct {
 	// Used by Google/Vertex providers to carry thoughtSignature for text parts
 	// that are associated with model reasoning.
 	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+
+	// Citations are references supporting this text, separate from the set of
+	// retrieved sources (TS LanguageModelV4Text.citations).
+	Citations []Citation `json:"citations,omitempty"`
 }
 
 // ContentType implements ContentPart interface
@@ -69,7 +78,7 @@ func (t TextContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (t TextContent) MarshalJSON() ([]byte, error) {
 	type textContentAlias TextContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		textContentAlias
 	}{
@@ -119,7 +128,7 @@ func (r ReasoningContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (r ReasoningContent) MarshalJSON() ([]byte, error) {
 	type reasoningContentAlias ReasoningContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		reasoningContentAlias
 	}{
@@ -151,7 +160,7 @@ func (i ImageContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (i ImageContent) MarshalJSON() ([]byte, error) {
 	type imageContentAlias ImageContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		imageContentAlias
 	}{
@@ -204,7 +213,7 @@ func (f FileContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (f FileContent) MarshalJSON() ([]byte, error) {
 	type fileContentAlias FileContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		fileContentAlias
 	}{
@@ -251,7 +260,7 @@ func (s SourceContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (s SourceContent) MarshalJSON() ([]byte, error) {
 	type sourceContentAlias SourceContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		sourceContentAlias
 	}{
@@ -321,7 +330,7 @@ func (f GeneratedFileContent) MarshalJSON() ([]byte, error) {
 	default:
 		data = map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(f.Data)}
 	}
-	return json.Marshal(generatedFileJSON{
+	return jsonstr.Marshal(generatedFileJSON{
 		Type:             f.ContentType(),
 		MediaType:        f.MediaType,
 		Data:             data,
@@ -424,7 +433,7 @@ func (t ToolCallContent) MarshalJSON() ([]byte, error) {
 		ToolCallID       string                 `json:"toolCallId"`
 		ToolName         string                 `json:"toolName"`
 		Title            string                 `json:"title,omitempty"`
-		Input            interface{}            `json:"input,omitempty"`
+		Input            interface{}            `json:"input"`
 		ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
@@ -434,7 +443,7 @@ func (t ToolCallContent) MarshalJSON() ([]byte, error) {
 		Error            interface{}            `json:"error,omitempty"`
 		ThoughtSignature string                 `json:"thoughtSignature,omitempty"`
 	}
-	return json.Marshal(toolCallContentJSON{
+	return jsonstr.Marshal(toolCallContentJSON{
 		Type:             t.ContentType(),
 		ToolCallID:       t.ToolCallID,
 		ToolName:         t.ToolName,
@@ -456,10 +465,11 @@ func toolCallContentInput(t ToolCallContent) interface{} {
 		return t.Arguments
 	}
 	if t.Input == "" {
-		return nil
+		// TS always carries an input; a call without arguments has {}.
+		return map[string]interface{}{}
 	}
 	var parsed interface{}
-	if err := json.Unmarshal([]byte(t.Input), &parsed); err == nil {
+	if err := jsonexact.Unmarshal([]byte(t.Input), &parsed); err == nil {
 		return parsed
 	}
 	return t.Input
@@ -496,7 +506,7 @@ func (c CustomContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (c CustomContent) MarshalJSON() ([]byte, error) {
 	type customContentAlias CustomContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		customContentAlias
 	}{
@@ -540,16 +550,105 @@ func (r ReasoningFileContent) ContentType() string {
 	return "reasoning-file"
 }
 
-// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+// MarshalJSON emits the TypeScript SDK ModelMessage ReasoningFilePart shape
+// (TS generate-text/to-response-messages.ts): `data` is the file's base64
+// string (FileData.DataString, else base64 of FileData.Data, else base64 of
+// Data), or the tagged `{"type":"url","url":...}` shape for a URL file, with
+// `mediaType`, `providerOptions` and `providerMetadata`. No `fileData` key is
+// written; UnmarshalJSON reads this shape and the v0.5 shape.
 func (r ReasoningFileContent) MarshalJSON() ([]byte, error) {
-	type reasoningFileContentAlias ReasoningFileContent
-	return json.Marshal(struct {
-		Type string `json:"type"`
-		reasoningFileContentAlias
-	}{
-		Type:                      r.ContentType(),
-		reasoningFileContentAlias: reasoningFileContentAlias(r),
+	type reasoningFileJSON struct {
+		Type             string                 `json:"type"`
+		Data             interface{}            `json:"data"`
+		MediaType        string                 `json:"mediaType"`
+		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+	}
+	var data interface{}
+	switch {
+	case r.FileData.Type == FileDataTypeURL:
+		data = FileData{Type: FileDataTypeURL, URL: r.FileData.URL, OriginalURL: r.FileData.OriginalURL}
+	case r.FileData.DataString != "":
+		data = r.FileData.DataString
+	case len(r.FileData.Data) > 0:
+		data = base64.StdEncoding.EncodeToString(r.FileData.Data)
+	default:
+		data = base64.StdEncoding.EncodeToString(r.Data)
+	}
+	return jsonstr.Marshal(reasoningFileJSON{
+		Type:             r.ContentType(),
+		Data:             data,
+		MediaType:        r.MediaType,
+		ProviderOptions:  r.ProviderOptions,
+		ProviderMetadata: r.ProviderMetadata,
 	})
+}
+
+// UnmarshalJSON reads the TS ReasoningFilePart shape (`data` as a base64
+// string or a tagged `{type: "data" | "url"}` object) and the v0.5 Go shape
+// (`fileData` plus a base64 `data`). A base64 string fills Data with the
+// decoded bytes when it decodes; FileData keeps the string as given.
+func (r *ReasoningFileContent) UnmarshalJSON(b []byte) error {
+	type taggedFileData struct {
+		Type        FileDataType `json:"type"`
+		Data        *string      `json:"data"`
+		URL         string       `json:"url"`
+		OriginalURL string       `json:"originalUrl"`
+	}
+	var raw struct {
+		Data             json.RawMessage        `json:"data"`
+		FileData         *taggedFileData        `json:"fileData"`
+		MediaType        string                 `json:"mediaType"`
+		ProviderOptions  map[string]interface{} `json:"providerOptions"`
+		ProviderMetadata json.RawMessage        `json:"providerMetadata"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*r = ReasoningFileContent{MediaType: raw.MediaType, ProviderOptions: raw.ProviderOptions, ProviderMetadata: raw.ProviderMetadata}
+	fromTagged := func(t taggedFileData) {
+		switch t.Type {
+		case FileDataTypeURL:
+			r.FileData = FileData{Type: FileDataTypeURL, URL: t.URL, OriginalURL: t.OriginalURL}
+		default:
+			r.FileData = FileData{Type: t.Type}
+			if t.Data != nil {
+				r.FileData.DataString = *t.Data
+			}
+		}
+	}
+	if raw.FileData != nil {
+		fromTagged(*raw.FileData)
+	}
+	data := raw.Data
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	switch data[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		if decoded, err := DecodeFileDataString(s); err == nil {
+			r.Data = decoded
+		}
+		if raw.FileData == nil {
+			r.FileData = FileData{Type: FileDataTypeData, DataString: s}
+		}
+	case '{':
+		var t taggedFileData
+		if err := json.Unmarshal(data, &t); err != nil {
+			return err
+		}
+		fromTagged(t)
+		if t.Type != FileDataTypeURL && t.Data != nil {
+			if decoded, err := DecodeFileDataString(*t.Data); err == nil {
+				r.Data = decoded
+			}
+		}
+	}
+	return nil
 }
 
 // ToolResultContent represents a tool execution result in a message
@@ -572,6 +671,12 @@ type ToolResultContent struct {
 
 	// Optional error if tool execution failed
 	Error string `json:"error,omitempty"`
+
+	// IsError is the TS tool-result isError flag of a provider-executed
+	// result: nil when the provider did not say, true or false when it did
+	// (an explicit false stays distinguishable from unset). Error carries the
+	// error text of a failed result.
+	IsError *bool `json:"isError,omitempty"`
 
 	// Structured output (takes precedence over Result)
 	// Use this for rich tool outputs with multiple content blocks
@@ -614,6 +719,7 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 		Input            map[string]interface{} `json:"input,omitempty"`
 		Result           interface{}            `json:"result,omitempty"`
 		Error            string                 `json:"error,omitempty"`
+		IsError          *bool                  `json:"isError,omitempty"`
 		Output           *ToolResultOutput      `json:"output,omitempty"`
 		ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
@@ -622,7 +728,7 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 		Dynamic          bool                   `json:"dynamic,omitempty"`
 		Preliminary      bool                   `json:"preliminary,omitempty"`
 	}
-	return json.Marshal(toolResultContentJSON{
+	return jsonstr.Marshal(toolResultContentJSON{
 		Type:             t.ContentType(),
 		ToolCallID:       t.ToolCallID,
 		ToolName:         t.ToolName,
@@ -630,6 +736,7 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 		Input:            t.Input,
 		Result:           t.Result,
 		Error:            t.Error,
+		IsError:          t.IsError,
 		Output:           t.Output,
 		ProviderExecuted: t.ProviderExecuted,
 		ProviderOptions:  t.ProviderOptions,
@@ -642,20 +749,46 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 
 // ToolErrorContent represents a failed tool execution in ordered content.
 type ToolErrorContent struct {
-	ToolCallID       string                 `json:"toolCallId"`
-	ToolName         string                 `json:"toolName"`
-	Title            string                 `json:"title,omitempty"`
-	Input            map[string]interface{} `json:"input,omitempty"`
-	Error            interface{}            `json:"error"`
+	ToolCallID string                 `json:"toolCallId"`
+	ToolName   string                 `json:"toolName"`
+	Title      string                 `json:"title,omitempty"`
+	Input      map[string]interface{} `json:"input,omitempty"`
+	Error      interface{}            `json:"error"`
+	// ErrorText is the text the model sees for this error in the tool result
+	// message: TS getErrorMessage(error), which is error.toString() ("Error:
+	// message", "AI_InvalidToolInputError: message"). Empty means Error is used.
+	ErrorText        string                 `json:"errorText,omitempty"`
 	ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 	ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 	ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
 	ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
 	Dynamic          bool                   `json:"dynamic,omitempty"`
+
+	// Err is the typed error behind a failed tool call: the error the tool's
+	// Execute returned, or the SDK's own error (an InvalidToolInputError, a
+	// NoSuchToolError, ...), as TS keeps the thrown value as the tool-error
+	// part's error. Error stays its text, so match the type with
+	// errors.As(part.Err, &target). Err is nil for parts decoded from JSON and
+	// for provider-executed failures whose error is not a Go error (a
+	// structured provider error value). It is never serialized.
+	Err error `json:"-"`
 }
 
 func (t ToolErrorContent) ContentType() string {
 	return "tool-error"
+}
+
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape
+// (`type: "tool-error"`), like every other content part.
+func (t ToolErrorContent) MarshalJSON() ([]byte, error) {
+	type toolErrorContentAlias ToolErrorContent
+	return jsonstr.Marshal(struct {
+		Type string `json:"type"`
+		toolErrorContentAlias
+	}{
+		Type:                  t.ContentType(),
+		toolErrorContentAlias: toolErrorContentAlias(t),
+	})
 }
 
 // ToolApprovalRequestContent indicates that a tool call requires approval before execution.
@@ -676,6 +809,19 @@ type ToolApprovalRequestContent struct {
 	// Approval revalidation re-validates and re-refines this value and
 	// requires the result to equal the approved input.
 	InputSchemaInput interface{} `json:"inputSchemaInput,omitempty"`
+
+	// InputSchemaInputSet marks InputSchemaInput as present even when it is
+	// nil: a JSON null schema input from a UI approval (TS keeps the own
+	// property, so approval revalidation validates null and the part
+	// serializes `"inputSchemaInput": null`). A non-nil InputSchemaInput is
+	// present without it.
+	InputSchemaInputSet bool `json:"-"`
+}
+
+// hasInputSchemaInput reports whether the request carries an inputSchemaInput,
+// including a JSON null (TS hasOwnProperty).
+func (t ToolApprovalRequestContent) hasInputSchemaInput() bool {
+	return t.InputSchemaInput != nil || t.InputSchemaInputSet
 }
 
 func (t ToolApprovalRequestContent) ContentType() string {
@@ -693,15 +839,21 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 		Reason           string           `json:"reason,omitempty"`
 		Signature        string           `json:"signature,omitempty"`
 		IsAutomatic      bool             `json:"isAutomatic,omitempty"`
-		InputSchemaInput interface{}      `json:"inputSchemaInput,omitempty"`
+		InputSchemaInput json.RawMessage  `json:"inputSchemaInput,omitempty"`
 	}
 	out := toolApprovalRequestContentJSON{
-		Type:             t.ContentType(),
-		ApprovalID:       t.ApprovalID,
-		Reason:           t.Reason,
-		Signature:        t.Signature,
-		IsAutomatic:      t.IsAutomatic,
-		InputSchemaInput: t.InputSchemaInput,
+		Type:        t.ContentType(),
+		ApprovalID:  t.ApprovalID,
+		Reason:      t.Reason,
+		Signature:   t.Signature,
+		IsAutomatic: t.IsAutomatic,
+	}
+	if t.hasInputSchemaInput() {
+		raw, err := jsonstr.Marshal(t.InputSchemaInput)
+		if err != nil {
+			return nil, err
+		}
+		out.InputSchemaInput = raw
 	}
 	if !toolCallIsZero(t.ToolCall) {
 		toolCall := toolCallContentFromToolCall(t.ToolCall)
@@ -709,17 +861,41 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 	} else {
 		out.ToolCallID = t.ToolCallID
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // ToolApprovalResponseContent indicates that approval was granted or denied.
 type ToolApprovalResponseContent struct {
-	ApprovalID       string   `json:"approvalId"`
-	ToolCallID       string   `json:"toolCallId,omitempty"`
-	ToolCall         ToolCall `json:"toolCall,omitempty"`
-	Approved         bool     `json:"approved"`
-	Reason           string   `json:"reason,omitempty"`
-	ProviderExecuted bool     `json:"providerExecuted,omitempty"`
+	ApprovalID string   `json:"approvalId"`
+	ToolCallID string   `json:"toolCallId,omitempty"`
+	ToolCall   ToolCall `json:"toolCall,omitempty"`
+	Approved   bool     `json:"approved"`
+	// Reason is an optional reason for the approval or denial. For denied tool
+	// calls, the reason is included in the execution-denied tool result that
+	// is sent to the model. For approved tool calls executed by the SDK, the
+	// reason remains in the message history: it is not included in the model
+	// prompt and is not exposed through a dedicated tool execution option. For
+	// provider-executed tools, the approval response (including the reason) is
+	// forwarded to the provider.
+	Reason           string `json:"reason,omitempty"`
+	ProviderExecuted bool   `json:"providerExecuted,omitempty"`
+	// ProviderExecutedSet marks ProviderExecuted as explicitly set, so an
+	// explicit `providerExecuted: false` is kept (in the UI chunk and in the
+	// marshaled part) where TS sends one, for example on an automatic denial
+	// of a tool call that carried an explicit false. It follows
+	// ToolCall.ProviderExecutedSet.
+	ProviderExecutedSet bool `json:"-"`
+	// ReasonSet marks an empty Reason as given (TS `reason: ''`), which the
+	// execution-denied tool result keeps instead of the provider's default
+	// denial text (TS `reason ?? default`). A non-empty Reason is always
+	// given. JSON decoding sets it for `"reason": ""`.
+	ReasonSet bool `json:"-"`
+}
+
+// HasReason reports whether the response carries a reason, also an empty
+// one (TS `reason !== undefined`).
+func (t ToolApprovalResponseContent) HasReason() bool {
+	return t.Reason != "" || t.ReasonSet
 }
 
 func (t ToolApprovalResponseContent) ContentType() string {
@@ -734,21 +910,46 @@ func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
 		ApprovalID       string           `json:"approvalId"`
 		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
 		Approved         bool             `json:"approved"`
-		Reason           string           `json:"reason,omitempty"`
-		ProviderExecuted bool             `json:"providerExecuted,omitempty"`
+		Reason           *string          `json:"reason,omitempty"`
+		ProviderExecuted *bool            `json:"providerExecuted,omitempty"`
 	}
 	out := toolApprovalResponseContentJSON{
-		Type:             t.ContentType(),
-		ApprovalID:       t.ApprovalID,
-		Approved:         t.Approved,
-		Reason:           t.Reason,
-		ProviderExecuted: t.ProviderExecuted,
+		Type:       t.ContentType(),
+		ApprovalID: t.ApprovalID,
+		Approved:   t.Approved,
+	}
+	if t.HasReason() {
+		reason := t.Reason
+		out.Reason = &reason
+	}
+	if t.ProviderExecuted || t.ProviderExecutedSet {
+		providerExecuted := t.ProviderExecuted
+		out.ProviderExecuted = &providerExecuted
 	}
 	if !toolCallIsZero(t.ToolCall) {
 		toolCall := toolCallContentFromToolCall(t.ToolCall)
 		out.ToolCall = &toolCall
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
+}
+
+// UnmarshalJSON decodes the part with the default field mapping and marks an
+// empty reason string as given (ReasonSet).
+func (t *ToolApprovalResponseContent) UnmarshalJSON(data []byte) error {
+	type plain ToolApprovalResponseContent
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var reason struct {
+		Reason *string `json:"reason"`
+	}
+	if err := json.Unmarshal(data, &reason); err != nil {
+		return err
+	}
+	*t = ToolApprovalResponseContent(decoded)
+	t.ReasonSet = reason.Reason != nil && *reason.Reason == ""
+	return nil
 }
 
 func toolCallContentFromToolCall(call ToolCall) ToolCallContent {
@@ -779,7 +980,7 @@ func providerMetadataRawFromMap(metadata map[string]interface{}) json.RawMessage
 	if len(metadata) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(metadata)
+	raw, err := jsonstr.Marshal(metadata)
 	if err != nil {
 		return nil
 	}
@@ -846,8 +1047,30 @@ type ToolResultOutput struct {
 	// Forwarded to the provider so the model understands the denial context.
 	Reason string `json:"reason,omitempty"`
 
+	// ReasonSet marks an empty Reason as given (TS `reason: ''`): provider
+	// converters then send "" instead of their default denial text (TS
+	// `output.reason ?? 'Tool call execution denied.'`). A non-empty Reason
+	// is always given. JSON decoding sets it for `"reason": ""`.
+	ReasonSet bool `json:"-"`
+
 	// ProviderOptions holds provider-specific options for the output direction.
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+}
+
+// HasReason reports whether the output carries a reason, also an empty one
+// (TS `reason !== undefined`).
+func (o ToolResultOutput) HasReason() bool {
+	return o.Reason != "" || o.ReasonSet
+}
+
+// ReasonOr returns Reason when the output has one (HasReason), else
+// defaultReason: TS `output.reason ?? defaultReason`, as provider converters
+// build the text of an execution-denied result.
+func (o ToolResultOutput) ReasonOr(defaultReason string) string {
+	if o.HasReason() {
+		return o.Reason
+	}
+	return defaultReason
 }
 
 // MarshalJSON emits the TypeScript SDK ToolResultOutput union shape. Content
@@ -857,20 +1080,23 @@ func (o ToolResultOutput) MarshalJSON() ([]byte, error) {
 	type outputJSON struct {
 		Type            ToolResultOutputType   `json:"type"`
 		Value           json.RawMessage        `json:"value,omitempty"`
-		Reason          string                 `json:"reason,omitempty"`
+		Reason          *string                `json:"reason,omitempty"`
 		ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 	}
 	out := outputJSON{
 		Type:            o.Type,
-		Reason:          o.Reason,
 		ProviderOptions: o.ProviderOptions,
+	}
+	if o.HasReason() {
+		reason := o.Reason
+		out.Reason = &reason
 	}
 	marshalValue := func(value interface{}) error {
 		if value == nil {
 			out.Value = json.RawMessage("null")
 			return nil
 		}
-		data, err := json.Marshal(value)
+		data, err := jsonstr.Marshal(value)
 		if err != nil {
 			return err
 		}
@@ -898,7 +1124,7 @@ func (o ToolResultOutput) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // UnmarshalJSON accepts the TypeScript SDK ToolResultOutput union shape and the
@@ -908,7 +1134,7 @@ func (o *ToolResultOutput) UnmarshalJSON(data []byte) error {
 		Type            ToolResultOutputType   `json:"type"`
 		Value           json.RawMessage        `json:"value"`
 		Content         json.RawMessage        `json:"content"`
-		Reason          string                 `json:"reason"`
+		Reason          *string                `json:"reason"`
 		ProviderOptions map[string]interface{} `json:"providerOptions"`
 	}
 	var raw outputJSON
@@ -916,7 +1142,12 @@ func (o *ToolResultOutput) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	o.Type = raw.Type
-	o.Reason = raw.Reason
+	o.Reason = ""
+	o.ReasonSet = false
+	if raw.Reason != nil {
+		o.Reason = *raw.Reason
+		o.ReasonSet = *raw.Reason == ""
+	}
 	o.ProviderOptions = raw.ProviderOptions
 	o.Value = nil
 	o.Content = nil
@@ -1006,7 +1237,7 @@ func unmarshalLegacyToolResultFileContentBlock(blockType string, data []byte) (F
 		URL               string                 `json:"url"`
 		FileID            interface{}            `json:"fileId"`
 		ProviderReference ProviderReference      `json:"providerReference"`
-		MediaType         string                 `json:"mediaType"`
+		MediaType         *string                `json:"mediaType"`
 		Filename          string                 `json:"filename"`
 		ProviderOptions   map[string]interface{} `json:"providerOptions"`
 	}
@@ -1014,33 +1245,54 @@ func unmarshalLegacyToolResultFileContentBlock(blockType string, data []byte) (F
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return FileContentBlock{}, err
 	}
+	mediaType := ""
+	if raw.MediaType != nil {
+		mediaType = *raw.MediaType
+	}
+	// TS mapToolResultOutput: only "file-data" keeps filename, and only
+	// "file-data", "image-data" and "file-url" read item.mediaType (the
+	// other legacy types have none in the TS schema, so it is dropped).
 	block := FileContentBlock{
-		MediaType:       raw.MediaType,
-		Filename:        raw.Filename,
 		ProviderOptions: raw.ProviderOptions,
+		legacyType:      blockType,
 	}
 	switch blockType {
 	case "file-data", "image-data":
 		block.FileData = FileData{Type: FileDataTypeData, DataString: raw.Data}
-		if block.MediaType == "" && strings.HasPrefix(blockType, "image-") {
+		block.MediaType = mediaType
+		if blockType == "file-data" {
+			block.Filename = raw.Filename
+		} else if raw.MediaType == nil {
+			// Required by the TS schema; Go keeps its v0.5 default.
 			block.MediaType = "image"
 		}
 	case "file-url", "image-url":
+		// TS: url = new URL(item.url), with originalUrl: item.url when
+		// url.toString() differs. Core prompt conversion normalizes URL
+		// (and fails with "Invalid URL" when it does not parse).
 		block.FileData = FileData{Type: FileDataTypeURL, URL: raw.URL}
+		if href, err := urlnorm.Href(raw.URL); err == nil && href != raw.URL {
+			block.FileData.OriginalURL = raw.URL
+		}
 		block.URL = raw.URL
-		if block.MediaType == "" {
-			if blockType == "image-url" {
-				block.MediaType = "image"
-			} else {
-				block.MediaType = inferToolResultMediaTypeFromURL(raw.URL)
-			}
+		switch {
+		case blockType == "image-url":
+			block.MediaType = "image"
+		case raw.MediaType != nil:
+			// TS `item.mediaType ?? getMediaTypeFromUrl(item.url)`: "" is
+			// kept, but still counts as missing in the warning.
+			block.MediaType = mediaType
+			block.legacyMediaTypeMissing = mediaType == ""
+		default:
+			block.MediaType = inferToolResultMediaTypeFromURL(raw.URL)
+			block.legacyMediaTypeMissing = true
 		}
 	case "file-id", "image-file-id":
 		block.FileData = FileData{Type: FileDataTypeReference, Reference: providerReferenceFromLegacyFileID(raw.FileID)}
-		block.MediaType = legacyReferenceMediaType(blockType, block.MediaType)
+		block.MediaType = legacyReferenceMediaType(blockType)
 	case "file-reference", "image-file-reference":
 		block.FileData = FileData{Type: FileDataTypeReference, Reference: raw.ProviderReference}
-		block.MediaType = legacyReferenceMediaType(blockType, block.MediaType)
+		block.MediaType = legacyReferenceMediaType(blockType)
 	}
 	return block, nil
 }
@@ -1062,26 +1314,28 @@ func providerReferenceFromLegacyFileID(fileID interface{}) ProviderReference {
 	}
 }
 
-func legacyReferenceMediaType(blockType, mediaType string) string {
-	if mediaType != "" {
-		return mediaType
-	}
+func legacyReferenceMediaType(blockType string) string {
 	if strings.HasPrefix(blockType, "image-") {
 		return "image"
 	}
 	return "application"
 }
 
+// inferToolResultMediaTypeFromURL mirrors TS getMediaTypeFromUrl: the text
+// after the last "." of the WHATWG pathname (`new URL(url).pathname`), the
+// whole pathname when it has no "." (JS `split('.').pop()`), or
+// application/octet-stream when the URL does not parse.
 func inferToolResultMediaTypeFromURL(value string) string {
-	path := value
-	if idx := strings.IndexAny(path, "?#"); idx >= 0 {
-		path = path[:idx]
-	}
-	idx := strings.LastIndex(path, ".")
-	if idx < 0 || idx == len(path)-1 {
+	parsed, err := urlnorm.Parse(value)
+	if err != nil {
 		return "application/octet-stream"
 	}
-	switch strings.ToLower(path[idx+1:]) {
+	path := parsed.Pathname()
+	ext := path[strings.LastIndex(path, ".")+1:]
+	if ext == "" {
+		return "application/octet-stream"
+	}
+	switch jscase.ToLower(ext) {
 	case "jpg", "jpeg":
 		return "image/jpeg"
 	case "png":
@@ -1140,13 +1394,13 @@ func (r RawToolResultContentBlock) MarshalJSON() ([]byte, error) {
 		fields[key] = value
 	}
 	if r.Type != "" {
-		typeData, err := json.Marshal(r.Type)
+		typeData, err := jsonstr.Marshal(r.Type)
 		if err != nil {
 			return nil, err
 		}
 		fields["type"] = typeData
 	}
-	return json.Marshal(fields)
+	return jsonstr.Marshal(fields)
 }
 
 func (r *RawToolResultContentBlock) UnmarshalJSON(data []byte) error {
@@ -1178,7 +1432,7 @@ func (t TextContentBlock) ToolResultContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated tool-result content shape.
 func (t TextContentBlock) MarshalJSON() ([]byte, error) {
 	type textContentBlockAlias TextContentBlock
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		textContentBlockAlias
 	}{
@@ -1213,7 +1467,7 @@ func (i ImageContentBlock) MarshalJSON() ([]byte, error) {
 		MediaType       string                 `json:"mediaType"`
 		ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 	}
-	return json.Marshal(imageContentBlockJSON{
+	return jsonstr.Marshal(imageContentBlockJSON{
 		Type:            "file",
 		Data:            FileData{Type: FileDataTypeData, Data: i.Data},
 		MediaType:       i.MediaType,
@@ -1249,11 +1503,61 @@ type FileContentBlock struct {
 
 	// Provider-specific options
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+
+	// legacyType is the deprecated TS tool-result content type the block was
+	// decoded from ("file-data", "file-url", "file-id", "file-reference",
+	// "image-data", "image-url", "image-file-id", "image-file-reference"),
+	// "" otherwise.
+	legacyType string
+	// legacyMediaTypeMissing is set for a legacy "file-url" block decoded
+	// without a mediaType (TS `!item.mediaType`).
+	legacyMediaTypeMissing bool
 }
 
 // ToolResultContentType implements ToolResultContentBlock interface
 func (f FileContentBlock) ToolResultContentType() string {
 	return "file"
+}
+
+// LegacyContentType is the deprecated TS tool-result content type the block
+// was decoded from ("file-data", "file-url", "file-id", "file-reference",
+// "image-data", "image-url", "image-file-id", "image-file-reference"), or ""
+// for a "file" block or one built in Go.
+func (f FileContentBlock) LegacyContentType() string {
+	return f.legacyType
+}
+
+// DeprecationWarning returns the deprecation warning TS mapToolResultOutput
+// logs when it converts a tool-result content item of a legacy type
+// ("file-data", "file-url", "file-id", "file-reference", "image-data",
+// "image-url", "image-file-id", "image-file-reference"), and false for a
+// block that was not decoded from one of those JSON types.
+func (f FileContentBlock) DeprecationWarning() (Warning, bool) {
+	var message string
+	switch f.legacyType {
+	case "":
+		return Warning{}, false
+	case "file-data", "image-data":
+		message = `The "` + f.legacyType + `" type for tool result content is deprecated. Use the "file" type with mediaType and { type: 'data', data } instead.`
+	case "file-url":
+		message = `The "file-url" type for tool result content is deprecated. Use the "file" type with mediaType and { type: 'url', url } instead.`
+		if f.legacyMediaTypeMissing {
+			inferenceSuffix := `Inferred media type '` + f.MediaType + `' from URL.`
+			if f.MediaType == "application/octet-stream" {
+				inferenceSuffix = `Unable to infer media type from URL. Defaulting to 'application/octet-stream'.`
+			}
+			message = `The "file-url" tool result content part with URL "` + f.URL + `" is missing a "mediaType". ` + inferenceSuffix + " " + message
+		}
+	case "image-url":
+		message = `The "image-url" type for tool result content is deprecated. Use the "file" type with mediaType 'image' (or a specific image/* subtype) and { type: 'url', url } instead.`
+	default:
+		message = `The "` + f.legacyType + `" type for tool result content is deprecated. Use the "file" type with mediaType and { type: 'reference', reference } instead.`
+	}
+	return Warning{
+		Type:    "deprecated",
+		Setting: `"tool-result" content of type "` + f.legacyType + `"`,
+		Message: message,
+	}, true
 }
 
 // MarshalJSON emits the TypeScript SDK tagged file tool-result shape.
@@ -1277,7 +1581,7 @@ func (f FileContentBlock) MarshalJSON() ([]byte, error) {
 	default:
 		data = FileData{Type: FileDataTypeData, Data: f.Data}
 	}
-	return json.Marshal(fileContentBlockJSON{
+	return jsonstr.Marshal(fileContentBlockJSON{
 		Type:            f.ToolResultContentType(),
 		Data:            data,
 		MediaType:       firstNonEmptyString(f.MediaType, f.FileData.MediaType),
@@ -1302,6 +1606,8 @@ func (f *FileContentBlock) UnmarshalJSON(data []byte) error {
 	f.MediaType = raw.MediaType
 	f.Filename = raw.Filename
 	f.ProviderOptions = raw.ProviderOptions
+	f.legacyType = ""
+	f.legacyMediaTypeMissing = false
 	switch raw.Data.Type {
 	case FileDataTypeURL:
 		f.URL = raw.Data.URL
@@ -1335,7 +1641,7 @@ func (c CustomContentBlock) ToolResultContentType() string {
 
 // MarshalJSON emits the TypeScript SDK custom tool-result content shape.
 func (c CustomContentBlock) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type            string                 `json:"type"`
 		ProviderOptions map[string]interface{} `json:"providerOptions"`
 	}{

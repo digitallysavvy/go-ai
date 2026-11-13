@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -18,15 +20,68 @@ const (
 )
 
 // TimeoutError wraps timeout failures so callers can inspect the reason with
-// errors.As, matching the TypeScript SDK's tagged timeout failures.
+// errors.As, matching the TypeScript SDK's tagged timeout failures. Unwrap
+// gives the underlying error (usually context.DeadlineExceeded).
 type TimeoutError struct {
 	Reason TimeoutReason
 	Err    error
+
+	// Timeout is the configured duration that elapsed, when known. With it,
+	// a step, first-chunk or chunk timeout reads like the TS abort reason
+	// ("Chunk timeout of 50ms exceeded").
+	Timeout time.Duration
+
+	// timeoutSet reports that Timeout is the configured duration, even when
+	// it is zero or negative (TS setAbortTimeout / AbortSignal.timeout with
+	// 0 or a negative value still abort with the labeled reason). Set by
+	// NewToolTimeoutError and by the configured step, first-chunk, chunk and
+	// total timeouts.
+	timeoutSet bool
 }
 
+// NewToolTimeoutError is the error of a tool whose per-tool timeout d
+// fired: the TS mergeAbortSignals(abortSignal, toolMs) abort reason. err is
+// the underlying error (context.DeadlineExceeded for the context cause, or
+// the tool's own error).
+func NewToolTimeoutError(d time.Duration, err error) *TimeoutError {
+	return &TimeoutError{Reason: TimeoutReasonTool, Err: err, Timeout: d, timeoutSet: true}
+}
+
+// ErrorName is the TS error name (a DOMException named "TimeoutError"), so a
+// tool that fails with its timeout reaches the model as TS
+// getErrorMessage(error): "TimeoutError: The operation was aborted due to
+// timeout" (prompt/create-tool-model-output.ts).
+func (e *TimeoutError) ErrorName() string { return "TimeoutError" }
+
+// timeoutLabels are the TS setAbortTimeout labels (stream-text.ts,
+// generate-text.ts).
+var timeoutLabels = map[TimeoutReason]string{
+	TimeoutReasonStep:       "Step",
+	TimeoutReasonFirstChunk: "First chunk",
+	TimeoutReasonChunk:      "Chunk",
+}
+
+// Error is the TS abort reason's message: setAbortTimeout's
+// "<Label> timeout of <ms>ms exceeded" for a step, first-chunk or chunk
+// timeout with a known duration, and AbortSignal.timeout's "The operation was
+// aborted due to timeout" for the total timeout and for a tool timeout with
+// a known duration (TS mergeAbortSignals(abortSignal, toolMs)). A duration
+// is known when it was configured, even zero or negative. A timeout without
+// a duration (other than total) keeps the Go text.
 func (e *TimeoutError) Error() string {
 	if e == nil {
 		return "<nil>"
+	}
+	// The duration is known when it was configured (timeoutSet), zero and
+	// negative values included: TS setAbortTimeout labels any non-null
+	// timeoutMs, and AbortSignal.timeout(0) still aborts with its reason.
+	known := e.timeoutSet || e.Timeout > 0
+	if e.Reason == TimeoutReasonTotal || (e.Reason == TimeoutReasonTool && known) {
+		return "The operation was aborted due to timeout"
+	}
+	if label, ok := timeoutLabels[e.Reason]; ok && known {
+		ms := strconv.FormatFloat(float64(e.Timeout)/float64(time.Millisecond), 'f', -1, 64)
+		return label + " timeout of " + ms + "ms exceeded"
 	}
 	if e.Err == nil {
 		return fmt.Sprintf("%s timeout exceeded", e.Reason)
@@ -41,11 +96,50 @@ func (e *TimeoutError) Unwrap() error {
 	return e.Err
 }
 
+// deadlineFired reports whether ctx ended because a deadline armed on it
+// passed while parent was still live: one of this SDK's timeouts, not the
+// caller's cancellation or the caller's own deadline. TS tells them apart the
+// same way: an expired AbortSignal.timeout rejects with a TimeoutError, an
+// abort with the abort reason.
+func deadlineFired(ctx, parent context.Context) bool {
+	if ctx == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false
+	}
+	return parent == nil || parent.Err() == nil
+}
+
 func wrapTimeoutError(reason TimeoutReason, err error) error {
 	if err == nil {
 		return nil
 	}
 	return &TimeoutError{Reason: reason, Err: err}
+}
+
+// timeoutError is wrapTimeoutError with the configured duration of the
+// timeout that fired.
+func (tc *TimeoutConfig) timeoutError(reason TimeoutReason, err error) error {
+	if err == nil {
+		return nil
+	}
+	timeoutErr := &TimeoutError{Reason: reason, Err: err}
+	if tc != nil {
+		var d *time.Duration
+		switch reason {
+		case TimeoutReasonTotal:
+			d = tc.Total
+		case TimeoutReasonStep:
+			d = tc.PerStep
+		case TimeoutReasonFirstChunk:
+			d = tc.FirstChunk
+		case TimeoutReasonChunk:
+			d = tc.PerChunk
+		}
+		if d != nil {
+			timeoutErr.Timeout = *d
+			timeoutErr.timeoutSet = true
+		}
+	}
+	return timeoutErr
 }
 
 // TimeoutConfig provides granular timeout controls for AI operations
@@ -76,15 +170,20 @@ type TimeoutConfig struct {
 	// (non-empty text/reasoning/tool-input deltas, files, reasoning files,
 	// tool calls — see isOutputChunkForTiming) reset this timer; metadata,
 	// empty deltas and block boundary chunks do not, so a burst of
-	// non-output chunks can't mask a stalled stream. If no semantic output
-	// chunk is received within this duration, the stream is aborted with
-	// TimeoutReasonChunk (audit row 106ea59 / WG-TIMEOUT).
+	// non-output chunks can't mask a stalled stream. The timer starts with
+	// the first semantic output chunk of each model call attempt (use
+	// FirstChunk to bound the wait for it), stops at an error part until
+	// the next output chunk, and stops at the model call's finish part (TS
+	// clearModelOutputTimeouts on model-call-end); if no further semantic output chunk is received
+	// within this duration, the stream is aborted with TimeoutReasonChunk
+	// (TS chunkMs; audit row 106ea59 / WG-TIMEOUT).
 	PerChunk *time.Duration
 
 	// FirstChunk is the timeout for the first semantic output chunk of each
 	// model-call step (TS firstChunkMs). It is armed fresh at the start of
 	// every step and disarmed (stops applying, for the rest of that step)
-	// as soon as the first chunk matching isOutputChunkForTiming arrives;
+	// as soon as the first chunk matching isOutputChunkForTiming (or an
+	// error part or the finish part, TS clearModelOutputTimeouts) arrives;
 	// PerChunk (if also set) then takes over from that point. Streaming
 	// only, like PerChunk (audit row 106ea59 / WG-TIMEOUT; GenerateText
 	// warns instead of applying it — audit row 349afe7).
@@ -114,18 +213,22 @@ func (tc *TimeoutConfig) CreateTimeoutContext(ctx context.Context, timeoutType s
 		return ctx, func() {}
 	}
 
+	// The deadline's cause is the TS abort reason (setAbortTimeout /
+	// AbortSignal.timeout): a model call, tool or provider reading
+	// context.Cause sees the TimeoutError; ctx.Err() stays
+	// context.DeadlineExceeded.
 	switch timeoutType {
 	case "total":
 		if tc.Total != nil {
-			return context.WithTimeout(ctx, *tc.Total)
+			return context.WithTimeoutCause(ctx, *tc.Total, tc.timeoutError(TimeoutReasonTotal, context.DeadlineExceeded))
 		}
 	case "step":
 		if tc.PerStep != nil {
-			return context.WithTimeout(ctx, *tc.PerStep)
+			return context.WithTimeoutCause(ctx, *tc.PerStep, tc.timeoutError(TimeoutReasonStep, context.DeadlineExceeded))
 		}
 	case "chunk":
 		if tc.PerChunk != nil {
-			return context.WithTimeout(ctx, *tc.PerChunk)
+			return context.WithTimeoutCause(ctx, *tc.PerChunk, tc.timeoutError(TimeoutReasonChunk, context.DeadlineExceeded))
 		}
 	}
 

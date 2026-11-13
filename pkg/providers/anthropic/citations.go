@@ -2,8 +2,12 @@ package anthropic
 
 import (
 	"encoding/json"
+	"math"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -31,7 +35,10 @@ func extractCitationDocuments(messages []types.Message) []citationDocument {
 			if !ok {
 				continue
 			}
-			if file.MediaType != "application/pdf" && file.MediaType != "text/plain" {
+			// The media type the prompt converter sends (MediaType, then
+			// the deprecated MimeType, then FileData.MediaType).
+			mediaType := firstNonEmptyString(file.MediaType, file.MimeType, file.FileData.MediaType)
+			if mediaType != "application/pdf" && mediaType != "text/plain" {
 				continue
 			}
 			if !fileCitationsEnabled(file.ProviderOptions) {
@@ -44,7 +51,7 @@ func extractCitationDocuments(messages []types.Message) []citationDocument {
 			docs = append(docs, citationDocument{
 				Title:     title,
 				Filename:  file.Filename,
-				MediaType: file.MediaType,
+				MediaType: mediaType,
 			})
 		}
 	}
@@ -70,7 +77,8 @@ func asFileContent(part types.ContentPart) (types.FileContent, bool) {
 // fileCitationsEnabled reports whether providerOptions.anthropic.citations.enabled
 // is explicitly true.
 func fileCitationsEnabled(providerOptions map[string]interface{}) bool {
-	anthropicOpts, ok := providerOptions["anthropic"].(map[string]interface{})
+	// Go-typed literals are read through their JSON form.
+	anthropicOpts, ok := normalizedOptionsMap(providerOptions["anthropic"])
 	if !ok {
 		return false
 	}
@@ -82,18 +90,6 @@ func fileCitationsEnabled(providerOptions map[string]interface{}) bool {
 	return enabled
 }
 
-// filterWebSearchCitations returns the subset of raw citations whose type is
-// "web_search_result_location", preserving order.
-func filterWebSearchCitations(citations []map[string]interface{}) []map[string]interface{} {
-	var out []map[string]interface{}
-	for _, c := range citations {
-		if citationType(c) == "web_search_result_location" {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // citationsProviderMetadata wraps citations as {"anthropic":{"citations":[...]}},
 // or returns nil when citations is empty (TS's `...(citations.length > 0 &&
 // {providerMetadata: {anthropic: {citations}}})`).
@@ -101,13 +97,45 @@ func citationsProviderMetadata(citations []map[string]interface{}) json.RawMessa
 	if len(citations) == 0 {
 		return nil
 	}
-	meta, err := json.Marshal(map[string]interface{}{
-		"anthropic": map[string]interface{}{"citations": citations},
+	stripped := make([]map[string]interface{}, len(citations))
+	for i, c := range citations {
+		stripped[i] = stripAnthropicCitation(c)
+	}
+	meta, err := jsonstr.Marshal(map[string]interface{}{
+		"anthropic": map[string]interface{}{"citations": stripped},
 	})
 	if err != nil {
 		return nil
 	}
 	return meta
+}
+
+// anthropicCitationKeys are the keys TS anthropicCitationSchema declares per
+// citation type. The schema is a discriminated union of z.object members, so
+// the parsed citation TS reports in providerMetadata keeps only these keys.
+var anthropicCitationKeys = map[string][]string{
+	"web_search_result_location": {"type", "cited_text", "url", "title", "encrypted_index"},
+	"page_location":              {"type", "cited_text", "document_index", "document_title", "start_page_number", "end_page_number", "file_id"},
+	"char_location":              {"type", "cited_text", "document_index", "document_title", "start_char_index", "end_char_index", "file_id"},
+	"content_block_location":     {"type", "cited_text", "document_index", "document_title", "start_block_index", "end_block_index", "file_id"},
+	"search_result_location":     {"type", "cited_text", "search_result_index", "source", "title", "start_block_index", "end_block_index"},
+}
+
+// stripAnthropicCitation returns the citation with the keys its TS schema
+// declares (zod strips the others); a citation of an unknown type is returned
+// as is (the response schema rejects it before conversion).
+func stripAnthropicCitation(c map[string]interface{}) map[string]interface{} {
+	keys, ok := anthropicCitationKeys[citationType(c)]
+	if !ok {
+		return c
+	}
+	out := make(map[string]interface{}, len(keys))
+	for _, k := range keys {
+		if v, present := c[k]; present {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func citationType(c map[string]interface{}) string {
@@ -148,15 +176,12 @@ func createCitationSource(citation map[string]interface{}, citationDocuments []c
 		}, true
 
 	case "page_location", "char_location":
-		docIndexF, ok := citation["document_index"].(float64)
-		if !ok {
+		docIndexF, _ := citation["document_index"].(float64)
+		docPtr := citationDocumentAt(citationDocuments, docIndexF)
+		if docPtr == nil {
 			return types.SourceContent{}, false
 		}
-		docIndex := int(docIndexF)
-		if docIndex < 0 || docIndex >= len(citationDocuments) {
-			return types.SourceContent{}, false
-		}
-		doc := citationDocuments[docIndex]
+		doc := *docPtr
 
 		title := doc.Title
 		if dtRaw, exists := citation["document_title"]; exists && dtRaw != nil {
@@ -179,7 +204,7 @@ func createCitationSource(citation map[string]interface{}, citationDocuments []c
 				"endCharIndex":   citation["end_char_index"],
 			}
 		}
-		meta, _ := json.Marshal(map[string]interface{}{"anthropic": anthMeta})
+		meta, _ := jsonstr.Marshal(map[string]interface{}{"anthropic": anthMeta})
 
 		return types.SourceContent{
 			SourceType:       "document",
@@ -212,18 +237,121 @@ func anthropicGenerateID() string {
 // extractCitationDocuments, a web-fetched document has no filename.
 func extractWebFetchCitationDocument(raw json.RawMessage) (citationDocument, bool) {
 	var wire webFetchResultWire
-	if err := json.Unmarshal(raw, &wire); err != nil {
+	if err := jsonexact.Unmarshal(raw, &wire); err != nil {
 		return citationDocument{}, false
 	}
 	if wire.Type != "web_fetch_result" {
 		return citationDocument{}, false
 	}
-	title := wire.Content.Title
-	if title == "" {
-		title = wire.URL
+	title := wire.URL // TS: title ?? url
+	if wire.Content.Title != nil {
+		title = *wire.Content.Title
 	}
 	return citationDocument{
 		Title:     title,
 		MediaType: wire.Content.Source.MediaType,
 	}, true
+}
+
+// mapAnthropicCitations normalizes raw Anthropic citations onto the shared
+// types.Citation shape (TS mapAnthropicCitation), resolving indexed document
+// citations against documents. It returns nil for no citations.
+func mapAnthropicCitations(citations []map[string]interface{}, documents []citationDocument) []types.Citation {
+	if len(citations) == 0 {
+		return nil
+	}
+	out := make([]types.Citation, 0, len(citations))
+	for _, citation := range citations {
+		out = append(out, mapAnthropicCitation(citation, documents))
+	}
+	return out
+}
+
+// mapAnthropicCitation mirrors TS mapAnthropicCitation: web_search_result_location
+// and search_result_location become url sources (the id is the URL); every
+// other kind becomes a document source whose id is the file_id or the
+// document index. The full raw citation is kept under providerMetadata.anthropic.
+func mapAnthropicCitation(citation map[string]interface{}, documents []citationDocument) types.Citation {
+	meta, _ := jsonstr.Marshal(map[string]interface{}{"anthropic": stripAnthropicCitation(citation)})
+	citedText := citationString(citation, "cited_text")
+
+	switch citationType(citation) {
+	case "web_search_result_location", "search_result_location":
+		url := citationString(citation, "url")
+		if citationType(citation) == "search_result_location" {
+			url = citationString(citation, "source")
+		}
+		return types.Citation{
+			Source: types.SourceContent{
+				SourceType:       "url",
+				ID:               url,
+				URL:              url,
+				Title:            citationString(citation, "title"),
+				ProviderMetadata: meta,
+			},
+			CitedText: citedText,
+		}
+	}
+
+	docIndex, _ := citation["document_index"].(float64)
+	doc := citationDocumentAt(documents, docIndex)
+	// TS String(citation.document_index) and `file_id ?? ...`: a present
+	// file_id (an empty one included) is the id.
+	index := providerutils.JSNumberString(docIndex)
+	id, hasFileID := citation["file_id"].(string)
+	if !hasFileID {
+		id = index
+	}
+	src := types.SourceContent{
+		SourceType:       "document",
+		ID:               id,
+		MediaType:        "text/plain",
+		ProviderMetadata: meta,
+	}
+	title := "Document " + index
+	if doc != nil {
+		src.MediaType = doc.MediaType
+		src.Filename = doc.Filename
+		title = doc.Title
+	}
+	if dt, ok := citation["document_title"].(string); ok {
+		title = dt
+	}
+	src.Title = title
+	return types.Citation{Source: src, CitedText: citedText}
+}
+
+// citationDocumentAt is TS documents[citation.document_index]: only an
+// integral in-range index names a document (a fractional or negative index
+// is an absent array element).
+func citationDocumentAt(documents []citationDocument, index float64) *citationDocument {
+	if index < 0 || index != math.Trunc(index) || index >= float64(len(documents)) {
+		return nil
+	}
+	return &documents[int(index)]
+}
+
+// anthropicResponseHasWebSearchResults reports whether any web_search_tool_result
+// block carries a non-empty array of retrieved results.
+func anthropicResponseHasWebSearchResults(content []anthropicContent) bool {
+	for _, part := range content {
+		if part.Type != "web_search_tool_result" {
+			continue
+		}
+		var results []json.RawMessage
+		if json.Unmarshal(part.Content, &results) == nil && len(results) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// firstNonEmptyString returns the first non-empty value.
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

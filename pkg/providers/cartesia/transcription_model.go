@@ -3,13 +3,13 @@ package cartesia
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -21,7 +21,7 @@ import (
 // batch transcription flow (POST /stt), and provider.TranscriptionStreamer
 // (see transcription_stream.go) for Ink 2's realtime WebSocket flow.
 //
-// ink-2 (and any "ink-2-*" variant) is a STREAMING-only realtime
+// Every model except ink-whisper (and "ink-whisper-*" snapshots) is a STREAMING-only realtime
 // transcription model (WebSocket-based, over /stt/websocket and
 // /stt/turns/websocket); DoTranscribe rejects it, matching the TypeScript
 // SDK's UnsupportedFunctionalityError for non-streaming use of that model.
@@ -43,7 +43,10 @@ func (m *TranscriptionModel) ModelID() string { return m.modelID }
 // isStreamingTranscriptionModelID mirrors the TypeScript SDK's
 // isStreamingTranscriptionModelId.
 func isStreamingTranscriptionModelID(modelID string) bool {
-	return modelID == ModelInk2 || strings.HasPrefix(modelID, "ink-2-")
+	// Ink Whisper (including dated snapshots such as "ink-whisper-2025-06-04")
+	// is the known batch-only model family. Future IDs inherit the current
+	// streaming protocol regardless of their name.
+	return modelID != ModelInkWhisper && !strings.HasPrefix(modelID, "ink-whisper-")
 }
 
 type cartesiaTranscriptionResponse struct {
@@ -60,7 +63,7 @@ type cartesiaTranscriptionResponse struct {
 // DoTranscribe performs batch speech-to-text transcription via POST /stt.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if isStreamingTranscriptionModelID(m.modelID) {
-		return nil, fmt.Errorf("%w: non-streaming transcription with %s (this model is realtime/WebSocket-only)", providererrors.ErrUnsupportedFeature, m.modelID)
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "non-streaming transcription with " + m.modelID}
 	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
@@ -74,10 +77,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var response cartesiaTranscriptionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/stt",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCartesiaTranscription),
+		Method:           http.MethodPost,
+		Path:             "/stt",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &response)
 	if err != nil {
 		return nil, handleError(err)
@@ -101,7 +105,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}
 	if response.Language != nil {
@@ -116,6 +120,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOptions) (*bytes.Buffer, string, []types.Warning, error) {
 	warnings := []types.Warning{}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, "", nil, err
+	}
 	cartesiaOpts := extractTranscriptionModelOptions(opts.ProviderOptions)
 
 	if cartesiaOpts != nil && cartesiaOpts.Streaming != nil {
@@ -128,7 +135,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := fileutil.ConvertBase64ToBytes(opts.AudioBase64)
 		if err != nil {
 			return nil, "", nil, fmt.Errorf("cartesia: failed to decode base64 audio: %w", err)
 		}
@@ -138,11 +145,11 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	if err := writer.WriteField("model", m.modelID); err != nil {
+	if err := providerutils.WriteFormDataField(writer, "model", m.modelID); err != nil {
 		return nil, "", nil, err
 	}
 
-	part, err := writer.CreateFormFile("file", "audio."+cartesiaAudioExtension(opts.MimeType))
+	part, err := providerutils.CreateTypedFormFile(writer, "file", "audio."+cartesiaAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -151,13 +158,14 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	if cartesiaOpts != nil {
-		if cartesiaOpts.Language != "" {
-			if err := writer.WriteField("language", cartesiaOpts.Language); err != nil {
+		// TS `language != null`: an empty string is sent too.
+		if language, ok := transcriptionLanguageOption(opts.ProviderOptions, cartesiaOpts); ok {
+			if err := providerutils.WriteFormDataField(writer, "language", language); err != nil {
 				return nil, "", nil, err
 			}
 		}
 		for _, granularity := range cartesiaOpts.TimestampGranularities {
-			if err := writer.WriteField("timestamp_granularities[]", granularity); err != nil {
+			if err := providerutils.WriteFormDataField(writer, "timestamp_granularities[]", granularity); err != nil {
 				return nil, "", nil, err
 			}
 		}
@@ -170,20 +178,5 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 }
 
 func cartesiaAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }

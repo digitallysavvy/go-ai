@@ -3,14 +3,15 @@ package azure
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -65,13 +66,10 @@ func (m *AzureMaiTranscriptionModel) DoStream(ctx context.Context, opts *provide
 		if rate != nil {
 			rateSuffix = fmt.Sprintf(" at %d Hz", resolvedRate)
 		}
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "inputAudioFormat",
-			Message: fmt.Sprintf(
-				"MAI streaming transcription requires 16-bit mono PCM (audio/pcm) at 16000 or 24000 Hz, got %s%s.",
-				opts.InputAudioFormat.Type, rateSuffix,
-			),
-		}
+		return nil, providererrors.NewArgumentError("inputAudioFormat", fmt.Sprintf(
+			"MAI streaming transcription requires 16-bit mono PCM (audio/pcm) at 16000 or 24000 Hz, got %s%s.",
+			opts.InputAudioFormat.Type, rateSuffix,
+		), nil)
 	}
 
 	transcription := map[string]interface{}{"model": m.modelID}
@@ -93,11 +91,12 @@ func (m *AzureMaiTranscriptionModel) DoStream(ctx context.Context, opts *provide
 		},
 	}
 
-	urlStr, err := m.url()
+	// TS awaits config.headers() before it calls config.url().
+	baseHeaders, err := m.headers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	baseHeaders, err := m.headers(ctx)
+	urlStr, err := m.url()
 	if err != nil {
 		return nil, err
 	}
@@ -137,38 +136,11 @@ func (m *AzureMaiTranscriptionModel) DoStream(ctx context.Context, opts *provide
 	}, nil
 }
 
-// toWebSocketURL rewrites an http(s) URL to ws(s), mirroring TS
-// provider-utils toWebSocketUrl.
+// toWebSocketURL is TS provider-utils toWebSocketUrl: new URL(url) with
+// http: set to ws: and https: to wss: (the WHATWG serialization; "Invalid
+// URL" for input it rejects).
 func toWebSocketURL(rawURL string) (string, error) {
-	switch {
-	case hasPrefixFold(rawURL, "https://"):
-		return "wss://" + rawURL[len("https://"):], nil
-	case hasPrefixFold(rawURL, "http://"):
-		return "ws://" + rawURL[len("http://"):], nil
-	case hasPrefixFold(rawURL, "wss://"), hasPrefixFold(rawURL, "ws://"):
-		return rawURL, nil
-	default:
-		return "", &providererrors.InvalidArgumentError{Field: "url", Message: "URL must use http(s) or ws(s) scheme: " + rawURL}
-	}
-}
-
-func hasPrefixFold(s, prefix string) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
-	for i := 0; i < len(prefix); i++ {
-		c1, c2 := s[i], prefix[i]
-		if c1 >= 'A' && c1 <= 'Z' {
-			c1 += 'a' - 'A'
-		}
-		if c2 >= 'A' && c2 <= 'Z' {
-			c2 += 'a' - 'A'
-		}
-		if c1 != c2 {
-			return false
-		}
-	}
-	return true
+	return wsutil.ToWebSocketURL(rawURL)
 }
 
 type azureMaiTranscriptionStreamConfig struct {
@@ -205,11 +177,12 @@ type azureMaiRealtimeEvent struct {
 	ItemID       string `json:"item_id"`
 	Delta        string `json:"delta"`
 	Intermediate string `json:"intermediate"`
-	Transcript   string `json:"transcript"`
-	Error        *struct {
-		Message string `json:"message"`
-		Code    string `json:"code"`
-	} `json:"error"`
+	// Transcript is a pointer: TS reads it with ??, so a present "" is a
+	// value.
+	Transcript *string `json:"transcript"`
+	// Error is untyped: TS reads error?.code / error?.message from whatever
+	// JSON the server sent and formats them with a template string.
+	Error interface{} `json:"error"`
 }
 
 func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig) {
@@ -221,9 +194,16 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 		cfg.audio.Cancel(err)
 	}
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
-		fail(err)
+		// TS connectToWebSocket: an abort fails with abortSignal.reason; a
+		// socket that fails to open fires onerror (onSocketError's text).
+		if cause := context.Cause(s.Context()); cause != nil {
+			fail(cause)
+		} else {
+			fail(errors.New("Azure MAI transcription WebSocket error")) //nolint:staticcheck // TS error text
+		}
 		return
 	}
 	s.SetConn(conn)
@@ -255,11 +235,8 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 					return nil
 				}
 				audioBytes += len(chunk)
-				msg, marshalErr := json.Marshal(map[string]string{"type": "input_audio_buffer.append", "audio": b64})
-				if marshalErr != nil {
-					return nil
-				}
-				return s.send(socket, msg)
+				// TS JSON.stringify({type, audio}): literal key order.
+				return s.send(socket, []byte(providerutils.StringifyOrdered(map[string]interface{}{"type": "input_audio_buffer.append", "audio": b64}, azureMaiAppendOrder)))
 			},
 			func() error {
 				select {
@@ -294,7 +271,7 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 	for {
 		select {
 		case <-s.Context().Done():
-			fail(s.Context().Err())
+			fail(context.Cause(s.Context())) // TS onAbort(abortSignal.reason)
 			return
 
 		case audioErr := <-audioErrCh:
@@ -323,12 +300,12 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				if finished {
 					return
 				}
-				if wsutil.IsCleanClose(res.Err) && committed {
-					// A clean close after the commit with no completed event
-					// yet is still an abnormal end: MAI should emit
-					// .completed before closing. Fail explicitly rather than
-					// finishing silently, mirroring TS onClose.
-					fail(errors.New("Azure MAI transcription connection closed before the transcript completed")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+				if wsutil.IsCleanClose(res.Err) {
+					// A close before the transcript completed (before or
+					// after the commit) is an abnormal end, as TS onClose
+					// reports it, with " (code N: reason)"
+					// (azure-mai-transcription-model.ts:349-355).
+					fail(errors.New("Azure MAI transcription connection closed before the transcript completed" + closeInfo.Suffix())) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 					return
 				}
 				fail(errors.New("Azure MAI transcription WebSocket error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
@@ -338,26 +315,36 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				continue
 			}
 
-			var event azureMaiRealtimeEvent
-			if jsonErr := json.Unmarshal([]byte(res.Text), &event); jsonErr != nil {
+			// TS safeParseJSON: any JSON value is a message and is reported
+			// as a raw part; only an object with known fields is an event.
+			var rawValue interface{}
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
+			if rawValue == nil {
+				// TS reads event.type of a JSON null: the TypeError fails the
+				// stream through onProcessingError.
+				fail(errors.New("Cannot read properties of null (reading 'type')")) //nolint:staticcheck // ST1005: TypeError text from TS
+				return
+			}
+			var event azureMaiRealtimeEvent
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &event); jsonErr != nil {
+				continue
+			}
 
 			switch event.Type {
 			case "session.created":
-				payload, marshalErr := json.Marshal(cfg.sessionUpdate)
-				if marshalErr == nil {
-					if sendErr := s.send(conn, payload); sendErr != nil {
-						fail(sendErr)
-						return
-					}
+				// TS socket.send(JSON.stringify(sessionUpdate)): a failure
+				// to serialize or send fails the stream.
+				sendErr := s.send(conn, []byte(providerutils.StringifyOrdered(cfg.sessionUpdate, azureMaiSessionOrder)))
+				if sendErr != nil {
+					fail(sendErr)
+					return
 				}
 
 			case "session.updated":
@@ -378,9 +365,9 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				}
 
 			case "conversation.item.input_audio_transcription.completed":
-				transcript := event.Transcript
-				if transcript == "" {
-					transcript = deltas
+				transcript := deltas
+				if event.Transcript != nil {
+					transcript = *event.Transcript
 				}
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: event.ItemID, Text: transcript}) {
 					return
@@ -392,16 +379,16 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 
 			case "conversation.item.input_audio_transcription.failed", "error":
 				message := "unknown error"
-				code := ""
-				if event.Error != nil {
-					if event.Error.Message != "" {
-						message = event.Error.Message
-					}
-					code = event.Error.Code
-				}
 				prefix := "Azure MAI transcription error"
-				if code != "" {
-					prefix += " (" + code + ")"
+				if errObj, ok := event.Error.(map[string]interface{}); ok {
+					// TS `${event.error.code}` / `${event.error?.message ??
+					// 'unknown error'}`: JS String() of a non-null value.
+					if code := errObj["code"]; code != nil {
+						prefix += " (" + providerutils.JSString(code) + ")"
+					}
+					if msg := errObj["message"]; msg != nil {
+						message = providerutils.JSString(msg)
+					}
 				}
 				fail(fmt.Errorf("%s: %s", prefix, message))
 				return
@@ -410,8 +397,22 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 	}
 }
 
-func (s *azureMaiTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
+// azureMaiAppendOrder and azureMaiSessionOrder are the key orders of TS's
+// append frame and session.update object literals.
+var (
+	azureMaiAppendOrder  = map[string][]string{"": {"type", "audio"}}
+	azureMaiSessionOrder = map[string][]string{
+		"":                                  {"type", "session"},
+		"session":                           {"type", "audio"},
+		"session.audio":                     {"input"},
+		"session.audio.input":               {"format", "transcription", "turn_detection", "noise_reduction"},
+		"session.audio.input.format":        {"type", "rate"},
+		"session.audio.input.transcription": {"model", "language"},
+	}
+)
+
+func (s *azureMaiTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: closeInfo.Wrap})
 }
 
 func (s *azureMaiTranscriptionStream) send(conn *websocket.Conn, message []byte) error {

@@ -90,6 +90,69 @@ type RealtimeServerWebSocketConfigProvider interface {
 	GetServerWebSocketConfig() (WebSocketConfig, error)
 }
 
+// RealtimeSessionIntent selects the realtime endpoint variant a server-side
+// connection targets. Mirrors TS RealtimeModelV4SessionIntent
+// ('conversation' | 'transcription', packages/provider/src/realtime-model/
+// v4/realtime-model-v4-server-connection.ts). The empty value means
+// RealtimeSessionIntentConversation, as an omitted TS intent does.
+// Providers should fail fast when their endpoint and codec do not support
+// an intent.
+type RealtimeSessionIntent string
+
+const (
+	// RealtimeSessionIntentConversation is the conversational voice
+	// endpoint most providers expose.
+	RealtimeSessionIntentConversation RealtimeSessionIntent = "conversation"
+
+	// RealtimeSessionIntentTranscription is a dedicated transcription
+	// endpoint, which some providers expose at a different URL.
+	RealtimeSessionIntentTranscription RealtimeSessionIntent = "transcription"
+)
+
+// RealtimeServerConnectionOptions are the options for
+// RealtimeServerConnectionProvider.GetServerConnection (TS
+// getServerWebSocketConfig `options?: { intent? }`).
+type RealtimeServerConnectionOptions struct {
+	// Intent selects the endpoint variant; empty means conversation.
+	Intent RealtimeSessionIntent
+}
+
+// RealtimeServerConnectionProvider is an optional realtime model capability
+// for a server-initiated upstream WebSocket connection that selects the
+// endpoint variant by intent. It mirrors TS getServerWebSocketConfig?(
+// { intent }) returning RealtimeModelV4ServerConnection
+// (packages/provider/src/realtime-model/v4/realtime-model-v4.ts and
+// realtime-model-v4-server-connection.ts): the returned WebSocketConfig
+// carries the URL (with any provider query parameters), the handshake
+// headers holding the long-lived provider credential, and optional
+// subprotocols. It is meant for a trusted server or proxy that owns the
+// socket; the context covers providers that need a round-trip (TS may
+// return a promise).
+//
+// It is separate from RealtimeServerWebSocketConfigProvider on purpose: Go's
+// ConnectRealtime prefers that older interface whenever a model implements
+// it, so adding it to more models would silently switch existing
+// client-secret callers to the long-lived key. This interface is used only
+// when a caller asks for an intent. Callers should pass the same intent to
+// RealtimeIntentCodec.
+type RealtimeServerConnectionProvider interface {
+	GetServerConnection(ctx context.Context, opts RealtimeServerConnectionOptions) (WebSocketConfig, error)
+}
+
+// RealtimeIntentCodec is an optional realtime model capability that builds
+// session configuration and serializes client events for a given intent.
+// It mirrors the TS `options?: { intent? }` argument of buildSessionConfig
+// and serializeClientEvent (realtime-model-v4.ts). The
+// Experimental_RealtimeModelV4 methods BuildSessionConfig and
+// SerializeClientEvent keep the conversation behavior; server-side callers
+// that opened a connection with RealtimeServerConnectionProvider should use
+// these methods with the same intent. An unsupported intent returns an
+// error.
+type RealtimeIntentCodec interface {
+	BuildSessionConfigForIntent(config RealtimeSessionConfig, intent RealtimeSessionIntent) (any, error)
+	SerializeClientEventForIntent(event RealtimeClientEvent, intent RealtimeSessionIntent) (json.RawMessage, error)
+}
+
 // RealtimeLifecycle describes non-default session startup/finalization
 // framing for a realtime model. Mirrors the relevant part of the TypeScript
 // SDK's Experimental_RealtimeModelV4 capabilities object (`startup` /
@@ -235,10 +298,143 @@ type RealtimeClientEvent struct {
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 }
 
-// RealtimeUsage reports cumulative realtime session usage (OpenAI Live
-// session.usage.updated / session.closed).
+// RealtimeUsage reports realtime usage on completion events or provider
+// snapshots, mirroring TS RealtimeModelV4Usage (packages/provider/src/
+// realtime-model/v4/realtime-model-v4-usage.ts). Providers populate only
+// what they report; snapshots without a response association must not be
+// summed as increments. Token counts are the provider's raw counts: the
+// input buckets include cached tokens, and the cached portions are also
+// reported in the CachedInput* fields.
+//
+// Token counts are *float64, the JS number TS reports (a fractional wire
+// value is kept, as TS does).
+//
+// Seconds stays a plain float64 for v0.5.2 compatibility (OpenAI Live
+// session.usage.updated / session.closed set it). JSON output always
+// includes "seconds" unless the usage is token-only: at least one token
+// field is set, Seconds is 0 and seconds was not marked present with
+// SetSeconds (or decoded from JSON alongside token fields). The zero value
+// marshals as {"seconds":0}, as in v0.5.2.
 type RealtimeUsage struct {
+	// InputTokens is the gross input tokens across all reported
+	// modalities; includes cached tokens.
+	InputTokens *float64 `json:"inputTokens,omitempty"`
+	// OutputTokens is the gross output tokens across all reported
+	// modalities.
+	OutputTokens *float64 `json:"outputTokens,omitempty"`
+	// CachedInputTokens is the cached portion of InputTokens.
+	CachedInputTokens *float64 `json:"cachedInputTokens,omitempty"`
+	// InputTextTokens is the input text tokens (includes cached text).
+	InputTextTokens *float64 `json:"inputTextTokens,omitempty"`
+	// InputAudioTokens is the input audio tokens (includes cached audio).
+	InputAudioTokens *float64 `json:"inputAudioTokens,omitempty"`
+	// OutputTextTokens is the output text tokens.
+	OutputTextTokens *float64 `json:"outputTextTokens,omitempty"`
+	// OutputAudioTokens is the output audio tokens.
+	OutputAudioTokens *float64 `json:"outputAudioTokens,omitempty"`
+	// CachedInputTextTokens is the cached portion of InputTextTokens.
+	CachedInputTextTokens *float64 `json:"cachedInputTextTokens,omitempty"`
+	// CachedInputAudioTokens is the cached portion of InputAudioTokens.
+	CachedInputAudioTokens *float64 `json:"cachedInputAudioTokens,omitempty"`
+
+	// Seconds is the audio duration in seconds (duration-billed sessions
+	// and transcription).
 	Seconds float64 `json:"seconds"`
+
+	// secondsSet marks Seconds as reported even when it is 0, so a usage
+	// with token fields still marshals "seconds".
+	secondsSet bool
+}
+
+// SetSeconds sets Seconds and marks it as reported, so it is marshaled even
+// when it is 0 and token fields are set.
+func (u *RealtimeUsage) SetSeconds(seconds float64) {
+	u.Seconds = seconds
+	u.secondsSet = true
+}
+
+// HasSeconds reports whether Seconds is part of this usage: it was set with
+// SetSeconds, is non-zero, or no token field is set (the v0.5.2 shape).
+func (u RealtimeUsage) HasSeconds() bool {
+	return u.secondsSet || u.Seconds != 0 || !u.hasTokens()
+}
+
+func (u RealtimeUsage) hasTokens() bool {
+	return u.InputTokens != nil || u.OutputTokens != nil ||
+		u.CachedInputTokens != nil || u.InputTextTokens != nil ||
+		u.InputAudioTokens != nil || u.OutputTextTokens != nil ||
+		u.OutputAudioTokens != nil || u.CachedInputTextTokens != nil ||
+		u.CachedInputAudioTokens != nil
+}
+
+// realtimeUsageTokens is RealtimeUsage without Seconds or methods.
+type realtimeUsageTokens struct {
+	InputTokens            *float64 `json:"inputTokens,omitempty"`
+	OutputTokens           *float64 `json:"outputTokens,omitempty"`
+	CachedInputTokens      *float64 `json:"cachedInputTokens,omitempty"`
+	InputTextTokens        *float64 `json:"inputTextTokens,omitempty"`
+	InputAudioTokens       *float64 `json:"inputAudioTokens,omitempty"`
+	OutputTextTokens       *float64 `json:"outputTextTokens,omitempty"`
+	OutputAudioTokens      *float64 `json:"outputAudioTokens,omitempty"`
+	CachedInputTextTokens  *float64 `json:"cachedInputTextTokens,omitempty"`
+	CachedInputAudioTokens *float64 `json:"cachedInputAudioTokens,omitempty"`
+}
+
+func (u RealtimeUsage) tokens() realtimeUsageTokens {
+	return realtimeUsageTokens{
+		InputTokens:            u.InputTokens,
+		OutputTokens:           u.OutputTokens,
+		CachedInputTokens:      u.CachedInputTokens,
+		InputTextTokens:        u.InputTextTokens,
+		InputAudioTokens:       u.InputAudioTokens,
+		OutputTextTokens:       u.OutputTextTokens,
+		OutputAudioTokens:      u.OutputAudioTokens,
+		CachedInputTextTokens:  u.CachedInputTextTokens,
+		CachedInputAudioTokens: u.CachedInputAudioTokens,
+	}
+}
+
+// MarshalJSON omits "seconds" only for token-only usage (see RealtimeUsage).
+func (u RealtimeUsage) MarshalJSON() ([]byte, error) {
+	if !u.HasSeconds() {
+		return json.Marshal(u.tokens())
+	}
+	return json.Marshal(struct {
+		realtimeUsageTokens
+		Seconds float64 `json:"seconds"`
+	}{u.tokens(), u.Seconds})
+}
+
+// UnmarshalJSON decodes RealtimeUsage. A "seconds" key decoded alongside
+// token fields marks Seconds present, so the value round-trips; a
+// seconds-only payload decodes to the same value as a struct literal.
+func (u *RealtimeUsage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		realtimeUsageTokens
+		Seconds *float64 `json:"seconds"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	t := raw.realtimeUsageTokens
+	*u = RealtimeUsage{
+		InputTokens:            t.InputTokens,
+		OutputTokens:           t.OutputTokens,
+		CachedInputTokens:      t.CachedInputTokens,
+		InputTextTokens:        t.InputTextTokens,
+		InputAudioTokens:       t.InputAudioTokens,
+		OutputTextTokens:       t.OutputTextTokens,
+		OutputAudioTokens:      t.OutputAudioTokens,
+		CachedInputTextTokens:  t.CachedInputTextTokens,
+		CachedInputAudioTokens: t.CachedInputAudioTokens,
+	}
+	if raw.Seconds != nil {
+		u.Seconds = *raw.Seconds
+		if u.Seconds == 0 && u.hasTokens() {
+			u.secondsSet = true
+		}
+	}
+	return nil
 }
 
 type RealtimeServerEvent struct {

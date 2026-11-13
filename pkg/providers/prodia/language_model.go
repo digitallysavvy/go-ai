@@ -6,9 +6,17 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // ProdiaLanguageModel implements the provider.LanguageModel interface for the
@@ -81,44 +89,48 @@ func extractLanguageProviderOptions(opts *provider.GenerateOptions) *ProdiaLangu
 // DoGenerate sends the prompt (and optional image) to the Prodia API using
 // multipart form-data and returns the generated content.
 func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateLanguageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+	currentDate := time.Now()
 	var warnings []types.Warning
 
 	// Warn about features this provider does not support.
 	if opts.Temperature != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "temperature is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Message: "temperature is not supported"})
 	}
 	if opts.TopP != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "topP is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topP", Message: "topP is not supported"})
 	}
 	if opts.TopK != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "topK is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK", Message: "topK is not supported"})
 	}
 	if opts.Seed != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "seed is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed", Message: "seed is not supported"})
 	}
 	if opts.MaxTokens != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "maxOutputTokens is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "maxOutputTokens", Message: "maxOutputTokens is not supported"})
 	}
-	if len(opts.StopSequences) > 0 {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "stopSequences is not supported"})
+	if opts.StopSequences != nil { // TS !== undefined: an empty array counts
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences", Message: "stopSequences is not supported"})
 	}
 	if opts.PresencePenalty != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "presencePenalty is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty", Message: "presencePenalty is not supported"})
 	}
 	if opts.FrequencyPenalty != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "frequencyPenalty is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty", Message: "frequencyPenalty is not supported"})
 	}
 	if len(opts.Tools) > 0 {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "tools are not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "tools", Message: "tools is not supported"})
 	}
 	if opts.ToolChoice.Type != "" {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "toolChoice is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "toolChoice", Message: "toolChoice is not supported"})
 	}
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type != "text" {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "responseFormat is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "responseFormat", Message: "responseFormat is not supported"})
 	}
 	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "reasoning is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "reasoning", Details: "This provider does not support reasoning configuration.", Message: "reasoning is not supported"})
 	}
 
 	provOpts := extractLanguageProviderOptions(opts)
@@ -131,7 +143,35 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	}
 
 	// Extract text prompt and optional image from the message history.
+	imageFile, err := lastUserImageFile(opts.Prompt)
+	if err != nil {
+		return nil, err
+	}
 	prompt, imageData, imageMIME := extractPromptAndImage(opts.Prompt)
+	if imageFile != nil {
+		switch imageFile.FileData.Type {
+		case types.FileDataTypeData:
+			imageData = imageFile.FileData.Data
+			if imageData == nil {
+				imageData = []byte{} // TS `if (imageBytes)`: an empty image is still sent
+			}
+			imageMIME = imageFile.MediaType
+		case types.FileDataTypeURL:
+			// TS fetches URL image parts and sends the bytes.
+			imageData, err = fetchImageURL(ctx, imageFile.FileData.URL)
+			if err != nil {
+				return nil, err
+			}
+			imageMIME = imageFile.MediaType
+		}
+		if !fileutil.IsFullMediaType(imageMIME) { // TS isFullMediaType: "image", "image/" and "image/*" are not
+			// TS detectMediaType({ data, topLevelType: 'image' }), else image/png.
+			imageMIME = "image/png"
+			if detected, ok := fileutil.DetectMediaTypeSignature(imageData, "image"); ok {
+				imageMIME = detected
+			}
+		}
+	}
 
 	jobConfig := map[string]interface{}{
 		"prompt":           prompt,
@@ -152,25 +192,16 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 		return nil, fmt.Errorf("prodia: failed to build multipart request: %w", err)
 	}
 
-	reqURL := fmt.Sprintf("%s/job?price=true", m.prov.effectiveBaseURL())
-	respBody, respHeaders, err := postMultipartToProdia(ctx, reqURL, m.prov.effectiveAPIKey(), buf, contentType, "multipart/form-data")
+	respBody, respHeaders, err := postMultipartToProdia(ctx, m.prov.client, buf, contentType, "multipart/form-data", opts.Headers)
 	if err != nil {
-		return nil, fmt.Errorf("prodia: %w", err)
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postFormDataToApi lets transport and API errors propagate unchanged
 	}
 
-	// Derive the Content-Type with boundary from the response header.
-	// Fall back to scanning the body when the header is absent.
-	respCT := respHeaders.Get("Content-Type")
-	if respCT == "" {
-		respCT, err = detectMultipartContentType(respBody)
-		if err != nil {
-			return nil, fmt.Errorf("prodia: cannot detect multipart boundary: %w", err)
-		}
-	}
-
-	jobResp, outputData, outputMIME, err := parseMultipartResponse(respCT, respBody)
+	// TS response.headers.get('content-type') ?? '': without a boundary
+	// in the header the response fails (the body is not sniffed).
+	jobResp, outputs, err := parseMultipartOutputs(providerutils.FetchHeaderText(respHeaders, "Content-Type"), respBody)
 	if err != nil {
-		return nil, fmt.Errorf("prodia: %w", err)
+		return nil, err
 	}
 
 	result := &types.GenerateResult{
@@ -179,23 +210,27 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 		ProviderMetadata: map[string]interface{}{
 			"prodia": buildProdiaProviderMetadata(jobResp),
 		},
+		ResponseMetadata: &types.ResponseMetadata{Timestamp: currentDate, ModelID: m.modelID, Headers: providerutils.ExtractHeaders(respHeaders)},
+		ResponseHeaders:  providerutils.ExtractHeaders(respHeaders),
 	}
 
-	if len(outputData) > 0 {
-		if strings.HasPrefix(outputMIME, "text/") {
-			result.Text = string(outputData)
-		} else {
-			if outputMIME == "" {
-				outputMIME = "image/png"
-			}
-			result.Content = []types.ContentPart{
-				types.GeneratedFileContent{
-					MediaType: outputMIME,
-					Data:      outputData,
-				},
-			}
+	// TS content order: the text (the last text part) first, then every image.
+	var files []types.ContentPart
+	hasText := false
+	for _, out := range outputs {
+		if out.isText {
+			// TS new TextDecoder().decode(part.body).
+			result.Text = promptutil.DecodeUTF8Text(out.data)
+			hasText = true
+			continue
 		}
+		files = append(files, types.GeneratedFileContent{MediaType: out.mediaType, Data: out.data})
 	}
+	// TS `textContent !== undefined`: an empty text part is still a text part.
+	if hasText {
+		result.Content = append(result.Content, types.TextContent{Text: result.Text})
+	}
+	result.Content = append(result.Content, files...)
 
 	return result, nil
 }
@@ -216,20 +251,31 @@ func (m *ProdiaLanguageModel) DoStream(ctx context.Context, opts *provider.Gener
 		Warnings: gr.Warnings,
 	})
 
-	// Text block.
-	if gr.Text != "" {
-		const blockID = "text-0"
-		chunks = append(chunks,
-			&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: blockID},
-			&provider.StreamChunk{Type: provider.ChunkTypeText, ID: blockID, Text: gr.Text},
-			&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: blockID},
-		)
+	// TS doStream emits response-metadata (modelId, timestamp) right after
+	// stream-start.
+	if gr.ResponseMetadata != nil {
+		chunks = append(chunks, &provider.StreamChunk{
+			Type: provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: &provider.ResponseMetadata{
+				ModelID:   gr.ResponseMetadata.ModelID,
+				Timestamp: gr.ResponseMetadata.Timestamp,
+			},
+		})
 	}
 
-	// File blocks (generated images).
+	// TS doStream walks result.content in order: a text part (even an empty
+	// one) becomes a text block, a file part a file chunk.
 	for _, part := range gr.Content {
-		if fc, ok := part.(types.GeneratedFileContent); ok {
-			cp := fc
+		switch p := part.(type) {
+		case types.TextContent:
+			const blockID = "text-0"
+			chunks = append(chunks,
+				&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: blockID},
+				&provider.StreamChunk{Type: provider.ChunkTypeText, ID: blockID, Text: p.Text},
+				&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: blockID},
+			)
+		case types.GeneratedFileContent:
+			cp := p
 			chunks = append(chunks, &provider.StreamChunk{
 				Type:                 provider.ChunkTypeFile,
 				GeneratedFileContent: &cp,
@@ -240,7 +286,7 @@ func (m *ProdiaLanguageModel) DoStream(ctx context.Context, opts *provider.Gener
 	// Finish chunk — mirror TS: include providerMetadata on the finish event.
 	var finishMeta json.RawMessage
 	if gr.ProviderMetadata != nil {
-		if b, err := json.Marshal(gr.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(gr.ProviderMetadata); err == nil {
 			finishMeta = b
 		}
 	}
@@ -254,16 +300,83 @@ func (m *ProdiaLanguageModel) DoStream(ctx context.Context, opts *provider.Gener
 	return &prodiaTextStream{chunks: chunks}, nil
 }
 
+// maxPromptImageBytes bounds a fetched URL image (untrusted remote input).
+const maxPromptImageBytes = 50 << 20
+
+// lastUserImageFile returns the first image file part (any file-data shape) of
+// the last user message, normalized. Provider-reference and text image parts
+// are unsupported (TS prodia-language-model.ts).
+func lastUserImageFile(p types.Prompt) (*types.FileContent, error) {
+	if p.IsSimple() {
+		return nil, nil
+	}
+	for i := len(p.Messages) - 1; i >= 0; i-- {
+		if p.Messages[i].Role != types.RoleUser {
+			continue
+		}
+		for _, part := range p.Messages[i].Content {
+			fc, ok := part.(types.FileContent)
+			if !ok {
+				continue
+			}
+			n, err := promptutil.NormalizeFileContent(fc)
+			if err != nil {
+				return nil, err
+			}
+			mt := n.MediaType
+			if mt != "image" && !strings.HasPrefix(mt, "image/") {
+				continue
+			}
+			switch n.FileData.Type {
+			case types.FileDataTypeReference:
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
+			case types.FileDataTypeText:
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
+			}
+			return &n, nil
+		}
+		break
+	}
+	return nil, nil
+}
+
+// promptImageDownloadOptions returns the options for fetching a URL image
+// part. The URL is caller-supplied, so it goes through the SSRF-validated
+// download path (private/loopback targets are refused at connect time and on
+// every redirect) with a size cap. A variable so tests can reach a loopback
+// httptest server.
+var promptImageDownloadOptions = func() fileutil.DownloadOptions {
+	opts := fileutil.DefaultDownloadOptions()
+	opts.MaxSize = maxPromptImageBytes
+	opts.Timeout = fileutil.NoTimeout // TS download sets no timeout
+	return opts
+}
+
+func fetchImageURL(ctx context.Context, rawURL string) ([]byte, error) {
+	opts := promptImageDownloadOptions()
+	// TS `await fetchFn(part.data.url.toString())` then arrayBuffer(): no SDK
+	// user-agent tag, and the body is read whatever the status. The URL is
+	// still validated (security is not traded for parity).
+	opts.RawFetch = true
+	return fileutil.Download(ctx, rawURL, opts)
+}
+
 // extractPromptAndImage walks the message prompt and returns:
 //   - the combined text prompt (system message prepended to last user text)
 //   - the raw bytes of the first image found in the last user message (nil if none)
 //   - the MIME type of that image (empty if none)
 func extractPromptAndImage(prompt types.Prompt) (string, []byte, string) {
+	// Prompt.System is the system message of a prompt that carries one outside
+	// Messages (TS has it as a system-role message); a system message in
+	// Messages comes later and wins, like TS's last-system-message loop.
 	if prompt.IsSimple() {
+		if prompt.System != "" {
+			return prompt.System + "\n" + prompt.Text, nil, ""
+		}
 		return prompt.Text, nil, ""
 	}
 
-	var systemMsg string
+	systemMsg := prompt.System
 	var userText string
 	var imageData []byte
 	var imageMIME string
@@ -315,26 +428,6 @@ func extractPromptAndImage(prompt types.Prompt) (string, []byte, string) {
 		combined = systemMsg + "\n" + userText
 	}
 	return combined, imageData, imageMIME
-}
-
-// detectMultipartContentType scans the raw body for the multipart boundary
-// marker and synthesises a Content-Type header value that parseMultipartResponse
-// can consume.  Used as a fallback when the response Content-Type header is
-// absent.
-func detectMultipartContentType(body []byte) (string, error) {
-	// The first line of a well-formed multipart body begins with "--<boundary>".
-	if len(body) < 4 || body[0] != '-' || body[1] != '-' {
-		return "", fmt.Errorf("body does not start with multipart boundary marker")
-	}
-	end := 2
-	for end < len(body) && body[end] != '\r' && body[end] != '\n' {
-		end++
-	}
-	boundary := string(body[2:end])
-	if boundary == "" {
-		return "", fmt.Errorf("empty boundary in multipart body")
-	}
-	return "multipart/form-data; boundary=" + boundary, nil
 }
 
 // prodiaTextStream is a synchronous provider.TextStream backed by a pre-built

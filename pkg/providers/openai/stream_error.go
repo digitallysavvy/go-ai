@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -26,17 +28,15 @@ func newOpenAIStreamProviderError(providerName string, raw json.RawMessage, head
 	var data interface{}
 
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &data)
+		_ = jsonexact.Unmarshal(raw, &data)
 	}
 	if frame != nil {
-		if frame.Message != "" {
-			message = frame.Message
-		}
+		message = frame.Message
 		statusCode = openAIStreamErrorStatusCode(frame)
 		errorCode = openAIStreamErrorCodeString(frame.Code)
 	}
 
-	return &providererrors.ProviderError{
+	providerErr := &providererrors.ProviderError{
 		Provider:        providerName,
 		StatusCode:      statusCode,
 		ErrorCode:       errorCode,
@@ -45,51 +45,76 @@ func newOpenAIStreamProviderError(providerName string, raw json.RawMessage, head
 		ResponseBody:    string(raw),
 		Data:            data,
 	}
+	if frame != nil {
+		// TS APICallError isRetryable: streamError?.isRetryable -- an
+		// insufficient_quota frame is never retryable despite its 429.
+		retryable := openAIStreamErrorIsRetryable(frame, statusCode)
+		providerErr.Retryable = &retryable
+	}
+	return providerErr
 }
 
 func parseOpenAIStreamError(raw json.RawMessage) *openAIStreamErrorFrame {
 	var value map[string]interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := jsonexact.Unmarshal(raw, &value); err != nil {
 		return nil
 	}
 
 	if valueType, _ := value["type"].(string); valueType == "response.failed" {
 		response, _ := value["response"].(map[string]interface{})
 		responseError, _ := response["error"].(map[string]interface{})
-		message, _ := responseError["message"].(string)
-		if message == "" {
+		message, ok := responseError["message"].(string)
+		if !ok {
 			return nil
 		}
 		return &openAIStreamErrorFrame{
 			Message: message,
-			Code:    responseError["code"],
+			Code:    openAIStreamErrorStringOrNumber(responseError["code"]),
 			Type:    "response.failed",
 			Frame:   value,
 		}
 	}
 
-	errorValue, _ := value["error"].(map[string]interface{})
-	if errorValue == nil {
+	// TS asRecord(value.error) ?? value: an array error member is a record
+	// too (typeof 'object'), and it has no string message.
+	var errorValue map[string]interface{}
+	switch e := value["error"].(type) {
+	case map[string]interface{}:
+		errorValue = e
+	case []interface{}:
+		return nil
+	default:
 		errorValue = value
 	}
-	message, _ := errorValue["message"].(string)
-	if message == "" {
+	message, ok := errorValue["message"].(string)
+	if !ok {
 		return nil
 	}
 	if _, hasNestedError := value["error"].(map[string]interface{}); !hasNestedError {
 		_, hasCode := errorValue["code"]
-		errorType, hasType := errorValue["type"].(string)
+		_, hasType := errorValue["type"].(string)
 		_, hasParam := errorValue["param"]
-		if !hasCode && !hasParam && (!hasType || errorType == "") {
+		if !hasCode && !hasParam && !hasType {
 			return nil
 		}
 	}
 	errorType, _ := errorValue["type"].(string)
 	return &openAIStreamErrorFrame{
 		Message: message,
-		Code:    errorValue["code"],
+		Code:    openAIStreamErrorStringOrNumber(errorValue["code"]),
 		Type:    errorType,
 		Frame:   value,
+	}
+}
+
+// openAIStreamErrorStringOrNumber is TS getStringOrNumber: a code that is not
+// a string or a number is undefined.
+func openAIStreamErrorStringOrNumber(v interface{}) interface{} {
+	switch v.(type) {
+	case string, float64:
+		return v
+	default:
+		return nil
 	}
 }
 
@@ -119,7 +144,7 @@ func openAIStreamErrorStatusCode(frame *openAIStreamErrorFrame) int {
 		}
 	}
 
-	discriminator := strings.ToLower(strings.TrimSpace(openAIStreamErrorCodeString(frame.Code) + " " + frame.Type))
+	discriminator := providerutils.JSToLower(strings.TrimSpace(openAIStreamErrorCodeString(frame.Code) + " " + frame.Type))
 	if strings.Contains(discriminator, "insufficient_quota") || strings.Contains(discriminator, "rate_limit") {
 		return 429
 	}
@@ -173,12 +198,10 @@ func newOpenAIStreamProviderErrorChunk(providerName string, raw json.RawMessage)
 	statusCode := 500
 	var data interface{}
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &data)
+		_ = jsonexact.Unmarshal(raw, &data)
 	}
 	if frame != nil {
-		if frame.Message != "" {
-			message = frame.Message
-		}
+		message = frame.Message
 		code = frame.Code
 		errType = frame.Type
 		statusCode = openAIStreamErrorStatusCode(frame)
@@ -196,7 +219,7 @@ func openAIStreamErrorCodeString(code interface{}) string {
 		if float64(int(v)) == v {
 			return strconv.Itoa(int(v))
 		}
-		return strconv.FormatFloat(v, 'f', -1, 64)
+		return providerutils.JSNumberString(v)
 	case int:
 		return strconv.Itoa(v)
 	case json.Number:
@@ -204,6 +227,37 @@ func openAIStreamErrorCodeString(code interface{}) string {
 	default:
 		return ""
 	}
+}
+
+// openAIErrorField is the `error` member of a Chat or Completions error
+// chunk as TS sees it: the openaiErrorDataSchema output (message, type,
+// param and code, in that order, only those present), compact like
+// JSON.stringify. TS passes this inner object (chunk.error), not the whole
+// frame, to throwIfOpenAIStreamErrorBeforeOutput and
+// createOpenAIProviderStreamError, so it is the error's data and
+// responseBody. A value that is not an object is returned unchanged.
+func openAIErrorField(inner json.RawMessage) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(inner, &obj) != nil || obj == nil {
+		return inner
+	}
+	var b strings.Builder
+	b.WriteByte('{')
+	first := true
+	for _, key := range []string{"message", "type", "param", "code"} {
+		v, ok := obj[key]
+		if !ok {
+			continue
+		}
+		if !first {
+			b.WriteByte(',')
+		}
+		first = false
+		b.WriteString(strconv.Quote(key) + ":")
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return json.RawMessage(zodlite.CompactJSON(b.String()))
 }
 
 func isHTTPErrorStatusCode(status int) bool {

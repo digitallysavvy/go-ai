@@ -1,6 +1,6 @@
 // Package githubcopilot is the Go port of the TypeScript
-// `@ai-sdk/harness-github-copilot` package (pinned to ai@7.0.113, hash
-// 5ecd4f4).
+// `@ai-sdk/harness-github-copilot` package (pinned to
+// ai@7.0.167, TS 9f7a842ae1).
 //
 // Like pkg/harness/cursor, GitHub Copilot is an "ACP-derived" adapter: TS
 // `createGitHubCopilot()` is a thin configuration layer over `createACP()`
@@ -30,8 +30,8 @@ import (
 )
 
 const (
-	ClientAppName    = "ai-sdk/harness-github-copilot"
-	ClientAppVersion = "0.0.0-go"
+	ClientAppName    = "ai-sdk-harness-github-copilot"
+	ClientAppVersion = "1.0.78" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "github-copilot"
 
 	githubOAuthTokenBodyLength         = 36
@@ -72,9 +72,23 @@ type Settings struct {
 	Port                 *int
 	PortEndpoint         *harness.PortEndpoint
 	StartupTimeoutMS     *int
-	Reconnect            *bridge.ReconnectOptions
-	MintBridgeToken      harness.MintBridgeTokenCallback
+	// HostDisconnectTimeoutMS aborts a running turn when its host
+	// disconnects and does not reconnect within this many milliseconds; a
+	// suspended turn is exempt (TS a54f0fd8c6).
+	HostDisconnectTimeoutMS *int
+	Reconnect               *bridge.ReconnectOptions
+	// MintBridgeToken is forwarded to the ACP adapter, which ignores it and
+	// logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
+	MintBridgeToken harness.MintBridgeTokenCallback
 }
+
+// GatewayModel is the AI Gateway model the Copilot CLI runs with in BYOK mode
+// (TS `GITHUB_COPILOT_GATEWAY_MODEL`). It is also reported on stream-start
+// parts that carry no model.
+const GatewayModel = "openai/gpt-5.5"
 
 // CreateGitHubCopilot returns the GitHub Copilot harness-v1 adapter, wiring
 // BuildConfig's acp.Settings into a live harness.Harness via acp.CreateACP.
@@ -106,6 +120,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		mcpToolTitlePrefixes = append(mcpToolTitlePrefixes, name+"-")
 	}
 
+	// GitHub Copilot CLI does not expose an option to disable project-level
+	// configuration. This ACP integration cannot isolate repository-owned
+	// configuration, so working directory contents must be trusted.
 	args := []string{"--acp", "--stdio", "--no-auto-update"}
 	if settings.ReasoningEffort != "" {
 		args = append(args, "--reasoning-effort="+string(settings.ReasoningEffort))
@@ -127,22 +144,30 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
 		HostToolMCPTransport: acp.HostToolMCPHTTP,
-		ForwardEnv:           []string{"COPILOT_GH_HOST", "GH_HOST"},
-		CredentialEnv:        []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
-		CredentialBrokering:  CredentialBrokering,
-		CredentialForwarding: CredentialForwarding(settings.CredentialForwarding),
+		// Images from tool outputs are only processed with direct GitHub Copilot
+		// authentication: with AI Gateway the CLI does not fetch the model
+		// catalog and passes only the text of a tool output.
+		NonTextContentTypes:    []acp.NonTextContentType{acp.NonTextContentImage},
+		ForwardEnv:             []string{"COPILOT_GH_HOST", "GH_HOST"},
+		CredentialEnv:          []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
+		CredentialBrokering:    CredentialBrokering,
+		CredentialBrokeringErr: CredentialBrokeringErr,
+		CredentialForwarding:   CredentialForwarding(settings.CredentialForwarding),
 		ProviderAuthentication: &acp.ProviderAuthentication{
 			GatewayEnv: map[string]any{
 				"COPILOT_PROVIDER_BASE_URL": map[string]any{"$source": "gateway-base-url", "ensureSuffix": "/v1"},
 				"COPILOT_PROVIDER_TYPE":     "openai",
 				"COPILOT_PROVIDER_API_KEY":  map[string]any{"$source": "gateway-api-key"},
 				"COPILOT_PROVIDER_WIRE_API": "responses",
-				"COPILOT_MODEL":             "openai/gpt-5.5",
+				"COPILOT_MODEL":             GatewayModel,
 				"COPILOT_PROVIDER_HEADERS":  map[string]any{"$source": "client-app", "prefix": "x-client-app: "},
 			},
 		},
-		ModelMapping:    acp.ModelMapping{Type: acp.ModelMappingSessionConfigOption, Path: "model"},
-		SkillsDirectory: ".copilot/skills",
+		ModelMapping: acp.ModelMapping{Type: acp.ModelMappingSessionConfigOption, Path: "model"},
+		// Copilot's BYOK (AI Gateway) mode exposes no model over ACP and the CLI
+		// requires COPILOT_MODEL, so the gateway model is what the session runs.
+		StreamStartFallbackModelID: GatewayModel,
+		SkillsDirectory:            ".copilot/skills",
 		InstructionMapping: &acp.InstructionMapping{
 			Type:     acp.InstructionMappingFilesystem,
 			FilePath: ".copilot/copilot-instructions.md",
@@ -157,14 +182,18 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 			}
 			return false
 		},
-		PortEndpoint:    settings.PortEndpoint,
-		MintBridgeToken: settings.MintBridgeToken,
+		ResolveHostToolCall: ResolveHostToolCall,
+		PortEndpoint:        settings.PortEndpoint,
+		MintBridgeToken:     settings.MintBridgeToken, //nolint:staticcheck // forwarded so ACP warns, as TS
 	}
 	if settings.Port != nil {
 		cfg.Port = *settings.Port
 	}
 	if settings.StartupTimeoutMS != nil {
 		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.HostDisconnectTimeoutMS != nil {
+		cfg.HostDisconnectTimeout = time.Duration(*settings.HostDisconnectTimeoutMS) * time.Millisecond
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect
@@ -201,4 +230,22 @@ func createGitHubOAuthSandboxCredentialPlaceholder(credential string) string {
 	sum := sha256.Sum256([]byte(credential))
 	tokenBody := hex.EncodeToString(sum[:])[:githubOAuthTokenBodyLength-len(githubOAuthSandboxCredentialMarker)]
 	return "gho_" + githubOAuthSandboxCredentialMarker + tokenBody
+}
+
+// ResolveHostToolCall resolves a GitHub Copilot ACP tool call to a host
+// tool. Copilot reports host tool calls without a programmatic name, titled
+// `<serverName>-<toolName>`, with the tool input as raw input. Mirrors TS
+// `resolveGitHubCopilotHostToolCall` (github-copilot-harness.ts, 03dac28304).
+func ResolveHostToolCall(opts acp.ResolveHostToolCallOptions) *acp.ResolvedHostToolCall {
+	raw, ok := opts.ToolCall.RawInput.(map[string]any)
+	// TS `toolCall.name != null`: a reported `name: ""` also opts out.
+	if opts.ToolCall.HasName() || !ok || raw == nil {
+		return nil
+	}
+	for _, name := range opts.ToolNames {
+		if opts.ToolCall.Title == opts.ServerName+"-"+name {
+			return &acp.ResolvedHostToolCall{ToolName: name, Input: raw}
+		}
+	}
+	return nil
 }

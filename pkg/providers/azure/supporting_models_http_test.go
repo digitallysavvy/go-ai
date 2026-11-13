@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -22,7 +25,7 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 		seenURI = r.URL.RequestURI()
 		seenUserAgent = r.Header.Get("User-Agent")
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
-		if _, ok := seenBody["input"].([]interface{}); ok {
+		if in, ok := seenBody["input"].([]interface{}); ok && len(in) == 2 {
 			return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[3,4]}],"usage":{"prompt_tokens":7,"total_tokens":9}}`, map[string]string{"X-Req": "r1"}), nil
 		}
 		return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`, map[string]string{"X-Req": "r1"}), nil
@@ -33,13 +36,13 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbed error = %v", err)
 	}
-	if !strings.HasPrefix(seenURI, "/v1/embeddings?api-version=2024-10-21") || seenBody["input"] != "hello" || seenBody["model"] != "dep" {
+	if !strings.HasPrefix(seenURI, "/v1/embeddings?api-version=2024-10-21") || fmt.Sprint(seenBody["input"]) != "[hello]" || seenBody["model"] != "dep" {
 		t.Fatalf("request mismatch uri=%q body=%#v", seenURI, seenBody)
 	}
 	if len(one.Embedding) != 2 || one.Response.Headers["X-Req"] != "r1" {
 		t.Fatalf("result mismatch: %#v", one)
 	}
-	if !strings.HasPrefix(seenUserAgent, "ai-sdk-azure/0.5.3 ") {
+	if !strings.HasPrefix(seenUserAgent, "ai-sdk-azure/"+sdkversion.Version+" ") {
 		t.Fatalf("User-Agent = %q", seenUserAgent)
 	}
 
@@ -85,15 +88,15 @@ func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
 		if !strings.HasPrefix(r.URL.RequestURI(), "/v1/images/generations?api-version=2024-10-21") {
 			t.Fatalf("image path = %q", r.URL.RequestURI())
 		}
-		return azureJSONResponse(200, `{"data":[{"url":"https://example.com/image.png"}]}`, nil), nil
+		return azureJSONResponse(200, `{"data":[{"b64_json":"aW1n"}]}`, nil), nil
 	})
 	im := NewImageModel(pImage, "img")
 	img, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
 	if err != nil {
 		t.Fatalf("image DoGenerate error = %v", err)
 	}
-	if img.URL == "" {
-		t.Fatalf("expected URL image result: %#v", img)
+	if img.Base64Image != "aW1n" {
+		t.Fatalf("expected base64 image result: %#v", img)
 	}
 
 	pSpeech := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -120,10 +123,10 @@ func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 		}
 		body, _ := io.ReadAll(r.Body)
 		seenBody = string(body)
-		return azureJSONResponse(200, `{"text":"hello","duration":1.5,"segments":[{"text":"hello","start":0.0,"end":1.5}]}`, nil), nil
+		return azureJSONResponse(200, `{"text":"hello","duration":1.5,"segments":[{"id":0,"seek":0,"text":"hello","start":0.0,"end":1.5,"tokens":[1],"temperature":0,"avg_logprob":-0.1,"compression_ratio":1,"no_speech_prob":0}]}`, nil), nil
 	})
 
-	tm := NewTranscriptionModel(p, "whisper")
+	tm := NewTranscriptionModel(p, "whisper-1")
 	res, err := tm.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
 		Audio:      []byte("audio"),
 		MimeType:   "audio/mpeg",
@@ -136,7 +139,7 @@ func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 	if !strings.Contains(seenBody, `name="response_format"`) || !strings.Contains(seenBody, "verbose_json") {
 		t.Fatalf("missing verbose response format in multipart body")
 	}
-	if !strings.Contains(seenBody, `name="model"`) || !strings.Contains(seenBody, "whisper") {
+	if !strings.Contains(seenBody, `name="model"`) || !strings.Contains(seenBody, "whisper-1") {
 		t.Fatalf("missing model in multipart body")
 	}
 	if res.Text != "hello" || len(res.Timestamps) != 1 {
@@ -185,7 +188,7 @@ func TestAzureADTokenProviderAuthenticatesEveryRequestSurface(t *testing.T) {
 			case "/v1/embeddings":
 				return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`, nil), nil
 			case "/v1/images/generations":
-				return azureJSONResponse(200, `{"data":[{"url":"https://example.com/image.png"}]}`, nil), nil
+				return azureJSONResponse(200, `{"data":[{"b64_json":"aW1n"}]}`, nil), nil
 			case "/v1/audio/speech":
 				return azureTextResponse(200, "AUDIO"), nil
 			case "/v1/audio/transcriptions":
@@ -369,5 +372,22 @@ func azureTextResponse(status int, body string) *http.Response {
 		StatusCode: status,
 		Header:     http.Header{},
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+// Azure reuses TS OpenAIEmbeddingModel, which parses providerOptions.openai:
+// a wrongly typed option is an InvalidArgumentError before any request.
+func TestAzureEmbeddingModelValidatesOpenAIOptions(t *testing.T) {
+	p := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		t.Fatal("no request expected")
+		return nil, nil
+	})
+	m := NewEmbeddingModel(p, "dep")
+	_, err := m.DoEmbedMany(context.Background(), []string{"a"}, &provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"dimensions": "256"}},
+	})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %T %v, want InvalidArgumentError", err, err)
 	}
 }

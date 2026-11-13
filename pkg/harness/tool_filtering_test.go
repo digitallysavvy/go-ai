@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
@@ -307,5 +308,28 @@ func TestAgent_PassesBuiltinFilteringPolicyToApprovalCapableHarness(t *testing.T
 	got := adapter.startCalls[0].BuiltinToolFiltering
 	if got == nil || got.Mode != BuiltinToolFilteringAllow || len(got.ToolNames) != 0 {
 		t.Fatalf("BuiltinToolFiltering = %+v, want {mode: allow, toolNames: []}", got)
+	}
+}
+
+// The built-in allow/deny lists forwarded to adapters are deterministic.
+func TestResolveToolFilteringBuiltinListsAreSorted(t *testing.T) {
+	builtin := map[string]BuiltinTool{}
+	var all = map[string]types.Tool{}
+	for _, n := range []string{"zeta", "alpha", "mid", "beta", "omega", "gamma"} {
+		builtin[n] = BuiltinTool{}
+		all[n] = types.Tool{Name: n}
+	}
+	h := &mockHarnessAdapter{id: "mock", builtinTools: builtin, supportsApproval: true}
+	for i := 0; i < 20; i++ {
+		got, err := ResolveToolFiltering(ResolveToolFilteringOptions{
+			Harness: h, UserTools: map[string]types.Tool{}, AllTools: all, ActiveTools: []string{"mid", "alpha", "zeta"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"alpha", "mid", "zeta"}
+		if !reflect.DeepEqual(got.BuiltinToolFiltering.ToolNames, want) {
+			t.Fatalf("allow list = %v, want %v", got.BuiltinToolFiltering.ToolNames, want)
+		}
 	}
 }

@@ -2,13 +2,15 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // MessageConversionError is returned when a UI message cannot be converted to
@@ -108,16 +110,12 @@ func ConvertToModelMessages(ctx context.Context, messages []UIMessage, opts ...C
 		case UIMessageRoleUser:
 			content := make([]types.ContentPart, 0, len(message.Parts))
 			for _, part := range message.Parts {
-				if textPart, ok := asTextUIPart(part); ok {
-					content = append(content, types.TextContent{Text: textPart.Text, ProviderOptions: textPart.ProviderMetadata})
-					continue
-				}
-				if filePart, ok := asFileUIPart(part); ok {
-					fileContent, err := fileUIPartToModel(filePart)
+				if IsTextUIPart(part) || IsFileUIPart(part) {
+					converted, err := convertUserContentUIPart(part)
 					if err != nil {
 						return nil, &MessageConversionError{OriginalMessage: message, Message: err.Error(), Cause: err}
 					}
-					content = append(content, fileContent)
+					content = append(content, converted)
 					continue
 				}
 				if dataPart, ok := asDataUIPart(part); ok {
@@ -165,6 +163,24 @@ func ConvertToModelMessages(ctx context.Context, messages []UIMessage, opts ...C
 					if err := processBlock(); err != nil {
 						return nil, err
 					}
+				case partType(part) == "steering-message":
+					// Steering messages were added to the run between two
+					// steps (TS convert-to-model-messages.ts 458-464).
+					if err := processBlock(); err != nil {
+						return nil, err
+					}
+					steering, _ := asSteeringMessageUIPart(part)
+					content := make([]types.ContentPart, 0)
+					if steering != nil {
+						for _, steeringPart := range steering.Parts {
+							converted, err := convertUserContentUIPart(steeringPart)
+							if err != nil {
+								return nil, &MessageConversionError{OriginalMessage: message, Message: err.Error(), Cause: err}
+							}
+							content = append(content, converted)
+						}
+					}
+					modelMessages = append(modelMessages, types.Message{Role: types.RoleUser, Content: content})
 				}
 			}
 			if err := processBlock(); err != nil {
@@ -274,7 +290,10 @@ func convertUIAssistantBlock(ctx context.Context, message UIMessage, block []UIM
 					IsAutomatic:      isTrue(p.Approval.IsAutomatic),
 					Reason:           p.Approval.RequestReason,
 					InputSchemaInput: p.Approval.InputSchemaInput,
-					Signature:        p.Approval.Signature,
+					// TS forwards inputSchemaInput when the approval has
+					// the own property, a null included.
+					InputSchemaInputSet: p.Approval.hasInputSchemaInput(),
+					Signature:           p.Approval.Signature,
 				})
 			}
 
@@ -290,7 +309,7 @@ func convertUIAssistantBlock(ctx context.Context, message UIMessage, block []UIM
 					output = p.ErrorText
 					errorMode = "json"
 				}
-				modelOutput, err := createUIToolModelOutput(ctx, p.ToolCallID, p.Input, output, findUITool(options.Tools, toolName), errorMode)
+				modelOutput, err := createUIPartModelOutput(ctx, p, output, findUITool(options.Tools, toolName), errorMode)
 				if err != nil {
 					return msg, err
 				}
@@ -332,6 +351,7 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 				ApprovalID:       p.Approval.ID,
 				Approved:         *p.Approval.Approved,
 				Reason:           p.Approval.Reason,
+				ReasonSet:        p.Approval.Reason == "" && p.Approval.hasReason(),
 				ProviderExecuted: isTrue(p.ProviderExecuted),
 			})
 		}
@@ -342,8 +362,9 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 				ToolCallID: p.ToolCallID,
 				ToolName:   toolName,
 				Output: &types.ToolResultOutput{
-					Type:   types.ToolResultOutputExecutionDenied,
-					Reason: p.Approval.Reason,
+					Type:      types.ToolResultOutputExecutionDenied,
+					Reason:    p.Approval.Reason,
+					ReasonSet: p.Approval.Reason == "" && p.Approval.hasReason(),
 				},
 				ProviderOptions: p.CallProviderMetadata,
 			})
@@ -356,8 +377,10 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 
 		switch p.State {
 		case ToolStateOutputDenied:
+			// TS `approval?.reason ?? 'Tool call execution denied.'`: a
+			// decoded empty reason stays empty.
 			reason := "Tool call execution denied."
-			if p.Approval != nil && p.Approval.Reason != "" {
+			if p.Approval.hasReason() {
 				reason = p.Approval.Reason
 			}
 			msg.Content = append(msg.Content, types.ToolResultContent{
@@ -373,7 +396,7 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 				output = p.ErrorText
 				errorMode = "text"
 			}
-			modelOutput, err := createUIToolModelOutput(ctx, p.ToolCallID, p.Input, output, findUITool(options.Tools, toolName), errorMode)
+			modelOutput, err := createUIPartModelOutput(ctx, p, output, findUITool(options.Tools, toolName), errorMode)
 			if err != nil {
 				return msg, err
 			}
@@ -401,15 +424,26 @@ func uiToolCallContent(toolCallID, toolName string, input interface{}, providerE
 		call.Input = v
 	case map[string]interface{}:
 		call.Arguments = v
-		if data, err := json.Marshal(v); err == nil {
+		if data, err := jsonstr.Marshal(v); err == nil {
 			call.Input = string(data)
 		}
 	default:
-		if data, err := json.Marshal(v); err == nil {
+		if data, err := jsonstr.Marshal(v); err == nil {
 			call.Input = string(data)
 		}
 	}
 	return call
+}
+
+// createUIPartModelOutput mirrors the TS createModelOutput helper in
+// convertToModelMessages: when a static tool part was normalized to a
+// dynamic-tool part and its tool is still unavailable, the persisted output
+// is omitted rather than sent to the model unfiltered.
+func createUIPartModelOutput(ctx context.Context, part *ToolUIPart, output interface{}, tool *types.Tool, errorMode string) (*types.ToolResultOutput, error) {
+	if errorMode == "none" && tool == nil && isToolPartFromUnavailableTool(part) {
+		return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "Tool output omitted because the tool is no longer available."}, nil
+	}
+	return createUIToolModelOutput(ctx, part.ToolCallID, part.Input, output, tool, errorMode)
 }
 
 // createUIToolModelOutput mirrors TS createToolModelOutput.
@@ -450,7 +484,7 @@ func uiErrorMessage(value interface{}) string {
 	case error:
 		return v.Error()
 	default:
-		data, err := json.Marshal(v)
+		data, err := jsonstr.Marshal(v)
 		if err != nil {
 			return fmt.Sprint(v)
 		}
@@ -460,18 +494,7 @@ func uiErrorMessage(value interface{}) string {
 
 // toJSONValue normalizes a value to plain JSON data by round-tripping it.
 func toJSONValue(value interface{}) interface{} {
-	if value == nil {
-		return nil
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var out interface{}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	return out
+	return jsonorder.ToJSONValue(value)
 }
 
 func findUITool(tools []types.Tool, name string) *types.Tool {
@@ -504,12 +527,12 @@ func fileUIPartToModel(p *FileUIPart) (types.FileContent, error) {
 	return content, nil
 }
 
-// validateUIPartURL mirrors `new URL(part.url)`, which rejects relative or
-// malformed URLs.
+// validateUIPartURL mirrors `new URL(part.url)`: a URL the WHATWG parser
+// rejects (relative, malformed host or port) is TS's TypeError "Invalid URL".
+// The URL is kept as given; core prompt conversion serializes it.
 func validateUIPartURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" {
-		return fmt.Errorf("Invalid URL: %s", raw) //nolint:staticcheck // matches TS SDK's exact error text
+	if _, err := urlnorm.Parse(raw); err != nil {
+		return &promptutils.InvalidURLError{URL: raw}
 	}
 	return nil
 }
@@ -544,6 +567,28 @@ func asReasoningUIPart(part UIMessagePart) (*ReasoningUIPart, bool) {
 		return &p, true
 	}
 	return nil, false
+}
+
+func asSteeringMessageUIPart(part UIMessagePart) (*SteeringMessageUIPart, bool) {
+	switch p := part.(type) {
+	case *SteeringMessageUIPart:
+		return p, p != nil
+	case SteeringMessageUIPart:
+		return &p, true
+	}
+	return nil, false
+}
+
+// convertUserContentUIPart converts a user text or file UI part to a model
+// message part (TS convert-to-model-messages.ts convertUserContentUIPart).
+func convertUserContentUIPart(part UIMessagePart) (types.ContentPart, error) {
+	if textPart, ok := asTextUIPart(part); ok {
+		return types.TextContent{Text: textPart.Text, ProviderOptions: textPart.ProviderMetadata}, nil
+	}
+	if filePart, ok := asFileUIPart(part); ok {
+		return fileUIPartToModel(filePart)
+	}
+	return nil, fmt.Errorf("unsupported user message part type %q", partType(part))
 }
 
 func asFileUIPart(part UIMessagePart) (*FileUIPart, bool) {

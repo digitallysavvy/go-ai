@@ -46,16 +46,24 @@ func runMistralStreamRecursionChild() {
 	var sb strings.Builder
 	sb.Grow(n*12 + 128)
 	for i := 0; i < n; i++ {
-		// No "choices" field: hits `if len(chunkData.Choices) == 0 { ...
-		// continue }`.
-		sb.WriteString(`data: {}` + "\n\n")
+		// A [DONE] frame is dropped and the loop keeps reading (an empty
+		// choices array now errors the stream, as TS).
+		sb.WriteString("data: [DONE]\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n")
 
 	s := newMistralStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per choices-less event -- 300,000 deep
 	// -- before reaching the real text chunk.
 	chunk, err := s.Next()
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeResponseMetadata {
+		// TS emits response-metadata on the first valid chunk.
+		chunk, err = s.Next()
+	}
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		// TS opens the text block "0" before the first delta.
+		chunk, err = s.Next()
+	}
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return

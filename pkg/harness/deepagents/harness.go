@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/bridgeauthkeys"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -45,11 +46,19 @@ type Settings struct {
 	// StartupTimeout is the maximum time to wait for the bridge to advertise
 	// its port. Zero defaults to bridge.DefaultStartupTimeout.
 	StartupTimeout time.Duration
+	// HostDisconnectTimeout aborts a running turn when its host disconnects
+	// and does not reconnect within this time, so the turn stops spending.
+	// A suspended turn is exempt. Zero keeps the turn running until it
+	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
+	HostDisconnectTimeout time.Duration
 	// Reconnect configures reconnection after an established bridge
 	// connection drops.
 	Reconnect bridge.ReconnectOptions
-	// MintBridgeToken creates the bridge channel token for one session.
-	// Defaults to a random 32-byte hex token.
+	// MintBridgeToken is ignored; CreateDeepAgents logs a warning when it is
+	// set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
 	MintBridgeToken harness.MintBridgeTokenCallback
 	// RecursionLimit is the maximum LangGraph super-steps per turn before it
 	// errors. Nil applies the Deep Agents default.
@@ -70,6 +79,7 @@ func CreateDeepAgents(settings ...Settings) harness.Harness {
 	if len(settings) > 0 {
 		s = settings[0]
 	}
+	bridge.WarnMintBridgeTokenIgnored(HarnessID, s.MintBridgeToken, nil)
 	return &deepAgentsHarness{settings: s}
 }
 
@@ -97,19 +107,17 @@ type resumeStateData struct {
 // doSuspendTurn so a later process can reattach. Mirrors TS
 // `deepAgentsBridgeCoordsSchema`.
 type bridgeCoords struct {
-	Port            int     `json:"port"`
-	Token           string  `json:"token"`
+	Port int `json:"port"`
+	// PrivateKey is the host-only bridge authentication key (TS c849d37dac);
+	// it never reaches the sandbox.
+	PrivateKey      string  `json:"privateKey"`
 	LastSeenEventID float64 `json:"lastSeenEventId"`
 	SandboxID       string  `json:"sandboxId,omitempty"`
 }
 
 // ValidateLifecycleStateData mirrors TS `lifecycleStateSchema`.
 func (h *deepAgentsHarness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 {
-		return nil
-	}
-	var v resumeStateData
-	return json.Unmarshal(data, &v)
+	return harnessutil.ValidateLifecycleStateObject(data, &resumeStateData{})
 }
 
 func unsupported(capability string) error {
@@ -126,13 +134,8 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	if isNetwork {
 		sandboxID = networkSession.ID()
 	}
-	if err := validateBasicSandboxSettings(sandboxSession, settings.Port, settings.PortEndpoint); err != nil {
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, nil, HarnessID); err != nil {
 		return nil, err
-	}
-	if settings.MintBridgeToken != nil && sandboxID == "" {
-		return nil, harness.NewCapabilityUnsupportedError(
-			"The deepagents harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.",
-			HarnessID, nil)
 	}
 
 	isContinue := opts.ContinueFrom != nil
@@ -208,7 +211,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 		timeout = bridge.DefaultStartupTimeout
 	}
 
-	onBridgeErr := func(*harness.ErrorPart) {}
+	onBridgeErr := bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID)
 	var onDiagnostic func(bridge.OutboundMessage)
 	if opts.Observability != nil {
 		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)
@@ -231,11 +234,11 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 		}
 	}
 
-	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
+	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, HarnessID)
 	if err != nil {
-		return nil, wrapPortError(err)
+		return nil, err
 	}
-	token := mintBridgeToken(settings.MintBridgeToken, sandboxID)
+	bridgeAuth := bridgeauthkeys.New()
 
 	forwardedAuthEnvironment := sandboxAuthEnvironment
 	if !credentialsBrokered {
@@ -265,18 +268,22 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 
 	command := "node " + harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs") +
 		" --workdir " + harnessutil.ShellQuote(workDir) +
+		" --home-dir " + harnessutil.ShellQuote(homeDir) +
 		" --bridge-state-dir " + harnessutil.ShellQuote(bridgeStateDir) +
 		" --bootstrap-dir " + harnessutil.ShellQuote(bootstrapDir)
 	if isResume {
 		command += " --resume true"
 	}
+	command += harnessutil.HostDisconnectTimeoutFlag(settings.HostDisconnectTimeout)
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "deepagents bridge", Source: HarnessID, Sandbox: toolSafeSandboxSession,
-		Command: command, Env: env, Port: port, Token: token, ReplayFromDisk: isResume,
+		Command: command, Env: env, Port: port, AuthPublicKey: bridgeAuth.PublicKey, // The TS adapter never sets BRIDGE_REPLAY_FROM_DISK: a respawned
+		// deepagents bridge resumes through `--resume true` only.
+		ReplayFromDisk: false,
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
-			return resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort)
+			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, HarnessID)
 		},
 	})
 	if err != nil {
@@ -284,7 +291,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	}
 
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:       bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{Name: "deepagents bridge"}),
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge", OpenRetryTimeout: timeout, StartContext: ctx, AuthPrivateKey: bridgeAuth.PrivateKey}),
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
 		OnDiagnostic:  onDiagnostic,
@@ -295,50 +302,8 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
-	sessionArgs.bridgePort = port
-	sessionArgs.bridgeToken = token
+	sessionArgs.bridgePort = launched.Port
+	sessionArgs.bridgePrivateKey = bridgeAuth.PrivateKey
 	sessionArgs.isResume = isResume
 	return newSession(sessionArgs), nil
-}
-
-func mintBridgeToken(cb harness.MintBridgeTokenCallback, sandboxID string) string {
-	if cb == nil {
-		return bridge.CreateBridgeToken()
-	}
-	return cb(sandboxID)
-}
-
-func validateBasicSandboxSettings(sandboxSession providerutils.SandboxSession, port int, portEndpoint *harness.PortEndpoint) error {
-	if _, ok := harness.AsNetworkSandboxSession(sandboxSession); ok {
-		return nil
-	}
-	if port == 0 {
-		return harness.NewCapabilityUnsupportedError(
-			"The deepagents harness requires an explicit `port` when using a basic sandbox session.", HarnessID, nil)
-	}
-	if portEndpoint == nil {
-		return harness.NewCapabilityUnsupportedError(
-			"The deepagents harness requires an explicit `portEndpoint` when using a basic sandbox session.", HarnessID, nil)
-	}
-	return nil
-}
-
-func resolveBridgeEndpoint(ctx context.Context, sandboxSession providerutils.SandboxSession, override *harness.PortEndpoint, port int) (harness.PortEndpoint, error) {
-	if override != nil {
-		return *override, nil
-	}
-	if n, ok := harness.AsNetworkSandboxSession(sandboxSession); ok {
-		return n.GetPortEndpoint(ctx, harness.PortEndpointOptions{Port: port, Protocol: harness.PortProtocolWS})
-	}
-	return harness.PortEndpoint{}, harness.NewCapabilityUnsupportedError(
-		"The deepagents harness requires an explicit `portEndpoint` when using a basic sandbox session.", HarnessID, nil)
-}
-
-func wrapPortError(err error) error {
-	if err == bridge.ErrNoPort {
-		return harness.NewCapabilityUnsupportedError(
-			"The deepagents harness needs a TCP port exposed by the sandbox. "+
-				"Create the sandbox with `ports: [<port>]` or pass `createDeepAgents({ port })`.", HarnessID, err)
-	}
-	return err
 }

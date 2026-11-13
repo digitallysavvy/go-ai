@@ -6,12 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"sync/atomic"
 	"time"
 
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -44,14 +49,15 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		return nil, err
 	}
 
-	headers := internalhttp.MergeHeaders(m.provider.headers, m.getModelConfigHeaders())
+	// TS: combineHeaders(config.headers (auth included), options.headers,
+	// model headers, o11y) — so a per-call Authorization / auth-method /
+	// team header wins, and the subprotocols derive from the merged set.
+	headers := mergeHeadersFold(
+		map[string]string{"Authorization": "Bearer " + token, "ai-gateway-auth-method": authMethod},
+		m.provider.headers, opts.Headers, m.getModelConfigHeaders(),
+	)
 	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	headers = internalhttp.MergeHeaders(headers, opts.Headers)
-	// The handshake carries auth on both channels, matching TS
-	// createAuthHeaders: the raw Authorization/ai-gateway-auth-method headers
-	// alongside the ai-gateway-auth.<token> subprotocol below.
-	headers["Authorization"] = "Bearer " + token
-	headers["ai-gateway-auth-method"] = authMethod
+	authMethod = gatewayHeaderValue(headers, "ai-gateway-auth-method")
 
 	startFrame := map[string]interface{}{
 		"type":             transcriptionStreamStartFrameType,
@@ -64,13 +70,19 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		startFrame["includeRawChunks"] = true
 	}
 
-	wsURL := ToGatewayTranscriptionURL(m.provider.baseURL, m.modelID)
-	// The team scope rides the subprotocol from the fully merged per-call
+	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/transcription-model", m.modelID)
+	if err != nil {
+		return nil, err
+	}
+	// The auth token and team scope ride the subprotocols from the fully merged per-call
 	// header set (headers, above — config headers + opts.Headers), not the
 	// static TeamIDOrSlug config field, so a caller overriding
 	// x-vercel-ai-gateway-team per call (e.g. via opts.Headers) takes effect
 	// here exactly like it does on every other Gateway request.
-	protocols := GetGatewayTranscriptionProtocols(token, gatewayTeamFromHeaders(headers))
+	protocols := []string{GatewayTranscriptionSubprotocol}
+	if bearer := gatewayHeaderValue(headers, "authorization"); strings.HasPrefix(bearer, "Bearer ") {
+		protocols = GetGatewayTranscriptionProtocols(strings.TrimPrefix(bearer, "Bearer "), gatewayTeamFromHeaders(headers))
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {
@@ -84,6 +96,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		startFrame: startFrame,
 		audio:      opts.Audio,
 		authMethod: authMethod,
+		wrapError:  m.provider.gatewayUnknownError,
 	})
 
 	return &provider.TranscriptionStreamResult{
@@ -91,6 +104,34 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		RequestBody: startFrame,
 		Response:    &provider.TranscriptionStreamResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID},
 	}, nil
+}
+
+// mergeHeadersFold merges header layers, later layers winning, with header
+// names compared case-insensitively (a per-call "authorization" replaces the
+// default "Authorization" instead of sitting beside it).
+func mergeHeadersFold(layers ...map[string]string) map[string]string {
+	out := make(map[string]string)
+	for _, layer := range layers {
+		for k, v := range layer {
+			for existing := range out {
+				if strings.EqualFold(existing, k) {
+					delete(out, existing)
+				}
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// gatewayHeaderValue looks a header up case-insensitively (TS normalizeHeaders).
+func gatewayHeaderValue(headers map[string]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
 }
 
 func transcriptionAudioFormatWire(f provider.AudioFormat) map[string]interface{} {
@@ -108,6 +149,8 @@ type gatewayTranscriptionStreamConfig struct {
 	startFrame map[string]interface{}
 	audio      provider.AudioStream
 	authMethod string
+	// wrapError mirrors TS asGatewayError (nil keeps errors unwrapped).
+	wrapError func(error) error
 }
 
 // gatewayTranscriptionStream implements provider.TranscriptionStream over the
@@ -119,16 +162,31 @@ type gatewayTranscriptionStreamConfig struct {
 // cleanly, so it stays local.
 type gatewayTranscriptionStream struct {
 	*wsutil.Session[provider.TranscriptionStreamPart]
+	// abortCtx is the caller's context (TS abortSignal).
+	abortCtx context.Context
+	// audioExhausted is set once the caller's audio reached io.EOF: TS
+	// cleanup then cancels a closed stream, which reaches no producer.
+	audioExhausted atomic.Bool
 }
 
 func newGatewayTranscriptionStream(parentCtx context.Context, cfg gatewayTranscriptionStreamConfig) *gatewayTranscriptionStream {
 	s := &gatewayTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
+	s.abortCtx = parentCtx
 	go s.run(cfg)
 	return s
 }
 
 func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	defer s.CloseParts()
+	defer failOnAbort(s.SetErr, s.abortCtx)
+	// TS cleanup() cancels the caller's audio on every terminal path: the
+	// finish part (cleanup(1000)), a consumer cancel and an abort, not only
+	// a failure. A failure has cancelled it with its error already.
+	defer func() {
+		if !s.audioExhausted.Load() {
+			cfg.audio.Cancel(nil)
+		}
+	}()
 	// Release the session's resources as soon as run() returns for any
 	// reason (finish, error, or cancellation) instead of only on an
 	// explicit Close() call, which a consumer that only drains Next() to
@@ -136,24 +194,26 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	defer s.CancelContext()
 
 	fail := func(err error) {
+		err = gatewayStreamTerminalError(s.abortCtx, err, cfg.wrapError)
 		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
 
 	conn, err := s.dial(cfg.url, cfg.protocols, cfg.headers)
 	if err != nil {
-		fail(err)
+		fail(gatewayDialError(s.Context(), "Connection error on AI Gateway transcription stream", err))
 		return
 	}
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	startPayload, err := json.Marshal(cfg.startFrame)
-	if err != nil {
-		fail(err)
-		return
-	}
-	if err := s.sendText(conn, string(startPayload)); err != nil {
+	// TS JSON.stringify(startFrame): type, inputAudioFormat, providerOptions,
+	// includeRawChunks (the audio format as the caller's {type, rate}).
+	startPayload := providerutils.StringifyOrdered(cfg.startFrame, map[string][]string{
+		"":                 {"type", "inputAudioFormat", "providerOptions", "includeRawChunks"},
+		"inputAudioFormat": {"type", "rate"},
+	})
+	if err := s.sendText(conn, startPayload); err != nil {
 		fail(err)
 		return
 	}
@@ -179,7 +239,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 			if finished {
 				return
 			}
-			fail(s.Context().Err())
+			fail(context.Cause(s.Context())) // TS onAbort(abortSignal.reason)
 			return
 
 		case audioErr := <-audioErrCh:
@@ -261,13 +321,22 @@ var gatewayServerErrorStatusCodes = map[string]int{
 	"rate_limit_exceeded":   429,
 }
 
-// gatewayTranscriptionServerError maps a server error-part payload
+// gatewayTranscriptionServerError maps a server error-part payload for a
+// transcription stream; see gatewayStreamServerError.
+func gatewayTranscriptionServerError(payload interface{}, authMethod string) error {
+	return gatewayStreamServerError(payload, authMethod, "transcription")
+}
+
+// gatewayStreamServerError maps a server error-part payload
 // ({message, type}) to the typed Gateway error class for its type, mirroring
 // TS createErrorFromServerErrorPart; unknown shapes keep the generic message.
-func gatewayTranscriptionServerError(payload interface{}, authMethod string) error {
+// streamLabel names the stream in the generic message ("transcription",
+// "speech").
+func gatewayStreamServerError(payload interface{}, authMethod, streamLabel string) error {
 	m, ok := payload.(map[string]interface{})
+	msg, hasMsg := "", false
 	if ok {
-		msg, hasMsg := m["message"].(string)
+		msg, hasMsg = m["message"].(string)
 		errType, hasType := m["type"].(string)
 		if hasMsg && hasType {
 			if statusCode, known := gatewayServerErrorStatusCodes[errType]; known {
@@ -275,15 +344,28 @@ func gatewayTranscriptionServerError(payload interface{}, authMethod string) err
 					"error": map[string]interface{}{"message": msg, "type": errType},
 				})
 				if marshalErr == nil {
-					return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "AI Gateway transcription stream failed", nil, authMethod)
+					return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "AI Gateway "+streamLabel+" stream failed", nil, authMethod)
 				}
 			}
 		}
-		if hasMsg && msg != "" {
-			return fmt.Errorf("AI Gateway transcription stream failed: %s", msg)
+	}
+	// TS getServerErrorMessage: a string message property, else getErrorMessage
+	// (null/undefined -> "unknown error", string as is, others JSON.stringify).
+	if !hasMsg {
+		switch v := payload.(type) {
+		case nil:
+			msg = "unknown error"
+		case string:
+			msg = v
+		default:
+			if b, err := jsonstr.Marshal(v); err == nil {
+				msg = string(b)
+			} else {
+				msg = fmt.Sprint(v)
+			}
 		}
 	}
-	return fmt.Errorf("AI Gateway transcription stream failed: %v", payload)
+	return fmt.Errorf("AI Gateway %s stream failed: %s", streamLabel, msg)
 }
 
 // pumpAudio reads chunks from audio and forwards them as binary frames (split
@@ -300,6 +382,7 @@ func (s *gatewayTranscriptionStream) pumpAudio(ctx context.Context, conn *websoc
 		chunk, err := audio.Next(ctx)
 		if err != nil {
 			if err == io.EOF {
+				s.audioExhausted.Store(true)
 				if sendErr := s.sendText(conn, fmt.Sprintf(`{"type":%q}`, transcriptionStreamAudioDoneFrameType)); sendErr != nil && ctx.Err() == nil {
 					wsutil.ReportError(ctx, errCh, sendErr)
 				}
@@ -339,8 +422,10 @@ func (s *gatewayTranscriptionStream) sendBinary(conn *websocket.Conn, message []
 // flattened TranscriptionModelV4StreamPart) into a provider.TranscriptionStreamPart.
 // Unknown types are ignored (envelope rule 6); malformed JSON returns ok=false.
 func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionStreamPart, bool) {
+	// TS secureJsonParse: a __proto__ key or a constructor.prototype is a
+	// parse failure, so the frame is ignored.
 	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+	if err := securejson.Unmarshal([]byte(text), &raw); err != nil {
 		return nil, false
 	}
 	rawType, _ := raw["type"].(string)
@@ -364,7 +449,7 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Delta = delta
@@ -376,9 +461,9 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalNumber(raw["startSecond"]) ||
-			!isOptionalNumber(raw["durationInSeconds"]) || !isOptionalNumber(raw["channelIndex"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalNumberKey(raw, "startSecond") ||
+			!isOptionalNumberKey(raw, "durationInSeconds") || !isOptionalNumberKey(raw, "channelIndex") ||
+			!isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Text = text
@@ -393,9 +478,9 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalNumber(raw["startSecond"]) ||
-			!isOptionalNumber(raw["endSecond"]) || !isOptionalNumber(raw["channelIndex"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalNumberKey(raw, "startSecond") ||
+			!isOptionalNumberKey(raw, "endSecond") || !isOptionalNumberKey(raw, "channelIndex") ||
+			!isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Text = text
@@ -406,7 +491,7 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
 
 	case provider.TranscriptionStreamPartTypeResponseMetadata:
-		if !isOptionalString(raw["modelId"]) || !isOptionalRecord(raw["headers"]) {
+		if !isOptionalStringKey(raw, "modelId") || !isOptionalRecordKey(raw, "headers") {
 			return nil, false
 		}
 		part.ModelID, _ = raw["modelId"].(string)
@@ -416,11 +501,12 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 			if !ok {
 				return nil, false
 			}
-			parsed, err := time.Parse(time.RFC3339Nano, tsStr)
-			if err != nil {
+			// TS new Date(timestamp); a NaN date makes the part invalid.
+			ms, ok := jsdate.Parse(tsStr)
+			if !ok {
 				return nil, false
 			}
-			part.Timestamp = parsed
+			part.Timestamp = time.UnixMilli(ms)
 		}
 
 	case provider.TranscriptionStreamPartTypeFinish:
@@ -432,14 +518,15 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["language"]) || !isOptionalNumber(raw["durationInSeconds"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "language") || !isOptionalNumberKey(raw, "durationInSeconds") ||
+			!isOptionalRecordKey(raw, "usage") || !isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.FinishText = text
 		part.Language, _ = raw["language"].(string)
 		part.DurationInSeconds = float64PtrFromInterface(raw["durationInSeconds"])
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
+		part.Usage = mapFromInterface(raw["usage"])
 		part.Segments = segments
 
 	case provider.TranscriptionStreamPartTypeRaw:
@@ -461,28 +548,32 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 	return part, true
 }
 
-// isOptionalString mirrors TS isOptional(value, isString): absent (nil) is
-// fine; present-but-non-string is not.
-func isOptionalString(v interface{}) bool {
-	if v == nil {
+// isOptionalStringKey mirrors TS isOptional(value, isString): the key is
+// absent (JS undefined) or holds a string. An explicit JSON null is not
+// undefined, so it fails the check.
+func isOptionalStringKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(string)
 	return ok
 }
 
-// isOptionalNumber mirrors TS isOptional(value, isNumber).
-func isOptionalNumber(v interface{}) bool {
-	if v == nil {
+// isOptionalNumberKey mirrors TS isOptional(value, isNumber).
+func isOptionalNumberKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(float64)
 	return ok
 }
 
-// isOptionalRecord mirrors TS isOptional(value, isRecord).
-func isOptionalRecord(v interface{}) bool {
-	if v == nil {
+// isOptionalRecordKey mirrors TS isOptional(value, isRecord).
+func isOptionalRecordKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(map[string]interface{})
@@ -594,3 +685,51 @@ var (
 	_ provider.TranscriptionStreamer = (*TranscriptionModel)(nil)
 	_ provider.TranscriptionStream   = (*gatewayTranscriptionStream)(nil)
 )
+
+// gatewayStreamTerminalError is the error a Gateway WebSocket stream fails
+// with. Once the caller's context is done the stream fails with its cancel
+// cause as is (TS connectToWebSocket onAbort: controller.error(reason), not
+// through asGatewayError), whichever operation the abort interrupted. Every
+// other error goes through wrapError (TS finishWithError: asGatewayError),
+// except a GatewayError and a context error.
+func gatewayStreamTerminalError(abortCtx context.Context, err error, wrapError func(error) error) error {
+	if abortCtx != nil && abortCtx.Err() != nil {
+		return context.Cause(abortCtx)
+	}
+	if wrapError != nil && !gatewayerrors.IsGatewayError(err) &&
+		!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return wrapError(err)
+	}
+	return err
+}
+
+// failOnAbort is TS connectToWebSocket onAbort(abortSignal.reason): when the
+// caller's context is cancelled the stream fails with its cancel cause, also
+// when run() returns from an emit the cancellation unblocked. An error set
+// earlier wins (SetErr keeps the first).
+func failOnAbort(setErr func(error), ctx context.Context) {
+	if ctx != nil && ctx.Err() != nil {
+		setErr(context.Cause(ctx))
+	}
+}
+
+// gatewaySocketOpenError is TS onSocketError for a WebSocket that fails to open (a refused
+// handshake, an unreachable host): the provider's socket error text, with the
+// dial error kept reachable through Unwrap. An abort while the handshake is
+// pending is the abort reason instead (TS onAbort).
+type gatewaySocketOpenError struct {
+	msg   string
+	cause error
+}
+
+func (e *gatewaySocketOpenError) Error() string { return e.msg }
+func (e *gatewaySocketOpenError) Unwrap() error { return e.cause }
+
+// gatewayDialError is the error of a failed dial: the cancel cause when the stream's
+// context is done (TS onAbort(abortSignal.reason)), else the socket error.
+func gatewayDialError(ctx context.Context, msg string, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return &gatewaySocketOpenError{msg: msg, cause: err}
+}

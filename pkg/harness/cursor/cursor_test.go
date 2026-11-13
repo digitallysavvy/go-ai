@@ -17,13 +17,13 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.HarnessID != "cursor" {
 		t.Errorf("HarnessID = %q, want cursor", cfg.HarnessID)
 	}
-	if cfg.ClientApp.Name != "ai-sdk/harness-cursor" || cfg.ClientApp.Version != "0.0.0-go" {
+	if cfg.ClientApp.Name != "ai-sdk-harness-cursor" || cfg.ClientApp.Version != "1.0.96" {
 		t.Errorf("ClientApp = %+v", cfg.ClientApp)
 	}
 	if cfg.Executable != "agent" {
 		t.Errorf("Executable = %q, want agent", cfg.Executable)
 	}
-	if !reflect.DeepEqual(cfg.Args, []string{"--disable-auto-update", "acp"}) {
+	if !reflect.DeepEqual(cfg.Args, []string{"--disable-auto-update", "--disable-project-configs", "acp"}) {
 		t.Errorf("Args = %v", cfg.Args)
 	}
 	if cfg.Source.Type != acp.SourceInstallCommand || cfg.Source.Command != "curl https://cursor.com/install -fsS | bash" {
@@ -48,7 +48,7 @@ func TestBuildConfig_Recipe(t *testing.T) {
 
 	wantNames := []string{
 		"bash", "delete", "glob", "grep", "read", "updateTodos", "readTodos",
-		"edit", "ls", "readLints", "semanticSearch", "createPlan", "webSearch",
+		"edit", "write", "ls", "readLints", "semanticSearch", "createPlan", "webSearch",
 		"task", "listMcpResources", "readMcpResource", "applyAgentDiff",
 		"fetch", "switchMode", "generateImage", "recordScreen", "computerUse",
 		"writeShellStdin", "reflect", "setupVmEnvironment", "replaceEnv",
@@ -99,7 +99,7 @@ func TestBuildConfig_ForwardsUserConfigurableSettings(t *testing.T) {
 	if !reflect.DeepEqual(cfg.MCPServers, map[string]any{"external": map[string]any{"command": "external-mcp"}}) {
 		t.Errorf("MCPServers = %+v", cfg.MCPServers)
 	}
-	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "token-for-sbx-1" {
+	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "token-for-sbx-1" { //nolint:staticcheck // the deprecated setting is still forwarded (ACP warns)
 		t.Errorf("MintBridgeToken not forwarded correctly")
 	}
 }
@@ -205,5 +205,27 @@ func TestCreateCursor(t *testing.T) {
 	}
 	if !harness.SupportsBuiltinToolApprovals(h) {
 		t.Error("expected SupportsBuiltinToolApprovals() to be true")
+	}
+}
+
+// TS #22367: Cursor accepts image tool model output.
+func TestBuildConfig_DeclaresImageContent(t *testing.T) {
+	if got := BuildConfig(Settings{}).NonTextContentTypes; !reflect.DeepEqual(got, []acp.NonTextContentType{acp.NonTextContentImage}) {
+		t.Errorf("NonTextContentTypes = %v, want [image]", got)
+	}
+}
+
+// TS declares `_toolName: z.literal(...)` (required) on updateTodos like the
+// other dynamic-shaped built-ins.
+func TestBuiltinToolsDiscriminatorRequired(t *testing.T) {
+	for _, name := range []string{"updateTodos", "createPlan", "task", "generateImage"} {
+		req, _ := BuiltinTools[name].Parameters.(map[string]any)["required"].([]string)
+		found := false
+		for _, r := range req {
+			found = found || r == "_toolName"
+		}
+		if !found {
+			t.Errorf("%s: _toolName must be required, got %v", name, req)
+		}
 	}
 }

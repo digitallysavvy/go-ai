@@ -16,8 +16,14 @@ import (
 
 // ProviderSettings contains configuration for the Amazon Bedrock Mantle provider.
 type ProviderSettings struct {
-	Region          string
-	APIKey          string
+	Region string
+	APIKey string
+
+	// APIKeyFunc resolves the bearer API key before each request (TS apiKey given
+	// as a function, 7716e189ee). It must return a non-empty key ("Amazon
+	// Bedrock API key must be a non-empty string." otherwise), is trimmed,
+	// wins over the environment and SigV4, and cannot be combined with APIKey.
+	APIKeyFunc      providerutils.APIKeyFunc `json:"-"`
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
@@ -69,33 +75,23 @@ func CreateBedrockMantle(settings ProviderSettings) *BedrockMantleProvider {
 	region := firstNonEmpty(settings.Region, os.Getenv("AWS_REGION"))
 	settings.Region = region
 
-	apiKey := firstNonEmpty(settings.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK"))
-	httpClient := settings.HTTPClient
+	// TS createBedrockMantle reads AWS_BEARER_TOKEN_BEDROCK once, when the
+	// provider is created (loadOptionalSetting, trimmed), and picks bearer or
+	// SigV4 then; SigV4 credentials are loaded per request by the transport.
+	apiKey := settings.APIKey
 	headers := copyHeaders(settings.Headers)
-	if apiKey == "" {
-		if settings.CredentialProvider != nil {
-			httpClient = withCredentialProviderSigV4Transport(httpClient, settings.CredentialProvider, region)
-		} else {
-			accessKeyID := firstNonEmpty(settings.AccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
-			secretAccessKey := firstNonEmpty(settings.SecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
-			sessionToken := firstNonEmpty(settings.SessionToken, os.Getenv("AWS_SESSION_TOKEN"))
-			httpClient = withSigV4Transport(httpClient, bedrock.NewAWSSignerForService(
-				accessKeyID,
-				secretAccessKey,
-				sessionToken,
-				region,
-				mantleSigningService,
-			))
-		}
-	}
+	httpClient := withAuthTransport(settings.HTTPClient, settings, region)
 
-	return &BedrockMantleProvider{
+	p := &BedrockMantleProvider{
 		settings:   settings,
 		region:     region,
 		apiKey:     apiKey,
 		httpClient: httpClient,
 		headers:    headers,
 	}
+	// Both Mantle routes (/v1 and /openai/v1) share one origin.
+	httpClient.Transport.(*sigV4Transport).baseURL = func() (string, error) { return p.baseURLForModel("") }
+	return p
 }
 
 // New creates a Bedrock Mantle provider.
@@ -111,22 +107,26 @@ func (p *BedrockMantleProvider) Name() string { return "bedrock-mantle" }
 // is one Mantle serves through its separate OpenAI-compatible route.
 func (p *BedrockMantleProvider) baseURLForModel(modelID string) (string, error) {
 	if p.settings.BaseURL != "" {
-		return strings.TrimRight(p.settings.BaseURL, "/"), nil
+		return strings.TrimSuffix(p.settings.BaseURL, "/"), nil
 	}
 	// Region is interpolated directly into the request host
 	// (https://bedrock-mantle.{region}.api.aws/...), so only a single DNS
 	// label is accepted; ports TS bedrock-mantle-provider.ts (TS #21842).
-	if !providerutils.IsValidHostnamePart(p.region) {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "region",
-			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
+	// TS loadSetting reads AWS_REGION lazily on each request URL build, so a
+	// region exported after the provider (or the default instance) was created
+	// is still honored.
+	region := firstNonEmpty(p.settings.Region, os.Getenv("AWS_REGION"))
+	if region == "" {
+		return "", providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION")
+	}
+	if !providerutils.IsValidHostnamePart(region) {
+		return "", providererrors.NewArgumentError("region", "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)
 	}
 	path := "v1"
 	if isMantleOpenAIOnlyModel(modelID) {
 		path = "openai/v1"
 	}
-	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/%s", p.region, path), nil
+	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/%s", region, path), nil
 }
 
 func (p *BedrockMantleProvider) openaiProviderForModel(modelID string) (*openai.Provider, error) {
@@ -202,17 +202,17 @@ func (p *BedrockMantleProvider) ImageModel(modelID string) (provider.ImageModel,
 
 // SpeechModel is not supported by Bedrock Mantle.
 func (p *BedrockMantleProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("bedrock-mantle provider does not support speech models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel is not supported by Bedrock Mantle.
 func (p *BedrockMantleProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("bedrock-mantle provider does not support transcription models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel is not supported by Bedrock Mantle.
 func (p *BedrockMantleProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("bedrock-mantle provider does not support reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // BedrockMantle is the default provider instance.
@@ -228,7 +228,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func noSuchModelError(modelID, modelType string) error {
-	return fmt.Errorf("%w: bedrock-mantle %s %q", providererrors.ErrModelNotFound, modelType, modelID)
+	return providererrors.NewNoSuchModelError(modelID, modelType)
 }
 
 func copyHeaders(headers map[string]string) map[string]string {
@@ -242,15 +242,7 @@ func copyHeaders(headers map[string]string) map[string]string {
 	return out
 }
 
-func withSigV4Transport(client *http.Client, signer *bedrock.AWSSigner) *http.Client {
-	return withSigV4TransportConfig(client, signer, nil, "")
-}
-
-func withCredentialProviderSigV4Transport(client *http.Client, credentialProvider bedrock.CredentialProvider, region string) *http.Client {
-	return withSigV4TransportConfig(client, nil, credentialProvider, region)
-}
-
-func withSigV4TransportConfig(client *http.Client, signer *bedrock.AWSSigner, credentialProvider bedrock.CredentialProvider, region string) *http.Client {
+func withAuthTransport(client *http.Client, settings ProviderSettings, region string) *http.Client {
 	if client == nil {
 		client = &http.Client{}
 	} else {
@@ -261,10 +253,18 @@ func withSigV4TransportConfig(client *http.Client, signer *bedrock.AWSSigner, cr
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	apiKey := settings.APIKey
+	if settings.APIKeyFunc == nil {
+		apiKey = providerutils.JSTrim(providerutils.APIKeyOrEnv(settings.APIKey, "AWS_BEARER_TOKEN_BEDROCK"))
+	}
 	client.Transport = &sigV4Transport{
 		base:               base,
-		signer:             signer,
-		credentialProvider: credentialProvider,
+		apiKey:             apiKey,
+		apiKeyFunc:         settings.APIKeyFunc,
+		accessKeyID:        settings.AccessKeyID,
+		secretAccessKey:    settings.SecretAccessKey,
+		sessionToken:       settings.SessionToken,
+		credentialProvider: settings.CredentialProvider,
 		region:             region,
 	}
 	return client

@@ -1,9 +1,11 @@
 package azure
 
 import (
-	"strings"
+	"math"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // AzureSpeechModelSpeechOptions is providerOptions.azure for the Azure
@@ -11,16 +13,20 @@ import (
 // AzureSpeechModelSpeechOptions.
 type AzureSpeechModelSpeechOptions struct {
 	// Style is applied with mstts:express-as, e.g. "excited".
-	Style string
+	Style string `json:"style,omitempty"`
 	// StyleDegree is the intensity of Style, from 0.01 to 2.
-	StyleDegree *float64
+	StyleDegree *float64 `json:"styleDegree,omitempty"`
 }
 
 // AzureSpeechModelOptions is the fully parsed providerOptions.azure for
 // azure.Speech, mirroring TS AzureSpeechModelOptions.
 type AzureSpeechModelOptions struct {
-	API AzureTranscriptionAPI // reuses "openai" | "speech"
+	API AzureTranscriptionAPI `json:"api,omitempty"` // reuses "openai" | "speech"
 	AzureSpeechModelSpeechOptions
+
+	// openaiOptions are the OpenAI speech options passed under
+	// providerOptions.azure (TS 6400cf8b88).
+	openaiOptions azurePickedOptions
 }
 
 // azureVoiceModelsByLowercaseID maps a lowercase model ID to its Azure
@@ -35,7 +41,7 @@ var azureVoiceModelsByLowercaseID = map[string]string{
 // getMAIVoiceModel returns the Azure voice-name suffix for modelID,
 // mirroring TS getMAIVoiceModel. ok is false for any other model ID.
 func getMAIVoiceModel(modelID string) (string, bool) {
-	name, ok := azureVoiceModelsByLowercaseID[strings.ToLower(modelID)]
+	name, ok := azureVoiceModelsByLowercaseID[providerutils.JSToLower(modelID)]
 	return name, ok
 }
 
@@ -51,15 +57,24 @@ func parseAzureSpeechProviderOptions(providerOptions map[string]interface{}) (Az
 	if !ok || raw == nil {
 		return result, nil
 	}
-	m, ok := raw.(map[string]interface{})
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return result, invalidAzureOption("providerOptions.azure", "must be an object")
 	}
 
 	allowed := map[string]bool{"api": true, "style": true, "styleDegree": true}
+	for _, key := range azureOpenAISpeechOptionKeys {
+		allowed[key] = true // TS 6400cf8b88: OpenAI speech options
+	}
 	for key := range m {
 		if !allowed[key] {
 			return result, invalidAzureOption("providerOptions.azure."+key, "unrecognized key")
+		}
+	}
+	result.openaiOptions = pickAzureOptions(providerOptions, azureOpenAISpeechOptionKeys)
+	if len(result.openaiOptions.keys) > 0 {
+		if err := openai.ValidateSpeechProviderOptions(map[string]interface{}{"openai": result.openaiOptions.values}); err != nil {
+			return result, invalidAzureOption("providerOptions.azure", azureOpenAIOptionCause(err))
 		}
 	}
 
@@ -79,7 +94,9 @@ func parseAzureSpeechProviderOptions(providerOptions map[string]interface{}) (Az
 	}
 	if v, ok := m["styleDegree"]; ok {
 		f, ok := toFloat64Option(v)
-		if !ok || f < 0.01 || f > 2 {
+		// TS z.number() rejects NaN (a NaN literal skips the JSON
+		// normalization, which cannot encode it).
+		if !ok || math.IsNaN(f) || f < 0.01 || f > 2 {
 			return result, invalidAzureOption("providerOptions.azure.styleDegree", "must be a number between 0.01 and 2")
 		}
 		result.StyleDegree = &f

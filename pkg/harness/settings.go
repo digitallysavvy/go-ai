@@ -2,13 +2,17 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -88,6 +92,32 @@ type Callbacks struct {
 	OnEnd                    func(ctx context.Context, e ai.OnFinishEvent)
 }
 
+// panicSafe wraps every set callback so a panicking callback is recovered
+// and dropped instead of crashing the turn (TS awaits each callback inside
+// `Promise.allSettled`, so a throwing callback never fails the turn).
+func (c Callbacks) panicSafe() Callbacks {
+	return Callbacks{
+		OnStart:                  safeCallback(c.OnStart),
+		OnStepStart:              safeCallback(c.OnStepStart),
+		OnLanguageModelCallStart: safeCallback(c.OnLanguageModelCallStart),
+		OnLanguageModelCallEnd:   safeCallback(c.OnLanguageModelCallEnd),
+		OnToolExecutionStart:     safeCallback(c.OnToolExecutionStart),
+		OnToolExecutionEnd:       safeCallback(c.OnToolExecutionEnd),
+		OnStepEnd:                safeCallback(c.OnStepEnd),
+		OnEnd:                    safeCallback(c.OnEnd),
+	}
+}
+
+func safeCallback[E any](fn func(context.Context, E)) func(context.Context, E) {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, e E) {
+		defer func() { _ = recover() }()
+		fn(ctx, e)
+	}
+}
+
 // AgentSettings are the construction-time settings for a HarnessAgent.
 // Mirrors TS `HarnessAgentSettings`.
 //
@@ -139,6 +169,15 @@ type AgentSettings struct {
 	// managed by the harness and must not be set here.
 	Headers map[string]string
 
+	// CallOptionsSchema validates the custom CallOptions of each prompt
+	// turn (TS `HarnessAgentSettings.callOptionsSchema`): when it is set and
+	// a call passes CallOptions, they are validated (schema defaults
+	// applied) before PrepareCall, and the validated value replaces them. A
+	// failure is a TypeValidationError (*ValidationError) with context field
+	// "options", and the turn does not start. Continuations are not
+	// validated (TS validates in _preparePromptTurnInput only).
+	CallOptionsSchema jsonschema.Schema
+
 	// PrepareCall derives the prompt and the settings that may vary between
 	// completed turns. See PrepareCallOptions/PrepareCallResult.
 	PrepareCall func(ctx context.Context, opts PrepareCallOptions) (PrepareCallResult, error)
@@ -171,6 +210,12 @@ type AgentSettings struct {
 	// host-executed tools.
 	ToolApproval AgentToolApprovalConfiguration
 
+	// ToolApprovalReasons carries the optional `reason` of a ToolApproval
+	// entry (TS `{ type: 'denied', reason }`). The reason of a denied tool is
+	// sent to the model in the execution-denied result and recorded on the
+	// automatic approval response.
+	ToolApprovalReasons map[string]string
+
 	// ActiveTools / InactiveTools limit the tools available to the harness
 	// without changing the tool call/result types in the result. Mutually
 	// exclusive; leave both nil to allow every tool.
@@ -179,7 +224,9 @@ type AgentSettings struct {
 
 	// Sandbox is the provider used to create or resume network sandbox
 	// sessions. When nil, every CreateSession call must provide an existing
-	// sandbox session.
+	// sandbox session. It is deprecated, as TS `sandbox` is: supply
+	// CreateSessionOptions.SandboxSession (or SandboxCreator) instead.
+	// NewAgent logs a deprecation warning when it is set.
 	Sandbox SandboxProvider
 
 	// SandboxConfig is the sandbox working-directory and lifecycle-hook
@@ -192,6 +239,19 @@ type AgentSettings struct {
 	// nest model-call and tool-execution spans. Nil disables it. Mirrors TS
 	// `HarnessAgentSettings.telemetry`.
 	Telemetry *telemetry.Options
+
+	// Debug configures diagnostics: bridge log forwarding (sandbox console
+	// lines and structured debug events) and the HARNESS_DEBUG stderr
+	// default. Set &DebugConfig{Enabled: &true} to turn it on in code; the
+	// HARNESS_DEBUG, HARNESS_DEBUG_LEVEL and HARNESS_DEBUG_SUBSYSTEMS env vars
+	// fill any unset field. Mirrors TS `HarnessAgentSettings.debug`.
+	Debug *DebugConfig
+
+	// OnLog is a programmatic sink for forwarded bridge diagnostics. It
+	// receives every captured console line and structured event, normalized,
+	// independent of the stderr default. Only called when diagnostics are
+	// enabled via Debug or HARNESS_DEBUG. Mirrors TS `onLog`.
+	OnLog func(Diagnostic)
 }
 
 var forbiddenAgentHeaders = map[string]struct{}{
@@ -207,13 +267,22 @@ func normalizeAgentHeaders(headers map[string]string) (map[string]string, error)
 	if len(headers) == 0 {
 		return nil, nil
 	}
-	out := make(map[string]string, len(headers))
-	for name, value := range headers {
-		lower := strings.ToLower(name)
+	// TS picks the first forbidden name in the headers object's key order.
+	// A Go map has no order, so the lower-cased names are visited sorted:
+	// the error is deterministic for any combination of forbidden headers.
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, providerutils.JSToLower(name))
+	}
+	sort.Strings(names)
+	for _, lower := range names {
 		if _, forbidden := forbiddenAgentHeaders[lower]; forbidden {
 			return nil, fmt.Errorf("HarnessAgent: `headers` must not include the managed header `%s`.", lower) //nolint:staticcheck // matches TS SDK's exact error text
 		}
-		out[lower] = value
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		out[providerutils.JSToLower(name)] = value
 	}
 	return out, nil
 }
@@ -324,8 +393,28 @@ func toHarnessResponseFormat(rf *provider.ResponseFormat) *ResponseFormat {
 		return &ResponseFormat{Type: ResponseFormatText}
 	}
 	out := &ResponseFormat{Type: ResponseFormatJSON, Name: rf.Name, Description: rf.Description}
-	if schema, ok := rf.Schema.(map[string]any); ok {
-		out.Schema = schema
-	}
+	out.Schema = responseFormatSchemaMap(rf.Schema)
 	return out
+}
+
+// responseFormatSchemaMap gives a response format schema as a JSON object
+// map. TS forwards `responseFormat.schema` whatever produced it; ai.Output
+// values hand a map or, for a struct schema or an *schema.OrderedSchema, an
+// *schema.OrderedSchema, which is read through its JSON form.
+func responseFormatSchemaMap(s interface{}) map[string]any {
+	switch v := s.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		return v
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	return m
 }

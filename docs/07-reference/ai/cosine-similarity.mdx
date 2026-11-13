@@ -33,7 +33,7 @@ A zero vector (all-zero components) or an empty (`len == 0`) vector on either
 side returns `(0, nil)` — not an error — matching the TypeScript AI SDK. Only
 a length mismatch between `a` and `b` returns an error, a typed
 `*errors.InvalidArgumentError` with message
-`"Vectors must have the same length (vector1Length=…, vector2Length=…)"`.
+`"Vectors must have the same length"` (the lengths are in the error's `Value`, as TS).
 
 ## Examples
 

@@ -36,38 +36,9 @@ func TestMCPServer(t *testing.T) {
 			t.Error("expected non-empty description")
 		}
 
-		// Verify parameters structure
-		params, ok := tool.Parameters.(map[string]interface{})
-		if !ok {
-			t.Fatal("expected Parameters to be map[string]interface{}")
-		}
-
-		if params["type"] != "object" {
-			t.Errorf("expected type 'object', got %v", params["type"])
-		}
-
-		properties, ok := params["properties"].(map[string]interface{})
-		if !ok {
-			t.Fatal("expected properties to be map[string]interface{}")
-		}
-
-		// Verify required parameters exist
-		if _, exists := properties["serverUrl"]; !exists {
-			t.Error("expected 'serverUrl' property to exist")
-		}
-
-		if _, exists := properties["toolName"]; !exists {
-			t.Error("expected 'toolName' property to exist")
-		}
-
-		// Verify required fields
-		required, ok := params["required"].([]string)
-		if !ok {
-			t.Fatal("expected required to be []string")
-		}
-
-		if len(required) != 2 {
-			t.Errorf("expected 2 required fields, got %d", len(required))
+		assertXAIEmptyInputSchema(t, tool)
+		if got, ok := tool.ProviderOptions.(MCPServerOptions); !ok || got.ServerURL != config.ServerURL || got.Authorization != config.Authorization {
+			t.Errorf("ProviderOptions = %#v, want the config", tool.ProviderOptions)
 		}
 	})
 
@@ -99,12 +70,9 @@ func TestMCPServer(t *testing.T) {
 			t.Error("expected ProviderExecuted to be true")
 		}
 
-		params := tool.Parameters.(map[string]interface{})
-		properties := params["properties"].(map[string]interface{})
-
-		serverUrlParam := properties["serverUrl"].(map[string]interface{})
-		if serverUrlParam["default"] != serverURL {
-			t.Errorf("expected default serverUrl to be %s, got %v", serverURL, serverUrlParam["default"])
+		assertXAIEmptyInputSchema(t, tool)
+		if got, ok := tool.ProviderOptions.(MCPServerOptions); !ok || got.ServerURL != serverURL {
+			t.Errorf("ProviderOptions = %#v, want server URL %s", tool.ProviderOptions, serverURL)
 		}
 	})
 
@@ -121,12 +89,10 @@ func TestMCPServer(t *testing.T) {
 			t.Error("expected ProviderExecuted to be true")
 		}
 
-		params := tool.Parameters.(map[string]interface{})
-		properties := params["properties"].(map[string]interface{})
-
-		authParam := properties["authorization"].(map[string]interface{})
-		if authParam["default"] != auth {
-			t.Errorf("expected default authorization to be %s, got %v", auth, authParam["default"])
+		// The token stays in the tool args, never in the input schema.
+		assertXAIEmptyInputSchema(t, tool)
+		if got, ok := tool.ProviderOptions.(MCPServerOptions); !ok || got.Authorization != auth {
+			t.Errorf("ProviderOptions = %#v, want authorization", tool.ProviderOptions)
 		}
 	})
 
@@ -168,91 +134,11 @@ func TestMCPServer(t *testing.T) {
 }
 
 func TestMCPServer_ParameterSchema(t *testing.T) {
-	t.Run("includes allowed tools when provided", func(t *testing.T) {
-		config := MCPServerConfig{
-			ServerURL:    "https://api.example.com/mcp",
-			AllowedTools: []string{"search", "summarize"},
-		}
-
-		tool := MCPServer(config)
-		params := tool.Parameters.(map[string]interface{})
-		properties := params["properties"].(map[string]interface{})
-
-		allowedToolsParam, exists := properties["allowedTools"]
-		if !exists {
-			t.Error("expected allowedTools property to exist")
-		}
-
-		allowedToolsMap := allowedToolsParam.(map[string]interface{})
-		if allowedToolsMap["type"] != "array" {
-			t.Errorf("expected allowedTools type to be 'array', got %v", allowedToolsMap["type"])
-		}
-	})
-
-	t.Run("includes headers when provided", func(t *testing.T) {
-		config := MCPServerConfig{
-			ServerURL: "https://api.example.com/mcp",
-			Headers: map[string]string{
-				"X-API-Version": "v1",
-			},
-		}
-
-		tool := MCPServer(config)
-		params := tool.Parameters.(map[string]interface{})
-		properties := params["properties"].(map[string]interface{})
-
-		headersParam, exists := properties["headers"]
-		if !exists {
-			t.Error("expected headers property to exist")
-		}
-
-		headersMap := headersParam.(map[string]interface{})
-		if headersMap["type"] != "object" {
-			t.Errorf("expected headers type to be 'object', got %v", headersMap["type"])
-		}
-	})
-
-	t.Run("includes authorization when provided", func(t *testing.T) {
-		config := MCPServerConfig{
-			ServerURL:     "https://api.example.com/mcp",
-			Authorization: "Bearer test_token",
-		}
-
-		tool := MCPServer(config)
-		params := tool.Parameters.(map[string]interface{})
-		properties := params["properties"].(map[string]interface{})
-
-		authParam, exists := properties["authorization"]
-		if !exists {
-			t.Error("expected authorization property to exist")
-		}
-
-		authMap := authParam.(map[string]interface{})
-		if authMap["type"] != "string" {
-			t.Errorf("expected authorization type to be 'string', got %v", authMap["type"])
-		}
-	})
-
-	t.Run("excludes optional parameters when not provided", func(t *testing.T) {
-		config := MCPServerConfig{
-			ServerURL: "https://api.example.com/mcp",
-		}
-
-		tool := MCPServer(config)
-		params := tool.Parameters.(map[string]interface{})
-		properties := params["properties"].(map[string]interface{})
-
-		// Should not include allowedTools, headers, or authorization
-		if _, exists := properties["allowedTools"]; exists {
-			t.Error("expected allowedTools property to not exist when not configured")
-		}
-
-		if _, exists := properties["headers"]; exists {
-			t.Error("expected headers property to not exist when not configured")
-		}
-
-		if _, exists := properties["authorization"]; exists {
-			t.Error("expected authorization property to not exist when not configured")
-		}
-	})
+	assertXAIEmptyInputSchema(t, MCPServer(MCPServerConfig{
+		ServerURL:     "https://api.example.com/mcp",
+		AllowedTools:  []string{"search"},
+		Authorization: "Bearer test_token",
+		Headers:       map[string]string{"X-API-Version": "v1"},
+	}))
+	assertXAIEmptyInputSchema(t, MCPServer(MCPServerConfig{ServerURL: "https://api.example.com/mcp"}))
 }

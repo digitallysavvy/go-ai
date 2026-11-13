@@ -9,10 +9,12 @@ import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 //
 //	tool := xai.ViewXVideo()
 func ViewXVideo() types.Tool {
-	return types.Tool{
+	return xaiProviderTool(types.Tool{
 		Name:             "xai.view_x_video",
 		Description:      "Analyze and describe an X (Twitter) video.",
+		Parameters:       xaiSchema(xaiNoInputSchemaJSON),
+		OutputSchema:     xaiSchema(xaiViewXVideoOutputSchemaJSON),
 		ProviderExecuted: true,
 		Execute:          providerExecutedNoop("xai.view_x_video"),
-	}
+	}, nil)
 }

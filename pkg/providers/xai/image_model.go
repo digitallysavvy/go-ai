@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for XAI
@@ -44,6 +47,34 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// xaiFileInputImageModelIDs are the image models that accept reference
+// images, mirroring TS fileInputModelIds.
+var xaiFileInputImageModelIDs = map[string]bool{
+	ModelGrokImagineImage:    true,
+	ModelGrokImagineImage20:  true,
+	ModelGrokImagineImagePro: true,
+}
+
+// SupportsFileInputs reports true for models that accept reference images and
+// nil (unknown) for any other model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if xaiFileInputImageModelIDs[m.modelID] {
+		v := true
+		return &v
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports false for models that accept reference images
+// (masks are not supported) and nil (unknown) otherwise.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if xaiFileInputImageModelIDs[m.modelID] {
+		v := false
+		return &v
+	}
+	return nil
+}
+
 // MaxImagesPerCall returns the maximum number of images accepted in one request.
 func (m *ImageModel) MaxImagesPerCall() int {
 	return 3
@@ -63,12 +94,12 @@ type XAIImageProviderOptions struct {
 	SyncMode *bool `json:"sync_mode,omitempty"`
 
 	// Resolution controls the output resolution tier of the generated image.
-	// Accepted values: "1k" (1024px), "2k" (2048px).
+	// Accepted values: "1k" (1024px), "1.5k", "2k" (2048px).
 	// Only supported by models that accept this option (e.g., grok-imagine-image-pro).
 	Resolution *string `json:"resolution,omitempty"`
 
 	// Quality controls the output quality.
-	// Valid values: "low", "medium", "high".
+	// Valid values: "low", "medium", "high", "auto".
 	Quality *string `json:"quality,omitempty"`
 
 	// User is a unique identifier for the end user, used for abuse detection.
@@ -131,10 +162,14 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	if httpResp.StatusCode >= 400 {
-		return nil, newXAIProviderError("xai.image", httpResp.StatusCode, httpResp.Body)
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 { // TS !response.ok
+		return nil, newXAIProviderErrorFrom("xai.image", httpResp.StatusError(httpResp.Body))
 	}
-	if err := json.Unmarshal(httpResp.Body, &resp); err != nil {
+	httpResp.Body = []byte(textdecode.UTF8(httpResp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator("xai.image", providerutils.SchemaXAIImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {
+		return nil, err
+	}
+	if err := providerutils.UnmarshalChunk(httpResp.Body, &resp); err != nil {
 		return nil, providererrors.NewProviderError("xai.image", 0, "",
 			fmt.Sprintf("failed to decode JSON response: %v", err), err)
 	}
@@ -145,15 +180,28 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// SDK's xai-image-model.ts behavior.
 	for _, d := range resp.Data {
 		if d.RespectModeration != nil && !*d.RespectModeration {
-			return nil, providererrors.NewProviderError("xai", 0, "",
-				"Image generation was blocked due to a content policy violation.", nil)
+			// TS throws a plain Error (xai-image-model.ts:185-189).
+			return nil, errors.New("Image generation was blocked due to a content policy violation.") //nolint:staticcheck // TS message text
 		}
 	}
 
-	// Check if we have at least one image
+	// TS returns an empty `images` array for an empty `data` array (core then
+	// retries and throws NoImageGeneratedError), so this is not an error.
 	if len(resp.Data) == 0 {
-		return nil, providererrors.NewProviderError("xai.image", 0, "",
-			"no images in response", nil)
+		meta := XAIImageMetadata{Images: []XAIImageItemMetadata{}}
+		if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
+			meta.CostInUsdTicks = resp.Usage.CostInUsdTicks
+		}
+		return &types.ImageResult{
+			MimeType: "image/png",
+			Warnings: warnings,
+			Response: &types.ResponseMetadata{
+				Timestamp: responseTimestamp,
+				ModelID:   m.modelID,
+				Headers:   flattenHeaders(httpResp.Headers),
+			},
+			ProviderMetadata: map[string]interface{}{"xai": meta},
+		}, nil
 	}
 
 	images, base64Images, err := m.responseImages(callCtx, resp.Data)
@@ -185,7 +233,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// Always build providerMetadata with per-image array (exposes revisedPrompt).
 	imagesMeta := make([]XAIImageItemMetadata, len(resp.Data))
 	for i, d := range resp.Data {
-		imagesMeta[i] = XAIImageItemMetadata{RevisedPrompt: d.RevisedPrompt}
+		// TS `...(item.revised_prompt ? { revisedPrompt } : {})`: an empty
+		// revised prompt is left out.
+		if d.RevisedPrompt != nil && *d.RevisedPrompt != "" {
+			imagesMeta[i] = XAIImageItemMetadata{RevisedPrompt: d.RevisedPrompt}
+		}
 	}
 	meta := XAIImageMetadata{Images: imagesMeta}
 	if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
@@ -220,7 +272,8 @@ func imageCallContext(ctx context.Context, abortSignal context.Context) (context
 func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([][]byte, []string, error) {
 	hasAllBase64 := true
 	for _, image := range data {
-		if image.B64JSON == "" {
+		// TS image.b64_json != null: an empty string is base64 data.
+		if image.B64JSON == nil {
 			hasAllBase64 = false
 			break
 		}
@@ -230,13 +283,13 @@ func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([
 	if hasAllBase64 {
 		base64Images := make([]string, 0, len(data))
 		for _, image := range data {
-			decoded, err := base64.StdEncoding.DecodeString(image.B64JSON)
+			decoded, err := fileutil.ConvertBase64ToBytes(*image.B64JSON)
 			if err != nil {
 				return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
 					fmt.Sprintf("failed to decode b64_json image: %v", err), err)
 			}
 			images = append(images, decoded)
-			base64Images = append(base64Images, image.B64JSON)
+			base64Images = append(base64Images, *image.B64JSON)
 		}
 		return images, base64Images, nil
 	}
@@ -248,25 +301,29 @@ func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([
 		}
 		imageBytes, err := m.downloadImage(ctx, image.URL)
 		if err != nil {
-			return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
-				fmt.Sprintf("failed to download image: %v", err), err)
+			// TS getFromApi with createStatusCodeErrorResponseHandler: an
+			// HTTP failure is an APICallError with the status text; any
+			// other failure (URL validation, abort) propagates unchanged,
+			// and a network failure is the retryable "Cannot connect to
+			// API" error (handleFetchError).
+			if cause, ok := fileutil.TransportFailure(err); ok {
+				return nil, nil, internalhttp.TransportErrorCtx(ctx, cause)
+			}
+			return nil, nil, providerutils.StatusCodeDownloadError("xai.image", err)
 		}
 		images = append(images, imageBytes)
 	}
 	return images, nil, nil
 }
 
+// flattenHeaders is TS extractResponseHeaders (repeated values joined with
+// ", ", each byte decoded as one character): providerutils.ExtractHeaders.
+// It kept only the first value of a repeated header.
 func flattenHeaders(headers http.Header) map[string]string {
 	if len(headers) == 0 {
 		return nil
 	}
-	flattened := make(map[string]string, len(headers))
-	for key, values := range headers {
-		if len(values) > 0 {
-			flattened[key] = values[0]
-		}
-	}
-	return flattened
+	return providerutils.ExtractHeaders(headers)
 }
 
 // buildRequestBody constructs the API request body
@@ -380,7 +437,10 @@ func (m *ImageModel) checkUnsupportedOptions(opts *provider.ImageGenerateOptions
 
 // downloadImage downloads an image from a URL with size limits to prevent DoS
 func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, error) {
-	return fileutil.Download(ctx, url, fileutil.DefaultDownloadOptions())
+	// url comes from the response body: validated and DNS-pinned, with the
+	// configured base URL origin exempt (TS getFromApi validateUrl +
+	// trustedOrigin: baseURL).
+	return fileutil.Download(ctx, url, fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport))
 }
 
 // extractImageProviderOptions extracts XAI-specific provider options
@@ -390,28 +450,44 @@ func extractImageProviderOptions(opts map[string]interface{}) (*XAIImageProvider
 	}
 
 	xaiOpts, ok := opts["xai"]
-	if !ok {
+	if !ok || xaiOpts == nil {
 		return &XAIImageProviderOptions{}, nil
+	}
+
+	// TS parseProviderOptions: a schema violation is an InvalidArgumentError
+	// ("invalid xai provider options").
+	invalid := func(cause error) error {
+		return providererrors.NewArgumentError("providerOptions", "invalid xai provider options", cause)
 	}
 
 	// Convert to JSON and back to struct
 	jsonData, err := json.Marshal(xaiOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal provider options: %w", err)
+		return nil, invalid(fmt.Errorf("failed to marshal provider options: %w", err))
 	}
 
 	var provOpts XAIImageProviderOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal provider options: %w", err)
+		return nil, invalid(fmt.Errorf("failed to unmarshal provider options: %w", err))
 	}
-	if provOpts.Resolution != nil && *provOpts.Resolution != "1k" && *provOpts.Resolution != "2k" {
-		return nil, fmt.Errorf("invalid xai image resolution %q: expected \"1k\" or \"2k\"", *provOpts.Resolution)
+	// TS xaiImageModelOptions members are .optional() (not nullish): a
+	// present null is invalid.
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(jsonData, &probe) == nil {
+		for _, key := range []string{"aspect_ratio", "output_format", "sync_mode", "resolution", "quality", "user"} {
+			if v, present := probe[key]; present && string(v) == "null" {
+				return nil, invalid(fmt.Errorf("%s must not be null", key))
+			}
+		}
+	}
+	if provOpts.Resolution != nil && *provOpts.Resolution != "1k" && *provOpts.Resolution != "1.5k" && *provOpts.Resolution != "2k" {
+		return nil, invalid(fmt.Errorf("invalid xai image resolution %q: expected \"1k\", \"1.5k\", or \"2k\"", *provOpts.Resolution))
 	}
 	if provOpts.Quality != nil {
 		switch *provOpts.Quality {
-		case "low", "medium", "high":
+		case "low", "medium", "high", "auto":
 		default:
-			return nil, fmt.Errorf("invalid xai image quality %q: expected \"low\", \"medium\", or \"high\"", *provOpts.Quality)
+			return nil, invalid(fmt.Errorf("invalid xai image quality %q: expected \"low\", \"medium\", \"high\", or \"auto\"", *provOpts.Quality))
 		}
 	}
 
@@ -420,10 +496,22 @@ func extractImageProviderOptions(opts map[string]interface{}) (*XAIImageProvider
 
 // handleError converts provider errors
 func (m *ImageModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if provErr, ok := err.(*providererrors.ProviderError); ok {
 		return provErr
 	}
-	return providererrors.NewProviderError("xai.image", 0, "", err.Error(), err)
+	if provErr, ok := xaiStatusError("xai.image", err); ok {
+		return provErr // TS xaiFailedResponseHandler
+	}
+	return err // TS handleFetchError: no HTTP response, returned unchanged
 }
 
 // xaiImageResponse represents the image generation API response
@@ -440,7 +528,7 @@ type xaiImageUsage struct {
 // xaiImageData represents image data in the response
 type xaiImageData struct {
 	URL               string  `json:"url,omitempty"`
-	B64JSON           string  `json:"b64_json,omitempty"`
+	B64JSON           *string `json:"b64_json,omitempty"`
 	RevisedPrompt     *string `json:"revised_prompt,omitempty"`
 	RespectModeration *bool   `json:"respect_moderation,omitempty"`
 }

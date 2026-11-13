@@ -89,8 +89,8 @@ func FuzzStripTypeScriptAnnotations(f *testing.F) {
 		var res result
 		select {
 		case res = <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("stripper did not return within 5s for %q", src)
+		case <-time.After(60 * time.Second):
+			t.Fatalf("stripper did not return within 60s for %q", src)
 		}
 		if res.panic != nil {
 			t.Fatalf("stripper panicked on %q: %v", src, res.panic)

@@ -271,7 +271,7 @@ if err != nil {
 
 Common transcription errors:
 
-- **NoTranscriptGeneratedError**: The model returned no transcript text
+- **NoTranscriptGeneratedError**: The model returned no transcription result (an empty transcript for silent audio is returned normally)
 - **ProviderError**: Provider-specific HTTP or API failure
 - **InvalidArgumentError**: Invalid input such as negative `MaxRetries` or invalid base64 audio
 - **context.DeadlineExceeded**: Operation timed out

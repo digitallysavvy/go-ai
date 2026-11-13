@@ -91,7 +91,7 @@ func TestDoGenerateBasicText(t *testing.T) {
 // Ported from "doGenerate > basic text response > should extract usage".
 func TestDoGenerateExtractUsage(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"usage":{"input_tokens":12,"output_tokens":25,"total_tokens":37},"output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"usage":{"input_tokens":12,"output_tokens":25,"total_tokens":37},"output":[]}`))
 	}, "m")
 
 	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: testPrompt})
@@ -115,7 +115,7 @@ func TestDoGenerateExtractUsage(t *testing.T) {
 // Ported from "doGenerate > basic text response > should handle missing usage gracefully".
 func TestDoGenerateMissingUsage(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"usage":null,"output":[],"output_text":"Test response"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"usage":null,"output":[],"output_text":"Test response"}`))
 	}, "m")
 
 	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: testPrompt})
@@ -132,7 +132,7 @@ func TestDoGenerateSendsModelIDSettingsAndInput(t *testing.T) {
 	var gotBody map[string]interface{}
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody = jsonBody(t, r)
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[]}`))
 	}, "deepseek-ai/DeepSeek-V3-0324")
 
 	temp := 0.5
@@ -184,7 +184,7 @@ func assertJSONEqual(t *testing.T, got, want interface{}) {
 // Ported from "doGenerate > basic text response > should handle unsupported settings with warnings".
 func TestDoGenerateUnsupportedSettingsWarnings(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[]}`))
 	}, "m")
 
 	topK := 10
@@ -218,6 +218,7 @@ func TestDoGenerateSourcesFromAnnotations(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{
 			"id":"resp_test_annotations","model":"deepseek-ai/DeepSeek-V3-0324","created_at":1,
+			"object":"response","status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,
 			"usage":{"input_tokens":20,"output_tokens":50,"total_tokens":70},
 			"output":[{"id":"msg_test_annotations","type":"message","role":"assistant","content":[
 				{"type":"output_text","text":"Here are some recent articles about AI.","annotations":[
@@ -250,6 +251,7 @@ func TestDoGenerateMCPToolsWithAnnotations(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{
 			"id":"resp_mcp_test","model":"m","created_at":1,
+			"object":"response","status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,
 			"usage":{"input_tokens":50,"output_tokens":100,"total_tokens":150},
 			"output":[
 				{"id":"mcp_search_test","type":"mcp_call","server_label":"web_search","name":"search",
@@ -295,6 +297,7 @@ func TestDoGenerateFunctionCallToolResponses(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{
 			"id":"resp_tool_test","model":"m","created_at":1,
+			"object":"response","status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,
 			"usage":{"input_tokens":50,"output_tokens":30,"total_tokens":80},
 			"output":[
 				{"id":"fc_test","type":"function_call","call_id":"call_123","name":"getWeather",
@@ -337,7 +340,7 @@ func TestDoGenerateConvertsUserImages(t *testing.T) {
 	var gotBody map[string]interface{}
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody = jsonBody(t, r)
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[],"output_text":"Test response"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[],"output_text":"Test response"}`))
 	}, "deepseek-ai/DeepSeek-V3-0324")
 
 	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
@@ -391,7 +394,7 @@ func TestDoGenerateAssistantMessages(t *testing.T) {
 	var gotBody map[string]interface{}
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody = jsonBody(t, r)
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[],"output_text":"Test response"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[],"output_text":"Test response"}`))
 	}, "deepseek-ai/DeepSeek-V3-0324")
 
 	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
@@ -415,7 +418,7 @@ func TestDoGenerateAssistantMessages(t *testing.T) {
 // Ported from "message conversion > should warn about unsupported assistant content types".
 func TestDoGenerateAssistantContentTypesNoWarnings(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[],"output_text":"Test response"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[],"output_text":"Test response"}`))
 	}, "m")
 
 	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
@@ -438,7 +441,7 @@ func TestDoGenerateAssistantContentTypesNoWarnings(t *testing.T) {
 // Ported from "message conversion > should warn about tool messages".
 func TestDoGenerateToolMessagesWarning(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[],"output_text":"Test response"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[],"output_text":"Test response"}`))
 	}, "m")
 
 	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
@@ -461,7 +464,7 @@ func TestDoGenerateStructuredOutputTextFormat(t *testing.T) {
 	var gotBody map[string]interface{}
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody = jsonBody(t, r)
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[{"id":"msg","type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"name\":\"John\"}"}]}]}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[{"id":"msg","type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"name\":\"John\"}"}]}]}`))
 	}, "moonshotai/Kimi-K2-Instruct")
 
 	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
@@ -496,7 +499,7 @@ func TestDoGenerateStructuredOutputCustomNameDescription(t *testing.T) {
 	var gotBody map[string]interface{}
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody = jsonBody(t, r)
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[],"output_text":"{}"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[],"output_text":"{}"}`))
 	}, "moonshotai/Kimi-K2-Instruct")
 
 	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
@@ -522,6 +525,7 @@ func TestDoGenerateReasoningContent(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{
 			"id":"resp_reasoning","model":"deepseek-ai/DeepSeek-R1","created_at":1,
+			"object":"response","status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,
 			"usage":{"input_tokens":10,"output_tokens":50,"total_tokens":60},
 			"output":[
 				{"id":"reasoning_1","type":"reasoning","content":[{"type":"reasoning_text","text":"Let me think about this problem step by step..."}]},
@@ -556,7 +560,7 @@ func TestDoGenerateProviderSpecificOptions(t *testing.T) {
 	var gotBody map[string]interface{}
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody = jsonBody(t, r)
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[],"output_text":"Test"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[],"output_text":"Test"}`))
 	}, "deepseek-ai/DeepSeek-V3-0324")
 
 	strict := true
@@ -592,7 +596,7 @@ func TestDoGeneratePrepareTools(t *testing.T) {
 	var gotBody map[string]interface{}
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody = jsonBody(t, r)
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[],"output_text":"Test"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[],"output_text":"Test"}`))
 	}, "m")
 
 	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
@@ -631,7 +635,7 @@ func TestDoGenerateAutoAndRequiredToolChoice(t *testing.T) {
 	var gotBody map[string]interface{}
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		gotBody = jsonBody(t, r)
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"output":[],"output_text":"Test"}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[],"output_text":"Test"}`))
 	}, "m")
 
 	tools := []types.Tool{{Type: types.ToolTypeFunction, Name: "test", Parameters: map[string]interface{}{"type": "object"}}}
@@ -746,7 +750,7 @@ func TestDoGenerateHTTPErrorEnvelope(t *testing.T) {
 func TestDoGenerateEmbeddedErrorField(t *testing.T) {
 	model, _ := newTestModel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"r","model":"m","created_at":1,"error":{"message":"Model overloaded"},"output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"error":{"message":"Model overloaded"},"output":[]}`))
 	}, "m")
 
 	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: testPrompt})

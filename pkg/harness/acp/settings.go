@@ -2,11 +2,13 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // SourceType discriminates Source. Mirrors TS `ACPSource`.
@@ -30,13 +32,11 @@ type Source struct {
 	// npm-locked
 	PackageJSON  string
 	PnpmLockYAML string
-	// PnpmWorkspaceYAML is optional. TS additionally rejects an explicitly
-	// empty string distinctly from "not provided" (`pnpmWorkspaceYaml?.length
-	// === 0` throws); Go cannot represent that distinction on a plain string
-	// field without an API-breaking change to *string, and an explicit ""
-	// already behaves identically to omission here, so that extra check is
-	// not ported.
-	PnpmWorkspaceYAML string
+	// PnpmWorkspaceYAML is optional. An empty string means "not provided"
+	// unless PnpmWorkspaceYAMLSet is true, in which case an empty value is
+	// rejected like TS (`pnpmWorkspaceYaml?.length === 0` throws).
+	PnpmWorkspaceYAMLSet bool
+	PnpmWorkspaceYAML    string
 
 	// install-command
 	Command string
@@ -62,19 +62,70 @@ type PermissionModeTarget struct {
 }
 
 // PermissionModeMapping maps every harness.PermissionMode to a target (nil =
-// explicit no-op for that mode). Mirrors TS `ACPPermissionModeMapping`; Go's
-// three named fields make it inherently "complete" once constructed, unlike
-// TS's runtime completeness check on an optional record.
+// explicit no-op for that mode). Mirrors TS `ACPPermissionModeMapping`.
+//
+// TS also accepts a partial record (a key left out). Such a mapping is part of
+// the implementation identity but is otherwise ignored: it is never sent to the
+// bridge. Go expresses a left-out key by setting its Unset<Mode> flag; the zero
+// value (no flag set) is a complete mapping, so existing callers are unchanged.
 type PermissionModeMapping struct {
 	AllowReads *PermissionModeTarget
 	AllowEdits *PermissionModeTarget
 	AllowAll   *PermissionModeTarget
+	// UnsetAllowReads, UnsetAllowEdits and UnsetAllowAll mark a mode whose key
+	// is absent (TS `undefined`); the target field of a marked mode is
+	// ignored. Flags (not a slice) keep the struct comparable with ==.
+	UnsetAllowReads bool
+	UnsetAllowEdits bool
+	UnsetAllowAll   bool
+}
+
+// IsComplete reports whether every mode has an entry (a target or an explicit
+// nil no-op). Mirrors TS `isCompletePermissionModeMapping`; a nil mapping is
+// not complete.
+func (m *PermissionModeMapping) IsComplete() bool {
+	return m != nil &&
+		!m.UnsetAllowReads && !m.UnsetAllowEdits && !m.UnsetAllowAll &&
+		validPermissionModeTarget(m.AllowReads) &&
+		validPermissionModeTarget(m.AllowEdits) &&
+		validPermissionModeTarget(m.AllowAll)
+}
+
+// validPermissionModeTarget mirrors TS `isPermissionModeMappingValue`: nil (an
+// explicit no-op) or a well-formed target. A session-config-option value must
+// be a string or bool.
+func validPermissionModeTarget(t *PermissionModeTarget) bool {
+	if t == nil {
+		return true
+	}
+	switch t.Type {
+	case PermissionTargetSessionMode:
+		return true
+	case PermissionTargetSessionConfigOption:
+		switch t.Value.(type) {
+		case string, bool:
+			return true
+		}
+	}
+	return false
+}
+
+func (m *PermissionModeMapping) isUnset(mode harness.PermissionMode) bool {
+	switch mode {
+	case harness.PermissionModeAllowReads:
+		return m.UnsetAllowReads
+	case harness.PermissionModeAllowEdits:
+		return m.UnsetAllowEdits
+	case harness.PermissionModeAllowAll:
+		return m.UnsetAllowAll
+	}
+	return false
 }
 
 // Get returns the target configured for mode (nil if mode is unmapped or
 // explicitly a no-op).
 func (m *PermissionModeMapping) Get(mode harness.PermissionMode) *PermissionModeTarget {
-	if m == nil {
+	if m == nil || m.isUnset(mode) {
 		return nil
 	}
 	switch mode {
@@ -148,9 +199,34 @@ type Authentication struct {
 	ClientCapabilities map[string]any `json:"clientCapabilities,omitempty"`
 }
 
+// MarshalJSON keeps a non-nil empty Meta or ClientCapabilities on the wire:
+// TS emits `_meta` whenever `authentication.meta` is not null, so an empty
+// record is sent as `{}`.
+func (a Authentication) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		MethodID           string          `json:"methodId"`
+		Meta               *map[string]any `json:"meta,omitempty"`
+		ClientCapabilities *map[string]any `json:"clientCapabilities,omitempty"`
+	}
+	w := wire{MethodID: a.MethodID}
+	if a.Meta != nil {
+		w.Meta = &a.Meta
+	}
+	if a.ClientCapabilities != nil {
+		w.ClientCapabilities = &a.ClientCapabilities
+	}
+	return json.Marshal(w)
+}
+
 // CredentialBrokering builds request transformations from resolved
 // credential environments. Mirrors TS `ACPCredentialBrokering`.
 type CredentialBrokering func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation
+
+// CredentialBrokeringErr is CredentialBrokering for implementations whose
+// transformation construction can fail (for example an invalid base URL in the
+// environment). TS `createCredentialRequestTransformation` throws there and
+// the error fails the session start; this form surfaces it the same way.
+type CredentialBrokeringErr func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error)
 
 // AuthenticationFile is one file materialized under the ACP implementation's
 // private home directory before it starts. Mirrors TS `ACPAuthenticationFile`.
@@ -172,6 +248,15 @@ const (
 	HostToolMCPHTTP  HostToolMCPTransport = "http"
 )
 
+// NonTextContentType is a kind of non-text tool model output (produced by a
+// tool's toModelOutput transformation) an ACP implementation can deliver to
+// its model. Text is always supported. Mirrors the elements of TS
+// `nonTextContentTypes` (`'image'`).
+type NonTextContentType string
+
+// NonTextContentImage declares that the implementation accepts inline images.
+const NonTextContentImage NonTextContentType = "image"
+
 // AskUserQuestionsSettings normalizes an ACP implementation's native
 // clarifying-question mechanism into the harness askUserQuestions built-in
 // tool. Mirrors TS `ACPAskUserQuestionsSettings`.
@@ -184,7 +269,10 @@ type AskUserQuestionsSettings struct {
 	IsNativeToolCall func(nativeToolCall ToolCall) bool
 	// FromNativeRequest converts one native question request into a
 	// client-executed askUserQuestions tool-call StreamPart, or nil if this
-	// request is not (or no longer) an askUserQuestions request.
+	// request is not (or no longer) an askUserQuestions request. As in TS,
+	// the returned call must carry an explicit client-executed flag: set
+	// ProviderExecutedOmitted to model an undefined `providerExecuted`,
+	// which is rejected.
 	FromNativeRequest func(nativeRequest any, nativeToolCall *ToolCall) *harness.ToolCallPart
 	// ToNativeResponse converts the harness askUserQuestions tool result
 	// back into the implementation's native response shape.
@@ -204,15 +292,32 @@ type Settings struct {
 	// of this package's scope).
 	BuiltinTools map[string]harness.BuiltinTool
 
-	MCPServers    map[string]any
+	MCPServers map[string]any
+	// IsMcpToolCall classifies an ACP tool call that did not resolve to a
+	// host tool as a dynamic MCP tool call. Required: a session fails to
+	// start without it (TS 03dac28304 makes it required, "ACP isMcpToolCall
+	// must be a function.").
 	IsMcpToolCall func(ToolCall) bool
+	// ResolveHostToolCall resolves an ACP tool call to the host tool it
+	// invokes (host tools are exposed to the ACP agent through the
+	// harness-owned MCP server). Required: a session fails to start without
+	// it ("ACP resolveHostToolCall must be a function."), since the bridge no
+	// longer resolves host tools itself (TS 03dac28304). The Cursor, GitHub
+	// Copilot and Grok Build adapters set their own; LegacyResolveHostToolCall
+	// keeps the pre-0.6 bridge behavior.
+	ResolveHostToolCall ResolveHostToolCallFunc
 
 	Port           int
 	PortEndpoint   *harness.PortEndpoint
 	StartupTimeout time.Duration
-	Reconnect      bridge.ReconnectOptions
+	// HostDisconnectTimeout aborts a running turn when its host disconnects
+	// and does not reconnect within this time, so the turn stops spending.
+	// A suspended turn is exempt. Zero keeps the turn running until it
+	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
+	HostDisconnectTimeout time.Duration
+	Reconnect             bridge.ReconnectOptions
 
-	// ClientApp overrides the default "ai-sdk/harness-acp"/Version identity
+	// ClientApp overrides the default "ai-sdk-harness-acp"/Version identity
 	// sent to the ACP implementation and used in the implementation identity
 	// hash. Concrete wrapper adapters normally set their own.
 	ClientApp ClientApp
@@ -227,10 +332,21 @@ type Settings struct {
 	Executable string
 	Args       []string
 	// ForwardEnv/CredentialEnv/Env must not overlap (validated).
-	ForwardEnv           []string
-	CredentialEnv        []string
-	CredentialBrokering  CredentialBrokering
-	AuthenticationFiles  AuthenticationFilesFunc
+	ForwardEnv          []string
+	CredentialEnv       []string
+	CredentialBrokering CredentialBrokering
+	// CredentialBrokeringErr is the error-returning form of
+	// CredentialBrokering; when set it is used instead, and its error fails
+	// the session start. Configure at most one of the two.
+	CredentialBrokeringErr CredentialBrokeringErr
+	AuthenticationFiles    AuthenticationFilesFunc
+	// PrepareSandbox prepares runtime-specific sandbox configuration before
+	// a bridge process starts, after authentication files have been
+	// written. It receives only the restricted sandbox session and is not
+	// invoked when reattaching to a live bridge. An error rejects startup
+	// without launching the bridge. Mirrors TS `prepareSandbox`
+	// (deeb2bfb62); ctx replaces its abortSignal.
+	PrepareSandbox       func(ctx context.Context, opts PrepareSandboxOptions) error
 	CredentialForwarding harness.CredentialForwarding
 	Env                  map[string]string
 
@@ -242,10 +358,35 @@ type Settings struct {
 	InstructionMapping     *InstructionMapping
 	OutputSchemaMapping    *OutputSchemaMapping
 	HostToolMCPTransport   HostToolMCPTransport
-	AskUserQuestions       *AskUserQuestionsSettings
-	PermissionModeMapping  *PermissionModeMapping
-	SessionMeta            map[string]any
-	MintBridgeToken        harness.MintBridgeTokenCallback
+	// StreamStartFallbackModelID is reported as the model of every
+	// stream-start part that carries none. TS wraps the GitHub Copilot
+	// harness for this (`withGitHubCopilotGatewayModel`): Copilot's BYOK mode
+	// exposes no model over ACP. Empty leaves stream-start parts unchanged.
+	StreamStartFallbackModelID string
+	// NonTextContentTypes lists the non-text tool model output the ACP
+	// implementation can deliver to its model. Text is always supported;
+	// undeclared image content is omitted with a bridge stderr warning.
+	// Declaring NonTextContentImage also enables image prompts when the ACP
+	// agent does not advertise image prompt support. Defaults to none.
+	// Mirrors TS `nonTextContentTypes`.
+	NonTextContentTypes   []NonTextContentType
+	AskUserQuestions      *AskUserQuestionsSettings
+	PermissionModeMapping *PermissionModeMapping
+	SessionMeta           map[string]any
+	// MintBridgeToken is ignored; CreateACP logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
+	MintBridgeToken harness.MintBridgeTokenCallback
+}
+
+// PrepareSandboxOptions is passed to Settings.PrepareSandbox. Mirrors the TS
+// `prepareSandbox` options.
+type PrepareSandboxOptions struct {
+	// Sandbox is the restricted sandbox session.
+	Sandbox providerutils.SandboxSession
+	// WorkDir is the session working directory.
+	WorkDir string
 }
 
 // ClientApp identifies the harness adapter to the ACP implementation and
@@ -256,4 +397,4 @@ type ClientApp struct {
 }
 
 // DefaultClientApp is used when Settings.ClientApp is the zero value.
-var DefaultClientApp = ClientApp{Name: "ai-sdk/harness-acp", Version: Version}
+var DefaultClientApp = ClientApp{Name: "ai-sdk-harness-acp", Version: Version}

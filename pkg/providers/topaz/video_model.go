@@ -10,11 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -96,6 +100,19 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 }
 
 // SpecificationVersion returns the specification version.
+// topazExpressBodyOrder is the key order of the TS /video/express body
+// ({source: {container, duration, frameCount, frameRate, resolution,
+// external | size}, output: buildOutput(...), filters: [{model, ...}]}).
+var topazExpressBodyOrder = map[string][]string{
+	"":                  {"source", "output", "filters"},
+	"source":            {"container", "duration", "frameCount", "frameRate", "resolution", "external", "size"},
+	"source.resolution": {"width", "height"},
+	"source.external":   {"provider", "presignedUrl"},
+	"output":            {"resolution", "frameRate", "audioTransfer", "audioCodec", "audioBitrate", "videoEncoder", "videoProfile", "videoBitrate", "dynamicCompressionLevel", "cropToFit", "container"},
+	"output.resolution": {"width", "height"},
+	"filters":           {"model"},
+}
+
 func (m *VideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
@@ -123,10 +140,20 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if opts == nil {
 		opts = &provider.VideoModelV3StartOptions{}
 	}
+	if err := validateVideoOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	var warnings []types.Warning
 
 	topazOpts := parseVideoModelOptions(opts.ProviderOptions)
+	// TS resolves the provider headers (loadApiKey) right after the options,
+	// before the input checks, and reuses them for the create and the cancel.
+	authHeaders, err := m.prov.authHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(authHeaders, opts.Headers)
 	addVideoUnsupportedWarnings(&opts.VideoModelV3CallOptions, &warnings)
 
 	input, err := selectInputVideo(&opts.VideoModelV3CallOptions, &warnings)
@@ -170,7 +197,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	var uploadBytes []byte
-	if input.Type == "url" {
+	// TS `bytes != null` for every file input: an empty file is uploaded
+	// too (a zero-length Uint8Array is not nullish).
+	upload := input.Type != "url"
+	if !upload {
 		// Topaz fetches URL inputs itself, so, like other providers, the
 		// bytes never need to pass through the SDK.
 		sourceBody["external"] = map[string]interface{}{"provider": "s3", "presignedUrl": input.URL}
@@ -193,34 +223,44 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	callCtx, cancel := mergeAbortContext(ctx, opts.AbortSignal)
 	defer cancel()
 
-	resp, err := m.prov.client.Do(callCtx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/video/express",
-		Body:    body,
-		Headers: opts.Headers,
+	resp, err := m.prov.presetClient.Do(callCtx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/video/express",
+		// TS JSON.stringify of the express body literal: the key order of
+		// source, output (buildOutput) and the filter, not sorted keys.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, topazExpressBodyOrder)),
+		Headers: headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS returns a rejected headers()/fetch error as is
 	}
-	if resp.StatusCode >= 400 {
-		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, newTopazAPIErrorFrom(resp.StatusError(resp.Body))
 	}
 
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazVideoCreate)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var created topazVideoExpressResponse
-	if err := json.Unmarshal(resp.Body, &created); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &created); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode video express response: %w", err)
 	}
 
 	requestID := created.RequestID
-	if requestID == "" {
-		return nil, fmt.Errorf("Topaz did not return a requestId for the video request.") //nolint:staticcheck // matches TS SDK's exact error text
+	// TS requireRequestId: only a missing or null requestId fails, with an
+	// InvalidResponseDataError whose data is that value (tools-11).
+	if _, present := topazStringField(resp.Body, "requestId"); !present {
+		return nil, providererrors.NewInvalidResponseDataError(nil, "Topaz did not return a requestId for the video request.")
 	}
 
-	if uploadBytes != nil {
+	if upload {
 		if err := m.uploadVideo(callCtx, requestID, uploadBytes, created.UploadURLs, contentType); err != nil {
 			// Canceling before processing starts refunds any reserved
 			// credits.
-			m.cancelQuietly(context.Background(), requestID, opts.Headers)
+			m.cancelQuietly(context.WithoutCancel(callCtx), requestID, headers)
 			return nil, err
 		}
 	}
@@ -233,7 +273,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	metadata := map[string]interface{}{"requestId": requestID}
 	// Preliminary: Topaz estimates up front only when it gets source
 	// metadata, and the completed status carries the billed value.
-	if created.Estimates != nil && len(created.Estimates.Cost) > 0 {
+	if created.Estimates != nil && created.Estimates.Cost != nil {
 		metadata["estimatedCredits"] = created.Estimates.Cost
 	}
 
@@ -244,7 +284,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Response: provider.VideoModelV3ResponseInfo{
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
-			Headers:   flattenHeader(resp.Headers),
+			Headers:   providerutils.ExtractHeaders(resp.Headers),
 		},
 	}, nil
 }
@@ -271,21 +311,27 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS returns a rejected headers()/fetch error as is
 	}
-	if resp.StatusCode >= 400 {
-		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, newTopazAPIErrorFrom(resp.StatusError(resp.Body))
 	}
 
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazVideoStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var status topazVideoStatusResponse
-	if err := json.Unmarshal(resp.Body, &status); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &status); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode video status response: %w", err)
 	}
 
 	response := provider.VideoModelV3ResponseInfo{
 		Timestamp: currentDate,
 		ModelID:   m.modelID,
-		Headers:   flattenHeader(resp.Headers),
+		Headers:   providerutils.ExtractHeaders(resp.Headers),
 	}
 
 	switch status.Status {
@@ -294,8 +340,12 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		// which it recomputes once the source upload has been received.
 		credits := lowerBoundCredits(status.Estimates)
 
-		if status.Download == nil || status.Download.URL == "" {
-			return nil, fmt.Errorf("Topaz reported request %s complete but returned no download URL.", op.RequestID) //nolint:staticcheck // matches TS SDK's exact error text
+		// TS `status.download?.url == null`: an InvalidResponseDataError
+		// with the parsed status as data; an empty URL is a URL (tools-11).
+		parsedStatus, _ := topazStringField(resp.Body, "status")
+		downloadRaw, _ := parsedStatus.(map[string]interface{})["download"].(map[string]interface{})
+		if downloadRaw["url"] == nil {
+			return nil, providererrors.NewInvalidResponseDataError(topazParsedData(parsedStatus, topazVideoStatusKeys), fmt.Sprintf("Topaz reported request %s complete but returned no download URL.", op.RequestID))
 		}
 
 		mediaType := containerMediaTypes[op.OutputContainer]
@@ -307,7 +357,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if credits != nil {
 			metadata["credits"] = *credits
 		}
-		if status.Estimates != nil && len(status.Estimates.Cost) > 0 {
+		if status.Estimates != nil && status.Estimates.Cost != nil {
 			metadata["estimatedCredits"] = status.Estimates.Cost
 		}
 		if status.OutputSize != nil {
@@ -358,6 +408,23 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		// state cannot break running jobs.
 		return &provider.VideoModelV3OperationStatusResult{Status: provider.VideoOperationStatusPending, Response: response}, nil
 	}
+}
+
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// TopazVideoModel has no doGenerate), so ai.GenerateVideo drives it through
+// the core start/status flow (one idempotency key per start, status retried
+// without a second start). It returns the Go-only Config
+// VideoPollIntervalMillis / VideoPollTimeoutMillis when positive, else 0
+// (the core 5000 / 600000 defaults); GenerateVideoOptions.Poll wins.
+// Topaz has no poll provider options. provc CR r89.
+func (m *VideoModel) VideoStartStatusPollDefaults(map[string]interface{}) (intervalMs, timeoutMs int) {
+	if v := m.prov.config.VideoPollIntervalMillis; v > 0 {
+		intervalMs = v
+	}
+	if v := m.prov.config.VideoPollTimeoutMillis; v > 0 {
+		timeoutMs = v
+	}
+	return intervalMs, timeoutMs
 }
 
 // DoGenerate generates a video synchronously by starting the operation and
@@ -429,8 +496,11 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 // models do not support, mirroring TS TopazVideoModel#addUnsupportedWarnings.
 func addVideoUnsupportedWarnings(opts *provider.VideoModelV3CallOptions, warnings *[]types.Warning) {
 	// generateVideo requires a prompt, so an empty one is the expected way
-	// to call an enhancement model and does not warrant a warning.
-	if opts.PromptSet && strings.TrimSpace(opts.Prompt) != "" {
+	// to call an enhancement model and does not warrant a warning. TS
+	// `prompt != null && prompt.trim() !== ''`: a non-blank prompt warns
+	// whether or not PromptSet marks it (a direct DoStart caller may leave
+	// it unset), and "" is blank either way.
+	if providerutils.JSTrim(opts.Prompt) != "" {
 		*warnings = append(*warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "prompt",
@@ -500,10 +570,10 @@ func selectInputVideo(opts *provider.VideoModelV3CallOptions, warnings *[]types.
 
 	if len(videos) == 0 {
 		if opts.Image != nil {
-			return nil, providererrors.NewValidationError("image",
+			return nil, invalidArgument("image",
 				"Topaz video models enhance an existing video, not a still image. Pass the input video via `inputReferences`.", nil)
 		}
-		return nil, providererrors.NewValidationError("inputReferences",
+		return nil, invalidArgument("inputReferences",
 			"Topaz video models require an input video. Pass it via `inputReferences`, "+
 				"e.g. `inputReferences: [{ type: \"file\", mediaType: \"video/mp4\", data: bytes }]`. "+
 				"For URL references, include `mediaType` so the reference is recognized as a video.", nil)
@@ -524,10 +594,10 @@ func selectInputVideo(opts *provider.VideoModelV3CallOptions, warnings *[]types.
 // reference, mirroring TS isVideoReference.
 func isVideoReference(file *provider.VideoModelV3File) bool {
 	if file.Type == "file" {
-		return strings.HasPrefix(strings.ToLower(file.MediaType), "video/")
+		return strings.HasPrefix(providerutils.JSToLower(file.MediaType), "video/")
 	}
 	if file.MediaType != "" {
-		return strings.HasPrefix(strings.ToLower(file.MediaType), "video/")
+		return strings.HasPrefix(providerutils.JSToLower(file.MediaType), "video/")
 	}
 	return containerFromURL(file.URL) != ""
 }
@@ -539,11 +609,9 @@ func containerFromURL(rawURL string) string {
 	if idx := strings.IndexAny(rawURL, "?#"); idx >= 0 {
 		withoutQuery = rawURL[:idx]
 	}
-	idx := strings.LastIndex(withoutQuery, ".")
-	if idx < 0 {
-		return ""
-	}
-	extension := strings.ToLower(withoutQuery[idx+1:])
+	// TS withoutQuery.split('.').pop(): with no dot the whole string is the
+	// "extension".
+	extension := providerutils.JSToLower(withoutQuery[strings.LastIndex(withoutQuery, ".")+1:])
 	return extensionContainers[extension]
 }
 
@@ -553,31 +621,31 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 	if topazOpts != nil && topazOpts.Source != nil && topazOpts.Source.Container != nil {
 		declared := *topazOpts.Source.Container
 		if !topazSourceContainers[declared] {
-			return "", providererrors.NewValidationError("providerOptions.topaz.source.container",
+			return "", invalidArgument("providerOptions.topaz.source.container",
 				fmt.Sprintf("%q is not a container Topaz accepts for the input video.", declared), nil)
 		}
 		return declared, nil
 	}
 
 	if input.Type == "file" {
-		container := mediaTypeContainers[strings.ToLower(input.MediaType)]
+		container := mediaTypeContainers[providerutils.JSToLower(input.MediaType)]
 		if container == "" {
-			return "", providererrors.NewValidationError("inputReferences",
-				fmt.Sprintf("Could not map the media type %q onto a Topaz container. Set the `source.container` provider option explicitly.", input.MediaType), nil)
+			return "", invalidArgument("inputReferences",
+				fmt.Sprintf("Could not map the media type \"%s\" onto a Topaz container. Set the `source.container` provider option explicitly.", input.MediaType), nil)
 		}
 		return container, nil
 	}
 
 	container := ""
 	if input.MediaType != "" {
-		container = mediaTypeContainers[strings.ToLower(input.MediaType)]
+		container = mediaTypeContainers[providerutils.JSToLower(input.MediaType)]
 	}
 	if container == "" {
 		container = containerFromURL(input.URL)
 	}
 	if container == "" {
-		return "", providererrors.NewValidationError("inputReferences",
-			fmt.Sprintf("Could not determine the container of the input video at %q. Set the `source.container` provider option, or pass `mediaType` on the reference.", input.URL), nil)
+		return "", invalidArgument("inputReferences",
+			fmt.Sprintf("Could not determine the container of the input video at \"%s\". Set the `source.container` provider option, or pass `mediaType` on the reference.", input.URL), nil)
 	}
 	return container, nil
 }
@@ -643,7 +711,7 @@ func resolveSource(topazOpts *VideoModelOptions, container string) (resolvedSour
 
 	if source.Width == nil || source.Height == nil || source.Duration == nil ||
 		source.FrameRate == nil || frameCount == nil {
-		return resolvedSource{}, providererrors.NewValidationError("providerOptions.topaz.source",
+		return resolvedSource{}, invalidArgument("providerOptions.topaz.source",
 			fmt.Sprintf("Source metadata must be complete. Missing: %s.", strings.Join(missing, ", ")), nil)
 	}
 
@@ -659,16 +727,47 @@ func resolveSource(topazOpts *VideoModelOptions, container string) (resolvedSour
 	}, nil
 }
 
-// parseResolution splits a "{width}x{height}" string.
-func parseResolution(resolution string) (width, height *int) {
+// parseResolution is TS `resolution.split('x').map(Number)` destructured to
+// [width, height]: each part is JS Number(part) (NaN for non-numeric text, a
+// fraction kept), and a missing part is undefined (nil). Nil for an unset
+// resolution.
+func parseResolution(resolution string) (width, height *float64) {
 	if resolution == "" {
 		return nil, nil
 	}
-	var w, h int
-	if _, err := fmt.Sscanf(resolution, "%dx%d", &w, &h); err != nil {
-		return nil, nil
+	parts := strings.Split(resolution, "x")
+	num := func(s string) *float64 {
+		f, ok := providerutils.JSNumber(s)
+		if !ok {
+			f = math.NaN()
+		}
+		return &f
 	}
-	return &w, &h
+	width = num(parts[0])
+	if len(parts) > 1 {
+		height = num(parts[1])
+	}
+	return width, height
+}
+
+// resolutionDimension is TS `output?.width ?? resolution.width ??
+// source.metadata?.width`: the first value that is not undefined (NaN is
+// not nullish), as its JSON value (JSON.stringify writes NaN and Infinity
+// as null). ok is false when every value is undefined.
+func resolutionDimension(output *int, fromResolution *float64, source *int) (value interface{}, ok bool) {
+	switch {
+	case output != nil:
+		return *output, true
+	case fromResolution != nil:
+		f := *fromResolution
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, true
+		}
+		return f, true
+	case source != nil:
+		return *source, true
+	}
+	return nil, false
 }
 
 // buildOutput builds the output request field and resolves the output
@@ -680,17 +779,17 @@ func buildOutput(opts *provider.VideoModelV3CallOptions, topazOpts *VideoModelOp
 		output = topazOpts.Output
 	}
 	if output != nil && output.Container != nil && !topazOutputContainers[*output.Container] {
-		return nil, "", providererrors.NewValidationError("providerOptions.topaz.output.container",
+		return nil, "", invalidArgument("providerOptions.topaz.output.container",
 			fmt.Sprintf("%q is not a container Topaz can produce for the enhanced video.", *output.Container), nil)
 	}
 
 	resWidth, resHeight := parseResolution(opts.Resolution)
 
-	width := firstIntPtr(outputWidth(output), resWidth, sourceWidth(source))
-	height := firstIntPtr(outputHeight(output), resHeight, sourceHeight(source))
+	width, hasWidth := resolutionDimension(outputWidth(output), resWidth, sourceWidth(source))
+	height, hasHeight := resolutionDimension(outputHeight(output), resHeight, sourceHeight(source))
 
-	if width == nil || height == nil {
-		return nil, "", providererrors.NewValidationError("resolution",
+	if !hasWidth || !hasHeight {
+		return nil, "", invalidArgument("resolution",
 			"Topaz needs the output resolution. Set the `resolution` call option or the `output.width` / `output.height` provider options.", nil)
 	}
 
@@ -702,7 +801,7 @@ func buildOutput(opts *provider.VideoModelV3CallOptions, topazOpts *VideoModelOp
 	}
 
 	result := map[string]interface{}{
-		"resolution": map[string]interface{}{"width": *width, "height": *height},
+		"resolution": map[string]interface{}{"width": width, "height": height},
 	}
 	if frameRate != nil {
 		result["frameRate"] = *frameRate
@@ -815,15 +914,6 @@ func sourceFrameRate(s resolvedSource) *float64 {
 	return &fr
 }
 
-func firstIntPtr(values ...*int) *int {
-	for _, v := range values {
-		if v != nil {
-			return v
-		}
-	}
-	return nil
-}
-
 func firstFloatPtr(values ...*float64) *float64 {
 	for _, v := range values {
 		if v != nil {
@@ -869,7 +959,14 @@ func (m *VideoModel) uploadVideo(ctx context.Context, requestID string, data []b
 		return err
 	}
 
-	client := fileutil.NewDownloadClient(uploadURL, opts)
+	// TS fetchWithValidatedEndpoint (c66402d340) uploads with
+	// redirect: 'error': net/http would replay the PUT body (a bytes.Reader
+	// sets GetBody) on a 307/308, sending the whole input video to the
+	// redirect target, so any redirect fails the upload.
+	client := &http.Client{Transport: opts.Transport, Timeout: opts.Timeout}
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("topaz: the input video upload was redirected to %s; redirects are rejected", req.URL.Redacted())
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -888,7 +985,14 @@ func (m *VideoModel) uploadVideo(ctx context.Context, requestID string, data []b
 		body, _ := fileutil.ReadResponseWithSizeLimit(resp, uploadURL, fileutil.DefaultMaxDownloadSize)
 		apiErr := providererrors.NewProviderError("topaz", resp.StatusCode, "",
 			fmt.Sprintf("Uploading the input video failed with status %d.", resp.StatusCode), nil)
-		apiErr.ResponseBody = string(body)
+		// TS APICallError: responseBody is response.text() (WHATWG UTF-8
+		// decode: BOM dropped, invalid bytes replaced) and responseHeaders
+		// the lower-cased response headers.
+		apiErr.ResponseBody = textdecode.UTF8(body)
+		apiErr.ResponseHeaders = make(map[string]string, len(resp.Header))
+		for k := range resp.Header {
+			apiErr.ResponseHeaders[strings.ToLower(k)] = strings.Join(resp.Header.Values(k), ", ")
+		}
 		return apiErr
 	}
 	return nil
@@ -898,21 +1002,14 @@ func (m *VideoModel) uploadVideo(ctx context.Context, requestID string, data []b
 // TopazVideoModel#cancelQuietly). Deliberately not tied to the caller's
 // context, which may be the reason the start failed.
 func (m *VideoModel) cancelQuietly(ctx context.Context, requestID string, headers map[string]string) {
-	_, _ = m.prov.client.Do(ctx, internalhttp.Request{ //nolint:errcheck
+	_, _ = m.prov.presetClient.Do(ctx, internalhttp.Request{ //nolint:errcheck
 		Method:  http.MethodDelete,
 		Path:    "/video/" + requestID,
 		Headers: headers,
+		// TS calls fetchImpl directly with the resolved headers only (no
+		// runtime user-agent tag).
+		RawFetch: true,
 	})
-}
-
-func flattenHeader(h http.Header) map[string]string {
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
-	}
-	return out
 }
 
 func lowerBoundCredits(estimates *topazVideoEstimates) *float64 {

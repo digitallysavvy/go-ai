@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"fmt"
 	"io"
 	stdhttp "net/http"
@@ -8,10 +9,12 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -33,12 +36,49 @@ const (
 type Provider struct {
 	config Config
 	client *http.Client
+	// clientConfig is the configuration client was built from, kept so a
+	// request that must not send one of the default headers (the batch
+	// start's anthropic-beta) can use a sibling client without it.
+	clientConfig http.Config
+	// batchToolNames keeps, for batches this provider started, the custom
+	// names of id-named provider tools so their batch results come back
+	// under the tool's Name (see batchToolNameStore).
+	batchToolNames *batchToolNameStore
 }
 
 // Config contains configuration for the Anthropic provider
 type Config struct {
-	// APIKey is the Anthropic API key
+	// BatchResultDownloads configures JSON Lines batch result downloads, e.g.
+	// the maximum bytes per result row (TS `batchResultDownloads`).
+	BatchResultDownloads providerutils.BatchResultDownloads
+
+	// APIKey is the Anthropic API key. When it is empty (and AuthToken is not
+	// set) the direct Anthropic provider falls back to the ANTHROPIC_API_KEY
+	// environment variable like TS loadApiKey; providers built on top of this
+	// one (Vertex, Bedrock, AWS, MiniMax) never read it.
 	APIKey string
+
+	// AuthToken authenticates with an `Authorization: Bearer` header instead
+	// of an API key (TS authToken). Setting both APIKey and AuthToken makes
+	// New panic with an InvalidArgumentError, like the TS constructor throws.
+	AuthToken string
+
+	// AuthTokenFunc resolves the bearer token before each request (TS
+	// authToken given as a function, 63bf860638), for short-lived tokens and
+	// token refresh. It is sent as `Authorization: Bearer <token>` like
+	// AuthToken (an empty token included), is resolved once per call
+	// (DoGenerate, DoStream, a files or skills request), and cannot be
+	// combined with APIKey or AuthToken. It is not serialized; a static
+	// AuthToken is.
+	AuthTokenFunc providerutils.APIKeyFunc `json:"-"`
+
+	// APIKeyFunc resolves the x-api-key credential before each request with
+	// the request's context, for wrapper providers whose TS apiKey is a
+	// Resolvable (MiniMax, TS 7716e189ee); TS anthropic itself takes a
+	// string apiKey. The environment variable is not read when it is set;
+	// setting both APIKey and APIKeyFunc fails every request with an
+	// InvalidArgumentError. It is not serialized.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// Name overrides the provider name returned by Provider.Name() and
 	// LanguageModel.Provider(). Defaults to "anthropic".
@@ -75,6 +115,24 @@ type Config struct {
 	// It runs before TransformRequestBody. Bedrock-Anthropic uses it.
 	TransformRequestBodyWithBetas func(body map[string]interface{}, betas []string, stream bool) map[string]interface{} `json:"-"`
 
+	// TransformRequestHeaders rewrites the per-request headers (caller headers
+	// and anthropic-beta) with access to the call's provider options (TS
+	// transformRequestHeaders). Vertex Anthropic uses it to send
+	// providerOptions.vertex.labels as the x-vertex-ai-labels header. A
+	// returned error aborts the request before it is sent.
+	TransformRequestHeaders func(headers map[string]string, providerOptions map[string]interface{}) (map[string]string, error) `json:"-"`
+
+	// ResolveConfigHeaders resolves per-call config headers (TS Resolvable
+	// config headers, resolved once at the start of doGenerate / doStream).
+	// The anthropic-beta value it returns replaces the one in Headers for
+	// the user-supplied betas (TS getBetasFromHeaders over the config
+	// headers), so its betas take the TS position in the beta set. It
+	// returns the context for the call's HTTP requests, so the provider's
+	// transport can send the resolved values without resolving them again.
+	// Wrapper providers (Vertex Anthropic) set it; an error fails the call
+	// before the request is built.
+	ResolveConfigHeaders func(ctx context.Context) (context.Context, map[string]string, error) `json:"-"`
+
 	// TransformStreamBody wraps the streaming response body before SSE
 	// parsing (for example to convert an AWS event stream into SSE).
 	TransformStreamBody func(body io.ReadCloser, header stdhttp.Header) io.ReadCloser `json:"-"`
@@ -86,6 +144,12 @@ type Config struct {
 	// SupportsNativeStructuredOutput gates native structured output. A nil
 	// value means true; the model capability must also allow it.
 	SupportsNativeStructuredOutput *bool
+
+	// SupportsMessageThreads reports whether the platform supports Anthropic
+	// message threads (ModelOptions.Thread). A nil value means true, like TS
+	// createAnthropic / createAnthropicAws; Vertex, Bedrock and MiniMax set
+	// it to false, and a thread then fails before the request.
+	SupportsMessageThreads *bool
 
 	// SupportsImageInput overrides model capability detection. A nil value
 	// preserves the default Anthropic model-based behavior.
@@ -104,8 +168,32 @@ type Config struct {
 	// that returns an empty map to force base64 conversion, matching TS.
 	SupportedURLs func(modelID string) map[string][]string `json:"-"`
 
+	// ConvertMediaPart lets a compatible provider convert file parts into its
+	// own image or video blocks (TS languageModelConfig.convertMediaPart). A
+	// nil block result falls back to the default conversion.
+	ConvertMediaPart prompt.AnthropicMediaPartConverter `json:"-"`
+
+	// MaxTemperature is the maximum temperature of a compatible provider
+	// (TS maxTemperature). nil means 1, the Anthropic maximum. When set, the
+	// clamp warnings name the provider instead of "anthropic".
+	MaxTemperature *float64 `json:"maxTemperature,omitempty"`
+
+	// SupportsTemperatureAndTopPWithThinking keeps temperature and topP when
+	// thinking is enabled, for compatible providers that accept both
+	// (TS supportsTemperatureAndTopPWithThinking).
+	SupportsTemperatureAndTopPWithThinking bool `json:"supportsTemperatureAndTopPWithThinking,omitempty"`
+
+	// CacheControlProviderOptionsName is the provider options namespace a
+	// compatible provider reads cache control from before falling back to
+	// "anthropic" (TS cacheControlProviderOptionsName).
+	CacheControlProviderOptionsName string `json:"cacheControlProviderOptionsName,omitempty"`
+
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// GenerateID creates the ids of generated sources (TS `generateId`
+	// provider setting). Defaults to a random id.
+	GenerateID func() string `json:"-"`
 
 	// UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this
 	// provider construction adds (version.ProviderUserAgent). Defaults to
@@ -126,6 +214,15 @@ type Config struct {
 	// client appends downstream. pkg/providers/googlevertex/anthropic sets
 	// this to match.
 	NoUserAgentTag bool `json:"noUserAgentTag,omitempty"`
+
+	// APIKeyEnvVar makes a wrapper provider (UserAgentName/NoUserAgentTag set)
+	// load its key at request time like TS loadApiKey: APIKey, else this
+	// environment variable, else a LoadAPIKeyError. Empty keeps the wrapper's
+	// own credentials untouched (anthropicaws, Vertex, Bedrock).
+	APIKeyEnvVar string `json:"-"`
+
+	// APIKeyDescription names the wrapper in the LoadAPIKeyError message.
+	APIKeyDescription string `json:"-"`
 }
 
 // DefaultSupportedURLs returns the URL patterns the direct Anthropic API and
@@ -155,10 +252,13 @@ func New(cfg Config) *Provider {
 	}
 
 	// Create HTTP client with default headers
-	headers := map[string]string{}
-	if cfg.APIKey != "" {
-		headers["x-api-key"] = cfg.APIKey
+	if (cfg.APIKey != "" || cfg.APIKeyFunc != nil) && (cfg.AuthToken != "" || cfg.AuthTokenFunc != nil) {
+		panic(providererrors.NewArgumentError("apiKey/authToken", "Both apiKey and authToken were provided. Please use only one authentication method.", nil))
 	}
+	if cfg.AuthToken != "" && cfg.AuthTokenFunc != nil {
+		panic(providererrors.NewArgumentError("authToken/authTokenFunc", "Both authToken and authTokenFunc were provided. Please use only one.", nil))
+	}
+	headers := authHeadersFor(cfg)
 	if !cfg.OmitAPIVersionHeader {
 		headers["anthropic-version"] = apiVersion
 	}
@@ -172,16 +272,87 @@ func New(cfg Config) *Provider {
 		mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent(uaName))
 	}
 
-	client := http.NewClient(http.Config{
+	clientConfig := http.Config{
 		BaseURL:    baseURL,
 		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
-	})
+		// TS getHeaders runs per request: the key is (re)loaded then, and a
+		// missing key fails the request with a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) { return requestAuthHeaders(ctx, cfg) },
+	}
+	client := http.NewClient(clientConfig)
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:         cfg,
+		client:         client,
+		clientConfig:   clientConfig,
+		batchToolNames: &batchToolNameStore{},
 	}
+}
+
+// authHeadersFor returns the authentication header of cfg: a bearer token when
+// AuthToken is set, otherwise x-api-key (see Config.APIKey for the
+// ANTHROPIC_API_KEY fallback).
+func authHeadersFor(cfg Config) map[string]string {
+	headers := map[string]string{}
+	apiKey := cfg.APIKey
+	if cfg.AuthTokenFunc != nil || cfg.APIKeyFunc != nil {
+		// The credential is resolved per request (requestAuthHeaders).
+		return headers
+	}
+	if apiKey == "" && cfg.AuthToken == "" && cfg.UserAgentName == "" && !cfg.NoUserAgentTag {
+		// The plain Anthropic provider reads ANTHROPIC_API_KEY (TS loadApiKey);
+		// wrapper providers always set UserAgentName or NoUserAgentTag and must
+		// not forward an Anthropic key to another service.
+		apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if cfg.AuthToken != "" {
+		headers["Authorization"] = "Bearer " + cfg.AuthToken
+	} else if apiKey != "" {
+		headers["x-api-key"] = apiKey
+	}
+	return headers
+}
+
+// requestAuthHeaders resolves the credentials of a plain Anthropic provider
+// at request time like TS getHeaders/loadApiKey: the API key comes from
+// Config.APIKey or the ANTHROPIC_API_KEY environment variable, and a missing
+// key is a LoadAPIKeyError. Wrapper providers (UserAgentName/NoUserAgentTag
+// set), AuthToken users and callers that authenticate through explicit
+// Config.Headers (x-api-key or Authorization) keep their own credentials.
+func requestAuthHeaders(ctx context.Context, cfg Config) (map[string]string, error) {
+	if cfg.AuthTokenFunc != nil {
+		// A caller's own Authorization header keeps its credential.
+		return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+			APIKeyFunc: cfg.AuthTokenFunc, ParameterName: "authToken",
+		}, "Authorization", "Bearer ")
+	}
+	if cfg.AuthToken != "" {
+		return nil, nil
+	}
+	envVar, description := "ANTHROPIC_API_KEY", "Anthropic"
+	if cfg.UserAgentName != "" || cfg.NoUserAgentTag {
+		envVar, description = cfg.APIKeyEnvVar, cfg.APIKeyDescription
+		if envVar == "" && cfg.APIKeyFunc == nil {
+			return nil, nil
+		}
+	}
+	if cfg.APIKeyFunc != nil {
+		return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: envVar, Description: description,
+		}, "x-api-key", "", "authorization")
+	}
+	// An explicit x-api-key or Authorization header keeps the caller's own
+	// credential.
+	return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, envVar, description, "x-api-key", "", "authorization")
+}
+
+// newID returns a fresh generated id (see Config.GenerateID).
+func (p *Provider) newID() string {
+	if p != nil && p.config.GenerateID != nil {
+		return p.config.GenerateID()
+	}
+	return anthropicGenerateID()
 }
 
 // NormalizeBaseURL validates and normalizes an Anthropic base URL (TS
@@ -198,7 +369,7 @@ func NormalizeBaseURL(baseURL string) (string, error) {
 	if err := providerutils.ValidateBaseURL(baseURL); err != nil {
 		return "", err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = strings.TrimSuffix(baseURL, "/")
 	if baseURL == anthropicAPIURL {
 		return DefaultBaseURL, nil
 	}
@@ -219,6 +390,13 @@ func (p *Provider) Name() string {
 		return p.config.Name
 	}
 	return "anthropic"
+}
+
+// baseName is the provider name without a trailing ".messages" (TS strips it
+// from providerName), the prefix of the batch, skills and decision provider
+// ids.
+func (p *Provider) baseName() string {
+	return strings.TrimSuffix(p.Name(), ".messages")
 }
 
 // LanguageModel returns a language model by ID
@@ -244,31 +422,31 @@ func (p *Provider) LanguageModelWithOptions(modelID string, options *ModelOption
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	// Anthropic doesn't provide embedding models
-	return nil, fmt.Errorf("anthropic does not support embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	// Anthropic doesn't provide image generation models
-	return nil, fmt.Errorf("anthropic does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	// Anthropic doesn't provide speech synthesis models
-	return nil, fmt.Errorf("anthropic does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	// Anthropic doesn't provide transcription models
-	return nil, fmt.Errorf("Anthropic does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Anthropic doesn't provide reranking models
-	return nil, fmt.Errorf("Anthropic does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests
@@ -284,18 +462,29 @@ func (p *Provider) Skills() provider.SkillsAPI {
 	return &SkillsAPI{provider: p}
 }
 
-// EvaluationModel returns an experimental evaluation model backed by the
+// DecisionModel returns an experimental decision model backed by the
 // Anthropic Messages API language model. Mirrors TypeScript's
-// AnthropicProvider.evaluationModel: `provider.evaluationModel = (modelId) =>
-// new EvaluationLanguageModel({ model: createChatModel(modelId), provider:
-// providerName + '.evaluation' })`.
-func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+// AnthropicProvider.decisionModel: `provider.decisionModel = (modelId) =>
+// new DecisionLanguageModel({ model: createChatModel(modelId), provider:
+// providerName + '.decision' })`.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
 	model, err := p.LanguageModel(modelID)
 	if err != nil {
 		return nil, err
 	}
-	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+	return ai.NewDecisionLanguageModel(ai.DecisionLanguageModelOptions{
 		Model:    model,
-		Provider: p.Name() + ".evaluation",
+		Provider: p.baseName() + ".decision",
 	})
+}
+
+// EvaluationModel is the deprecated form of DecisionModel.
+//
+// Deprecated: Use DecisionModel instead.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.DecisionModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return provider.AsEvaluationModel(model), nil
 }

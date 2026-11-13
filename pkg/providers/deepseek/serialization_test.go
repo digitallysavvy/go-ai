@@ -9,14 +9,14 @@ func TestDeepseekSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := modelAny.(*LanguageModel).Serialize()
-	if serialized.Provider != "deepseek" || serialized.ModelID != "deepseek-chat" || serialized.Config == nil {
+	if serialized.Provider != "deepseek.chat" || serialized.ModelID != "deepseek-chat" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	restored, err := deserializeModel(serialized)
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "deepseek" || restored.ModelID() != "deepseek-chat" {
+	if restored.Provider() != "deepseek.chat" || restored.ModelID() != "deepseek-chat" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

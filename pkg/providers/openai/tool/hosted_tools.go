@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -10,6 +11,47 @@ import (
 // CodeInterpreterContainer configures an auto-created code interpreter container.
 type CodeInterpreterContainer struct {
 	FileIDs []string `json:"fileIds,omitempty"`
+	// MemoryLimit is the container memory: "1g", "4g", "16g" or "64g"
+	// (TS 7bb309d132).
+	MemoryLimit string `json:"memoryLimit,omitempty"`
+	// NetworkPolicy controls outbound network access from the container.
+	NetworkPolicy *CodeInterpreterNetworkPolicy `json:"networkPolicy,omitempty"`
+}
+
+// CodeInterpreterNetworkPolicy is the container network policy: Type
+// "disabled" (no network), or "allowlist" with AllowedDomains and optional
+// DomainSecrets injected for those domains.
+type CodeInterpreterNetworkPolicy struct {
+	Type           string                        `json:"type"`
+	AllowedDomains []string                      `json:"allowedDomains"`
+	DomainSecrets  []CodeInterpreterDomainSecret `json:"domainSecrets,omitempty"`
+}
+
+// MarshalJSON writes {type: "disabled"} for a disabled policy and an
+// allowlist with its domains (an empty list when nil) otherwise.
+func (p CodeInterpreterNetworkPolicy) MarshalJSON() ([]byte, error) {
+	if p.Type != "allowlist" {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+		}{p.Type})
+	}
+	domains := p.AllowedDomains
+	if domains == nil {
+		domains = []string{}
+	}
+	return json.Marshal(struct {
+		Type           string                        `json:"type"`
+		AllowedDomains []string                      `json:"allowedDomains"`
+		DomainSecrets  []CodeInterpreterDomainSecret `json:"domainSecrets,omitempty"`
+	}{p.Type, domains, p.DomainSecrets})
+}
+
+// CodeInterpreterDomainSecret is a secret the container receives for
+// requests to Domain.
+type CodeInterpreterDomainSecret struct {
+	Domain string `json:"domain"`
+	Name   string `json:"name"`
+	Value  string `json:"value"`
 }
 
 // CodeInterpreterConfig configures the provider-executed code_interpreter tool.
@@ -54,28 +96,52 @@ type ImageGenerationConfig struct {
 	Size              string               `json:"size,omitempty"`
 }
 
-// CodeInterpreter creates an OpenAI provider-executed code_interpreter tool.
+// CodeInterpreter creates an OpenAI provider-executed code_interpreter tool
+// (TS openai.tools.codeInterpreter, id "openai.code_interpreter").
 func CodeInterpreter(config CodeInterpreterConfig) types.Tool {
-	return providerExecutedHostedTool("openai.code_interpreter", config)
+	tool := providerExecutedHostedTool("openai.code_interpreter", config, providerArgs(config))
+	// TS codeInterpreterInputSchema: {code: z.string().nullish(),
+	// containerId: z.string()}.
+	tool.Parameters = schemaFromJSON(codeInterpreterInputSchemaJSON)
+	tool.OutputSchema = schemaFromJSON(codeInterpreterOutputSchemaJSON)
+	return tool
 }
 
-// FileSearch creates an OpenAI provider-executed file_search tool.
+// FileSearch creates an OpenAI provider-executed file_search tool (TS
+// openai.tools.fileSearch, id "openai.file_search").
 func FileSearch(config FileSearchConfig) types.Tool {
-	return providerExecutedHostedTool("openai.file_search", config)
+	args := providerArgs(config)
+	if config.VectorStoreIDs == nil {
+		// TS fileSearch({vectorStoreIds: undefined}) has no vectorStoreIds
+		// arg (JSON drops undefined); an empty list is kept.
+		delete(args, "vectorStoreIds")
+	}
+	tool := providerExecutedHostedTool("openai.file_search", config, args)
+	tool.OutputSchema = schemaFromJSON(fileSearchOutputSchemaJSON)
+	return tool
 }
 
-// ImageGeneration creates an OpenAI provider-executed image_generation tool.
+// ImageGeneration creates an OpenAI provider-executed image_generation tool
+// (TS openai.tools.imageGeneration, id "openai.image_generation").
 func ImageGeneration(config ImageGenerationConfig) types.Tool {
-	return providerExecutedHostedTool("openai.image_generation", config)
+	tool := providerExecutedHostedTool("openai.image_generation", config, providerArgs(config))
+	tool.OutputSchema = schemaFromJSON(imageGenerationOutputSchemaJSON)
+	return tool
 }
 
-func providerExecutedHostedTool(name string, options interface{}) types.Tool {
-	return types.Tool{
+// providerExecutedHostedTool builds a hosted tool. Name stays the TS id (the
+// direct OpenAI provider dispatches on it); Type, ProviderID and
+// ProviderArgs make it a provider tool on the AI Gateway too; options is the
+// typed config the OpenAI request builder reads.
+func providerExecutedHostedTool(name string, options interface{}, args map[string]interface{}) types.Tool {
+	return providerTool(types.Tool{
 		Name:             name,
 		ProviderExecuted: true,
 		ProviderOptions:  options,
+		// TS input schema of file_search / image_generation: z.object({}).
+		Parameters: schemaFromJSON(emptyObjectSchemaJSON),
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("%s is executed by the OpenAI API, not locally", name)
 		},
-	}
+	}, name, args)
 }

@@ -5,13 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -39,12 +44,12 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 
 // SpecificationVersion returns the specification version
 func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *VideoModel) Provider() string {
-	return "replicate"
+	return "replicate.video"
 }
 
 // ModelID returns the model ID
@@ -101,7 +106,8 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 		input["size"] = opts.Resolution
 	}
 
-	if opts.Duration != nil && *opts.Duration != 0 {
+	// TS `if (options.duration)`: 0 and NaN are falsy.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
 		input["duration"] = *opts.Duration
 	}
 
@@ -109,12 +115,13 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 		input["fps"] = *opts.FPS
 	}
 
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		input["seed"] = *opts.Seed
 	}
 
 	if opts.ProviderOptions != nil {
-		if raw, ok := opts.ProviderOptions["replicate"]; ok {
+		// TS parseProviderOptions: a null providerOptions.replicate is absent.
+		if raw, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["replicate"]; ok && raw != nil {
 			repOpts, ok := raw.(map[string]interface{})
 			if !ok {
 				return nil, fmt.Errorf("replicate: invalid providerOptions.replicate: expected object")
@@ -139,6 +146,58 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 	return input, nil
 }
 
+// replicateVideoInputOrder is the TS buildInput assignment order of the keys
+// it sets itself; passthrough option keys follow, sorted (a Go map has no
+// caller order).
+var replicateVideoInputOrder = []string{
+	"prompt", "image", "aspect_ratio", "size", "duration", "fps", "seed",
+	"guidance_scale", "num_inference_steps", "motion_bucket_id", "cond_aug",
+	"decoding_t", "video_length", "sizing_strategy", "frames_per_second", "prompt_optimizer",
+}
+
+// orderedVideoBody sends the prediction body in the TS literal order:
+// {input, version, webhook, webhook_events_filter}, input in buildInput
+// order.
+func orderedVideoBody(body map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	if input, ok := body["input"].(map[string]interface{}); ok {
+		ordered := jsonorder.New()
+		for _, k := range replicateVideoInputOrder {
+			if v, has := input[k]; has {
+				ordered.Set(k, v)
+			}
+		}
+		rest := make([]string, 0)
+		for k := range input {
+			if _, done := ordered.Get(k); !done {
+				rest = append(rest, k)
+			}
+		}
+		sort.Strings(rest)
+		for _, k := range rest {
+			ordered.Set(k, input[k])
+		}
+		out.Set("input", ordered)
+	}
+	for _, k := range []string{"version", "webhook", "webhook_events_filter"} {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	return out
+}
+
+// splitReplicateModelID is TS `const [modelId, version] =
+// this.modelId.split(':')`: the text before the first colon and the text
+// between the first and second colon (a third part is dropped).
+func splitReplicateModelID(id string) (modelID, version string, hasVersion bool) {
+	parts := strings.Split(id, ":")
+	if len(parts) < 2 {
+		return id, "", false
+	}
+	return parts[0], parts[1], true
+}
+
 // replicateVideoOperation is the opaque operation reference returned by
 // DoStart and passed back into DoStatus.
 type replicateVideoOperation struct {
@@ -152,12 +211,15 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	currentDate := time.Now()
 	callOpts := &opts.VideoModelV3CallOptions
 
+	if err := validateVideoOptions(callOpts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	input, err := m.buildInput(callOpts)
 	if err != nil {
 		return nil, err
 	}
 
-	modelID, version, hasVersion := strings.Cut(m.modelID, ":")
+	modelID, version, hasVersion := splitReplicateModelID(m.modelID)
 
 	predictionPath := fmt.Sprintf("/models/%s/predictions", modelID)
 	if hasVersion {
@@ -177,8 +239,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    predictionPath,
-		Body:    body,
+		Body:    orderedVideoBody(body),
 		Headers: callOpts.Headers,
+		// TS createJsonResponseHandler(replicatePredictionSchema).
+		ValidateResponse: validateVideoPrediction,
 	}, &prediction)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -216,14 +280,19 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	// provider credentials (TS credentialedOrigin: baseURL).
 	downloadOpts.Headers = m.prov.credentialedHeaders(op.GetURL, opts.Headers)
 
-	if statusOptionsHook != nil {
-		statusOptionsHook(&downloadOpts)
-	}
-
-	var prediction replicatePredictionWire
-	result, err := fileutil.PollJSON(ctx, op.GetURL, downloadOpts, &prediction)
+	result, err := fileutil.PollJSON(ctx, op.GetURL, downloadOpts, nil)
 	if err != nil {
-		return nil, m.handlePollError(err)
+		return nil, m.handlePollError(ctx, err)
+	}
+	// TS createJsonResponseHandler(replicatePredictionSchema), over
+	// response.text() (TextDecoder).
+	result.Data = []byte(textdecode.UTF8(result.Data))
+	if err := validateVideoPrediction(http.StatusOK, headersOf(result.Headers), result.Data); err != nil {
+		return nil, err
+	}
+	var prediction replicatePredictionWire
+	if err := jsonexact.Unmarshal(result.Data, &prediction); err != nil {
+		return nil, fmt.Errorf("failed to decode status response: %w", err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
@@ -255,8 +324,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if prediction.Output == nil {
 			return nil, providererrors.NewVideoGenerationError("replicate", m.modelID, "No video URL in response", nil)
 		}
+		// TS `!prediction.output`: an empty string is also "no video URL".
 		outputURL, ok := prediction.Output.(string)
-		if !ok {
+		if !ok || outputURL == "" {
 			return nil, providererrors.NewVideoGenerationError("replicate", m.modelID, "No video URL in response", nil)
 		}
 
@@ -264,8 +334,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			"videos":       []map[string]interface{}{{"url": outputURL}},
 			"predictionId": prediction.ID,
 		}
-		if prediction.Metrics != nil {
-			meta["metrics"] = prediction.Metrics
+		if metrics, present := replicateVideoMetrics(prediction.Metrics); present {
+			meta["metrics"] = metrics
 		}
 
 		return &provider.VideoModelV3OperationStatusResult{
@@ -335,6 +405,22 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}, nil
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// ReplicateVideoModel has no doGenerate), so ai.GenerateVideo drives it through
+// the core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	opts, _ := providerutils.NormalizeOptionsJSON(providerOptions)["replicate"].(map[string]interface{})
+	if v, ok := providerutils.CoerceInt(opts["pollIntervalMs"]); ok && v > 0 {
+		intervalMs = v
+	}
+	if v, ok := providerutils.CoerceInt(opts["pollTimeoutMs"]); ok && v > 0 {
+		timeoutMs = v
+	}
+	return intervalMs, timeoutMs
+}
+
 // getPollOptions extracts polling options from provider options
 func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling.PollOptions {
 	// TS has no synchronous doGenerate for this model: core's generateVideo
@@ -365,53 +451,57 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 }
 
 func (m *VideoModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) || providerutils.IsInvalidJSONResponse(err) {
+		return err // TS throws these unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, "", string(statusErr.Body), err)
+		return replicateAPIErrorText(statusErr.StatusCode, statusErr.Text(), statusErr.Headers, statusErr.Body)
 	}
-	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
 // for a non-2xx HTTP response, or a validation/network error) into a
 // Replicate API error where possible.
-func (m *VideoModel) handlePollError(err error) error {
+func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return providererrors.NewProviderError(m.Provider(), dlErr.StatusCode, "", string(dlErr.Body), err)
+		// TS reads the failed body as text (TextDecoder).
+		return replicateAPIErrorText(dlErr.StatusCode, dlErr.StatusText, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
 	}
-	return fmt.Errorf("failed to check status: %w", err)
+	// TS getFromApi handleFetchError: a network failure is the retryable
+	// "Cannot connect to API" error and an abort stays as is; a URL or
+	// redirect rejected by validateUrl keeps its DownloadError.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return internalhttp.TransportErrorCtx(ctx, cause)
+	}
+	return err
 }
 
-// convertReplicateHeaders flattens net/http.Header into map[string]string,
-// taking the first value for each header key.
+// convertReplicateHeaders flattens net/http.Header into map[string]string
+// like TS extractResponseHeaders.
 func convertReplicateHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
+	// TS extractResponseHeaders: repeated values joined with ", ".
+	if out := providerutils.ExtractHeaders(h); out != nil {
+		return out
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	return map[string]string{}
 }
 
 // flattenReplicateHeaders flattens a fileutil.DownloadResult's headers
 // (map[string][]string) the same way convertReplicateHeaders does for
 // net/http.Header.
 func flattenReplicateHeaders(h map[string][]string) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
-	}
-	return out
+	return convertReplicateHeaders(http.Header(h))
 }
 
 // replicatePredictionWire mirrors TS replicatePredictionSchema.
@@ -423,11 +513,35 @@ type replicatePredictionWire struct {
 	URLs   struct {
 		Get string `json:"get"`
 	} `json:"urls"`
-	Metrics *struct {
-		PredictTime *float64 `json:"predict_time,omitempty"`
-	} `json:"metrics,omitempty"`
+	// Metrics is the raw metrics member, read with replicateVideoMetrics.
+	Metrics json.RawMessage `json:"metrics,omitempty"`
 }
 
-// statusOptionsHook lets tests observe the outgoing status request (swap the
-// transport) without loosening the SSRF guard in production. Nil in production.
-var statusOptionsHook func(*fileutil.DownloadOptions)
+// headersOf converts fileutil's header map to http.Header.
+func headersOf(h map[string][]string) http.Header { return http.Header(h) }
+
+// replicateVideoMetrics is the zod output of the prediction metrics
+// ({predict_time?: number | null}, undeclared keys stripped) that TS passes
+// as providerMetadata.replicate.metrics: an explicit null stays null, and
+// present is false when the wire has no metrics key (TS undefined).
+func replicateVideoMetrics(raw json.RawMessage) (interface{}, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var fields map[string]json.RawMessage
+	if string(raw) == "null" || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return nil, true
+	}
+	metrics := map[string]interface{}{}
+	if v, ok := fields["predict_time"]; ok {
+		var f *float64
+		if json.Unmarshal(v, &f) == nil {
+			if f == nil {
+				metrics["predict_time"] = nil
+			} else {
+				metrics["predict_time"] = *f
+			}
+		}
+	}
+	return metrics, true
+}

@@ -6,7 +6,11 @@
 // deepagents, acp) must already be BUILT in the checkout -- this tool copies
 // packages/<pkg>/dist/bridge/*, it does not invoke pnpm/tsup itself, so the
 // checkout stays a pure "read" dependency of the Go build (no Node toolchain
-// is required to build go-ai). Build them first, e.g.:
+// is required to build go-ai). Since TS 726a1ccb32 the built dist/bridge
+// ships the lockfile as pnpm-lockfile.yaml (pnpm 12 `pnpm pack` drops files
+// named pnpm-lock.yaml); this tool reads that name and writes pnpm-lock.yaml,
+// the name the sandbox bootstrap installs from. Build them first (tsdown),
+// e.g.:
 //
 //	pnpm install --frozen-lockfile \
 //	  --filter "@ai-sdk/harness-claude-code..." \
@@ -31,8 +35,8 @@
 //	go run ./pkg/harness/bridges/internal/syncbridges \
 //	  -ts-dir /path/to/ai \
 //	  -out pkg/harness/bridges \
-//	  -tag ai@7.0.113 \
-//	  -commit 5c830d570e
+//	  -tag ai@7.0.170 \
+//	  -commit 2ebc78b654
 package main
 
 import (
@@ -66,8 +70,9 @@ type adapterSpec struct {
 	// for adapters that do have one.
 	sourceDir string
 	// files lists the file names to copy. For entries with a bundle step,
-	// "index.mjs" (tsup's output name) is renamed to "bridge.mjs" on copy;
-	// every other name is copied as-is.
+	// "index.mjs" (the bundler's output name) is renamed to "bridge.mjs" on
+	// copy and "pnpm-lock.yaml" is read from dist's "pnpm-lockfile.yaml"
+	// (see distSourceName); every other name is copied as-is.
 	files []string
 	// bridgeEntry is the file name (after the index.mjs -> bridge.mjs
 	// rename) that the TS host launches with `node`, or "" if this adapter
@@ -142,11 +147,17 @@ var adapterSpecs = []adapterSpec{
 
 type manifestFile = map[string]any
 
+// Defaults must match the tsTag/tsCommit recorded in VERSIONS.json.
+const (
+	defaultTag    = "ai@7.0.170"
+	defaultCommit = "2ebc78b654"
+)
+
 func main() {
 	tsDir := flag.String("ts-dir", os.Getenv("AI_SDK_TS_DIR"), "path to the ai-sdk TS monorepo checkout (or set AI_SDK_TS_DIR)")
 	outDir := flag.String("out", "pkg/harness/bridges", "output directory (the pkg/harness/bridges package)")
-	tag := flag.String("tag", "ai@7.0.113", "TS tag these assets are pinned to")
-	commit := flag.String("commit", "5c830d570e", "TS commit these assets are pinned to")
+	tag := flag.String("tag", defaultTag, "TS tag these assets are pinned to")
+	commit := flag.String("commit", defaultCommit, "TS commit these assets are pinned to")
 	flag.Parse()
 
 	if *tsDir == "" {
@@ -221,7 +232,11 @@ func syncAdapter(tsDir, outDir string, spec adapterSpec) (manifestFile, error) {
 
 	files := manifestFile{}
 	for _, name := range spec.files {
-		srcPath := filepath.Join(fromDir, name)
+		srcName := name
+		if spec.builtBridgeDir != "" {
+			srcName = distSourceName(name)
+		}
+		srcPath := filepath.Join(fromDir, srcName)
 		destName := name
 		if name == "index.mjs" {
 			destName = "bridge.mjs"
@@ -233,8 +248,13 @@ func syncAdapter(tsDir, outDir string, spec adapterSpec) (manifestFile, error) {
 		}
 		files[destName] = sum
 	}
+	hashes := map[string]string{}
+	for name, sum := range files {
+		hashes[name] = sum.(string)
+	}
 
 	return manifestFile{
+		"contentHash":   contentHash(hashes),
 		"sourcePackage": spec.npmPackage,
 		"sourceVersion": sourceVersion,
 		"sourceDir":     fmt.Sprintf("packages/%s/%s", spec.packageDir, spec.sourceDir),
@@ -242,6 +262,34 @@ func syncAdapter(tsDir, outDir string, spec adapterSpec) (manifestFile, error) {
 		"bridgeEntry":   spec.bridgeEntry,
 		"files":         sortedKeys(files),
 	}, nil
+}
+
+// contentHash is the adapter's bridge content hash: the lowercase-hex sha256
+// of "<name> <sha256>\n" over its files in name order. It changes whenever
+// any vendored byte changes, so drift reviews can tell two builds of the
+// same sourceVersion apart (TS bridge bytes move between releases without a
+// version bump). Must match bridges.ContentHash.
+func contentHash(files map[string]string) string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		_, _ = io.WriteString(h, name+" "+files[name]+"\n")
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// distSourceName maps an embedded file name to its name in a built
+// dist/bridge directory: TS 726a1ccb32 copies src/bridge/pnpm-lock.yaml to
+// dist/bridge/pnpm-lockfile.yaml.
+func distSourceName(name string) string {
+	if name == "pnpm-lock.yaml" {
+		return "pnpm-lockfile.yaml"
+	}
+	return name
 }
 
 // sortedKeys re-marshals a manifestFile of file->hash pairs so

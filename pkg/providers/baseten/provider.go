@@ -1,13 +1,17 @@
 package baseten
 
 import (
-	"fmt"
+	"context"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // DefaultBaseURL is Baseten's Model APIs base URL (TS defaultBaseURL).
@@ -71,22 +75,42 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 
+	// TS createChatModel uses modelURL only for a /sync/v1 deployment; any
+	// other URL (a /sync embeddings deployment) leaves chat on the Model APIs
+	// at baseURL (a /predict URL is rejected by LanguageModel).
 	chatBaseURL := baseURL
-	if cfg.ModelURL != "" {
+	customChat := strings.Contains(cfg.ModelURL, "/sync/v1")
+	if customChat {
 		chatBaseURL = cfg.ModelURL
 	}
+	// TS c4a8b80e02: transformBasetenRequestBody is wired only on the
+	// default Model APIs chat path, not on a /sync/v1 custom deployment.
+	var transform func(map[string]interface{}) (map[string]interface{}, []types.Warning)
+	if !customChat {
+		transform = transformBasetenRequestBody
+	}
 
+	structuredOutputs := true
 	chatProvider := openai.New(openai.Config{
-		APIKey:           apiKey,
-		APIKeyEnvVar:     "BASETEN_API_KEY",
-		BaseURL:          chatBaseURL,
-		Headers:          cfg.Headers,
-		HTTPClient:       cfg.HTTPClient,
-		ChatProviderName: "baseten.chat",
+		APIKey:            apiKey,
+		APIKeyEnvVar:      "BASETEN_API_KEY",
+		APIKeyDescription: "Baseten API key",
+		BaseURL:           chatBaseURL,
+		Headers:           cfg.Headers,
+		HTTPClient:        cfg.HTTPClient,
+		Name:              "baseten",
+		ChatProviderName:  "baseten.chat",
 		// TS createChatModel builds an OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:    true,
-		UserAgentName: "baseten",
+		AllowVideo:                true,
+		OpenAICompatible:          true,
+		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
+		IncludeUsage:              true,
+		UserAgentName:             "baseten",
+		// TS basetenErrorStructure.
+		CompatErrorStructure: basetenErrorStructure,
+
+		TransformRequestBodyWithWarnings: transform,
 	})
 
 	p := &Provider{
@@ -96,17 +120,73 @@ func New(cfg Config) *Provider {
 
 	if cfg.ModelURL != "" && strings.Contains(cfg.ModelURL, "/sync") {
 		p.embedding = openai.New(openai.Config{
-			APIKey:        apiKey,
-			APIKeyEnvVar:  "BASETEN_API_KEY",
-			BaseURL:       basetenEmbeddingURL(cfg.ModelURL),
-			Headers:       cfg.Headers,
-			HTTPClient:    cfg.HTTPClient,
-			Name:          "baseten.embedding",
-			UserAgentName: "baseten",
+			APIKey:            apiKey,
+			APIKeyEnvVar:      "BASETEN_API_KEY",
+			APIKeyDescription: "Baseten API key",
+			BaseURL:           basetenEmbeddingURL(cfg.ModelURL),
+			Headers:           cfg.Headers,
+			HTTPClient:        cfg.HTTPClient,
+			Name:              "baseten",
+			OpenAICompatible:  true,
+			IncludeUsage:      true,
+			UserAgentName:     "baseten",
+			// TS basetenErrorStructure.
+			CompatErrorStructure: basetenErrorStructure,
 		})
 	}
 
 	return p
+}
+
+// basetenDeepSeekV4Pro0813 is the Model APIs model whose JSON mode with
+// reasoning returns the answer as reasoning and leaves content empty.
+const basetenDeepSeekV4Pro0813 = "deepseek-ai/DeepSeek-V4-Pro-0813"
+
+// transformBasetenRequestBody is TS transformBasetenRequestBody
+// (baseten-provider.ts, c4a8b80e02): for DeepSeek V4 Pro 0813 with
+// reasoning not "none" and a json_schema / json_object response_format, the
+// response_format is dropped and a new leading system message carries the
+// JSON instruction (injectJsonInstructionIntoMessages({messages: [],
+// schema})), with a compatibility warning. Every other body is unchanged.
+func transformBasetenRequestBody(body map[string]interface{}) (map[string]interface{}, []types.Warning) {
+	if model, _ := body["model"].(string); model != basetenDeepSeekV4Pro0813 {
+		return body, nil
+	}
+	if effort, ok := body["reasoning_effort"].(string); ok && effort == "none" {
+		return body, nil
+	}
+	responseFormat, _ := body["response_format"].(map[string]interface{})
+	formatType, _ := responseFormat["type"].(string)
+	if formatType != "json_schema" && formatType != "json_object" {
+		return body, nil
+	}
+	var schema interface{}
+	if js, ok := responseFormat["json_schema"].(map[string]interface{}); ok {
+		schema = js["schema"]
+	}
+	system := map[string]interface{}{
+		"role":    "system",
+		"content": providerutils.InjectJSONInstructionSchema("", schema, providerutils.InjectJSONInstructionOptions{}),
+	}
+	out := make(map[string]interface{}, len(body))
+	for k, v := range body {
+		if k != "response_format" {
+			out[k] = v
+		}
+	}
+	switch msgs := body["messages"].(type) {
+	case []map[string]interface{}:
+		out["messages"] = append([]map[string]interface{}{system}, msgs...)
+	case []interface{}:
+		out["messages"] = append([]interface{}{system}, msgs...)
+	default:
+		out["messages"] = []map[string]interface{}{system}
+	}
+	return out, []types.Warning{{
+		Type:    "compatibility",
+		Feature: "responseFormat",
+		Details: "JSON instructions are injected into the system message and response_format is omitted because Baseten DeepSeek V4 Pro 0813 returns JSON as reasoning when JSON mode and reasoning are combined. The response is not constrained by the server.",
+	}}
 }
 
 // basetenEmbeddingURL mirrors TS getCommonModelConfig's embedding URL
@@ -121,8 +201,10 @@ func basetenEmbeddingURL(modelURL string) string {
 
 // LanguageModel returns an OpenAI-compatible Chat Completions model.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	if p.modelURL != "" && strings.Contains(p.modelURL, "/predict") {
-		return nil, fmt.Errorf("baseten: not supported; you must use a /sync/v1 endpoint for chat models")
+	// TS createChatModel: a /sync/v1 URL wins, then a /predict URL throws
+	// (the TS Error text).
+	if p.modelURL != "" && !strings.Contains(p.modelURL, "/sync/v1") && strings.Contains(p.modelURL, "/predict") {
+		return nil, errors.New("Not supported. You must use a /sync/v1 endpoint for chat models.") //nolint:staticcheck // TS error text
 	}
 	if modelID == "" {
 		// TS: modelId ?? 'placeholder' for a custom /sync/v1 deployment
@@ -148,9 +230,9 @@ func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	if p.embedding == nil {
 		if p.modelURL == "" {
-			return nil, fmt.Errorf("baseten: no model URL provided for embeddings; set ModelURL to a /sync or /sync/v1 endpoint")
+			return nil, errors.New("No model URL provided for embeddings. Please set modelURL option for embeddings.") //nolint:staticcheck // TS error text
 		}
-		return nil, fmt.Errorf("baseten: not supported; you must use a /sync or /sync/v1 endpoint for embeddings")
+		return nil, errors.New("Not supported. You must use a /sync or /sync/v1 endpoint for embeddings.") //nolint:staticcheck // TS error text
 	}
 	if modelID == "" {
 		modelID = "embeddings"
@@ -180,6 +262,40 @@ type embeddingModel struct {
 
 func (m *embeddingModel) MaxEmbeddingsPerCall() int {
 	return maxEmbeddingsPerCall
+}
+
+// DoEmbedMany enforces Baseten's lower batch limit (TS maxEmbeddingsPerCall
+// check in the OpenAI-compatible embedding model).
+func (m *embeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	if len(inputs) > maxEmbeddingsPerCall {
+		return nil, &providerrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.ModelID(),
+			MaxEmbeddingsPerCall: maxEmbeddingsPerCall,
+			Values:               inputs,
+		}
+	}
+	return m.EmbeddingModel.DoEmbedMany(ctx, inputs, opts)
+}
+
+// ImageModel returns a NoSuchModelError, as TS createBaseten's imageModel
+// throws (baseten-provider.ts:355); the inherited OpenAI image model is not
+// exposed.
+func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
+	return nil, providerrors.NewNoSuchModelError(modelID, "imageModel")
+}
+
+// SpeechModel returns a NoSuchModelError: TS createBaseten has no speech
+// model factory, so the inherited OpenAI speech model is not exposed.
+func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+	return nil, providerrors.NewNoSuchModelError(modelID, "speechModel")
+}
+
+// TranscriptionModel returns a NoSuchModelError: TS createBaseten has no
+// transcription model factory, so the inherited OpenAI transcription model
+// is not exposed.
+func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
+	return nil, providerrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // Name returns the provider name.

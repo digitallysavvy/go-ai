@@ -292,7 +292,7 @@ func TestMCPToolResultResponseParsed_ResolvesPairedToolName(t *testing.T) {
 			{
 				Type:      "mcp_tool_result",
 				ToolUseID: "mcp_123",
-				IsError:   false,
+				IsError:   nil,
 				Content:   json.RawMessage(`"sunny"`),
 			},
 		},
@@ -409,17 +409,14 @@ func TestMCPToolUseStreamingEmitsImmediately(t *testing.T) {
 	}
 
 	// Next: EOF
-	_, err = stream.Next()
-	if err != io.EOF {
-		t.Errorf("expected io.EOF, got: %v", err)
-	}
+	expectFinishOtherThenEOF(t, stream)
 }
 
 // MCP streaming: mcp_tool_result in content_block_start emits a ChunkTypeToolResult
 // chunk so the SDK's pendingDeferredToolCalls map is cleared.
 func TestMCPToolResultStreamingEmitsToolResult(t *testing.T) {
 	sseData := "" +
-		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_result\",\"tool_use_id\":\"mcp-stream-001\",\"is_error\":false,\"content\":{\"results\":[]}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_result\",\"tool_use_id\":\"mcp-stream-001\",\"is_error\":false,\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n\n" +
 		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done\"}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -916,5 +913,34 @@ func TestBetaHeadersNoRegressionWithNewOptions(t *testing.T) {
 		if !strings.Contains(h, want) {
 			t.Errorf("missing header %q in %q", want, h)
 		}
+	}
+}
+
+// expectFinishOtherThenEOF asserts the stream ends with the finish chunk TS
+// emits for a message_stop that had no message_delta (reason `other`).
+func expectFinishOtherThenEOF(t *testing.T, s provider.TextStream) {
+	t.Helper()
+	c, err := s.Next()
+	if err != nil || c.Type != provider.ChunkTypeFinish || c.FinishReason != types.FinishReasonOther {
+		t.Fatalf("Next() = %+v, %v; want finish(other)", c, err)
+	}
+	if _, err := s.Next(); err != io.EOF {
+		t.Fatalf("expected io.EOF, got: %v", err)
+	}
+}
+
+// TS maps toolConfiguration as {allowed_tools, enabled}: an explicit empty
+// allowed-tools list and an empty configuration object are both preserved.
+func TestMCPServersWireKeepsEmptyToolConfiguration(t *testing.T) {
+	empty := []string{}
+	out := mcpServersWire([]MCPServerConfig{
+		{Type: "url", Name: "a", URL: "https://a", ToolConfiguration: &MCPToolConfiguration{AllowedTools: empty}},
+		{Type: "url", Name: "b", URL: "https://b", ToolConfiguration: &MCPToolConfiguration{}},
+	})
+	if tc, ok := out[0]["tool_configuration"].(map[string]interface{}); !ok || tc["allowed_tools"] == nil {
+		t.Fatalf("allowed_tools dropped: %#v", out[0])
+	}
+	if tc, ok := out[1]["tool_configuration"].(map[string]interface{}); !ok || len(tc) != 0 {
+		t.Fatalf("empty tool_configuration dropped: %#v", out[1])
 	}
 }

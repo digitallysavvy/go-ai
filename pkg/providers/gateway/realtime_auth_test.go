@@ -134,3 +134,18 @@ func TestRealtimeModel_SerializeClientEvent_SessionUpdateAndItems(t *testing.T) 
 		t.Fatalf("conversation-item-create item = %#v", decoded)
 	}
 }
+
+// TS decodeSubprotocolValue maps -/_ to +/ and pads before atob, so a
+// standard-alphabet or padded team value decodes like the URL-safe one.
+func TestGetGatewayRealtimeTeamIDOrSlugAcceptsStandardAndPadded(t *testing.T) {
+	// "team?>" encodes to dGVhbT8+ in the standard alphabet and dGVhbT8- URL-safe.
+	for _, enc := range []string{"dGVhbT8-", "dGVhbT8+"} {
+		if got := GetGatewayRealtimeTeamIDOrSlug("ai-gateway-team." + enc); got != "team?>" {
+			t.Fatalf("%s decoded to %q", enc, got)
+		}
+	}
+	// "ab" encodes to YWI= padded.
+	if got := GetGatewayRealtimeTeamIDOrSlug("ai-gateway-team.YWI="); got != "ab" {
+		t.Fatalf("padded decoded to %q", got)
+	}
+}

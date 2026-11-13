@@ -3,8 +3,11 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"reflect"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -35,7 +38,7 @@ func (m *SpeechModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *SpeechModel) Provider() string {
-	return m.provider.Name()
+	return m.provider.Name() + ".speech"
 }
 
 // ModelID returns the model ID
@@ -45,40 +48,103 @@ func (m *SpeechModel) ModelID() string {
 
 // DoGenerate performs speech synthesis
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
-	reqBody, warnings := m.buildRequestBody(opts)
+	reqBody, warnings, err := m.buildRequestBodyChecked(opts)
+	if err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
+	// TS sends and reports JSON.stringify(requestBody): the body literal's
+	// key order, HTML characters literal.
+	requestText := providerutils.StringifyOrdered(reqBody, openAISpeechBodyOrder)
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/audio/speech",
-		Body:    reqBody,
+		Query:   m.provider.config.AudioQuery,
+		Body:    []byte(requestText),
 		Headers: opts.Headers,
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped
+		}
+		if pe, ok := m.provider.apiError(m.Provider(), err); ok {
+			return nil, pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
+		}
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("OpenAI TTS API returned status %d: %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
-	requestBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal OpenAI speech request metadata: %w", err)
-	}
-
 	return &types.SpeechResult{
 		Audio:    resp.Body,
 		Warnings: warnings,
 		Request: &types.StepRequest{
-			Body: string(requestBytes),
+			Body: requestText,
 		},
 		Response: &types.ResponseMetadata{
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
 		},
 	}, nil
+}
+
+// buildRequestBodyChecked is buildRequestBody plus TS parseProviderOptions
+// validation of providerOptions.openai (instructions: string|null,
+// speed: number in [0.25, 4]|null).
+func (m *SpeechModel) buildRequestBodyChecked(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	if err := validateSpeechProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
+	body, warnings := m.buildRequestBody(opts)
+	return body, warnings, nil
+}
+
+// ValidateSpeechProviderOptions validates providerOptions.openai for speech
+// calls (TS openaiSpeechModelOptionsSchema; also used by the Azure speech
+// router for OpenAI options passed under providerOptions.azure).
+func ValidateSpeechProviderOptions(providerOptions map[string]interface{}) error {
+	return validateSpeechProviderOptions(providerOptions)
+}
+
+func validateSpeechProviderOptions(providerOptions map[string]interface{}) error {
+	raw, ok := providerOptions["openai"]
+	if !ok || raw == nil {
+		return nil
+	}
+	invalid := func(msg string) error {
+		return providererrors.NewArgumentError("providerOptions", "invalid openai provider options", errors.New(msg))
+	}
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
+	if !ok {
+		return invalid("Invalid input: expected object")
+	}
+	if v, ok := m["instructions"]; ok && v != nil {
+		if _, isString := v.(string); !isString {
+			return invalid("Invalid input: expected string at instructions")
+		}
+	}
+	if v, ok := m["speed"]; ok && v != nil {
+		f, isNum := speechSpeedOption(v)
+		if !isNum || math.IsNaN(f) { // z.number() rejects NaN
+			return invalid("Invalid input: expected number at speed")
+		}
+		if f < 0.25 {
+			return invalid("Too small: expected number to be >=0.25 at speed")
+		}
+		if f > 4 {
+			return invalid("Too big: expected number to be <=4 at speed")
+		}
+	}
+	return nil
 }
 
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {
@@ -114,11 +180,11 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	// providerOptions.openai.speed/instructions take priority over the
 	// top-level fields when explicitly set (e13c32f; no speed default).
 	if opts.ProviderOptions != nil {
-		if openaiOpts, ok := opts.ProviderOptions["openai"].(map[string]interface{}); ok {
+		if openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"]); ok {
 			if v, ok := speechSpeedOption(openaiOpts["speed"]); ok {
 				body["speed"] = v
 			}
-			if instructions, ok := openaiOpts["instructions"].(string); ok && instructions != "" {
+			if instructions, ok := openaiOpts["instructions"].(string); ok {
 				body["instructions"] = instructions
 			}
 		}
@@ -127,7 +193,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "language",
-			Details: fmt.Sprintf("OpenAI speech models do not support language selection. Language parameter %q was ignored.", opts.Language),
+			Details: fmt.Sprintf("OpenAI speech models do not support language selection. Language parameter \"%s\" was ignored.", opts.Language),
 		})
 	}
 	return body, warnings
@@ -136,17 +202,30 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 // speechSpeedOption converts a JSON-decoded providerOptions.openai.speed
 // value (typically float64, but tolerate int/json.Number) to float64.
 func speechSpeedOption(v interface{}) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	case json.Number:
+	if n, ok := v.(json.Number); ok {
 		f, err := n.Float64()
 		return f, err == nil
-	default:
+	}
+	return goNumber(v)
+}
+
+// goNumber reads every Go integer and float kind (int64, uint8, float32,
+// ...) as a float64.
+func goNumber(v interface{}) (float64, bool) {
+	if v == nil {
 		return 0, false
 	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	}
+	return 0, false
 }
+
+// openAISpeechBodyOrder is the key order of TS getArgs' requestBody literal
+// (openai-speech-model.ts).
+var openAISpeechBodyOrder = map[string][]string{"": {"model", "input", "voice", "response_format", "speed", "instructions"}}

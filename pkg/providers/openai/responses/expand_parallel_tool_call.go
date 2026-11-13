@@ -16,7 +16,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 const (
@@ -33,9 +37,12 @@ type ParallelToolCallMetadata struct {
 	ItemID     string `json:"itemId"`
 	ToolCallID string `json:"toolCallId"`
 	ToolName   string `json:"toolName"`
-	Input      string `json:"input"`
-	Index      int    `json:"index"`
-	Count      int    `json:"count"`
+	// Input is the full wrapper input. TS 22b8158276 keeps it on the first
+	// child only (index 0); siblings leave it empty and it is omitted from
+	// JSON. Older histories may repeat it on every child.
+	Input string `json:"input,omitempty"`
+	Index int    `json:"index"`
+	Count int    `json:"count"`
 }
 
 // GetParallelToolCallMetadata extracts ParallelToolCallMetadata from a
@@ -44,29 +51,60 @@ type ParallelToolCallMetadata struct {
 // shape produced by openAIResponsesToolCallMetadata / a tool-result's
 // merged provider metadata: {<providerName>: {parallelToolCall: {...}}}.
 func GetParallelToolCallMetadata(metadata map[string]interface{}, providerName string) (ParallelToolCallMetadata, bool) {
-	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	m, _, ok := getParallelToolCallMetadata(metadata, providerName)
+	return m, ok
+}
+
+// getParallelToolCallMetadata is GetParallelToolCallMetadata that also
+// reports whether `input` was present (TS `input?: string`, 22b8158276): an
+// absent input is accepted, a present non-string input is rejected.
+func getParallelToolCallMetadata(metadata map[string]interface{}, providerName string) (ParallelToolCallMetadata, bool, bool) {
+	openaiMeta, ok := providerutils.NormalizeProviderOptionsObject(metadata[providerName])
 	if !ok {
-		return ParallelToolCallMetadata{}, false
+		return ParallelToolCallMetadata{}, false, false
 	}
 	raw, ok := openaiMeta[parallelToolCallKey]
 	if !ok {
-		return ParallelToolCallMetadata{}, false
+		return ParallelToolCallMetadata{}, false, false
 	}
 	// raw may already be a ParallelToolCallMetadata value (set in-process by
 	// ExpandParallelToolCall) or a generic map[string]interface{} (decoded
 	// from JSON on a later turn); round-trip through JSON to normalize.
-	data, err := json.Marshal(raw)
+	data, err := jsonstr.Marshal(raw)
 	if err != nil {
-		return ParallelToolCallMetadata{}, false
+		return ParallelToolCallMetadata{}, false, false
+	}
+	// TS isJSONObject + typeof checks: every field must be present with its
+	// exact type (itemId/toolCallId/toolName strings, index/count integers);
+	// empty strings are accepted. input is optional, but a string when given.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return ParallelToolCallMetadata{}, false, false
 	}
 	var m ParallelToolCallMetadata
-	if err := json.Unmarshal(data, &m); err != nil {
-		return ParallelToolCallMetadata{}, false
+	for key, dst := range map[string]interface{}{"itemId": &m.ItemID, "toolCallId": &m.ToolCallID, "toolName": &m.ToolName} {
+		v, present := fields[key]
+		if !present || json.Unmarshal(v, dst) != nil || len(v) == 0 || v[0] != '"' {
+			return ParallelToolCallMetadata{}, false, false
+		}
 	}
-	if m.ToolCallID == "" || m.ToolName == "" || m.Index < 0 || m.Count <= m.Index {
-		return ParallelToolCallMetadata{}, false
+	hasInput := false
+	if v, present := fields["input"]; present {
+		if json.Unmarshal(v, &m.Input) != nil || len(v) == 0 || v[0] != '"' {
+			return ParallelToolCallMetadata{}, false, false
+		}
+		hasInput = true
 	}
-	return m, true
+	for key, dst := range map[string]*int{"index": &m.Index, "count": &m.Count} {
+		v, present := fields[key]
+		if !present || json.Unmarshal(v, dst) != nil {
+			return ParallelToolCallMetadata{}, false, false
+		}
+	}
+	if m.Index < 0 || m.Count <= m.Index {
+		return ParallelToolCallMetadata{}, false, false
+	}
+	return m, hasInput, true
 }
 
 // isFunctionTool reports whether t is a plain client-executed function tool
@@ -108,13 +146,24 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 	}
 
 	var parsed map[string]interface{}
-	if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+	if err := jsonexact.Unmarshal([]byte(input), &parsed); err != nil {
 		return nil, false
 	}
 
 	rawToolUses, ok := parsed["tool_uses"].([]interface{})
 	if !ok || len(rawToolUses) == 0 {
 		return nil, false
+	}
+
+	// TS JSON.stringify(parameters) keeps the model's key order; the ordered
+	// tree gives each nested call's input text.
+	var orderedUses []interface{}
+	if tree, ok := jsonorder.Parse([]byte(input)); ok {
+		if obj, ok := tree.(*jsonorder.Object); ok {
+			if uses, ok := obj.Get("tool_uses"); ok {
+				orderedUses, _ = uses.([]interface{})
+			}
+		}
 	}
 
 	availableToolNames := map[string]bool{}
@@ -142,7 +191,14 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 		if childToolName == "" || !availableToolNames[childToolName] {
 			return nil, false
 		}
-		childInput, _ := json.Marshal(parameters)
+		childInput, _ := jsonstr.Marshal(parameters)
+		if index < len(orderedUses) {
+			if use, ok := orderedUses[index].(*jsonorder.Object); ok {
+				if params, ok := use.Get("parameters"); ok {
+					childInput = []byte(jsonorder.Stringify(params))
+				}
+			}
+		}
 		expanded = append(expanded, types.ToolCall{
 			ID:           fmt.Sprintf("%s_%d", toolCallID, index),
 			ToolName:     childToolName,
@@ -154,7 +210,7 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 						ItemID:     itemID,
 						ToolCallID: toolCallID,
 						ToolName:   toolName,
-						Input:      input,
+						Input:      firstChildInput(index, input),
 						Index:      index,
 						Count:      len(rawToolUses),
 					},
@@ -163,4 +219,13 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 		})
 	}
 	return expanded, true
+}
+
+// firstChildInput keeps the wrapper input on the first child only (TS
+// 22b8158276 `...(index === 0 && { input })`).
+func firstChildInput(index int, input string) string {
+	if index == 0 {
+		return input
+	}
+	return ""
 }

@@ -9,6 +9,7 @@ import (
 func init() {
 	provider.RegisterModelDeserializer("perplexity", deserializeModel)
 	provider.RegisterEmbeddingModelDeserializer("perplexity", deserializeEmbeddingModel)
+	provider.RegisterEmbeddingModelDeserializer("perplexity.embedding", deserializeEmbeddingModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {
@@ -33,4 +34,21 @@ func deserializeEmbeddingModel(serialized provider.SerializedModel) (provider.Em
 	data, _ := json.Marshal(serialized.Config)
 	_ = json.Unmarshal(data, &cfg)
 	return New(cfg).EmbeddingModel(serialized.ModelID)
+}
+
+func init() {
+	provider.RegisterDecisionModelDeserializer(decisionProviderName, deserializeDecisionModel)
+}
+
+// Serialize implements provider.SerializableModel for workflow boundaries.
+// Mirrors TS perplexity-decision-model.ts [WORKFLOW_SERIALIZE].
+func (m *DecisionModel) Serialize() provider.SerializedModel {
+	return provider.SerializedModel{Provider: m.Provider(), ModelID: m.ModelID(), Config: provider.SerializableConfig(m.provider.config)}
+}
+
+func deserializeDecisionModel(serialized provider.SerializedModel) (provider.DecisionModel, error) {
+	var cfg Config
+	data, _ := json.Marshal(serialized.Config)
+	_ = json.Unmarshal(data, &cfg)
+	return New(cfg).DecisionModel(serialized.ModelID)
 }

@@ -1,13 +1,77 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
+import { existsSync, globSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
+import { Buffer as Buffer$1 } from "node:buffer";
+import { homedir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { createOpencodeClient, createOpencodeServer } from "@opencode-ai/sdk/v2";
+import { rgPath } from "@vscode/ripgrep";
 import { createServer } from "node:http";
 //#region ../harness/dist/bridge/index.js
+const BRIDGE_AUTH_TIMEOUT_MS = 1e4;
+const BRIDGE_AUTH_MESSAGE_PREFIX = "ai-sdk-harness-bridge-auth-v1\0";
+const PROOF_FRAME_REGEXP = /^\{"type":"bridge-auth-proof","signature":"([A-Za-z0-9_-]{86})"\}$/;
+function createBridgeAuthMessage({ challenge }) {
+	return Buffer$1.from(`${BRIDGE_AUTH_MESSAGE_PREFIX}${challenge}`, "utf8");
+}
+function serializeBridgeAuthChallengeFrame({ challenge }) {
+	return JSON.stringify({
+		type: "bridge-auth-challenge",
+		challenge
+	});
+}
+function parseBridgeAuthProofFrame({ text }) {
+	return PROOF_FRAME_REGEXP.exec(text)?.[1];
+}
+const PUBLIC_KEY_REGEXP = /^[A-Za-z0-9_-]{43}$/;
+const UNAUTHORIZED_CLOSE_CODE = 1008;
+const INVALID_PUBLIC_KEY_MESSAGE = "The bridge requires a valid Ed25519 public key for authentication.";
+function parseBridgeAuthPublicKey({ publicKey }) {
+	if (publicKey == null || !PUBLIC_KEY_REGEXP.test(publicKey)) throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	let key;
+	try {
+		key = createPublicKey({
+			key: {
+				kty: "OKP",
+				crv: "Ed25519",
+				x: publicKey
+			},
+			format: "jwk"
+		});
+	} catch {
+		throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	}
+	if (key.asymmetricKeyType !== "ed25519") throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	return key;
+}
+function authenticateBridgeConnection({ ws, publicKey, timeoutMs = BRIDGE_AUTH_TIMEOUT_MS, onAuthenticated }) {
+	const challenge = randomBytes(32).toString("hex");
+	const timeout = setTimeout(() => ws.terminate(), timeoutMs);
+	timeout.unref?.();
+	const onError = () => {};
+	ws.on("error", onError);
+	ws.once("close", () => clearTimeout(timeout));
+	ws.once("message", (raw, isBinary) => {
+		clearTimeout(timeout);
+		const text = isBinary ? void 0 : rawDataToString(raw);
+		const signature = text == null ? void 0 : parseBridgeAuthProofFrame({ text });
+		if (signature == null || !verify(null, createBridgeAuthMessage({ challenge }), publicKey, Buffer$1.from(signature, "base64url"))) {
+			ws.close(UNAUTHORIZED_CLOSE_CODE, "unauthorized");
+			return;
+		}
+		ws.off("error", onError);
+		onAuthenticated();
+	});
+	ws.send(serializeBridgeAuthChallengeFrame({ challenge }));
+}
+function rawDataToString(raw) {
+	const buffer = Array.isArray(raw) ? Buffer$1.concat(raw) : Buffer$1.isBuffer(raw) ? raw : Buffer$1.from(raw);
+	if (buffer.byteLength > 1024) return void 0;
+	return buffer.toString("utf8");
+}
 const DEBUG_LEVEL_WEIGHT = {
 	error: 0,
 	warn: 1,
@@ -135,7 +199,13 @@ const WS_OPEN = 1;
 async function runBridge(options) {
 	const { bridgeType, bridgeStateDir, onStart, onStop, onDestroy } = options;
 	const teardownGraceMs = options.turnTeardownGraceMs ?? 1e4;
-	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
+	const hostDisconnectTimeoutMs = options.hostDisconnectTimeoutMs != null && Number.isFinite(options.hostDisconnectTimeoutMs) && options.hostDisconnectTimeoutMs > 0 ? Math.min(options.hostDisconnectTimeoutMs, 2147483647) : void 0;
+	let hostDisconnectTimer;
+	const clearHostDisconnectTimer = () => {
+		clearTimeout(hostDisconnectTimer);
+		hostDisconnectTimer = void 0;
+	};
+	const authPublicKey = parseBridgeAuthPublicKey({ publicKey: options.publicKey ?? env["BRIDGE_AUTH_PUBLIC_KEY"] });
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
 	const startConfigPath = `${bridgeStateDir}/start-config.json`;
@@ -156,6 +226,7 @@ async function runBridge(options) {
 	* between turns. A new `start` fences on this so turns never overlap.
 	*/
 	let activeTurn;
+	let lastStartId;
 	let debugConfig;
 	let consoleCaptureInstalled = false;
 	const envDebugEnabled = ENV_TRUTHY.has((env.HARNESS_DEBUG ?? "").toLowerCase());
@@ -299,6 +370,11 @@ async function runBridge(options) {
 	const handleInbound = async (msg, ws) => {
 		switch (msg.type) {
 			case "start": {
+				const startId = msg.startId;
+				if (startId != null) {
+					if (startId === lastStartId) return;
+					lastStartId = startId;
+				}
 				for (;;) {
 					const pendingTurn = activeTurn;
 					if (pendingTurn == null) break;
@@ -316,6 +392,7 @@ async function runBridge(options) {
 				const thisTurn = new Promise((resolve) => turnFinished = resolve);
 				activeTurn = thisTurn;
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				const firstTurn = isFirstTurn;
 				isFirstTurn = false;
 				eventLog = [];
@@ -382,6 +459,7 @@ async function runBridge(options) {
 						activeTurn = void 0;
 						currentTurnState = "waiting";
 						writeBridgeMeta("waiting");
+						clearHostDisconnectTimer();
 					}
 					turnFinished();
 				}
@@ -448,6 +526,7 @@ async function runBridge(options) {
 				return;
 			case "resume":
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				replay(ws, msg.lastSeenEventId);
 				return;
 			case "destroy":
@@ -507,16 +586,20 @@ async function runBridge(options) {
 		}) + "\n");
 		options.onListening?.(currentBoundPort);
 	});
-	wss.on("connection", (ws, req) => {
-		if (new URL(req.url ?? "/", "http://localhost").searchParams.get("agent_bridge_token") !== expectedToken) {
-			ws.close(1008, "unauthorized");
-			return;
-		}
+	wss.on("connection", (ws) => authenticateBridgeConnection({
+		ws,
+		publicKey: authPublicKey,
+		onAuthenticated: () => acceptConnection(ws)
+	}));
+	const acceptConnection = (ws) => {
 		sendControl(ws, {
 			type: "bridge-hello",
 			state: currentTurnState,
 			lastSeq: seqCounter,
-			capabilities: { experimental_userMessageResponses: true }
+			capabilities: {
+				idempotentStart: true,
+				experimental_userMessageResponses: true
+			}
 		});
 		ws.on("message", (raw) => {
 			let parsed;
@@ -532,11 +615,21 @@ async function runBridge(options) {
 			}
 			handleInbound(parsed, ws);
 		});
-		ws.on("close", () => {
-			if (activeSocket === ws) activeSocket = void 0;
+		ws.on("close", (_code, reason) => {
+			if (activeSocket === ws) {
+				activeSocket = void 0;
+				if (hostDisconnectTimeoutMs != null && activeTurn != null && reason.toString() !== "suspended") {
+					clearHostDisconnectTimer();
+					hostDisconnectTimer = setTimeout(() => {
+						hostDisconnectTimer = void 0;
+						if (activeSocket == null) turnAbort?.abort();
+					}, hostDisconnectTimeoutMs);
+					hostDisconnectTimer.unref?.();
+				}
+			}
 		});
 		ws.on("error", () => {});
-	});
+	};
 	process.on("uncaughtException", (err) => {
 		emitError({
 			error: err,
@@ -576,6 +669,73 @@ function serialiseError(err) {
 		stack: err.stack
 	};
 	return err;
+}
+//#endregion
+//#region src/bridge/opencode-host-input-tracker.ts
+function createOpenCodeHostInputTracker({ emit }) {
+	const unsettledToolCalls = /* @__PURE__ */ new Map();
+	const waitingToolCallIds = /* @__PURE__ */ new Set();
+	const groupWaits = /* @__PURE__ */ new Map([["host-tool", /* @__PURE__ */ new Set()], ["subagent", /* @__PURE__ */ new Set()]]);
+	const coveredIds = /* @__PURE__ */ new Set();
+	const emitEarlyFinishStepIfReady = () => {
+		if (unsettledToolCalls.size === 0) return;
+		const notWaitingByGroup = /* @__PURE__ */ new Map();
+		for (const [callID, group] of unsettledToolCalls) {
+			if (waitingToolCallIds.has(callID)) continue;
+			if (group == null) return;
+			notWaitingByGroup.set(group, (notWaitingByGroup.get(group) ?? 0) + 1);
+		}
+		for (const [group, count] of notWaitingByGroup) if (count > groupWaits.get(group).size) return;
+		const uncovered = [...waitingToolCallIds, ...[...groupWaits.values()].flatMap((ids) => [...ids])].filter((id) => !coveredIds.has(id));
+		if (uncovered.length === 0) return;
+		for (const id of uncovered) coveredIds.add(id);
+		emit({
+			type: "finish-step",
+			finishReason: {
+				unified: "tool-calls",
+				raw: "host-input"
+			},
+			usage: {
+				inputTokens: {
+					total: 0,
+					noCache: 0,
+					cacheRead: 0,
+					cacheWrite: 0
+				},
+				outputTokens: {
+					total: 0,
+					text: 0
+				}
+			},
+			harnessMetadata: { opencode: { inferredStep: true } }
+		});
+	};
+	return {
+		observeToolCall({ callID, status, group }) {
+			if (status === "started") unsettledToolCalls.set(callID, group);
+			else unsettledToolCalls.delete(callID);
+			emitEarlyFinishStepIfReady();
+		},
+		markWaiting({ toolCallId }) {
+			if (!unsettledToolCalls.has(toolCallId)) unsettledToolCalls.set(toolCallId, void 0);
+			waitingToolCallIds.add(toolCallId);
+			emitEarlyFinishStepIfReady();
+		},
+		clearWaiting({ toolCallId, settled = false }) {
+			waitingToolCallIds.delete(toolCallId);
+			if (settled) unsettledToolCalls.delete(toolCallId);
+		},
+		markGroupWaiting({ group, id }) {
+			groupWaits.get(group).add(id);
+			emitEarlyFinishStepIfReady();
+		},
+		clearGroupWaiting({ group, id }) {
+			groupWaits.get(group).delete(id);
+		},
+		observeFinishStep() {
+			coveredIds.clear();
+		}
+	};
 }
 //#endregion
 //#region src/bridge/opencode-types.ts
@@ -965,7 +1125,7 @@ function translateLegacyStepFinishPart(value) {
 }
 //#endregion
 //#region src/bridge/create-emit-stream-event.ts
-function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireToolName, nativeNameField, getHostToolName, authorizeHostToolCall, onSubagentSession, isMcpToolName, stripWorkDir, formatError }) {
+function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireToolName, nativeNameField, getHostToolName, authorizeHostToolCall, onSubagentSession, onToolCallStatus, isMcpToolName, stripWorkDir, formatError }) {
 	const compactionMessages = /* @__PURE__ */ new Set();
 	let compactionTrigger = "auto";
 	let compaction;
@@ -1080,6 +1240,7 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 				getHostToolName,
 				authorizeHostToolCall,
 				onSubagentSession,
+				onToolCallStatus,
 				isMcpToolName
 			});
 			return;
@@ -1152,6 +1313,11 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 			const callID = String(props.callID ?? event.id);
 			const command = String(props.command ?? "");
 			state.shellCommands.set(callID, command);
+			onToolCallStatus?.({
+				callID,
+				status: "started",
+				group: void 0
+			});
 			emit({
 				type: "tool-call",
 				toolCallId: callID,
@@ -1164,6 +1330,11 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 		}
 		if (type === "session.next.shell.ended") {
 			const callID = String(props.callID ?? event.id);
+			onToolCallStatus?.({
+				callID,
+				status: "settled",
+				group: void 0
+			});
 			emit({
 				type: "tool-result",
 				toolCallId: callID,
@@ -1194,6 +1365,14 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 				toolName
 			});
 			const hostToolName = getHostToolName(toolName, props.tool);
+			onToolCallStatus?.({
+				callID,
+				status: "started",
+				group: toolCallGroup({
+					hostToolName,
+					toolName
+				})
+			});
 			if (hostToolName) {
 				authorizeHostToolCall({
 					callID,
@@ -1224,6 +1403,11 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 			const rawToolName = cachedTool?.rawToolName ?? String(props.tool ?? "");
 			if (rawToolName === "StructuredOutput" || rawToolName === "question") return;
 			const toolName = cachedTool?.toolName ?? toWireToolName(rawToolName || "unknown");
+			onToolCallStatus?.({
+				callID,
+				status: "settled",
+				group: void 0
+			});
 			if (getHostToolName(toolName, rawToolName)) return;
 			emit({
 				type: "tool-result",
@@ -1290,6 +1474,10 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 		}
 	};
 }
+function toolCallGroup({ hostToolName, toolName }) {
+	if (hostToolName) return "host-tool";
+	if (toolName === "agent") return "subagent";
+}
 function closeLegacyOpenParts({ state, emit }) {
 	for (const id of state.legacyReasoningPartIds) {
 		emit({
@@ -1324,7 +1512,7 @@ function emitLegacyStepFinishPart({ part, state, emit }) {
 	emit(event);
 	return true;
 }
-function emitLegacyToolPart({ part, state, emit, toWireToolName, nativeNameField, getHostToolName, authorizeHostToolCall, onSubagentSession, isMcpToolName }) {
+function emitLegacyToolPart({ part, state, emit, toWireToolName, nativeNameField, getHostToolName, authorizeHostToolCall, onSubagentSession, onToolCallStatus, isMcpToolName }) {
 	const toolPart = legacyToolPartFromValue(part);
 	if (!toolPart) return;
 	const status = toolPart.status;
@@ -1350,6 +1538,14 @@ function emitLegacyToolPart({ part, state, emit, toWireToolName, nativeNameField
 		toolName
 	});
 	const hostToolName = getHostToolName(toolName, rawToolName);
+	onToolCallStatus?.({
+		callID,
+		status: status === "running" ? "started" : "settled",
+		group: toolCallGroup({
+			hostToolName,
+			toolName
+		})
+	});
 	if (hostToolName) {
 		if (status === "running") authorizeHostToolCall({
 			callID,
@@ -1388,11 +1584,7 @@ function emitLegacyToolPart({ part, state, emit, toWireToolName, nativeNameField
 	}
 }
 function legacyToolPartInput(part) {
-	return {
-		...part.metadata,
-		...part.state?.metadata,
-		...part.state?.input
-	};
+	return { ...part.state?.input };
 }
 function legacyToolPartOutput(part) {
 	const state = part.state;
@@ -1429,6 +1621,7 @@ function legacyToolPartFromValue(value) {
 	const part = asOpenCodeObject(value);
 	if (!part || part.type !== "tool" || typeof part.tool !== "string" || typeof part.callID !== "string") return;
 	const stateObject = asOpenCodeObject(part.state);
+	if (asOpenCodeObject(stateObject?.time)?.compacted != null) return void 0;
 	const provider = asOpenCodeObject(part.provider);
 	const state = stateObject ? {
 		status: stringValue(stateObject.status),
@@ -1465,8 +1658,36 @@ function openCodeErrorFromValue(value) {
 //#endregion
 //#region src/bridge/opencode-path.ts
 const fallbackPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-function prependOpenCodeBinToPath({ bootstrapDir, env }) {
-	env.PATH = [path.join(bootstrapDir, "node_modules", ".bin"), env.PATH || fallbackPath].join(path.delimiter);
+function configureOpenCodePath({ bootstrapDir, env }) {
+	env.PATH = [
+		path.join(bootstrapDir, "node_modules", ".bin"),
+		env.PATH || fallbackPath,
+		path.dirname(rgPath)
+	].join(path.delimiter);
+}
+//#endregion
+//#region src/bridge/opencode-project-isolation.ts
+const GLOB_CHARACTERS = /[*?[\]{}]/;
+function resolveOpenCodeInstructions({ workdir, hostInstructions }) {
+	if (hostInstructions !== void 0 && !(Array.isArray(hostInstructions) && hostInstructions.every((entry) => typeof entry === "string"))) return;
+	const directory = resolveRealPath(workdir);
+	return [path.join(directory, "AGENTS.md"), ...(hostInstructions ?? []).flatMap((entry) => {
+		if (entry.startsWith("http://") || entry.startsWith("https://") || entry.startsWith("~/") || path.isAbsolute(entry)) return [entry];
+		if (!GLOB_CHARACTERS.test(path.dirname(entry))) return [path.join(directory, entry)];
+		return globSync(entry, {
+			cwd: directory,
+			withFileTypes: true
+		}).filter((match) => match.isFile()).map((match) => path.join(match.parentPath, match.name)).sort();
+	})];
+}
+function resolveRealPath(file) {
+	const resolved = path.resolve(file);
+	try {
+		return realpathSync(resolved);
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return resolved;
+		throw error;
+	}
 }
 //#endregion
 //#region src/bridge/opencode-server-auth.ts
@@ -1556,7 +1777,7 @@ function normalizeJsonValue(value) {
 }
 //#endregion
 //#region src/bridge/tool-relay.ts
-async function startAuthorizedToolRelay({ tools, emit, requestToolResult, authorizer = new ToolRelayAuthorizer() }) {
+async function startAuthorizedToolRelay({ tools, emit, requestToolResult, onWaitingChange, authorizer = new ToolRelayAuthorizer() }) {
 	const toolNames = new Set(tools.map((tool) => tool.name));
 	const server = createServer(async (req, res) => {
 		try {
@@ -1589,7 +1810,14 @@ async function startAuthorizedToolRelay({ tools, emit, requestToolResult, author
 				input: JSON.stringify(input ?? {}),
 				providerExecuted: false
 			});
-			const { output, isError } = await requestToolResult(requestId);
+			onWaitingChange?.({
+				requestId,
+				waiting: true
+			});
+			const { output, isError, toolResult } = await requestToolResult(requestId).finally(() => onWaitingChange?.({
+				requestId,
+				waiting: false
+			}));
 			emit({
 				type: "tool-result",
 				toolCallId: requestId,
@@ -1598,7 +1826,11 @@ async function startAuthorizedToolRelay({ tools, emit, requestToolResult, author
 				isError: !!isError
 			});
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ result: output }));
+			res.end(JSON.stringify({
+				result: output,
+				...isError != null ? { isError } : {},
+				...toolResult != null ? { toolResult } : {}
+			}));
 		} catch (error) {
 			res.writeHead(500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
@@ -1668,6 +1900,110 @@ function positionalIdIndex(input) {
 	return Number.isInteger(oneBasedIndex) && oneBasedIndex > 0 ? oneBasedIndex - 1 : void 0;
 }
 //#endregion
+//#region src/bridge/opencode-prompt.ts
+function toOpenCodePromptParts(prompt) {
+	if (typeof prompt === "string") return [{
+		type: "text",
+		text: prompt
+	}];
+	return prompt.map((part) => part.type === "text" ? {
+		type: "text",
+		text: part.text
+	} : {
+		type: "file",
+		mime: part.mediaType,
+		url: `data:${part.mediaType};base64,${part.data}`
+	});
+}
+//#endregion
+//#region src/bridge/permission-paths.ts
+async function areOpenCodePermissionPathsTrusted(options) {
+	const args = options.toolCall?.input;
+	const nativeName = options.toolCall?.nativeName;
+	const access = ["edit", "write"].includes(options.action) || [
+		"write",
+		"edit",
+		"apply_patch"
+	].includes(nativeName ?? "") ? "write" : "read";
+	let targets;
+	if (Array.isArray(options.metadata?.files)) {
+		if (options.metadata.files.length === 0) return false;
+		targets = options.metadata.files.flatMap((value) => {
+			if (value == null || typeof value !== "object") return [void 0];
+			const file = value;
+			return file.type === "move" || file.movePath != null ? [file.filePath, file.movePath] : [file.filePath];
+		});
+	} else if (args && [
+		"read",
+		"view",
+		"write",
+		"edit"
+	].includes(nativeName ?? "")) targets = [args.filePath];
+	else if (args && [
+		"glob",
+		"grep",
+		"list",
+		"ls"
+	].includes(nativeName ?? "")) targets = [args.path ?? options.workDir];
+	else if (typeof options.metadata?.filepath === "string" && options.action !== "edit") targets = [options.metadata.filepath];
+	else if (options.action === "edit" && typeof options.metadata?.filepath === "string" && path.posix.isAbsolute(options.metadata.filepath)) targets = [options.metadata.filepath];
+	else if (options.action === "read" && options.resources.length > 0 && options.resources.every((value) => path.posix.isAbsolute(value))) targets = options.resources;
+	else return false;
+	if (!targets.every((value) => typeof value === "string")) return false;
+	return areFileToolPathsTrusted({
+		workDir: options.workDir,
+		cwd: options.workDir,
+		paths: targets,
+		access,
+		readableSkillRoots: options.readableSkillRoots
+	});
+}
+async function areFileToolPathsTrusted(options) {
+	if (options.paths.length === 0) return false;
+	try {
+		const roots = [await realpath(options.workDir)];
+		if (options.access === "read") for (const root of options.readableSkillRoots) try {
+			roots.push(await realpath(root));
+		} catch {
+			continue;
+		}
+		for (const filePath of options.paths) {
+			if (typeof filePath !== "string" || filePath.trim().length === 0) return false;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(options.cwd)) return false;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${options.cwd}/${filePath}`;
+			for (const candidatePath of [absolutePath, path.posix.normalize(absolutePath)]) {
+				const candidate = await resolvePermissionPath({ filePath: candidatePath });
+				if (!roots.some((root) => {
+					const relative = path.posix.relative(root, candidate);
+					return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+				})) return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function resolvePermissionPath(options) {
+	let existingPath = options.filePath;
+	const missing = [];
+	for (;;) {
+		let exists = true;
+		try {
+			await lstat(existingPath);
+		} catch (error) {
+			if (error == null || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+			exists = false;
+		}
+		if (exists) return path.posix.join(await realpath(existingPath), ...missing);
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === "." || segment === "..") throw new Error("Unable to resolve permission path.");
+		missing.unshift(segment);
+		existingPath = parent;
+	}
+}
+//#endregion
 //#region src/bridge/index.ts
 const NATIVE_TO_COMMON = {
 	view: "read",
@@ -1688,9 +2024,10 @@ const OPENCODE_TO_WIRE = {
 	askUserQuestions: "question",
 	subtask: "agent"
 };
-const PUBLIC_TO_NATIVE = {
-	read: "view",
-	write: "write",
+const BUILTIN_TOOL_PERMISSION = {
+	askUserQuestions: "question",
+	read: "read",
+	write: "edit",
 	edit: "edit",
 	bash: "bash",
 	glob: "glob",
@@ -1699,7 +2036,7 @@ const PUBLIC_TO_NATIVE = {
 	webfetch: "webfetch",
 	skill: "skill",
 	todowrite: "todowrite",
-	agent: "agent"
+	agent: "task"
 };
 const TOOL_KIND = {
 	read: "readonly",
@@ -1714,6 +2051,7 @@ const TOOL_KIND = {
 	skill: "edit",
 	todowrite: "edit"
 };
+const APPROVAL_TOOL_CALL_WAIT_MS = 5e3;
 const HARNESS_CLIENT_APP = env.AI_SDK_HARNESS_CLIENT_APP;
 const args = parseArgs(argv.slice(2));
 const workdir = args.workdir ?? emitFatal("Missing --workdir argument.");
@@ -1724,25 +2062,26 @@ const runtime = {
 	toolNames: /* @__PURE__ */ new Set(),
 	mcpToolPrefixes: /* @__PURE__ */ new Set()
 };
-prependOpenCodeBinToPath({
+let currentHostInputTracker;
+let currentTurn;
+configureOpenCodePath({
 	bootstrapDir,
 	env
 });
+env.OPENCODE_DISABLE_PROJECT_CONFIG = "1";
 await runBridge({
 	bridgeType: "opencode",
 	bridgeStateDir,
+	...args.hostDisconnectTimeoutMs !== void 0 ? { hostDisconnectTimeoutMs: args.hostDisconnectTimeoutMs } : {},
 	onStart: runTurn,
 	onStop: () => runtime.sessionId ? { openCodeSessionId: runtime.sessionId } : {}
 });
 async function runTurn(start, turn) {
+	currentTurn = turn;
 	const emit = (msg) => turn.emit(msg);
 	let totalUsage;
 	try {
-		await ensureRuntime({
-			start,
-			turn,
-			emit
-		});
+		await ensureRuntime({ start });
 		const client = runtime.client;
 		if (start.skillsChanged) await client.instance.dispose({ directory: workdir });
 		const sessionId = await ensureSession({
@@ -1798,18 +2137,17 @@ async function switchSessionModel({ client, sessionId, start }) {
 	});
 	if (response.error != null) throw response.error;
 }
-async function ensureRuntime({ start, turn, emit }) {
-	if (runtime.client && isDeepStrictEqual(runtime.openCodeConfig, start.openCodeConfig)) return;
+async function ensureRuntime({ start }) {
+	if (runtime.client && isDeepStrictEqual(runtime.openCodeConfig, start.openCodeConfig) && isDeepStrictEqual(runtime.inactiveBuiltinToolNames, start.inactiveBuiltinToolNames)) return;
 	closeRuntime();
 	try {
+		const homeDirectory = homedir();
+		for (const protectedPath of [homeDirectory, path.join(env.XDG_CONFIG_HOME || path.join(homeDirectory, ".config"), "opencode")]) if (isPathInsideOrEqual(protectedPath, workdir)) throw new Error(`OpenCode session working directory "${workdir}" must not be or contain the sandbox home directory or OpenCode's global config directory, because OpenCode always loads configuration from those locations.`);
 		if (start.tools && start.tools.length > 0) {
 			runtime.toolNames = new Set(start.tools.map((tool) => tool.name));
-			runtime.relay = await startToolRelay({
-				tools: start.tools,
-				emit,
-				requestToolResult: turn.requestToolResult
-			});
+			runtime.relay = await startToolRelay({ tools: start.tools });
 		}
+		const toolSchemasPath = runtime.relay && start.tools ? writeHostToolSchemas(start.tools) : void 0;
 		const serverAuthHeaders = configureOpenCodeServerAuth({ env });
 		const server = await createOpencodeServer({
 			hostname: "127.0.0.1",
@@ -1817,7 +2155,8 @@ async function ensureRuntime({ start, turn, emit }) {
 			timeout: 3e4,
 			config: buildOpenCodeConfig({
 				start,
-				relayPort: runtime.relay?.port
+				relayPort: runtime.relay?.port,
+				toolSchemasPath
 			})
 		});
 		runtime.server = server;
@@ -1829,6 +2168,7 @@ async function ensureRuntime({ start, turn, emit }) {
 		const mcpServers = asOpenCodeObject((await runtime.client.mcp.status()).data) ?? {};
 		runtime.mcpToolPrefixes = new Set(Object.entries(mcpServers).filter(([serverName, status]) => serverName !== "harness-tools" && asOpenCodeObject(status)?.status === "connected").map(([serverName]) => `${sanitizeMcpToolName(serverName)}_`));
 		runtime.openCodeConfig = structuredClone(start.openCodeConfig);
+		runtime.inactiveBuiltinToolNames = structuredClone(start.inactiveBuiltinToolNames);
 	} catch (error) {
 		closeRuntime();
 		throw error;
@@ -1841,19 +2181,20 @@ function closeRuntime() {
 	runtime.client = void 0;
 	runtime.relay = void 0;
 	runtime.openCodeConfig = void 0;
+	runtime.inactiveBuiltinToolNames = void 0;
 	runtime.toolNames = /* @__PURE__ */ new Set();
 	runtime.mcpToolPrefixes = /* @__PURE__ */ new Set();
 }
-function buildOpenCodeConfig({ start, relayPort }) {
+function buildOpenCodeConfig({ start, relayPort, toolSchemasPath }) {
 	const config = {
 		...withoutAgentPolicyOverrides(start.openCodeConfig),
 		share: "disabled",
 		autoupdate: false,
 		permission: {
-			read: "allow",
-			glob: "allow",
-			grep: "allow",
-			list: "allow",
+			read: start.permissionMode && start.permissionMode !== "allow-all" ? "ask" : "allow",
+			glob: start.permissionMode && start.permissionMode !== "allow-all" ? "ask" : "allow",
+			grep: start.permissionMode && start.permissionMode !== "allow-all" ? "ask" : "allow",
+			list: start.permissionMode && start.permissionMode !== "allow-all" ? "ask" : "allow",
 			edit: "ask",
 			bash: "ask",
 			external_directory: "ask",
@@ -1863,33 +2204,39 @@ function buildOpenCodeConfig({ start, relayPort }) {
 			question: "allow"
 		}
 	};
+	const instructions = resolveOpenCodeInstructions({
+		workdir,
+		hostInstructions: start.openCodeConfig?.instructions
+	});
+	if (instructions) config.instructions = instructions;
 	if (start.model) config.model = start.model;
 	if (skillsDir) config.skills = { paths: [skillsDir] };
-	const inactiveToolNames = resolveInactiveBuiltinToolNames(start);
 	const permission = config.permission;
-	for (const toolName of inactiveToolNames) {
-		const permissionName = toPermissionToolName(PUBLIC_TO_NATIVE[toolName] ?? toolName);
-		if (permissionName === "ls") permission.list = "ask";
-		else permission[permissionName] = "ask";
-	}
+	for (const toolName of start.inactiveBuiltinToolNames ?? []) permission[BUILTIN_TOOL_PERMISSION[toolName]] = "deny";
 	const provider = buildProviderConfig(start);
 	if (provider) config.provider = provider;
 	const mcp = { ...start.mcpServers };
-	if (relayPort && start.tools && start.tools.length > 0) mcp["harness-tools"] = {
+	if (relayPort && toolSchemasPath) mcp["harness-tools"] = {
 		type: "local",
 		enabled: true,
 		command: ["node", `${bootstrapDir}/host-tool-mcp.mjs`],
 		environment: {
-			TOOL_SCHEMAS: JSON.stringify(start.tools.map((t) => ({
-				name: t.name,
-				description: t.description,
-				inputSchema: t.inputSchema
-			}))),
+			TOOL_SCHEMAS_PATH: toolSchemasPath,
 			TOOL_RELAY_URL: `http://127.0.0.1:${relayPort}`
 		}
 	};
 	if (Object.keys(mcp).length > 0) config.mcp = mcp;
 	return config;
+}
+function writeHostToolSchemas(tools) {
+	mkdirSync(bridgeStateDir, { recursive: true });
+	const toolSchemasPath = path.resolve(bridgeStateDir, "host-tool-schemas.json");
+	writeFileSync(toolSchemasPath, JSON.stringify(tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		inputSchema: tool.inputSchema
+	}))));
+	return toolSchemasPath;
 }
 function withoutAgentPolicyOverrides(input) {
 	const config = { ...input };
@@ -1912,6 +2259,7 @@ function buildProviderConfig(start) {
 	const providerID = model.providerID ?? start.provider ?? env.OPENAI_NAME ?? "anthropic";
 	const modelID = model.modelID;
 	if (env.AI_GATEWAY_API_KEY && env.AI_GATEWAY_BASE_URL) return { [providerID]: {
+		...providerID === "google" || providerID === "mistral" ? { npm: "@ai-sdk/openai-compatible" } : {},
 		options: {
 			apiKey: env.AI_GATEWAY_API_KEY,
 			baseURL: toOpenCodeGatewayBaseUrl(env.AI_GATEWAY_BASE_URL),
@@ -1972,7 +2320,7 @@ async function legacySessionGet({ client, sessionId }) {
 async function legacySessionCreate({ client }) {
 	return client.session.create({});
 }
-async function legacySessionPrompt({ client, sessionId, start, prompt: promptText }) {
+async function legacySessionPrompt({ client, sessionId, start, prompt }) {
 	const session = client.session;
 	return (session.promptAsync ?? session.prompt).call(session, {
 		sessionID: sessionId,
@@ -1982,10 +2330,7 @@ async function legacySessionPrompt({ client, sessionId, start, prompt: promptTex
 			type: "json_schema",
 			schema: start.responseFormat.schema
 		} } : {},
-		parts: [{
-			type: "text",
-			text: promptText ?? start.prompt
-		}]
+		parts: toOpenCodePromptParts(prompt)
 	});
 }
 async function legacySessionAbort({ client, sessionId }) {
@@ -2090,6 +2435,8 @@ async function runPrompt({ client, sessionId, start, turn, emit }) {
 	let terminalError;
 	let submittingUserMessage = false;
 	const state = createTranslationState();
+	const hostInputTracker = createOpenCodeHostInputTracker({ emit });
+	currentHostInputTracker = hostInputTracker;
 	const initialSessionTokens = await readSessionTokens({
 		client,
 		sessionId
@@ -2104,13 +2451,16 @@ async function runPrompt({ client, sessionId, start, turn, emit }) {
 	const eventLoop = consumeEvents({
 		client,
 		sessionId,
+		readableSkillRoots: start.readableSkillRoots,
 		permissionMode: start.permissionMode,
-		builtinToolFiltering: start.builtinToolFiltering,
+		inactiveBuiltinToolNames: start.inactiveBuiltinToolNames,
 		turn,
 		state,
+		hostInputTracker,
 		emit: (msg) => {
 			if (msg.type === "text-delta" || msg.type === "reasoning-delta") sawContent = true;
 			if (msg.type === "finish-step") {
+				hostInputTracker.observeFinishStep();
 				sawFinishStep = true;
 				stepUsage = addUsage({
 					left: stepUsage,
@@ -2217,7 +2567,8 @@ async function runPrompt({ client, sessionId, start, turn, emit }) {
 			prompted = await legacySessionPrompt({
 				client,
 				sessionId,
-				start
+				start,
+				prompt: start.prompt
 			});
 		} catch (error) {
 			promptRequestSettled.resolve(void 0);
@@ -2285,8 +2636,9 @@ async function runCompaction({ client, sessionId, start, turn, emit }) {
 	const eventLoop = consumeEvents({
 		client,
 		sessionId,
+		readableSkillRoots: start.readableSkillRoots,
 		permissionMode: start.permissionMode,
-		builtinToolFiltering: start.builtinToolFiltering,
+		inactiveBuiltinToolNames: start.inactiveBuiltinToolNames,
 		turn,
 		state: createTranslationState(),
 		emit: (msg) => {
@@ -2335,7 +2687,7 @@ async function runCompaction({ client, sessionId, start, turn, emit }) {
 		harnessMetadata: { opencode: { missingSummary: true } }
 	});
 }
-async function consumeEvents({ client, sessionId, permissionMode, builtinToolFiltering, turn, state, emit, signal, onSubscribed, onEvent }) {
+async function consumeEvents({ client, sessionId, permissionMode, readableSkillRoots = [], inactiveBuiltinToolNames, turn, state, hostInputTracker, emit, signal, onSubscribed, onEvent }) {
 	const stream = await subscribeLegacyEvents({
 		client,
 		signal
@@ -2343,12 +2695,83 @@ async function consumeEvents({ client, sessionId, permissionMode, builtinToolFil
 	onSubscribed?.();
 	if (!stream) return;
 	const taskSessionIds = /* @__PURE__ */ new Set([sessionId]);
+	const observedCalls = /* @__PURE__ */ new Map();
+	const permissionContext = {
+		readableSkillRoots,
+		decisions: /* @__PURE__ */ new Map(),
+		getToolCall: async ({ event, sessionId: sourceSessionId }) => {
+			const props = event.properties ?? {};
+			const source = asOpenCodeObject(props.tool) ?? asOpenCodeObject(props.source);
+			const callID = stringValue(source?.callID);
+			if (!callID) return void 0;
+			const key = JSON.stringify([sourceSessionId, callID]);
+			const observed = observedCalls.get(key);
+			if (observed) return observed;
+			const messageID = stringValue(source?.messageID);
+			if (messageID && typeof client.session.message === "function") try {
+				const parts = asOpenCodeObject((await client.session.message({
+					sessionID: sourceSessionId,
+					messageID,
+					directory: workdir
+				})).data)?.parts;
+				if (Array.isArray(parts)) {
+					const snapshot = permissionToolCallFromPart(parts.map(asOpenCodeObject).find((value) => value?.callID === callID));
+					if (snapshot) {
+						observedCalls.set(key, snapshot);
+						return snapshot;
+					}
+				}
+			} catch {
+				return observedCalls.get(key);
+			}
+			return observedCalls.get(key);
+		},
+		emitToolCall: ({ toolCallId, toolCall }) => {
+			if (!toolCall || sentToolCallIds.has(toolCallId)) return;
+			const nativeName = toolCall.nativeName;
+			const toolName = toWireToolName(nativeName);
+			state.toolCallsEmitted.add(toolCallId);
+			emitToHost({
+				type: "tool-call",
+				toolCallId,
+				toolName,
+				input: JSON.stringify(toolCall.input),
+				providerExecuted: true,
+				...nativeNameField({
+					nativeName,
+					toolName
+				})
+			});
+		}
+	};
 	const registerSubagentSession = (sourceSessionId) => function register({ parentSessionId, sessionId: subagentSessionId }) {
 		if (parentSessionId === sourceSessionId && taskSessionIds.has(sourceSessionId)) taskSessionIds.add(subagentSessionId);
 	};
+	const sentToolCallIds = /* @__PURE__ */ new Set();
+	const approvalsAwaitingToolCall = /* @__PURE__ */ new Map();
+	const emitToHost = (message) => {
+		emit(message);
+		if (message.type !== "tool-call") return;
+		const toolCallId = String(message.toolCallId);
+		sentToolCallIds.add(toolCallId);
+		approvalsAwaitingToolCall.get(toolCallId)?.();
+	};
+	const emitApprovalRequest = async (message) => {
+		const toolCallId = String(message.toolCallId);
+		if (!sentToolCallIds.has(toolCallId)) {
+			let timeout;
+			await new Promise((resolve) => {
+				timeout = setTimeout(resolve, APPROVAL_TOOL_CALL_WAIT_MS);
+				approvalsAwaitingToolCall.set(toolCallId, resolve);
+			});
+			clearTimeout(timeout);
+			approvalsAwaitingToolCall.delete(toolCallId);
+		}
+		emit(message);
+	};
 	const emitStreamEvent = createEmitStreamEvent({
 		state,
-		emit,
+		emit: emitToHost,
 		emitWarning: turn.emitWarning,
 		emitError: turn.emitError,
 		toWireToolName,
@@ -2359,6 +2782,7 @@ async function consumeEvents({ client, sessionId, permissionMode, builtinToolFil
 			state
 		}),
 		onSubagentSession: registerSubagentSession(sessionId),
+		onToolCallStatus: (input) => hostInputTracker?.observeToolCall(input),
 		isMcpToolName: (toolName) => [...runtime.mcpToolPrefixes].some((prefix) => toolName.startsWith(prefix)),
 		stripWorkDir,
 		formatError
@@ -2422,42 +2846,107 @@ async function consumeEvents({ client, sessionId, permissionMode, builtinToolFil
 		}
 		processEvent(event);
 	};
-	for await (const rawEvent of stream) {
-		if (signal.aborted || turn.abortSignal.aborted) break;
+	let rejectHandlerFailure;
+	const handlerFailure = new Promise((_, reject) => {
+		rejectHandlerFailure = reject;
+	});
+	handlerFailure.catch(() => {});
+	const runHandler = (handler) => {
+		handler.catch((error) => rejectHandlerFailure(error));
+	};
+	const hostInputWait = ({ toolCallId, isDescendant, settlesToolCall }) => {
+		if (hostInputTracker == null) return void 0;
+		if (isDescendant) {
+			const id = toolCallId;
+			return {
+				markWaiting: () => hostInputTracker.markGroupWaiting({
+					group: "subagent",
+					id
+				}),
+				clearWaiting: () => hostInputTracker.clearGroupWaiting({
+					group: "subagent",
+					id
+				})
+			};
+		}
+		return {
+			markWaiting: () => hostInputTracker.markWaiting({ toolCallId }),
+			clearWaiting: () => hostInputTracker.clearWaiting({
+				toolCallId,
+				settled: settlesToolCall
+			})
+		};
+	};
+	const iterator = stream[Symbol.asyncIterator]();
+	try {
+		for (;;) {
+			const next = await Promise.race([iterator.next(), handlerFailure]);
+			if (next.done) break;
+			if (consumeEvent(next.value)) break;
+		}
+	} finally {
+		for (const release of approvalsAwaitingToolCall.values()) release();
+		iterator.return?.();
+	}
+	function consumeEvent(rawEvent) {
+		if (signal.aborted || turn.abortSignal.aborted) return true;
 		const event = unwrapOpenCodeEvent(rawEvent);
 		const eventSessionId = event ? getOpenCodeEventSessionId(event) : void 0;
-		if (!event) continue;
+		if (!event) return false;
 		const scopedSessionId = !eventSessionId || eventSessionId === sessionId ? sessionId : taskSessionIds.has(eventSessionId) ? eventSessionId : void 0;
-		if (!scopedSessionId) continue;
+		if (!scopedSessionId) return false;
 		const isDescendant = scopedSessionId !== sessionId;
-		if (event.type === "question.asked") await handleQuestion({
+		const part = asOpenCodeObject(event.properties?.part);
+		const snapshot = permissionToolCallFromPart(part);
+		if (snapshot && typeof part?.callID === "string") observedCalls.set(JSON.stringify([scopedSessionId, part.callID]), snapshot);
+		if (event.type === "session.next.tool.started") {
+			const props = event.properties ?? {};
+			const input = asOpenCodeObject(props.input);
+			const nativeName = stringValue(props.toolName ?? props.tool);
+			const callID = stringValue(props.callID);
+			if (input && nativeName && callID) observedCalls.set(JSON.stringify([scopedSessionId, callID]), {
+				nativeName,
+				input
+			});
+		}
+		const waitFor = ({ toolCallId, settlesToolCall }) => hostInputWait({
+			toolCallId: isDescendant ? `${scopedSessionId}:${toolCallId}` : toolCallId,
+			isDescendant,
+			settlesToolCall
+		});
+		if (event.type === "question.asked") runHandler(handleQuestion({
 			client,
 			turn,
 			emit,
-			event
-		});
-		else if (event.type === "permission.v2.asked") await handlePermissionV2({
+			event,
+			waitFor
+		}));
+		else if (event.type === "permission.v2.asked") runHandler(handlePermissionV2({
 			client,
 			sessionId: scopedSessionId,
+			context: permissionContext,
 			permissionMode,
-			builtinToolFiltering,
+			inactiveBuiltinToolNames,
 			turn,
-			emit,
-			event
-		});
-		else if (event.type === "permission.asked") await handlePermission({
+			emit: isDescendant ? emit : emitApprovalRequest,
+			event,
+			waitFor
+		}));
+		else if (event.type === "permission.asked") runHandler(handlePermission({
 			client,
 			sessionId: scopedSessionId,
+			context: permissionContext,
 			permissionMode,
-			builtinToolFiltering,
+			inactiveBuiltinToolNames,
 			turn,
-			emit,
-			event
-		});
+			emit: isDescendant ? emit : emitApprovalRequest,
+			event,
+			waitFor
+		}));
 		else if (isDescendant) processDescendantEvent(scopedSessionId, event);
 		else emitStreamEvent(event);
-		if (isDescendant) continue;
-		if (onEvent?.(event)) break;
+		if (isDescendant) return false;
+		return onEvent?.(event) === true;
 	}
 }
 function getSubagentStepId(event) {
@@ -2469,7 +2958,7 @@ function getSubagentStepId(event) {
 	if (event?.type !== "session.next.step.ended") return void 0;
 	return stringValue(event.properties?.stepID) ?? event.id;
 }
-async function handleQuestion({ client, turn, emit, event }) {
+async function handleQuestion({ client, turn, emit, event, waitFor }) {
 	const nativeRequest = event.properties;
 	if (nativeRequest == null || typeof nativeRequest.id !== "string" || typeof nativeRequest.sessionID !== "string" || !Array.isArray(nativeRequest.questions)) return;
 	const toolCallId = nativeRequest.tool?.callID ?? nativeRequest.id;
@@ -2483,6 +2972,11 @@ async function handleQuestion({ client, turn, emit, event }) {
 		providerMetadata: { opencode: { nativeRequest } }
 	});
 	const questionKey = openCodeQuestionKey(nativeRequest);
+	const wait = waitFor?.({
+		toolCallId,
+		settlesToolCall: true
+	});
+	wait?.markWaiting();
 	const nativeResponse = toOpenCodeQuestionResponse({
 		nativeRequest,
 		output: (await turn.requestToolResult({
@@ -2491,7 +2985,7 @@ async function handleQuestion({ client, turn, emit, event }) {
 				const continuedRequest = candidate.toolResult?.providerOptions?.opencode?.nativeRequest;
 				return continuedRequest != null && openCodeQuestionKey(continuedRequest) === questionKey;
 			}
-		})).output
+		}).finally(() => wait?.clearWaiting())).output
 	});
 	const response = nativeResponse.action === "reject" ? await client.question.reject({
 		requestID: nativeRequest.id,
@@ -2506,19 +3000,27 @@ async function handleQuestion({ client, turn, emit, event }) {
 function sanitizeMcpToolName(value) {
 	return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
-async function handlePermissionV2({ client, sessionId, permissionMode, builtinToolFiltering, turn, emit, event }) {
+async function handlePermissionV2({ client, sessionId, context, permissionMode, inactiveBuiltinToolNames, turn, emit, event, waitFor }) {
 	const props = event.properties ?? {};
 	const requestID = String(props.id ?? "");
 	if (!requestID) return;
 	const reply = await selectPermissionReply({
+		context,
+		sessionId,
+		toolCall: await context.getToolCall({
+			event,
+			sessionId
+		}),
+		metadata: asOpenCodeObject(props.metadata),
 		action: String(props.action ?? ""),
 		resources: Array.isArray(props.resources) ? props.resources.map(String) : [],
 		requestID,
 		toolCallId: String(props.source?.callID ?? requestID),
 		permissionMode,
-		builtinToolFiltering,
+		inactiveBuiltinToolNames,
 		turn,
-		emit
+		emit,
+		waitFor
 	});
 	await client.v2.session.permission.reply({
 		sessionID: sessionId,
@@ -2527,20 +3029,28 @@ async function handlePermissionV2({ client, sessionId, permissionMode, builtinTo
 		...reply.message ? { message: reply.message } : {}
 	});
 }
-async function handlePermission({ client, sessionId, permissionMode, builtinToolFiltering, turn, emit, event }) {
+async function handlePermission({ client, sessionId, context, permissionMode, inactiveBuiltinToolNames, turn, emit, event, waitFor }) {
 	const props = event.properties ?? {};
 	const requestID = String(props.id ?? "");
 	if (!requestID) return;
 	const tool = asOpenCodeObject(props.tool);
 	const reply = await selectPermissionReply({
+		context,
+		sessionId,
+		toolCall: await context.getToolCall({
+			event,
+			sessionId
+		}),
+		metadata: asOpenCodeObject(props.metadata),
 		action: String(props.permission ?? ""),
 		resources: Array.isArray(props.patterns) ? props.patterns.map(String) : [],
 		requestID,
 		toolCallId: String(tool?.callID ?? requestID),
 		permissionMode,
-		builtinToolFiltering,
+		inactiveBuiltinToolNames,
 		turn,
-		emit
+		emit,
+		waitFor
 	});
 	await client.permission.reply({
 		requestID,
@@ -2549,36 +3059,66 @@ async function handlePermission({ client, sessionId, permissionMode, builtinTool
 		...reply.message ? { message: reply.message } : {}
 	});
 }
-async function selectPermissionReply({ action, resources, requestID, toolCallId, permissionMode, builtinToolFiltering, turn, emit }) {
+async function selectPermissionReply({ context, sessionId, toolCall, metadata, action, resources, requestID, toolCallId, permissionMode, inactiveBuiltinToolNames, turn, emit, waitFor }) {
+	const requestApproval = () => {
+		const key = toolCall ? JSON.stringify([
+			sessionId,
+			toolCallId,
+			toolCall
+		]) : void 0;
+		const existing = key ? context.decisions.get(key) : void 0;
+		if (existing) return existing;
+		const decision = (async () => {
+			context.emitToolCall({
+				toolCallId,
+				toolCall
+			});
+			await emit({
+				type: "tool-approval-request",
+				approvalId: requestID,
+				toolCallId
+			});
+			const wait = waitFor?.({
+				toolCallId,
+				settlesToolCall: false
+			});
+			wait?.markWaiting();
+			return turn.requestToolApproval(requestID).finally(() => wait?.clearWaiting());
+		})();
+		if (key) context.decisions.set(key, decision);
+		return decision;
+	};
 	const toolName = toPermissionToolName(action);
 	if (isBuiltinToolInactive({
 		toolName,
-		toolFiltering: builtinToolFiltering
+		inactiveBuiltinToolNames
 	})) {
-		emit({
-			type: "tool-approval-request",
-			approvalId: requestID,
-			toolCallId
-		});
-		const decision = await turn.requestToolApproval(requestID);
+		const decision = await requestApproval();
 		return decision.approved ? { reply: "once" } : {
 			reply: "reject",
 			...decision.reason ? { message: decision.reason } : {}
 		};
 	}
 	if (!permissionMode || permissionMode === "allow-all") return { reply: "always" };
-	if (resources.some((resource) => isExternalPath(resource))) return {
-		reply: "reject",
-		message: "External directory access rejected."
-	};
-	const kind = TOOL_KIND[toolName] ?? "bash";
-	if (permissionMode === "allow-edits" ? kind === "readonly" || kind === "edit" : kind === "readonly") return { reply: "always" };
-	emit({
-		type: "tool-approval-request",
-		approvalId: requestID,
-		toolCallId
-	});
-	const decision = await turn.requestToolApproval(requestID);
+	const nativeName = toolCall?.nativeName;
+	const filePermission = action === "external_directory" || [
+		"read",
+		"write",
+		"edit",
+		"glob",
+		"grep",
+		"ls"
+	].includes(toolName);
+	const kind = action === "external_directory" && nativeName ? nativeName === "apply_patch" ? "edit" : TOOL_KIND[toWireToolName(nativeName)] ?? "bash" : TOOL_KIND[toolName] ?? "bash";
+	if ((permissionMode === "allow-edits" ? kind === "readonly" || kind === "edit" : kind === "readonly") && (!filePermission || await areOpenCodePermissionPathsTrusted({
+		action,
+		resources,
+		metadata,
+		toolCall,
+		workDir: workdir,
+		readableSkillRoots: context.readableSkillRoots
+	}))) return { reply: "once" };
+	const decision = await requestApproval();
 	return decision.approved ? { reply: "once" } : {
 		reply: "reject",
 		...decision.reason ? { message: decision.reason } : {}
@@ -2597,18 +3137,8 @@ function toPermissionToolName(action) {
 	if (normalized.includes("read")) return "read";
 	return toWireToolName(normalized);
 }
-function resolveInactiveBuiltinToolNames(start) {
-	const toolFiltering = start.builtinToolFiltering;
-	if (toolFiltering == null) return [];
-	return toolFiltering.mode === "allow" ? Object.keys(PUBLIC_TO_NATIVE).filter((name) => !toolFiltering.toolNames.includes(name)) : toolFiltering.toolNames;
-}
 function isBuiltinToolInactive(input) {
-	if (input.toolFiltering == null) return false;
-	return input.toolFiltering.mode === "allow" ? !input.toolFiltering.toolNames.includes(input.toolName) : input.toolFiltering.toolNames.includes(input.toolName);
-}
-function isExternalPath(resource) {
-	if (!path.isAbsolute(resource)) return false;
-	return !isPathInsideOrEqual(resource, workdir) && (!skillsDir || !isPathInsideOrEqual(resource, skillsDir));
+	return input.inactiveBuiltinToolNames?.some((toolName) => toolName === input.toolName) ?? false;
 }
 function isPathInsideOrEqual(file, root) {
 	const relative = path.relative(canonicalizeForContainment(root), canonicalizeForContainment(file));
@@ -2622,6 +3152,20 @@ function canonicalizeForContainment(inputPath) {
 		const parent = path.dirname(normalized);
 		return parent === normalized ? normalized : path.join(canonicalizeForContainment(parent), path.basename(normalized));
 	}
+}
+function permissionToolCallFromPart(value) {
+	const part = asOpenCodeObject(value);
+	const state = asOpenCodeObject(part?.state);
+	const input = asOpenCodeObject(state?.input);
+	if (part?.type !== "tool" || typeof part.tool !== "string" || !input || ![
+		"running",
+		"completed",
+		"error"
+	].includes(String(state?.status))) return void 0;
+	return {
+		nativeName: part.tool,
+		input
+	};
 }
 function toWireToolName(nativeName) {
 	return NATIVE_TO_COMMON[nativeName] ?? OPENCODE_TO_WIRE[nativeName] ?? nativeName;
@@ -2753,11 +3297,26 @@ function emitAssistantContentPart(part, emit) {
 		id
 	});
 }
-async function startToolRelay({ tools, emit, requestToolResult }) {
+async function startToolRelay({ tools }) {
 	return startAuthorizedToolRelay({
 		tools,
-		emit,
-		requestToolResult
+		emit: (message) => {
+			currentTurn?.emit(message);
+		},
+		requestToolResult: (toolCallId) => {
+			if (!currentTurn) throw new Error("No active turn in OpenCode bridge");
+			return currentTurn.requestToolResult(toolCallId);
+		},
+		onWaitingChange: ({ requestId, waiting }) => {
+			if (waiting) currentHostInputTracker?.markGroupWaiting({
+				group: "host-tool",
+				id: requestId
+			});
+			else currentHostInputTracker?.clearGroupWaiting({
+				group: "host-tool",
+				id: requestId
+			});
+		}
 	});
 }
 function createDeferred() {
@@ -2843,6 +3402,7 @@ function parseArgs(args) {
 	const out = {};
 	for (let i = 0; i < args.length; i++) if (args[i] === "--workdir" && i + 1 < args.length) out.workdir = args[++i];
 	else if (args[i] === "--bridge-state-dir" && i + 1 < args.length) out.bridgeStateDir = args[++i];
+	else if (args[i] === "--host-disconnect-timeout-ms" && i + 1 < args.length) out.hostDisconnectTimeoutMs = Number(args[++i]);
 	else if (args[i] === "--bootstrap-dir" && i + 1 < args.length) out.bootstrapDir = args[++i];
 	else if (args[i] === "--skills-dir" && i + 1 < args.length) out.skillsDir = args[++i];
 	return out;

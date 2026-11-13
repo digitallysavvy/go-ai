@@ -1,0 +1,575 @@
+package providerutils
+
+import (
+	"net/http"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
+
+// This file ports the zod response schemas the TS OpenAI-family providers
+// apply to every non-streaming body through createJsonResponseHandler
+// (openaiChatResponseSchema, OpenAICompatibleChatResponseSchema,
+// openaiCompletionResponseSchema, groqChatResponseSchema,
+// mistralChatResponseSchema, deepseekChatResponseSchema,
+// moonshotAIChatResponseSchema, alibabaChatResponseSchema). A body that does
+// not match is an APICallError "Invalid JSON response" whose cause is the
+// TypeValidationError (or the JSONParseError for text that is not JSON).
+
+// ChatResponseKind selects the TS response schema of a non-streaming call.
+// The zero value is the openai-compatible OpenAICompatibleChatResponseSchema.
+type ChatResponseKind int
+
+const (
+	// ResponseKindOpenAICompatible is OpenAICompatibleChatResponseSchema (also
+	// the Go OpenAI chat model in openai-compatible mode).
+	ResponseKindOpenAICompatible ChatResponseKind = iota
+	// ResponseKindOpenAI is openaiChatResponseSchema (also azure).
+	ResponseKindOpenAI
+	// ResponseKindOpenAICompletion is openaiCompletionResponseSchema.
+	ResponseKindOpenAICompletion
+	// ResponseKindCompatCompletion is openaiCompatibleCompletionResponseSchema.
+	ResponseKindCompatCompletion
+	ResponseKindGroq
+	ResponseKindDeepSeek
+	ResponseKindMoonshot
+	ResponseKindMistral
+	ResponseKindAlibaba
+	// ResponseKindCohere is cohereChatResponseSchema.
+	ResponseKindCohere
+)
+
+var (
+	zOpenAIUsage = zNullish(zObj(
+		fl("prompt_tokens", nNum), fl("completion_tokens", nNum), fl("total_tokens", nNum),
+		fl("prompt_tokens_details", zNullish(zObj(fl("cached_tokens", nNum), fl("cache_write_tokens", nNum)))),
+		fl("completion_tokens_details", zNullish(zObj(
+			fl("reasoning_tokens", nNum), fl("accepted_prediction_tokens", nNum), fl("rejected_prediction_tokens", nNum)))),
+	))
+
+	// zOpenAIChatLogprob is one entry of openaiChatResponseSchema / chunk
+	// logprobs.content and logprobs.refusal.
+	zOpenAIChatLogprob = zObj(
+		fl("token", zStr), fl("logprob", zNum),
+		fl("top_logprobs", zArr(zObj(fl("token", zStr), fl("logprob", zNum)))),
+	)
+
+	zOpenAIChatResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("choices", zArr(zObj(
+			fl("message", zObj(
+				fl("role", zNullish(zLit("assistant"))),
+				fl("content", nStr),
+				// set instead of content when the model refuses (TS f6dbf04b5d)
+				fl("refusal", nStr),
+				fl("audio", zNullish(zObj(fl("transcript", nStr)))),
+				fl("tool_calls", zNullish(zArr(zObj(
+					fl("id", nStr), fl("type", zLit("function")),
+					fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
+				)))),
+				fl("annotations", zNullish(zArr(zObj(
+					fl("type", zLit("url_citation")),
+					fl("url_citation", zObj(fl("start_index", zNum), fl("end_index", zNum), fl("url", zStr), fl("title", zStr))),
+				)))),
+			)),
+			fl("index", zNum),
+			fl("logprobs", zNullish(zObj(
+				fl("content", zNullish(zArr(zOpenAIChatLogprob))),
+				// refusal token logprobs (TS 646a7e3c2e)
+				fl("refusal", zNullish(zArr(zOpenAIChatLogprob))),
+			))),
+			fl("finish_reason", nStr),
+		))),
+		fl("usage", zOpenAIUsage),
+	)
+
+	zCompatChatResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("choices", zArr(zObj(
+			fl("message", zObj(
+				fl("role", zNullish(zLit("assistant"))),
+				fl("content", zCompatContent),
+				fl("reasoning_content", nStr), fl("reasoning", nStr),
+				fl("tool_calls", zNullish(zArr(zObj(
+					fl("id", nStr),
+					fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
+					fl("extra_content", zNullish(zObj(fl("google", zNullish(zObj(fl("thought_signature", nStr))))))),
+				)))),
+			)),
+			fl("finish_reason", nStr),
+		))),
+		fl("usage", zCompatUsage),
+	)
+
+	zCompletionResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("choices", zArr(zObj(
+			fl("text", zStr), fl("finish_reason", zStr),
+			fl("logprobs", zNullish(zObj(
+				fl("tokens", zArr(zStr)), fl("token_logprobs", zArr(zNum)),
+				fl("top_logprobs", zNullish(zArr(zRec(zNum)))),
+			))),
+		))),
+		fl("usage", zNullish(zObj(fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum)))),
+	)
+
+	zCompatCompletionResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("choices", zArr(zObj(fl("text", zStr), fl("finish_reason", zStr)))),
+		fl("usage", zNullish(zObj(fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum)))),
+	)
+
+	zGroqResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("choices", zArr(zObj(
+			fl("message", zObj(
+				fl("content", nStr), fl("reasoning", nStr),
+				fl("tool_calls", zNullish(zArr(zObj(
+					fl("id", nStr), fl("type", zLit("function")),
+					fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
+				)))),
+			)),
+			fl("index", zNum),
+			fl("finish_reason", nStr),
+		))),
+		fl("usage", zNullish(zObj(
+			fl("prompt_tokens", nNum), fl("completion_tokens", nNum), fl("total_tokens", nNum),
+			fl("prompt_tokens_details", zNullish(zObj(fl("cached_tokens", nNum)))),
+			fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
+		))),
+	)
+
+	zDeepSeekResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("object", zNullish(zLit("chat.completion"))), fl("system_fingerprint", nStr),
+		fl("choices", zArr(zObj(
+			fl("index", nNum),
+			fl("message", zObj(
+				fl("role", zNullish(zLit("assistant"))),
+				fl("content", nStr), fl("reasoning_content", nStr),
+				fl("tool_calls", zNullish(zArr(zObj(
+					fl("id", nStr), fl("type", zNullish(zLit("function"))),
+					fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
+				)))),
+			)),
+			fl("logprobs", zNullish(zObj(
+				fl("content", zNullish(zArr(zLogprobEl))),
+				fl("reasoning_content", zNullish(zArr(zLogprobEl))),
+			))),
+			fl("finish_reason", nStr),
+		))),
+		fl("usage", zDeepSeekUsage),
+	)
+
+	zMoonshotResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("object", zNullish(zLit("chat.completion"))),
+		fl("choices", zArr(zObj(
+			fl("index", nNum),
+			fl("message", zObj(
+				fl("role", zNullish(zLit("assistant"))),
+				fl("content", nStr), fl("reasoning_content", nStr),
+				fl("tool_calls", zNullish(zArr(zObj(
+					fl("id", nStr), fl("type", zNullish(zLit("function"))),
+					fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
+				)))),
+			)),
+			fl("logprobs", zNullish(zObj(fl("content", zNullish(zArr(zLogprobEl)))))),
+			fl("finish_reason", nStr),
+		))),
+		fl("usage", zMoonshotUsage),
+	)
+
+	zMistralResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("choices", zArr(zObj(
+			fl("message", zObj(
+				fl("role", zLit("assistant")),
+				fl("content", zMistralContent),
+				fl("tool_calls", zNullish(zArr(zObj(
+					fl("id", zStr),
+					fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
+				)))),
+			)),
+			fl("index", zNum),
+			fl("finish_reason", nStr),
+		))),
+		fl("object", zLit("chat.completion")),
+		// mistralUsageSchema is required in the response (nullish only in chunks).
+		// .catchall(z.json()): an extra key holding a non-finite number
+		// fails (ruling 4).
+		fl("usage", zodlite.ObjectCatchall(zodlite.JSON,
+			fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum),
+			fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
+			fl("prompt_tokens_details", zNullish(zMistralDetails)),
+			fl("prompt_token_details", zNullish(zMistralDetails)),
+			fl("completion_tokens_details", zNullish(zodlite.ObjectCatchall(zodlite.JSON, fl("reasoning_tokens", nNum)))),
+		)),
+	)
+
+	// cohereUsageSchema (TS 3aad18a417): every field is nullish, and
+	// billed_units / tokens are nullish loose objects with nullish numbers.
+	zCohereTokens = zObj(fl("input_tokens", nNum), fl("output_tokens", nNum))
+
+	// cohereCitationSchema (TS cohere-citations.ts): every citation field is
+	// nullish; a source references a document (loose object) or tool output.
+	zCohereCitation = zObj(
+		fl("start", nNum), fl("end", nNum), fl("text", nStr),
+		fl("sources", zNullish(zArr(zObj(
+			fl("type", nStr), fl("id", nStr),
+			fl("document", zNullish(zObj(fl("id", nStr), fl("text", nStr), fl("title", nStr)))),
+			fl("tool_output", zNullish(zObj())),
+		)))),
+		fl("type", nStr),
+	)
+
+	zCohereResponse = zObj(
+		fl("id", nStr),
+		fl("generation_id", nStr),
+		fl("message", zObj(
+			fl("role", zStr),
+			fl("content", zNullish(zArr(zUnionOf(
+				zObj(fl("type", zLit("text")), fl("text", zStr)),
+				zObj(fl("type", zLit("thinking")), fl("thinking", zStr)),
+			)))),
+			fl("tool_plan", nStr),
+			fl("tool_calls", zNullish(zArr(zObj(
+				fl("id", zStr), fl("type", zLit("function")),
+				fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
+			)))),
+			fl("citations", zNullish(zArr(zCohereCitation))),
+		)),
+		fl("finish_reason", zStr),
+		fl("usage", zNullish(zObj(
+			fl("billed_units", zNullish(zCohereTokens)),
+			fl("tokens", zNullish(zCohereTokens)),
+			fl("cached_tokens", nNum),
+		))),
+	)
+
+	zAlibabaResponse = zObj(
+		fl("id", nStr), fl("created", nNum), fl("model", nStr),
+		fl("choices", zArr(zObj(
+			fl("message", zObj(
+				fl("role", zNullish(zLit("assistant"))),
+				fl("content", nStr), fl("reasoning_content", nStr),
+				fl("tool_calls", zNullish(zArr(zObj(
+					fl("id", zStr), fl("type", zLit("function")),
+					fl("function", zObj(fl("name", zStr), fl("arguments", zStr))),
+				)))),
+			)),
+			fl("finish_reason", nStr),
+			fl("index", zNum),
+		))),
+		fl("usage", zNullish(zObj(
+			fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum),
+			fl("prompt_tokens_details", zNullish(zObj(fl("cached_tokens", nNum), fl("cache_creation_input_tokens", nNum), fl("cache_type", nStr)))),
+			fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
+		))),
+	)
+)
+
+func (k ChatResponseKind) node() zNode {
+	switch k {
+	case ResponseKindOpenAI:
+		return zOpenAIChatResponse
+	case ResponseKindOpenAICompletion:
+		return zCompletionResponse
+	case ResponseKindCompatCompletion:
+		return zCompatCompletionResponse
+	case ResponseKindGroq:
+		return zGroqResponse
+	case ResponseKindDeepSeek:
+		return zDeepSeekResponse
+	case ResponseKindMoonshot:
+		return zMoonshotResponse
+	case ResponseKindMistral:
+		return zMistralResponse
+	case ResponseKindAlibaba:
+		return zAlibabaResponse
+	case ResponseKindCohere:
+		return zCohereResponse
+	}
+	return zCompatChatResponse
+}
+
+// ValidateChatResponse checks a non-streaming response body against the TS
+// zod response schema of kind. A nil result means TS's safeParse succeeds. The
+// error is a *ChunkSchemaError, or the JSON syntax error when body is not
+// valid JSON.
+func ValidateChatResponse(body []byte, kind ChatResponseKind) error {
+	value, err := parseJSValue(body)
+	if err != nil {
+		return err
+	}
+	if bad := zodlite.Validate(kind.node(), body, value); bad != nil {
+		return bad
+	}
+	return nil
+}
+
+// ValidateCohereCitations checks the citations of a Cohere `citation-start`
+// stream event (TS cohereChatChunkSchema, 033a980fee): nil (absent or null),
+// one citation, or an array of citations, each against cohereCitationSchema.
+// A nil result means the TS parse succeeds; the error is a *ChunkSchemaError.
+func ValidateCohereCitations(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+	path := []interface{}{"delta", "message", "citations"}
+	if arr, ok := value.([]interface{}); ok {
+		if bad := zArr(zCohereCitation)(arr, true, path); bad != nil {
+			return bad
+		}
+		return nil
+	}
+	if bad := zCohereCitation(value, true, path); bad != nil {
+		return bad
+	}
+	return nil
+}
+
+// ChatResponseValidator returns the response check of an http.Request
+// (ValidateResponse): TS createJsonResponseHandler(schema) turns a body that
+// fails the schema into an APICallError "Invalid JSON response" with the
+// status, headers and body of the response and the TypeValidationError (or
+// JSONParseError) as cause.
+func ChatResponseValidator(providerName string, kind ChatResponseKind) func(statusCode int, headers http.Header, body []byte) error {
+	return responseValidator(providerName, func(body []byte) error { return ValidateChatResponse(body, kind) })
+}
+
+func responseValidator(providerName string, validate func(body []byte) error) func(statusCode int, headers http.Header, body []byte) error {
+	return func(statusCode int, headers http.Header, body []byte) error {
+		err := validate(body)
+		if err == nil {
+			return nil
+		}
+		return InvalidJSONResponseError(providerName, statusCode, headers, body, err)
+	}
+}
+
+// InvalidJSONResponseError builds the failure of TS createJsonResponseHandler:
+// an APICallError "Invalid JSON response" carrying the response status,
+// headers and body, whose cause is the TypeValidationError for a schema
+// mismatch (cause is a *ChunkSchemaError) or the JSONParseError for text that
+// is not JSON (any other cause).
+func InvalidJSONResponseError(providerName string, statusCode int, headers http.Header, body []byte, cause error) error {
+	if _, ok := cause.(*ChunkSchemaError); !ok {
+		cause = nil // not JSON: ChunkParseFailure reports the parse failure
+	}
+	_, typed := ChunkParseFailure(string(body), cause)
+	return &providererrors.ProviderError{
+		Provider:        providerName,
+		StatusCode:      statusCode,
+		Message:         InvalidJSONResponseMessage,
+		Cause:           typed,
+		ResponseHeaders: ExtractHeaders(headers),
+		ResponseBody:    string(body),
+	}
+}
+
+// InvalidJSONResponseMessage is the TS createJsonResponseHandler failure
+// message.
+const InvalidJSONResponseMessage = providererrors.InvalidJSONResponseMessage
+
+// IsInvalidJSONResponse reports whether err is the createJsonResponseHandler
+// failure (so provider error handlers can return it as is).
+func IsInvalidJSONResponse(err error) bool {
+	for err != nil {
+		if pe, ok := err.(*providererrors.ProviderError); ok && pe.Message == InvalidJSONResponseMessage {
+			return true
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}
+
+var (
+	zRespAssistantMessage = zObj(
+		fl("type", zLit("message")), fl("role", zLit("assistant")), fl("id", zStr), fl("phase", zRespPhase),
+		// The API returns text or a refusal as content parts (TS 6b97088662).
+		fl("content", zArr(zDiscType(map[string]zNode{
+			"output_text": zObj(
+				fl("type", zLit("output_text")), fl("text", zStr),
+				fl("logprobs", zNullish(zArr(zObj(fl("token", zStr), fl("logprob", zNum),
+					fl("top_logprobs", zArr(zObj(fl("token", zStr), fl("logprob", zNum)))))))),
+				fl("annotations", zArr(zRespAnnotation)),
+			),
+			"refusal": zObj(fl("type", zLit("refusal")), fl("refusal", zStr)),
+		}))),
+	)
+
+	// openaiResponsesResponseSchema output items: the output_item.done
+	// members, except message/reasoning (full bodies), and function_call and
+	// custom_tool_call (no status).
+	zRespOutputItem = func() zNode {
+		items := map[string]zNode{
+			"message": zRespAssistantMessage,
+			"reasoning": zObj(fl("type", zLit("reasoning")), fl("id", zStr), fl("encrypted_content", nStr),
+				fl("summary", zArr(zObj(fl("type", zLit("summary_text")), fl("text", zStr))))),
+			"function_call": zObj(fl("type", zLit("function_call")), fl("call_id", zStr), fl("name", zStr), fl("arguments", zStr), fl("id", zStr),
+				fl("async", zNullish(zBoolean)), fl("namespace", nStr), fl("caller", zNullish(zRespCaller))),
+			"custom_tool_call": zObj(fl("type", zLit("custom_tool_call")), fl("call_id", zStr), fl("name", zStr), fl("input", zStr), fl("id", zStr),
+				fl("async", zNullish(zBoolean))),
+		}
+		for k, v := range zRespItemDoneMembers {
+			if _, replaced := items[k]; !replaced {
+				items[k] = v
+			}
+		}
+		return zDiscType(items)
+	}()
+
+	zOpenAIResponsesResponse = zObj(
+		fl("id", zRespOptStr), fl("created_at", zOptional(zNum)),
+		fl("error", zNullish(zObj(fl("message", zStr), fl("type", zStr), fl("param", nStr), fl("code", zStr)))),
+		fl("model", zRespOptStr),
+		fl("output", zOptional(zArr(zRespOutputItem))),
+		fl("service_tier", nStr),
+		fl("reasoning", zNullish(zObj(fl("context", nStr)))),
+		fl("incomplete_details", zNullish(zObj(fl("reason", zStr)))),
+		fl("usage", zNullish(zRespUsage)),
+	)
+)
+
+// ResponsesResponseValidator is ChatResponseValidator for the OpenAI
+// Responses API (openaiResponsesResponseSchema, also Azure).
+func ResponsesResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
+	return responseValidator(providerName, func(body []byte) error {
+		value, err := parseJSValue(body)
+		if err != nil {
+			return err
+		}
+		if bad := zodlite.Validate(zOpenAIResponsesResponse, body, value); bad != nil {
+			return bad
+		}
+		return nil
+	})
+}
+
+var zHuggingFaceResponse = zObj(
+	fl("id", zStr), fl("model", zStr), fl("object", zStr), fl("created_at", zNum), fl("status", zStr),
+	fl("error", zNullable(zAny)), fl("instructions", zNullable(zAny)), fl("max_output_tokens", zNullable(zAny)),
+	fl("metadata", zNullable(zAny)), fl("tool_choice", zAny),
+	fl("tools", zArr(zAny)), fl("temperature", zNum), fl("top_p", zNum),
+	fl("incomplete_details", zOptional(zNullable(zObj(fl("reason", zStr))))),
+	fl("usage", zOptional(zNullable(zObj(
+		fl("input_tokens", zNum),
+		fl("input_tokens_details", zOptional(zObj(fl("cached_tokens", zNum)))),
+		fl("output_tokens", zNum),
+		fl("output_tokens_details", zOptional(zObj(fl("reasoning_tokens", zNum)))),
+		fl("total_tokens", zNum),
+	)))),
+	fl("output", zArr(zDiscType(map[string]zNode{
+		"message": zObj(fl("type", zLit("message")), fl("id", zStr), fl("role", zOptional(zStr)), fl("status", zOptional(zStr)),
+			fl("content", zArr(zObj(fl("type", zLit("output_text")), fl("text", zStr), fl("annotations", zOptional(zArr(zAny))))))),
+		"reasoning": zObj(fl("type", zLit("reasoning")), fl("id", zStr), fl("status", zOptional(zStr)),
+			fl("content", zArr(zObj(fl("type", zLit("reasoning_text")), fl("text", zStr)))),
+			fl("summary", zOptional(zArr(zOptional(zObj(fl("type", zLit("reasoning_summary")), fl("text", zStr))))))),
+		"function_call": zObj(fl("type", zLit("function_call")), fl("id", zStr), fl("call_id", zStr), fl("name", zStr), fl("arguments", zStr),
+			fl("output", zOptional(zStr)), fl("status", zOptional(zStr))),
+		"mcp_call": zObj(fl("type", zLit("mcp_call")), fl("id", zStr), fl("name", zStr), fl("arguments", zStr),
+			fl("output", zOptional(zStr)), fl("status", zOptional(zStr))),
+		"mcp_list_tools": zObj(fl("type", zLit("mcp_list_tools")), fl("id", zStr), fl("server_label", zStr),
+			fl("tools", zOptional(zArr(zAny))), fl("status", zOptional(zStr))),
+	}))),
+	fl("output_text", zOptional(zNullable(zStr))),
+)
+
+// HuggingFaceResponsesResponseValidator is ChatResponseValidator for the
+// Hugging Face Responses API (huggingfaceResponsesResponseSchema).
+func HuggingFaceResponsesResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
+	return responseValidator(providerName, func(body []byte) error {
+		value, err := parseJSValue(body)
+		if err != nil {
+			return err
+		}
+		if bad := zodlite.Validate(zHuggingFaceResponse, body, value); bad != nil {
+			return bad
+		}
+		return nil
+	})
+}
+
+var (
+	// mistralConversationContentSchema.
+	zMistralConversationContent = zDiscType(map[string]zNode{
+		"text": zObj(fl("type", zLit("text")), fl("text", zStr)),
+		"thinking": zObj(fl("type", zLit("thinking")), fl("thinking", zArr(
+			zObj(fl("type", zLit("text")), fl("text", zStr))))),
+		"tool_reference": zObj(fl("type", zLit("tool_reference")), fl("tool", nStr), fl("title", nStr), fl("url", nStr)),
+	})
+
+	// mistralConversationUsageSchema: mistralUsageSchema with the three token
+	// counts defaulting to 0.
+	zMistralConversationUsage = zodlite.ObjectCatchall(zodlite.JSON,
+		fl("prompt_tokens", zOptional(zNum)), fl("completion_tokens", zOptional(zNum)), fl("total_tokens", zOptional(zNum)),
+		fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
+		fl("prompt_tokens_details", zNullish(zMistralDetails)),
+		fl("prompt_token_details", zNullish(zMistralDetails)),
+		fl("completion_tokens_details", zNullish(zodlite.ObjectCatchall(zodlite.JSON, fl("reasoning_tokens", nNum)))),
+	)
+
+	// mistralConversationResponseSchema.
+	zMistralConversationResponse = zObj(
+		fl("conversation_id", zStr),
+		fl("outputs", zArr(zDiscType(map[string]zNode{
+			"tool.execution": zObj(fl("type", zLit("tool.execution")), fl("id", zStr), fl("name", zStr), fl("arguments", zStr),
+				fl("function", nStr), fl("info", zNullish(zRec(zodlite.JSON)))),
+			"function.call": zObj(fl("type", zLit("function.call")), fl("tool_call_id", zStr), fl("name", zStr),
+				fl("arguments", zUnionOf(zStr, zRec(zodlite.JSON)))),
+			"message.output": zObj(fl("type", zLit("message.output")),
+				fl("content", zUnionOf(zStr, zArr(zMistralConversationContent))), fl("model", nStr)),
+		}))),
+		fl("usage", zNullish(zMistralConversationUsage)),
+	)
+)
+
+// MistralConversationResponseValidator is ChatResponseValidator for the
+// Mistral Conversations API (mistralConversationResponseSchema).
+func MistralConversationResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
+	return responseValidator(providerName, func(body []byte) error {
+		value, err := parseJSValue(body)
+		if err != nil {
+			return err
+		}
+		if bad := zodlite.Validate(zMistralConversationResponse, body, value); bad != nil {
+			return bad
+		}
+		return nil
+	})
+}
+
+// MistralConversationStreamContentError reports why a streamed
+// message.output.delta `content` value (a string or one conversation content
+// chunk) fails the TS schema; nil when it is valid.
+func MistralConversationStreamContentError(raw []byte) error {
+	value, err := parseJSValue(raw)
+	if err != nil {
+		return err
+	}
+	if _, ok := value.(string); ok {
+		return nil
+	}
+	if bad := zodlite.Validate(zMistralConversationContent, raw, value); bad != nil {
+		return bad
+	}
+	return nil
+}
+
+// MistralConversationUsageError reports why a streamed
+// conversation.response.done `usage` value fails the TS schema.
+func MistralConversationUsageError(raw []byte) error {
+	value, err := parseJSValue(raw)
+	if err != nil {
+		return err
+	}
+	if bad := zodlite.Validate(zMistralConversationUsage, raw, value); bad != nil {
+		return bad
+	}
+	return nil
+}

@@ -398,6 +398,53 @@ func TestAuthRejectsMismatchedCallbackIssuer(t *testing.T) {
 	}
 }
 
+// TestAuthRejectsEmptyCallbackIssuer mirrors TS oauth.test.ts's "rejects
+// a mismatched authorization response issuer before code exchange": an `iss`
+// on the callback that disagrees with the pinned authorization server's
+// issuer must fail before any token request is sent (protects against an
+// authorization-server mix-up / IdP-confusion attack).
+func TestAuthRejectsEmptyCallbackIssuer(t *testing.T) {
+	provider := newFakeOAuthProvider()
+	provider.clientInfo = &OAuthClientInformation{ClientID: "existing-client"}
+	provider.codeVerifier = "verifier-xyz"
+	provider.storedState = strPtr("expected-state")
+	provider.asInfo = &OAuthAuthorizationServerInformation{
+		Issuer:                 "https://auth.example.com",
+		AuthorizationServerURL: "https://auth.example.com/",
+		TokenEndpoint:          "https://auth.example.com/token",
+	}
+
+	var tokenRequested bool
+	client := oauthFlowTestServer(t, map[string]func(*http.Request) (*http.Response, error){
+		"/.well-known/oauth-protected-resource": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"resource":"https://auth.example.com/mcp","authorization_servers":["https://auth.example.com"]}`), nil
+		},
+		"/.well-known/oauth-authorization-server": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, oauthFlowASMetadataJSON), nil
+		},
+		"/token": func(req *http.Request) (*http.Response, error) {
+			tokenRequested = true
+			return jsonResponse(http.StatusOK, `{"access_token":"AT","token_type":"Bearer"}`), nil
+		},
+	})
+
+	_, err := Auth(context.Background(), provider, AuthOptions{
+		ServerURL:            "https://auth.example.com/mcp",
+		HasAuthorizationCode: true,
+		AuthorizationCode:    "the-code",
+		CallbackState:        "expected-state",
+		CallbackIssuer:       "",
+		HasCallbackIssuer:    true,
+		HTTPClient:           client,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match expected issuer") {
+		t.Fatalf("err = %v, want issuer mismatch error", err)
+	}
+	if tokenRequested {
+		t.Fatal("token endpoint must not be called when the callback issuer is mismatched")
+	}
+}
+
 // TestAuthRefreshesExistingTokens mirrors TS auth()'s refresh path.
 func TestAuthRefreshesExistingTokens(t *testing.T) {
 	provider := newFakeOAuthProvider()
@@ -669,8 +716,8 @@ func TestAuthUsesCustomClientAuthenticatorForTokenExchange(t *testing.T) {
 	if capturedExampleParam != "example_value" {
 		t.Fatalf("example_param = %q, want custom authenticator's value", capturedExampleParam)
 	}
-	if capturedExampleURL != "https://auth.example.com/token" {
-		t.Fatalf("example_url = %q, want the resolved token endpoint passed to the authenticator", capturedExampleURL)
+	if capturedExampleURL != "https://auth.example.com" {
+		t.Fatalf("example_url = %q, want the authorization server URL passed to the authenticator (TS)", capturedExampleURL)
 	}
 	// The default client_secret_basic/post authentication (which would have
 	// set client_id/client_secret) must NOT have run: a custom authenticator
@@ -679,5 +726,32 @@ func TestAuthUsesCustomClientAuthenticatorForTokenExchange(t *testing.T) {
 	// else { applyClientAuthentication(...) }`).
 	if capturedClientID != "" || capturedClientSecret != "" {
 		t.Fatalf("client_id=%q client_secret=%q, want both empty: default auth must not run when a custom authenticator is set", capturedClientID, capturedClientSecret)
+	}
+}
+
+// TestRefreshOAuthAuthorizationPassesAuthorizationServerURLToAuthenticator
+// mirrors TS "awaits async addClientAuthentication before dispatching refresh
+// request": the url argument is the authorization server URL as given.
+func TestRefreshOAuthAuthorizationPassesAuthorizationServerURLToAuthenticator(t *testing.T) {
+	var got string
+	client := oauthFlowTestServer(t, map[string]func(*http.Request) (*http.Response, error){
+		"/token": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"access_token":"AT","token_type":"Bearer"}`), nil
+		},
+	})
+	_, err := RefreshOAuthAuthorization(context.Background(), "https://auth.example.com", RefreshOAuthAuthorizationParams{
+		ClientInformation: OAuthClientInformation{ClientID: "c"},
+		RefreshToken:      "rt",
+		HTTPClient:        client,
+		AddClientAuthentication: func(ctx context.Context, h http.Header, p url.Values, u string, m *OAuthAuthorizationServerMetadata) error {
+			got = u
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://auth.example.com" {
+		t.Fatalf("url = %q", got)
 	}
 }

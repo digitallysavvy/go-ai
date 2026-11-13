@@ -54,6 +54,7 @@ type RemoteProcess struct {
 	cmdID     string
 
 	stdout, stderr *streamBuffer
+	stdin          *commandStdin
 
 	logsDone chan struct{}
 	logsErr  error
@@ -67,8 +68,20 @@ type RemoteProcess struct {
 // (`sandbox.runCommand({..., detached: true})` followed by independent
 // `command.logs()` consumption).
 func (s *Sandbox) SpawnCommand(ctx context.Context, cmd string, args []string, cwd string, env map[string]string) (*RemoteProcess, error) {
+	return s.spawnCommand(ctx, cmd, args, cwd, env, false)
+}
+
+// SpawnCommandWithStdin is SpawnCommand with a writable stdin (TS
+// `runCommand({..., stdin: true, detached: true})`, which sends
+// `attachStdin: true`). The returned process's Stdin writes through
+// @vercel/sandbox 3.9.0 writeStdin / closeStdin with ctx.
+func (s *Sandbox) SpawnCommandWithStdin(ctx context.Context, cmd string, args []string, cwd string, env map[string]string) (*RemoteProcess, error) {
+	return s.spawnCommand(ctx, cmd, args, cwd, env, true)
+}
+
+func (s *Sandbox) spawnCommand(ctx context.Context, cmd string, args []string, cwd string, env map[string]string, attachStdin bool) (*RemoteProcess, error) {
 	created, err := s.client.RunCommandDetached(ctx, s.sessionID, runCommandRequest{
-		Command: cmd, Args: args, CWD: cwd, Env: env,
+		Command: cmd, Args: args, CWD: cwd, Env: env, AttachStdin: attachStdin,
 	})
 	if err != nil {
 		return nil, err
@@ -78,8 +91,20 @@ func (s *Sandbox) SpawnCommand(ctx context.Context, cmd string, args []string, c
 		stdout: newStreamBuffer(), stderr: newStreamBuffer(),
 		logsDone: make(chan struct{}), exitCode: -1,
 	}
+	if attachStdin {
+		p.stdin = &commandStdin{ctx: ctx, client: s.client, sessionID: s.sessionID, cmdID: created.ID}
+	}
 	go p.consumeLogs(ctx)
 	return p, nil
+}
+
+// Stdin is the command's writable standard input, or nil when it was not
+// started with SpawnCommandWithStdin. Closing it delivers EOF.
+func (p *RemoteProcess) Stdin() io.WriteCloser {
+	if p.stdin == nil {
+		return nil
+	}
+	return p.stdin
 }
 
 func (p *RemoteProcess) consumeLogs(ctx context.Context) {

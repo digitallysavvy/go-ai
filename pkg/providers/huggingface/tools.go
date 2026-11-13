@@ -31,9 +31,13 @@ func prepareResponsesTools(tools []types.Tool, toolChoice types.ToolChoice) (hfT
 	for _, tool := range tools {
 		switch tool.Type {
 		case types.ToolTypeProviderDefined:
+			id := tool.ProviderID
+			if id == "" {
+				id = tool.Name // siblings (tool.DropProviderDefinedTools) fall back the same way
+			}
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
-				Feature: fmt.Sprintf("provider-defined tool %s", tool.ProviderID),
+				Feature: fmt.Sprintf("provider-defined tool %s", id),
 			})
 		default:
 			hfTools = append(hfTools, hfTool{
@@ -48,6 +52,9 @@ func prepareResponsesTools(tools []types.Tool, toolChoice types.ToolChoice) (hfT
 	switch toolChoice.Type {
 	case types.ToolChoiceAuto:
 		mappedToolChoice = "auto"
+	case types.ToolChoiceNone:
+		// Forwarded since TS #23843 (it used to be ignored).
+		mappedToolChoice = "none"
 	case types.ToolChoiceRequired:
 		mappedToolChoice = "required"
 	case types.ToolChoiceTool:
@@ -57,8 +64,7 @@ func prepareResponsesTools(tools []types.Tool, toolChoice types.ToolChoice) (hfT
 				"name": toolChoice.ToolName,
 			},
 		}
-		// ToolChoiceNone and the zero value are not supported and are ignored,
-		// matching TS's `case 'none': // not supported, ignore`.
+		// The zero value sends no tool_choice.
 	}
 
 	return hfTools, toolsPresent, mappedToolChoice, warnings

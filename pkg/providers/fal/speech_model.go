@@ -2,7 +2,6 @@ package fal
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +9,8 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -51,8 +52,10 @@ type falSpeechResponse struct {
 	RequestID  string   `json:"request_id,omitempty"`
 }
 
-// buildRequestBody mirrors FalSpeechModel.getArgs in fal-speech-model.ts.
-func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {
+// buildOrderedRequestBody mirrors FalSpeechModel.getArgs in fal-speech-model.ts
+// with the JS object key order (text, output_format, voice, speed, then
+// provider options), which JSON.stringify(requestBody) records in request.body.
+func (m *SpeechModel) buildOrderedRequestBody(opts *provider.SpeechGenerateOptions) (*jsonorder.Object, []types.Warning) {
 	warnings := []types.Warning{}
 
 	outputFormat := "url"
@@ -60,24 +63,48 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		outputFormat = "hex"
 	}
 
-	body := map[string]interface{}{
-		"text":          opts.Text,
-		"output_format": outputFormat,
-	}
+	body := jsonorder.New()
+	body.Set("text", opts.Text)
+	body.Set("output_format", outputFormat)
 	if opts.Voice != "" {
-		body["voice"] = opts.Voice
+		body.Set("voice", opts.Voice)
 	}
 	if opts.Speed != nil {
-		body["speed"] = *opts.Speed
+		body.Set("speed", *opts.Speed)
 	}
 
 	// Provider options (voice_setting, audio_setting, language_boost,
 	// pronunciation_dict) are already snake_case on the wire, matching the
 	// TS SDK's `...falOptions` spread into the top-level request body.
 	if opts.ProviderOptions != nil {
-		if falOpts, ok := opts.ProviderOptions["fal"].(map[string]interface{}); ok {
+		if falOpts, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["fal"].(map[string]interface{}); ok {
+			// zod looseObject output: the schema's keys in schema order, then
+			// the unknown keys.
+			known := []string{"voice_setting", "audio_setting", "language_boost", "pronunciation_dict"}
+			rest := map[string]interface{}{}
 			for k, v := range falOpts {
-				body[k] = v
+				rest[k] = v
+			}
+			for _, k := range known {
+				v, ok := falOpts[k]
+				if !ok {
+					continue
+				}
+				delete(rest, k)
+				if vs, isMap := v.(map[string]interface{}); isMap && k == "voice_setting" {
+					// z.object strips unknown keys and follows the schema order.
+					ordered := jsonorder.New()
+					for _, sk := range []string{"speed", "vol", "voice_id", "pitch", "english_normalization", "emotion"} {
+						if sv, ok := vs[sk]; ok {
+							ordered.Set(sk, sv)
+						}
+					}
+					v = ordered
+				}
+				body.Set(k, v)
+			}
+			for _, k := range jsonorder.FromMap(rest).Keys() {
+				body.Set(k, rest[k])
 			}
 		}
 	}
@@ -108,17 +135,21 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
 	}
-	body, warnings := m.buildRequestBody(opts)
+	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+	body, warnings := m.buildOrderedRequestBody(opts)
 	currentDate := time.Now()
 
 	requestPath := fmt.Sprintf("%s/%s", m.provider.speechHost, m.modelID)
 
 	var jsonResp falSpeechResponse
 	httpResp, err := m.provider.absClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    requestPath,
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFalSpeech),
+		Method:           http.MethodPost,
+		Path:             requestPath,
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &jsonResp)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -134,22 +165,23 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	// used in tests); every other origin is still fully validated.
 	audioData, err := fileutil.Download(ctx, jsonResp.Audio.URL, fileutil.TrustedOriginDownloadOptions(requestPath, nil))
 	if err != nil {
-		return nil, fmt.Errorf("failed to download fal speech audio: %w", err)
-	}
-
-	requestBytes, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal fal speech request: %w", err)
+		// TS getFromApi handleFetchError: a network failure is the retryable
+		// "Cannot connect to API" error, an abort stays as is.
+		if cause, ok := fileutil.TransportFailure(err); ok {
+			return nil, internalhttp.TransportErrorCtx(ctx, cause)
+		}
+		// TS getFromApi with createStatusCodeErrorResponseHandler.
+		return nil, providerutils.StatusCodeDownloadError("fal", err)
 	}
 
 	var rawResponse interface{}
-	_ = json.Unmarshal(httpResp.Body, &rawResponse)
+	_ = jsonexact.Unmarshal(httpResp.Body, &rawResponse)
 
 	return &types.SpeechResult{
 		Audio:    audioData,
 		Warnings: warnings,
 		Request: &types.StepRequest{
-			Body: string(requestBytes),
+			Body: jsonorder.Stringify(body),
 		},
 		Response: &types.ResponseMetadata{
 			Timestamp: currentDate,
@@ -161,12 +193,20 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 }
 
 func (m *SpeechModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message := parseFalErrorMessage(statusErr.Body, string(statusErr.Body))
-		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, "", message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		return providerErr
+		return falAPIError(m.Provider(), statusErr, err)
 	}
-	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }

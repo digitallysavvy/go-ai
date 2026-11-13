@@ -4,8 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"math"
+	"reflect"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -14,6 +21,8 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ---------------------------------------------------------------------------
@@ -40,15 +49,32 @@ type TelemetryStartEvent struct {
 	// nil means telemetry was not configured for this call.
 	Settings *Settings
 	// Prompt, System, and Messages are only populated when
-	// Settings.RecordInputs is true.
+	// Settings.ShouldRecordInputs() is true.
 	Prompt string
 	System string
 	// Messages carries the caller-supplied message list (generateText/
 	// streamText/generateObject/streamObject), used to build
 	// gen_ai.input.messages on the root span (fc15550, 12cfe40).
 	Messages []types.Message
+	// PromptString is the caller's string prompt (TS `prompt: string`) for
+	// generateText / streamText when Messages was normalized from it, or nil
+	// when the caller gave messages. TS standardizePrompt keeps the string
+	// as the user message content ({"role":"user","content":"hi"}), which
+	// the legacy root ai.prompt records as is. Only populated when inputs
+	// are recorded. Not used by object, embed or rerank operations, which
+	// use Prompt.
+	PromptString *string
+	// InstructionMessages are the call's instructions given as system
+	// messages (TS instructions: SystemModelMessage[]), only populated when
+	// inputs are recorded. The GenAI integration records one
+	// gen_ai.system_instructions part per message; System is used when it
+	// is empty.
+	InstructionMessages []types.Message
 	// ValueCount is populated for batch value operations such as embedMany.
 	ValueCount int
+	// Dimensions is the requested embedding output dimensions, when set
+	// (embed / embedMany).
+	Dimensions *int
 	// Headers carries caller-supplied request headers, emitted as
 	// ai.request.headers.* when OpenTelemetryOptions.Headers is set (18651f6).
 	Headers map[string]string
@@ -112,6 +138,58 @@ type TelemetryStartEvent struct {
 	// emitted as ai.request.audio.mediaType (LegacyOpenTelemetry) /
 	// ai.request.audio.media_type (OpenTelemetry), input-gated.
 	AudioMediaType string
+
+	// Voice, OutputFormat, Instructions, Speed and Language are the speech
+	// request settings for "ai.generateSpeech" ("" / nil when not given),
+	// mirroring TS GenerateSpeechStartEvent voice / outputFormat /
+	// instructions / speed / language (speech-events.ts). The detected
+	// transcription language is TelemetryFinishEvent.Language.
+	Voice        string
+	OutputFormat string
+	Instructions string
+	Speed        *float64
+	Language     string
+	// ProviderOptions are the caller's provider-specific options for
+	// "ai.generateSpeech", "ai.transcribe" and "ai.streamTranscribe" (TS
+	// providerOptions on the speech and transcription start events).
+	ProviderOptions map[string]interface{}
+	// InputAudioFormat is the raw input format for "ai.streamTranscribe"
+	// (TS StreamTranscriptionStartEvent.inputAudioFormat), nil otherwise.
+	InputAudioFormat *TelemetryAudioFormat
+	// TimestampGranularities are the requested shared timing granularities
+	// for "ai.transcribe" ("word" / "segment"), nil when not specified (TS
+	// TranscriptionStartEvent.timestampGranularities).
+	TimestampGranularities []string
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
+}
+
+// TelemetryAudioFormat is a raw audio format (TS SharedV4AudioFormat): the
+// encoding, e.g. "audio/pcm", and the sample rate in Hz when applicable.
+type TelemetryAudioFormat struct {
+	Type string `json:"type"`
+	Rate *int   `json:"rate,omitempty"`
+}
+
+// TelemetryAudioResponse is the response metadata of a speech or
+// transcription model call (TS SpeechModelResponseMetadata /
+// TranscriptionModelResponseMetadata).
+type TelemetryAudioResponse struct {
+	Timestamp time.Time         `json:"timestamp"`
+	ModelID   string            `json:"modelId"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      interface{}       `json:"body,omitempty"`
+}
+
+// TelemetryTranscriptTiming is one transcript segment or word with its
+// timing (TS {text, startSecond, endSecond}).
+type TelemetryTranscriptTiming struct {
+	Text        string  `json:"text"`
+	StartSecond float64 `json:"startSecond"`
+	EndSecond   float64 `json:"endSecond"`
 }
 
 // TelemetryStepStartEvent is passed to TelemetryIntegration.OnStepStart.
@@ -136,16 +214,30 @@ type TelemetryStepStartEvent struct {
 	// step, emitted as ai.prompt.messages (input-gated, JSON-encoded) by
 	// LegacyOpenTelemetry.OnStepStart, mirroring TS's onStepStart
 	// (legacy-open-telemetry.ts: `'ai.prompt.messages': {input: () =>
-	// stringifyForTelemetry(event.promptMessages)}`). Go's types.Message list
-	// stands in for TS's LanguageModelV4Prompt (which folds the system
-	// message into the message array); this is an accepted Go-runtime
-	// divergence, same as legacyPromptJSON elsewhere in this file.
+	// stringifyForTelemetry(event.promptMessages)}`). The step's messages
+	// stand in for TS's LanguageModelV4Prompt; legacyPromptMessagesJSON
+	// writes them in the V4 shape, led by System / InstructionMessages as
+	// system messages.
 	PromptMessages []types.Message
+	// System is the step's system / instructions text, which TS folds into
+	// the LanguageModelV4Prompt as the leading system message
+	// (convertToLanguageModelPrompt), so ai.prompt.messages starts with it.
+	// InstructionMessages are the instructions given as system messages (TS
+	// instructions: SystemModelMessage[]), one system message each; System
+	// is used when it is empty. Both are only populated when inputs are
+	// recorded.
+	System              string
+	InstructionMessages []types.Message
 	// StepTools carries the tool definitions available for this step,
 	// emitted as ai.prompt.tools (input-gated, one JSON string per tool)
 	// mirroring TS's `'ai.prompt.tools': {input: () =>
 	// event.stepTools?.map(tool => JSON.stringify(tool))}`.
 	StepTools []types.Tool
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // LanguageModelCallStartEvent is emitted immediately before a provider model call.
@@ -160,6 +252,16 @@ type LanguageModelCallStartEvent struct {
 	// System carries the effective system/instructions text for this call,
 	// used for gen_ai.system_instructions in the GenAI integration.
 	System string
+	// InstructionMessages are the step instructions given as system messages
+	// (TS instructions: SystemModelMessage[]): the GenAI chat span records one
+	// gen_ai.system_instructions part per message, and System is used when it
+	// is empty.
+	InstructionMessages []types.Message
+	// Messages are the step's messages as the caller sees them (TS
+	// languageModelCallStartEvent.messages), which the GenAI chat span of a
+	// text call formats into gen_ai.input.messages. When nil it formats the
+	// messages of Prompt instead.
+	Messages []types.Message
 
 	// Request settings, used for gen_ai.request.* in the GenAI integration.
 	Temperature      *float64
@@ -170,6 +272,11 @@ type LanguageModelCallStartEvent struct {
 	FrequencyPenalty *float64
 	StopSequences    []string
 	Seed             *int
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // LanguageModelCallEndEvent is emitted after a provider model call returns and
@@ -188,6 +295,17 @@ type LanguageModelCallEndEvent struct {
 	// ai.response.providerMetadata when OpenTelemetryOptions.ProviderMetadata
 	// is set (18651f6).
 	ProviderMetadata map[string]interface{}
+	// RequestURL is the HTTP origin of the endpoint the provider reported for
+	// this model call ("https://host[:port]"; never a path or credentials),
+	// or "" when unknown. OpenTelemetry records it as server.address and
+	// server.port. Mirrors TS `LanguageModelCallEndEvent.request.url`
+	// (934100cad4).
+	RequestURL string
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // LanguageModelCallPerformance contains timing statistics for provider model work.
@@ -210,6 +328,13 @@ type EmbeddingModelCallStartEvent struct {
 	ModelProvider string
 	ModelID       string
 	Values        []string
+	// Dimensions is the requested embedding output dimensions, when set.
+	Dimensions *int
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // EmbeddingModelCallEndEvent is emitted after an embedding model call
@@ -237,6 +362,11 @@ type EmbeddingModelCallEndEvent struct {
 	// error). OnEmbedEnd records it on the span (matching TS onError's
 	// recordErrorOnSpan) instead of setting usage/embeddings attributes.
 	Error error
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // RerankingModelCallStartEvent is emitted immediately before a reranking model call.
@@ -250,6 +380,11 @@ type RerankingModelCallStartEvent struct {
 	DocumentsType string
 	Query         string
 	TopN          *int
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // RerankingModelCallEndEvent is emitted after a reranking model call attempt
@@ -276,6 +411,11 @@ type RerankingModelCallEndEvent struct {
 	// error). OnRerankEnd records it on the span (matching TS onError's
 	// recordErrorOnSpan) instead of setting ranking attributes.
 	Error error
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryToolCallStartEvent is passed to TelemetryIntegration.OnToolExecutionStart.
@@ -284,11 +424,21 @@ type TelemetryToolCallStartEvent struct {
 	// CallID identifies the logical (generateText/streamText/...) call this
 	// tool call belongs to (H5), distinct from ToolCallID which identifies
 	// the individual tool invocation. See TelemetryStartEvent.CallID.
-	CallID      string
-	ToolCallID  string
-	ToolName    string
-	Args        map[string]interface{}
+	CallID     string
+	ToolCallID string
+	ToolName   string
+	Args       map[string]interface{}
+	// ArgsText is the tool call's input as the model sent it (the raw JSON
+	// text), when known. The integrations record Args in its key order (TS
+	// toolCall.input keeps the parsed object's order); without it Args is
+	// written in sorted key order.
+	ArgsText    string
 	ToolContext map[string]interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryToolCallFinishEvent is passed to TelemetryIntegration.OnToolExecutionEnd.
@@ -304,6 +454,11 @@ type TelemetryToolCallFinishEvent struct {
 	Error       error
 	DurationMs  int64
 	ToolContext map[string]interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryChunkEvent is passed to TelemetryIntegration.OnChunk (streaming only).
@@ -335,20 +490,39 @@ type TelemetryStepFinishEvent struct {
 	Usage         TelemetryUsage
 
 	// Text is the generated text for this step.
-	// Integrations should check Settings.RecordOutputs before recording.
+	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	Text string
 
-	// Reasoning is the joined reasoning/thinking text for this step.
-	// Integrations should check Settings.RecordOutputs before recording.
+	// Reasoning is the reasoning/thinking text of this step with the parts
+	// joined by "\n" (see JoinReasoning), the legacy ai.response.reasoning
+	// value. Integrations should check Settings.ShouldRecordOutputs() before recording.
 	Reasoning string
 
+	// ReasoningParts are the step's reasoning parts. The legacy integration
+	// records ai.response.reasoning whenever there is one, even when every
+	// part's text is empty (TS `reasoning.length > 0`).
+	ReasoningParts []types.ReasoningContent
+
+	// ReasoningFiles are the step's reasoning file parts. TS counts them in
+	// `reasoning.length > 0`, so the legacy integration records
+	// ai.response.reasoning (their text is empty) for a step with only
+	// reasoning files.
+	ReasoningFiles []types.ReasoningFileContent
+
 	// ToolCalls made by the model in this step.
-	// Integrations should check Settings.RecordOutputs before recording.
+	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	ToolCalls []types.ToolCall
 
 	// Files holds model-generated output files for this step.
-	// Integrations should check Settings.RecordOutputs before recording.
+	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	Files []types.GeneratedFileContent
+
+	// ToolResults are the results of the tool calls of this step, including
+	// failed calls, which carry Error. StepResult.ToolResults holds only the
+	// successful ones (TS toolResults); the failures are here because this
+	// event has no content to carry TS's tool-error parts. Integrations
+	// should check Settings.ShouldRecordOutputs() before recording.
+	ToolResults []types.ToolResult
 
 	// ProviderMetadata holds provider-specific response metadata for this step.
 	ProviderMetadata map[string]interface{}
@@ -377,6 +551,11 @@ type TelemetryStepFinishEvent struct {
 	Settings       *Settings
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryStepEndEvent is the canonical name for TelemetryStepFinishEvent.
@@ -403,10 +582,10 @@ type TelemetryFinishEvent struct {
 	ModelProvider string
 	ModelID       string
 	// Text is the full generated text. Integrations should check
-	// Settings.RecordOutputs before recording this value.
+	// Settings.ShouldRecordOutputs() before recording this value.
 	Text string
-	// Reasoning is the joined reasoning/thinking text for the final step,
-	// emitted as ai.response.reasoning (output-gated) for ai.generateText/
+	// Reasoning is the reasoning/thinking text of the final step with the
+	// parts joined by "\n" (see JoinReasoning), emitted as ai.response.reasoning (output-gated) for ai.generateText/
 	// ai.streamText, mirroring TS onGenerateEnd's
 	// `event.finalStep.reasoning`.
 	Reasoning string
@@ -414,8 +593,16 @@ type TelemetryFinishEvent struct {
 	// (output-gated) for ai.generateText/ai.streamText only.
 	ToolCalls []types.ToolCall
 	// Files holds any model-generated output files (e.g. images, audio).
-	// Integrations should check Settings.RecordOutputs before recording file data.
+	// Integrations should check Settings.ShouldRecordOutputs() before recording file data.
 	Files []types.GeneratedFileContent
+	// ToolResults and ReasoningParts feed the GenAI integration's root-span
+	// gen_ai.output.messages (TS onGenerateEnd): the tool results of every
+	// step and the reasoning parts of the final step.
+	ToolResults    []types.ToolResult
+	ReasoningParts []types.ReasoningContent
+	// ReasoningFiles are the final step's reasoning file parts (see
+	// TelemetryStepFinishEvent.ReasoningFiles).
+	ReasoningFiles []types.ReasoningFileContent
 	// Object holds the parsed result for ai.generateObject/ai.streamObject,
 	// emitted as ai.response.object (output-gated, JSON-encoded) instead of
 	// ai.response.text/reasoning/toolCalls/files, mirroring TS's
@@ -456,6 +643,23 @@ type TelemetryFinishEvent struct {
 	// as a raw JSON string on ai.response.usage, mirroring TS's
 	// onAudioOperationEnd.
 	ProviderUsage map[string]interface{}
+	// Warnings, Response, Segments, Words, Language and DurationInSeconds
+	// are the speech / transcription end-event fields (TS
+	// GenerateSpeechEndEvent warnings / response; TranscriptionEndEvent and
+	// StreamTranscriptionEndEvent warnings / response / segments / words /
+	// language / durationInSeconds). Words is for "ai.transcribe" only.
+	// Text carries the speech input text or the transcript.
+	Warnings          []types.Warning
+	Response          *TelemetryAudioResponse
+	Segments          []TelemetryTranscriptTiming
+	Words             []TelemetryTranscriptTiming
+	Language          string
+	DurationInSeconds *float64
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryErrorEvent is passed to TelemetryIntegration.OnError.
@@ -463,11 +667,16 @@ type TelemetryErrorEvent struct {
 	Settings *Settings
 	Error    error
 	// CallID, when set, lets an integration defensively close a nested span
-	// it opened for this call (e.g. the "ai.evaluate.doEvaluate" span from
-	// OnEvaluationModelCallStart) that would otherwise leak because the
+	// it opened for this call (e.g. the "ai.decide.doDecide" span from
+	// OnDecisionModelCallStart) that would otherwise leak because the
 	// corresponding *End event is never notified on an error path. Other
 	// operations leave this empty and are unaffected.
 	CallID string
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryAbortEvent is emitted when a generation is aborted by context
@@ -477,6 +686,11 @@ type TelemetryAbortEvent struct {
 	CallID   string
 	Reason   error
 	Steps    []types.StepResult
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryUsage carries token counts for telemetry events.
@@ -592,8 +806,8 @@ type abortHandler interface {
 }
 
 // stepErrorHandler is implemented by integrations that close a still-open
-// step (and, for GenAI, model-call/"chat") span when the provider call
-// itself failed — see FireOnStepError.
+// step (and, for GenAI, model-call/"chat") span when the step failed before
+// it produced a result — see FireOnStepError.
 type stepErrorHandler interface {
 	OnStepError(context.Context, TelemetryErrorEvent)
 }
@@ -682,12 +896,36 @@ func (NoopTelemetryIntegration) ExecuteTool(
 type LegacyOpenTelemetry struct {
 	tracer     trace.Tracer
 	enrichSpan EnrichSpanFunc
+	inst       *integrationInstance
 }
+
+// integrationInstance tags one constructed integration so its per-call state
+// is its own: TS keeps a callStates map per integration instance, so two
+// instances of the same class (two exporters) never share spans. Copies of
+// an integration value share the tag. A zero-value integration has none and
+// keys its state by callId alone.
+type integrationInstance struct{ prefix string }
+
+var integrationInstanceCount atomic.Uint64
+
+func newIntegrationInstance() *integrationInstance {
+	return &integrationInstance{prefix: "i" + strconv.FormatUint(integrationInstanceCount.Add(1), 10) + "\x00"}
+}
+
+// instanceStateKey scopes callID to inst. An empty callID stays empty.
+func instanceStateKey(inst *integrationInstance, callID string) string {
+	if callID == "" || inst == nil {
+		return callID
+	}
+	return inst.prefix + callID
+}
+
+func (i LegacyOpenTelemetry) stateKey(callID string) string { return instanceStateKey(i.inst, callID) }
 
 // LegacyOpenTelemetryOptions configures a LegacyOpenTelemetry integration.
 type LegacyOpenTelemetryOptions struct {
 	// Tracer is the OTel tracer to use. Defaults to the global tracer
-	// provider's "ai-sdk" tracer when nil.
+	// provider's "ai" tracer (LegacyTracerName) when nil, as TS.
 	Tracer trace.Tracer
 	// EnrichSpan adds custom attributes to spans as they are created.
 	// SDK-managed attributes win on key collisions. A per-call
@@ -699,15 +937,15 @@ type LegacyOpenTelemetryOptions struct {
 // configured with a tracer and/or EnrichSpan function, matching TS's
 // `new LegacyOpenTelemetry({tracer, enrichSpan})` (9b47dea).
 func NewLegacyOpenTelemetry(opts LegacyOpenTelemetryOptions) LegacyOpenTelemetry {
-	return LegacyOpenTelemetry{tracer: opts.Tracer, enrichSpan: opts.EnrichSpan}
+	return LegacyOpenTelemetry{tracer: opts.Tracer, enrichSpan: opts.EnrichSpan, inst: newIntegrationInstance()}
 }
 
 // tracerFor resolves the tracer this integration should use: a no-op tracer
 // when telemetry is disabled, the constructor-configured tracer when set,
-// else the shared GetTracer fallback (global "ai-sdk" tracer).
+// else the shared GetTracer fallback (global "ai" tracer, as TS).
 func (i LegacyOpenTelemetry) tracerFor(settings *Settings) trace.Tracer {
 	if !Enabled(settings) {
-		return noop.NewTracerProvider().Tracer(TracerName)
+		return noop.NewTracerProvider().Tracer(LegacyTracerName)
 	}
 	if i.tracer != nil {
 		return i.tracer
@@ -726,7 +964,7 @@ type otelSpanEntry struct {
 	// languageModel span entries: the declared tool definitions captured at
 	// OnLanguageModelCallStart, merged with provider-executed tool calls
 	// observed at OnLanguageModelCallEnd (5ad6abf).
-	toolDefs []map[string]interface{}
+	toolDefs []*jsonorder.Object
 }
 
 var otelModelCallSpans sync.Map
@@ -763,14 +1001,15 @@ func modelCallID(parts ...string) string {
 // TS avoids this by giving each integration class its own `callStates =
 // new Map<string, CallState>()`, keyed by the event's callId
 // (packages/otel/src/legacy-open-telemetry.ts / open-telemetry.ts): every
-// lifecycle method looks up (or creates) its OWN state for event.callId and
+// lifecycle method looks up its OWN state for event.callId (only the
+// operation starts create it; the others return when there is none) and
 // reads/writes rootSpan/stepSpan/toolSpans/etc there, never through ambient
 // OTel context. This ports that: legacyCallState is LegacyOpenTelemetry's own
 // per-call bookkeeping (a parallel, GenAI-specific genAICallState exists in
 // open_telemetry.go so the two integrations' state can never collide), keyed
 // by CallID in the package-level legacyCallStates map — LegacyOpenTelemetry
 // is a small value type constructed fresh per NewLegacyOpenTelemetry call
-// (like the pre-existing otelModelCallSpans for embed/rerank/evaluation), so
+// (like the pre-existing otelModelCallSpans for embed/rerank/decision), so
 // its mutable span bookkeeping has always lived in package-level state rather
 // than the struct itself.
 //
@@ -784,7 +1023,7 @@ type legacyCallState struct {
 	mu        sync.Mutex
 	rootSpan  trace.Span
 	stepSpan  trace.Span
-	toolSpans map[string]trace.Span
+	toolSpans spanSet
 	// embedSpans holds the nested "doEmbed" span(s) for this call, keyed by
 	// EmbedCallID (a single ai.embed call has one entry; ai.embedMany's
 	// batch splitting can have several concurrently) — mirrors TS's
@@ -792,11 +1031,37 @@ type legacyCallState struct {
 	// span — mirrors TS's state.rerankSpan. Both are closed defensively by
 	// OnError/OnAbort (mirroring TS) so a provider failure that skips
 	// OnEmbedEnd/OnRerankEnd doesn't leak them.
-	embedSpans      map[string]trace.Span
-	rerankSpan      trace.Span
+	embedSpans spanSet
+	rerankSpan trace.Span
+	// tracer is the tracer that started rootSpan; child spans use it too,
+	// as TS uses this.tracer for every span.
+	tracer          trace.Tracer
 	baseAttrs       []attribute.KeyValue
 	settings        legacySettings
 	runtimeCtxAttrs []attribute.KeyValue
+	// operationType is the root's operation (TS state.operationId), which
+	// names and shapes the step spans: a WorkflowAgent stream run reports
+	// its steps from the delegated stream ("ai.streamText") under the
+	// "ai.workflowAgent.stream" root.
+	operationType string
+	// objectHint is the last object step's parsed text (ordered), whose
+	// key order the root ai.response.object keeps (TS JSON.stringify of the
+	// object parsed from the model text).
+	objectHint interface{}
+}
+
+// legacyStepOperation returns the operation that shapes a step span: the
+// root's (TS state.operationId) when the call has a root, else the event's.
+func legacyStepOperation(key, eventOperation string) string {
+	if st := legacyLoadedState(key); st != nil {
+		st.mu.Lock()
+		op := st.operationType
+		st.mu.Unlock()
+		if op != "" {
+			return op
+		}
+	}
+	return eventOperation
 }
 
 var legacyCallStates sync.Map // map[string]*legacyCallState, keyed by CallID
@@ -812,6 +1077,18 @@ func legacyState(callID string) *legacyCallState {
 	return v.(*legacyCallState)
 }
 
+// legacyLoadedState returns LegacyOpenTelemetry's call state for callID
+// without creating it (TS this.callStates.get), or nil.
+func legacyLoadedState(callID string) *legacyCallState {
+	if callID == "" {
+		return nil
+	}
+	if v, ok := legacyCallStates.Load(callID); ok {
+		return v.(*legacyCallState)
+	}
+	return nil
+}
+
 // legacyDeleteState removes callID's call state once its root span has ended
 // (mirrors TS's this.cleanupCallState(event.callId), called at the end of
 // onGenerateEnd/onObjectOperationEnd/onEmbedOperationEnd/onRerankOperationEnd/
@@ -822,13 +1099,36 @@ func legacyDeleteState(callID string) {
 	}
 }
 
+// legacyChildTracer returns the tracer that started the call's root span
+// (TS this.tracer), falling back to the parent span's provider's "ai" tracer.
+// key is the state key (i.stateKey(callID)).
+func legacyChildTracer(key string, parent trace.Span) trace.Tracer {
+	if key != "" {
+		if st := legacyLoadedState(key); st != nil {
+			st.mu.Lock()
+			t := st.tracer
+			st.mu.Unlock()
+			if t != nil {
+				return t
+			}
+		}
+	}
+	return parent.TracerProvider().Tracer(LegacyTracerName)
+}
+
 // legacyRootSpanFor resolves LegacyOpenTelemetry's own root span for callID.
-// Falls back to trace.SpanFromContext(ctx) when callID is empty or has no
-// recorded root span yet, so any call site not yet updated to populate
-// CallID keeps working exactly as before (single-integration behavior is
-// unaffected either way).
+// An empty callID (a call site that doesn't populate CallID) falls back to
+// trace.SpanFromContext(ctx); a callID with no recorded root span yields a
+// non-recording span, as TS returns when getCallState finds none. Like TS
+// getCallState it never creates call state.
 func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
-	if st := legacyState(callID); st != nil {
+	if callID == "" {
+		return trace.SpanFromContext(ctx)
+	}
+	// TS `if (!state?.rootSpan) return;`: without our own root span the span
+	// in ctx belongs to the caller or to another integration, so return a
+	// non-recording span and let the handler stop.
+	if st := legacyLoadedState(callID); st != nil {
 		st.mu.Lock()
 		span := st.rootSpan
 		st.mu.Unlock()
@@ -836,17 +1136,35 @@ func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
 			return span
 		}
 	}
-	return trace.SpanFromContext(ctx)
+	return trace.SpanFromContext(context.Background())
 }
 
-// finiteFloat64Attr returns an attribute.KeyValue for a float64 value, or
-// false when the value is NaN or ±Inf. OTLP does not support non-finite
-// floats; mirrors TS sanitizeAttributeValue (otel/src/sanitize-attribute-value.ts).
+// finiteFloat64Attr returns the attribute for a JS number value (see
+// jsNumberAttr), or false when the value is NaN or ±Inf. OTLP does not
+// support non-finite floats; mirrors TS sanitizeAttributeValue
+// (otel/src/sanitize-attribute-value.ts).
 func finiteFloat64Attr(key string, v float64) (attribute.KeyValue, bool) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return attribute.KeyValue{}, false
 	}
-	return attribute.Float64(key, v), true
+	return jsNumberAttr(key, v), true
+}
+
+// jsNumberAttr is a JS number attribute as OpenTelemetry JS exports it
+// (@opentelemetry/otlp-transformer toAnyValue: `Number.isInteger(value) ?
+// intValue : doubleValue`): an integral value (1, 0, 2048) is an int64
+// attribute, any other a float64 one. A non-finite value stays float64.
+func jsNumberAttr(key string, v float64) attribute.KeyValue {
+	if isJSInteger(v) {
+		return attribute.Int64(key, int64(v))
+	}
+	return attribute.Float64(key, v)
+}
+
+// isJSInteger is JS Number.isInteger for a value an int64 can hold.
+func isJSInteger(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v == math.Trunc(v) &&
+		v >= -9.223372036854775808e18 && v < 9.223372036854775808e18
 }
 
 // finiteFloat64Slice returns values unchanged, or false if any element is
@@ -892,38 +1210,140 @@ func customSpanAttributes(ctx context.Context, ctorEnrich EnrichSpanFunc, settin
 	}
 	out := make([]attribute.KeyValue, 0, len(attrs))
 	for key, value := range attrs {
-		switch v := value.(type) {
-		case string:
-			out = append(out, attribute.String(key, v))
-		case bool:
-			out = append(out, attribute.Bool(key, v))
-		case int:
-			out = append(out, attribute.Int(key, v))
-		case int64:
-			out = append(out, attribute.Int64(key, v))
-		case float64:
-			if kv, ok := finiteFloat64Attr(key, v); ok {
-				out = append(out, kv)
-			}
-		case []string:
-			out = append(out, attribute.StringSlice(key, v))
-		case []bool:
-			out = append(out, attribute.BoolSlice(key, v))
-		case []int:
-			out = append(out, attribute.IntSlice(key, v))
-		case []int64:
-			out = append(out, attribute.Int64Slice(key, v))
-		case []float64:
-			if finite, ok := finiteFloat64Slice(v); ok {
-				out = append(out, attribute.Float64Slice(key, finite))
-			}
-		default:
-			if b, err := json.Marshal(v); err == nil {
-				out = append(out, attribute.String(key, string(b)))
-			}
+		if kv, ok := enrichAttribute(key, value); ok {
+			out = append(out, kv)
 		}
 	}
 	return out
+}
+
+// enrichAttribute converts one EnrichSpan value like TS sanitizeAttributes
+// followed by OTel's attribute check: strings, booleans and finite numbers
+// are kept; an array keeps its primitives when they all have one type (and,
+// for numbers, are all finite); anything else (null, objects, mixed or empty
+// arrays) is dropped. Go types JS does not have are read by kind: a named
+// string or number type is that primitive, every integer and float kind is a
+// number, and a pointer is the value it points at.
+func enrichAttribute(key string, value interface{}) (attribute.KeyValue, bool) {
+	rv, ok := derefValue(reflect.ValueOf(value))
+	if !ok {
+		return attribute.KeyValue{}, false
+	}
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			// Bytes are binary data (a JS Uint8Array is not an attribute
+			// value), not a list of numbers.
+			return attribute.KeyValue{}, false
+		}
+		return enrichArrayAttribute(key, rv)
+	case reflect.String:
+		return attribute.String(key, rv.String()), true
+	case reflect.Bool:
+		return attribute.Bool(key, rv.Bool()), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return attribute.Int64(key, rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if u := rv.Uint(); u <= math.MaxInt64 {
+			return attribute.Int64(key, int64(u)), true
+		}
+		return finiteFloat64Attr(key, float64(rv.Uint()))
+	case reflect.Float32, reflect.Float64:
+		return finiteFloat64Attr(key, rv.Float())
+	}
+	return attribute.KeyValue{}, false
+}
+
+// derefValue follows pointers and interfaces; false for an invalid value or
+// a nil pointer (TS null).
+func derefValue(rv reflect.Value) (reflect.Value, bool) {
+	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+		if rv.IsNil() {
+			return reflect.Value{}, false
+		}
+		rv = rv.Elem()
+	}
+	return rv, rv.IsValid()
+}
+
+// enrichArrayAttribute is sanitizeAttributeValue for an array: only the
+// string, number and boolean items count, and they must share one type, so
+// an empty array is dropped. A slice whose element type is an integer kind
+// stays an int64 slice; other numbers are float64s.
+func enrichArrayAttribute(key string, items reflect.Value) (attribute.KeyValue, bool) {
+	var strs []string
+	var nums []float64
+	var ints []int64
+	var bools []bool
+	intElems := true
+	switch items.Type().Elem().Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+	default:
+		intElems = false
+	}
+	for n := 0; n < items.Len(); n++ {
+		item, ok := derefValue(items.Index(n))
+		if !ok {
+			continue
+		}
+		switch item.Kind() {
+		case reflect.String:
+			strs = append(strs, item.String())
+		case reflect.Bool:
+			bools = append(bools, item.Bool())
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			nums = append(nums, float64(item.Int()))
+			ints = append(ints, item.Int())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			u := item.Uint()
+			nums = append(nums, float64(u))
+			if u > math.MaxInt64 {
+				intElems = false
+			}
+			ints = append(ints, int64(u))
+		case reflect.Float32, reflect.Float64:
+			nums = append(nums, item.Float())
+		}
+	}
+	kinds := 0
+	for _, n := range []int{len(strs), len(nums), len(bools)} {
+		if n > 0 {
+			kinds++
+		}
+	}
+	if kinds != 1 {
+		return attribute.KeyValue{}, false
+	}
+	switch {
+	case len(strs) > 0:
+		return attribute.StringSlice(key, strs), true
+	case len(bools) > 0:
+		return attribute.BoolSlice(key, bools), true
+	case intElems:
+		return attribute.Int64Slice(key, ints), true
+	}
+	if finite, ok := finiteFloat64Slice(nums); ok {
+		// OpenTelemetry JS exports each element by its own type; a Go
+		// attribute slice has one type, so a list of integral values is an
+		// int64 list.
+		allIntegral := true
+		for _, f := range finite {
+			if !isJSInteger(f) {
+				allIntegral = false
+				break
+			}
+		}
+		if allIntegral {
+			ints := make([]int64, len(finite))
+			for i, f := range finite {
+				ints[i] = int64(f)
+			}
+			return attribute.Int64Slice(key, ints), true
+		}
+		return attribute.Float64Slice(key, finite), true
+	}
+	return attribute.KeyValue{}, false
 }
 
 // settingsFunctionID returns settings.FunctionID, or "" when settings is nil.
@@ -932,6 +1352,22 @@ func settingsFunctionID(settings *Settings) string {
 		return ""
 	}
 	return settings.FunctionID
+}
+
+// legacyRecordSpanError mirrors TS recordSpanError in legacy-open-telemetry.ts:
+// an exception event plus an error status carrying the message. Unlike the
+// GenAI integration's recordErrorOnSpan it does not add
+// http.response.status_code.
+func legacyRecordSpanError(span trace.Span, err error) {
+	if err == nil {
+		return
+	}
+	if _, statusOnly := err.(errorEventWithoutError); statusOnly || isHiddenToolError(err) {
+		span.SetStatus(codes.Error, "")
+		return
+	}
+	recordSpanException(span, err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 // legacyOperationNameAttrs mirrors TS's assembleOperationName
@@ -964,7 +1400,7 @@ func legacyOperationNameAttrs(operationID, functionID string) []attribute.KeyVal
 // legacySettings holds the call-level generation settings TS folds into a
 // plain "settings" object before getBaseTelemetryAttributes
 // (legacy-open-telemetry.ts onGenerateStart/onObjectOperationStart/
-// onEmbedOperationStart/onRerankOperationStart/onEvaluateOperationStart).
+// onEmbedOperationStart/onRerankOperationStart/onDecideOperationStart).
 // Every operation sets MaxRetries; only generateText/streamText set
 // StopSequences.
 type legacySettings struct {
@@ -1010,7 +1446,7 @@ func legacySettingsAttrs(s legacySettings) []attribute.KeyValue {
 			attrs = append(attrs, kv)
 		}
 	}
-	if s.StopSequences != nil {
+	if len(s.StopSequences) > 0 {
 		attrs = append(attrs, attribute.StringSlice("ai.settings.stopSequences", s.StopSequences))
 	}
 	if s.Seed != nil {
@@ -1071,7 +1507,7 @@ func legacyJSONEachElement(v interface{}) []string {
 
 // legacyJSONOrEmpty JSON-encodes v, returning "" if it cannot be marshaled.
 func legacyJSONOrEmpty(v interface{}) string {
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil {
 		return ""
 	}
@@ -1085,26 +1521,81 @@ func legacyJSONOrEmpty(v interface{}) string {
 // legacy-open-telemetry.ts. Field order matches the TS object-literal
 // insertion order (Go struct fields marshal in declared order, unlike map
 // keys which json.Marshal sorts alphabetically); `omitempty` mirrors
-// JSON.stringify dropping undefined fields. Unlike TS — whose ModelMessage
-// content can be a bare string for simple text — Go's types.Message.Content
-// is always a slice of parts, so a simple single-text message serializes as
-// an array-of-parts object rather than a bare string; this is an accepted
-// Go-runtime type-system divergence (same one already present in
-// ai.prompt.messages / ai.prompt.tools elsewhere).
-func legacyPromptJSON(isObjectOp bool, system, prompt string, messages []types.Message) string {
+// JSON.stringify dropping undefined fields. Messages have the TS
+// ModelMessage keys (role, content, providerOptions; see
+// legacyModelMessages). A string prompt (promptString, generateText /
+// streamText) is recorded as TS standardizePrompt keeps it:
+// {"role":"user","content":"hi"}; other messages keep their parts.
+//
+// When the instructions were given as system messages (TS
+// `instructions: SystemModelMessage[]`), `system` is that array in the TS
+// SystemModelMessage shape ({role, content, providerOptions}, content the
+// message text) rather than the joined text, as `JSON.stringify` writes
+// `event.instructions`.
+func legacyPromptJSON(isObjectOp bool, system, prompt string, messages, instructionMessages []types.Message, promptString *string) string {
+	var sys interface{}
+	if len(instructionMessages) > 0 {
+		sys = legacySystemMessages(instructionMessages)
+	} else if system != "" {
+		sys = system
+	}
+	// An empty, non-nil message list is recorded as [] (TS messages: []);
+	// only nil (TS undefined) is left out.
+	// Messages are the TS ModelMessage shape (no Go-only tool_calls / name
+	// keys); a string prompt is the user message's string content (TS
+	// standardizePrompt).
+	var msgs *[]interface{}
+	switch {
+	case !isObjectOp && promptString != nil:
+		list := legacyModelMessages(nil, promptString)
+		msgs = &list
+	case messages != nil:
+		list := legacyModelMessages(messages, nil)
+		msgs = &list
+	}
 	if isObjectOp {
 		v := struct {
-			System   string          `json:"system,omitempty"`
-			Prompt   string          `json:"prompt,omitempty"`
-			Messages []types.Message `json:"messages,omitempty"`
-		}{System: system, Prompt: prompt, Messages: messages}
+			System   interface{}    `json:"system,omitempty"`
+			Prompt   string         `json:"prompt,omitempty"`
+			Messages *[]interface{} `json:"messages,omitempty"`
+		}{System: sys, Prompt: prompt, Messages: msgs}
 		return legacyJSONOrEmpty(v)
 	}
 	v := struct {
-		System   string          `json:"system,omitempty"`
-		Messages []types.Message `json:"messages,omitempty"`
-	}{System: system, Messages: messages}
+		System   interface{}    `json:"system,omitempty"`
+		Messages *[]interface{} `json:"messages,omitempty"`
+	}{System: sys, Messages: msgs}
 	return legacyJSONOrEmpty(v)
+}
+
+// legacySystemMessage is the JSON shape of a TS SystemModelMessage
+// ({role: 'system', content: string, providerOptions?}).
+type legacySystemMessage struct {
+	Role            string                 `json:"role"`
+	Content         string                 `json:"content"`
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+}
+
+// legacySystemMessages converts instruction messages to the TS
+// SystemModelMessage JSON shape. A Go system message holds its text in text
+// parts; their texts are concatenated into the single TS content string.
+func legacySystemMessages(messages []types.Message) []legacySystemMessage {
+	out := make([]legacySystemMessage, 0, len(messages))
+	for _, m := range messages {
+		var text strings.Builder
+		for _, part := range m.Content {
+			switch p := part.(type) {
+			case types.TextContent:
+				text.WriteString(p.Text)
+			case *types.TextContent:
+				if p != nil {
+					text.WriteString(p.Text)
+				}
+			}
+		}
+		out = append(out, legacySystemMessage{Role: "system", Content: text.String(), ProviderOptions: m.ProviderOptions})
+	}
+	return out
 }
 
 // legacyBaseAttrsKey is a private context key carrying the root span's
@@ -1161,8 +1652,18 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		Seed:             e.Seed,
 		MaxRetries:       e.MaxRetries,
 	}
-	if e.OperationType == "ai.generateText" || e.OperationType == "ai.streamText" {
+	// TS onGenerateStart (every operation the other handlers do not take,
+	// the WorkflowAgent roots included) records stopSequences;
+	// onObjectOperationStart and the embed/rerank/audio handlers do not.
+	if legacyGenerateStartOperation(e.OperationType) {
 		settings.StopSequences = e.StopSequences
+	}
+	switch e.OperationType {
+	case "ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
+		// TS onAudioOperationStart (legacy-open-telemetry.ts 280-317)
+		// records no ai.settings.*, even with the event's maxRetries
+		// (cr-r91-provc-to-carry).
+		settings = legacySettings{}
 	}
 	baseAttrs := legacyBaseAttrs(e.ModelProvider, e.ModelID, settings, e.Headers)
 	span.SetAttributes(baseAttrs...)
@@ -1179,21 +1680,24 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	// OnStepStart/OnEmbedStart/OnRerankStart/OnToolExecutionStart/OnEnd/
 	// OnError/OnAbort can find it by CallID instead of trace.SpanFromContext.
 	if e.CallID != "" {
-		st := legacyState(e.CallID)
+		st := legacyState(i.stateKey(e.CallID))
 		st.mu.Lock()
 		st.rootSpan = span
+		st.tracer = tracer
 		st.baseAttrs = baseAttrs
 		st.settings = settings
+		st.operationType = e.OperationType
 		st.mu.Unlock()
 	}
 
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordInputs := e.Settings.ShouldRecordInputs()
 
 	switch e.OperationType {
 	case "ai.embed":
 		// TS onEmbedOperationStart sets ai.value (not ai.prompt) for a
-		// single embed call, input-gated and JSON-encoded.
-		if recordInputs && e.Prompt != "" {
+		// single embed call, input-gated and JSON-encoded. An empty value
+		// is recorded too (TS JSON.stringify("") is `""`).
+		if recordInputs {
 			span.SetAttributes(attribute.String("ai.value", legacyJSONOrEmpty(e.Prompt)))
 		}
 	case "ai.embedMany":
@@ -1217,7 +1721,9 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		// ai.request.audio.size/mediaType (transcribe/streamTranscribe), all
 		// input-gated. No ai.prompt/ai.settings.* attributes for audio
 		// operations.
-		if recordInputs && e.Text != "" {
+		// TS: text == null ? undefined : ... — generateSpeech always has a
+		// text (an empty one is recorded too); transcription events have none.
+		if recordInputs && (e.Text != "" || e.OperationType == "ai.generateSpeech") {
 			span.SetAttributes(attribute.String("ai.request.text", e.Text))
 		}
 		if recordInputs && e.AudioByteLength != nil {
@@ -1236,7 +1742,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		// non-empty.
 		isObjectOp := e.OperationType == "ai.generateObject" || e.OperationType == "ai.streamObject"
 		if recordInputs {
-			if promptJSON := legacyPromptJSON(isObjectOp, e.System, e.Prompt, e.Messages); promptJSON != "" {
+			if promptJSON := legacyPromptJSON(isObjectOp, e.System, e.Prompt, e.Messages, e.InstructionMessages, e.PromptString); promptJSON != "" {
 				span.SetAttributes(attribute.String("ai.prompt", promptJSON))
 			}
 		}
@@ -1244,7 +1750,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 			// TS: 'ai.schema' is input-gated; schema.name/description and
 			// settings.output are plain (unconditional) values.
 			if recordInputs && len(e.Schema) > 0 {
-				if b, err := json.Marshal(e.Schema); err == nil {
+				if b, err := jsonstr.Marshal(e.Schema); err == nil {
 					span.SetAttributes(attribute.String("ai.schema", string(b)))
 				}
 			}
@@ -1268,7 +1774,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		// already filtered by Settings.IncludeRuntimeContext upstream.
 		ctx = context.WithValue(ctx, runtimeContextAttrsKey{}, attrs)
 		if e.CallID != "" {
-			if st := legacyState(e.CallID); st != nil {
+			if st := legacyState(i.stateKey(e.CallID)); st != nil {
 				st.mu.Lock()
 				st.runtimeCtxAttrs = attrs
 				st.mu.Unlock()
@@ -1276,6 +1782,44 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		}
 	}
 	return ctx // span is embedded via OTel context propagation
+}
+
+// legacyGenerateStartOperation reports whether TS LegacyOpenTelemetry.onStart
+// routes operationType to onGenerateStart: anything but the embed, rerank,
+// object and audio operations.
+func legacyGenerateStartOperation(operationType string) bool {
+	switch operationType {
+	case "ai.embed", "ai.embedMany", "ai.rerank", "ai.generateObject", "ai.streamObject",
+		"ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
+		return false
+	}
+	return true
+}
+
+// legacyInheritedAttrs returns the attributes a nested span (doGenerate/
+// doStream step, doEmbed, doRerank, doDecide) copies from its root: TS
+// `...state.baseTelemetryAttributes`, which getBaseTelemetryAttributes builds
+// from the model, settings, headers and the runtime context
+// (ai.settings.context.*). It reads this integration's callID state and falls
+// back to the values OnStart stashed in ctx.
+func legacyInheritedAttrs(ctx context.Context, callID string) []attribute.KeyValue {
+	var base, runtimeCtx []attribute.KeyValue
+	if callID != "" {
+		if v, ok := legacyCallStates.Load(callID); ok {
+			st := v.(*legacyCallState)
+			st.mu.Lock()
+			base, runtimeCtx = st.baseAttrs, st.runtimeCtxAttrs
+			st.mu.Unlock()
+		}
+	}
+	if base == nil {
+		base, _ = ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue)
+	}
+	if runtimeCtx == nil {
+		runtimeCtx, _ = ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue)
+	}
+	out := make([]attribute.KeyValue, 0, len(base)+len(runtimeCtx))
+	return append(append(out, base...), runtimeCtx...)
 }
 
 // runtimeContextAttrsKey is a private context key carrying the root span's
@@ -1287,60 +1831,157 @@ type runtimeContextAttrsKey struct{}
 // getRuntimeContextAttributes (otel/src/supplemental-attributes.ts): nested
 // objects recurse, arrays and other primitives are kept as-is, and nil
 // values are skipped.
+//
+// TS writes every flattened key into one object, so a dotted key that names
+// the same path as a nested one ({"a.b": 1, "a": {"b": 2}}) yields a single
+// attribute holding the later entry's value (and a later value the sanitizer
+// drops removes it). Go keeps one attribute per name the same way, visiting
+// entries in runtimeContextObject order.
 func runtimeContextAttributes(runtimeContext map[string]interface{}) []attribute.KeyValue {
 	if len(runtimeContext) == 0 {
 		return nil
 	}
+	acc := &runtimeContextAccumulator{index: map[string]int{}}
+	acc.add("ai.settings.context", runtimeContext)
 	var attrs []attribute.KeyValue
-	for key, value := range runtimeContext {
-		attrs = appendRuntimeContextAttribute(attrs, "ai.settings.context."+key, value)
+	for i, kv := range acc.attrs {
+		if acc.valid[i] {
+			attrs = append(attrs, kv)
+		}
 	}
 	return attrs
 }
 
-func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value interface{}) []attribute.KeyValue {
+// runtimeContextAccumulator is TS's attributes object: one slot per name in
+// first-write order, the last write's value (or none when the sanitizer
+// rejects it).
+type runtimeContextAccumulator struct {
+	attrs []attribute.KeyValue
+	valid []bool
+	index map[string]int
+}
+
+func (a *runtimeContextAccumulator) add(key string, value interface{}) {
 	if value == nil {
-		return attrs
+		return
 	}
-	if nested, ok := value.(map[string]interface{}); ok {
-		for nestedKey, nestedValue := range nested {
-			attrs = appendRuntimeContextAttribute(attrs, key+"."+nestedKey, nestedValue)
+	if keys, get, ok := runtimeContextObject(value); ok {
+		for _, nestedKey := range keys {
+			a.add(key+"."+nestedKey, get(nestedKey))
 		}
-		return attrs
+		return
 	}
-	switch v := value.(type) {
-	case string:
-		return append(attrs, attribute.String(key, v))
-	case bool:
-		return append(attrs, attribute.Bool(key, v))
-	case int:
-		return append(attrs, attribute.Int(key, v))
-	case int64:
-		return append(attrs, attribute.Int64(key, v))
-	case float64:
-		if kv, ok := finiteFloat64Attr(key, v); ok {
-			return append(attrs, kv)
-		}
-		return attrs
-	case []string:
-		return append(attrs, attribute.StringSlice(key, v))
-	case []bool:
-		return append(attrs, attribute.BoolSlice(key, v))
-	case []int:
-		return append(attrs, attribute.IntSlice(key, v))
-	case []int64:
-		return append(attrs, attribute.Int64Slice(key, v))
-	case []float64:
-		if finite, ok := finiteFloat64Slice(v); ok {
-			return append(attrs, attribute.Float64Slice(key, finite))
-		}
-		return attrs
-	default:
-		if b, err := json.Marshal(v); err == nil {
-			return append(attrs, attribute.String(key, string(b)))
-		}
-		return attrs
+	// Arrays and primitives are kept as they are, then sanitized like every
+	// TS attribute value (selectAttributes -> sanitizeAttributeValue). An
+	// ordered decode's json.Number leaves are numbers (jsonorder.Plain).
+	kv, ok := enrichAttribute(key, jsonorder.Plain(value))
+	if i, seen := a.index[key]; seen {
+		a.attrs[i], a.valid[i] = kv, ok
+		return
 	}
+	a.index[key] = len(a.attrs)
+	a.attrs = append(a.attrs, kv)
+	a.valid = append(a.valid, ok)
+}
+
+// runtimeContextObject returns the entries of a value TS treats as an object
+// to flatten (typeof 'object', not an array): any string-keyed map, an
+// ordered object, or a struct by its JSON fields. Entries come in the order
+// TS Object.entries would visit them where Go can see one: an ordered object
+// (*jsonorder.Object) keeps its wire order and a struct its JSON field order.
+// A map has none, so its keys are sorted (array-index keys first, as JS
+// enumerates them), the order Go serializes the same map.
+func runtimeContextObject(value interface{}) ([]string, func(string) interface{}, bool) {
+	switch obj := value.(type) {
+	case map[string]interface{}:
+		return jsonorder.FromMap(obj).Keys(), func(k string) interface{} { return obj[k] }, true
+	case *jsonorder.Object:
+		if obj == nil {
+			return nil, nil, false
+		}
+		return obj.Keys(), func(k string) interface{} {
+			v, _ := obj.Get(k)
+			return v
+		}, true
+	}
+	rv := reflect.ValueOf(value)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil, nil, false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, nil, false
+		}
+		out := make(map[string]interface{}, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out[iter.Key().String()] = iter.Value().Interface()
+		}
+		return jsonorder.FromMap(out).Keys(), func(k string) interface{} { return out[k] }, true
+	case reflect.Struct:
+		b, err := json.Marshal(rv.Interface())
+		if err != nil {
+			return nil, nil, false
+		}
+		tree, ok := jsonorder.Parse(b)
+		if !ok {
+			return nil, nil, false
+		}
+		obj, ok := tree.(*jsonorder.Object)
+		if !ok {
+			return nil, nil, false
+		}
+		return obj.Keys(), func(k string) interface{} {
+			v, _ := obj.Get(k)
+			return v
+		}, true
+	}
+	return nil, nil, false
+}
+
+// stepSpanFor resolves this integration's open step span for callID from its
+// own call state (TS state.stepSpan). Only an event without a CallID falls
+// back to the step span in ctx, which holds only the last registered
+// integration's span.
+func (i LegacyOpenTelemetry) stepSpanFor(ctx context.Context, callID string) (trace.Span, bool) {
+	if key := i.stateKey(callID); key != "" {
+		// TS `if (!state?.stepSpan) return;`: a step span in ctx is not
+		// necessarily ours.
+		if v, ok := legacyCallStates.Load(key); ok {
+			st := v.(*legacyCallState)
+			st.mu.Lock()
+			span := st.stepSpan
+			st.mu.Unlock()
+			if span != nil {
+				return span, true
+			}
+		}
+		return nil, false
+	}
+	span, ok := ctx.Value(stepSpanKey{}).(trace.Span)
+	return span, ok
+}
+
+// requestSettingsFor returns the root call's settings from this
+// integration's call state (TS state.settings), falling back to the values
+// OnStart stashed in ctx. FireOnStart returns the last integration's ctx, so
+// with another integration registered after this one the ctx value is
+// missing.
+func (i LegacyOpenTelemetry) requestSettingsFor(ctx context.Context, callID string) (legacySettings, bool) {
+	if st := legacyLoadedState(i.stateKey(callID)); st != nil {
+		st.mu.Lock()
+		settings, hasRoot := st.settings, st.rootSpan != nil
+		st.mu.Unlock()
+		if hasRoot {
+			return settings, true
+		}
+	}
+	settings, ok := ctx.Value(legacyRequestSettingsKey{}).(legacySettings)
+	return settings, ok
 }
 
 // stepSpanKey is a private context key used to pass the OTel step span from
@@ -1381,16 +2022,16 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	// H5: resolve this integration's OWN root span by CallID rather than
 	// trace.SpanFromContext(ctx), which — with two integrations registered —
 	// would return whichever integration's OnStart ran last.
-	rootSpan := legacyRootSpanFor(e.CallID, ctx)
+	rootSpan := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !rootSpan.IsRecording() {
 		return ctx
 	}
-	tracer := rootSpan.TracerProvider().Tracer("go-ai")
+	tracer := legacyChildTracer(i.stateKey(e.CallID), rootSpan)
 	// Explicitly rebase ctx onto our own root span before creating the step
 	// span, so it nests correctly under LegacyOpenTelemetry's root even if
 	// ctx's ambient "current span" belongs to another registered integration.
 	ctx = trace.ContextWithSpan(ctx, rootSpan)
-	opType := e.OperationType
+	opType := legacyStepOperation(i.stateKey(e.CallID), e.OperationType)
 	if opType == "" {
 		opType = "ai.step"
 	}
@@ -1419,10 +2060,10 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	// any per-step override — mirroring TS onStepStart/onObjectStepStart,
 	// which both read from state.settings (set once at ai.<op>Start), never
 	// from per-step values. gen_ai.request.stop_sequences is only set for
-	// generateText/streamText (onObjectStepStart omits it), matching
-	// legacySettings.StopSequences only being populated for those two
-	// operation types in OnStart above.
-	if settings, ok := ctx.Value(legacyRequestSettingsKey{}).(legacySettings); ok {
+	// generateText/streamText steps (onObjectStepStart omits it); OnStart
+	// above populates legacySettings.StopSequences only for the operations TS
+	// routes to onGenerateStart.
+	if settings, ok := i.requestSettingsFor(ctx, e.CallID); ok {
 		if settings.FrequencyPenalty != nil {
 			if kv, ok := finiteFloat64Attr("gen_ai.request.frequency_penalty", *settings.FrequencyPenalty); ok {
 				stepSpan.SetAttributes(kv)
@@ -1436,8 +2077,8 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 				stepSpan.SetAttributes(kv)
 			}
 		}
-		if opType == "ai.generateText" || opType == "ai.streamText" {
-			if settings.StopSequences != nil {
+		if legacyGenerateStartOperation(opType) {
+			if len(settings.StopSequences) > 0 {
 				stepSpan.SetAttributes(attribute.StringSlice("gen_ai.request.stop_sequences", settings.StopSequences))
 			}
 		}
@@ -1460,9 +2101,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		functionID = e.Settings.FunctionID
 	}
 	stepSpan.SetAttributes(legacyOperationNameAttrs(legacyStepOperationID(opType), functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		stepSpan.SetAttributes(baseAttrs...)
-	}
+	stepSpan.SetAttributes(legacyInheritedAttrs(ctx, i.stateKey(e.CallID))...)
 	// TS's onStepStart sets 'ai.model.provider'/'ai.model.id' from the
 	// step's own event.provider/event.modelId AFTER spreading
 	// state.baseTelemetryAttributes, so a step whose model differs from the
@@ -1480,17 +2119,21 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	// onObjectStepStart (generateObject/streamObject, ai.prompt.messages
 	// only — object calls never populate StepTools/ToolChoice, so those two
 	// attributes are naturally absent there).
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordInputs := e.Settings.ShouldRecordInputs()
 	if recordInputs {
-		if len(e.PromptMessages) > 0 {
-			if b, err := json.Marshal(e.PromptMessages); err == nil {
-				stepSpan.SetAttributes(attribute.String("ai.prompt.messages", string(b)))
+		// TS stringifyForTelemetry(event.promptMessages): the V4 prompt with
+		// the instructions as leading system messages.
+		if len(e.PromptMessages) > 0 || e.System != "" || len(e.InstructionMessages) > 0 {
+			if text, ok := legacyPromptMessagesJSON(e.System, e.InstructionMessages, e.PromptMessages); ok {
+				stepSpan.SetAttributes(attribute.String("ai.prompt.messages", text))
 			}
 		}
 		if len(e.StepTools) > 0 {
+			// TS: event.stepTools.map(tool => JSON.stringify(tool)), the
+			// prepared language-model tools.
 			tools := make([]string, 0, len(e.StepTools))
 			for _, t := range e.StepTools {
-				if b, err := json.Marshal(t); err == nil {
+				if b, err := jsonstr.Marshal(languageModelToolDefinition(t)); err == nil {
 					tools = append(tools, string(b))
 				}
 			}
@@ -1499,13 +2142,13 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 			}
 		}
 		if e.ToolChoice.Type != "" {
-			if b, err := json.Marshal(e.ToolChoice); err == nil {
+			if b, err := jsonstr.Marshal(e.ToolChoice); err == nil {
 				stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
 			}
 		}
 	}
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.stepSpan = stepSpan
 			st.mu.Unlock()
@@ -1548,12 +2191,12 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
 	// H5: resolve our own root span by CallID rather than
 	// trace.SpanFromContext(ctx).
-	parent := legacyRootSpanFor(e.CallID, ctx)
+	parent := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !parent.IsRecording() {
 		return
 	}
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := legacyChildTracer(i.stateKey(e.CallID), parent)
 	spanName := e.OperationID
 	if spanName == "" {
 		spanName = "ai.embed.doEmbed"
@@ -1568,14 +2211,12 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	}
 	functionID := settingsFunctionID(e.Settings)
 	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		span.SetAttributes(baseAttrs...)
-	}
-	if (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
+	span.SetAttributes(legacyInheritedAttrs(ctx, i.stateKey(e.CallID))...)
+	if e.Settings.ShouldRecordInputs() && len(e.Values) > 0 {
 		span.SetAttributes(attribute.StringSlice("ai.values", legacyJSONEachElement(e.Values)))
 	}
 	if callID != "" {
-		otelModelCallSpans.Store(otelSpanKey("embedding", callID), otelSpanEntry{span: span})
+		otelModelCallSpans.Store(otelSpanKey("embedding", i.stateKey(callID)), otelSpanEntry{span: span})
 	}
 	// H5: also record it in our own callId-keyed state (mirrors TS's
 	// state.embedSpans.set(event.embedCallId, ...)) so OnError/OnAbort can
@@ -1583,12 +2224,9 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	// OnEmbedEnd ever fires — otherwise this span leaks (TS's onError/onAbort
 	// both iterate state.embedSpans.values()).
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
-			if st.embedSpans == nil {
-				st.embedSpans = make(map[string]trace.Span)
-			}
-			st.embedSpans[e.EmbedCallID] = span
+			st.embedSpans.set(e.EmbedCallID, span)
 			st.mu.Unlock()
 		}
 	}
@@ -1605,11 +2243,11 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 // comment on EmbeddingModelCallEndEvent).
 func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
-	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", callID))
+	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", i.stateKey(callID)))
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
-			delete(st.embedSpans, e.EmbedCallID)
+			st.embedSpans.take(e.EmbedCallID)
 			st.mu.Unlock()
 		}
 	}
@@ -1621,18 +2259,21 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 		return
 	}
 	if e.Error != nil {
-		RecordErrorOnSpan(entry.span, e.Error)
+		legacyRecordSpanError(entry.span, e.Error)
 		entry.span.End()
 		return
 	}
-	if (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
+	if e.Settings.ShouldRecordOutputs() && len(e.Embeddings) > 0 {
 		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))
 	}
 	// ai.usage.tokens is a plain value in TS (not {output: ...}), so it is
 	// never gated by recordOutputs; sanitizeAttributeValue drops it when
-	// usage.tokens is NaN (provider returned no usage), which
-	// setFiniteFloat64 mirrors.
-	entry.span.SetAttributes(setFiniteFloat64(nil, "ai.usage.tokens", e.Usage.Tokens)...)
+	// usage.tokens is NaN (provider returned no usage). The count is an
+	// integer, which OpenTelemetry JS exports as an int value, so it is an
+	// Int64 like the root span's copy.
+	if tokens, ok := embeddingUsageTokens(e.Usage); ok {
+		entry.span.SetAttributes(attribute.Int64("ai.usage.tokens", tokens))
+	}
 	entry.span.End()
 }
 
@@ -1643,12 +2284,12 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
 	// H5: resolve our own root span by CallID rather than
 	// trace.SpanFromContext(ctx).
-	parent := legacyRootSpanFor(e.CallID, ctx)
+	parent := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !parent.IsRecording() {
 		return
 	}
 	callID := modelCallID(e.CallID, e.OperationID)
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := legacyChildTracer(i.stateKey(e.CallID), parent)
 	spanName := e.OperationID
 	if spanName == "" {
 		spanName = "ai.rerank.doRerank"
@@ -1663,22 +2304,20 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	}
 	functionID := settingsFunctionID(e.Settings)
 	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		span.SetAttributes(baseAttrs...)
-	}
-	if (e.Settings == nil || e.Settings.RecordInputs) && e.Documents != nil {
+	span.SetAttributes(legacyInheritedAttrs(ctx, i.stateKey(e.CallID))...)
+	if e.Settings.ShouldRecordInputs() && e.Documents != nil {
 		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
 			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
 		}
 	}
 	if callID != "" {
-		otelModelCallSpans.Store(otelSpanKey("reranking", callID), otelSpanEntry{span: span})
+		otelModelCallSpans.Store(otelSpanKey("reranking", i.stateKey(callID)), otelSpanEntry{span: span})
 	}
 	// H5: also record it in our own callId-keyed state (mirrors TS's
 	// state.rerankSpan = {span, context}) so OnError/OnAbort can defensively
 	// close it if the provider call itself fails before OnRerankEnd fires.
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.rerankSpan = span
 			st.mu.Unlock()
@@ -1698,9 +2337,9 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 // RerankingModelCallEndEvent).
 func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
 	callID := modelCallID(e.CallID, e.OperationID)
-	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("reranking", callID))
+	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("reranking", i.stateKey(callID)))
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.rerankSpan = nil
 			st.mu.Unlock()
@@ -1714,14 +2353,14 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 		return
 	}
 	if e.Error != nil {
-		RecordErrorOnSpan(entry.span, e.Error)
+		legacyRecordSpanError(entry.span, e.Error)
 		entry.span.End()
 		return
 	}
 	entry.span.SetAttributes(attribute.String("ai.ranking.type", e.DocumentsType))
-	if e.Settings == nil || e.Settings.RecordOutputs {
+	if e.Settings.ShouldRecordOutputs() {
 		if len(e.Ranking) > 0 {
-			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)))
+			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", rankingJSONEach(e.Ranking)))
 		}
 	}
 	entry.span.End()
@@ -1743,7 +2382,10 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	// could return the other integration's "current" span).
 	var span trace.Span
 	if e.CallID != "" {
-		st := legacyState(e.CallID)
+		st := legacyLoadedState(i.stateKey(e.CallID))
+		if st == nil {
+			return ctx
+		}
 		st.mu.Lock()
 		span = st.stepSpan
 		st.mu.Unlock()
@@ -1756,7 +2398,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 			return ctx
 		}
 	}
-	tracer := span.TracerProvider().Tracer("go-ai")
+	tracer := legacyChildTracer(i.stateKey(e.CallID), span)
 	ctx, child := tracer.Start(trace.ContextWithSpan(ctx, span), "ai.toolCall")
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType: SpanTypeTool,
@@ -1776,24 +2418,29 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	// ai.toolCall.args is output-gated in TS (`output: () => ...`), not
 	// input-gated — the model's tool-call arguments are treated as part of
 	// the generation's output.
-	if (e.Settings == nil || e.Settings.RecordOutputs) && e.Args != nil {
-		if b, err := json.Marshal(e.Args); err == nil {
+	if e.Settings.ShouldRecordOutputs() && e.Args != nil {
+		if b, err := jsonstr.Marshal(orderedToolInput(e.Args, e.ArgsText)); err == nil {
 			child.SetAttributes(attribute.String("ai.toolCall.args", string(b)))
 		}
 	}
 	// Runtime context attrs on tool call spans (0651c5f): reuse the root
-	// span's already-flattened ai.settings.context.* attrs, since
-	// TelemetryToolCallStartEvent carries no RuntimeContext of its own.
-	if attrs, ok := ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue); ok {
-		child.SetAttributes(attrs...)
+	// span's already-flattened ai.settings.context.* attrs (TS filters
+	// state.baseTelemetryAttributes), since TelemetryToolCallStartEvent
+	// carries no RuntimeContext of its own. The call state holds this
+	// integration's own; ctx holds only the last integration's.
+	var runtimeCtxAttrs []attribute.KeyValue
+	if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
+		st.mu.Lock()
+		runtimeCtxAttrs = st.runtimeCtxAttrs
+		st.mu.Unlock()
+	} else {
+		runtimeCtxAttrs, _ = ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue)
 	}
+	child.SetAttributes(runtimeCtxAttrs...)
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
-			if st.toolSpans == nil {
-				st.toolSpans = make(map[string]trace.Span)
-			}
-			st.toolSpans[e.ToolCallID] = child
+			st.toolSpans.set(e.ToolCallID, child)
 			st.mu.Unlock()
 		}
 	}
@@ -1803,34 +2450,33 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 // OnToolExecutionEnd ends the tool execution child span, mirroring TS's
 // onToolExecutionEnd: a successful call records ai.toolCall.result
 // (output-gated, JSON-encoded), a failed one records the error on the span
-// instead. ai.toolCall.durationMs is a Go-only addition (TS carries no
-// duration on this span) kept as an additive, non-conflicting attribute.
+// instead. No duration attribute is recorded (TS legacy-open-telemetry.ts
+// 741-771 has none).
 func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	// H5: look up OUR OWN tool span by (CallID, ToolCallID) instead of
-	// trace.SpanFromContext(ctx).
+	// trace.SpanFromContext(ctx). TS returns when there is no such span
+	// (`if (!toolSpanEntry) return;`): the span in ctx may belong to another
+	// integration or to the caller.
 	var span trace.Span
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
-			span = st.toolSpans[e.ToolCallID]
-			if span != nil {
-				delete(st.toolSpans, e.ToolCallID)
-			}
+			span = st.toolSpans.take(e.ToolCallID)
 			st.mu.Unlock()
 		}
-	}
-	if span == nil {
+		if span == nil {
+			return
+		}
+	} else {
 		span = trace.SpanFromContext(ctx)
 	}
 	if !span.IsRecording() {
 		return
 	}
-	span.SetAttributes(attribute.Int64("ai.toolCall.durationMs", e.DurationMs))
 	if e.Error != nil {
-		span.RecordError(e.Error)
-		span.SetStatus(codes.Error, e.Error.Error())
-	} else if (e.Settings == nil || e.Settings.RecordOutputs) && e.Result != nil {
-		if b, err := json.Marshal(e.Result); err == nil {
+		legacyRecordSpanError(span, e.Error)
+	} else if e.Settings.ShouldRecordOutputs() && e.Result != nil {
+		if b, err := jsonstr.Marshal(e.Result); err == nil {
 			span.SetAttributes(attribute.String("ai.toolCall.result", string(b)))
 		}
 	}
@@ -1866,13 +2512,29 @@ func legacyToolCallsJSON(toolCalls []types.ToolCall) (string, bool) {
 	}
 	entries := make([]toolCallEntry, len(toolCalls))
 	for i, tc := range toolCalls {
-		entries[i] = toolCallEntry{ToolCallID: tc.ID, ToolName: tc.ToolName, Input: tc.Arguments}
+		entries[i] = toolCallEntry{ToolCallID: tc.ID, ToolName: tc.ToolName, Input: orderedToolInput(tc.Arguments, tc.RawArguments)}
 	}
-	b, err := json.Marshal(entries)
+	b, err := jsonstr.Marshal(entries)
 	if err != nil {
 		return "", false
 	}
 	return string(b), true
+}
+
+// rankingJSONEach JSON-encodes each ranking entry as TS
+// `event.ranking.map(r => JSON.stringify(r))`, whose entries are
+// `{index, relevanceScore}`. types.RerankItem has no JSON tags, so marshaling
+// it directly would write {"Index":..,"RelevanceScore":..}.
+func rankingJSONEach(ranking []types.RerankItem) []string {
+	type rankingEntry struct {
+		Index          int     `json:"index"`
+		RelevanceScore float64 `json:"relevanceScore"`
+	}
+	entries := make([]rankingEntry, len(ranking))
+	for i, r := range ranking {
+		entries[i] = rankingEntry{Index: r.Index, RelevanceScore: r.RelevanceScore}
+	}
+	return jsonStringifyEach(entries)
 }
 
 // legacyFilesJSON JSON-encodes generated files as TS's
@@ -1890,7 +2552,7 @@ func legacyFilesJSON(files []types.GeneratedFileContent) (string, bool) {
 	for i, f := range files {
 		entries[i] = fileEntry{Type: "file", MediaType: f.MediaType, Data: base64.StdEncoding.EncodeToString(f.Data)}
 	}
-	b, err := json.Marshal(entries)
+	b, err := jsonstr.Marshal(entries)
 	if err != nil {
 		return "", false
 	}
@@ -1978,27 +2640,36 @@ func isLegacyObjectOperation(operationType string) bool {
 // the smaller legacyObjectUsageAttrs usage set), matching TS's dispatch on
 // state.operationId (H3 follow-up 3).
 func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
-	stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span)
+	stepSpan, ok := i.stepSpanFor(ctx, e.CallID)
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
 	if e.FinishReason == string(types.FinishReasonError) {
 		stepSpan.SetStatus(codes.Error, "")
 	}
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 
-	stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	// TS drops an undefined finish reason (selectAttributes).
+	if e.FinishReason != "" {
+		stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	}
 
-	if isLegacyObjectOperation(e.OperationType) {
+	// TS onStepEnd shapes the span by the root's operation (state.operationId).
+	stepOp := legacyStepOperation(i.stateKey(e.CallID), e.OperationType)
+	if isLegacyObjectOperation(stepOp) {
 		// onObjectStepEnd: ai.response.object (re-parsed/re-stringified JSON
 		// text, falling back to the raw text on parse failure, mirroring TS's
-		// try/catch), no reasoning/toolCalls/files.
-		if recordOutputs && e.Text != "" {
+		// try/catch), no reasoning/toolCalls/files. Empty text is recorded as
+		// "" (JSON.parse throws, so TS records the raw text).
+		if recordOutputs {
+			// JSON.stringify(JSON.parse(text)) keeps the model's key order.
 			objectAttr := e.Text
-			var parsed interface{}
-			if json.Unmarshal([]byte(e.Text), &parsed) == nil {
-				if b, err := json.Marshal(parsed); err == nil {
-					objectAttr = string(b)
+			if tree, ok := jsonorder.Parse([]byte(e.Text)); ok {
+				objectAttr = jsonorder.Stringify(tree)
+				if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
+					st.mu.Lock()
+					st.objectHint = tree
+					st.mu.Unlock()
 				}
 			}
 			stepSpan.SetAttributes(attribute.String("ai.response.object", objectAttr))
@@ -2016,10 +2687,14 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 			))
 		}
 	} else {
-		if recordOutputs && e.Text != "" {
+		// TS records ai.response.text even when it is empty (a tool-call-only
+		// step): selectAttributes only drops null/undefined.
+		if recordOutputs {
 			stepSpan.SetAttributes(attribute.String("ai.response.text", e.Text))
 		}
-		if recordOutputs && e.Reasoning != "" {
+		// TS: event.reasoning.length > 0 ? joined text : undefined (reasoning
+		// holds the reasoning file parts too).
+		if recordOutputs && (e.Reasoning != "" || len(e.ReasoningParts) > 0 || len(e.ReasoningFiles) > 0) {
 			stepSpan.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
 		}
 		if recordOutputs {
@@ -2036,7 +2711,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		// like the msTo* fields above, are plain values in TS's
 		// selectAttributes call, not {output: ...} — so they're never gated
 		// by recordOutputs.
-		isStreamText := e.OperationType == "ai.streamText"
+		isStreamText := stepOp == "ai.streamText"
 		if isStreamText {
 			if e.Performance.TimeToFirstOutputMs != nil {
 				ms := *e.Performance.TimeToFirstOutputMs
@@ -2056,7 +2731,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 			stepSpan.SetAttributes(setFiniteFloat64(nil, "ai.response.avgOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond)...)
 			stepSpan.AddEvent("ai.stream.finish", trace.WithAttributes(
 				attribute.Int64("ai.response.msToFinish", e.Performance.ResponseTimeMs),
-				attribute.Float64("ai.response.avgOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond),
+				jsNumberAttr("ai.response.avgOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond),
 			))
 		}
 	}
@@ -2068,18 +2743,24 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		)
 	}
 	if e.ResponseModelID != "" {
-		stepSpan.SetAttributes(attribute.String("ai.response.model", e.ResponseModelID))
+		stepSpan.SetAttributes(
+			attribute.String("ai.response.model", e.ResponseModelID),
+			attribute.String("gen_ai.response.model", e.ResponseModelID),
+		)
 	}
 	if !e.ResponseTimestamp.IsZero() {
-		stepSpan.SetAttributes(attribute.String("ai.response.timestamp", e.ResponseTimestamp.UTC().Format(time.RFC3339)))
+		// TS response.timestamp.toISOString(), expanded years included.
+		if iso, ok := jsdate.ISOString(e.ResponseTimestamp); ok {
+			stepSpan.SetAttributes(attribute.String("ai.response.timestamp", iso))
+		}
 	}
 	if e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			stepSpan.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
 
-	stepSpan.SetAttributes(attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}))
+	stepSpan.SetAttributes(finishReasonsAttrs(e.FinishReason)...)
 	if e.Usage.InputTokens != nil {
 		stepSpan.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
 	}
@@ -2087,7 +2768,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		stepSpan.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
 	}
 
-	if isLegacyObjectOperation(e.OperationType) {
+	if isLegacyObjectOperation(stepOp) {
 		stepSpan.SetAttributes(legacyObjectUsageAttrs(e.Usage)...)
 	} else {
 		stepSpan.SetAttributes(legacyFullUsageAttrs(e.Usage)...)
@@ -2098,7 +2779,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	// state.stepSpan if it's still set, mirroring TS's onAbort/onError) don't
 	// try to end it a second time.
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.stepSpan == stepSpan {
 				st.stepSpan = nil
@@ -2121,16 +2802,16 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 // recordSpanError(...); state.stepSpan.end(); }` when e.Error is set, or
 // onAbort's `state.stepSpan.end()` (no error status) when it's nil.
 func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEvent) {
-	stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span)
+	stepSpan, ok := i.stepSpanFor(ctx, e.CallID)
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
 	if e.Error != nil {
-		RecordErrorOnSpan(stepSpan, e.Error)
+		legacyRecordSpanError(stepSpan, e.Error)
 	}
 	stepSpan.End()
 	if e.CallID != "" {
-		if st := legacyState(e.CallID); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.stepSpan == stepSpan {
 				st.stepSpan = nil
@@ -2152,18 +2833,21 @@ func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEv
 // gen_ai.system/gen_ai.request.model from the root span for the same
 // reason: TS's onXEnd methods never set gen_ai.* on the root span at all).
 func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
+	// The end is terminal for the call: its state goes even when no span is
+	// recording, so a late event cannot leave an entry behind.
+	defer legacyDeleteState(i.stateKey(e.CallID))
 	// H5: resolve OUR OWN root span by CallID instead of
 	// trace.SpanFromContext(ctx), which — with a second integration also
 	// registered — would silently resolve to that other integration's span
 	// and leave ours never ended.
-	span := legacyRootSpanFor(e.CallID, ctx)
+	span := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
 	if e.FinishReason == string(types.FinishReasonError) {
 		span.SetStatus(codes.Error, "")
 	}
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 
 	switch e.OperationType {
 	case "ai.embed", "ai.embedMany":
@@ -2171,15 +2855,21 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 	case "ai.rerank":
 		// TS onRerankOperationEnd sets nothing beyond ending the span.
 	case "ai.generateObject", "ai.streamObject":
-		i.legacyOnObjectOperationEnd(span, e, recordOutputs)
+		var hint interface{}
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
+			st.mu.Lock()
+			hint = st.objectHint
+			st.mu.Unlock()
+		}
+		i.legacyOnObjectOperationEnd(span, e, recordOutputs, hint)
 	case "ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
-		recordInputs := e.Settings == nil || e.Settings.RecordInputs
+		recordInputs := e.Settings.ShouldRecordInputs()
 		i.legacyOnAudioOperationEnd(span, e, recordInputs, recordOutputs)
 	default:
 		i.legacyOnGenerateEnd(span, e, recordOutputs)
 	}
 	span.End()
-	legacyDeleteState(e.CallID)
+	legacyDeleteState(i.stateKey(e.CallID))
 }
 
 // legacyOnAudioOperationEnd mirrors TS's onAudioOperationEnd
@@ -2200,7 +2890,9 @@ func (i LegacyOpenTelemetry) legacyOnAudioOperationEnd(span trace.Span, e Teleme
 		}
 	}
 	if recordOutputs {
-		if e.Text != "" {
+		// TS: 'segments' in event ? {output: () => event.text} : undefined, so a
+		// transcription records its text even when empty.
+		if !isSpeech {
 			span.SetAttributes(attribute.String("ai.response.text", e.Text))
 		}
 		if isSpeech {
@@ -2219,25 +2911,39 @@ func (i LegacyOpenTelemetry) legacyOnAudioOperationEnd(span trace.Span, e Teleme
 		span.SetAttributes(attrs...)
 	}
 	if e.ProviderUsage != nil {
-		if b, err := json.Marshal(e.ProviderUsage); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderUsage); err == nil {
 			span.SetAttributes(attribute.String("ai.response.usage", string(b)))
 		}
 	}
 	if e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
 }
 
+// JoinReasoning is the value of the legacy ai.response.reasoning attribute:
+// the reasoning parts' text joined with "\n" (TS legacy-open-telemetry.ts),
+// unlike StepResult.ReasoningText, which concatenates with no separator
+// (asReasoningText). Empty for no parts.
+func JoinReasoning(parts []types.ReasoningContent) string {
+	texts := make([]string, len(parts))
+	for i, part := range parts {
+		texts[i] = part.Text
+	}
+	return strings.Join(texts, "\n")
+}
+
 // legacyOnGenerateEnd mirrors TS's onGenerateEnd (generateText/streamText).
 func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
-	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	if e.FinishReason != "" {
+		span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	}
 	if recordOutputs {
-		if e.Text != "" {
-			span.SetAttributes(attribute.String("ai.response.text", e.Text))
-		}
-		if e.Reasoning != "" {
+		// Empty text is recorded too (TS `event.text ?? undefined`).
+		span.SetAttributes(attribute.String("ai.response.text", e.Text))
+		// TS: finalStep.reasoning.length > 0 ? joined text : undefined.
+		if e.Reasoning != "" || len(e.ReasoningParts) > 0 || len(e.ReasoningFiles) > 0 {
 			span.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
 		}
 		if s, ok := legacyToolCallsJSON(e.ToolCalls); ok {
@@ -2248,7 +2954,7 @@ func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFin
 		}
 	}
 	if e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
@@ -2258,15 +2964,25 @@ func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFin
 // legacyOnObjectOperationEnd mirrors TS's onObjectOperationEnd
 // (generateObject/streamObject): ai.response.object instead of text, and the
 // smaller legacyObjectUsageAttrs usage set.
-func (i LegacyOpenTelemetry) legacyOnObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
-	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+//
+// hint is the last object step's ordered parse: a Go map object is written
+// in the model's key order (TS JSON.stringify(event.object)); a
+// json.RawMessage or ordered object keeps its own order.
+func (i LegacyOpenTelemetry) legacyOnObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool, hint interface{}) {
+	if e.FinishReason != "" {
+		span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	}
 	if recordOutputs && e.Object != nil {
-		if b, err := json.Marshal(e.Object); err == nil {
+		obj := e.Object
+		if _, ordered := jsonorder.Normalize(obj); !ordered && hint != nil {
+			obj = jsonorder.Hinted{V: obj, Hint: hint}
+		}
+		if b, err := jsonstr.Marshal(obj); err == nil {
 			span.SetAttributes(attribute.String("ai.response.object", string(b)))
 		}
 	}
 	if e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
@@ -2291,7 +3007,7 @@ func (i LegacyOpenTelemetry) legacyOnEmbedOperationEnd(span trace.Span, e Teleme
 			span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(v)))
 		}
 	case []float64:
-		if b, err := json.Marshal(v); err == nil {
+		if b, err := jsonstr.Marshal(v); err == nil {
 			span.SetAttributes(attribute.String("ai.embedding", string(b)))
 		}
 	}
@@ -2302,125 +3018,100 @@ func (i LegacyOpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEven
 	i.OnEnd(ctx, e)
 }
 
-// OnError records the error on the root span and ends it. It also
-// defensively closes any nested "ai.evaluate.doEvaluate" span left open by
-// OnEvaluationModelCallStart for this CallID, since
-// OnEvaluationModelCallEnd is never notified on an error path (mirrors
-// evaluate.ts, where onEvaluationModelCallEnd only fires on success).
+// OnError records the error on the call's still-open child spans and the
+// root span and ends them, in TS onError order (closeOpenChildSpans). The
+// nested "ai.decide.doDecide" span is closed here too, since
+// OnDecisionModelCallEnd is never notified on an error path (decide.ts
+// notifies onDecisionModelCallEnd only on success).
 func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
-	if e.CallID != "" {
-		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("evaluation", e.CallID)); ok {
-			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
-				if e.Error != nil {
-					RecordErrorOnSpan(entry.span, e.Error)
-				}
-				entry.span.End()
-			}
-		}
-	}
-	// H5: close any of OUR OWN still-open step/tool spans, mirroring TS's
-	// onError (`if (state.stepSpan) { recordSpanError(...); .end(); }` and a
-	// loop over state.toolSpans) — otherwise a step or tool span left open by
-	// an error that skipped OnStepEnd/OnToolExecutionEnd would leak.
-	if st := legacyState(e.CallID); st != nil {
-		st.mu.Lock()
-		stepSpan := st.stepSpan
-		st.stepSpan = nil
-		toolSpans := st.toolSpans
-		st.toolSpans = nil
-		embedSpans := st.embedSpans
-		st.embedSpans = nil
-		rerankSpan := st.rerankSpan
-		st.rerankSpan = nil
-		st.mu.Unlock()
-		if stepSpan != nil && stepSpan.IsRecording() {
-			if e.Error != nil {
-				RecordErrorOnSpan(stepSpan, e.Error)
-			}
-			stepSpan.End()
-		}
-		for _, toolSpan := range toolSpans {
-			if toolSpan.IsRecording() {
-				if e.Error != nil {
-					RecordErrorOnSpan(toolSpan, e.Error)
-				}
-				toolSpan.End()
-			}
-		}
-		// H5: also close any still-open embed/rerank nested spans, mirroring
-		// TS's onError loop over state.embedSpans and its state.rerankSpan
-		// close — otherwise a doEmbed/doRerank span left open by a provider
-		// error that skipped OnEmbedEnd/OnRerankEnd would leak.
-		for _, embedSpan := range embedSpans {
-			if embedSpan.IsRecording() {
-				if e.Error != nil {
-					RecordErrorOnSpan(embedSpan, e.Error)
-				}
-				embedSpan.End()
-			}
-		}
-		if rerankSpan != nil && rerankSpan.IsRecording() {
-			if e.Error != nil {
-				RecordErrorOnSpan(rerankSpan, e.Error)
-			}
-			rerankSpan.End()
-		}
-	}
-	span := legacyRootSpanFor(e.CallID, ctx)
+	// Terminal for the call (also when it arrives after OnEnd, as for a
+	// generateText output parse failure): never leave state behind.
+	defer legacyDeleteState(i.stateKey(e.CallID))
+	spanErr := errorEventSpanError(e.Error)
+	i.closeOpenChildSpans(e.CallID, spanErr)
+	span := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
-	if e.Error != nil {
-		RecordErrorOnSpan(span, e.Error)
-	}
+	legacyRecordSpanError(span, spanErr)
 	span.End()
-	legacyDeleteState(e.CallID)
+	legacyDeleteState(i.stateKey(e.CallID))
 }
 
-// OnAbort closes any in-flight step span (mirroring TS onAbort's
-// `state.stepSpan.end()`, no error status — LegacyOpenTelemetry has no
-// inferenceSpan of its own to close, unlike GenAI's OpenTelemetry), any
-// in-flight tool spans, and records the abort reason on the root span before
-// ending it. H5: all three are resolved by CallID from our own state (never
-// trace.SpanFromContext(ctx)/ctx.Value(stepSpanKey{}) alone), so this closes
-// the right spans even when another integration is also registered.
+// OnAbort ends the call's still-open child spans (LegacyOpenTelemetry has no
+// chat span of its own, unlike GenAI's OpenTelemetry) and then the root span,
+// with plain .end() calls and no abort reason, in TS onAbort order
+// (closeOpenChildSpans). H5: all are resolved by CallID from our own state
+// (never trace.SpanFromContext(ctx)/ctx.Value(stepSpanKey{}) alone), so this
+// closes the right spans even when another integration is also registered.
 func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
-	if st := legacyState(e.CallID); st != nil {
-		st.mu.Lock()
-		stepSpan := st.stepSpan
-		st.stepSpan = nil
-		toolSpans := st.toolSpans
-		st.toolSpans = nil
-		embedSpans := st.embedSpans
-		st.embedSpans = nil
-		rerankSpan := st.rerankSpan
-		st.rerankSpan = nil
-		st.mu.Unlock()
-		if stepSpan != nil && stepSpan.IsRecording() {
+	defer legacyDeleteState(i.stateKey(e.CallID))
+	i.closeOpenChildSpans(e.CallID, nil)
+	if e.CallID == "" {
+		if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
 			stepSpan.End()
 		}
-		for _, toolSpan := range toolSpans {
-			if toolSpan.IsRecording() {
-				toolSpan.End()
-			}
-		}
-		for _, embedSpan := range embedSpans {
-			if embedSpan.IsRecording() {
-				embedSpan.End()
-			}
-		}
-		if rerankSpan != nil && rerankSpan.IsRecording() {
-			rerankSpan.End()
-		}
-	} else if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
-		stepSpan.End()
 	}
-	span := legacyRootSpanFor(e.CallID, ctx)
+	span := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
 	span.End()
-	legacyDeleteState(e.CallID)
+	legacyDeleteState(i.stateKey(e.CallID))
+}
+
+// closeOpenChildSpans ends callID's still-open child spans in the order TS
+// legacy onAbort ends them: the tool spans (in start order, TS
+// `state.toolSpans.values()`), the step span, the embedding spans (in start
+// order), the rerank span and the decision span. A non-nil err is recorded
+// on each first (onError). TS legacy onError leaves tool spans open; Go ends
+// them first, with the error, so they are not leaked. Without a CallID none
+// is known.
+func (i LegacyOpenTelemetry) closeOpenChildSpans(callID string, err error) {
+	if callID == "" {
+		return
+	}
+	end := func(span trace.Span) {
+		if span == nil || !span.IsRecording() {
+			return
+		}
+		if err != nil {
+			legacyRecordSpanError(span, err)
+		}
+		span.End()
+	}
+	key := i.stateKey(callID)
+	var stepSpan, rerankSpan trace.Span
+	var toolSpans, embedSpans []trace.Span
+	var embedKeys []string
+	if st := legacyLoadedState(key); st != nil {
+		st.mu.Lock()
+		stepSpan, st.stepSpan = st.stepSpan, nil
+		rerankSpan, st.rerankSpan = st.rerankSpan, nil
+		toolSpans = st.toolSpans.drain()
+		embedKeys, embedSpans = st.embedSpans.drainKeyed()
+		st.mu.Unlock()
+	}
+	// The embedding and rerank spans are also stored in otelModelCallSpans
+	// (OnEmbedStart/OnRerankStart); drop those entries with them so a call
+	// whose OnEmbedEnd/OnRerankEnd never fires leaves nothing behind.
+	for _, embedCallID := range embedKeys {
+		otelModelCallSpans.Delete(otelSpanKey("embedding", i.stateKey(modelCallID(embedCallID, callID))))
+	}
+	otelModelCallSpans.Delete(otelSpanKey("reranking", key))
+	for _, span := range toolSpans {
+		end(span)
+	}
+	end(stepSpan)
+	for _, span := range embedSpans {
+		end(span)
+	}
+	end(rerankSpan)
+	if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", key)); ok {
+		if entry, ok := value.(otelSpanEntry); ok {
+			end(entry.span)
+		}
+	}
 }
 
 // ExecuteTool delegates directly to execute. Nested span support can be added here.
@@ -2473,6 +3164,18 @@ func AddTelemetryIntegration(i TelemetryIntegration) {
 	integrations = append(integrations, i)
 }
 
+// HasIntegrations reports whether any non-noop integration is registered.
+func HasIntegrations() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, i := range integrations {
+		if _, noop := i.(NoopTelemetryIntegration); !noop {
+			return true
+		}
+	}
+	return false
+}
+
 // ClearTelemetryIntegrations removes all registered integrations.
 // After this call, telemetry events are silently discarded.
 func ClearTelemetryIntegrations() {
@@ -2500,8 +3203,11 @@ func snapshot() []TelemetryIntegration {
 	return append([]TelemetryIntegration(nil), integrations...)
 }
 
+// snapshotFor resolves the integrations of one call: per-call Integrations
+// when non-nil (an empty slice means none, as TS `integrations: []`), else
+// the global ones (TS `telemetry?.integrations != null ? ... : globals`).
 func snapshotFor(settings *Settings) []TelemetryIntegration {
-	if settings != nil && len(settings.Integrations) > 0 {
+	if settings != nil && settings.Integrations != nil {
 		return append([]TelemetryIntegration(nil), settings.Integrations...)
 	}
 	return snapshot()
@@ -2514,6 +3220,14 @@ func telemetryDisabled(settings *Settings) bool {
 // ---------------------------------------------------------------------------
 // Fire functions — fan-out to all registered integrations
 // ---------------------------------------------------------------------------
+
+// callIntegration runs one integration callback. TS mergeCallbacks ignores
+// errors thrown by an integration (Promise.allSettled), so a panicking
+// integration must not fail the generation it observes.
+func callIntegration(fn func()) {
+	defer func() { _ = recover() }()
+	fn()
+}
 
 // FireOnStart calls OnStart on every registered integration.
 //
@@ -2537,13 +3251,15 @@ func telemetryDisabled(settings *Settings) bool {
 // returned ctx is used for that; with a single integration registered this
 // is byte-for-byte the previous behavior.
 func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnStart, e)
 	result := ctx
 	for _, i := range snapshotFor(e.Settings) {
-		result = i.OnStart(ctx, e)
+		callIntegration(func() { result = i.OnStart(ctx, e) })
 	}
 	return result
 }
@@ -2551,12 +3267,14 @@ func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 // FireOnStepStart calls OnStepStart on every registered integration, threading
 // the returned context through the chain so each integration can inject step spans.
 func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepStart, e)
 	for _, i := range snapshotFor(e.Settings) {
-		ctx = i.OnStepStart(ctx, e)
+		callIntegration(func() { ctx = i.OnStepStart(ctx, e) })
 	}
 	return ctx
 }
@@ -2568,13 +3286,15 @@ func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Con
 // returned ctx. The caller should use the returned ctx for the actual
 // provider call (594029e), so provider HTTP spans become children of it.
 func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallStartHandler); ok {
-			ctx = handler.OnLanguageModelCallStart(ctx, e)
+			callIntegration(func() { ctx = handler.OnLanguageModelCallStart(ctx, e) })
 		}
 	}
 	return ctx
@@ -2582,43 +3302,49 @@ func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartE
 
 // FireOnLanguageModelCallEnd publishes and fans out a model-call end event.
 func FireOnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallEndHandler); ok {
-			handler.OnLanguageModelCallEnd(ctx, e)
+			callIntegration(func() { handler.OnLanguageModelCallEnd(ctx, e) })
 		}
 	}
 }
 
 // FireOnEmbedStart publishes and fans out an embedding model-call start event.
 func FireOnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnEmbedStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(embedStartHandler); ok {
-			handler.OnEmbedStart(ctx, e)
+			callIntegration(func() { handler.OnEmbedStart(ctx, e) })
 		}
 	}
 }
 
 // FireOnEmbedEnd publishes and fans out an embedding model-call end event.
 func FireOnEmbedEnd(ctx context.Context, e EmbeddingModelCallEndEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnEmbedEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(embedEndHandler); ok {
-			handler.OnEmbedEnd(ctx, e)
+			callIntegration(func() { handler.OnEmbedEnd(ctx, e) })
 			continue
 		}
 		if handler, ok := integration.(embedFinishHandler); ok {
-			handler.OnEmbedFinish(ctx, e)
+			callIntegration(func() { handler.OnEmbedFinish(ctx, e) })
 		}
 	}
 }
@@ -2632,30 +3358,34 @@ func FireOnEmbedFinish(ctx context.Context, e EmbeddingModelCallEndEvent) {
 
 // FireOnRerankStart publishes and fans out a reranking model-call start event.
 func FireOnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnRerankStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(rerankStartHandler); ok {
-			handler.OnRerankStart(ctx, e)
+			callIntegration(func() { handler.OnRerankStart(ctx, e) })
 		}
 	}
 }
 
 // FireOnRerankEnd publishes and fans out a reranking model-call end event.
 func FireOnRerankEnd(ctx context.Context, e RerankingModelCallEndEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnRerankEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(rerankEndHandler); ok {
-			handler.OnRerankEnd(ctx, e)
+			callIntegration(func() { handler.OnRerankEnd(ctx, e) })
 			continue
 		}
 		if handler, ok := integration.(rerankFinishHandler); ok {
-			handler.OnRerankFinish(ctx, e)
+			callIntegration(func() { handler.OnRerankFinish(ctx, e) })
 		}
 	}
 }
@@ -2670,24 +3400,28 @@ func FireOnRerankFinish(ctx context.Context, e RerankingModelCallEndEvent) {
 // FireOnToolCallStart calls OnToolExecutionStart on every registered integration,
 // threading the returned context through the chain.
 func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionStart, e)
 	for _, i := range snapshotFor(e.Settings) {
-		ctx = i.OnToolExecutionStart(ctx, e)
+		callIntegration(func() { ctx = i.OnToolExecutionStart(ctx, e) })
 	}
 	return ctx
 }
 
 // FireOnToolCallFinish calls OnToolExecutionEnd on every registered integration.
 func FireOnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionEnd, e)
 	for _, i := range snapshotFor(e.Settings) {
-		i.OnToolExecutionEnd(ctx, e)
+		callIntegration(func() { i.OnToolExecutionEnd(ctx, e) })
 	}
 }
 
@@ -2703,15 +3437,23 @@ func FireOnChunk(ctx context.Context, e TelemetryChunkEvent) {
 //
 // Deprecated: use FireOnStepEnd.
 func FireOnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepEnd, e)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepFinish, e)
-	for _, i := range snapshotFor(e.Settings) {
-		i.OnStepEnd(ctx, e)
+	// TS mergeCallbacks(onStepEnd, onStepFinish): every integration's
+	// OnStepEnd, then the deprecated OnStepFinish handlers, each callback
+	// isolated so a panicking OnStepEnd does not skip OnStepFinish.
+	integrations := snapshotFor(e.Settings)
+	for _, i := range integrations {
+		callIntegration(func() { i.OnStepEnd(ctx, e) })
+	}
+	for _, i := range integrations {
 		if handler, ok := i.(deprecatedStepFinishHandler); ok {
-			handler.OnStepFinish(ctx, e)
+			callIntegration(func() { handler.OnStepFinish(ctx, e) })
 		}
 	}
 }
@@ -2724,16 +3466,18 @@ func FireOnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 // FireOnEnd calls OnEnd on every registered integration, falling back to the
 // deprecated OnFinish method for older integrations.
 func FireOnEnd(ctx context.Context, e TelemetryFinishEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnEnd, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if handler, ok := i.(endHandler); ok {
-			handler.OnEnd(ctx, e)
+			callIntegration(func() { handler.OnEnd(ctx, e) })
 			continue
 		}
-		i.OnFinish(ctx, e)
+		callIntegration(func() { i.OnFinish(ctx, e) })
 	}
 }
 
@@ -2746,32 +3490,38 @@ func FireOnFinish(ctx context.Context, e TelemetryFinishEvent) {
 
 // FireOnError calls OnError on every registered integration.
 func FireOnError(ctx context.Context, e TelemetryErrorEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnError, e)
 	for _, i := range snapshotFor(e.Settings) {
-		i.OnError(ctx, e)
+		callIntegration(func() { i.OnError(ctx, e) })
 	}
 }
 
 // FireOnAbort calls OnAbort on every registered integration.
 func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
 	PublishDiagnostic(ctx, DiagnosticEventOnAbort, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if h, ok := i.(abortHandler); ok {
-			h.OnAbort(ctx, e)
+			callIntegration(func() { h.OnAbort(ctx, e) })
 		}
 	}
 }
 
 // FireOnStepError closes a still-open step span (and, for the GenAI
 // integration, the nested model-call/"chat" span) when the provider call
-// itself failed, so neither OnStepEnd nor OnLanguageModelCallEnd will ever
-// fire for it (H4 item 2: "span leak on provider error"). Callers at the
+// itself failed, or a streamText step failed mid-stream before it produced a
+// result (TS notifyStepError), so neither OnStepEnd nor
+// OnLanguageModelCallEnd will ever fire for it (H4 item 2: "span leak on
+// provider error"). Callers at the
 // generateText/streamText/generateObject/streamObject provider-call failure
 // sites pass the most deeply-nested ctx they have available (typically the
 // ctx returned by FireOnLanguageModelCallStart) — unlike FireOnError/
@@ -2783,14 +3533,28 @@ func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
 // span (provider error); leave it nil to just close it without an error
 // status (abort).
 func FireOnStepError(ctx context.Context, e TelemetryErrorEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	e = FilterEvent(e, e.Settings)
+	PublishDiagnostic(ctx, DiagnosticEventOnStepError, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if h, ok := i.(stepErrorHandler); ok {
-			h.OnStepError(ctx, e)
+			callIntegration(func() { h.OnStepError(ctx, e) })
 		}
 	}
+}
+
+type aiVersionKey struct{}
+
+// AIVersionFromContext returns the SDK version carried by the context passed
+// to TelemetryIntegration.ExecuteTool, or "" for any other context. ExecuteTool
+// has no event argument, so the version travels on ctx; TS passes `aiVersion`
+// in the executeTool options (TS #23958).
+func AIVersionFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(aiVersionKey{}).(string)
+	return v
 }
 
 // FireExecuteTool chains ExecuteTool across all registered integrations (Gap 4).
@@ -2815,13 +3579,26 @@ func FireExecuteToolWithSettings(
 	if telemetryDisabled(settings) {
 		return execute(ctx, args)
 	}
+	ctx = context.WithValue(ctx, aiVersionKey{}, sdkversion.Version)
 	is := snapshotFor(settings)
 	if len(is) == 0 {
 		return execute(ctx, args)
 	}
-	// Build chain from innermost (execute) outward.
+	// Build chain from the innermost (execute) outward.
 	fn := execute
-	for i := len(is) - 1; i >= 0; i-- {
+	if !settings.ShouldRecordInputs() {
+		// TS filterTelemetryEvent hides toolCall.input from the executeTool
+		// wrappers, while the tool itself still runs with its real input
+		// (TS execute takes no arguments). The integrations see nil args;
+		// the innermost call ignores what they pass and uses the original.
+		original := args
+		fn = func(ctx context.Context, _ map[string]interface{}) (interface{}, error) {
+			return execute(ctx, original)
+		}
+		args = nil
+	}
+	// TS wraps in registration order, so the last integration is outermost.
+	for i := 0; i < len(is); i++ {
 		fn = makeToolFn(is[i], toolName, fn)
 	}
 	return fn(ctx, args)
@@ -2836,4 +3613,19 @@ func makeToolFn(
 	return func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 		return integration.ExecuteTool(ctx, toolName, args, next)
 	}
+}
+
+// errorEventWithoutError stands for an OnError event without an error: TS
+// onError records `event.error ?? event`, a non-Error value, so the spans
+// get an ERROR status without a message or an exception event.
+type errorEventWithoutError struct{}
+
+func (errorEventWithoutError) Error() string { return "" }
+
+// errorEventSpanError is the error OnError records on its spans.
+func errorEventSpanError(err error) error {
+	if err == nil {
+		return errorEventWithoutError{}
+	}
+	return err
 }

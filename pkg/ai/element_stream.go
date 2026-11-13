@@ -2,10 +2,7 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -27,6 +24,11 @@ type ElementStreamOptions[ELEMENT any] struct {
 	// ElementSchema defines the structure of each array element
 	ElementSchema schema.Schema
 
+	// MaxItems is an optional upper bound on the number of elements. When the
+	// model streams more, the element stream ends and OnError receives the
+	// TS validation error ("elements array must contain at most N items").
+	MaxItems *int
+
 	// OnElement is called when a new element is parsed
 	OnElement func(element ElementStreamResult[ELEMENT])
 
@@ -39,6 +41,12 @@ type ElementStreamOptions[ELEMENT any] struct {
 
 // ElementStream creates a channel that streams array elements as they complete
 // This is useful for streaming arrays where elements are generated incrementally.
+//
+// Elements follow the TS elementStream rules: the text of each step is parsed
+// on its own (a step that emitted other text before the JSON, such as a tool
+// step, does not disturb a later step), an element is published once it is
+// complete (the element still being streamed is held back), and each element
+// is published once across steps.
 //
 // Example:
 //
@@ -63,6 +71,7 @@ type ElementStreamOptions[ELEMENT any] struct {
 //	}
 func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOptions[ELEMENT]) <-chan ElementStreamResult[ELEMENT] {
 	ch := make(chan ElementStreamResult[ELEMENT], 10)
+	arr := &arrayOutput[ELEMENT]{elementSchema: opts.ElementSchema, maxItems: opts.MaxItems}
 
 	go func() {
 		defer close(ch)
@@ -71,130 +80,165 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 				opts.OnComplete()
 			}
 		}()
-
-		var lastText string
-		var lastElementCount int
-		// Consume via Stream() rather than result.nextChunk() directly: for
-		// StreamTextResult values from StreamText, processStream is already
-		// reading the raw provider stream in the background (it always runs
-		// now, to execute tools and multi-step continuations regardless of
-		// callbacks). Reading result.nextChunk() here too would race with
-		// that goroutine over the same underlying stream.
-		stream := result.Stream()
 		closed := result.closedSignal()
-
-		for {
-			chunk, err := stream.Next()
-			if err != nil {
-				if err.Error() != "EOF" && opts.OnError != nil {
-					opts.OnError(err)
-				}
-				break
+		err := streamArrayElements(result, nil, arr, arr.ParsePartialOutput, arr.maxItems, func(elem ElementStreamResult[ELEMENT]) bool {
+			if !sendUnlessClosed(ch, elem, closed) {
+				return false
 			}
-
-			// Accumulate text
-			if chunk.Type == provider.ChunkTypeText {
-				lastText += chunk.Text
-
-				// Try to parse as partial JSON array
-				elements, err := parsePartialArrayElements[ELEMENT](lastText, opts.ElementSchema)
-				if err != nil {
-					// Not yet parseable, continue
-					continue
-				}
-
-				// Emit any new elements
-				if len(elements) > lastElementCount {
-					for i := lastElementCount; i < len(elements); i++ {
-						elemResult := ElementStreamResult[ELEMENT]{
-							Element: elements[i],
-							Index:   i,
-							IsFinal: false,
-						}
-
-						if !sendUnlessClosed(ch, elemResult, closed) {
-							return // consumer abandoned the stream (result closed)
-						}
-						if opts.OnElement != nil {
-							opts.OnElement(elemResult)
-						}
-					}
-					lastElementCount = len(elements)
-				}
+			if opts.OnElement != nil {
+				opts.OnElement(elem)
 			}
-
-			// Handle finish
-			if chunk.Type == provider.ChunkTypeFinish {
-				break
-			}
+			return true
+		})
+		if err != nil && opts.OnError != nil {
+			opts.OnError(err)
 		}
 	}()
 
 	return ch
 }
 
-// parsePartialArrayElements parses a partial JSON array string and extracts complete elements
-func parsePartialArrayElements[ELEMENT any](text string, elementSchema schema.Schema) ([]ELEMENT, error) {
-	// Try to parse as partial JSON
-	parsed, err := jsonutil.ParsePartialJSON(text)
-	if err != nil {
-		return nil, err
-	}
-
-	if parsed == nil {
-		return nil, fmt.Errorf("no parseable content yet")
-	}
-
-	// Check if it has an elements array (matching our ArrayOutput format)
-	parsedMap, ok := parsed.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("response is not an object")
-	}
-
-	elementsRaw, ok := parsedMap["elements"]
-	if !ok {
-		return nil, fmt.Errorf("response does not have elements array")
-	}
-
-	elementsArray, ok := elementsRaw.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("elements is not an array")
-	}
-
-	// Parse each complete element
-	var elements []ELEMENT
-	for i, elemRaw := range elementsArray {
-		// Skip last element if it might be incomplete
-		// (This is a heuristic - we could be more sophisticated here)
-		if i == len(elementsArray)-1 {
-			// Check if this element looks complete by trying to validate
-			if err := elementSchema.Validator().Validate(elemRaw); err != nil {
-				// Last element is incomplete, skip it
-				break
+// streamArrayElements calls emit for each array element as it completes (TS
+// createElementStreamTransform over the partial outputs of
+// createOutputTransformStream). For the call's own Output (logOutput) it reads
+// the partial outputs StreamText published (parsed incrementally from the
+// step's first text block, reset at step and stream retry boundaries,
+// 91a67c2f56). Otherwise it feeds the full stream through the same output
+// stage with spec; an output that is not one of this package's falls back to
+// parsePartial over the step's text. It returns the stream error, or the
+// maxItems validation error when the model exceeds maxItems.
+func streamArrayElements[ELEMENT any](
+	result *StreamTextResult,
+	logOutput any,
+	spec outputProcessor,
+	parsePartial func(context.Context, ParsePartialOutputOptions) (*PartialOutput[[]ELEMENT], error),
+	maxItems *int,
+	emit func(ElementStreamResult[ELEMENT]) bool,
+) error {
+	ctx := context.Background()
+	published := 0
+	// publish emits the elements of partial not published yet; false ends the
+	// stream (consumer gone, or maxItems exceeded with *err set).
+	publish := func(partial []ELEMENT, err *error) bool {
+		for ; published < len(partial); published++ {
+			if maxItems != nil && published >= *maxItems {
+				// TS createElementStreamTransform errors with
+				// getArrayLengthValidationError({value: partialOutput,
+				// maxItems}): a TypeValidationError holding the partial
+				// array (maxItems only).
+				lengthErr := arrayLengthValidationError(len(partial), nil, maxItems)
+				*err = objectTypeValidationError(partial, lengthErr.Error(), lengthErr)
+				return false
+			}
+			if !emit(ElementStreamResult[ELEMENT]{Element: partial[published], Index: published}) {
+				return false // consumer abandoned the stream (result closed)
 			}
 		}
-
-		// Validate element
-		if err := elementSchema.Validator().Validate(elemRaw); err != nil {
-			// Invalid element, skip
-			continue
-		}
-
-		// Convert to typed element
-		jsonBytes, err := json.Marshal(elemRaw)
-		if err != nil {
-			continue
-		}
-
-		var typedElem ELEMENT
-		if err := json.Unmarshal(jsonBytes, &typedElem); err != nil {
-			continue
-		}
-
-		elements = append(elements, typedElem)
+		return true
 	}
 
-	return elements, nil
+	if log := result.partialOutputLog(logOutput); log != nil {
+		closed := result.closedSignal()
+		finished := make(chan struct{})
+		defer close(finished)
+		go func() {
+			select {
+			case <-closed:
+				log.wake()
+			case <-finished:
+			}
+		}()
+		isClosed := func() bool {
+			select {
+			case <-closed:
+				return true
+			default:
+				return false
+			}
+		}
+		for i := 0; ; i++ {
+			v, ok, logErr := log.next(i, isClosed)
+			if !ok {
+				return logErr
+			}
+			partial, isArray := v.([]ELEMENT)
+			if !isArray {
+				continue
+			}
+			var err error
+			if !publish(partial, &err) {
+				return err
+			}
+		}
+	}
+
+	var tracker partialOutputTracker
+	// An external (harness) result's output stage follows the turn's first
+	// text block, not reset at step boundaries (TS HarnessStreamTextResult
+	// createOutputTransformStream); its public stream carries that stage's
+	// deltas, so restaging them yields the partials the turn published.
+	var external *externalOutputStage
+	if spec != nil && result.uiChunkBuf != nil {
+		external = &externalOutputStage{spec: spec}
+	}
+	var text string
+	// Consume an independent cursor over the processed stream (TS: the
+	// element stream is its own tee), never result.nextChunk(): processStream
+	// is already reading the raw provider stream in the background, and the
+	// shared Stream() cursor belongs to the caller's own reads.
+	stream := result.NewStream()
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			if err.Error() != "EOF" {
+				return err
+			}
+			return nil
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			return nil
+		}
+		var partial []ELEMENT
+		if external != nil {
+			_, v, ok, perr := external.stage(ctx, *chunk)
+			if perr != nil || !ok {
+				continue
+			}
+			if partial, ok = v.([]ELEMENT); !ok {
+				continue
+			}
+		} else if spec != nil {
+			// The output stage keeps its state per step (TS resets at
+			// start-step) and reads the step's first text block only; the
+			// number of published elements is not reset.
+			v, ok, perr := tracker.observe(ctx, spec, *chunk)
+			if perr != nil || !ok {
+				continue
+			}
+			if partial, ok = v.([]ELEMENT); !ok {
+				continue
+			}
+		} else {
+			switch chunk.Type {
+			case provider.ChunkTypeStartStep:
+				text = ""
+				continue
+			case provider.ChunkTypeText:
+				text += chunk.Text
+			default:
+				continue
+			}
+			p, perr := parsePartial(ctx, ParsePartialOutputOptions{Text: text})
+			if perr != nil || p == nil {
+				continue
+			}
+			partial = p.Partial
+		}
+		var emitErr error
+		if !publish(partial, &emitErr) {
+			return emitErr
+		}
+	}
 }
 
 // ElementStreamMethod adds the ElementStream method to StreamTextResult
@@ -202,6 +246,9 @@ func parsePartialArrayElements[ELEMENT any](text string, elementSchema schema.Sc
 
 // ElementStreamWithOutput creates an element stream from a StreamTextResult using an ArrayOutput
 // This is a convenience method that combines output parsing with element streaming.
+// It follows the same rules as ElementStream; an output built with
+// ArrayOutput also applies its MaxItems bound (the stream ends when the model
+// exceeds it).
 //
 // Example:
 //
@@ -224,61 +271,18 @@ func parsePartialArrayElements[ELEMENT any](text string, elementSchema schema.Sc
 func ElementStreamWithOutput[ELEMENT any](result *StreamTextResult, output Output[[]ELEMENT, []ELEMENT]) <-chan ElementStreamResult[ELEMENT] {
 	ch := make(chan ElementStreamResult[ELEMENT], 10)
 
-	// Extract element schema from the array output
-	// This is a bit of a hack - we need to access the internal structure
-	// For now, we'll create a simple streaming implementation
+	var maxItems *int
+	if arr, ok := output.(*arrayOutput[ELEMENT]); ok {
+		maxItems = arr.maxItems
+	}
 
 	go func() {
 		defer close(ch)
-
-		var lastText string
-		var lastElementCount int
-		ctx := context.Background()
-		// See ElementStream: consume via Stream(), not result.nextChunk(),
-		// to avoid racing processStream's own read of the raw provider
-		// stream.
-		stream := result.Stream()
 		closed := result.closedSignal()
-
-		for {
-			chunk, err := stream.Next()
-			if err != nil {
-				break
-			}
-
-			// Accumulate text
-			if chunk.Type == provider.ChunkTypeText {
-				lastText += chunk.Text
-
-				// Try to parse partial output
-				partialOutput, err := output.ParsePartialOutput(ctx, ParsePartialOutputOptions{
-					Text: lastText,
-				})
-				if err != nil || partialOutput == nil {
-					continue
-				}
-
-				// Check if we have new elements
-				currentElements := partialOutput.Partial
-				if len(currentElements) > lastElementCount {
-					for i := lastElementCount; i < len(currentElements); i++ {
-						if !sendUnlessClosed(ch, ElementStreamResult[ELEMENT]{
-							Element: currentElements[i],
-							Index:   i,
-							IsFinal: false,
-						}, closed) {
-							return // consumer abandoned the stream (result closed)
-						}
-					}
-					lastElementCount = len(currentElements)
-				}
-			}
-
-			// Handle finish
-			if chunk.Type == provider.ChunkTypeFinish {
-				break
-			}
-		}
+		spec, _ := output.(outputProcessor)
+		_ = streamArrayElements(result, output, spec, output.ParsePartialOutput, maxItems, func(elem ElementStreamResult[ELEMENT]) bool {
+			return sendUnlessClosed(ch, elem, closed)
+		})
 	}()
 
 	return ch

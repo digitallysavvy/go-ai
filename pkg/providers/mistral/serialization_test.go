@@ -13,7 +13,7 @@ func TestMistralSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := modelAny.(*LanguageModel).Serialize()
-	if serialized.Provider != "mistral" || serialized.ModelID != "mistral-small-latest" || serialized.Config == nil {
+	if serialized.Provider != "mistral.chat" || serialized.ModelID != "mistral-small-latest" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 
@@ -21,7 +21,7 @@ func TestMistralSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "mistral" || restored.ModelID() != "mistral-small-latest" {
+	if restored.Provider() != "mistral.chat" || restored.ModelID() != "mistral-small-latest" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }
@@ -33,7 +33,7 @@ func TestMistralSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 		t.Fatalf("EmbeddingModel error = %v", err)
 	}
 	serialized := modelAny.(*EmbeddingModel).Serialize()
-	if serialized.Provider != "mistral" || serialized.ModelID != "mistral-embed" || serialized.Config == nil {
+	if serialized.Provider != "mistral.embedding" || serialized.ModelID != "mistral-embed" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -44,7 +44,7 @@ func TestMistralSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeEmbeddingModel error = %v", err)
 	}
-	if restored.Provider() != "mistral" || restored.ModelID() != "mistral-embed" {
+	if restored.Provider() != "mistral.embedding" || restored.ModelID() != "mistral-embed" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -64,7 +64,7 @@ func TestMistralSerializeAndDeserializeSpeechModel(t *testing.T) {
 		t.Fatalf("SpeechModel error = %v", err)
 	}
 	serialized := modelAny.(*SpeechModel).Serialize()
-	if serialized.Provider != "mistral" || serialized.ModelID != "voxtral-tts" || serialized.Config == nil {
+	if serialized.Provider != "mistral.speech" || serialized.ModelID != "voxtral-tts" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 
@@ -72,7 +72,7 @@ func TestMistralSerializeAndDeserializeSpeechModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeSpeechModel error = %v", err)
 	}
-	if restored.Provider() != "mistral" || restored.ModelID() != "voxtral-tts" {
+	if restored.Provider() != "mistral.speech" || restored.ModelID() != "voxtral-tts" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -92,7 +92,7 @@ func TestMistralSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
 	serialized := modelAny.(*TranscriptionModel).Serialize()
-	if serialized.Provider != "mistral" || serialized.ModelID != "voxtral-mini-latest" || serialized.Config == nil {
+	if serialized.Provider != "mistral.transcription" || serialized.ModelID != "voxtral-mini-latest" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 
@@ -100,7 +100,7 @@ func TestMistralSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeTranscriptionModel error = %v", err)
 	}
-	if restored.Provider() != "mistral" || restored.ModelID() != "voxtral-mini-latest" {
+	if restored.Provider() != "mistral.transcription" || restored.ModelID() != "voxtral-mini-latest" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 

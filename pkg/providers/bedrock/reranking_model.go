@@ -3,21 +3,26 @@ package bedrock
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // RerankingModel implements provider.RerankingModel for Amazon Bedrock.
 type RerankingModel struct {
 	provider *Provider
 	modelID  string
+	// region is the AWS region read when the model was created (TS
+	// createRerankingModel loadSetting); "" reads it per request.
+	region string
 }
 
 // RerankingOptions are Amazon Bedrock-specific reranking provider options.
@@ -29,7 +34,7 @@ type RerankingOptions struct {
 
 // NewRerankingModel creates a new Amazon Bedrock reranking model.
 func NewRerankingModel(provider *Provider, modelID string) *RerankingModel {
-	return &RerankingModel{provider: provider, modelID: modelID}
+	return &RerankingModel{provider: provider, modelID: modelID, region: provider.Region()}
 }
 
 func (m *RerankingModel) SpecificationVersion() string { return "v4" }
@@ -46,7 +51,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if err != nil {
 		return nil, err
 	}
-	bodyBytes, err := json.Marshal(body)
+	// JSON.stringify: a non-finite number in a JSON document or
+	// additionalModelRequestFields is written as null (ruling 4).
+	bodyBytes, err := jsonstr.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal rerank request: %w", err)
 	}
@@ -58,8 +65,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if err != nil {
 		return nil, err
 	}
+	// TS postJsonToApi sets only Content-Type (no Accept; the "Accept
+	// header" known difference).
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 	requestHeaders := map[string]string{}
 	for k, v := range opts.Headers {
 		requestHeaders[k] = v
@@ -69,29 +77,40 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, err
 	}
 
-	resp, err := m.provider.Client().HTTPClient().Do(req)
+	resp, err := internalhttp.WithFetchRedirects(m.provider.Client().HTTPClient()).Do(req)
 	if err != nil {
-		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
+		// TS handleFetchError: a rejected fetch is returned unchanged, a
+		// network failure is the retryable "Cannot connect to API" error.
+		return nil, providerErrorFromTransport(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readJSONResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read rerank response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+		return nil, bedrockAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
-	var parsed struct {
-		Results []types.RerankItem `json:"results"`
+	if err := bedrockValidator(zbRerank)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	// The wire item has the exact keys of TS amazonBedrockRerankingResponseSchema
+	// (types.RerankItem is untagged, so only case-insensitive matching filled it).
+	var parsed struct {
+		Results []bedrockRerankWireItem `json:"results"`
+	}
+	if err := jsonexact.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode rerank response: %w", err)
 	}
+	ranking := make([]types.RerankItem, len(parsed.Results))
+	for i, r := range parsed.Results {
+		ranking[i] = types.RerankItem{Index: r.Index, RelevanceScore: r.RelevanceScore}
+	}
 	var raw interface{}
-	_ = json.Unmarshal(respBody, &raw)
+	_ = jsonexact.Unmarshal(respBody, &raw)
 	return &types.RerankResult{
-		Ranking: parsed.Results,
+		Ranking: ranking,
 		Response: types.RerankResponse{
 			Headers: map[string][]string(resp.Header),
 			Body:    raw,
@@ -99,15 +118,30 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	}, nil
 }
 
+// bedrockRerankWireItem is one TS amazonBedrockRerankingResponseSchema
+// result, with the schema's exact keys.
+type bedrockRerankWireItem struct {
+	Index          int     `json:"index"`
+	RelevanceScore float64 `json:"relevanceScore"`
+}
+
 func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[string]interface{}, error) {
-	options := bedrockRerankingOptions(opts.ProviderOptions)
+	// Go-typed option literals are read through their JSON form.
+	providerOptions := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	if err := validateRerankProviderOptions(providerOptions); err != nil {
+		return nil, err
+	}
+	options := bedrockRerankingOptions(providerOptions)
 	sources, err := bedrockRerankSources(opts.Documents)
 	if err != nil {
 		return nil, err
 	}
-	region := m.provider.Region()
+	region := m.region
 	if region == "" {
-		return nil, fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+		region = m.provider.Region()
+	}
+	if region == "" {
+		return nil, errRegionMissing()
 	}
 	modelConfiguration := map[string]interface{}{
 		"modelArn": fmt.Sprintf("arn:aws:bedrock:%s::foundation-model/%s", region, m.modelID),

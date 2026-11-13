@@ -32,6 +32,13 @@ func (e *InvalidToolApprovalSignatureError) Error() string {
 	return fmt.Sprintf(`Tool approval signature verification failed for approval "%s" (tool call "%s"): %s`, e.ApprovalID, e.ToolCallID, e.Reason)
 }
 
+// ErrorName is the TS error name (AI_InvalidToolApprovalSignatureError), used
+// where TS shows error.toString(), for example the WorkflowAgent approval
+// resume tool result.
+func (e *InvalidToolApprovalSignatureError) ErrorName() string {
+	return "AI_InvalidToolApprovalSignatureError"
+}
+
 // IsInvalidToolApprovalSignatureError reports whether err is an
 // InvalidToolApprovalSignatureError. This is the Go equivalent of the
 // TypeScript SDK's InvalidToolApprovalSignatureError.isInstance helper.

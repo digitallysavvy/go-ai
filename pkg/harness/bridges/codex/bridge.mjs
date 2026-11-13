@@ -1,13 +1,140 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
+import { Buffer as Buffer$1 } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 //#region ../harness/dist/bridge/index.js
+const BRIDGE_AUTH_TIMEOUT_MS = 1e4;
+const BRIDGE_AUTH_MESSAGE_PREFIX = "ai-sdk-harness-bridge-auth-v1\0";
+const PROOF_FRAME_REGEXP = /^\{"type":"bridge-auth-proof","signature":"([A-Za-z0-9_-]{86})"\}$/;
+function createBridgeAuthMessage({ challenge }) {
+	return Buffer$1.from(`${BRIDGE_AUTH_MESSAGE_PREFIX}${challenge}`, "utf8");
+}
+function serializeBridgeAuthChallengeFrame({ challenge }) {
+	return JSON.stringify({
+		type: "bridge-auth-challenge",
+		challenge
+	});
+}
+function parseBridgeAuthProofFrame({ text }) {
+	return PROOF_FRAME_REGEXP.exec(text)?.[1];
+}
+const PUBLIC_KEY_REGEXP = /^[A-Za-z0-9_-]{43}$/;
+const UNAUTHORIZED_CLOSE_CODE = 1008;
+const INVALID_PUBLIC_KEY_MESSAGE = "The bridge requires a valid Ed25519 public key for authentication.";
+function parseBridgeAuthPublicKey({ publicKey }) {
+	if (publicKey == null || !PUBLIC_KEY_REGEXP.test(publicKey)) throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	let key;
+	try {
+		key = createPublicKey({
+			key: {
+				kty: "OKP",
+				crv: "Ed25519",
+				x: publicKey
+			},
+			format: "jwk"
+		});
+	} catch {
+		throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	}
+	if (key.asymmetricKeyType !== "ed25519") throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	return key;
+}
+function authenticateBridgeConnection({ ws, publicKey, timeoutMs = BRIDGE_AUTH_TIMEOUT_MS, onAuthenticated }) {
+	const challenge = randomBytes(32).toString("hex");
+	const timeout = setTimeout(() => ws.terminate(), timeoutMs);
+	timeout.unref?.();
+	const onError = () => {};
+	ws.on("error", onError);
+	ws.once("close", () => clearTimeout(timeout));
+	ws.once("message", (raw, isBinary) => {
+		clearTimeout(timeout);
+		const text = isBinary ? void 0 : rawDataToString(raw);
+		const signature = text == null ? void 0 : parseBridgeAuthProofFrame({ text });
+		if (signature == null || !verify(null, createBridgeAuthMessage({ challenge }), publicKey, Buffer$1.from(signature, "base64url"))) {
+			ws.close(UNAUTHORIZED_CLOSE_CODE, "unauthorized");
+			return;
+		}
+		ws.off("error", onError);
+		onAuthenticated();
+	});
+	ws.send(serializeBridgeAuthChallengeFrame({ challenge }));
+}
+function rawDataToString(raw) {
+	const buffer = Array.isArray(raw) ? Buffer$1.concat(raw) : Buffer$1.isBuffer(raw) ? raw : Buffer$1.from(raw);
+	if (buffer.byteLength > 1024) return void 0;
+	return buffer.toString("utf8");
+}
+const name = "AI_HarnessBridgeCapabilityUnsupportedError";
+/**
+* Signals an unsupported capability discovered inside a sandbox bridge.
+* `isInstance` also recognizes the serialized error shape received by the
+* host, where it can be translated to `HarnessCapabilityUnsupportedError`.
+*/
+var HarnessBridgeCapabilityUnsupportedError = class extends Error {
+	constructor({ message, harnessId, cause }) {
+		super(message);
+		Object.defineProperty(this, "name", { value: name });
+		this.harnessId = harnessId;
+		this.cause = cause;
+	}
+	static isInstance(error) {
+		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
+	}
+};
+function getNormalizedInlineImage(part) {
+	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
+		data: part.data.data,
+		mediaType: part.mediaType
+	};
+}
+function convertHarnessToolModelOutput({ output }) {
+	switch (output.type) {
+		case "text":
+		case "error-text": return {
+			content: [{
+				type: "text",
+				text: output.value
+			}],
+			isError: output.type === "error-text"
+		};
+		case "json":
+		case "error-json": return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output.value)
+			}],
+			isError: output.type === "error-json"
+		};
+		case "execution-denied": return {
+			content: [{
+				type: "text",
+				text: output.reason ?? "Tool execution denied."
+			}],
+			isError: true
+		};
+		case "content": return {
+			content: output.value.map((part) => {
+				if (part.type === "text") return {
+					type: "text",
+					text: part.text
+				};
+				const image = getNormalizedInlineImage(part);
+				if (image != null) return {
+					type: "image",
+					...image
+				};
+				throw new HarnessBridgeCapabilityUnsupportedError({ message: `Harnesses support only text and inline images in tool model output; unsupported content '${part.type}'.` });
+			}),
+			isError: false
+		};
+	}
+}
 const DEBUG_LEVEL_WEIGHT = {
 	error: 0,
 	warn: 1,
@@ -135,7 +262,13 @@ const WS_OPEN = 1;
 async function runBridge(options) {
 	const { bridgeType, bridgeStateDir, onStart, onStop, onDestroy } = options;
 	const teardownGraceMs = options.turnTeardownGraceMs ?? 1e4;
-	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
+	const hostDisconnectTimeoutMs = options.hostDisconnectTimeoutMs != null && Number.isFinite(options.hostDisconnectTimeoutMs) && options.hostDisconnectTimeoutMs > 0 ? Math.min(options.hostDisconnectTimeoutMs, 2147483647) : void 0;
+	let hostDisconnectTimer;
+	const clearHostDisconnectTimer = () => {
+		clearTimeout(hostDisconnectTimer);
+		hostDisconnectTimer = void 0;
+	};
+	const authPublicKey = parseBridgeAuthPublicKey({ publicKey: options.publicKey ?? env["BRIDGE_AUTH_PUBLIC_KEY"] });
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
 	const startConfigPath = `${bridgeStateDir}/start-config.json`;
@@ -156,6 +289,7 @@ async function runBridge(options) {
 	* between turns. A new `start` fences on this so turns never overlap.
 	*/
 	let activeTurn;
+	let lastStartId;
 	let debugConfig;
 	let consoleCaptureInstalled = false;
 	const envDebugEnabled = ENV_TRUTHY.has((env.HARNESS_DEBUG ?? "").toLowerCase());
@@ -299,6 +433,11 @@ async function runBridge(options) {
 	const handleInbound = async (msg, ws) => {
 		switch (msg.type) {
 			case "start": {
+				const startId = msg.startId;
+				if (startId != null) {
+					if (startId === lastStartId) return;
+					lastStartId = startId;
+				}
 				for (;;) {
 					const pendingTurn = activeTurn;
 					if (pendingTurn == null) break;
@@ -316,6 +455,7 @@ async function runBridge(options) {
 				const thisTurn = new Promise((resolve) => turnFinished = resolve);
 				activeTurn = thisTurn;
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				const firstTurn = isFirstTurn;
 				isFirstTurn = false;
 				eventLog = [];
@@ -382,6 +522,7 @@ async function runBridge(options) {
 						activeTurn = void 0;
 						currentTurnState = "waiting";
 						writeBridgeMeta("waiting");
+						clearHostDisconnectTimer();
 					}
 					turnFinished();
 				}
@@ -448,6 +589,7 @@ async function runBridge(options) {
 				return;
 			case "resume":
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				replay(ws, msg.lastSeenEventId);
 				return;
 			case "destroy":
@@ -507,16 +649,20 @@ async function runBridge(options) {
 		}) + "\n");
 		options.onListening?.(currentBoundPort);
 	});
-	wss.on("connection", (ws, req) => {
-		if (new URL(req.url ?? "/", "http://localhost").searchParams.get("agent_bridge_token") !== expectedToken) {
-			ws.close(1008, "unauthorized");
-			return;
-		}
+	wss.on("connection", (ws) => authenticateBridgeConnection({
+		ws,
+		publicKey: authPublicKey,
+		onAuthenticated: () => acceptConnection(ws)
+	}));
+	const acceptConnection = (ws) => {
 		sendControl(ws, {
 			type: "bridge-hello",
 			state: currentTurnState,
 			lastSeq: seqCounter,
-			capabilities: { experimental_userMessageResponses: true }
+			capabilities: {
+				idempotentStart: true,
+				experimental_userMessageResponses: true
+			}
 		});
 		ws.on("message", (raw) => {
 			let parsed;
@@ -532,11 +678,21 @@ async function runBridge(options) {
 			}
 			handleInbound(parsed, ws);
 		});
-		ws.on("close", () => {
-			if (activeSocket === ws) activeSocket = void 0;
+		ws.on("close", (_code, reason) => {
+			if (activeSocket === ws) {
+				activeSocket = void 0;
+				if (hostDisconnectTimeoutMs != null && activeTurn != null && reason.toString() !== "suspended") {
+					clearHostDisconnectTimer();
+					hostDisconnectTimer = setTimeout(() => {
+						hostDisconnectTimer = void 0;
+						if (activeSocket == null) turnAbort?.abort();
+					}, hostDisconnectTimeoutMs);
+					hostDisconnectTimer.unref?.();
+				}
+			}
 		});
 		ws.on("error", () => {});
-	});
+	};
 	process.on("uncaughtException", (err) => {
 		emitError({
 			error: err,
@@ -1095,6 +1251,7 @@ function normalizeItem({ item, textByItem, reasoningByItem }) {
 			server: typeof item.server === "string" ? item.server : void 0,
 			tool: typeof item.tool === "string" ? item.tool : void 0,
 			arguments: item.arguments,
+			status: normalizeMcpStatus(item.status),
 			result: result == null ? item.result : {
 				content: result.content,
 				structured_content: result.structuredContent
@@ -1134,6 +1291,10 @@ function normalizeCommandStatus(value) {
 	if (value === "completed") return "completed";
 	if (value === "inProgress") return "in_progress";
 	return "failed";
+}
+function normalizeMcpStatus(value) {
+	if (value === "inProgress") return "in_progress";
+	if (value === "completed" || value === "failed") return value;
 }
 function matchesActiveTurn({ params, activeThreadId, activeTurnId }) {
 	const nestedTurn = asRecord$2(params.turn);
@@ -1261,7 +1422,7 @@ function toTomlInline(value) {
 	if (typeof value === "number" && Number.isFinite(value)) return String(value);
 	if (Array.isArray(value)) return `[${value.map(toTomlInline).join(",")}]`;
 	if (value != null && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== void 0).map(([key, item]) => `${JSON.stringify(key)}=${toTomlInline(item)}`).join(",")}}`;
-	throw new Error("Codex hook configuration contains an unsupported value.");
+	throw new Error("Codex configuration contains an unsupported value.");
 }
 function asRecord$1(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
@@ -1272,17 +1433,20 @@ const CODEX_CLI_PATH = fileURLToPath(new URL("./node_modules/@openai/codex/bin/c
 function createCodexAppServerRuntime() {
 	let client;
 	let loadedThreadId;
+	let loadedThreadModel;
 	let loadedConfig;
 	let activeTurn;
 	const close = async () => {
 		const previous = client;
 		client = void 0;
 		loadedThreadId = void 0;
+		loadedThreadModel = void 0;
 		loadedConfig = void 0;
 		await previous?.close();
 	};
 	const runTurn = async (options) => {
-		const { start, turn, emit, workdir, threadId, codexModel, codexConfig } = options;
+		const { start, turn, emit, workdir, threadId, codexModel } = options;
+		const { codexConfig, providerCliOverrides } = splitModelProviderConfig(options.codexConfig);
 		if (activeTurn != null) throw new Error("A Codex turn is already active.");
 		const toolPolicy = resolveCodexBuiltinToolPolicy({
 			builtinToolFiltering: start.builtinToolFiltering,
@@ -1298,9 +1462,10 @@ function createCodexAppServerRuntime() {
 				...toolPolicy.disabled.view_image ? { view_image: false } : {}
 			} } : {}
 		};
+		const cliOverrides = [...providerCliOverrides, ...trustedHook?.cliOverrides ?? []];
 		const processConfig = {
 			thread: nextConfig,
-			cliOverrides: trustedHook?.cliOverrides ?? []
+			cliOverrides
 		};
 		if (client != null && !isDeepStrictEqual(loadedConfig, processConfig)) await close();
 		const handler = createAppServerEventHandler({
@@ -1327,7 +1492,7 @@ function createCodexAppServerRuntime() {
 		if (client == null) {
 			const created = new CodexAppServerClient({
 				executable: process.execPath,
-				args: createCodexAppServerArgs({ cliOverrides: trustedHook?.cliOverrides }),
+				args: createCodexAppServerArgs({ cliOverrides }),
 				cwd: workdir,
 				env: process.env,
 				onNotification: (notification) => {
@@ -1347,7 +1512,8 @@ function createCodexAppServerRuntime() {
 						request,
 						dynamicTools: active.dynamicTools,
 						emit: active.options.emit,
-						requestToolResult: active.options.turn.requestToolResult
+						requestToolResult: active.options.turn.requestToolResult,
+						stepTracker: active.options.stepTracker
 					}).catch((error) => {
 						active.fail(error);
 						throw error;
@@ -1434,6 +1600,7 @@ function createCodexAppServerRuntime() {
 					params: { threadId: loadedThreadId }
 				}) });
 				loadedThreadId = void 0;
+				loadedThreadModel = void 0;
 			}
 			if (trustedHook != null) assertTrustedApplyPatchHook({
 				response: await raceWithProcess({ operation: runningClient.request({
@@ -1476,9 +1643,18 @@ function createCodexAppServerRuntime() {
 					method: threadMethod
 				});
 				loadedThreadId = currentTurn.threadId;
+				loadedThreadModel = {
+					requestedModel: codexModel,
+					modelId: readOptionalString(asRecord(threadResponse)?.model)
+				};
 			}
 			handler.announceThread(currentTurn.threadId);
-			emit({ type: "stream-start" });
+			const threadModel = loadedThreadModel;
+			const streamStartModelId = threadModel != null && threadModel.requestedModel === codexModel && threadModel.modelId != null ? threadModel.modelId : codexModel;
+			emit({
+				type: "stream-start",
+				...streamStartModelId ? { modelId: streamStartModelId } : {}
+			});
 			currentTurn.turnId = readNestedString({
 				value: await raceWithProcess({ operation: runningClient.request({
 					method: "turn/start",
@@ -1538,6 +1714,13 @@ function createCodexAppServerArgs({ cliOverrides = [] } = {}) {
 		"--stdio"
 	];
 }
+function splitModelProviderConfig(codexConfig) {
+	const { model_provider: modelProvider, model_providers: modelProviders, ...threadConfig } = codexConfig;
+	return {
+		codexConfig: threadConfig,
+		providerCliOverrides: [...modelProvider === void 0 ? [] : [`model_provider=${toTomlInline(modelProvider)}`], ...modelProviders === void 0 ? [] : [`model_providers=${toTomlInline(modelProviders)}`]]
+	};
+}
 function createThreadParams({ start, workdir, codexModel, codexConfig }) {
 	return {
 		...codexModel == null ? {} : { model: codexModel },
@@ -1554,11 +1737,18 @@ function createTurnParams({ threadId, start, codexModel, disableEnvironments = f
 	return {
 		threadId,
 		...disableEnvironments ? { environments: [] } : {},
-		input: [{
+		input: typeof start.prompt === "string" ? [{
 			type: "text",
 			text: start.prompt,
 			text_elements: []
-		}],
+		}] : start.prompt.map((part) => part.type === "text" ? {
+			type: "text",
+			text: part.text,
+			text_elements: []
+		} : {
+			type: "image",
+			url: `data:${part.mediaType};base64,${part.data}`
+		}),
 		approvalPolicy: "never",
 		sandboxPolicy: {
 			type: "externalSandbox",
@@ -1602,7 +1792,7 @@ function createDynamicTools(tools) {
 function isValidDynamicToolName(name) {
 	return name.length > 0 && name.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(name) && name !== "mcp" && !name.startsWith("mcp__");
 }
-async function handleAppServerRequest({ request, dynamicTools, emit, requestToolResult }) {
+async function handleAppServerRequest({ request, dynamicTools, emit, requestToolResult, stepTracker }) {
 	if (request.method !== "item/tool/call") throw new Error(`Codex app-server requested unsupported method '${request.method}'.`);
 	const params = asRecord(request.params);
 	if (params == null || typeof params.callId !== "string" || typeof params.tool !== "string") throw new Error("Codex app-server sent an invalid dynamic tool request.");
@@ -1615,7 +1805,9 @@ async function handleAppServerRequest({ request, dynamicTools, emit, requestTool
 		input: JSON.stringify(params.arguments ?? {}),
 		providerExecuted: false
 	});
-	const result = await requestToolResult(params.callId);
+	const callId = params.callId;
+	stepTracker.awaitHostInput({ itemId: callId });
+	const result = await requestToolResult(callId).finally(() => stepTracker.resolveHostInput({ itemId: callId }));
 	emit({
 		type: "tool-result",
 		toolCallId: params.callId,
@@ -1623,6 +1815,19 @@ async function handleAppServerRequest({ request, dynamicTools, emit, requestTool
 		result: result.output ?? null,
 		isError: result.isError === true
 	});
+	if (result.toolResult != null) {
+		const converted = convertHarnessToolModelOutput({ output: result.toolResult.output });
+		return {
+			contentItems: converted.content.map((part) => part.type === "text" ? {
+				type: "inputText",
+				text: part.text
+			} : {
+				type: "inputImage",
+				imageUrl: `data:${part.mediaType};base64,${part.data}`
+			}),
+			success: result.isError !== true && !converted.isError
+		};
+	}
 	return {
 		contentItems: [{
 			type: "inputText",
@@ -1653,11 +1858,16 @@ function assertSuccessfulTurn(result) {
 function asRecord(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
+function readOptionalString(value) {
+	return typeof value === "string" && value.length > 0 ? value : void 0;
+}
 //#endregion
 //#region src/bridge/codex-step-tracker.ts
 function createCodexStepTracker(input) {
 	let stepOpen = false;
 	const pendingToolItemIds = /* @__PURE__ */ new Set();
+	const hostInputWaitingItemIds = /* @__PURE__ */ new Set();
+	const earlyFinishStepItemIds = /* @__PURE__ */ new Set();
 	const finishStep = () => {
 		if (!stepOpen || pendingToolItemIds.size > 0) return;
 		input.send({
@@ -1670,6 +1880,23 @@ function createCodexStepTracker(input) {
 			harnessMetadata: { codex: { inferredStep: true } }
 		});
 		stepOpen = false;
+		earlyFinishStepItemIds.clear();
+	};
+	const emitEarlyFinishStepIfReady = () => {
+		if (!stepOpen || pendingToolItemIds.size === 0) return;
+		for (const itemId of pendingToolItemIds) if (!hostInputWaitingItemIds.has(itemId)) return;
+		const uncovered = [...pendingToolItemIds].filter((itemId) => !earlyFinishStepItemIds.has(itemId));
+		if (uncovered.length === 0) return;
+		for (const itemId of uncovered) earlyFinishStepItemIds.add(itemId);
+		input.send({
+			type: "finish-step",
+			finishReason: {
+				unified: "tool-calls",
+				raw: "host-input"
+			},
+			usage: defaultUsage(),
+			harnessMetadata: { codex: { inferredStep: true } }
+		});
 	};
 	return {
 		observeEvent({ event, itemId }) {
@@ -1677,8 +1904,10 @@ function createCodexStepTracker(input) {
 			if (!item || !isStepItem(item)) return;
 			stepOpen = true;
 			if (isToolStepItem(item)) {
-				if (event.type === "item.started" && itemId) pendingToolItemIds.add(itemId);
-				else if (event.type === "item.completed") {
+				if (event.type === "item.started" && itemId) {
+					pendingToolItemIds.add(itemId);
+					emitEarlyFinishStepIfReady();
+				} else if (event.type === "item.completed") {
 					if (itemId) pendingToolItemIds.delete(itemId);
 					finishStep();
 				}
@@ -1686,7 +1915,17 @@ function createCodexStepTracker(input) {
 		},
 		finishTurn() {
 			pendingToolItemIds.clear();
+			hostInputWaitingItemIds.clear();
 			finishStep();
+		},
+		awaitHostInput({ itemId }) {
+			stepOpen = true;
+			pendingToolItemIds.add(itemId);
+			hostInputWaitingItemIds.add(itemId);
+			emitEarlyFinishStepIfReady();
+		},
+		resolveHostInput({ itemId }) {
+			hostInputWaitingItemIds.delete(itemId);
 		}
 	};
 }
@@ -1876,6 +2115,7 @@ function createEmitStreamEvent({ send, stepTracker, setTurnUsage, setThreadId, e
 				toolCallId: id,
 				toolName,
 				result: extractMcpToolCallResult(item),
+				...item.status === "failed" ? { isError: true } : {},
 				dynamic: true
 			});
 			observeStep();
@@ -1974,11 +2214,13 @@ const bridgeStateDir = requireArg({
 	name: "--bridge-state-dir"
 });
 const HARNESS_CLIENT_APP = env.AI_SDK_HARNESS_CLIENT_APP;
+const STANDALONE_WEB_SEARCH_BASE_URLS = /* @__PURE__ */ new Set(["https://api.openai.com/v1", "https://chatgpt.com/backend-api/codex"]);
 const threadState = { id: void 0 };
 const appServer = createCodexAppServerRuntime();
 await runBridge({
 	bridgeType: "codex",
 	bridgeStateDir,
+	...args.hostDisconnectTimeoutMs !== void 0 ? { hostDisconnectTimeoutMs: args.hostDisconnectTimeoutMs } : {},
 	onStart: runTurn,
 	onStop: async () => {
 		const data = threadState.id ? { threadId: threadState.id } : {};
@@ -2031,19 +2273,17 @@ async function runTurn(start, turn) {
 	});
 }
 function resolveCodexRuntime({ start }) {
-	const codexConfig = {
-		...start.codexConfig,
-		developer_instructions: [start.instructions, "Only respond with your `final` message once you have fully addressed the user request."].filter((instruction) => Boolean(instruction)).join("\n\n"),
-		model_reasoning_summary: "detailed"
-	};
 	const gatewayBaseUrl = env.AI_GATEWAY_BASE_URL;
 	const hasGatewayAuth = Boolean(env.AI_GATEWAY_API_KEY || gatewayBaseUrl);
 	if (hasGatewayAuth && !gatewayBaseUrl) throw new Error("AI Gateway auth was selected but AI_GATEWAY_BASE_URL is missing from the Codex bridge environment.");
 	const apiBaseUrl = hasGatewayAuth ? gatewayBaseUrl : env.OPENAI_BASE_URL ?? (env.CODEX_API_KEY != null || start.headers != null ? "https://api.openai.com/v1" : void 0);
 	const codexModel = start.model && hasGatewayAuth && !start.model.includes("/") ? `openai/${start.model}` : start.model;
-	if (hasGatewayAuth && codexModel?.startsWith("openai/")) codexConfig.model_supports_reasoning_summaries = true;
+	const codexConfig = {
+		model_reasoning_summary: "detailed",
+		...start.codexConfig,
+		developer_instructions: [start.instructions, "Only respond with your `final` message once you have fully addressed the user request."].filter((instruction) => Boolean(instruction)).join("\n\n")
+	};
 	if (apiBaseUrl) {
-		codexConfig.preferred_auth_method = "apikey";
 		codexConfig.model_provider = "agent_bridge_openai";
 		codexConfig.model_providers = { agent_bridge_openai: {
 			name: env.CODEX_MODEL_PROVIDER_NAME || "Agent Bridge OpenAI",
@@ -2051,6 +2291,7 @@ function resolveCodexRuntime({ start }) {
 			env_key: "CODEX_API_KEY",
 			wire_api: "responses",
 			supports_websockets: false,
+			...STANDALONE_WEB_SEARCH_BASE_URLS.has(apiBaseUrl.replace(/\/+$/, "")) ? { supports_standalone_web_search: true } : {},
 			...start.headers != null || hasGatewayAuth && HARNESS_CLIENT_APP ? { http_headers: {
 				...start.headers,
 				...hasGatewayAuth && HARNESS_CLIENT_APP ? {
@@ -2070,6 +2311,7 @@ function parseArgs(args) {
 	const out = {};
 	for (let i = 0; i < args.length; i++) if (args[i] === "--workdir" && i + 1 < args.length) out.workdir = args[++i];
 	else if (args[i] === "--bridge-state-dir" && i + 1 < args.length) out.bridgeStateDir = args[++i];
+	else if (args[i] === "--host-disconnect-timeout-ms" && i + 1 < args.length) out.hostDisconnectTimeoutMs = Number(args[++i]);
 	return out;
 }
 function emitFatal(message) {

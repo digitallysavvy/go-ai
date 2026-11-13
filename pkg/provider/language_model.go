@@ -193,6 +193,28 @@ type StreamRequestBody interface {
 	RequestBody() interface{}
 }
 
+// StreamRequestURL is an optional capability a TextStream implementation
+// can provide to report the HTTP endpoint it posted to (TS doStream()
+// {request: {url}}, 934100cad4). pkg/ai reduces it to its origin
+// (types.StepRequest.URL) before results, callbacks or telemetry see it, so
+// credentials, path, query and fragment never leave the provider. A stream
+// that doesn't implement it reports no request URL.
+type StreamRequestURL interface {
+	// RequestURL returns the URL the stream was opened with, or "".
+	RequestURL() string
+}
+
+// StreamResponseHeaders is an optional interface a TextStream can provide to
+// report the HTTP response headers of the call that opened it (TS doStream()
+// {response: {headers}}, returned beside the stream rather than as a stream
+// part). pkg/ai reads it for the step response; a response-metadata part that
+// carries headers still replaces them (v0.5 providers). Stream wrappers
+// forward it like RequestURL.
+type StreamResponseHeaders interface {
+	// ResponseHeaders returns the HTTP response headers, or nil.
+	ResponseHeaders() map[string]string
+}
+
 // StreamChunk represents a single chunk in a text stream
 type StreamChunk struct {
 	// Type of chunk
@@ -281,6 +303,10 @@ type StreamChunk struct {
 	// stream part types.
 	ProviderMetadata json.RawMessage
 
+	// Citations carries the references supporting the text block with this ID
+	// when Type is ChunkTypeTextEnd (TS text-end `citations`).
+	Citations []types.Citation
+
 	// ResponseMetadata is set when Type == ChunkTypeResponseMetadata.
 	// Carries the provider-level HTTP response metadata emitted early in the
 	// stream (after headers arrive, before content begins).
@@ -312,6 +338,19 @@ type StreamChunk struct {
 	// ChunkTypeFinishStep. Mirrors the TS SDK's 'finish-step' fullStream
 	// part's `performance` field.
 	Performance *types.StepPerformance
+
+	// SteeringMessage carries the user message that was added to the run
+	// when Type is ChunkTypeSteeringMessage (TS TextStreamSteeringMessagePart
+	// `message: UserModelMessage`, packages/ai/src/generate-text/
+	// stream-text-result.ts). Its Role is types.RoleUser. The steering
+	// message's id travels in ID.
+	SteeringMessage *types.Message
+
+	// StepNumber is the number of the step whose model call received the
+	// steering message, set when Type is ChunkTypeSteeringMessage (TS
+	// TextStreamSteeringMessagePart `stepNumber`). nil on every other chunk
+	// type.
+	StepNumber *int
 }
 
 // ResponseMetadata is the payload of a ChunkTypeResponseMetadata chunk.
@@ -446,6 +485,24 @@ const (
 	// GeneratedFileContent part.
 	ChunkTypeFile ChunkType = "file"
 
+	// ChunkTypePing is a provider keep-alive part with no payload. Mirrors
+	// the TS LanguageModelV4StreamPart `{ type: 'ping' }`
+	// (packages/provider/src/language-model/v4/language-model-v4-stream-part.ts),
+	// which a provider emits only when asked to (e.g. Anthropic's
+	// includePings provider option).
+	ChunkTypePing ChunkType = "ping"
+
+	// ChunkTypeSteeringMessage reports a steering user message delivered to
+	// the model call of step StepNumber; it is streamed before that step's
+	// output. ID carries the steering message id and SteeringMessage the
+	// message. This is an ai-level stream part, not a provider part: it
+	// mirrors TS TextStreamSteeringMessagePart `{ type: 'steering-message',
+	// id, message, stepNumber }` (packages/ai/src/generate-text/
+	// stream-text-result.ts, emitted by stream-text.ts). Go's ai-level parts
+	// (start, start-step, finish-step, tool-result, ...) share this
+	// ChunkType set, so it is declared here. Providers never emit it.
+	ChunkTypeSteeringMessage ChunkType = "steering-message"
+
 	// ChunkTypeRaw carries the unmodified provider chunk requested by
 	// Include.RawChunks. Providers should only emit this when GenerateOptions
 	// IncludeRawChunks is true.
@@ -491,6 +548,14 @@ const (
 	// ChunkTypeStreamFinish is a synthetic stream lifecycle marker emitted when
 	// the stream has been fully consumed.
 	ChunkTypeStreamFinish ChunkType = "ai.stream.finish"
+
+	// ChunkTypeDiscardStep is a synthetic marker consumed by
+	// ai.NewStreamTextResultFromParts: the content recorded for the step in
+	// progress is dropped from the result (the chunks already forwarded stay
+	// on the stream). It mirrors HarnessStreamTextResult
+	// .discardCurrentStepContent, used when a suspended turn closes its
+	// already-recorded step. It is never part of the public full stream.
+	ChunkTypeDiscardStep ChunkType = "ai.stream.discardStep"
 )
 
 // EmbedModelOptions contains options forwarded to the embedding provider on each call.
@@ -502,6 +567,13 @@ type EmbedModelOptions struct {
 
 	// Headers are additional HTTP headers to send with the request.
 	Headers map[string]string
+
+	// Dimensions is the requested number of output dimensions for the
+	// embeddings (the top-level `dimensions` setting). nil means unspecified.
+	// It is validated as a positive integer by ai.Embed / ai.EmbedMany; support
+	// and allowed values depend on the model and provider. Providers map it to
+	// their native setting; an explicit provider option takes precedence.
+	Dimensions *int
 }
 
 // EmbeddingModel represents an embedding model
@@ -633,6 +705,10 @@ type ImageFile struct {
 
 	// MediaType for type="file" (e.g., "image/png")
 	MediaType string
+
+	// ProviderOptions carries optional provider-specific options for the file
+	// part (TS ImageModelV4File.providerOptions).
+	ProviderOptions map[string]interface{}
 }
 
 // SpeechModel represents a speech synthesis model
@@ -703,9 +779,79 @@ type TranscriptionOptions struct {
 	// Whether to include timestamps
 	Timestamps bool
 
+	// TimestampGranularities is the shared timing detail to request:
+	// TranscriptionTimestampGranularityWord and/or
+	// TranscriptionTimestampGranularitySegment. Mirrors TS
+	// TranscriptionModelV4CallOptions.timestampGranularities
+	// (packages/provider/src/transcription-model/v4/
+	// transcription-model-v4-call-options.ts).
+	//
+	// nil means unset. An empty, non-nil slice is an explicit request for no
+	// additional timing detail; it does not suppress timings a provider
+	// returns by default. Supporting adapters warn when they cannot provide
+	// a requested granularity.
+	//
+	// Precedence in supporting adapters: the provider's own
+	// timestampGranularities provider option wins; otherwise this field
+	// when non-nil (even when empty); otherwise the Go-only Timestamps
+	// flag; otherwise the provider default.
+	TimestampGranularities []string
+
 	// ProviderOptions contains provider-specific request options.
 	ProviderOptions map[string]interface{}
 
 	// Additional HTTP headers
+	Headers map[string]string
+}
+
+// Timestamp granularities for TranscriptionOptions.TimestampGranularities,
+// mirroring TS TranscriptionModelV4TimestampGranularity ('word' | 'segment').
+// Word is for word highlighting; segment is for caption-sized phrases.
+const (
+	TranscriptionTimestampGranularityWord    = "word"
+	TranscriptionTimestampGranularitySegment = "segment"
+)
+
+// TranscriptionURLModel is an optional TranscriptionModel capability for
+// native URL transcription: the provider fetches the audio itself, so an
+// HTTP(S) audio URL is sent without downloading it locally. Mirrors TS
+// TranscriptionModelV4.doGenerateFromUrl?
+// (packages/provider/src/transcription-model/v4/transcription-model-v4.ts).
+//
+// Return (nil, nil) to decline (for example when the provider cannot fetch
+// this URL); the caller then downloads the audio through the validated
+// downloader and calls DoTranscribe. Return an error for any other failure
+// (authentication, invalid audio). Headers are for the provider API and are
+// never forwarded to the audio host. Models that implement only
+// DoTranscribe keep working unchanged.
+type TranscriptionURLModel interface {
+	DoTranscribeFromURL(ctx context.Context, opts *TranscriptionURLOptions) (*types.TranscriptionResult, error)
+}
+
+// TranscriptionURLOptions are the options for
+// TranscriptionURLModel.DoTranscribeFromURL. They mirror TS
+// Omit<TranscriptionModelV4CallOptions, 'audio' | 'mediaType'> & { audio: URL }:
+// TranscriptionOptions without the audio bytes and media type.
+type TranscriptionURLOptions struct {
+	// AudioURL is the absolute http or https URL of the audio, passed as the
+	// caller gave it (TS `audio: URL`).
+	AudioURL string
+
+	// Language of the audio (optional; Go extension, as on
+	// TranscriptionOptions).
+	Language string
+
+	// Timestamps mirrors TranscriptionOptions.Timestamps (Go extension).
+	Timestamps bool
+
+	// TimestampGranularities mirrors
+	// TranscriptionOptions.TimestampGranularities, with the same nil/empty
+	// meaning and precedence.
+	TimestampGranularities []string
+
+	// ProviderOptions contains provider-specific request options.
+	ProviderOptions map[string]interface{}
+
+	// Additional HTTP headers for the provider API.
 	Headers map[string]string
 }

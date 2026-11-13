@@ -36,12 +36,77 @@ func TestCreateBedrockMantleDefaultsAndModels(t *testing.T) {
 	}
 }
 
-func TestBedrockMantleBearerTokenSkipsSigV4Transport(t *testing.T) {
-	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) { return nil, nil })
-	client := &http.Client{Transport: base}
-	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", APIKey: "bearer", HTTPClient: client})
-	if _, ok := p.httpClient.Transport.(*sigV4Transport); ok {
-		t.Fatal("bearer token auth must not install SigV4 transport")
+func TestBedrockMantleBearerTokenSkipsSigning(t *testing.T) {
+	var got *http.Request
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		got = req
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", APIKey: " bearer \n", HTTPClient: &http.Client{Transport: base}})
+	req, _ := http.NewRequest(http.MethodPost, "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", strings.NewReader("{}"))
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got.Header.Get("Authorization") != "Bearer bearer" || got.Header.Get("X-Amz-Date") != "" {
+		t.Fatalf("headers = %v", got.Header)
+	}
+}
+
+// The bearer token is read when the provider is created (TS
+// createBedrockMantle loadOptionalSetting): a token set later is not used, and
+// one set at creation is used even after the variable is cleared.
+func TestBedrockMantleBearerTokenFromEnvAtCreation(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "akid")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	var got *http.Request
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		got = req
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	send := func(p *BedrockMantleProvider) string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", strings.NewReader("{}"))
+		resp, err := p.httpClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return got.Header.Get("Authorization")
+	}
+	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", HTTPClient: &http.Client{Transport: base}})
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "late-token")
+	if auth := send(p); !strings.HasPrefix(auth, "AWS4-HMAC-SHA256") {
+		t.Fatalf("Authorization = %q, want SigV4 (token set after creation)", auth)
+	}
+	p = CreateBedrockMantle(ProviderSettings{Region: "us-east-1", HTTPClient: &http.Client{Transport: base}})
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	if auth := send(p); auth != "Bearer late-token" {
+		t.Fatalf("Authorization = %q, want the token read at creation", auth)
+	}
+}
+
+// A stale Authorization header from the wrapped OpenAI client must not be signed.
+func TestBedrockMantleSigV4DropsStaleAuthorization(t *testing.T) {
+	var got *http.Request
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		got = req
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", AccessKeyID: "akid", SecretAccessKey: "secret", HTTPClient: &http.Client{Transport: base}})
+	req, _ := http.NewRequest(http.MethodPost, "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer sk-openai")
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	auth := got.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256") || strings.Contains(strings.SplitN(auth, "Signature=", 2)[0], "authorization;") {
+		t.Fatalf("Authorization = %q", auth)
 	}
 }
 
@@ -249,5 +314,24 @@ func TestBaseURLForModel_ExplicitBaseURLAlwaysWins(t *testing.T) {
 	}
 	if got != "https://custom.example.com/v1" {
 		t.Fatalf("baseURLForModel = %q, want explicit override", got)
+	}
+}
+
+func TestBedrockMantleMissingCredentialsIncludeOriginalError(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	tr := &sigV4Transport{region: "us-east-1", baseURL: func() (string, error) { return "https://example.com", nil }, base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("unexpected send")
+	})}
+	req, _ := http.NewRequest("POST", "https://example.com", nil)
+	_, err := tr.RoundTrip(req)
+	if err == nil || !strings.HasSuffix(err.Error(), "\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") {
+		t.Fatalf("access key error = %v", err)
+	}
+	tr.accessKeyID = "akid"
+	_, err = tr.RoundTrip(req)
+	if err == nil || !strings.HasSuffix(err.Error(), "provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") {
+		t.Fatalf("secret error = %v", err)
 	}
 }

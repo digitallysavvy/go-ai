@@ -36,6 +36,7 @@ type Session[T any] struct {
 	err error
 
 	closeOnce sync.Once
+	closed    bool // Close was called (guarded by mu)
 	connMu    sync.Mutex
 	conn      *websocket.Conn
 }
@@ -78,6 +79,9 @@ func (s *Session[T]) Err() error {
 // Close implements provider.TranscriptionStream / provider.SpeechTranslationStream.
 func (s *Session[T]) Close() error {
 	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
 		s.cancel()
 		s.connMu.Lock()
 		if s.conn != nil {
@@ -106,6 +110,15 @@ func (s *Session[T]) Emit(part T) bool {
 	case s.parts <- part:
 		return true
 	case <-s.ctx.Done():
+		// TS connectToWebSocket: an abort fails the stream with
+		// abortSignal.reason (controller.error), even while a part is still
+		// waiting for the consumer; a part pending when the caller closed
+		// the stream is simply dropped.
+		s.mu.Lock()
+		if !s.closed && s.err == nil {
+			s.err = context.Cause(s.ctx)
+		}
+		s.mu.Unlock()
 		return false
 	}
 }
@@ -122,10 +135,18 @@ func (s *Session[T]) CloseParts() { close(s.parts) }
 func (s *Session[T]) CancelContext() { s.cancel() }
 
 // SetConn records the active WebSocket connection so Close can close it.
+//
+// When the session was already closed (Close ran before the dial finished and
+// found no connection to tear down), conn is closed immediately instead of
+// being leaked with a read loop that nothing can interrupt.
 func (s *Session[T]) SetConn(conn *websocket.Conn) {
 	s.connMu.Lock()
 	s.conn = conn
+	closed := s.ctx.Err() != nil
 	s.connMu.Unlock()
+	if closed && conn != nil {
+		_ = conn.Close()
+	}
 }
 
 // ReportError delivers err on errCh, falling back to ctx.Done() so a send

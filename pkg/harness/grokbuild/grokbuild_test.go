@@ -125,3 +125,14 @@ func TestCreateGrokBuild(t *testing.T) {
 		t.Errorf("HarnessID() = %q, want grok-build", h.HarnessID())
 	}
 }
+
+// TS #22367: Grok Build accepts image tool model output.
+func TestBuildConfig_DeclaresImageContent(t *testing.T) {
+	cfg, err := BuildConfig(Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.NonTextContentTypes) != 1 || cfg.NonTextContentTypes[0] != acp.NonTextContentImage {
+		t.Errorf("NonTextContentTypes = %v, want [image]", cfg.NonTextContentTypes)
+	}
+}

@@ -36,8 +36,18 @@ type ToolSearchArgs struct {
 // Stored in types.Tool.ProviderOptions so that PrepareTools can produce the
 // correct ToolSearchToolDef wire format.
 type ToolSearchOptions struct {
-	// Execution is "server" or "client".
+	// Execution is "server" or "client" (defaults to "server").
 	Execution string
+
+	// ExecutionSet reports that the caller passed Execution explicitly. TS
+	// sends `execution` on the wire only when the caller set it, so an
+	// explicit "server" is sent while the default is omitted.
+	ExecutionSet bool
+
+	// Parameters is the JSON schema for client-mode search arguments sent
+	// as the tool's `parameters` (TS args.parameters). The tool's own
+	// Parameters field holds the TS tool input schema instead.
+	Parameters map[string]interface{}
 }
 
 // ToolSearch creates a provider tool for the OpenAI Responses API tool_search feature.
@@ -64,7 +74,11 @@ type ToolSearchOptions struct {
 //	        },
 //	    },
 //	    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-//	        query, _ := input["query"].(string)
+//	        // The call input is {arguments, call_id} (TS toolSearchInputSchema);
+//	        // the search arguments match Parameters.
+//	        args, _ := input["arguments"].(map[string]interface{})
+//	        query, _ := args["query"].(string)
+//	        _ = query
 //	        return []string{"get_weather", "search_web"}, nil
 //	    },
 //	})
@@ -81,14 +95,32 @@ func ToolSearch(args ToolSearchArgs) types.Tool {
 		}
 	}
 
-	return types.Tool{
-		Name:             "openai.tool_search",
-		Description:      args.Description,
-		Parameters:       args.Parameters,
+	toolArgs := map[string]interface{}{}
+	if args.Execution != "" {
+		toolArgs["execution"] = args.Execution
+	}
+	if args.Description != "" {
+		toolArgs["description"] = args.Description
+	}
+	if args.Parameters != nil {
+		toolArgs["parameters"] = args.Parameters
+	}
+
+	return providerTool(types.Tool{
+		Name:        "openai.tool_search",
+		Description: args.Description,
+		// TS toolSearchInputSchema {arguments?: unknown, call_id?: string |
+		// null}: the input of a tool_search call. The search arguments
+		// schema (args.Parameters) is tool config sent to OpenAI, not the
+		// call input, so it lives in ProviderOptions/ProviderArgs.
+		Parameters:       schemaFromJSON(toolSearchInputSchemaJSON),
+		OutputSchema:     schemaFromJSON(toolSearchOutputSchemaJSON),
 		ProviderExecuted: execution == "server",
 		ProviderOptions: ToolSearchOptions{
-			Execution: execution,
+			Execution:    execution,
+			ExecutionSet: args.Execution != "",
+			Parameters:   args.Parameters,
 		},
 		Execute: execute,
-	}
+	}, "openai.tool_search", toolArgs)
 }

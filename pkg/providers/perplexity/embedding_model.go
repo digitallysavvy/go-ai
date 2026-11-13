@@ -2,9 +2,10 @@ package perplexity
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/json"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -50,12 +51,13 @@ func NewEmbeddingModel(p *Provider, modelID string) *EmbeddingModel {
 
 // SpecificationVersion returns the specification version.
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
-// Provider returns the provider name.
+// Provider returns the provider ID, TS config.provider of
+// createEmbeddingModel ("perplexity.embedding").
 func (m *EmbeddingModel) Provider() string {
-	return "perplexity"
+	return "perplexity.embedding"
 }
 
 // ModelID returns the model ID.
@@ -76,9 +78,20 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 
 // DoEmbed performs embedding for a single input.
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	result, err := m.DoEmbedMany(ctx, []string{input}, opts)
 	if err != nil {
 		return nil, err
+	}
+	if len(result.Embeddings) == 0 {
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
 	r := &types.EmbeddingResult{
 		Embedding:        result.Embeddings[0],
@@ -94,12 +107,27 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch.
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
 		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
 			Provider:             m.Provider(),
 			ModelID:              m.modelID,
 			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
 			Values:               inputs,
+		}
+	}
+
+	// TS parseProviderOptions throws InvalidArgumentError for a bad
+	// dimensions (non-integer, <= 0) or an unknown encodingFormat.
+	opts = normalizeTypedEmbeddingOptions(opts)
+	if opts != nil {
+		if _, err := providerutils.ParseProviderOptions("perplexity", opts.ProviderOptions, embeddingOptionsSchema); err != nil {
+			return nil, err
 		}
 	}
 
@@ -117,17 +145,34 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	if perplexityOpts.Dimensions != nil {
 		reqBody["dimensions"] = *perplexityOpts.Dimensions
+	} else if opts != nil && opts.Dimensions != nil {
+		// Top-level dimensions (TS #22338); the provider option wins.
+		reqBody["dimensions"] = *opts.Dimensions
 	}
 
 	var response perplexityEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/embeddings",
-		Body:    reqBody,
-		Headers: embedOptsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaPerplexityEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/v1/embeddings",
+		Body:             reqBody,
+		Headers:          embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("perplexity", 0, "", err.Error(), err)
+		// TS failedResponseHandler: createJsonErrorResponseHandler(perplexityErrorSchema).
+		if pe, ok := perplexityStatusError(err, m.Provider()); ok {
+			return nil, pe
+		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS: loadApiKey throws LoadAPIKeyError unchanged
+		}
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
 	embeddings := make([][]float64, len(response.Data))
@@ -141,13 +186,17 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	result := &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}
 	if response.Usage != nil {
 		result.Usage = types.EmbeddingUsage{
+			// zod number() accepts fractions; Tokens keeps them, the
+			// integral counters truncate.
 			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.PromptTokens,
+			InputTokens: int(response.Usage.PromptTokens),
+			TotalTokens: int(response.Usage.PromptTokens),
+			// TS `response.usage ? { tokens: ... } : undefined`.
+			Reported: true,
 		}
 		if response.Usage.Cost != nil {
 			var inputCost, totalCost interface{}
@@ -176,6 +225,50 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return result, nil
 }
 
+// embeddingOptionsSchema is perplexityEmbeddingModelOptions.
+var embeddingOptionsSchema = providerutils.OptionSchema{
+	"dimensions":     providerutils.OptPositive(true),
+	"encodingFormat": providerutils.OptEnum("base64_int8", "base64_binary"),
+}
+
+// normalizeTypedEmbeddingOptions turns an exported
+// PerplexityEmbeddingModelOptions (value or pointer) given as the
+// "perplexity" entry into its JSON object form (the TS options object), so
+// it is validated and applied like a map. The caller's map is not modified.
+func normalizeTypedEmbeddingOptions(opts *provider.EmbedModelOptions) *provider.EmbedModelOptions {
+	if opts == nil || opts.ProviderOptions == nil {
+		return opts
+	}
+	var typed *PerplexityEmbeddingModelOptions
+	switch v := opts.ProviderOptions["perplexity"].(type) {
+	case PerplexityEmbeddingModelOptions:
+		typed = &v
+	case *PerplexityEmbeddingModelOptions:
+		if v == nil {
+			typed = &PerplexityEmbeddingModelOptions{}
+		} else {
+			typed = v
+		}
+	default:
+		return opts
+	}
+	encoded, err := json.Marshal(typed)
+	if err != nil {
+		return opts
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal(encoded, &obj) != nil {
+		return opts
+	}
+	copied := *opts
+	copied.ProviderOptions = make(map[string]interface{}, len(opts.ProviderOptions))
+	for k, v := range opts.ProviderOptions {
+		copied.ProviderOptions[k] = v
+	}
+	copied.ProviderOptions["perplexity"] = obj
+	return &copied
+}
+
 func extractEmbeddingOptions(opts *provider.EmbedModelOptions) PerplexityEmbeddingModelOptions {
 	if opts == nil || opts.ProviderOptions == nil {
 		return PerplexityEmbeddingModelOptions{}
@@ -194,6 +287,9 @@ func extractEmbeddingOptions(opts *provider.EmbedModelOptions) PerplexityEmbeddi
 		case int:
 			result.Dimensions = &n
 		case float64:
+			iv := int(n)
+			result.Dimensions = &iv
+		case int64:
 			iv := int(n)
 			result.Dimensions = &iv
 		}
@@ -217,7 +313,10 @@ func embedOptsHeaders(opts *provider.EmbedModelOptions) map[string]string {
 // int8 values; for "base64_binary" the raw unsigned bytes (packed bits) are
 // returned.
 func decodePerplexityEmbedding(encoded string, encodingFormat string) ([]float64, error) {
-	bytes, err := base64.StdEncoding.DecodeString(encoded)
+	// TS convertBase64ToUint8Array: base64url characters map to the standard
+	// alphabet and atob's forgiving decode applies (padding optional,
+	// whitespace ignored).
+	bytes, err := fileutil.ConvertBase64ToBytes(encoded)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +344,7 @@ type perplexityEmbeddingResponse struct {
 }
 
 type perplexityEmbeddingUsage struct {
-	PromptTokens int                      `json:"prompt_tokens"`
+	PromptTokens pplxNumber               `json:"prompt_tokens"`
 	Cost         *perplexityEmbeddingCost `json:"cost,omitempty"`
 }
 

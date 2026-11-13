@@ -32,8 +32,8 @@ func TestKlingAIProviderUnsupportedMethodsAndClient(t *testing.T) {
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel should be unsupported")
 	}
-	if _, err := p.VideoModel(""); err == nil {
-		t.Fatal("VideoModel should require model ID")
+	if _, err := p.VideoModel(""); err != nil {
+		t.Fatalf("VideoModel(\"\") must not error at construction (TS raises at doStart): %v", err)
 	}
 	if p.Client() != nil {
 		t.Fatal("Client() should be nil on zero-value provider")
@@ -66,7 +66,7 @@ func TestKlingAIVideoModelHelperBranches(t *testing.T) {
 		"X-Request-Id": {"req-1"},
 		"X-Multi":      {"a", "b"},
 	})
-	if headers["X-Request-Id"] != "req-1" || headers["X-Multi"] != "a" {
+	if headers["X-Request-Id"] != "req-1" || headers["X-Multi"] != "a, b" {
 		t.Fatalf("convertHTTPHeaders() = %#v", headers)
 	}
 	if empty := convertHTTPHeaders(nil); len(empty) != 0 {
@@ -96,7 +96,7 @@ func TestKlingAIVideoModelHelperBranches(t *testing.T) {
 		ModelID:   model.modelID,
 		Headers:   map[string]string{"X-Req": "abc"},
 	}
-	resp, err := model.buildCompletedStatusResult(&status, "task-1", responseInfo)
+	resp, err := model.buildCompletedStatusResult(&status, "task-1", responseInfo, nil)
 	if err != nil {
 		t.Fatalf("buildCompletedStatusResult() error = %v", err)
 	}

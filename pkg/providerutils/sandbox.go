@@ -7,6 +7,17 @@ import (
 
 // SandboxSession executes commands and reads/writes files in an isolated
 // environment.
+//
+// Relative paths in every method, including the WorkingDirectory option of
+// Run and Spawn, resolve against the same base directory: the directory Run
+// and Spawn start in when no WorkingDirectory is given. Absolute paths are
+// used as is (TS sandbox.ts, 5c247e9b85).
+//
+// TS 5c247e9b85 added stat, listDirectory and deleteFile, and 95348b32c6 a
+// writable stdin for spawn. Adding methods here would break existing
+// implementations, so they are optional interfaces: SandboxStatter,
+// SandboxDirectoryLister, SandboxFileDeleter and WritableSandboxProcess
+// (with SandboxProcessOptions.Stdin).
 type SandboxSession interface {
 	Description() string
 	Run(ctx context.Context, opts SandboxProcessOptions) (SandboxRunResult, error)
@@ -30,6 +41,73 @@ type SandboxProcessOptions struct {
 	// Env contains per-command environment variables. It mirrors the TypeScript
 	// SandboxSession env option.
 	Env map[string]string
+	// Stdin, for Spawn only, keeps standard input open: the returned process
+	// then implements WritableSandboxProcess. An implementation that does not
+	// support a writable stdin must return an error before starting the
+	// command. When false, standard input is closed (TS spawn `stdin`,
+	// 95348b32c6). Run ignores it.
+	Stdin bool
+}
+
+// WritableSandboxProcess is a SandboxProcess spawned with
+// SandboxProcessOptions.Stdin set. Mirrors TS `WritableSandboxProcess`.
+type WritableSandboxProcess interface {
+	SandboxProcess
+	// Stdin is written to the process's standard input. Closing it delivers
+	// EOF after pending writes without terminating the process.
+	Stdin() io.WriteCloser
+}
+
+// Sandbox file and directory types reported by SandboxStatter and
+// SandboxDirectoryLister. Mirrors TS `SandboxFileStat` / `SandboxDirectoryEntry`.
+const (
+	SandboxPathTypeFile      = "file"
+	SandboxPathTypeDirectory = "directory"
+	SandboxPathTypeSymlink   = "symlink"
+	SandboxPathTypeOther     = "other"
+)
+
+// SandboxFileStat describes a file or directory. Mirrors TS `SandboxFileStat`.
+type SandboxFileStat struct {
+	// Type is "file", "directory" or "other" (devices, sockets, named pipes).
+	Type string
+	// Size is the size in bytes; a directory's size is implementation-defined.
+	Size int64
+}
+
+// SandboxDirectoryEntry is one entry of a directory listing. Mirrors TS
+// `SandboxDirectoryEntry`.
+type SandboxDirectoryEntry struct {
+	// Name is the entry name, without the directory path.
+	Name string
+	// Type is "file", "directory", "symlink" (not followed) or "other".
+	Type string
+}
+
+// SandboxStatter is an optional SandboxSession extension (TS
+// `SandboxSession.stat`).
+type SandboxStatter interface {
+	// Stat reports a path, following symbolic links. It returns (nil, nil)
+	// when the path does not exist.
+	Stat(ctx context.Context, path string) (*SandboxFileStat, error)
+}
+
+// SandboxDirectoryLister is an optional SandboxSession extension (TS
+// `SandboxSession.listDirectory`).
+type SandboxDirectoryLister interface {
+	// ListDirectory lists one directory without descending into
+	// subdirectories, in unspecified order. It returns (nil, nil) when the
+	// directory does not exist and an error when the path is not a directory.
+	ListDirectory(ctx context.Context, path string) ([]SandboxDirectoryEntry, error)
+}
+
+// SandboxFileDeleter is an optional SandboxSession extension (TS
+// `SandboxSession.deleteFile`).
+type SandboxFileDeleter interface {
+	// DeleteFile deletes one file (a symbolic link itself, not its target).
+	// It returns true when the file was deleted, false when it does not
+	// exist, and an error when the path is a directory.
+	DeleteFile(ctx context.Context, path string) (bool, error)
 }
 
 // SandboxRunResult is returned by SandboxSession.Run.

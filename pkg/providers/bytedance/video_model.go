@@ -6,15 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	stdhttp "net/http"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodjson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // default polling configuration matching the AI SDK core's own default
@@ -87,7 +96,9 @@ func bytedanceResolveStartImage(opts *provider.VideoModelV3CallOptions) *provide
 }
 
 func bytedanceIsVideoFile(f *provider.VideoModelV3File) bool {
-	return f.MediaType != "" && strings.HasPrefix(f.MediaType, "video/")
+	// TS getTopLevelMediaType(mediaType) === 'video': the part before the first "/".
+	top, _, _ := strings.Cut(f.MediaType, "/")
+	return f.MediaType != "" && top == "video"
 }
 
 // bytedanceResolveReferenceContent builds the reference image_url/video_url
@@ -167,6 +178,8 @@ func bytedanceResolveLastFrameImage(opts *provider.VideoModelV3CallOptions, prov
 // creation endpoint and returns an opaque operation reference
 // (TS ByteDanceVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	// TS: the response timestamp is taken before the request is built and sent.
+	currentDate := time.Now()
 	provOpts, err := extractProviderOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, err
@@ -209,10 +222,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		})
 	}
 
-	body, err := m.buildRequestBody(&opts.VideoModelV3CallOptions, provOpts)
+	body, bodyWarnings, err := m.buildRequestBodyWithWarnings(&opts.VideoModelV3CallOptions, provOpts)
 	if err != nil {
 		return nil, err
 	}
+	warnings = append(warnings, bodyWarnings...)
 
 	// Progress notifications require a protocol-aware receiver, so we don't
 	// implement VideoModelWebhookHandler; forward webhookUrl as callback_url
@@ -225,21 +239,28 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Method:  "POST",
 		Path:    "/contents/generations/tasks",
 		Headers: opts.Headers,
-		Body:    body,
+		Body:    orderedVideoBody(body, provOpts.Additional),
 	})
 	if err != nil {
-		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
+		// TS postJsonToApi lets a transport failure (an abort, or the
+		// "Cannot connect to API" APICallError) propagate unchanged.
+		return nil, err
 	}
-	if submitResp.StatusCode >= 400 {
-		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode)
+	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
+		return nil, newHTTPErrorText(submitResp.StatusCode, submitResp.HTTPStatusText(), submitResp.Headers, submitResp.Body)
 	}
 
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	submitBody := []byte(textdecode.UTF8(submitResp.Body))
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceTask)(submitResp.StatusCode, submitResp.Headers, submitBody); err != nil {
+		return nil, err
+	}
 	var createResp taskCreateResponse
-	if err := json.Unmarshal(submitResp.Body, &createResp); err != nil {
+	if err := jsonexact.Unmarshal(submitBody, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse creation response: %v", err))
 	}
 	if createResp.ID == "" {
-		return nil, NewVideoGenerationError("No task ID returned from API")
+		return nil, newVideoGenerationErrorText("No task ID returned from API")
 	}
 
 	operation, _ := json.Marshal(bytedanceOperation{TaskID: createResp.ID})
@@ -248,7 +269,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Operation: operation,
 		Warnings:  warnings,
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(submitResp.Headers),
 		},
@@ -264,24 +285,41 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // DNS-pinning transport, and credentials are only forwarded on the trusted
 // hop.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now() // TS: taken before the status request
 	var operation bytedanceOperation
 	if err := json.Unmarshal(opts.Operation, &operation); err != nil {
 		return nil, fmt.Errorf("bytedance: invalid operation reference: %w", err)
 	}
 
-	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, nil)
-	downloadOpts.Headers = internalhttp.MergeHeaders(m.prov.reqHeaders, opts.Headers)
-
-	pollURL := strings.TrimRight(m.prov.config.BaseURL, "/") + "/contents/generations/tasks/" + operation.TaskID
-
-	var statusResp taskStatusResponse
-	result, err := fileutil.PollJSON(ctx, pollURL, downloadOpts, &statusResp)
+	// TS combineHeaders(await resolve(config.headers), options.headers): the
+	// key is loaded per request, so a missing key is a LoadAPIKeyError
+	// before any request (bytedance-provider.ts:77).
+	providerHeaders, err := m.prov.requestHeaders()
 	if err != nil {
-		return nil, m.handlePollError(err)
+		return nil, err
+	}
+	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, nil)
+	downloadOpts.Headers = internalhttp.MergeHeaders(providerHeaders, opts.Headers)
+
+	pollURL := m.prov.config.BaseURL + "/contents/generations/tasks/" + providerutils.EncodePathSegment(operation.TaskID)
+
+	result, err := fileutil.DownloadWithMetadata(ctx, pollURL, downloadOpts)
+	if err != nil {
+		return nil, m.handlePollError(ctx, err)
+	}
+	// TS createJsonResponseHandler(byteDanceStatusResponseSchema), over
+	// response.text() (TextDecoder).
+	result.Data = []byte(textdecode.UTF8(result.Data))
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceStatus)(200, stdhttp.Header(result.Headers), result.Data); err != nil {
+		return nil, err
+	}
+	var statusResp taskStatusResponse
+	if err := jsonexact.Unmarshal(result.Data, &statusResp); err != nil {
+		return nil, fmt.Errorf("bytedance: failed to decode status response: %w", err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
-		Timestamp: time.Now(),
+		Timestamp: currentDate,
 		ModelID:   m.modelID,
 		Headers:   flattenHeaderSlice(result.Headers),
 	}
@@ -289,28 +327,24 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	switch statusResp.Status {
 	case "succeeded":
 		videoURL := ""
-		lastFrameURL := ""
+		var lastFrameURL *string
 		if statusResp.Content != nil {
 			videoURL = statusResp.Content.VideoURL
 			lastFrameURL = statusResp.Content.LastFrameURL
 		}
 		if videoURL == "" {
-			return nil, NewVideoGenerationError(fmt.Sprintf("No video URL in response. Task ID: %s", operation.TaskID))
+			return nil, newVideoGenerationErrorText("No video URL in response. Task ID: " + operation.TaskID)
 		}
 
-		// Assign through an interface{} local rather than the *taskUsageField
-		// directly: a nil *taskUsageField boxed straight into the map would
-		// compare non-nil (a typed nil), unlike TS's plain `undefined`.
-		var usage interface{}
-		if statusResp.Usage != nil {
-			usage = statusResp.Usage
+		// TS `usage: statusResponse.usage`: the zod-parsed usage object, an
+		// explicit null kept as null, and no key when the wire has none
+		// (JSON drops the undefined value).
+		meta := map[string]interface{}{"taskId": operation.TaskID}
+		if usage, present := bytedanceStatusUsage(statusResp.Usage); present {
+			meta["usage"] = usage
 		}
-		meta := map[string]interface{}{
-			"taskId": operation.TaskID,
-			"usage":  usage,
-		}
-		if lastFrameURL != "" {
-			meta["lastFrameUrl"] = lastFrameURL
+		if lastFrameURL != nil {
+			meta["lastFrameUrl"] = *lastFrameURL
 		}
 
 		return &provider.VideoModelV3OperationStatusResult{
@@ -324,16 +358,20 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	// ModelArk documents "cancelled"; "canceled" is handled defensively.
 	case "failed", "expired", "cancelled", "canceled":
-		details := ""
+		var details string
+		haveDetails := false
 		if statusResp.Error != nil {
-			if statusResp.Error.Message != "" {
-				details = statusResp.Error.Message
-			} else if statusResp.Error.Code != "" {
-				details = statusResp.Error.Code
+			switch {
+			case statusResp.Error.Message != nil:
+				details, haveDetails = *statusResp.Error.Message, true
+			case statusResp.Error.Code != nil:
+				details, haveDetails = *statusResp.Error.Code, true
 			}
 		}
-		if details == "" {
-			details = mustMarshal(statusResp)
+		if !haveDetails {
+			// TS JSON.stringify(statusResponse): the zod-parsed body, so the
+			// schema's keys in schema order and no unknown wire keys.
+			details = zodjson.Stringify(result.Data, bytedanceStatusSpec)
 		}
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
@@ -424,15 +462,43 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}, nil
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// ByteDanceVideoModel has no doGenerate), so ai.GenerateVideo drives it
+// through the core start/status flow. It returns the deprecated
+// pollIntervalMs / pollTimeoutMs provider options (0 when unset: the core
+// 5000 / 600000 defaults): TS warns that they are ignored, Go keeps honoring
+// them (v0.5.2 contract) and still reports the deprecation warning.
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, err := extractProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
+}
+
 // buildRequestBody builds the API request body from call options
 func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, error) {
-	var warnings []types.Warning // unused feature warnings are attached by DoStart; kept local for resolveReferenceContent
+	body, _, err := m.buildRequestBodyWithWarnings(opts, provOpts)
+	return body, err
+}
+
+// buildRequestBodyWithWarnings is buildRequestBody plus the warnings the
+// request construction raises (for example a URL input reference without a
+// media type), which DoStart reports.
+func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, []types.Warning, error) {
+	var warnings []types.Warning
 
 	content := []map[string]interface{}{}
 
-	// Go cannot distinguish an omitted optional string from an explicit empty
-	// string. Map the zero value to TS's omitted prompt behavior.
-	if opts.Prompt != "" {
+	// TS `prompt != null`: an explicit empty prompt is sent (PromptSet), an
+	// omitted one is not.
+	if opts.PromptSet || opts.Prompt != "" {
 		content = append(content, map[string]interface{}{
 			"type": "text",
 			"text": opts.Prompt,
@@ -446,7 +512,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 	if startImage != nil {
 		imageURL, err := encodeImage(startImage)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encode image: %w", err)
+			return nil, nil, fmt.Errorf("failed to encode image: %w", err)
 		}
 		imagePart := map[string]interface{}{
 			"type": "image_url",
@@ -496,11 +562,12 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 		body["ratio"] = opts.AspectRatio
 	}
 
-	if opts.Duration != nil && *opts.Duration != 0 {
+	// TS `if (options.duration)`: 0 and NaN are falsy.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
 		body["duration"] = *opts.Duration
 	}
 
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
 
@@ -542,35 +609,24 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 		body[k] = v
 	}
 
-	return body, nil
-}
-
-// parseAPIError parses a ByteDance API error response
-func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
-	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil {
-		msg := ""
-		if errResp.Error != nil {
-			msg = errResp.Error.Message
-		} else if errResp.Message != "" {
-			msg = errResp.Message
-		}
-		if msg != "" {
-			return NewError(statusCode, msg, "")
-		}
-	}
-	return NewError(statusCode, fmt.Sprintf("API returned status %d", statusCode), string(body))
+	return body, warnings, nil
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
 // for a non-2xx HTTP response, or a validation/network error) into a
 // ByteDance API error where possible.
-func (m *VideoModel) handlePollError(err error) error {
+func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return m.parseAPIError(dlErr.Body, dlErr.StatusCode)
+		return newHTTPErrorText(dlErr.StatusCode, dlErr.StatusText, stdhttp.Header(dlErr.Headers), dlErr.Body)
 	}
-	return NewVideoGenerationError(fmt.Sprintf("failed to check status: %v", err))
+	// TS getFromApi handleFetchError: a network failure is the retryable
+	// "Cannot connect to API" error and an abort stays as is; a URL or
+	// redirect rejected by validateUrl keeps its DownloadError.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return internalhttp.TransportErrorCtx(ctx, cause)
+	}
+	return err
 }
 
 // encodeImage encodes a VideoModelV3File to a URL or data URI
@@ -595,11 +651,33 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 	if !ok {
 		return &ProviderOptions{}, nil
 	}
+	if err := validateByteDanceOptions(opts, byteDanceVideoOptionsSchema); err != nil {
+		return nil, err
+	}
 
 	// Convert to JSON and back to get proper typed struct
 	jsonData, err := json.Marshal(bdOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal bytedance provider options: %w", err)
+	}
+
+	// TS pollIntervalMs / pollTimeoutMs are numbers: a fractional value is
+	// valid there. Go keeps honoring them (whole milliseconds), so round a
+	// fraction up before the *int decode instead of failing it.
+	var pollFix map[string]interface{}
+	if json.Unmarshal(jsonData, &pollFix) == nil {
+		changed := false
+		for _, k := range []string{"pollIntervalMs", "pollTimeoutMs"} {
+			if f, ok := pollFix[k].(float64); ok && f != math.Trunc(f) {
+				pollFix[k] = math.Ceil(f)
+				changed = true
+			}
+		}
+		if changed {
+			if fixed, mErr := json.Marshal(pollFix); mErr == nil {
+				jsonData = fixed
+			}
+		}
 	}
 
 	var provOpts ProviderOptions
@@ -647,23 +725,123 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 	return &provOpts, nil
 }
 
-// mustMarshal marshals a value to JSON string, returning "{}" on error
-func mustMarshal(v interface{}) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
+// videoBodyKeyOrder is the TS buildRequestBody insertion order of the keys
+// it sets itself.
+var videoBodyKeyOrder = []string{"model", "content", "ratio", "duration", "seed", "resolution", "generate_audio", "watermark", "camera_fixed", "return_last_frame", "service_tier", "draft"}
 
-func flattenHeaders(headers map[string][]string) map[string]string {
-	out := make(map[string]string, len(headers))
-	for k, vs := range headers {
-		if len(vs) > 0 {
-			out[k] = vs[0]
+// orderedVideoBody sends body in the TS JSON.stringify order: the built keys
+// in buildRequestBody order, then the passthrough option keys (sorted: a Go
+// map has no caller order; a passthrough key that repeats a built key keeps
+// that key's position), then doStart's callback_url.
+func orderedVideoBody(body, passthrough map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range videoBodyKeyOrder {
+		if v, ok := body[k]; ok {
+			if k == "content" {
+				v = orderedContent(v)
+			}
+			out.Set(k, v)
 		}
 	}
+	extra := make([]string, 0, len(passthrough))
+	for k := range passthrough {
+		extra = append(extra, k)
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	rest := make([]string, 0)
+	for k := range body {
+		if _, done := out.Get(k); !done {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		out.Set(k, body[k])
+	}
 	return out
+}
+
+// orderedContent writes each content entry as TS builds it: type, then the
+// text or media member, then role.
+func orderedContent(v interface{}) interface{} {
+	entries, ok := v.([]map[string]interface{})
+	if !ok {
+		return v
+	}
+	out := make([]interface{}, len(entries))
+	for i, entry := range entries {
+		o := jsonorder.New()
+		for _, k := range []string{"type", "text", "image_url", "video_url", "audio_url", "role"} {
+			if val, ok := entry[k]; ok {
+				o.Set(k, val)
+			}
+		}
+		rest := make([]string, 0)
+		for k := range entry {
+			if _, done := o.Get(k); !done {
+				rest = append(rest, k)
+			}
+		}
+		sort.Strings(rest)
+		for _, k := range rest {
+			o.Set(k, entry[k])
+		}
+		out[i] = o
+	}
+	return out
+}
+
+// bytedanceStatusSpec is TS byteDanceStatusResponseSchema's shape.
+var bytedanceStatusSpec = zodjson.Obj([]string{"id", "model", "status", "content", "usage", "error"}, map[string]*zodjson.Node{
+	"content": zodjson.Obj([]string{"video_url", "last_frame_url"}, nil),
+	"usage":   zodjson.Obj([]string{"completion_tokens"}, nil),
+	"error":   zodjson.Obj([]string{"code", "message"}, nil),
+})
+
+// flattenHeaders is TS extractResponseHeaders: repeated values are joined
+// with ", " (providerutils.ExtractHeaders); an empty set is an empty map.
+func flattenHeaders(headers map[string][]string) map[string]string {
+	if out := providerutils.ExtractHeaders(stdhttp.Header(headers)); out != nil {
+		return out
+	}
+	return map[string]string{}
+}
+
+// bytedanceStatusUsage is the zod output of the status usage object
+// ({completion_tokens?: number | null}, undeclared keys stripped). present is
+// false when the wire has no usage key. A whole completion_tokens is an int
+// (the v0.5.2 type when it fits), a fractional one a float64.
+func bytedanceStatusUsage(raw json.RawMessage) (interface{}, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	if string(raw) == "null" {
+		return nil, true
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil, true
+	}
+	usage := map[string]interface{}{}
+	if tokens, ok := fields["completion_tokens"]; ok {
+		var f *float64
+		if json.Unmarshal(tokens, &f) == nil {
+			switch {
+			case f == nil:
+				usage["completion_tokens"] = nil
+			case *f == math.Trunc(*f) && *f >= math.MinInt && *f <= math.MaxInt && math.Abs(*f) < 1e15:
+				usage["completion_tokens"] = int(*f)
+			default:
+				usage["completion_tokens"] = *f
+			}
+		}
+	}
+	return usage, true
 }
 
 func flattenHeaderSlice(headers map[string][]string) map[string]string {
@@ -689,30 +867,24 @@ type taskStatusResponse struct {
 	Model   string            `json:"model"`
 	Status  string            `json:"status"`
 	Content *taskContentField `json:"content"`
-	Usage   *taskUsageField   `json:"usage"`
+	// Usage is the raw usage member, read with bytedanceStatusUsage (a
+	// fractional completion_tokens must not fail the whole decode).
+	Usage json.RawMessage `json:"usage"`
 	// Error is present on failed tasks (the HTTP response itself is still 200).
 	Error *errorDetail `json:"error"`
 }
 
 // taskContentField holds the video URL in the status response
 type taskContentField struct {
-	VideoURL     string `json:"video_url"`
-	LastFrameURL string `json:"last_frame_url"`
-}
-
-// taskUsageField holds token usage info
-type taskUsageField struct {
-	CompletionTokens int `json:"completion_tokens"`
-}
-
-// errorResponse is the error response format from ByteDance
-type errorResponse struct {
-	Error   *errorDetail `json:"error"`
-	Message string       `json:"message"`
+	VideoURL string `json:"video_url"`
+	// LastFrameURL is a pointer: TS keeps `last_frame_url != null` even when "".
+	LastFrameURL *string `json:"last_frame_url"`
 }
 
 // errorDetail holds the error message and code
 type errorDetail struct {
-	Message string `json:"message"`
-	Code    string `json:"code"`
+	// Pointers: TS `error?.message ?? error?.code ?? JSON.stringify(...)` only
+	// skips null/absent, so an empty string is a real diagnostic.
+	Message *string `json:"message"`
+	Code    *string `json:"code"`
 }

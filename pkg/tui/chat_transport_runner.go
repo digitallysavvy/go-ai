@@ -25,7 +25,11 @@ type toolCallMeta struct {
 // (agent-tui-runner.ts). It sends the current message history and adapts the
 // returned UI message chunk stream into an AgentTUIStreamResult the existing
 // TerminalRenderer can consume.
-func (r *AgentTUIRunner) streamViaTransport(ctx context.Context, messages []types.Message) (AgentTUIStreamResult, error) {
+//
+// seed is the assistant message of the previous turn when this request resumes
+// it (after a tool approval); the response chunks continue that message, as
+// TS readUIMessageStream({ message: result.message }) does.
+func (r *AgentTUIRunner) streamViaTransport(ctx context.Context, messages []types.Message, seed *ai.UIMessage) (AgentTUIStreamResult, error) {
 	chunks, errs := r.transport.SendMessages(ctx, ai.ChatTransportSendMessagesRequest{
 		ChatID:   r.chatID,
 		Trigger:  "submit-message",
@@ -33,6 +37,7 @@ func (r *AgentTUIRunner) streamViaTransport(ctx context.Context, messages []type
 	})
 
 	stream := newTransportTextStream(chunks, errs)
+	stream.seed = seed
 	src := NewStreamRenderSourceFromTextStream(stream, nil, types.StepResult{})
 	stream.target = src
 	return AgentTUIStreamResult{Stream: src}, nil
@@ -53,6 +58,9 @@ type transportTextStream struct {
 	// construction; Next() writes the final response messages onto it once
 	// the stream completes.
 	target *StreamRenderSource
+
+	// seed is the assistant message this response continues, if any.
+	seed *ai.UIMessage
 
 	done chan struct{}
 
@@ -98,7 +106,10 @@ func (t *transportTextStream) Next() (*provider.StreamChunk, error) {
 		case chunk, ok := <-t.chunks:
 			if !ok {
 				t.chunks = nil
-				t.finish(nil)
+				// A transport sends its failure on errs before closing both
+				// channels, so a ready error must not lose to the closed chunk
+				// channel in the select above.
+				t.finish(t.pendingErr())
 				continue
 			}
 			t.mu.Lock()
@@ -118,6 +129,25 @@ func (t *transportTextStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 	}
+}
+
+// pendingErr returns a transport error that is already waiting on errs.
+func (t *transportTextStream) pendingErr() error {
+	for t.errs != nil {
+		select {
+		case err, ok := <-t.errs:
+			if !ok {
+				t.errs = nil
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+	}
+	return nil
 }
 
 func (t *transportTextStream) convert(chunk ai.UIMessageChunk) (*provider.StreamChunk, bool) {
@@ -140,10 +170,11 @@ func (t *transportTextStream) finish(err error) {
 	if err != nil || target == nil {
 		return
 	}
-	messages, step := buildTransportResult(raw)
+	final, messages, step := buildTransportResult(raw, t.seed)
 	target.responseMessages = messages
 	target.finalStep = step
 	target.usage = step.Usage
+	target.uiMessage = final
 }
 
 func (t *transportTextStream) Err() error {
@@ -172,9 +203,13 @@ func (t *transportTextStream) Close() error {
 // then converts it into model messages via ai.ConvertToModelMessages so
 // AgentTUIRunner's existing tool-approval-request detection (which inspects
 // types.Message content parts) keeps working unmodified.
-func buildTransportResult(raw []ai.UIMessageChunk) ([]types.Message, types.StepResult) {
+//
+// seed, when set, is the assistant message the response continues: without it
+// the output of an approved tool (a tool-output chunk for a call that is not
+// in the replayed message) makes the whole response unreadable.
+func buildTransportResult(raw []ai.UIMessageChunk, seed *ai.UIMessage) (*ai.UIMessage, []types.Message, types.StepResult) {
 	if len(raw) == 0 {
-		return nil, types.StepResult{}
+		return nil, nil, types.StepResult{}
 	}
 
 	replay := make(chan ai.UIMessageChunk, len(raw))
@@ -183,7 +218,7 @@ func buildTransportResult(raw []ai.UIMessageChunk) ([]types.Message, types.StepR
 	}
 	close(replay)
 
-	msgCh, errCh := ai.ReadUIMessages(context.Background(), ai.ReadUIMessagesOptions{Stream: replay})
+	msgCh, errCh := ai.ReadUIMessages(context.Background(), ai.ReadUIMessagesOptions{Stream: replay, Message: seed})
 	var final ai.UIMessage
 	var got bool
 	for msg := range msgCh {
@@ -191,14 +226,33 @@ func buildTransportResult(raw []ai.UIMessageChunk) ([]types.Message, types.StepR
 		got = true
 	}
 	if err := <-errCh; err != nil || !got {
-		return nil, types.StepResult{}
+		return nil, nil, types.StepResult{}
 	}
 
 	modelMessages, err := ai.ConvertToModelMessages(context.Background(), []ai.UIMessage{final})
 	if err != nil {
-		return nil, types.StepResult{}
+		return nil, nil, types.StepResult{}
 	}
-	return modelMessages, stepResultFromFinishChunk(raw)
+	return &final, modelMessages, stepResultFromFinishChunk(raw)
+}
+
+// applyUIToolApproval records the user's decision on the tool part of a UI
+// message (TS applyToolApprovalResponse: state approval-responded plus the
+// approval object), so the next request resumes the right call.
+func applyUIToolApproval(message *ai.UIMessage, toolCallID string, approvalID string, response AgentTUIToolApprovalResponse) {
+	if message == nil {
+		return
+	}
+	for _, part := range message.Parts {
+		tool, ok := part.(*ai.ToolUIPart)
+		if !ok || tool.ToolCallID != toolCallID {
+			continue
+		}
+		approved := response.Approved
+		tool.State = ai.ToolStateApprovalResponded
+		tool.Approval = &ai.ToolUIPartApproval{ID: approvalID, Approved: &approved, Reason: response.Reason}
+		return
+	}
 }
 
 // stepResultFromFinishChunk best-effort extracts usage/performance from a
@@ -288,14 +342,17 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 			Dynamic:          boolField(chunk, "dynamic"),
 		}}, true
 	case "tool-input-error":
+		// TS readUIMessageStream moves the part to output-error with the input
+		// and errorText, which the renderer shows as a tool error section.
 		id := stringField(chunk, "toolCallId")
-		name := stringField(chunk, "toolName")
-		rememberToolMeta(toolMeta, id, name, stringField(chunk, "title"))
-		return &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
-			ID: id, ToolName: name,
-			Arguments: mapField(chunk, "input"),
-			Invalid:   true,
-			Error:     errors.New(stringField(chunk, "errorText")),
+		rememberToolMeta(toolMeta, id, stringField(chunk, "toolName"), stringField(chunk, "title"))
+		meta := toolMeta[id]
+		// TS statusForStreamChunk has no case for tool-input-error, so the
+		// status line is left alone (toolInputErrorMarker tells observeStatus).
+		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, Raw: toolInputErrorMarker{}, ToolResult: &types.ToolResult{
+			ToolCallID: id, ToolName: meta.name, Title: meta.title,
+			Input: mapField(chunk, "input"),
+			Error: errors.New(stringField(chunk, "errorText")),
 		}}, true
 
 	case "tool-output-available":
@@ -313,13 +370,11 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 			Error: errors.New(stringField(chunk, "errorText")),
 		}}, true
 	case "tool-output-denied":
+		// The reason shown is the one of the earlier approval response.
 		id := stringField(chunk, "toolCallId")
 		meta := toolMeta[id]
-		reason := "denied"
-		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
+		return &provider.StreamChunk{Type: provider.ChunkTypeToolOutputDenied, ToolResult: &types.ToolResult{
 			ToolCallID: id, ToolName: meta.name, Title: meta.title,
-			ApprovalStatus: types.ToolApprovalStatusDenied,
-			ApprovalReason: &reason,
 		}}, true
 
 	case "tool-approval-request":
@@ -335,26 +390,18 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 			ApprovalID:     approvalID,
 		}}, true
 	case "tool-approval-response":
+		// The renderer maps the approval id back to its tool call: approved
+		// shows executing, denied the "denied" status with the reason (TS
+		// approval-responded); only a tool-output-denied chunk renders the
+		// tool as denied output.
 		approved := boolField(chunk, "approved")
-		if approved {
-			return nil, false
-		}
 		approvalID := stringField(chunk, "approvalId")
-		id := approvalToToolCall[approvalID]
-		if id == "" {
-			return nil, false
-		}
-		meta := toolMeta[id]
-		reason := stringField(chunk, "reason")
-		if reason == "" {
-			reason = "denied"
-		}
-		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
-			ToolCallID: id, ToolName: meta.name, Title: meta.title,
-			ApprovalStatus: types.ToolApprovalStatusDenied,
-			ApprovalID:     approvalID,
-			ApprovalReason: &reason,
+		return &provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
+			ApprovalID: approvalID, ToolCallID: approvalToToolCall[approvalID], Approved: approved, Reason: stringField(chunk, "reason"),
 		}}, true
+
+	case "start-step":
+		return &provider.StreamChunk{Type: provider.ChunkTypeStartStep}, true
 
 	case "error":
 		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: stringField(chunk, "errorText")}, true
@@ -364,7 +411,7 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 		return &provider.StreamChunk{Type: provider.ChunkTypeFinish}, true
 
 	default:
-		// "start", "start-step", "finish-step", "source-url",
+		// "start", "finish-step", "source-url",
 		// "source-document", "file", "reasoning-file", "custom",
 		// "message-metadata", "tool-output-denied" variants, and any unknown
 		// chunk type: acknowledged (already appended to raw) but not
@@ -372,6 +419,9 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 		return nil, false
 	}
 }
+
+// toolInputErrorMarker tags the chunk made from a tool-input-error UI chunk.
+type toolInputErrorMarker struct{}
 
 func rememberToolMeta(meta map[string]toolCallMeta, id, name, title string) {
 	if id == "" {

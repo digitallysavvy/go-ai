@@ -1,6 +1,6 @@
 // Package grokbuild is the Go port of the TypeScript
-// `@ai-sdk/harness-grok-build` package (pinned to ai@7.0.113, hashes 39e8870
-// bb54c38).
+// `@ai-sdk/harness-grok-build` package (pinned to
+// ai@7.0.167, TS 9f7a842ae1).
 //
 // Like pkg/harness/cursor, Grok Build is an "ACP-derived" adapter: TS
 // `createGrokBuild()` is a thin configuration layer over `createACP()`
@@ -28,8 +28,8 @@ import (
 )
 
 const (
-	ClientAppName    = "ai-sdk/harness-grok-build"
-	ClientAppVersion = "0.0.0-go"
+	ClientAppName    = "ai-sdk-harness-grok-build"
+	ClientAppVersion = "1.0.120" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "grok-build"
 )
 
@@ -58,9 +58,18 @@ type Settings struct {
 	Port                 *int
 	PortEndpoint         *harness.PortEndpoint
 	StartupTimeoutMS     *int
-	Reconnect            *bridge.ReconnectOptions
-	MCPServers           map[string]any
-	MintBridgeToken      harness.MintBridgeTokenCallback
+	// HostDisconnectTimeoutMS aborts a running turn when its host
+	// disconnects and does not reconnect within this many milliseconds; a
+	// suspended turn is exempt (TS a54f0fd8c6).
+	HostDisconnectTimeoutMS *int
+	Reconnect               *bridge.ReconnectOptions
+	MCPServers              map[string]any
+	// MintBridgeToken is forwarded to the ACP adapter, which ignores it and
+	// logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
+	MintBridgeToken harness.MintBridgeTokenCallback
 }
 
 // CreateGrokBuild returns the Grok Build harness-v1 adapter, wiring
@@ -93,8 +102,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 	args = append(args, "stdio")
 
 	cfg := acp.Settings{
-		HarnessID: HarnessID,
-		ClientApp: acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
+		NonTextContentTypes: []acp.NonTextContentType{acp.NonTextContentImage},
+		HarnessID:           HarnessID,
+		ClientApp:           acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
 		Source: acp.Source{
 			Type:              acp.SourceNPMLocked,
 			PackageJSON:       string(files["package.json"]),
@@ -108,10 +118,20 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
-		ForwardEnv:           []string{"GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL", "GROK_CLI_CHAT_PROXY_BASE_URL"},
-		CredentialEnv:        []string{"XAI_API_KEY"},
-		CredentialBrokering:  CredentialBrokering,
-		CredentialForwarding: settings.CredentialForwarding,
+		// Repository-owned Claude / Cursor hooks and MCP servers in the work
+		// dir are not loaded (TS e4a6112776).
+		Env: map[string]string{
+			"GROK_CLAUDE_HOOKS_ENABLED": "false",
+			"GROK_CURSOR_HOOKS_ENABLED": "false",
+			"GROK_CLAUDE_MCPS_ENABLED":  "false",
+			"GROK_CURSOR_MCPS_ENABLED":  "false",
+		},
+		ForwardEnv:             []string{"GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL", "GROK_CLI_CHAT_PROXY_BASE_URL"},
+		CredentialEnv:          []string{"XAI_API_KEY"},
+		CredentialBrokering:    CredentialBrokering,
+		CredentialBrokeringErr: CredentialBrokeringErr,
+		CredentialForwarding:   settings.CredentialForwarding,
+		PrepareSandbox:         PrepareSandbox,
 		ProviderAuthentication: &acp.ProviderAuthentication{
 			GatewayEnv: map[string]any{
 				"GROK_CLIENT_NAME":      map[string]any{"$source": "client-app-name"},
@@ -138,14 +158,18 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 			namespace, _ := meta["namespace"].(string)
 			return namespace == "mcp"
 		},
-		PortEndpoint:    settings.PortEndpoint,
-		MintBridgeToken: settings.MintBridgeToken,
+		ResolveHostToolCall: ResolveHostToolCall,
+		PortEndpoint:        settings.PortEndpoint,
+		MintBridgeToken:     settings.MintBridgeToken, //nolint:staticcheck // forwarded so ACP warns, as TS
 	}
 	if settings.Port != nil {
 		cfg.Port = *settings.Port
 	}
 	if settings.StartupTimeoutMS != nil {
 		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.HostDisconnectTimeoutMS != nil {
+		cfg.HostDisconnectTimeout = time.Duration(*settings.HostDisconnectTimeoutMS) * time.Millisecond
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect
@@ -156,12 +180,27 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 // CredentialBrokering builds the request transformation mapping Grok
 // Build's sandbox XAI_API_KEY back to the host credential. Mirrors the
 // `credentialBrokering` closure in `createGrokBuild()`.
+//
+// A transformation that cannot be built (an invalid `GROK_XAI_API_BASE_URL`)
+// yields nil here for source compatibility; CredentialBrokeringErr surfaces the
+// error the way TS (which throws) does, and is what the harness wires.
 func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
-	if env["XAI_API_KEY"] == "" || sandboxEnv["XAI_API_KEY"] == "" {
+	transformations, err := CredentialBrokeringErr(env, sandboxEnv, headers)
+	if err != nil {
 		return nil
 	}
-	matchURL := env["GROK_XAI_API_BASE_URL"]
-	if matchURL == "" {
+	return transformations
+}
+
+// CredentialBrokeringErr is CredentialBrokering returning the error from
+// building the transformation.
+func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+	if env["XAI_API_KEY"] == "" || sandboxEnv["XAI_API_KEY"] == "" {
+		return nil, nil
+	}
+	// TS `??`: only an absent variable falls back; a set-but-empty one is kept.
+	matchURL, hasBaseURL := env["GROK_XAI_API_BASE_URL"]
+	if !hasBaseURL {
 		matchURL = "https://api.x.ai/v1"
 	}
 	transformHeaders := map[string]string{}
@@ -169,7 +208,7 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.R
 		transformHeaders[k] = v
 	}
 	transformHeaders["Authorization"] = "Bearer " + env["XAI_API_KEY"]
-	if env["GROK_CLI_CHAT_PROXY_BASE_URL"] != "" {
+	if _, hasProxy := env["GROK_CLI_CHAT_PROXY_BASE_URL"]; hasProxy {
 		transformHeaders["X-XAI-Token-Auth"] = "xai-grok-cli"
 	}
 	tr, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
@@ -178,7 +217,30 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.R
 		TransformHeaders: transformHeaders,
 	})
 	if err != nil {
+		return nil, err
+	}
+	return []harness.RequestTransformation{tr}, nil
+}
+
+// ResolveHostToolCall resolves a Grok Build ACP tool call to a host tool.
+// Grok Build calls MCP tools through its `use_tool` meta-tool, with a
+// `{tool_name, tool_input}` raw input where tool_name is
+// `<serverName>__<toolName>`. Mirrors TS `resolveGrokBuildHostToolCall`
+// (grok-build-harness.ts, 03dac28304).
+func ResolveHostToolCall(opts acp.ResolveHostToolCallOptions) *acp.ResolvedHostToolCall {
+	raw, ok := opts.ToolCall.RawInput.(map[string]any)
+	if !ok || raw == nil {
 		return nil
 	}
-	return []harness.RequestTransformation{tr}
+	input, ok := raw["tool_input"].(map[string]any)
+	if !ok || input == nil {
+		return nil
+	}
+	toolName, _ := raw["tool_name"].(string)
+	for _, name := range opts.ToolNames {
+		if toolName == opts.ServerName+"__"+name {
+			return &acp.ResolvedHostToolCall{ToolName: name, Input: input}
+		}
+	}
+	return nil
 }

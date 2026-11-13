@@ -7,8 +7,11 @@ import (
 	"io"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ExternalStreamOptions configures NewStreamTextResultFromParts: the
@@ -27,6 +30,14 @@ type ExternalStreamOptions struct {
 	Provider string
 	ModelID  string
 
+	// TerminalFinishClosesTurn marks src as a harness turn: a content-less
+	// terminal ChunkTypeFinish only closes the turn (summed usage overridden,
+	// finish reason set) and never records a step of its own, even when no
+	// step was recorded before it (TS HarnessStreamTextResult.finish leaves
+	// steps empty). Without it a lone empty ChunkTypeFinish is recorded as
+	// the only step.
+	TerminalFinishClosesTurn bool
+
 	// OnChunk is invoked for every chunk as it is consumed from src, mirroring
 	// StreamTextOptions.OnChunk.
 	OnChunk func(chunk provider.StreamChunk)
@@ -41,12 +52,26 @@ type ExternalStreamOptions struct {
 	// value returned by TextOutput/ObjectOutput/ArrayOutput/ChoiceOutput/
 	// JSONOutput), enables structured-output parsing on the returned result:
 	// Output()/OutputErr() resolve once src is fully consumed by parsing the
-	// final step's accumulated text, and PartialOutput() updates after every
-	// text chunk of that step, deduplicated exactly like StreamTextOptions.
-	// Output. A value that does not satisfy outputProcessor is ignored (mirrors
+	// final step's accumulated text, and PartialOutput() follows the turn's
+	// first text block, as TS HarnessStreamTextResult's output stage: it is
+	// not reset at step boundaries, a partial is published when its value
+	// changes, and that block's text deltas reach the full and UI streams
+	// together with each new partial (held deltas are flushed at the block's
+	// text-end or before a finish-step). A value that does not satisfy outputProcessor is ignored (mirrors
 	// StreamTextOptions.Output's `interface{}` + type-assertion contract; see
 	// stream.go's own opts.Output handling for the pattern this mirrors).
 	Output interface{}
+
+	// RuntimeContext and ToolsContext are recorded on every step (TS
+	// DefaultStepResult `runtimeContext` / `toolsContext`).
+	RuntimeContext interface{}
+	ToolsContext   map[string]interface{}
+
+	// OnStep is invoked on the consuming goroutine each time a step closes,
+	// after the step was appended to Steps(), with the same StepResult Steps()
+	// reports. A caller that must act on the finished step (callbacks,
+	// telemetry) can wait for it; it must not block on the result itself.
+	OnStep func(step types.StepResult)
 }
 
 // NewStreamTextResultFromParts builds a *StreamTextResult by consuming src, a
@@ -58,16 +83,30 @@ type ExternalStreamOptions struct {
 // output is within a single step, plus an explicit step boundary:
 //   - provider.ChunkTypeStreamStart opens a step (its Warnings, if any, are
 //     recorded).
+//   - The public full stream carries a ChunkTypeStartStep (with the step's
+//     warnings) before the first content of every step, whether or not src
+//     sends ChunkTypeStreamStart (which stays internal), as TS
+//     HarnessStreamTextResult does.
+//   - A tool-result chunk with Preliminary set is recorded in the step like any
+//     other tool-result (content, ToolResults, response messages), exactly as
+//     TS HarnessStreamTextResult appends every tool-result part, including
+//     preliminary ones, to the step content; the final result for the same
+//     call does not supersede or replace them.
 //   - Text/reasoning/tool-call/tool-result/source/file/custom content chunks
 //     accumulate into that step exactly as they do for a normal
 //     provider.LanguageModel-driven step.
 //   - provider.ChunkTypeFinishStep closes a step that is not the last one:
 //     the step is appended to Steps(), and consumption continues (expecting
 //     another ChunkTypeStreamStart).
-//   - provider.ChunkTypeFinish closes the final step the same way when it
-//     carries new content of its own (no preceding ChunkTypeFinishStep for
-//     that content), and marks the whole result done. But when it arrives
-//     with no new content at all — i.e. every step was already closed by its
+//   - provider.ChunkTypeFinish with text, reasoning, tool or approval content
+//     no ChunkTypeFinishStep closed fails the result with TS's "received
+//     terminal finish with unclosed step content" error (an error part
+//     replaces the finish part, the step is not recorded). Source and file
+//     parts do not count, as TS does not record them as step content.
+//   - provider.ChunkTypeDiscardStep drops the step in progress, like TS
+//     discardCurrentStepContent.
+//   - A lone ChunkTypeFinish before any step marks the whole result done, and
+//     when it arrives with no new content at all — i.e. every step was already closed by its
 //     own ChunkTypeFinishStep — it is treated as a pure turn-closing
 //     boundary: no extra empty step is appended, and its Usage (when set)
 //     OVERRIDES the locally-summed total instead of being added to it. This
@@ -104,11 +143,13 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 		cbCallID:        callID,
 		cbModelProvider: opts.Provider,
 		cbModelID:       opts.ModelID,
+		hasOutputSpec:   opts.Output != nil,
 	}
 	if op, ok := opts.Output.(outputProcessor); ok {
 		result.outputSpec = op
 	}
 	result.chunkBuf = newChunkBuffer()
+	result.uiChunkBuf = newChunkBuffer()
 	result.processingDone = make(chan struct{})
 
 	go result.consumeExternalParts(ctx, src, opts)
@@ -116,26 +157,142 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 	return result
 }
 
-// isEmpty reports whether no content has been accumulated for this step
-// since it was last reset. Used to distinguish a terminal ChunkTypeFinish
-// that closes a step's own content (the general case) from one that is a
-// pure turn-closing boundary carrying no new content of its own (the harness
-// case: every step was already closed by its own ChunkTypeFinishStep, and
-// the terminal ChunkTypeFinish exists only to carry the turn's totalUsage and
-// mark the stream done). See consumeExternalParts's ChunkTypeFinish handling
-// below.
-func (s *externalStepAccum) isEmpty() bool {
-	return s.text == "" && len(s.content) == 0 && len(s.reasoning) == 0 &&
-		len(s.files) == 0 && len(s.sources) == 0 && len(s.toolCalls) == 0 &&
-		len(s.toolResults) == 0 && len(s.warnings) == 0
+// hasUnclosedContent mirrors TS HarnessStreamTextResult's
+// `currentStepContent.length > 0`: the step holds text, reasoning, tool or
+// approval content. Source, file, reasoning-file and custom parts are not
+// recorded as step content by TS (appendToCurrentStepContent ignores them), so
+// they never make a step "unclosed".
+func (s *externalStepAccum) hasUnclosedContent() bool {
+	if len(s.toolCalls) > 0 || len(s.toolResults) > 0 {
+		return true
+	}
+	for _, part := range s.content {
+		switch part.(type) {
+		case types.SourceContent, types.GeneratedFileContent, types.ReasoningFileContent, types.CustomContent:
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// errExternalUnclosedFinish is the error TS fails a turn with when a terminal
+// finish arrives while a step still holds content no finish-step closed.
+const errExternalUnclosedFinish = "HarnessAgent: received terminal finish with unclosed step content. Harness adapters must emit `finish-step` before `finish`."
+
+// startText begins a new text block for id, always as its own content part.
+func (s *externalStepAccum) startText(id string, md json.RawMessage) {
+	if s.textIdx == nil {
+		s.textIdx = map[string]int{}
+	}
+	s.textIdx[id] = len(s.content)
+	s.content = append(s.content, types.TextContent{ProviderMetadata: md})
+}
+
+// addText appends a text delta to the active block for id (creating it if no
+// text-start was seen). An empty id (a source that does not tag blocks)
+// falls back to merging into the trailing text part.
+func (s *externalStepAccum) addText(id, text string, md json.RawMessage) {
+	if id == "" {
+		s.content = appendTextPart(s.content, text, md)
+		return
+	}
+	i, ok := s.textIdx[id]
+	if !ok {
+		s.startText(id, md)
+		i = s.textIdx[id]
+	}
+	tc := s.content[i].(types.TextContent)
+	tc.Text += text
+	if len(md) > 0 {
+		tc.ProviderMetadata = md
+	}
+	s.content[i] = tc
+}
+
+func (s *externalStepAccum) endText(id string, md json.RawMessage, citations []types.Citation) {
+	i, ok := s.textIdx[id]
+	if !ok {
+		return
+	}
+	if len(md) > 0 || len(citations) > 0 {
+		tc := s.content[i].(types.TextContent)
+		if len(md) > 0 {
+			tc.ProviderMetadata = md
+		}
+		// TS HarnessStreamTextResult text-end: `if (part.citations != null)
+		// content.citations = part.citations`.
+		if len(citations) > 0 {
+			tc.Citations = citations
+		}
+		s.content[i] = tc
+	}
+	delete(s.textIdx, id)
+}
+
+func (s *externalStepAccum) startReasoning(id string, md json.RawMessage) {
+	if s.reasoningIdx == nil {
+		s.reasoningIdx = map[string]int{}
+	}
+	s.reasoningIdx[id] = len(s.content)
+	s.content = append(s.content, types.ReasoningContent{ProviderMetadata: md})
+}
+
+func (s *externalStepAccum) addReasoning(id, text string, md json.RawMessage) {
+	if id == "" {
+		s.content = appendReasoningPart(s.content, text, md)
+		return
+	}
+	i, ok := s.reasoningIdx[id]
+	if !ok {
+		s.startReasoning(id, md)
+		i = s.reasoningIdx[id]
+	}
+	rc := s.content[i].(types.ReasoningContent)
+	rc.Text += text
+	if len(md) > 0 {
+		rc.ProviderMetadata = md
+	}
+	s.content[i] = rc
+}
+
+func (s *externalStepAccum) endReasoning(id string, md json.RawMessage) {
+	i, ok := s.reasoningIdx[id]
+	if !ok {
+		return
+	}
+	if len(md) > 0 {
+		rc := s.content[i].(types.ReasoningContent)
+		rc.ProviderMetadata = md
+		s.content[i] = rc
+	}
+	delete(s.reasoningIdx, id)
+}
+
+// reasoningParts returns every reasoning part in content, in order.
+func (s *externalStepAccum) reasoningParts() []types.ReasoningContent {
+	var out []types.ReasoningContent
+	for _, part := range s.content {
+		if rc, ok := part.(types.ReasoningContent); ok {
+			out = append(out, rc)
+		}
+	}
+	return out
 }
 
 // externalStepAccum holds the in-progress state for one step while
 // consumeExternalParts reads src.
 type externalStepAccum struct {
-	text             string
-	content          []types.ContentPart
-	reasoning        []types.ReasoningContent
+	text    string
+	content []types.ContentPart
+	// textIdx/reasoningIdx map an active text/reasoning block's stream ID to
+	// its index in content, so interleaved blocks (a-start, b-start, a-delta,
+	// b-delta, a-delta) accumulate into their own parts instead of merging
+	// into whichever part is last. Cleared at every step boundary (a fresh
+	// externalStepAccum). Mirrors TS HarnessStreamTextResult's
+	// currentStepTextContent/currentStepReasoningContent maps (TS #23086).
+	textIdx          map[string]int
+	reasoningIdx     map[string]int
 	files            []types.GeneratedFileContent
 	sources          []types.SourceContent
 	toolCalls        []types.ToolCall
@@ -158,6 +315,9 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		if r.chunkBuf != nil {
 			r.chunkBuf.close(r.err)
 		}
+		if r.uiChunkBuf != nil {
+			r.uiChunkBuf.close(r.err)
+		}
 	}()
 
 	onEnd := opts.OnEnd
@@ -165,63 +325,110 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		onEnd = opts.OnFinish
 	}
 
+	// TS HarnessStreamTextResult sends the message-level 'start' part first,
+	// as streamText does: the public stream and the UI conversion (which maps
+	// a start-led source one to one) both begin with it. A src that already
+	// starts with its own start part keeps that one.
+	startSent := false
+	sendStart := func(first *provider.StreamChunk) {
+		if startSent {
+			return
+		}
+		startSent = true
+		if first != nil && first.Type == provider.ChunkTypeStart {
+			return
+		}
+		startPart := provider.StreamChunk{Type: provider.ChunkTypeStart}
+		r.uiChunkBuf.push(startPart)
+		r.chunkBuf.push(startPart)
+	}
+
 	var accumulatedText []string
 	stepNumber := 0
 	step := &externalStepAccum{}
+	stepStarted := false
 
-	// lastStepText/hasPublishedPartial/lastPartialJSON support r.outputSpec
-	// (see ExternalStreamOptions.Output doc): lastStepText is the most
-	// recently completed step's own text, used for the terminal parse below
-	// (mirrors StreamText's outputSpec.parseCompleteOutput call, scoped to
-	// the final step only — audit row 2a5ed55 / WG4). hasPublishedPartial/
-	// lastPartialJSON dedupe PartialOutput() updates within the current step,
-	// reset at every step boundary, mirroring stepLastPartialJSON in stream.go.
+	// lastStepText is the most recently completed step's own text, used for
+	// the terminal parse below (mirrors StreamText's
+	// outputSpec.parseCompleteOutput call, scoped to the final step only —
+	// audit row 2a5ed55 / WG4).
 	var lastStepText string
-	var hasPublishedPartial bool
-	var lastPartialJSON string
+	// output is the TS harness createOutputTransformStream stage: with an
+	// output spec, the public and UI streams carry its text deltas.
+	var output *externalOutputStage
+	if r.outputSpec != nil {
+		output = &externalOutputStage{spec: r.outputSpec}
+	}
 
 	finishStep := func(terminal bool) {
 		content := append([]types.ContentPart(nil), step.content...)
+		reasoning := step.reasoningParts()
+		// Response messages are built per step and concatenated in step
+		// order, so a tool-call step followed by an answer step yields
+		// assistant/tool/assistant rather than a flattened, reordered
+		// assistant/tool pair (TS #23085). Provider-executed results stay on
+		// the assistant message; only host (client-executed) results go on
+		// the tool message.
+		stepResponseMsgs := providerutils.ConvertToResponseMessages(step.toolCalls, content, step.toolResults)
+		step.response.Messages = stepResponseMsgs
+		// A chunk-supplied response model (the runtime-resolved one) wins over
+		// the requested one, as TS's step modelId follows the result's.
+		stepModelID := opts.ModelID
+		if step.response.ModelID != "" {
+			stepModelID = step.response.ModelID
+		}
+		// TS step toolResults are the tool-result content parts: failed
+		// calls are tool-error content only (owner ruling r71).
+		publicToolResults := successfulToolResults(step.toolResults)
 		result := types.StepResult{
-			CallID:           r.cbCallID,
-			StepNumber:       stepNumber,
-			Model:            types.StepModel{Provider: opts.Provider, ModelID: opts.ModelID},
-			Text:             step.text,
-			Content:          content,
-			Reasoning:        step.reasoning,
-			ReasoningText:    reasoningText(step.reasoning),
-			Files:            step.files,
-			ToolCalls:        step.toolCalls,
-			ToolResults:      step.toolResults,
-			FinishReason:     step.finishReason,
-			RawFinishReason:  step.rawFinishReason,
-			Usage:            step.usage,
-			Warnings:         step.warnings,
-			Sources:          step.sources,
-			Response:         step.response,
-			ProviderMetadata: step.providerMetadata,
+			CallID:             r.cbCallID,
+			StepNumber:         stepNumber,
+			Model:              types.StepModel{Provider: opts.Provider, ModelID: stepModelID},
+			Text:               step.text,
+			Content:            content,
+			Reasoning:          reasoning,
+			ReasoningText:      reasoningText(reasoning),
+			Files:              step.files,
+			ToolCalls:          step.toolCalls,
+			ToolResults:        publicToolResults,
+			StaticToolCalls:    filterStaticToolCalls(step.toolCalls),
+			DynamicToolCalls:   filterDynamicToolCalls(step.toolCalls),
+			StaticToolResults:  filterStaticToolResults(publicToolResults),
+			DynamicToolResults: filterDynamicToolResults(publicToolResults),
+			ToolsContext:       opts.ToolsContext,
+			RuntimeContext:     opts.RuntimeContext,
+			FinishReason:       step.finishReason,
+			RawFinishReason:    step.rawFinishReason,
+			Usage:              step.usage,
+			Warnings:           step.warnings,
+			Sources:            step.sources,
+			Response:           step.response,
+			ProviderMetadata:   step.providerMetadata,
+			ResponseMessages:   stepResponseMsgs,
 		}
 
 		accumulatedText = append(accumulatedText, step.text)
 		lastStepText = step.text
-		hasPublishedPartial = false
-		lastPartialJSON = ""
 
 		r.mu.Lock()
 		r.cbSteps = append(r.cbSteps, result)
+		r.cbResponseMessages = append(r.cbResponseMessages, stepResponseMsgs...)
 		r.text = strings.Join(accumulatedText, "")
+		// TS HarnessStreamTextResult.text resolves to the final step's text.
+		r.finalText = step.text
+		r.hasFinalText = true
 		r.finishReason = step.finishReason
 		if step.rawFinishReason != "" {
 			r.rawFinishReason = step.rawFinishReason
 		}
 		r.usage = r.usage.Add(step.usage)
 		r.toolCalls = append(r.toolCalls, step.toolCalls...)
-		r.toolResults = append(r.toolResults, step.toolResults...)
+		r.toolResults = append(r.toolResults, publicToolResults...)
 		r.sources = append(r.sources, step.sources...)
 		r.files = append(r.files, step.files...)
 		r.warnings = append(r.warnings, step.warnings...)
 		if len(step.providerMetadata) > 0 {
-			if raw, err := json.Marshal(step.providerMetadata); err == nil {
+			if raw, err := jsonstr.Marshal(step.providerMetadata); err == nil {
 				r.providerMetadata = raw
 			}
 		}
@@ -234,6 +441,10 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 
 		stepNumber++
 		step = &externalStepAccum{}
+		stepStarted = false
+		if opts.OnStep != nil {
+			opts.OnStep(result)
+		}
 	}
 
 consumeLoop:
@@ -250,6 +461,34 @@ consumeLoop:
 			}
 			break
 		}
+		sendStart(chunk)
+
+		// TS discardCurrentStepContent: drop the step in progress (content,
+		// warnings, started flag) without recording it.
+		if chunk.Type == provider.ChunkTypeDiscardStep {
+			step = &externalStepAccum{}
+			stepStarted = false
+			continue
+		}
+
+		// TS fails (instead of flushing) a terminal finish that arrives
+		// while a step still holds unclosed content: the finish part is not
+		// forwarded, an error part is.
+		if chunk.Type == provider.ChunkTypeFinish && step.hasUnclosedContent() {
+			failure := fmt.Errorf("%s", errExternalUnclosedFinish)
+			errChunk := provider.StreamChunk{Type: provider.ChunkTypeError, Text: failure.Error(), Err: failure}
+			if opts.OnChunk != nil {
+				opts.OnChunk(errChunk)
+			}
+			if r.uiChunkBuf != nil {
+				r.uiChunkBuf.push(errChunk)
+			}
+			if r.chunkBuf != nil {
+				r.chunkBuf.push(errChunk)
+			}
+			r.err = failure
+			break consumeLoop
+		}
 
 		if opts.OnChunk != nil {
 			opts.OnChunk(*chunk)
@@ -259,48 +498,93 @@ consumeLoop:
 			r.status = StreamStatusStreaming
 		}
 		r.mu.Unlock()
-		if r.chunkBuf != nil {
-			r.chunkBuf.push(*chunk)
+		// TS HarnessStreamTextResult.startStep(): the first part of every step
+		// (and an otherwise empty step's finish-step) is preceded by a
+		// 'start-step' part carrying the step's warnings. The source's
+		// stream-start is internal, so the step opener is synthesized here for
+		// the public stream and the UI conversion alike.
+		if chunk.Type == provider.ChunkTypeStartStep {
+			stepStarted = true
+		} else if !stepStarted && opensExternalStep(chunk, step, stepNumber, opts.TerminalFinishClosesTurn) {
+			stepStarted = true
+			warnings := append([]types.Warning{}, step.warnings...)
+			startStep := provider.StreamChunk{Type: provider.ChunkTypeStartStep, Warnings: warnings}
+			if r.uiChunkBuf != nil {
+				r.uiChunkBuf.push(startStep)
+			}
+			if r.chunkBuf != nil {
+				r.chunkBuf.push(startStep)
+			}
+		}
+		published := []provider.StreamChunk{*chunk}
+		if output != nil {
+			var perr error
+			var partial any
+			var publish bool
+			published, partial, publish, perr = output.stage(ctx, *chunk)
+			if perr != nil {
+				r.err = perr
+				break consumeLoop
+			}
+			if publish {
+				r.mu.Lock()
+				r.partialOutput = partial
+				r.mu.Unlock()
+			}
+		}
+		for _, out := range published {
+			if r.uiChunkBuf != nil {
+				// A lone first step that ends directly in ChunkTypeFinish is
+				// recorded as a step (see the ChunkTypeFinish case below). The
+				// UI conversion treats a ChunkTypeFinish after a start-step as
+				// the call-level finish only, so give it the step's own
+				// finish-step boundary first (its OnStepEnd and "finish-step"
+				// UI part).
+				if out.Type == provider.ChunkTypeFinish && stepNumber == 0 && !opts.TerminalFinishClosesTurn {
+					stepFinish := out
+					stepFinish.Type = provider.ChunkTypeFinishStep
+					r.uiChunkBuf.push(stepFinish)
+				}
+				r.uiChunkBuf.push(out)
+			}
+			// The public full stream carries the TS part set only (as
+			// StreamText).
+			if r.chunkBuf != nil && !isInternalStreamMarker(out.Type) {
+				r.chunkBuf.push(out)
+			}
 		}
 
 		switch chunk.Type {
 		case provider.ChunkTypeStreamStart:
 			step.warnings = append(step.warnings, chunk.Warnings...)
 
+		case provider.ChunkTypeTextStart:
+			step.startText(chunk.ID, chunk.ProviderMetadata)
+
+		case provider.ChunkTypeTextEnd:
+			step.endText(chunk.ID, chunk.ProviderMetadata, chunk.Citations)
+
+		case provider.ChunkTypeReasoningStart:
+			step.startReasoning(chunk.ID, chunk.ProviderMetadata)
+
+		case provider.ChunkTypeReasoningEnd:
+			step.endReasoning(chunk.ID, chunk.ProviderMetadata)
+
 		case provider.ChunkTypeText:
+			if chunk.Text != "" || len(chunk.ProviderMetadata) > 0 {
+				step.addText(chunk.ID, chunk.Text, chunk.ProviderMetadata)
+			}
 			if chunk.Text != "" {
 				step.text += chunk.Text
-				step.content = append(step.content, types.TextContent{Text: chunk.Text})
-
-				// Update partial output after each text chunk (deduplicated),
-				// scoped to the in-progress step's own text only. Mirrors the
-				// identical block in stream.go's processStream.
-				if r.outputSpec != nil {
-					partial, hasPartial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
-						Text: step.text,
-					})
-					if partialErr != nil {
-						r.err = partialErr
-						break consumeLoop
-					}
-					if hasPartial {
-						newJSONStr, ok := partialOutputDedupKey(partial)
-						if ok && (!hasPublishedPartial || newJSONStr != lastPartialJSON) {
-							hasPublishedPartial = true
-							lastPartialJSON = newJSONStr
-							r.mu.Lock()
-							r.partialOutput = partial
-							r.mu.Unlock()
-						}
-					}
-				}
 			}
 
 		case provider.ChunkTypeReasoning:
-			if chunk.Reasoning != "" {
-				rc := types.ReasoningContent{Text: chunk.Reasoning}
-				step.reasoning = append(step.reasoning, rc)
-				step.content = append(step.content, rc)
+			reasoningDelta := chunk.Reasoning
+			if reasoningDelta == "" {
+				reasoningDelta = chunk.Text
+			}
+			if reasoningDelta != "" || len(chunk.ProviderMetadata) > 0 {
+				step.addReasoning(chunk.ID, reasoningDelta, chunk.ProviderMetadata)
 			}
 
 		case provider.ChunkTypeToolCall:
@@ -310,7 +594,15 @@ consumeLoop:
 			}
 
 		case provider.ChunkTypeToolResult:
-			if chunk.ToolResult != nil {
+			// TS HarnessStreamTextResult.appendToCurrentStepContent records
+			// every tool-result part, preliminary ones included (unlike core
+			// streamText, which keeps preliminary results stream-only).
+			//
+			// A result that arrives while no step is open is a continuation
+			// outcome (a client or host tool result supplied between model
+			// calls, TS enqueueContinuation): it reaches the stream but never
+			// creates or alters a step.
+			if chunk.ToolResult != nil && stepStarted {
 				step.toolResults = append(step.toolResults, *chunk.ToolResult)
 				step.content = append(step.content, toolResultContentFromToolResult(*chunk.ToolResult))
 			}
@@ -340,6 +632,16 @@ consumeLoop:
 		case provider.ChunkTypeToolApprovalRequest:
 			if chunk.ToolApprovalRequest != nil {
 				step.content = append(step.content, *chunk.ToolApprovalRequest)
+			}
+
+		case provider.ChunkTypeToolApprovalResponse:
+			// TS records an automatic approval response (enqueue) in the
+			// step content, but a continuation response that arrives between
+			// model calls (enqueueContinuation) never creates or alters a
+			// step. A response only reaches here with the step started when
+			// it follows that step's own tool call/approval request.
+			if chunk.ToolApprovalResponse != nil && stepStarted {
+				step.content = append(step.content, *chunk.ToolApprovalResponse)
 			}
 
 		case provider.ChunkTypeResponseMetadata:
@@ -378,19 +680,26 @@ consumeLoop:
 			// before the terminal ChunkTypeFinish (run_prompt.go rejects a
 			// terminal `finish` with unclosed step content), so stepNumber is
 			// always >= 1 by the time the real turn-closing boundary arrives.
-			if chunk.Type == provider.ChunkTypeFinish && step.isEmpty() && stepNumber > 0 {
+			if chunk.Type == provider.ChunkTypeFinish && !step.hasUnclosedContent() && (stepNumber > 0 || opts.TerminalFinishClosesTurn) {
 				r.mu.Lock()
 				if chunk.Usage != nil {
 					r.usage = *chunk.Usage
 				}
 				r.finishReason = chunk.FinishReason
-				if chunk.RawFinishReason != "" {
+				// A harness turn's terminal finish replaces the raw finish
+				// reason and provider metadata, also with none (TS
+				// HarnessStreamTextResult.finish(input) assigns
+				// input.finishReason.raw and input.providerMetadata).
+				if chunk.RawFinishReason != "" || opts.TerminalFinishClosesTurn {
 					r.rawFinishReason = chunk.RawFinishReason
+				}
+				if opts.TerminalFinishClosesTurn {
+					r.providerMetadata = nil
 				}
 				if len(chunk.ProviderMetadata) > 0 {
 					var md map[string]interface{}
-					if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
-						if raw, err := json.Marshal(md); err == nil {
+					if jsonErr := jsonexact.UnmarshalPlain(chunk.ProviderMetadata, &md); jsonErr == nil {
+						if raw, err := jsonstr.Marshal(md); err == nil {
 							r.providerMetadata = raw
 						}
 					}
@@ -407,7 +716,7 @@ consumeLoop:
 			step.rawFinishReason = chunk.RawFinishReason
 			if len(chunk.ProviderMetadata) > 0 {
 				var md map[string]interface{}
-				if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
+				if jsonErr := jsonexact.UnmarshalPlain(chunk.ProviderMetadata, &md); jsonErr == nil {
 					step.providerMetadata = md
 				}
 			}
@@ -469,11 +778,20 @@ consumeLoop:
 			if step.rawFinishReason == "" {
 				step.rawFinishReason = "error"
 			}
-			r.err = fmt.Errorf("%s", chunk.Text)
+			// Keep the typed error when the source carries one (TS rejects the
+			// result promises with the original error object), so errors.As
+			// works on Err().
+			if chunk.Err != nil {
+				r.err = chunk.Err
+			} else {
+				r.err = fmt.Errorf("%s", chunk.Text)
+			}
 			finishStep(true)
 			break consumeLoop
 		}
 	}
+
+	sendStart(nil)
 
 	// Resolve the final typed output, if a spec was provided, from the last
 	// step's own text — same scope and unconditional-on-finishReason contract
@@ -481,16 +799,19 @@ consumeLoop:
 	// WG4); skipped when the turn itself failed, matching stream.go's r.err
 	// != nil early return before that point.
 	if r.err == nil && r.outputSpec != nil {
-		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         lastStepText,
-			FinishReason: r.finishReason,
-			Usage:        &r.usage,
-		})
+		parsed, parseErr := r.outputSpec.parseCompleteOutput(ctx, finalStepOutputOptions(lastStepText, r.cbSteps, r.finishReason, r.usage))
 		r.mu.Lock()
 		if parseErr == nil {
 			r.outputResult = parsed
 		}
 		r.outputErr = parseErr
+		r.mu.Unlock()
+	} else if r.err != nil {
+		// TS HarnessStreamTextResult fail / abort reject every delayed
+		// promise with the error, so `.output` (finalStep.then) rejects
+		// with it too.
+		r.mu.Lock()
+		r.outputErr = r.err
 		r.mu.Unlock()
 	}
 
@@ -518,4 +839,99 @@ func reasoningText(reasoning []types.ReasoningContent) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// opensExternalStep reports whether chunk is the first step content of an
+// external stream's step, i.e. whether a 'start-step' part must precede it.
+// Lifecycle markers and a pure turn-closing finish (no content since the last
+// step boundary) do not open a step; error/abort chunks end the stream.
+func opensExternalStep(chunk *provider.StreamChunk, step *externalStepAccum, stepNumber int, terminalFinishClosesTurn bool) bool {
+	switch chunk.Type {
+	case provider.ChunkTypeStart, provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata,
+		provider.ChunkTypeFirstChunk, provider.ChunkTypeStreamFinish,
+		provider.ChunkTypeError, provider.ChunkTypeAbort, provider.ChunkTypeRaw:
+		return false
+	case provider.ChunkTypeFinish:
+		// A harness turn's terminal finish closes the turn without opening a
+		// step (TS HarnessStreamTextResult.finish never calls startStep),
+		// also after a suspended turn discarded its open step.
+		return step.hasUnclosedContent() || (stepNumber == 0 && !terminalFinishClosesTurn)
+	case provider.ChunkTypeToolApprovalResponse, provider.ChunkTypeToolResult:
+		// A continuation response arrives between model calls and must not
+		// open a step (TS enqueueContinuation); an automatic one follows its
+		// request, which already opened the step.
+		return false
+	}
+	return true
+}
+
+// externalOutputStage is TS harness createOutputTransformStream
+// (harness-stream-text-result.ts): the partial output is parsed from the
+// turn's first text block (the block of the turn's first text part; it is
+// not reset at step boundaries), a partial is published only when its
+// serialized value differs from the last one (initially ""), and that
+// block's deltas are held and published together with each new partial, at
+// its text-end or before a finish-step.
+type externalOutputStage struct {
+	spec          outputProcessor
+	firstID       string
+	hasFirst      bool
+	text          string
+	pending       string
+	metadata      json.RawMessage
+	lastPublished string
+}
+
+func (s *externalOutputStage) flush() []provider.StreamChunk {
+	out := provider.StreamChunk{Type: provider.ChunkTypeText, ID: s.firstID, Text: s.pending, ProviderMetadata: s.metadata}
+	s.pending = ""
+	return []provider.StreamChunk{out}
+}
+
+// stage folds one source part in and returns the parts to publish, in
+// order, and the partial output to publish with them, if any.
+func (s *externalOutputStage) stage(ctx context.Context, c provider.StreamChunk) (out []provider.StreamChunk, partial any, publish bool, err error) {
+	if c.Type == provider.ChunkTypeFinishStep && s.pending != "" {
+		out = s.flush()
+	}
+	switch c.Type {
+	case provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd:
+	default:
+		return append(out, c), nil, false, nil
+	}
+	if !s.hasFirst {
+		s.hasFirst, s.firstID = true, c.ID
+	} else if c.ID != s.firstID {
+		return append(out, c), nil, false, nil
+	}
+	switch c.Type {
+	case provider.ChunkTypeTextStart:
+		return append(out, c), nil, false, nil
+	case provider.ChunkTypeTextEnd:
+		if s.pending != "" {
+			out = append(out, s.flush()...)
+		}
+		return append(out, c), nil, false, nil
+	}
+	s.text += c.Text
+	s.pending += c.Text
+	if len(c.ProviderMetadata) > 0 {
+		s.metadata = c.ProviderMetadata
+	}
+	if c.Text == "" && len(c.ProviderMetadata) > 0 {
+		return append(out, c), nil, false, nil
+	}
+	partial, ok, err := s.spec.parsePartialOutput(ctx, ParsePartialOutputOptions{Text: s.text})
+	if err != nil {
+		return out, nil, false, err
+	}
+	if !ok {
+		return out, nil, false, nil
+	}
+	key, keyOK := partialOutputDedupKey(partial)
+	if !keyOK || key == s.lastPublished {
+		return out, nil, false, nil
+	}
+	s.lastPublished = key
+	return append(out, s.flush()...), partial, true, nil
 }

@@ -2,22 +2,27 @@ package anthropic
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	stdhttp "net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // Batch implements provider.BatchV4 for the Anthropic Message Batches API
@@ -39,7 +44,7 @@ func (p *Provider) ExperimentalBatch() provider.BatchV4 { return NewBatch(p) }
 func (b *Batch) SpecificationVersion() string { return "v4" }
 
 // Provider returns the batch interface's provider ID, e.g. "anthropic.batch".
-func (b *Batch) Provider() string { return b.provider.Name() + ".batch" }
+func (b *Batch) Provider() string { return b.provider.baseName() + ".batch" }
 
 // SupportedURLs returns the same URL patterns the underlying language model
 // accepts directly, matching TS `supportedUrls: () => supportedUrls` shared
@@ -61,6 +66,11 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	providerName := b.provider.Name()
+	// Go-typed option literals are read through their JSON form.
+	opts.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	if err := validateAnthropicBatchProviderOptions(providerName, opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	explicitBatchBetas := anthropicBatchProviderBetas(providerName, opts.ProviderOptions)
 	betas := betaSet{}
 	betas.add(explicitBatchBetas...)
@@ -77,43 +87,57 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	preparedRequests := make([]map[string]interface{}, 0, len(opts.Requests))
+	toolNames := newBatchToolNamesBuilder(len(opts.Requests))
 	for _, req := range opts.Requests {
 		textReq := req.Text
+		// The caller's request is not modified.
+		callOpts := normalizeCallOptions(&textReq.Options)
 
-		requestBetas := anthropicBatchProviderBetas(providerName, textReq.Options.ProviderOptions)
+		if err := validateAnthropicBatchProviderOptions(providerName, callOpts.ProviderOptions); err != nil {
+			return nil, err
+		}
+		requestBetas := anthropicBatchProviderBetas(providerName, callOpts.ProviderOptions)
 		if len(requestBetas) > 0 {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: "per-request providerOptions.anthropic.anthropicBeta",
 				Message: fmt.Sprintf(
 					"Anthropic Message Batches do not support per-request betas "+
-						"(request %q). Set providerOptions.anthropic.anthropicBeta "+
+						"(request \"%s\"). Set providerOptions.anthropic.anthropicBeta "+
 						"on startBatch instead.", textReq.ID),
 			}
 		}
 
 		lm := NewLanguageModel(b.provider, textReq.ModelID, nil)
-		prepared, err := lm.prepareRequest(&textReq.Options, false)
+		prepared, err := lm.prepareRequestWithBetas(callOpts, false, explicitBatchBetas)
 		if err != nil {
 			return nil, err
+		}
+		if prepared.thread {
+			return nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: "message threads in batches",
+				Message:       fmt.Sprintf("Anthropic Message Batches do not support message threads (request \"%s\").", textReq.ID),
+			}
 		}
 		if prepared.usesJSONResponseTool {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: "batch responseFormat JSON-tool fallback",
 				Message: fmt.Sprintf(
 					"Anthropic Message Batches cannot decode the JSON-tool structured-output fallback "+
-						"(request %q) because batch results are retrieved independently of the start call. "+
+						"(request \"%s\") because batch results are retrieved independently of the start call. "+
 						"Use a model that supports native output_format structured outputs.", textReq.ID),
 			}
 		}
-		if aliased := findAliasedAnthropicProviderTool(textReq.Options.Tools, prepared.toolsetNames); aliased != "" {
+		if aliased := findAliasedAnthropicProviderTool(callOpts.Tools, prepared.toolsetNames); aliased != "" {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: "aliased provider tool names in batches",
 				Message: fmt.Sprintf(
 					"Anthropic Message Batches cannot restore the custom provider-tool name "+
-						"%q when results are retrieved independently of the start call "+
-						"(request %q). Use the provider's canonical tool name.", aliased, textReq.ID),
+						"\"%s\" when results are retrieved independently of the start call "+
+						"(request \"%s\"). Use the provider's canonical tool name.", aliased, textReq.ID),
 			}
 		}
+
+		toolNames.add(textReq.ID, batchCustomToolNames(callOpts.Tools))
 
 		body := lm.transformRequestBody(prepared.body, prepared.betas, false)
 		if err := validateAnthropicBatchBody(body, textReq.ID); err != nil {
@@ -133,17 +157,16 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	headers := b.startBatchHeaders(betas.list, opts.Headers)
 
 	var response anthropicBatchResponseWire
-	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/messages/batches",
-		Body:    map[string]interface{}{"requests": preparedRequests},
-		Headers: headers,
+	if err := b.startBatchClient(len(betas.list) > 0).DoJSON(ctx, internalhttp.Request{
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodPost,
+		Path:             "/messages/batches",
+		Body:             map[string]interface{}{"requests": preparedRequests},
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
-	if err := response.validate(); err != nil {
-		return nil, err
-	}
+	b.provider.batchToolNames.put(response.ID, toolNames.build())
 
 	return &provider.BatchV4StartResult{
 		BatchV4Status: response.toStatus(),
@@ -168,47 +191,41 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var response anthropicBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/messages/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodPost,
+		Path:             "/messages/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
-	}
-	if err := response.validate(); err != nil {
-		return nil, err
 	}
 	return &provider.BatchV4CancelResult{}, nil
 }
 
 // DoListBatches lists batches (`GET /messages/batches`).
 func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOptions) (*provider.BatchV4ListResult, error) {
-	query := map[string]string{}
+	// TS url.searchParams.set in this order: limit, then after_id.
+	query := internalhttp.NewSearchParams()
 	if opts.Limit != nil {
-		query["limit"] = strconv.Itoa(*opts.Limit)
+		query.Set("limit", strconv.Itoa(*opts.Limit))
 	}
 	if opts.Cursor != "" {
-		query["after_id"] = opts.Cursor
+		query.Set("after_id", opts.Cursor)
 	}
 
 	var response anthropicBatchListResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/messages/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchList),
+		Method:           stdhttp.MethodGet,
+		Path:             "/messages/batches",
+		SearchParams:     query,
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
 
 	batches := make([]provider.BatchV4ListItem, 0, len(response.Data))
 	for _, item := range response.Data {
-		// Mirrors TS's anthropicBatchListResponseSchema, which validates every
-		// entry in "data" against the same required-field envelope as a single
-		// batch response; one malformed entry fails the whole list call.
-		if err := item.validate(); err != nil {
-			return nil, err
-		}
 		batches = append(batches, provider.BatchV4ListItem{BatchV4Status: item.toStatus(), BatchID: item.ID})
 	}
 
@@ -229,20 +246,16 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 
 	if batch.toStatus().Status == provider.BatchStatusPending {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("Anthropic batch %q is not complete.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch \"%s\" is not complete.", opts.BatchID), nil)
 	}
 	if batch.ArchivedAt != nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("Anthropic batch %q results are no longer available.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch \"%s\" results are no longer available.", opts.BatchID), nil)
 	}
-	if batch.ResultsURL == nil || *batch.ResultsURL == "" {
+	// TS results_url == null: an empty URL goes on to getFromApi, whose URL
+	// validation rejects it (DownloadError "Invalid URL: ").
+	if batch.ResultsURL == nil {
 		return nil, providererrors.NewInvalidResponseDataError(batch,
-			fmt.Sprintf("Anthropic batch %q completed without batch output.", opts.BatchID))
+			fmt.Sprintf("Anthropic batch \"%s\" completed without batch output.", opts.BatchID))
 	}
 
 	resultsURL := *batch.ResultsURL
@@ -256,12 +269,27 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	// host is validated against the SSRF blocklist, DNS-pinned, and never
 	// sees credentials, matching TS's outgoingHeaders = {} for a
 	// non-same-origin hop.
-	baseURL := b.provider.config.BaseURL
+	// The origin is the resolved base URL (TS config.baseURL: Config.BaseURL,
+	// else ANTHROPIC_BASE_URL, else the default API URL), never the raw
+	// Config.BaseURL, which is empty for a default provider.
+	baseURL := b.provider.clientConfig.BaseURL
 	isTrusted := func(raw string) bool { return providerutils.IsSameOrigin(raw, baseURL) }
 	downloadOpts := fileutil.DefaultDownloadOptions()
+	downloadOpts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
 	downloadOpts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
-	downloadOpts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, fileutil.SafeTransport())
+	// The credentialed hop goes through the provider's own HTTP client
+	// transport (TS `fetch: this.options.config.fetch`).
+	var trustedTransport stdhttp.RoundTripper
+	if hc := b.provider.config.HTTPClient; hc != nil {
+		trustedTransport = hc.Transport
+	}
+	downloadOpts.Transport = fileutil.TrustRoutingTransport(isTrusted, trustedTransport, fileutil.SafeTransport())
 	if err := downloadOpts.URLValidator(resultsURL); err != nil {
+		return nil, err
+	}
+
+	maxLineBytes, err := b.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
 		return nil, err
 	}
 
@@ -269,24 +297,33 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if err != nil {
 		return nil, err
 	}
+	var rawHeaders map[string]string
 	if isTrusted(resultsURL) {
-		for k, v := range b.rawRequestHeaders(opts.Headers) {
-			httpReq.Header.Set(k, v)
+		rawHeaders, err = b.rawRequestHeaders(ctx, opts.Headers)
+		if err != nil {
+			return nil, err
 		}
+	}
+	for k, v := range anthropicBatchResultsHeaders(rawHeaders) {
+		httpReq.Header.Set(k, v)
 	}
 
 	client := fileutil.NewDownloadClient(resultsURL, downloadOpts)
-	httpResp, err := client.Do(httpReq)
+	httpResp, err := internalhttp.WithFetchRedirects(client).Do(httpReq)
 	if err != nil {
-		return nil, b.handleError(err)
+		// TS getFromApi → handleFetchError: a network failure is the
+		// retryable "Cannot connect to API: ..." APICallError.
+		return nil, b.handleError(internalhttp.TransportErrorCtx(httpReq.Context(), err))
 	}
-	if httpResp.StatusCode >= 400 {
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 { // TS !response.ok
 		defer httpResp.Body.Close() //nolint:errcheck
 		body, _ := fileutil.ReadResponseWithSizeLimit(httpResp, resultsURL, downloadOpts.MaxSize)
-		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
+		return nil, b.handleError(internalhttp.StatusErrorFromRaw(httpResp, body))
 	}
 
-	return newAnthropicBatchResultsStream(httpResp.Body, b.provider), nil
+	stream := newAnthropicBatchResultsStream(httpResp.Body, b.provider, resultsURL, maxLineBytes)
+	stream.toolNames = b.provider.batchToolNames.get(opts.BatchID)
+	return stream, nil
 }
 
 // retrieveBatch fetches one batch's current representation
@@ -294,14 +331,12 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*anthropicBatchResponseWire, error) {
 	var response anthropicBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/messages/batches/" + providerutils.EncodePathSegment(batchID),
-		Headers: headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodGet,
+		Path:             "/messages/batches/" + providerutils.EncodePathSegment(batchID),
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
-	}
-	if err := response.validate(); err != nil {
-		return nil, err
 	}
 	return &response, nil
 }
@@ -321,6 +356,13 @@ func (b *Batch) handleError(err error) error {
 func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range headers {
+		// TS normalizeHeaders lower-cases the caller's keys and the computed
+		// { 'anthropic-beta': undefined } entry then replaces any caller
+		// value, so a caller anthropic-beta never reaches the wire, whatever
+		// its casing and even when no betas are computed.
+		if strings.EqualFold(k, "anthropic-beta") {
+			continue
+		}
 		out[k] = v
 	}
 	if len(betas) > 0 {
@@ -329,30 +371,62 @@ func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map
 	return out
 }
 
-// rawRequestHeaders builds the authentication headers used for a raw
-// (non-client-relative) request, such as following a results_url returned by
-// the batches API. Duplicates the header construction in New() because
-// *http.Client (returned by Client.HTTPClient()) does not carry the
-// provider's default headers.
-func (b *Batch) rawRequestHeaders(extra map[string]string) map[string]string {
-	headers := map[string]string{}
-	if b.provider.config.APIKey != "" {
-		headers["x-api-key"] = b.provider.config.APIKey
+// startBatchClient is the client for the create-batch request. TS
+// getStartBatchHeaders normalizes the provider headers and then sets
+// 'anthropic-beta' to the computed set, or to undefined when the set is
+// empty, so a provider-level Config.Headers anthropic-beta never reaches the
+// wire (the batch beta set takes only providerOptions betas). With betas the
+// computed request header replaces the default one; without, a sibling
+// client built without the default anthropic-beta sends the request.
+func (b *Batch) startBatchClient(hasBetas bool) *internalhttp.Client {
+	if hasBetas || b.provider.clientConfig.Headers == nil {
+		return b.provider.client
 	}
-	if !b.provider.config.OmitAPIVersionHeader {
-		apiVersion := b.provider.config.APIVersion
-		if apiVersion == "" {
-			apiVersion = DefaultAPIVersion
+	filtered := make(map[string]string, len(b.provider.clientConfig.Headers))
+	dropped := false
+	for k, v := range b.provider.clientConfig.Headers {
+		if strings.EqualFold(k, "anthropic-beta") {
+			dropped = true
+			continue
 		}
-		headers["anthropic-version"] = apiVersion
+		filtered[k] = v
 	}
-	for k, v := range b.provider.config.Headers {
-		headers[k] = v
+	if !dropped {
+		return b.provider.client
+	}
+	cfg := b.provider.clientConfig
+	cfg.Headers = filtered
+	return internalhttp.NewClient(cfg)
+}
+
+// rawRequestHeaders builds the provider headers used for a raw
+// (non-client-relative) request, such as following a results_url returned by
+// the batches API: the client's default headers (API version, configured
+// headers, user-agent suffix) with the request-time API key and the call
+// headers on top. *http.Client (returned by Client.HTTPClient()) does not
+// carry them itself.
+func (b *Batch) rawRequestHeaders(ctx context.Context, extra map[string]string) (map[string]string, error) {
+	// The client's default headers carry the API version, configured headers
+	// and the user-agent suffix (TS getBatchHeaders resolves the same
+	// provider headers).
+	// The request-time credential is resolved once, with the call's ctx; a
+	// missing API key fails the request like TS getBatchHeaders/loadApiKey.
+	headers, err := b.provider.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return nil, err
 	}
 	for k, v := range extra {
 		headers[k] = v
 	}
-	return headers
+	return headers, nil
+}
+
+// anthropicBatchResultsHeaders is TS getFromApi's request headers for the
+// results download: the provider headers on a same-origin hop (nil
+// otherwise, TS outgoingHeaders = {}), with getRuntimeEnvironmentUserAgent()
+// appended either way (the raw HTTP client does not add it).
+func anthropicBatchResultsHeaders(providerHeaders map[string]string) map[string]string {
+	return providerutils.WithUserAgentSuffix(providerHeaders, providerutils.RuntimeEnvironmentUserAgent())
 }
 
 // anthropicBatchProviderBetas extracts providerOptions.anthropic.anthropicBeta
@@ -360,6 +434,11 @@ func (b *Batch) rawRequestHeaders(extra map[string]string) map[string]string {
 // provider was constructed with a custom Name), mirroring TS
 // getAnthropicBatchProviderBetas's canonical+custom option merge.
 func anthropicBatchProviderBetas(providerName string, providerOptions map[string]interface{}) []string {
+	// TS: provider.split('.')[0], the same name the language model reads its
+	// options under ("foo.messages" -> "foo").
+	if idx := strings.IndexByte(providerName, '.'); idx != -1 {
+		providerName = providerName[:idx]
+	}
 	betas := anthropicBetaOptionList(providerOptions, "anthropic")
 	if providerName != "anthropic" {
 		if opts, ok := providerOptions[providerName].(map[string]interface{}); ok {
@@ -376,17 +455,63 @@ func anthropicBetaOptionList(providerOptions map[string]interface{}, key string)
 	if !ok {
 		return nil
 	}
-	raw, ok := opts["anthropicBeta"].([]interface{})
-	if !ok {
-		return nil
+	switch raw := opts["anthropicBeta"].(type) {
+	case []string:
+		return append([]string(nil), raw...)
+	case []interface{}:
+		out := make([]string, 0, len(raw))
+		for _, v := range raw {
+			if s, ok := v.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
 	}
-	out := make([]string, 0, len(raw))
-	for _, v := range raw {
-		if s, ok := v.(string); ok {
-			out = append(out, s)
+	return nil
+}
+
+// validateAnthropicBatchProviderOptions mirrors TS parseProviderOptions with
+// anthropicLanguageModelOptions.pick({anthropicBeta}) for the canonical
+// `anthropic` key and the provider's own key: a non-object entry or an
+// anthropicBeta that is not an array of strings (null included) fails with an
+// InvalidArgumentError instead of being ignored.
+func validateAnthropicBatchProviderOptions(providerName string, providerOptions map[string]interface{}) error {
+	if idx := strings.IndexByte(providerName, '.'); idx != -1 {
+		providerName = providerName[:idx]
+	}
+	keys := []string{"anthropic"}
+	if providerName != "anthropic" {
+		keys = append(keys, providerName)
+	}
+	for _, key := range keys {
+		value := providerOptions[key]
+		if value == nil {
+			continue
+		}
+		invalid := func(cause error) error {
+			return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", key), cause)
+		}
+		opts, ok := value.(map[string]interface{})
+		if !ok {
+			return invalid(fmt.Errorf("expected object, received %T", value))
+		}
+		beta, present := opts["anthropicBeta"]
+		if !present {
+			continue
+		}
+		switch list := beta.(type) {
+		case []string:
+		case []interface{}:
+			for i, v := range list {
+				if _, isString := v.(string); !isString {
+					return invalid(fmt.Errorf("anthropicBeta[%d]: expected string, received %T", i, v))
+				}
+			}
+		default:
+			return invalid(fmt.Errorf("anthropicBeta: expected array, received %T", beta))
 		}
 	}
-	return out
+	return nil
 }
 
 // validateAnthropicTextBatchRequests mirrors TS assertTextBatchRequests: every
@@ -396,7 +521,7 @@ func validateAnthropicTextBatchRequests(requests []provider.BatchV4Request) erro
 		if req.Type != provider.BatchRequestTypeText || req.Text == nil {
 			return &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("batch request type: %s", req.Type),
-				Message:       fmt.Sprintf("The Anthropic Message Batches API does not support batch requests with type %q.", req.Type),
+				Message:       fmt.Sprintf("The Anthropic Message Batches API does not support batch requests with type \"%s\".", req.Type),
 			}
 		}
 	}
@@ -409,16 +534,10 @@ func validateAnthropicBatchRequestIDs(requests []provider.BatchV4Request) error 
 	for _, req := range requests {
 		id := req.Text.ID
 		if !anthropicBatchRequestIDPattern.MatchString(id) {
-			return &providererrors.InvalidArgumentError{
-				Field:   "requests",
-				Message: fmt.Sprintf("Anthropic batch request ID %q must match ^[A-Za-z0-9_-]{1,64}$.", id),
-			}
+			return providererrors.NewArgumentError("requests", fmt.Sprintf("Anthropic batch request ID \"%s\" must match ^[A-Za-z0-9_-]{1,64}$.", id), nil)
 		}
 		if seen[id] {
-			return &providererrors.InvalidArgumentError{
-				Field:   "requests",
-				Message: fmt.Sprintf("Anthropic batch request IDs must be unique; duplicate ID %q.", id),
-			}
+			return providererrors.NewArgumentError("requests", fmt.Sprintf("Anthropic batch request IDs must be unique; duplicate ID \"%s\".", id), nil)
 		}
 		seen[id] = true
 	}
@@ -431,7 +550,7 @@ func validateAnthropicBatchBody(body map[string]interface{}, requestID string) e
 	if body["speed"] != nil {
 		return &providererrors.UnsupportedFunctionalityError{
 			Functionality: "providerOptions.anthropic.speed",
-			Message:       fmt.Sprintf("Anthropic Message Batches do not support speed (request %q).", requestID),
+			Message:       fmt.Sprintf("Anthropic Message Batches do not support speed (request \"%s\").", requestID),
 		}
 	}
 	if fallbacks, ok := body["fallbacks"].([]FallbackConfig); ok {
@@ -439,7 +558,7 @@ func validateAnthropicBatchBody(body map[string]interface{}, requestID string) e
 			if fb.Speed != "" {
 				return &providererrors.UnsupportedFunctionalityError{
 					Functionality: "providerOptions.anthropic.fallbacks[].speed",
-					Message:       fmt.Sprintf("Anthropic Message Batches do not support fallback speed (request %q).", requestID),
+					Message:       fmt.Sprintf("Anthropic Message Batches do not support fallback speed (request \"%s\").", requestID),
 				}
 			}
 		}
@@ -461,8 +580,173 @@ func findAliasedAnthropicProviderTool(tools []types.Tool, toolsetNames map[strin
 		if mapped, ok := toolsetNames[t.Name]; ok && mapped != t.Name {
 			return t.Name
 		}
+		// A provider tool renamed from its id (TS: a tools record key that
+		// differs from the wire name, e.g. "search" for web_search) cannot be
+		// restored either. Tools keeping the constructor's id as their name
+		// stay accepted: their batch results carry the wire name.
+		if id := ProviderToolID(t); id != t.Name {
+			if wire := prompt.AnthropicProviderToolName(id); wire != id && wire != t.Name {
+				return t.Name
+			}
+		}
 	}
 	return ""
+}
+
+// batchCustomToolNames returns the wire name -> tool Name map of the
+// provider tools in a batch request whose Name differs from their Anthropic
+// wire name, or nil. findAliasedAnthropicProviderTool has rejected renamed
+// tools, so these are Go tools that keep the constructor's id as their Name
+// ("anthropic.bash_20250124" sent as "bash").
+func batchCustomToolNames(tools []types.Tool) map[string]string {
+	var out map[string]string
+	for wire, name := range newAnthropicToolNames(tools).toCustom {
+		if wire == name {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[wire] = name
+	}
+	return out
+}
+
+// batchToolNames is the custom tool names of one batch: when every request
+// declares the same id-named provider tools (the common case) one shared
+// map serves them all; otherwise each request that has such tools keeps its
+// own map, and requests with identical tool sets share one map value.
+type batchToolNames struct {
+	all       map[string]string
+	byRequest map[string]map[string]string
+}
+
+// forRequest returns the wire name -> tool Name map for custom_id, or nil.
+func (n *batchToolNames) forRequest(customID string) map[string]string {
+	if n == nil {
+		return nil
+	}
+	if n.all != nil {
+		return n.all
+	}
+	return n.byRequest[customID]
+}
+
+// batchToolNamesBuilder collects the custom tool names of a batch's
+// requests in DoStartBatch.
+type batchToolNamesBuilder struct {
+	requests  int
+	byRequest map[string]map[string]string
+	interned  map[string]map[string]string
+}
+
+func newBatchToolNamesBuilder(requests int) *batchToolNamesBuilder {
+	return &batchToolNamesBuilder{requests: requests}
+}
+
+func (b *batchToolNamesBuilder) add(customID string, names map[string]string) {
+	if len(names) == 0 {
+		return
+	}
+	pairs := make([]string, 0, len(names))
+	for wire, name := range names {
+		pairs = append(pairs, strconv.Quote(wire)+":"+strconv.Quote(name))
+	}
+	sort.Strings(pairs)
+	key := strings.Join(pairs, ",")
+	if b.interned == nil {
+		b.interned = map[string]map[string]string{}
+		b.byRequest = map[string]map[string]string{}
+	}
+	if shared, ok := b.interned[key]; ok {
+		names = shared
+	} else {
+		b.interned[key] = names
+	}
+	b.byRequest[customID] = names
+}
+
+// build returns the batch's names, or nil when no request has id-named
+// provider tools.
+func (b *batchToolNamesBuilder) build() *batchToolNames {
+	if len(b.byRequest) == 0 {
+		return nil
+	}
+	if len(b.interned) == 1 && len(b.byRequest) == b.requests {
+		for _, names := range b.interned {
+			return &batchToolNames{all: names}
+		}
+	}
+	return &batchToolNames{byRequest: b.byRequest}
+}
+
+// maxRememberedBatchToolNames bounds the number of batches in
+// batchToolNameStore.
+const maxRememberedBatchToolNames = 1024
+
+// maxRememberedBatchToolNameRequests bounds the per-request entries
+// (batchToolNames.byRequest) kept across all batches in batchToolNameStore,
+// so many large mixed batches cannot pin unbounded memory. The newest batch
+// is always kept.
+const maxRememberedBatchToolNameRequests = 1 << 18
+
+// batchToolNameStore remembers the custom tool names of batches started by a
+// Provider (batch ID -> batchToolNames), so DoGetBatchResults on the same
+// Provider returns calls of id-named provider tools under the tool's Name,
+// as DoGenerate does. TS never needs this: its provider tools are named by
+// the caller (normally the wire name), and it rejects names it cannot
+// restore. Results read by another Provider or process carry the wire names.
+// Only batches with such tools are stored, at most
+// maxRememberedBatchToolNames of them and maxRememberedBatchToolNameRequests
+// per-request entries in all (oldest batches dropped first). A nil store
+// remembers nothing. Stored values are never mutated, so readers share them.
+type batchToolNameStore struct {
+	mu       sync.Mutex
+	names    map[string]*batchToolNames
+	order    []string
+	requests int
+}
+
+// size is the number of per-request entries n holds (a shared map counts
+// as one).
+func (n *batchToolNames) size() int {
+	if n.all != nil {
+		return 1
+	}
+	return len(n.byRequest)
+}
+
+func (s *batchToolNameStore) put(batchID string, names *batchToolNames) {
+	if s == nil || batchID == "" || names == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.names == nil {
+		s.names = map[string]*batchToolNames{}
+	}
+	if old, ok := s.names[batchID]; ok {
+		s.requests -= old.size()
+	} else {
+		s.order = append(s.order, batchID)
+	}
+	s.names[batchID] = names
+	s.requests += names.size()
+	for len(s.order) > 1 && (len(s.order) > maxRememberedBatchToolNames || s.requests > maxRememberedBatchToolNameRequests) {
+		s.requests -= s.names[s.order[0]].size()
+		delete(s.names, s.order[0])
+		s.order[0] = ""
+		s.order = s.order[1:]
+	}
+}
+
+func (s *batchToolNameStore) get(batchID string) *batchToolNames {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.names[batchID]
 }
 
 // --- Wire types -------------------------------------------------------
@@ -486,30 +770,6 @@ type anthropicBatchResponseWire struct {
 	CancelInitiatedAt *string                         `json:"cancel_initiated_at"`
 	EndedAt           *string                         `json:"ended_at"`
 	ResultsURL        *string                         `json:"results_url"`
-}
-
-// validate rejects a batch-object response missing fields the TS zod schema
-// (anthropicBatchResponseZodSchema) requires: id, type === "message_batch",
-// processing_status, created_at, and expires_at (request_counts is a nested
-// object whose own zero value -- all-zero counts -- is a legitimate state
-// for a just-created batch, so it cannot be distinguished from "missing" the
-// way the scalar string fields can and is left unchecked). Mirrors TS's
-// createJsonResponseHandler throwing when safeParseJSON/schema validation
-// fails on the decoded envelope.
-func (r anthropicBatchResponseWire) validate() error {
-	switch {
-	case r.ID == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"id\".")
-	case r.Type != "message_batch":
-		return providererrors.NewInvalidResponseDataError(r, fmt.Sprintf("Anthropic batch response has unexpected \"type\" %q, want \"message_batch\".", r.Type))
-	case r.ProcessingStatus == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"processing_status\".")
-	case r.CreatedAt == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"created_at\".")
-	case r.ExpiresAt == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"expires_at\".")
-	}
-	return nil
 }
 
 func (r anthropicBatchResponseWire) toStatus() provider.BatchV4Status {
@@ -554,8 +814,8 @@ type anthropicBatchListResponseWire struct {
 type anthropicBatchResultErrorWire struct {
 	Type  string `json:"type"`
 	Error struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
+		Type    *string `json:"type"`
+		Message *string `json:"message"`
 	} `json:"error"`
 	RequestID *string `json:"request_id"`
 }
@@ -574,33 +834,50 @@ type anthropicBatchResultLineWire struct {
 // anthropicBatchResultsStream implements provider.BatchV4ItemResultStream
 // over the JSONL body returned by a batch's results_url.
 type anthropicBatchResultsStream struct {
-	scanner  *bufio.Scanner
-	body     io.ReadCloser
-	provider *Provider
-	err      error
+	scanner      *bufio.Scanner
+	body         io.ReadCloser
+	provider     *Provider
+	url          string
+	maxLineBytes int
+	err          error
+	// toolNames holds the wire name -> tool Name maps of the id-named
+	// provider tools of a batch this provider started (nil otherwise).
+	toolNames *batchToolNames
 }
 
-func newAnthropicBatchResultsStream(body io.ReadCloser, p *Provider) *anthropicBatchResultsStream {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	return &anthropicBatchResultsStream{scanner: scanner, body: body, provider: p}
+func newAnthropicBatchResultsStream(body io.ReadCloser, p *Provider, url string, maxLineBytes int) *anthropicBatchResultsStream {
+	scanner := providerutils.NewJSONLinesScanner(body, maxLineBytes)
+	return &anthropicBatchResultsStream{scanner: scanner, body: body, provider: p, url: url, maxLineBytes: maxLineBytes}
 }
 
 func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 	for {
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, s.url, s.maxLineBytes)
 				s.err = err
+				_ = s.body.Close()
 				return nil, err
 			}
 			return nil, io.EOF
 		}
-		line := bytes.TrimSpace(s.scanner.Bytes())
-		if len(line) == 0 {
+		// TS parseJsonLines skips a line only when line.trim() is empty and
+		// parses the line as read, so JS whitespace around a JSON value
+		// (U+00A0, U+0085 alone, ...) is a JSONParseError.
+		line := s.scanner.Bytes()
+		if providerutils.JSONLineIsBlank(line) {
 			continue
 		}
+		// TS createJsonLinesResponseHandler(anthropicBatchResultLineSchema): a
+		// line that is not JSON (JSONParseError) or lacks a string custom_id
+		// (TypeValidationError) fails the stream.
+		if err := anthropicBatchLineError(line); err != nil {
+			s.err = err
+			_ = s.body.Close()
+			return nil, err
+		}
 		var wire anthropicBatchResultLineWire
-		if err := json.Unmarshal(line, &wire); err != nil {
+		if err := jsonexact.Unmarshal(line, &wire); err != nil {
 			s.err = err
 			return nil, err
 		}
@@ -608,9 +885,34 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 	}
 }
 
+// anthropicBatchLineError validates one results line against
+// anthropicBatchResultLineSchema ({custom_id: string, result: unknown}).
+func anthropicBatchLineError(line []byte) error {
+	if syntax := jsonexact.Unmarshal(line, new(interface{})); syntax != nil {
+		return jsonParseFailure(string(line), syntax)
+	}
+	message := zodlite.ValidationMessage(zBatchResultLine, string(line))
+	if message == "" {
+		return nil
+	}
+	return providererrors.NewValidationErrorWithContext(compactJSON(string(line)), validationIssueText(message), nil, &providererrors.ValidationContext{})
+}
+
+// jsonParseFailure is TS safeParseJSON's JSONParseError for text: a
+// secureJsonParse rejection, which jsonexact already reports as a
+// JSONParseError, keeps its SyntaxError as the cause instead of nesting a
+// second JSONParseError.
+func jsonParseFailure(text string, err error) *providererrors.JSONParseError {
+	var parseErr *providererrors.JSONParseError
+	if errors.As(err, &parseErr) {
+		return providererrors.NewJSONParseError(text, parseErr.Cause)
+	}
+	return providererrors.NewJSONParseError(text, err)
+}
+
 func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLineWire) *provider.BatchV4ItemResult {
 	var result anthropicBatchResultWire
-	if err := json.Unmarshal(wire.Result, &result); err != nil {
+	if err := jsonexact.Unmarshal(wire.Result, &result); err != nil {
 		return invalidAnthropicBatchResult(wire.CustomID)
 	}
 
@@ -621,21 +923,21 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.CustomID, Status: provider.BatchItemExpired}
 	case "errored":
 		var errWire anthropicBatchResultErrorWire
-		if err := json.Unmarshal(result.Error, &errWire); err != nil {
+		if err := jsonexact.Unmarshal(result.Error, &errWire); err != nil {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		// Mirrors TS anthropicBatchResultSchema's discriminated-union member for
 		// "errored", which requires error.type === "error" (z.literal('error'))
-		// plus non-empty error.error.type/message; any mismatch fails the whole
+		// plus string error.error.type/message (empty is valid); any mismatch fails the whole
 		// result line rather than surfacing a partially-populated error.
-		if errWire.Type != "error" || errWire.Error.Type == "" || errWire.Error.Message == "" {
+		if errWire.Type != "error" || errWire.Error.Type == nil || errWire.Error.Message == nil {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		item := &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     wire.CustomID,
 			Status: provider.BatchItemFailed,
-			Error:  &provider.BatchError{Message: errWire.Error.Message, Type: errWire.Error.Type},
+			Error:  &provider.BatchError{Message: *errWire.Error.Message, Type: *errWire.Error.Type},
 		}
 		if errWire.RequestID != nil {
 			item.ProviderMetadata = map[string]interface{}{"anthropic": map[string]interface{}{"requestId": *errWire.RequestID}}
@@ -647,7 +949,7 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		var response anthropicResponse
-		if err := json.Unmarshal(validated, &response); err != nil {
+		if err := jsonexact.Unmarshal(validated, &response); err != nil {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		lm := &LanguageModel{provider: s.provider}
@@ -662,6 +964,10 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 			// rawBatchCitations doc comment), matching TS
 			// convertAnthropicBatchResponse.
 			rawBatchCitations: true,
+			batchResult:       true,
+			// Id-named provider tools of a batch this provider started come
+			// back under the tool's Name, as in DoGenerate.
+			customToolNames: s.toolNames.forRequest(wire.CustomID),
 		})
 		return &provider.BatchV4ItemResult{
 			Type:       provider.BatchRequestTypeText,
@@ -700,84 +1006,61 @@ var anthropicKnownBatchContentTypes = map[string]bool{
 	"web_search_tool_result":                 true,
 }
 
-// anthropicBatchContentBlockRequiredFields lists the JSON fields
-// anthropicResponseSchema requires to be present for content-block types
-// simple enough to check by field presence alone (mirrors the per-variant
-// required fields in anthropic-api.ts's anthropicResponseSchema). A known
-// type with no entry here (e.g. the several deeply nested
-// *_tool_result/*_code_execution_* variants) is accepted once it parses as
-// a JSON object with a recognized type; porting every nested union's full
-// shape is out of scope for this presence-level check.
-var anthropicBatchContentBlockRequiredFields = map[string][]string{
-	"text":              {"text"},
-	"thinking":          {"thinking", "signature"},
-	"redacted_thinking": {"data"},
-	"tool_use":          {"id", "name"},
-	"server_tool_use":   {"id", "name"},
-	"mcp_tool_use":      {"id", "name", "server_name"},
-	"mcp_tool_result":   {"tool_use_id", "is_error", "content"},
-}
-
-// validateAnthropicBatchMessage mirrors TS parseAnthropicBatchResponse: a
-// partial, field-presence-level port of anthropicResponseSchema. It
-// validates the message envelope (type "message", a content array, and a
-// usage object with numeric input/output token counts — all required,
-// non-nullish fields of the schema), then per content block: an
-// unrecognized block type is dropped; a recognized type missing one of its
-// required fields fails the whole message; anything else is kept as-is.
-// Returns the (possibly content-filtered) message JSON and true on success,
-// or nil/false when the message can't be salvaged into a valid result at
-// all, matching TS returning undefined from parseAnthropicBatchResponse.
+// validateAnthropicBatchMessage mirrors TS parseAnthropicBatchResponse: the
+// message must match anthropicResponseSchema (zAnthropicResponse). When it
+// does not, each content block is validated on its own: a block outside the
+// known types is dropped (a possible future block type), while a known type
+// that fails its schema, or a block that is not an object with a string type,
+// makes the whole message invalid. The remaining blocks must then pass the
+// schema together. It returns the (possibly content-filtered) message JSON,
+// or nil/false when TS returns undefined.
 func validateAnthropicBatchMessage(raw json.RawMessage) (json.RawMessage, bool) {
-	var envelope struct {
-		Type    string            `json:"type"`
-		Content []json.RawMessage `json:"content"`
-		Usage   *struct {
-			InputTokens  *float64 `json:"input_tokens"`
-			OutputTokens *float64 `json:"output_tokens"`
-		} `json:"usage"`
+	if zodlite.ValidationMessage(zAnthropicResponse, string(raw)) == "" {
+		return raw, true
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil ||
-		envelope.Type != "message" ||
-		envelope.Content == nil ||
-		envelope.Usage == nil ||
-		envelope.Usage.InputTokens == nil ||
-		envelope.Usage.OutputTokens == nil {
+	var full map[string]json.RawMessage
+	if err := jsonexact.Unmarshal(raw, &full); err != nil || full == nil {
 		return nil, false
 	}
-
-	filtered := make([]json.RawMessage, 0, len(envelope.Content))
-	for _, block := range envelope.Content {
-		var fields map[string]interface{}
-		if err := json.Unmarshal(block, &fields); err != nil {
+	var parts []json.RawMessage
+	if err := jsonexact.Unmarshal(full["content"], &parts); err != nil || parts == nil {
+		return nil, false
+	}
+	withContent := func(content []json.RawMessage) (json.RawMessage, bool) {
+		contentJSON, err := json.Marshal(content)
+		if err != nil {
 			return nil, false
 		}
-		blockType, _ := fields["type"].(string)
-		if !anthropicKnownBatchContentTypes[blockType] {
-			continue
+		clone := make(map[string]json.RawMessage, len(full))
+		for k, v := range full {
+			clone[k] = v
 		}
-		for _, field := range anthropicBatchContentBlockRequiredFields[blockType] {
-			if v, ok := fields[field]; !ok || v == nil {
-				return nil, false
-			}
-		}
-		filtered = append(filtered, block)
+		clone["content"] = contentJSON
+		out, err := json.Marshal(clone)
+		return out, err == nil
 	}
 
-	var full map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &full); err != nil {
+	kept := make([]json.RawMessage, 0, len(parts))
+	for _, part := range parts {
+		single, ok := withContent([]json.RawMessage{part})
+		if ok && zodlite.ValidationMessage(zAnthropicResponse, string(single)) == "" {
+			kept = append(kept, part)
+			continue
+		}
+		var fields map[string]interface{}
+		if err := jsonexact.Unmarshal(part, &fields); err != nil || fields == nil {
+			return nil, false
+		}
+		blockType, isString := fields["type"].(string)
+		if !isString || anthropicKnownBatchContentTypes[blockType] {
+			return nil, false
+		}
+	}
+	recovered, ok := withContent(kept)
+	if !ok || zodlite.ValidationMessage(zAnthropicResponse, string(recovered)) != "" {
 		return nil, false
 	}
-	filteredJSON, err := json.Marshal(filtered)
-	if err != nil {
-		return nil, false
-	}
-	full["content"] = filteredJSON
-	rebuilt, err := json.Marshal(full)
-	if err != nil {
-		return nil, false
-	}
-	return rebuilt, true
+	return recovered, true
 }
 
 func invalidAnthropicBatchResult(id string) *provider.BatchV4ItemResult {

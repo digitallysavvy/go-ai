@@ -6,8 +6,18 @@
 // tested without a remote sandbox: bridges bind 0.0.0.0/127.0.0.1 on the host
 // and GetPortEndpoint returns `ws://127.0.0.1:<port>`.
 //
-// It provides NO isolation: commands run as the current user with full host
-// network and filesystem access. Use it for development and tests only.
+// WARNING: it provides NO isolation and is NOT a security boundary. Use it
+// for development and tests only.
+//   - Commands run as the current user with full host network and filesystem
+//     access; file paths are not confined to the session directory (absolute
+//     and ".." paths are accepted).
+//   - Commands inherit the FULL host environment, including API keys and
+//     other secrets. To restrict it, set Options.HostEnv to the names of the
+//     host variables to pass through (for example PATH); everything else is
+//     dropped. Options.Env adds variables on top either way.
+//   - Stop kills the process group of every command that is still running,
+//     but background children that outlive their shell are not tracked and
+//     can survive Stop/Destroy.
 //
 // Layout per session (under Options.RootDir):
 //
@@ -29,6 +39,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -50,6 +61,12 @@ type Options struct {
 
 	// Shell runs commands. Defaults to /bin/sh.
 	Shell string
+
+	// HostEnv limits which host environment variables commands inherit. Nil
+	// (the default) inherits the entire host environment, including secrets
+	// such as API keys. A non-nil slice (even empty) inherits only the named
+	// variables; HOME is always set to the session home.
+	HostEnv []string
 
 	// Env is added to every command's environment (after the host
 	// environment and HOME, before per-command env).
@@ -141,6 +158,19 @@ func (p *Provider) open(id string, create bool) (*Session, bool, error) {
 	if statErr != nil && !fresh {
 		return nil, false, statErr
 	}
+	// The session directory holds HOME (credentials written by adapters) and
+	// is usually under a shared temp dir, so keep it owner-only.
+	if err := os.MkdirAll(p.opts.RootDir, 0o700); err != nil {
+		return nil, false, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, false, err
+	}
+	if fresh {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return nil, false, err
+		}
+	}
 	for _, d := range []string{workDir, homeDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, false, err
@@ -161,6 +191,7 @@ func (p *Provider) open(id string, create bool) (*Session, bool, error) {
 		homeDir:   filepath.ToSlash(absHome),
 		shell:     p.opts.Shell,
 		env:       p.opts.Env,
+		hostEnv:   p.opts.HostEnv,
 		host:      p.opts.Host,
 		ports:     append([]int(nil), p.opts.Ports...),
 		keepFiles: p.opts.KeepFiles,
@@ -176,6 +207,7 @@ type Session struct {
 	homeDir   string
 	shell     string
 	env       map[string]string
+	hostEnv   []string
 	host      string
 	keepFiles bool
 
@@ -254,13 +286,11 @@ func (s *Session) Stop(context.Context) error {
 
 // Destroy stops the session and removes its directory (unless KeepFiles).
 func (s *Session) Destroy(ctx context.Context) error {
-	if err := s.Stop(ctx); err != nil {
-		return err
-	}
+	stopErr := s.Stop(ctx)
 	if s.keepFiles {
-		return nil
+		return stopErr
 	}
-	return os.RemoveAll(s.dir)
+	return errors.Join(stopErr, os.RemoveAll(s.dir))
 }
 
 // Restricted returns a filesystem/process-only view of the same sandbox.
@@ -278,6 +308,19 @@ func (s *Session) resolve(p string) string {
 
 func (s *Session) environment(extra map[string]string) []string {
 	env := os.Environ()
+	if s.hostEnv != nil {
+		allowed := make(map[string]struct{}, len(s.hostEnv))
+		for _, name := range s.hostEnv {
+			allowed[name] = struct{}{}
+		}
+		env = env[:0:0]
+		for _, kv := range os.Environ() {
+			name, _, _ := strings.Cut(kv, "=")
+			if _, ok := allowed[name]; ok {
+				env = append(env, kv)
+			}
+		}
+	}
 	env = append(env, "HOME="+s.homeDir)
 	for k, v := range s.env {
 		env = append(env, k+"="+v)
@@ -313,6 +356,20 @@ func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOp
 		return nil, err
 	}
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
+	// TS 95348b32c6: Stdin keeps standard input open behind
+	// WritableSandboxProcess.Stdin; otherwise it stays closed (/dev/null).
+	var stdin io.WriteCloser
+	if opts.Stdin {
+		w, err := cmd.StdinPipe()
+		if err != nil {
+			_ = stdoutR.Close()
+			_ = stdoutW.Close()
+			_ = stderrR.Close()
+			_ = stderrW.Close()
+			return nil, err
+		}
+		stdin = w
+	}
 	startErr := cmd.Start()
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
@@ -322,10 +379,20 @@ func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOp
 		return nil, startErr
 	}
 	stdout, stderr := io.Reader(stdoutR), io.Reader(stderrR)
-	p := &process{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{}), exitCode: -1}
+	p := &process{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{}), exitCode: 1}
+	var handle providerutils.SandboxProcess = p
+	if stdin != nil {
+		handle = &writableProcess{process: p, stdin: stdin}
+	}
 	s.mu.Lock()
 	s.procs[p] = struct{}{}
+	raced := s.stopped
 	s.mu.Unlock()
+	if raced {
+		// Stop ran between the stopped check and registration; it did not
+		// see this process, so kill it here.
+		_ = p.Kill()
+	}
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -340,7 +407,7 @@ func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOp
 		s.mu.Unlock()
 	}()
 	go p.wait(ctx)
-	return p, nil
+	return handle, nil
 }
 
 // Run runs a command to completion and collects its output.
@@ -384,22 +451,11 @@ func (s *Session) ReadTextFile(ctx context.Context, opts providerutils.SandboxRe
 	if err != nil || data == nil {
 		return nil, err
 	}
-	text := string(data)
-	if opts.StartLine != nil || opts.EndLine != nil {
-		lines := strings.Split(text, "\n")
-		start, end := 1, len(lines)
-		if opts.StartLine != nil && *opts.StartLine > 1 {
-			start = *opts.StartLine
-		}
-		if opts.EndLine != nil && *opts.EndLine < end {
-			end = *opts.EndLine
-		}
-		if start > end {
-			text = ""
-		} else {
-			text = strings.Join(lines[start-1:end], "\n")
-		}
+	text, err := providerutils.DecodeSandboxText(data, opts.Encoding)
+	if err != nil {
+		return nil, err
 	}
+	text = providerutils.ExtractLines(text, opts.StartLine, opts.EndLine)
 	return &text, nil
 }
 
@@ -427,10 +483,109 @@ func (s *Session) WriteBinaryFile(ctx context.Context, path string, content []by
 
 // WriteTextFile writes UTF-8 text to a file.
 func (s *Session) WriteTextFile(ctx context.Context, opts providerutils.SandboxWriteTextFileOptions) error {
-	return s.WriteFile(ctx, opts.Path, strings.NewReader(opts.Content))
+	data, err := providerutils.EncodeSandboxText(opts.Content, opts.Encoding)
+	if err != nil {
+		return err
+	}
+	return s.WriteFile(ctx, opts.Path, bytes.NewReader(data))
 }
 
 // restricted exposes only the providerutils.SandboxSession surface.
+// Stat implements providerutils.SandboxStatter (TS SandboxSession.stat):
+// symbolic links are followed; a missing path (or one under a file) is
+// (nil, nil).
+func (s *Session) Stat(ctx context.Context, path string) (*providerutils.SandboxFileStat, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(s.resolve(path))
+	if isMissing(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	typ := providerutils.SandboxPathTypeOther
+	switch {
+	case info.Mode().IsRegular():
+		typ = providerutils.SandboxPathTypeFile
+	case info.IsDir():
+		typ = providerutils.SandboxPathTypeDirectory
+	}
+	return &providerutils.SandboxFileStat{Type: typ, Size: info.Size()}, nil
+}
+
+// ListDirectory implements providerutils.SandboxDirectoryLister (TS
+// SandboxSession.listDirectory): entries are not followed, so a symbolic
+// link is reported as "symlink".
+func (s *Session) ListDirectory(ctx context.Context, path string) ([]providerutils.SandboxDirectoryEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	resolved := s.resolve(path)
+	info, err := os.Stat(resolved)
+	if isMissing(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("Failed to list %s: Not a directory", path) //nolint:staticcheck // TS error text
+	}
+	dirEntries, err := os.ReadDir(resolved)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]providerutils.SandboxDirectoryEntry, 0, len(dirEntries))
+	for _, e := range dirEntries {
+		typ := providerutils.SandboxPathTypeOther
+		switch mode := e.Type(); {
+		case mode&os.ModeSymlink != 0:
+			typ = providerutils.SandboxPathTypeSymlink
+		case mode.IsRegular():
+			typ = providerutils.SandboxPathTypeFile
+		case mode.IsDir():
+			typ = providerutils.SandboxPathTypeDirectory
+		}
+		entries = append(entries, providerutils.SandboxDirectoryEntry{Name: e.Name(), Type: typ})
+	}
+	return entries, nil
+}
+
+// DeleteFile implements providerutils.SandboxFileDeleter (TS
+// SandboxSession.deleteFile): a symbolic link is deleted itself; a
+// directory is an error.
+func (s *Session) DeleteFile(ctx context.Context, path string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	resolved := s.resolve(path)
+	info, err := os.Lstat(resolved)
+	if isMissing(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() {
+		return false, fmt.Errorf("Cannot delete %s: it is a directory.", path) //nolint:staticcheck // TS error text
+	}
+	if err := os.Remove(resolved); err != nil {
+		if isMissing(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// isMissing reports a path that does not exist, including one under a
+// regular file (ENOTDIR), which TS treats as missing too.
+func isMissing(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
 type restricted struct{ s *Session }
 
 func (r restricted) Description() string { return r.s.Description() }
@@ -455,6 +610,15 @@ func (r restricted) WriteFile(ctx context.Context, p string, c io.Reader) error 
 func (r restricted) WriteBinaryFile(ctx context.Context, p string, c []byte) error {
 	return r.s.WriteBinaryFile(ctx, p, c)
 }
+func (r restricted) Stat(ctx context.Context, p string) (*providerutils.SandboxFileStat, error) {
+	return r.s.Stat(ctx, p)
+}
+func (r restricted) ListDirectory(ctx context.Context, p string) ([]providerutils.SandboxDirectoryEntry, error) {
+	return r.s.ListDirectory(ctx, p)
+}
+func (r restricted) DeleteFile(ctx context.Context, p string) (bool, error) {
+	return r.s.DeleteFile(ctx, p)
+}
 func (r restricted) WriteTextFile(ctx context.Context, o providerutils.SandboxWriteTextFileOptions) error {
 	return r.s.WriteTextFile(ctx, o)
 }
@@ -475,9 +639,15 @@ type process struct {
 
 func (p *process) wait(ctx context.Context) {
 	err := p.cmd.Wait()
-	code := -1
+	// Same mapping as the TS reference sandbox (local-sandbox.ts): the
+	// process's own exit code; for a signal-killed process 128 + 1 (Node
+	// reports the signal as a string, so its `typeof signal === 'number'`
+	// check always falls back to 1); 1 when neither is known.
+	code := 1
 	if p.cmd.ProcessState != nil {
-		code = p.cmd.ProcessState.ExitCode()
+		if code = p.cmd.ProcessState.ExitCode(); code == -1 {
+			code = 129
+		}
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -491,6 +661,15 @@ func (p *process) wait(ctx context.Context) {
 	p.mu.Unlock()
 	close(p.done)
 }
+
+// writableProcess is a process spawned with SandboxProcessOptions.Stdin.
+type writableProcess struct {
+	*process
+	stdin io.WriteCloser
+}
+
+// Stdin implements providerutils.WritableSandboxProcess.
+func (w *writableProcess) Stdin() io.WriteCloser { return w.stdin }
 
 func (p *process) PID() int {
 	if p.cmd.Process == nil {
@@ -534,3 +713,13 @@ func randomHex(n int) string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+var (
+	_ providerutils.SandboxStatter         = (*Session)(nil)
+	_ providerutils.SandboxDirectoryLister = (*Session)(nil)
+	_ providerutils.SandboxFileDeleter     = (*Session)(nil)
+	_ providerutils.SandboxStatter         = restricted{}
+	_ providerutils.SandboxDirectoryLister = restricted{}
+	_ providerutils.SandboxFileDeleter     = restricted{}
+	_ providerutils.WritableSandboxProcess = (*writableProcess)(nil)
+)

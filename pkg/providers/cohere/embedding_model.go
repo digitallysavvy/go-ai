@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -36,12 +38,12 @@ func NewEmbeddingModel(provider *Provider, modelID string, options ...EmbeddingO
 
 // SpecificationVersion returns the specification version
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "cohere"
+	return "cohere.textEmbedding"
 }
 
 // ModelID returns the model ID
@@ -62,15 +64,24 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 
 // DoEmbed performs embedding for a single input
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	result, err := m.DoEmbedMany(ctx, []string{input}, opts)
 	if err != nil {
 		return nil, err
 	}
 	if len(result.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
+	embedding := result.Embeddings[0]
 	r := &types.EmbeddingResult{
-		Embedding: result.Embeddings[0],
+		Embedding: embedding,
 		Usage:     result.Usage,
 	}
 	if len(result.Responses) > 0 {
@@ -81,51 +92,124 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
+	// TS parseProviderOptions({provider: 'cohere', schema: cohereEmbeddingModelOptions})
+	// runs before the too-many-values check.
+	var parsed map[string]interface{}
+	if opts != nil {
+		var err error
+		parsed, err = providerutils.ParseProviderOptions("cohere", opts.ProviderOptions, cohereEmbeddingOptionsSchema)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(inputs) > m.MaxEmbeddingsPerCall() {
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
+	}
 	if err := m.options.Validate(); err != nil {
 		return nil, err
 	}
 
-	reqBody := map[string]interface{}{
-		"texts": inputs,
-		"model": m.modelID,
-		// The v2 embed endpoint requires embedding_types.
-		"embedding_types": []string{"float"},
+	// Per-call options win over the model options.
+	embeddingType := m.options.EmbeddingType
+	inputType := m.options.InputType
+	truncate := m.options.Truncate
+	var outputDimension *int
+	if m.options.OutputDimension != nil {
+		d := int(*m.options.OutputDimension)
+		outputDimension = &d
+	}
+	if v, ok := parsed["embeddingType"].(string); ok {
+		embeddingType = EmbeddingType(v)
+	}
+	if v, ok := parsed["inputType"].(string); ok {
+		inputType = InputType(v)
+	}
+	if v, ok := parsed["truncate"].(string); ok {
+		truncate = TruncateMode(v)
+	}
+	if v, ok := parsed["outputDimension"]; ok {
+		d := int(reflect.ValueOf(v).Convert(reflect.TypeOf(float64(0))).Float())
+		outputDimension = &d
+	}
+	if embeddingType == "" {
+		embeddingType = EmbeddingTypeFloat
+	}
+	if inputType == "" {
+		inputType = InputTypeSearchQuery
 	}
 
-	if m.options.InputType != "" {
-		reqBody["input_type"] = string(m.options.InputType)
-	} else {
-		reqBody["input_type"] = "search_document"
+	reqBody := map[string]interface{}{
+		"texts":           inputs,
+		"model":           m.modelID,
+		"embedding_types": []string{string(embeddingType)},
+		"input_type":      string(inputType),
 	}
-	if m.options.Truncate != "" {
-		reqBody["truncate"] = string(m.options.Truncate)
+	if truncate != "" {
+		reqBody["truncate"] = string(truncate)
 	}
-	if m.options.OutputDimension != nil {
-		reqBody["output_dimension"] = int(*m.options.OutputDimension)
+	if outputDimension != nil {
+		reqBody["output_dimension"] = *outputDimension
+	} else if opts != nil && opts.Dimensions != nil {
+		// Top-level dimensions (TS #22338); the provider option wins.
+		reqBody["output_dimension"] = *opts.Dimensions
 	}
 
 	var response cohereEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embed",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.CohereEmbeddingResponseValidator(m.Provider(), string(embeddingType)),
+		Method:           http.MethodPost,
+		Path:             "/embed",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS: loadApiKey throws LoadAPIKeyError unchanged
+		}
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		return nil, providererrors.NewSchemaProviderError("cohere", err, cohereErrorSchema)
+	}
+	embeddings, err := response.embeddingsFor(embeddingType)
+	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
 	}
-	embeddings, err := response.floatEmbeddings()
-	if err != nil {
-		return nil, providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	var rawBody interface{}
+	if err := jsonexact.Unmarshal(httpResp.Body, &rawBody); err != nil {
+		rawBody = response
 	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Meta.BilledUnits.InputTokens),
-			InputTokens: response.Meta.BilledUnits.InputTokens,
-			TotalTokens: response.Meta.BilledUnits.InputTokens,
+			Tokens:      response.Meta.BilledUnits.InputTokens,
+			InputTokens: int(response.Meta.BilledUnits.InputTokens),
+			TotalTokens: int(response.Meta.BilledUnits.InputTokens),
+			// TS always returns `usage: { tokens: meta.billed_units.input_tokens }`.
+			Reported: true,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawBody}},
 	}, nil
 }
 
@@ -138,34 +222,31 @@ func optsHeaders(opts *provider.EmbedModelOptions) map[string]string {
 }
 
 type cohereEmbedResponse struct {
-	// Embeddings is an object keyed by embedding type (v2), or a plain float
-	// array (legacy).
+	// Embeddings is either an object keyed by embedding type (when
+	// embedding_types is requested) or a plain float array.
 	Embeddings json.RawMessage `json:"embeddings"`
 	Meta       struct {
 		BilledUnits struct {
-			InputTokens int `json:"input_tokens"`
+			// TS z.number(): a fractional count is valid; Tokens keeps it
+			// exactly, the int fields keep the integer part.
+			InputTokens float64 `json:"input_tokens"`
 		} `json:"billed_units"`
 	} `json:"meta"`
 }
 
-// floatEmbeddings extracts the float embeddings from either response shape.
-func (r cohereEmbedResponse) floatEmbeddings() ([][]float64, error) {
+// embeddingsFor extracts the embeddings of the requested type, ignoring any
+// other formats present in the response.
+func (r cohereEmbedResponse) embeddingsFor(t EmbeddingType) ([][]float64, error) {
 	raw := bytes.TrimSpace(r.Embeddings)
-	var out [][]float64
-	if len(raw) > 0 && raw[0] == '[' {
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("invalid cohere embeddings response: %w", err)
-		}
-		return out, nil
-	}
 	var byType map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &byType); err != nil {
 		return nil, fmt.Errorf("invalid cohere embeddings response: %w", err)
 	}
-	sel, ok := byType["float"]
+	sel, ok := byType[string(t)]
 	if !ok {
-		return nil, fmt.Errorf("invalid cohere embeddings response: missing float embeddings")
+		return nil, fmt.Errorf("invalid cohere embeddings response: missing %s embeddings", t)
 	}
+	var out [][]float64
 	if err := json.Unmarshal(sel, &out); err != nil {
 		return nil, fmt.Errorf("invalid cohere embeddings response: %w", err)
 	}

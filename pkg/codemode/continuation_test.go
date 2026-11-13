@@ -177,9 +177,10 @@ func TestRunCodeMode_TryCatchAroundAnInterruptDoesNotObserveAnything(t *testing.
 // observed at all -- a fire-and-forget `tools.guarded({});` with no
 // `await`/`.then()`/anything -- so the script can complete (or, here,
 // return a value having nothing to do with it) while the interruption it
-// raised is left dangling, unresolved, forever. Mirrors TypeScript's
-// RunDetachedBridgeRequestError, produced by `run`'s own
-// __runAssertNoDetachedBridgeCalls (an unawaited bridge Promise).
+// would have raised is never even started (run starts a host call only once
+// it is observed). Mirrors TypeScript's RunDetachedBridgeRequestError,
+// produced by `run`'s own __runAssertNoDetachedBridgeCalls (an unawaited
+// bridge Promise).
 func TestRunCodeMode_DetachedBridgeRequestForAnUnawaitedInterruptedCall(t *testing.T) {
 	tools := ToolSet{"guarded": {
 		Name:          "guarded",

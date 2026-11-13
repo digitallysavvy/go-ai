@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
-	"github.com/digitallysavvy/go-ai/pkg/internal/media"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -74,6 +74,7 @@ func singleGenerate(ctx context.Context, opts GenerateVideoOptions) (*GenerateVi
 		return nil, err
 	}
 
+	warnVideoPollWithoutStartStatus(opts)
 	response, err := runVideoCall(ctx, opts, normalized, opts.N)
 	if err != nil {
 		return nil, err
@@ -89,6 +90,8 @@ func parallelGenerate(ctx context.Context, opts GenerateVideoOptions, maxPerCall
 	if err != nil {
 		return nil, err
 	}
+
+	warnVideoPollWithoutStartStatus(opts)
 
 	type callResult struct {
 		index    int
@@ -130,19 +133,19 @@ func parallelGenerate(ctx context.Context, opts GenerateVideoOptions, maxPerCall
 	}
 
 	var videos []*types.GeneratedFile
+	uploadedVideos := 0
 	warnings := append([]types.Warning{}, normalized.Warnings...)
 	var responses []VideoModelResponseMetadata
 	var providerMetadata []map[string]interface{}
 
 	for _, response := range orderedResponses {
 		// Convert video data
-		for _, videoData := range response.Videos {
-			file, err := convertVideoData(ctx, videoData, opts.Download, opts.DownloadWithMetadata)
-			if err != nil {
-				return nil, err
-			}
-			videos = append(videos, file)
+		files, uploaded, err := convertVideoList(ctx, response.Videos, opts.Download, opts.DownloadWithMetadata)
+		if err != nil {
+			return nil, err
 		}
+		videos = append(videos, files...)
+		uploadedVideos += uploaded
 
 		// Collect warnings
 		warnings = append(warnings, response.Warnings...)
@@ -156,20 +159,56 @@ func parallelGenerate(ctx context.Context, opts GenerateVideoOptions, maxPerCall
 		}
 	}
 
-	// Check if any videos were generated
-	if len(videos) == 0 {
+	// Check if any videos were generated (TS 2e44144812: videos delivered to
+	// the upload destination count too).
+	if len(videos) == 0 && uploadedVideos == 0 {
 		return nil, &NoVideoGeneratedError{Responses: responses}
 	}
 
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 
+	return newGenerateVideoResult(videos, uploadedVideos, warnings, responses, mergeProviderMetadata(providerMetadata)), nil
+}
+
+// newGenerateVideoResult builds the result; Video is the first video
+// available to the SDK, nil for an upload-only result (TS throws from the
+// video getter; known difference).
+func newGenerateVideoResult(videos []*types.GeneratedFile, uploaded int, warnings []types.Warning, responses []VideoModelResponseMetadata, providerMetadata map[string]interface{}) *GenerateVideoResult {
+	if videos == nil {
+		videos = []*types.GeneratedFile{}
+	}
+	var first *types.GeneratedFile
+	if len(videos) > 0 {
+		first = videos[0]
+	}
 	return &GenerateVideoResult{
-		Video:            videos[0],
+		Video:            first,
 		Videos:           videos,
+		UploadedVideos:   uploaded,
 		Warnings:         warnings,
 		Responses:        responses,
-		ProviderMetadata: mergeProviderMetadata(providerMetadata),
-	}, nil
+		ProviderMetadata: providerMetadata,
+	}
+}
+
+// convertVideoList converts the provider's videos, counting (not
+// downloading) those the provider delivered to the caller's upload
+// destination (type "uploaded").
+func convertVideoList(ctx context.Context, data []provider.VideoModelV3VideoData, download URLDownloadFunction, downloadWithMetadata URLDownloadWithMetadataFunction) ([]*types.GeneratedFile, int, error) {
+	files := make([]*types.GeneratedFile, 0, len(data))
+	uploaded := 0
+	for _, videoData := range data {
+		if videoData.Type == provider.VideoDataTypeUploaded {
+			uploaded++
+			continue
+		}
+		file, err := convertVideoData(ctx, videoData, download, downloadWithMetadata)
+		if err != nil {
+			return nil, 0, err
+		}
+		files = append(files, file)
+	}
+	return files, uploaded, nil
 }
 
 // runVideoCall executes a single provider call for n videos, either via
@@ -194,23 +233,20 @@ func runVideoCall(ctx context.Context, opts GenerateVideoOptions, normalized *no
 		Headers:         videoHeadersWithUserAgent(opts.Headers),
 	}
 
-	// Determine whether to use the start/status flow: hasStartStatus &&
-	// (Poll != nil || Webhook != nil). Unlike TS, DoGenerate is always
-	// present on VideoModelV3, so there is no "model has no doGenerate" case.
+	// Determine whether to use the start/status flow (TS useStartStatus:
+	// hasStartStatus && (poll != null || webhook != null || model.doGenerate
+	// == null)). VideoModelV3 always has DoGenerate, so a model whose TS twin
+	// implements only doStart/doStatus marks itself with
+	// videoStartStatusOnlyModel; its DoGenerate is a convenience shim that
+	// GenerateVideo does not use.
 	starter, hasStarter := opts.Model.(provider.VideoModelStarter)
 	checker, hasChecker := opts.Model.(provider.VideoModelStatusChecker)
 	hasStartStatus := hasStarter && hasChecker
-	useStartStatus := hasStartStatus && (opts.Poll != nil || opts.Webhook != nil)
-
-	if (opts.Poll != nil || opts.Webhook != nil) && !hasStartStatus {
-		logModelWarnings([]types.Warning{{
-			Type:    "other",
-			Message: "poll/webhook options were provided but the model does not support doStart/doStatus. Falling back to doGenerate.",
-		}}, opts.Model.Provider(), opts.Model.ModelID())
-	}
+	startStatusOnly, isStartStatusOnly := opts.Model.(videoStartStatusOnlyModel)
+	useStartStatus := hasStartStatus && (opts.Poll != nil || opts.Webhook != nil || isStartStatusOnly)
 
 	if useStartStatus {
-		statusResult, err := executeStartStatusFlow(ctx, startStatusFlowOptions{
+		flow := startStatusFlowOptions{
 			model:      opts.Model,
 			starter:    starter,
 			checker:    checker,
@@ -218,7 +254,11 @@ func runVideoCall(ctx context.Context, opts GenerateVideoOptions, normalized *no
 			poll:       opts.Poll,
 			webhook:    opts.Webhook,
 			maxRetries: opts.MaxRetries,
-		})
+		}
+		if isStartStatusOnly {
+			flow.defaultIntervalMs, flow.defaultTimeoutMs = startStatusOnly.VideoStartStatusPollDefaults(opts.ProviderOptions)
+		}
+		statusResult, err := executeStartStatusFlow(ctx, flow)
 		if err != nil {
 			return nil, err
 		}
@@ -233,6 +273,24 @@ func runVideoCall(ctx context.Context, opts GenerateVideoOptions, normalized *no
 	return doGenerateVideoWithRetry(ctx, opts.Model, callOpts, opts.MaxRetries)
 }
 
+// warnVideoPollWithoutStartStatus logs, once per GenerateVideo call (TS logs
+// it before the calls are parallelized), that Poll / Webhook cannot be used
+// because the model has no start/status flow.
+func warnVideoPollWithoutStartStatus(opts GenerateVideoOptions) {
+	if opts.Poll == nil && opts.Webhook == nil {
+		return
+	}
+	_, hasStarter := opts.Model.(provider.VideoModelStarter)
+	_, hasChecker := opts.Model.(provider.VideoModelStatusChecker)
+	if hasStarter && hasChecker {
+		return
+	}
+	logModelWarnings([]types.Warning{{
+		Type:    "other",
+		Message: "poll/webhook options were provided but the model does not support doStart/doStatus. Falling back to doGenerate.",
+	}}, opts.Model.Provider(), opts.Model.ModelID())
+}
+
 func doGenerateVideoWithRetry(ctx context.Context, model provider.VideoModelV3, opts *provider.VideoModelV3CallOptions, maxRetries *int) (*provider.VideoModelV3Response, error) {
 	retries := preparedMaxRetries(maxRetries)
 	if retries == 0 {
@@ -243,7 +301,6 @@ func doGenerateVideoWithRetry(ctx context.Context, model provider.VideoModelV3, 
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   retries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -267,6 +324,22 @@ type startStatusFlowOptions struct {
 	poll       *VideoPollOptions
 	webhook    provider.VideoWebhookFactory
 	maxRetries *int
+	// defaultIntervalMs / defaultTimeoutMs replace the core defaults (5000 /
+	// 600000) when positive and Poll leaves the value unset.
+	defaultIntervalMs int
+	defaultTimeoutMs  int
+}
+
+// videoStartStatusOnlyModel is implemented by a video model whose TS twin has
+// no doGenerate (only doStart/doStatus), such as KlingAI, fal, Replicate and
+// ByteDance. TS generateVideo always drives such a model through the core
+// start/status flow: one idempotency key per start, doStatus retried on its
+// own (never a second billable start), and the core poll defaults and error
+// texts. VideoStartStatusPollDefaults returns the poll interval and timeout
+// in milliseconds that the model's v0.5.2 provider options set (0 for the
+// core default); GenerateVideoOptions.Poll values win over them.
+type videoStartStatusOnlyModel interface {
+	VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int)
 }
 
 // videoPollingTimeoutError is returned when a polling loop exceeds its
@@ -331,10 +404,14 @@ func executeStartStatusFlow(ctx context.Context, opts startStatusFlowOptions) (*
 	intervalMs := 5000
 	if opts.poll != nil && opts.poll.IntervalMs != nil {
 		intervalMs = *opts.poll.IntervalMs
+	} else if opts.defaultIntervalMs > 0 {
+		intervalMs = opts.defaultIntervalMs
 	}
 	timeoutMs := 600000
 	if opts.poll != nil && opts.poll.TimeoutMs != nil {
 		timeoutMs = *opts.poll.TimeoutMs
+	} else if opts.defaultTimeoutMs > 0 {
+		timeoutMs = opts.defaultTimeoutMs
 	}
 	delayFn := defaultVideoPollDelay
 	if opts.poll != nil && opts.poll.Delay != nil {
@@ -403,22 +480,29 @@ func executeStartStatusFlow(ctx context.Context, opts startStatusFlowOptions) (*
 				outcomeCh <- statusOutcome{result: r, err: e}
 			}()
 
+			// Only the poll deadline is the polling timeout (TS
+			// statusTimeoutController.signal.aborted); the caller's own
+			// cancellation or deadline ends the call with its error.
+			pollDeadline := func() bool { return ctx.Err() == nil && statusCtx.Err() == context.DeadlineExceeded }
 			select {
 			case outcome := <-outcomeCh:
 				cancel()
 				if outcome.err != nil {
-					if statusCtx.Err() == context.DeadlineExceeded {
+					if pollDeadline() {
 						return nil, timeoutErr
 					}
 					return nil, outcome.err
 				}
 				statusResult = outcome.result
 			case <-statusCtx.Done():
+				timedOut := pollDeadline()
 				cancel()
-				if statusCtx.Err() == context.DeadlineExceeded {
+				if timedOut {
 					return nil, timeoutErr
 				}
-				return nil, statusCtx.Err()
+				// TS Promise.race settles with doStatus's rejection: the
+				// abort reason.
+				return nil, context.Cause(ctx)
 			}
 		}
 
@@ -463,7 +547,6 @@ func doStartVideoWithRetry(ctx context.Context, starter provider.VideoModelStart
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   retries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -487,7 +570,6 @@ func doStatusVideoWithRetry(ctx context.Context, checker provider.VideoModelStat
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   retries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -579,6 +661,12 @@ func convertPromptImage(img *VideoPromptImage) (*provider.VideoModelV3File, erro
 		}, nil
 	}
 
+	// TS normalizeImageData: a DataContent string that starts with http://
+	// or https:// is a URL file, not base64.
+	if isVideoHTTPDataString(img.DataString) {
+		return &provider.VideoModelV3File{Type: "url", URL: img.DataString, MediaType: img.MediaType}, nil
+	}
+
 	if img.DataString != "" {
 		data, mediaType, err := decodeVideoPromptImageDataString(img.DataString)
 		if err != nil {
@@ -607,59 +695,52 @@ func convertPromptImage(img *VideoPromptImage) (*provider.VideoModelV3File, erro
 	return nil, nil
 }
 
+// isVideoHTTPDataString is the TS normalizeImageData URL check on a
+// DataContent string (case-sensitive prefixes).
+func isVideoHTTPDataString(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+// splitVideoDataURL mirrors TS splitDataUrl: the header is everything before
+// the first comma, the media type is header.split(';')[0].split(':')[1] (so an
+// empty type stays "" and is not replaced by detection), and the content is
+// the second comma-separated part only.
+func splitVideoDataURL(value string) (mediaType, content string) {
+	header, rest, _ := strings.Cut(value, ",")
+	if parts := strings.Split(strings.SplitN(header, ";", 2)[0], ":"); len(parts) > 1 {
+		mediaType = parts[1]
+	}
+	content, _, _ = strings.Cut(rest, ",")
+	return mediaType, content
+}
+
 func decodeVideoPromptImageDataString(value string) ([]byte, string, error) {
 	mediaType := ""
 	content := value
 	isDataURL := false
 	if strings.HasPrefix(value, "data:") {
 		isDataURL = true
-		header, body, ok := strings.Cut(value, ",")
-		if ok {
-			content = body
-			if strings.HasPrefix(header, "data:") {
-				mediaType = strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
-			}
-		}
+		mediaType, content = splitVideoDataURL(value)
 	}
 
-	data, err := types.DecodeFileDataString(content)
+	data, err := fileutil.ConvertBase64ToBytes(content)
 	if err != nil {
 		return nil, "", err
 	}
-	if mediaType == "" {
-		if isDataURL {
-			mediaType = "image/png"
-		} else {
-			mediaType = detectVideoPromptImageMediaType(data)
-		}
+	if mediaType == "" && !isDataURL {
+		mediaType = detectVideoPromptImageMediaType(data)
 	}
 	return data, mediaType, nil
 }
 
+// detectVideoPromptImageMediaType detects an image media type from the bytes
+// of a prompt or frame image, falling back to image/png (TS
+// detectFileMediaType with restrictToImages).
 func detectVideoPromptImageMediaType(data []byte) string {
-	switch {
-	case len(data) >= 8 &&
-		data[0] == 0x89 && data[1] == 0x50 &&
-		data[2] == 0x4E && data[3] == 0x47 &&
-		data[4] == 0x0D && data[5] == 0x0A &&
-		data[6] == 0x1A && data[7] == 0x0A:
-		return "image/png"
-	case len(data) >= 4 &&
-		data[0] == 0x47 && data[1] == 0x49 &&
-		data[2] == 0x46 && data[3] == 0x38:
-		return "image/gif"
-	case len(data) >= 3 &&
-		data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
-		return "image/jpeg"
-	case len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 &&
-		data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x57 && data[9] == 0x45 &&
-		data[10] == 0x42 && data[11] == 0x50:
-		return "image/webp"
-	default:
-		return "image/png"
+	if mt, ok := fileutil.DetectMediaTypeSignature(data, "image"); ok {
+		return mt
 	}
+	return "image/png"
 }
 
 // normalizedVideoInputs holds the shared, provider-ready video call inputs
@@ -768,6 +849,10 @@ func convertReferenceImage(img *VideoPromptImage) (*provider.VideoModelV3File, e
 		return &provider.VideoModelV3File{Type: "url", URL: img.URL, MediaType: img.MediaType}, nil
 	}
 
+	if isVideoHTTPDataString(img.DataString) {
+		return &provider.VideoModelV3File{Type: "url", URL: img.DataString, MediaType: img.MediaType}, nil
+	}
+
 	if img.DataString != "" {
 		data, mediaType, err := decodeVideoReferenceDataString(img.DataString, img.MediaType)
 		if err != nil {
@@ -793,83 +878,32 @@ func decodeVideoReferenceDataString(value string, explicitMediaType string) ([]b
 	isDataURL := false
 	if strings.HasPrefix(value, "data:") {
 		isDataURL = true
-		header, body, ok := strings.Cut(value, ",")
-		if ok {
-			content = body
-			if mediaType == "" && strings.HasPrefix(header, "data:") {
-				mediaType = strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
-			}
+		var urlType string
+		urlType, content = splitVideoDataURL(value)
+		if mediaType == "" {
+			mediaType = urlType
 		}
 	}
 
-	data, err := types.DecodeFileDataString(content)
+	data, err := fileutil.ConvertBase64ToBytes(content)
 	if err != nil {
 		return nil, "", err
 	}
-	if mediaType == "" {
-		if isDataURL {
-			mediaType = "image/png"
-		} else {
-			mediaType = detectAnyFileMediaType(data)
-		}
+	if mediaType == "" && !isDataURL {
+		mediaType = detectAnyFileMediaType(data)
 	}
 	return data, mediaType, nil
 }
 
-// detectAnyFileMediaType detects an image or video media type from binary
-// data, trying image signatures first (they are shorter and more specific)
-// and falling back to video signatures, defaulting to "image/png" when
-// neither matches (mirrors TS detectFileMediaType with restrictToImages=false).
+// detectAnyFileMediaType detects the media type of a reference's bytes across
+// every known signature (image, video, audio, document), defaulting to
+// "image/png" when none matches (TS detectFileMediaType without
+// restrictToImages).
 func detectAnyFileMediaType(data []byte) string {
-	if mt := detectImageMediaTypeOrEmpty(data); mt != "" {
-		return mt
-	}
-	if mt := detectVideoMediaTypeOrEmpty(data); mt != "" {
+	if mt, ok := fileutil.DetectMediaTypeSignature(data, ""); ok {
 		return mt
 	}
 	return "image/png"
-}
-
-func detectImageMediaTypeOrEmpty(data []byte) string {
-	switch {
-	case len(data) >= 8 &&
-		data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
-		data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A:
-		return "image/png"
-	case len(data) >= 4 &&
-		data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38:
-		return "image/gif"
-	case len(data) >= 3 &&
-		data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
-		return "image/jpeg"
-	case len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50:
-		return "image/webp"
-	default:
-		return ""
-	}
-}
-
-func detectVideoMediaTypeOrEmpty(data []byte) string {
-	switch {
-	case len(data) >= 4 &&
-		data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3:
-		return "video/webm"
-	case len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x41 && data[9] == 0x56 && data[10] == 0x49 && data[11] == 0x20:
-		return "video/x-msvideo"
-	case len(data) >= 12 &&
-		data[4] == 0x66 && data[5] == 0x74 && data[6] == 0x79 && data[7] == 0x70 &&
-		data[8] == 0x71 && data[9] == 0x74:
-		return "video/quicktime"
-	case len(data) >= 8 &&
-		data[4] == 0x66 && data[5] == 0x74 && data[6] == 0x79 && data[7] == 0x70:
-		return "video/mp4"
-	default:
-		return ""
-	}
 }
 
 // convertVideoData converts VideoModelV3VideoData to GeneratedFile.
@@ -886,7 +920,7 @@ func convertVideoData(ctx context.Context, data provider.VideoModelV3VideoData, 
 			mediaType = downloadedMediaType
 		}
 		if !isUsableVideoMediaType(mediaType) {
-			mediaType = media.DetectVideoMediaType(videoBytes)
+			mediaType = detectVideoBytesMediaType(videoBytes)
 		}
 		if mediaType == "" {
 			mediaType = "video/mp4"
@@ -898,7 +932,7 @@ func convertVideoData(ctx context.Context, data provider.VideoModelV3VideoData, 
 		}, nil
 
 	case "base64":
-		decoded, err := types.DecodeFileDataString(data.Data)
+		decoded, err := fileutil.ConvertBase64ToBytes(data.Data)
 		if err != nil {
 			return nil, err
 		}
@@ -914,7 +948,7 @@ func convertVideoData(ctx context.Context, data provider.VideoModelV3VideoData, 
 	case "binary":
 		mediaType := data.MediaType
 		if mediaType == "" && len(data.Binary) > 0 {
-			mediaType = media.DetectVideoMediaType(data.Binary)
+			mediaType = detectVideoBytesMediaType(data.Binary)
 		}
 		if mediaType == "" {
 			mediaType = "video/mp4"
@@ -937,13 +971,9 @@ func convertToGenerateVideoResult(ctx context.Context, response *provider.VideoM
 		return nil, &NoVideoGeneratedError{Responses: responses}
 	}
 
-	videos := make([]*types.GeneratedFile, 0, len(response.Videos))
-	for _, videoData := range response.Videos {
-		file, err := convertVideoData(ctx, videoData, download, downloadWithMetadata)
-		if err != nil {
-			return nil, err
-		}
-		videos = append(videos, file)
+	videos, uploaded, err := convertVideoList(ctx, response.Videos, download, downloadWithMetadata)
+	if err != nil {
+		return nil, err
 	}
 	warnings := response.Warnings
 	if warnings == nil {
@@ -951,16 +981,15 @@ func convertToGenerateVideoResult(ctx context.Context, response *provider.VideoM
 	}
 	logModelWarnings(warnings, model.Provider(), model.ModelID())
 
-	return &GenerateVideoResult{
-		Video:            videos[0],
-		Videos:           videos,
-		Warnings:         warnings,
-		Responses:        responses,
-		ProviderMetadata: mergeProviderMetadata([]map[string]interface{}{response.ProviderMetadata}),
-	}, nil
+	return newGenerateVideoResult(videos, uploaded, warnings, responses, mergeProviderMetadata([]map[string]interface{}{response.ProviderMetadata})), nil
 }
 
 func downloadVideoURL(ctx context.Context, url string, download URLDownloadFunction, downloadWithMetadata URLDownloadWithMetadataFunction) ([]byte, string, error) {
+	// TS downloads new URL(videoData.url): the WHATWG serialization (a URL
+	// that does not parse is used as given, like downloadGeneratedFileURL).
+	if href, err := urlnorm.Href(url); err == nil {
+		url = href
+	}
 	if downloadWithMetadata != nil {
 		result, err := downloadWithMetadata(ctx, url)
 		if err != nil {
@@ -979,11 +1008,21 @@ func downloadVideoURL(ctx context.Context, url string, download URLDownloadFunct
 	opts := fileutil.DefaultDownloadOptions()
 	opts.URLValidator = downloadURLValidator
 	opts.Transport = downloadTransport()
+	// TS createDownload() sets no timeout: a large video on a slow link must
+	// not be cut off after 60 s; ctx still cancels it.
+	opts.Timeout = fileutil.NoTimeout
 	result, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 	if err != nil {
 		return nil, "", err
 	}
 	return result.Data, result.ContentType, nil
+}
+
+// detectVideoBytesMediaType detects a video media type from bytes (TS
+// detectMediaType with topLevelType video); empty when no signature matches.
+func detectVideoBytesMediaType(data []byte) string {
+	mt, _ := fileutil.DetectMediaTypeSignature(data, "video")
+	return mt
 }
 
 func isUsableVideoMediaType(mediaType string) bool {

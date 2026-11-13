@@ -43,16 +43,17 @@ func validateDownloadURL(rawURL string) error {
 	// Strip trailing dots so a fully-qualified name like "localhost." (which
 	// resolves identically to "localhost") cannot bypass the hostname
 	// blocklist below (TS validateDownloadUrl).
-	host := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
+	host := fileutil.NormalizeHostname(u.Hostname())
 	if host == "" {
 		return providererrors.NewSSRFError(rawURL, "URL must have a hostname", nil)
 	}
 
-	// Block localhost and .local/.localhost domain names before DNS resolution.
-	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") {
+	// Block localhost and .local/.localhost/.internal domain names before DNS resolution.
+	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".internal") {
 		return providererrors.NewSSRFError(
 			rawURL,
-			fmt.Sprintf("URL with hostname %q is not allowed", host),
+			// TS: `URL with hostname ${hostname} is not allowed` (no quotes).
+			fmt.Sprintf("URL with hostname %s is not allowed", host),
 			nil,
 		)
 	}

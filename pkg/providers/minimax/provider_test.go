@@ -9,18 +9,18 @@ func TestNewDefaultsToMiniMaxEndpointAndEnvVar(t *testing.T) {
 
 	p := New(Config{})
 	if p.Name() != "minimax" {
-		t.Fatalf("Name() = %q, want minimax", p.Name())
+		t.Fatalf("Name() = %q, want minimax.messages", p.Name())
 	}
 
 	model, err := p.LanguageModel(ModelM3)
 	if err != nil {
 		t.Fatalf("LanguageModel() error = %v", err)
 	}
-	if model.Provider() != "minimax" {
-		t.Fatalf("model.Provider() = %q, want minimax", model.Provider())
+	if model.Provider() != "minimax.messages" {
+		t.Fatalf("model.Provider() = %q, want minimax.messages", model.Provider())
 	}
 	if model.ModelID() != "minimax-m3" {
-		t.Fatalf("model.ModelID() = %q, want minimax-m3", model.ModelID())
+		t.Fatalf("model.ModelID() = %q, want minimax.messages-m3", model.ModelID())
 	}
 }
 
@@ -58,9 +58,7 @@ func TestUnsupportedModelTypes(t *testing.T) {
 	if _, err := p.EmbeddingModel("model"); err == nil {
 		t.Fatal("EmbeddingModel() expected error, got nil")
 	}
-	if _, err := p.ImageModel("model"); err == nil {
-		t.Fatal("ImageModel() expected error, got nil")
-	}
+	// TS c4c8523cc3: imageModel is supported (TestR91toolsMiniMaxImage*).
 	if _, err := p.SpeechModel("model"); err == nil {
 		t.Fatal("SpeechModel() expected error, got nil")
 	}

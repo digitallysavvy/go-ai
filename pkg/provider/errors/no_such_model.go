@@ -17,7 +17,7 @@ type NoSuchModelError struct {
 	// ModelType identifies the kind of model requested, matching TS's
 	// modelType union: "languageModel", "embeddingModel", "imageModel",
 	// "transcriptionModel", "speechModel", "rerankingModel", "videoModel",
-	// or "evaluationModel".
+	// or "decisionModel".
 	ModelType string
 
 	// Message is a custom error message. When empty, Error() falls back to
@@ -43,4 +43,10 @@ func IsNoSuchModelError(err error) bool {
 // TS-style message (`No such ${modelType}: ${modelId}`).
 func NewNoSuchModelError(modelID, modelType string) *NoSuchModelError {
 	return &NoSuchModelError{ModelID: modelID, ModelType: modelType}
+}
+
+// Is lets errors.Is(err, ErrModelNotFound) keep matching a NoSuchModelError,
+// so callers written against the sentinel continue to work.
+func (e *NoSuchModelError) Is(target error) bool {
+	return target == ErrModelNotFound
 }

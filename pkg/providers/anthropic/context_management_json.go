@@ -3,6 +3,8 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // MarshalJSON implements custom JSON marshaling for ContextManagement
@@ -88,7 +90,7 @@ func marshalClearToolUsesEdit(e *ClearToolUsesEdit) (map[string]interface{}, err
 		result["clearToolInputs"] = *e.ClearToolInputs
 	}
 
-	if len(e.ExcludeTools) > 0 {
+	if e.ExcludeTools != nil {
 		result["excludeTools"] = e.ExcludeTools
 	}
 
@@ -221,7 +223,7 @@ func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 		AppliedEdits []json.RawMessage `json:"applied_edits"`
 	}
 
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := jsonexact.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
@@ -232,7 +234,7 @@ func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 		var typeCheck struct {
 			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(rawEdit, &typeCheck); err != nil {
+		if err := jsonexact.Unmarshal(rawEdit, &typeCheck); err != nil {
 			return err
 		}
 
@@ -241,21 +243,21 @@ func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 		switch typeCheck.Type {
 		case "clear_tool_uses_20250919":
 			var e AppliedClearToolUsesEdit
-			if err := json.Unmarshal(rawEdit, &e); err != nil {
+			if err := jsonexact.Unmarshal(rawEdit, &e); err != nil {
 				return err
 			}
 			edit = &e
 
 		case "clear_thinking_20251015":
 			var e AppliedClearThinkingEdit
-			if err := json.Unmarshal(rawEdit, &e); err != nil {
+			if err := jsonexact.Unmarshal(rawEdit, &e); err != nil {
 				return err
 			}
 			edit = &e
 
 		case "compact_20260112":
 			var e AppliedCompactEdit
-			if err := json.Unmarshal(rawEdit, &e); err != nil {
+			if err := jsonexact.Unmarshal(rawEdit, &e); err != nil {
 				return err
 			}
 			edit = &e
@@ -269,4 +271,31 @@ func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// wireContextManagement is the request body form of the option: the API names
+// the clear_tool_uses and compact fields in snake_case (TS maps clearAtLeast
+// to clear_at_least, and so on); MarshalJSON keeps the camelCase option names
+// so the type round-trips through UnmarshalJSON.
+func wireContextManagement(cm *ContextManagement) (map[string]interface{}, error) {
+	edits := make([]map[string]interface{}, 0, len(cm.Edits))
+	for _, edit := range cm.Edits {
+		m, err := marshalEdit(edit)
+		if err != nil {
+			return nil, err
+		}
+		for from, to := range map[string]string{
+			"clearAtLeast":         "clear_at_least",
+			"clearToolInputs":      "clear_tool_inputs",
+			"excludeTools":         "exclude_tools",
+			"pauseAfterCompaction": "pause_after_compaction",
+		} {
+			if v, ok := m[from]; ok {
+				delete(m, from)
+				m[to] = v
+			}
+		}
+		edits = append(edits, m)
+	}
+	return map[string]interface{}{"edits": edits}, nil
 }

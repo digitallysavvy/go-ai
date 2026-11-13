@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -63,40 +67,73 @@ type transcriptionModelOptions struct {
 	Mode             string // "SMART" | "VERBATIM"
 }
 
-func parseTranscriptionModelOptions(providerOptions map[string]interface{}) transcriptionModelOptions {
+// parseTranscriptionModelOptionsChecked mirrors TS parseProviderOptions with
+// googleTranscriptionModelOptions: a present value of the wrong type (or a
+// mode outside SMART/VERBATIM) fails with an InvalidArgumentError. Empty
+// arrays stay non-nil because TS forwards `languageCodes: []`.
+func parseTranscriptionModelOptionsChecked(providerOptions map[string]interface{}) (transcriptionModelOptions, error) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
 	var out transcriptionModelOptions
-	google, _ := providerOptions["google"].(map[string]interface{})
-	if google == nil {
-		return out
+	raw, ok := providerOptions["google"]
+	if !ok || raw == nil {
+		return out, nil
 	}
-	if v, ok := google["languageCodes"].([]interface{}); ok {
-		for _, s := range v {
-			if str, ok := s.(string); ok {
-				out.LanguageCodes = append(out.LanguageCodes, str)
-			}
+	google, isMap := raw.(map[string]interface{})
+	if !isMap {
+		return out, invalidGoogleFilesOptions(fmt.Errorf("google: expected object, received %T", raw))
+	}
+	strList := func(key string) ([]string, error) {
+		v, present := google[key]
+		if !present || v == nil {
+			return nil, nil
 		}
-	} else if v, ok := google["languageCodes"].([]string); ok {
-		out.LanguageCodes = v
-	}
-	if v, ok := google["customVocabulary"].([]interface{}); ok {
-		for _, s := range v {
-			if str, ok := s.(string); ok {
-				out.CustomVocabulary = append(out.CustomVocabulary, str)
+		switch list := v.(type) {
+		case []string:
+			return append([]string{}, list...), nil
+		case []interface{}:
+			res := make([]string, 0, len(list))
+			for i, item := range list {
+				str, isStr := item.(string)
+				if !isStr {
+					return nil, invalidGoogleFilesOptions(fmt.Errorf("%s[%d]: expected string, received %T", key, i, item))
+				}
+				res = append(res, str)
 			}
+			return res, nil
 		}
-	} else if v, ok := google["customVocabulary"].([]string); ok {
-		out.CustomVocabulary = v
+		return nil, invalidGoogleFilesOptions(fmt.Errorf("%s: expected array, received %T", key, v))
 	}
-	if v, ok := google["wordTimestamp"].(bool); ok {
-		out.WordTimestamp = &v
+	var err error
+	if out.LanguageCodes, err = strList("languageCodes"); err != nil {
+		return out, err
 	}
-	if v, ok := google["diarization"].(bool); ok {
-		out.Diarization = &v
+	if out.CustomVocabulary, err = strList("customVocabulary"); err != nil {
+		return out, err
 	}
-	if v, ok := google["mode"].(string); ok {
-		out.Mode = v
+	for _, key := range []string{"wordTimestamp", "diarization"} {
+		v, present := google[key]
+		if !present || v == nil {
+			continue
+		}
+		b, isBool := v.(bool)
+		if !isBool {
+			return out, invalidGoogleFilesOptions(fmt.Errorf("%s: expected boolean, received %T", key, v))
+		}
+		if key == "wordTimestamp" {
+			out.WordTimestamp = &b
+		} else {
+			out.Diarization = &b
+		}
 	}
-	return out
+	if v, present := google["mode"]; present && v != nil {
+		mode, isStr := v.(string)
+		if !isStr || (mode != "SMART" && mode != "VERBATIM") {
+			return out, invalidGoogleFilesOptions(fmt.Errorf("mode: invalid option %v, expected one of SMART, VERBATIM", v))
+		}
+		out.Mode = mode
+	}
+	return out, nil
 }
 
 // buildTranscriptionConfig builds the Interactions API transcription_config
@@ -105,10 +142,10 @@ func parseTranscriptionModelOptions(providerOptions map[string]interface{}) tran
 // object, matching TS buildTranscriptionConfig exactly.
 func buildTranscriptionConfig(opts transcriptionModelOptions) map[string]interface{} {
 	config := map[string]interface{}{}
-	if len(opts.LanguageCodes) > 0 {
+	if opts.LanguageCodes != nil {
 		config["language_codes"] = opts.LanguageCodes
 	}
-	if len(opts.CustomVocabulary) > 0 {
+	if opts.CustomVocabulary != nil {
 		config["custom_vocabulary"] = opts.CustomVocabulary
 	}
 	wantsMode := opts.Mode != "" || (opts.Diarization != nil && *opts.Diarization) || (opts.WordTimestamp != nil && *opts.WordTimestamp)
@@ -117,7 +154,7 @@ func buildTranscriptionConfig(opts transcriptionModelOptions) map[string]interfa
 		if modeType == "" {
 			modeType = "VERBATIM"
 		}
-		mode := map[string]interface{}{"type": strings.ToLower(modeType)}
+		mode := map[string]interface{}{"type": providerutils.JSToLower(modeType)}
 		if opts.Diarization != nil && *opts.Diarization {
 			mode["diarization_mode"] = "speaker"
 		}
@@ -132,31 +169,34 @@ func buildTranscriptionConfig(opts transcriptionModelOptions) map[string]interfa
 	return config
 }
 
-// parseOffsetSeconds parses a Google duration offset such as "1s" or
-// "9.400s" to seconds.
+// parseOffsetSeconds is TS Number.parseFloat for a Google duration offset such
+// as "1s" or "9.400s": leading JS whitespace skipped, then the longest
+// decimal prefix, finite only.
 func parseOffsetSeconds(offset string) (float64, bool) {
-	if offset == "" {
+	m := leadingFloatRE.FindString(providerutils.JSTrimStart(offset))
+	if m == "" {
 		return 0, false
 	}
-	trimmed := strings.TrimSuffix(offset, "s")
-	v, err := strconv.ParseFloat(trimmed, 64)
-	if err != nil {
+	v, err := strconv.ParseFloat(m, 64)
+	if err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
 		return 0, false
 	}
 	return v, true
 }
 
+var leadingFloatRE = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?`)
+
 type transcriptionWordAnnotation struct {
-	Type        string `json:"type"`
-	Text        string `json:"text,omitempty"`
-	Speaker     string `json:"speaker,omitempty"`
-	StartOffset string `json:"start_offset,omitempty"`
-	EndOffset   string `json:"end_offset,omitempty"`
+	Type        string  `json:"type"`
+	Text        *string `json:"text,omitempty"`
+	Speaker     string  `json:"speaker,omitempty"`
+	StartOffset string  `json:"start_offset,omitempty"`
+	EndOffset   string  `json:"end_offset,omitempty"`
 }
 
 type transcriptionResponseContent struct {
 	Type        string                        `json:"type"`
-	Text        string                        `json:"text,omitempty"`
+	Text        *string                       `json:"text,omitempty"`
 	Annotations []transcriptionWordAnnotation `json:"annotations,omitempty"`
 }
 
@@ -175,24 +215,26 @@ type transcriptionResponse struct {
 // (POST /interactions), matching TS GoogleTranscriptionModel.doGenerate.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if isLiveTranscriptionModelID(m.modelID) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "modelId",
-			Message: fmt.Sprintf(
-				"Model '%s' only supports streaming transcription. Use ai.ExperimentalStreamTranscribe, or a unary model such as '%s'.",
-				m.modelID, ModelGemini35Transcribe,
-			),
-		}
+		return nil, providererrors.NewArgumentError("modelId", fmt.Sprintf(
+			"Model '%s' only supports streaming transcription. Use ai.ExperimentalStreamTranscribe, or a unary model such as '%s'.",
+			m.modelID, ModelGemini35Transcribe,
+		), nil)
 	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	// TS reads currentDate before the request.
+	currentDate := time.Now()
 
 	audioBase64 := opts.AudioBase64
 	if audioBase64 == "" {
 		audioBase64 = base64.StdEncoding.EncodeToString(opts.Audio)
 	}
 
-	transcriptionOpts := parseTranscriptionModelOptions(opts.ProviderOptions)
+	transcriptionOpts, err := parseTranscriptionModelOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	transcriptionConfig := buildTranscriptionConfig(transcriptionOpts)
 
 	reqBody := map[string]interface{}{
@@ -213,29 +255,29 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var response transcriptionResponse
 	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/interactions",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractionsTranscription),
+		Method:           http.MethodPost,
+		Path:             "/interactions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", "failed to transcribe audio: "+err.Error(), err)
-	}
-	if resp.StatusCode >= 400 {
-		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "",
-			fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
+		return nil, m.handleError(err)
 	}
 
 	var text strings.Builder
 	var segments []types.TranscriptionTimestamp
 	for _, step := range response.Steps {
 		for _, content := range step.Content {
-			if content.Type != "text" {
+			// TS skips a content without text (null/absent), annotations
+			// included; an empty string still counts.
+			if content.Type != "text" || content.Text == nil {
 				continue
 			}
-			text.WriteString(content.Text)
+			text.WriteString(*content.Text)
 			for _, annotation := range content.Annotations {
-				if annotation.Type != "word_info" || annotation.Text == "" {
+				// TS skips only a null/absent word text.
+				if annotation.Type != "word_info" || annotation.Text == nil {
 					continue
 				}
 				startSecond, ok1 := parseOffsetSeconds(annotation.StartOffset)
@@ -244,7 +286,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 					continue
 				}
 				segments = append(segments, types.TranscriptionTimestamp{
-					Text:  annotation.Text,
+					Text:  *annotation.Text,
 					Start: startSecond,
 					End:   endSecond,
 				})
@@ -252,27 +294,54 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}
 	}
 
+	// TS `response.usage != null`: an empty usage object is still reported.
 	var providerMetadata map[string]interface{}
-	if len(response.Usage) > 0 {
+	if response.Usage != nil {
 		providerMetadata = map[string]interface{}{
 			"google": map[string]interface{}{"usage": response.Usage},
 		}
 	}
 
 	var providerUsage map[string]interface{}
-	if len(response.Usage) > 0 {
+	if response.Usage != nil {
 		providerUsage = response.Usage
 	}
 
 	return &types.TranscriptionResult{
 		Text:             text.String(),
 		Segments:         segments,
+		Warnings:         []types.Warning{}, // TS always returns warnings: []
 		ProviderMetadata: providerMetadata,
 		ProviderUsage:    providerUsage,
 		Response: &types.ResponseMetadata{
-			ModelID: m.modelID,
-			Headers: providerutils.ExtractHeaders(resp.Headers),
-			Body:    json.RawMessage(resp.Body),
+			Timestamp: currentDate,
+			ModelID:   m.modelID,
+			Headers:   providerutils.ExtractHeaders(resp.Headers),
+			Body:      json.RawMessage(resp.Body),
 		},
 	}, nil
+}
+
+// handleError maps transport errors like TS googleFailedResponseHandler: a
+// missing key stays a LoadAPIKeyError and HTTP failures keep status, headers
+// and body for retry decisions.
+func (m *TranscriptionModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err
+	}
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
+	}
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }

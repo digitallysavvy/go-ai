@@ -2,11 +2,15 @@ package xai
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -68,30 +72,34 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, err
 	}
 	timestamp := time.Now()
+	// TS sends and reports JSON.stringify(requestBody): the body literal's
+	// key order, HTML characters literal.
+	requestText := providerutils.StringifyOrdered(body, xaiSpeechBodyOrder)
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/tts",
-		Body:    body,
+		Body:    []byte(requestText),
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		return nil, err // TS handleFetchError: abort as is, else "Cannot connect to API"
 	}
 	// xAI returns a trace id on every response, success and error.
-	traceID := resp.Headers.Get("x-trace-id")
-	if resp.StatusCode >= 400 {
-		message := parseXAIErrorMessage(resp.Body)
-		if traceID != "" {
-			message = fmt.Sprintf("%s (trace: %s)", message, traceID)
-		}
-		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", message, nil)
+	// TS `traceId != null`: a present empty header is reported too.
+	traceID := providerutils.FetchHeaderText(http.Header(resp.Headers), "x-trace-id")
+	_, hasTraceID := http.Header(resp.Headers)[http.CanonicalHeaderKey("x-trace-id")]
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, newXAIProviderErrorFrom(m.Provider(), resp.StatusError(resp.Body))
 	}
 
-	requestBytes, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal xAI speech request metadata: %w", err)
-	}
+	requestBytes := []byte(requestText)
 
 	// With `with_timestamps` the API returns a JSON envelope carrying
 	// base64-encoded audio plus character-level timings instead of raw audio
@@ -100,14 +108,18 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	audio := resp.Body
 	var envelope *xaiSpeechTimestampsResponse
 	if withTimestamps {
+		resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+		if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaXAISpeechTimestamps)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return nil, err
+		}
 		var parsed xaiSpeechTimestampsResponse
-		if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		if err := jsonexact.Unmarshal(resp.Body, &parsed); err != nil {
 			return nil, providererrors.NewProviderError(m.Provider(), 0, "",
 				fmt.Sprintf("failed to decode speech timestamps envelope: %v", err), err)
 		}
 		envelope = &parsed
 		if envelope.Audio != nil && *envelope.Audio != "" {
-			decoded, decErr := base64.StdEncoding.DecodeString(*envelope.Audio)
+			decoded, decErr := fileutil.ConvertBase64ToBytes(*envelope.Audio)
 			if decErr != nil {
 				return nil, providererrors.NewProviderError(m.Provider(), 0, "",
 					fmt.Sprintf("failed to decode base64 audio: %v", decErr), decErr)
@@ -121,7 +133,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	xaiMetadata := map[string]interface{}{}
-	if traceID != "" {
+	if hasTraceID {
 		xaiMetadata["traceId"] = traceID
 	}
 	if envelope != nil {
@@ -138,9 +150,13 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			}
 		}
 	}
-	var providerMetadata map[string]interface{}
-	if len(xaiMetadata) > 0 {
-		providerMetadata = map[string]interface{}{"xai": xaiMetadata}
+	// TS always returns providerMetadata.xai, even when empty.
+	providerMetadata := map[string]interface{}{"xai": xaiMetadata}
+	// createBinaryResponseHandler yields no raw value: the response body is
+	// only reported for the JSON envelope returned with `with_timestamps`.
+	var responseBody interface{}
+	if envelope != nil {
+		responseBody = providerutils.RawJSONBody(resp.Body)
 	}
 
 	return &types.SpeechResult{
@@ -154,7 +170,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: timestamp,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(resp.Headers),
-			Body:      resp.Body,
+			Body:      responseBody,
 		},
 	}, nil
 }
@@ -231,8 +247,26 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	if xaiOpts.WithTimestamps != nil {
 		body["with_timestamps"] = *xaiOpts.WithTimestamps
 	}
-	if len(xaiOpts.Replace) > 0 {
-		body["replace"] = xaiOpts.Replace
+	// TS copies xaiOptions?.<key> (zod .nullish keeps null), so an explicit
+	// null is sent as null and replace: {} is sent as {}
+	// (xai-speech-model.ts:128-138).
+	rawXAI, _ := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["xai"])
+	for optionKey, bodyKey := range map[string]string{
+		"optimizeStreamingLatency": "optimize_streaming_latency",
+		"textNormalization":        "text_normalization",
+		"withTimestamps":           "with_timestamps",
+		"replace":                  "replace",
+	} {
+		if v, present := rawXAI[optionKey]; present && v == nil {
+			body[bodyKey] = nil
+		}
+	}
+	if _, isObject := rawXAI["replace"].(map[string]interface{}); isObject || len(xaiOpts.Replace) > 0 {
+		replace := xaiOpts.Replace
+		if replace == nil {
+			replace = map[string]string{}
+		}
+		body["replace"] = replace
 	}
 	return body, warnings, nil
 }
@@ -243,7 +277,7 @@ func extractXAISpeechProviderOptions(providerOptions map[string]interface{}) (XA
 	if !ok || raw == nil {
 		return opts, nil
 	}
-	b, err := json.Marshal(raw)
+	b, err := json.Marshal(raw) // caller options: a non-finite number is invalid (zod), not null
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}
@@ -260,4 +294,11 @@ func extractXAISpeechProviderOptions(providerOptions map[string]interface{}) (XA
 		return opts, invalidXAIProviderOptions(fmt.Errorf("optimizeStreamingLatency must be 0, 1, or 2"))
 	}
 	return opts, nil
+}
+
+// xaiSpeechBodyOrder is the key order of TS getArgs' requestBody and
+// output_format literals (xai-speech-model.ts).
+var xaiSpeechBodyOrder = map[string][]string{
+	"":              {"text", "voice_id", "language", "output_format", "speed", "optimize_streaming_latency", "text_normalization", "with_timestamps", "replace"},
+	"output_format": {"codec", "sample_rate", "bit_rate"},
 }

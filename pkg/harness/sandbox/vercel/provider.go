@@ -10,11 +10,13 @@
 // api-client.js.
 //
 // Capability gaps vs the TS package (documented, not silently dropped):
-//   - No `@vercel/oidc` token refresh loop or local-dev credential prompting
-//     (`vercel link` / `vercel env pull`). VERCEL_OIDC_TOKEN is read fresh on
-//     each top-level operation; explicit Token+TeamID+ProjectID work exactly
-//     as in TS.
-//   - No snapshot listing/tree, session listing, user/group management, or
+//   - The `@vercel/oidc` token refresh is opt-in (OIDCRefresh) and there is
+//     no local-dev credential prompting (`vercel link` / `vercel env pull`).
+//     The Vercel OIDC token (VERCEL_OIDC_TOKEN_FILE, else VERCEL_OIDC_TOKEN)
+//     is read fresh on each top-level operation; explicit
+//     Token+TeamID+ProjectID work exactly as in TS.
+//   - Snapshots are only created and listed for template preparation; there is
+//     no snapshot tree, session listing, user/group management, or
 //     `@workflow/serde` (de)serialization hooks — these are native-SDK
 //     features unrelated to the harness sandbox surface and are not exposed
 //     by packages/sandbox-vercel either.
@@ -24,13 +26,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -63,22 +68,39 @@ func withDefaultSandboxSettings(p CreateParams) CreateParams {
 // withAuthError wraps err as a harness.SandboxAuthenticationError when it is
 // a credential-resolution failure or a 401/403 API response. Other errors
 // pass through unchanged. Mirrors TS `withVercelSandboxAuthenticationError`,
-// simplified: this port does not reproduce the @vercel/oidc error-name/opaque
-// message heuristics, since it never delegates to that library (see package
-// doc).
+// including its message test over the cause chain; the @vercel/oidc error
+// names and the Node.js ERR_INVALID_ARG_TYPE case have no Go counterpart,
+// since this port never delegates to those libraries (see package doc).
 func withAuthError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, ErrNoCredentials) {
+	var oidcErr *vercelOIDCContextError
+	if errors.Is(err, ErrNoCredentials) || errors.Is(err, ErrPartialCredentials) || errors.As(err, &oidcErr) {
 		return harness.NewSandboxAuthenticationError(vercelAuthMessage, vercelProviderID, err)
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && isAuthErrorStatus(apiErr.StatusCode) {
 		return harness.NewSandboxAuthenticationError(vercelAuthMessage, vercelProviderID, err)
 	}
+	// TS isVercelSandboxAuthenticationFailure also tests the message of every
+	// error in the cause chain against VERCEL_AUTHENTICATION_ERROR_MESSAGE,
+	// so a matching template preparation or API error message is an
+	// authentication failure too.
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if vercelAuthErrorMessagePattern.MatchString(e.Error()) {
+			return harness.NewSandboxAuthenticationError(vercelAuthMessage, vercelProviderID, err)
+		}
+	}
 	return err
 }
+
+// vercelAuthErrorMessagePattern is TS VERCEL_AUTHENTICATION_ERROR_MESSAGE. A
+// JS /i regexp without the u flag never folds s to U+017F or k to U+212A (Go
+// (?i) does), so those letters match only their ASCII cases.
+var vercelAuthErrorMessagePattern = regexp.MustCompile("(?i)" + strings.NewReplacer(
+	"s", "(?-i:[sS])", "S", "(?-i:[sS])", "k", "(?-i:[kK])", "K", "(?-i:[kK])",
+).Replace(`Could not get credentials from OIDC context|No authentication found|Failed to (?:retrieve|refresh) authentication token|Missing credentials parameters to access the Vercel API|Authentication failed`))
 
 // Template describes a one-time sandbox preparation recipe: `Identity`
 // selects a stable, cached snapshot; `Prepare` runs against a fresh sandbox
@@ -93,6 +115,10 @@ type Template struct {
 // TS `VercelNetworkSandboxSessionCreateOptions`.
 type CreateSessionOptions struct {
 	Credentials Credentials
+	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
+	// OIDCRefresh). Nil uses the token as read (VERCEL_OIDC_TOKEN_FILE, else
+	// VERCEL_OIDC_TOKEN).
+	OIDCRefresh *OIDCRefresh
 	// BaseURL overrides the Vercel API base URL (tests only).
 	BaseURL string
 
@@ -121,6 +147,10 @@ type CreateSessionOptions struct {
 // template snapshot) and returns it as a harness.NetworkSandboxSession.
 // Mirrors TS `createVercelNetworkSandboxSession`.
 func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions) (harness.NetworkSandboxSession, error) {
+	// TS effectiveSignal?.throwIfAborted() comes first.
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
 	if opts.SandboxID != "" && opts.Name != "" && opts.SandboxID != opts.Name {
 		return nil, errors.New("createVercelNetworkSandboxSession: sandboxId and name must match when both are provided.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
@@ -139,13 +169,21 @@ func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions)
 		FailoverRegions:    opts.FailoverRegions,
 		KeepLastSnapshots:  opts.KeepLastSnapshots,
 	})
+	// 3.9.0 Sandbox.create / getOrCreate throw this TypeError before
+	// getCredentials, so it wins over a missing credential.
+	if err := checkRuntimeOrImage(baseParams); err != nil {
+		return nil, err
+	}
 
-	creds, err := ResolveCredentials(opts.Credentials)
+	creds, err := resolveCredentialsWithRefresh(ctx, opts.Credentials, opts.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
 	}
-	client := NewAPIClient(opts.BaseURL, creds)
+	client := newAPIClient(opts.BaseURL, creds, opts.OIDCRefresh)
 
+	if opts.Template != nil && opts.Template.Prepare == nil {
+		return nil, errors.New("createVercelNetworkSandboxSession: template.Prepare must be provided.") //nolint:staticcheck // mirrors TS message style
+	}
 	if opts.Template == nil {
 		params := baseParams
 		if liveName != "" {
@@ -177,16 +215,24 @@ type ResumeSessionOptions struct {
 	Credentials Credentials
 	BaseURL     string
 	SandboxID   string
+	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
+	// OIDCRefresh). Nil uses the token as read (VERCEL_OIDC_TOKEN_FILE, else
+	// VERCEL_OIDC_TOKEN).
+	OIDCRefresh *OIDCRefresh
 }
 
 // ResumeNetworkSandboxSession resumes an existing named sandbox. Mirrors TS
 // `resumeVercelNetworkSandboxSession`.
 func ResumeNetworkSandboxSession(ctx context.Context, opts ResumeSessionOptions) (harness.NetworkSandboxSession, error) {
-	creds, err := ResolveCredentials(opts.Credentials)
+	// TS effectiveSignal?.throwIfAborted() comes first.
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
+	creds, err := resolveCredentialsWithRefresh(ctx, opts.Credentials, opts.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
 	}
-	client := NewAPIClient(opts.BaseURL, creds)
+	client := newAPIClient(opts.BaseURL, creds, opts.OIDCRefresh)
 	resume := true
 	sbx, err := GetSandbox(ctx, client, opts.SandboxID, &resume)
 	if err != nil {
@@ -209,13 +255,18 @@ func SessionFromNativeSandbox(sandbox *Sandbox) providerutils.SandboxSession {
 	return NewSession(sandbox)
 }
 
+// templateVersion is TS TEMPLATE_VERSION (vercel-sandbox.ts): bumped to 3
+// by 177291adce so templates built before the bridge and snapshot changes
+// are not reused (a stale template made session creation time out).
+const templateVersion = 3
+
 // deriveTemplateName computes the stable, content-addressed template
 // snapshot name for (identity, environment selection). Mirrors TS's
-// `ai-sdk-harness-v2-${sha256(material).slice(0,12).hex}` derivation in
-// `createVercelNetworkSandboxSession`. The exact hash algorithm need not
-// match TS byte-for-byte (each runs in its own process and only compares
-// against its own prior calls); determinism and injectivity in (identity,
-// selection) are what matters.
+// `ai-sdk-harness-v${TEMPLATE_VERSION}-${sha256(material).slice(0,12).hex}`
+// derivation in
+// `createVercelNetworkSandboxSession`. The material is encoded like
+// JSON.stringify (no HTML escaping, U+2028/U+2029 raw), so Go and TS hosts
+// sharing a Vercel project resolve the same template snapshot.
 func deriveTemplateName(identity string, baseParams CreateParams) string {
 	var selection interface{}
 	switch {
@@ -226,9 +277,9 @@ func deriveTemplateName(identity string, baseParams CreateParams) string {
 	default:
 		selection = map[string]string{"runtime": baseParams.Runtime}
 	}
-	material, _ := json.Marshal([]interface{}{2, identity, selection})
+	material, _ := jsstr.Marshal([]interface{}{templateVersion, identity, selection})
 	digest := sha256.Sum256(material)
-	return "ai-sdk-harness-v2-" + hex.EncodeToString(digest[:12])
+	return "ai-sdk-harness-v" + strconv.Itoa(templateVersion) + "-" + hex.EncodeToString(digest[:12])
 }
 
 // snapshotCache is a small in-process identity -> snapshotID cache, mirroring
@@ -254,10 +305,13 @@ func (c *snapshotCache) set(key, value string) {
 	c.m[key] = value
 }
 
-// ensureTemplateSnapshot gets-or-creates a persistent named template sandbox,
-// preparing it via onCreate exactly once, then returns a snapshot ID for it
-// (stopping it to produce one if it doesn't already have one). Mirrors TS
-// `ensureTemplateSnapshot`.
+// ensureTemplateSnapshot returns a manual snapshot ID for the named template,
+// preparing it via onCreate exactly once. Mirrors TS `ensureTemplateSnapshot`
+// (TS #23529): the template is prepared in a non-persistent builder sandbox
+// and a manual snapshot is taken only after onCreate completes. A concurrent
+// builder that hits the duplicate-name conflict (or finds the named builder
+// sandbox before preparation has finished) waits for the winner's completed
+// manual snapshot instead of reusing an incomplete one.
 func ensureTemplateSnapshot(ctx context.Context, client *APIClient, baseParams CreateParams, templateName string, cache *snapshotCache, onCreate func(context.Context, *Sandbox) error) (string, error) {
 	if cache != nil {
 		if id, ok := cache.get(templateName); ok {
@@ -267,30 +321,38 @@ func ensureTemplateSnapshot(ctx context.Context, client *APIClient, baseParams C
 
 	templateParams := baseParams
 	templateParams.Name = templateName
-	persistent := true
+	persistent := false
 	templateParams.Persistent = &persistent
 	if templateParams.SnapshotExpiration == nil {
 		zero := int64(0)
 		templateParams.SnapshotExpiration = &zero
 	}
 
-	prepared, err := GetOrCreateSandbox(ctx, client, templateParams, onCreate)
-	if err != nil {
+	var createdSnapshotID string
+	onCreateStarted := false
+	_, err := GetOrCreateSandbox(ctx, client, templateParams, func(ctx context.Context, sbx *Sandbox) error {
+		onCreateStarted = true
+		if onCreate != nil {
+			if err := onCreate(ctx, sbx); err != nil {
+				return err
+			}
+		}
+		id, err := sbx.Snapshot(ctx, templateParams.SnapshotExpiration)
+		if err != nil {
+			return err
+		}
+		createdSnapshotID = id
+		return nil
+	})
+	if err != nil && (onCreateStarted || !isSandboxNameConflictError(err)) {
 		return "", err
 	}
 
-	snapshotID := prepared.CurrentSnapshotID()
+	snapshotID := createdSnapshotID
 	if snapshotID == "" {
-		stoppedSnapshotID, err := prepared.Stop(ctx)
+		snapshotID, err = pollForTemplateSnapshotWithTimeout(ctx, client, templateName, templateSnapshotWaitTimeout)
 		if err != nil {
 			return "", err
-		}
-		snapshotID = stoppedSnapshotID
-		if snapshotID == "" {
-			snapshotID, err = pollForTemplateSnapshot(ctx, client, templateName)
-			if err != nil {
-				return "", err
-			}
 		}
 	}
 
@@ -300,45 +362,80 @@ func ensureTemplateSnapshot(ctx context.Context, client *APIClient, baseParams C
 	return snapshotID, nil
 }
 
-const (
-	snapshotPollInterval = 500 * time.Millisecond
-	snapshotPollTimeout  = 30 * time.Second
+var (
+	snapshotPollInterval        = 500 * time.Millisecond
+	templateSnapshotWaitTimeout = 60 * time.Second
 )
 
-// pollForTemplateSnapshot polls a named sandbox until it reports a snapshot
-// ID. Mirrors TS `pollForTemplateSnapshot`.
-func pollForTemplateSnapshot(ctx context.Context, client *APIClient, name string) (string, error) {
-	deadline := time.Now().Add(snapshotPollTimeout)
-	resumeFalse := false
+// pollForTemplateSnapshotWithTimeout polls until a completed manual snapshot
+// exists for the named template (TS `pollForTemplateSnapshot`).
+func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, name string, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if err := ctx.Err(); err != nil {
-			return "", err
+		if ctx.Err() != nil { // TS abortSignal?.throwIfAborted(): the abort reason
+			return "", context.Cause(ctx)
 		}
-		sbx, err := GetSandbox(ctx, client, name, &resumeFalse)
+		// Only completed manual snapshots count: automatic snapshots can be
+		// taken of a half-prepared builder. Like TS, the listing stops at
+		// the first match.
+		snapshotID, found := "", false
+		err := client.eachSnapshot(ctx, name, func(snap snapshotWire) bool {
+			if snap.Status == "created" && snap.CreationMethod == "manual" {
+				snapshotID, found = snap.ID, true
+			}
+			return found
+		})
 		if err != nil {
 			return "", err
 		}
-		if sbx.CurrentSnapshotID() != "" {
-			return sbx.CurrentSnapshotID(), nil
+		if found {
+			return snapshotID, nil
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", context.Cause(ctx)
 		case <-time.After(snapshotPollInterval):
 		}
 	}
-	return "", fmt.Errorf("Timed out waiting for snapshot of template %q to publish.", name) //nolint:staticcheck // matches TS SDK's exact error text
+	return "", fmt.Errorf("Timed out waiting for snapshot of template \"%s\" to publish.", name) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
+// sandboxNameConflictPattern is TS /sandbox.*name.*already exists/i: JS `.`
+// stops at a line terminator, and a /i regexp without the u flag never
+// folds s to U+017F (Go (?i) does).
+var sandboxNameConflictPattern = regexp.MustCompile(`(?i)(?-i:[sS])andbox` + providerutils.JSRegexpDot + `*name` + providerutils.JSRegexpDot + `*already exi(?-i:[sS])t(?-i:[sS])`)
+
+// isSandboxNameConflictError reports the API's duplicate sandbox name
+// response (400 or 409 with an "already exists" message). Mirrors TS
+// `isSandboxNameConflictError`, which tests the @vercel/sandbox 3.9.0
+// APIError message ("Status code N is not ok: <server message>", from
+// base-client.js parse) and json.error.message. Go's own Error() text
+// ("vercel sandbox API: ...") is not one of them: its "sandbox" prefix
+// would match a server message that only says the name already exists.
+func isSandboxNameConflictError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.StatusCode != 400 && apiErr.StatusCode != 409 {
+		return false
+	}
+	tsMessage := "Status code " + strconv.Itoa(apiErr.StatusCode) + " is not ok"
+	if apiErr.Message != "" {
+		tsMessage += ": " + apiErr.Message
+	}
+	return sandboxNameConflictPattern.MatchString(tsMessage) || sandboxNameConflictPattern.MatchString(apiErr.Message)
 }
 
 // createLiveSandboxFromSnapshot forks a live sandbox from a prepared
-// snapshot. Mirrors TS `createLiveSandboxFromSnapshot`: runtime, image,
-// source, and persistent are stripped from baseParams (the snapshot's own
-// values apply), and liveName overrides the sandbox name when given.
+// snapshot. Mirrors TS `createLiveSandboxFromSnapshot`: runtime, image and
+// source are stripped from baseParams (the snapshot's own values apply);
+// persistent is passed through to the live sandbox (TS ea39523ce9); and
+// liveName overrides the sandbox name when given.
 func createLiveSandboxFromSnapshot(ctx context.Context, client *APIClient, baseParams CreateParams, snapshotID, liveName string) (*Sandbox, error) {
 	forkParams := baseParams
 	forkParams.Runtime = ""
 	forkParams.Image = ""
-	forkParams.Persistent = nil
 	forkParams.Source = &SnapshotSource{Type: "snapshot", SnapshotID: snapshotID}
 	if liveName != "" {
 		forkParams.Name = liveName

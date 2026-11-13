@@ -2,12 +2,14 @@ package anthropicaws
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -116,5 +118,23 @@ func TestAnthropicAWSSigV4HeadersAndCredentialProvider(t *testing.T) {
 	}
 	if got := transport.req.Header.Get("X-Amz-Security-Token"); got != "session" {
 		t.Fatalf("X-Amz-Security-Token = %q", got)
+	}
+}
+
+func TestAnthropicAWSRejectsHostRewritingRegion(t *testing.T) {
+	for _, region := range []string{"evil.example.com/#", "user@internal:8080/#", "us-east-1/../..", "us east 1", "region\n"} {
+		transport := &captureTransport{}
+		_, err := New(Config{Region: region, WorkspaceID: "w", APIKey: "k", HTTPClient: &http.Client{Transport: transport}})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) || invalid.Field != "region" {
+			t.Fatalf("region %q: err = %v, want InvalidArgumentError(region)", region, err)
+		}
+		if transport.req != nil {
+			t.Fatalf("region %q: request was sent", region)
+		}
+	}
+	// A custom endpoint ignores the unused region.
+	if _, err := New(Config{Region: "not a region", WorkspaceID: "w", APIKey: "k", BaseURL: "https://proxy.example/v1"}); err != nil {
+		t.Fatalf("custom baseURL with unused region: %v", err)
 	}
 }

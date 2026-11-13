@@ -2,7 +2,11 @@ package gemini
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // orderedMap is an insertion-order-preserving JSON object, mirroring the key
@@ -40,14 +44,12 @@ func (m *orderedMap) set(key string, value interface{}) {
 // json.Number/etc.) the way JS `JSON.stringify` does for a single value: no
 // indentation and no HTML-escaping of `<`, `>`, `&`.
 func marshalJSONCompact(v interface{}) string {
-	var buf strings.Builder
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		b, _ := json.Marshal(v)
-		return string(b)
+	// jsonstr also writes U+2028/U+2029 raw, like JSON.stringify.
+	b, err := jsonstr.Marshal(v)
+	if err != nil {
+		b, _ = json.Marshal(v)
 	}
-	return strings.TrimRight(buf.String(), "\n")
+	return string(b)
 }
 
 // marshalOrdered compact-serializes an ordered JSON tree (*orderedMap /
@@ -58,7 +60,9 @@ func marshalOrdered(v interface{}) string {
 	case *orderedMap:
 		var b strings.Builder
 		b.WriteByte('{')
-		for i, k := range val.keys {
+		// JSON.stringify enumerates array-index keys first, ascending
+		// (google-json-accumulator.ts:127 finalize).
+		for i, k := range jsonorder.JSKeyOrder(val.keys) {
 			if i > 0 {
 				b.WriteByte(',')
 			}
@@ -79,7 +83,7 @@ func marshalOrdered(v interface{}) string {
 		}
 		b.WriteByte(']')
 		return b.String()
-	case nil:
+	case nil, arrayHole:
 		return "null"
 	default:
 		return marshalJSONCompact(val)
@@ -104,6 +108,8 @@ func toPlainJSON(v interface{}) interface{} {
 			out[i] = toPlainJSON(e)
 		}
 		return out
+	case arrayHole:
+		return nil
 	default:
 		return val
 	}
@@ -115,20 +121,30 @@ func toPlainJSON(v interface{}) interface{} {
 func decodeOrderedJSON(data []byte) (interface{}, error) {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.UseNumber()
-	return decodeOrderedValue(dec)
+	return decodeOrderedValue(dec, 0)
 }
 
-func decodeOrderedValue(dec *json.Decoder) (interface{}, error) {
+// maxOrderedJSONDepth bounds the recursive decode (encoding/json's
+// maxNestingDepth): deeper input is an error instead of a fatal stack
+// overflow (TS JSON.stringify throws a catchable RangeError).
+const maxOrderedJSONDepth = 10000
+
+var errOrderedJSONTooDeep = errors.New("exceeded max depth")
+
+func decodeOrderedValue(dec *json.Decoder, depth int) (interface{}, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
 	}
-	return decodeOrderedToken(dec, tok)
+	return decodeOrderedToken(dec, tok, depth)
 }
 
-func decodeOrderedToken(dec *json.Decoder, tok json.Token) (interface{}, error) {
+func decodeOrderedToken(dec *json.Decoder, tok json.Token, depth int) (interface{}, error) {
 	switch t := tok.(type) {
 	case json.Delim:
+		if depth+1 > maxOrderedJSONDepth {
+			return nil, errOrderedJSONTooDeep
+		}
 		switch t {
 		case '{':
 			obj := newOrderedMap()
@@ -138,7 +154,7 @@ func decodeOrderedToken(dec *json.Decoder, tok json.Token) (interface{}, error) 
 					return nil, err
 				}
 				key, _ := keyTok.(string)
-				val, err := decodeOrderedValue(dec)
+				val, err := decodeOrderedValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -151,7 +167,7 @@ func decodeOrderedToken(dec *json.Decoder, tok json.Token) (interface{}, error) 
 		case '[':
 			arr := []interface{}{}
 			for dec.More() {
-				val, err := decodeOrderedValue(dec)
+				val, err := decodeOrderedValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}

@@ -1,12 +1,8 @@
 package azure
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -45,45 +41,17 @@ func (m *TranscriptionModel) ModelID() string {
 	return m.deploymentID
 }
 
-// DoTranscribe performs speech-to-text transcription
+// DoTranscribe performs speech-to-text transcription through the OpenAI
+// transcription model configured for this deployment (TS wraps
+// OpenAITranscriptionModel), so providerOptions.openai, media type, headers,
+// segments and response metadata match.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
-	body, contentType, err := m.buildMultipartBody(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	// Azure OpenAI transcription endpoint
-	path := m.provider.endpointPath(m.deploymentID, "/audio/transcriptions")
-
-	// Use internal http client's Do method with custom headers
-	req := internalhttp.Request{
-		Method: "POST",
-		Path:   path,
-		Body:   body,
-		Headers: map[string]string{
-			"Content-Type": contentType,
-		},
-	}
-	headers, err := m.provider.requestHeaders(ctx, req.Headers)
-	if err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
-	}
-	req.Headers = headers
-
-	resp, err := m.provider.client.Do(ctx, req)
-	if err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("azure OpenAI API returned status %d: %s", resp.StatusCode, string(resp.Body))
-	}
-
-	return m.convertResponse(resp.Body, opts.Timestamps)
+	return openai.NewTranscriptionModel(m.provider.openaiDelegate(m.deploymentID), m.deploymentID).DoTranscribe(ctx, opts)
 }
 
 // DoStream streams a transcript for live audio over the OpenAI realtime
-// WebSocket (gpt-realtime-whisper deployments). Mirrors TS
+// WebSocket (gpt-realtime-whisper, gpt-live-transcribe and gpt-transcribe
+// deployments). Mirrors TS
 // AzureTranscriptionModel#doStream's default ("openai") branch, which wraps
 // an OpenAITranscriptionModel instance constructed with Azure's own
 // url/headers closures -- so this reuses the openai package's realtime
@@ -92,29 +60,21 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 // REST wire format but through p.endpointPath/p.requestHeaders instead of
 // OpenAI's.
 func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
-	if !openai.IsRealtimeTranscriptionModelID(m.deploymentID) {
+	if !openai.SupportsStreamingTranscription(m.deploymentID) {
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: fmt.Sprintf("streaming transcription with %s", m.deploymentID),
 		}
 	}
 
+	if err := openai.ValidateTranscriptionProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	streamOpts := openai.TranscriptionStreamOpenAIOptions(opts.ProviderOptions)
 
-	// options that only apply to the REST transcription endpoint, mirroring
-	// TS's doStream check on the raw providerOptions.openai fields.
-	var warnings []types.Warning
-	if streamOpts.HasInclude {
-		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("include"))
-	}
-	if streamOpts.Prompt != "" {
-		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("prompt"))
-	}
-	if streamOpts.HasTemperature {
-		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("temperature"))
-	}
-	if len(streamOpts.TimestampGranularities) > 0 {
-		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("timestampGranularities"))
-	}
+	// options that only apply to the REST transcription endpoint, and
+	// streaming.delay for a model without a delay setting, mirroring TS's
+	// doStream checks on providerOptions.openai.
+	warnings := openai.StreamingTranscriptionWarnings(m.deploymentID, streamOpts)
 
 	wsURL, err := m.realtimeWebSocketURL()
 	if err != nil {
@@ -126,7 +86,11 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// token is injected by a custom `fetch` wrapper at REST call time, which
 	// a raw WebSocket dial never goes through either in TS or here), merged
 	// with options.headers via combineHeaders.
-	headers := internalhttp.MergeHeaders(m.provider.staticAuthHeaders(), opts.Headers)
+	keyHeaders, err := m.provider.apiKeyHeadersCtx(ctx, "openai")
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(m.provider.staticAuthHeaders(), keyHeaders, opts.Headers)
 	sessionUpdate := openai.BuildOpenAIRealtimeTranscriptionSession(m.deploymentID, opts.InputAudioFormat, streamOpts)
 
 	abortCtx := opts.AbortSignal
@@ -157,106 +121,14 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 // Chat/Completion/Responses/Image models (p.responsesBaseURL +
 // p.includeAPIVersionQuery) -- converted from http(s) to ws(s).
 func (m *TranscriptionModel) realtimeWebSocketURL() (string, error) {
+	if m.provider.config.BaseURL == "" && m.provider.config.ResourceName == "" {
+		return "", missingResourceNameError()
+	}
 	target := m.provider.responsesBaseURL(m.deploymentID) + "/realtime?intent=transcription"
 	if m.provider.includeAPIVersionQuery() {
 		target += "&api-version=" + m.provider.config.APIVersion
 	}
 	return toWebSocketURL(target)
-}
-
-func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOptions) (io.Reader, string, error) {
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	// Add audio file
-	part, err := writer.CreateFormFile("file", "audio.mp3")
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to create form file: %w", err)
-	}
-
-	if _, err := part.Write(opts.Audio); err != nil {
-		return nil, "", fmt.Errorf("failed to write audio data: %w", err)
-	}
-
-	// Add optional parameters
-	_ = writer.WriteField("model", m.deploymentID)
-
-	if opts.Language != "" {
-		_ = writer.WriteField("language", opts.Language)
-	}
-
-	// Set response format
-	responseFormat := "json"
-	if opts.Timestamps {
-		responseFormat = "verbose_json"
-	}
-	_ = writer.WriteField("response_format", responseFormat)
-
-	if err := writer.Close(); err != nil {
-		return nil, "", fmt.Errorf("failed to close multipart writer: %w", err)
-	}
-
-	return &buf, writer.FormDataContentType(), nil
-}
-
-func (m *TranscriptionModel) convertResponse(body []byte, timestamps bool) (*types.TranscriptionResult, error) {
-	if timestamps {
-		// Verbose JSON format with timestamps
-		var response struct {
-			Text     string  `json:"text"`
-			Language string  `json:"language"`
-			Duration float64 `json:"duration"`
-			Segments []struct {
-				ID               int     `json:"id"`
-				Seek             int     `json:"seek"`
-				Start            float64 `json:"start"`
-				End              float64 `json:"end"`
-				Text             string  `json:"text"`
-				Tokens           []int   `json:"tokens"`
-				Temperature      float64 `json:"temperature"`
-				AvgLogprob       float64 `json:"avg_logprob"`
-				CompressionRatio float64 `json:"compression_ratio"`
-				NoSpeechProb     float64 `json:"no_speech_prob"`
-			} `json:"segments"`
-		}
-
-		if err := json.Unmarshal(body, &response); err != nil {
-			return nil, fmt.Errorf("failed to decode response: %w", err)
-		}
-
-		timestampList := make([]types.TranscriptionTimestamp, len(response.Segments))
-		for i, seg := range response.Segments {
-			timestampList[i] = types.TranscriptionTimestamp{
-				Text:  seg.Text,
-				Start: seg.Start,
-				End:   seg.End,
-			}
-		}
-
-		return &types.TranscriptionResult{
-			Text:       response.Text,
-			Segments:   timestampList,
-			Timestamps: timestampList,
-			Usage: types.TranscriptionUsage{
-				DurationSeconds: response.Duration,
-			},
-		}, nil
-	}
-
-	// Simple JSON format
-	var response struct {
-		Text string `json:"text"`
-	}
-
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &types.TranscriptionResult{
-		Text:       response.Text,
-		Timestamps: nil,
-		Usage:      types.TranscriptionUsage{},
-	}, nil
 }
 
 var (

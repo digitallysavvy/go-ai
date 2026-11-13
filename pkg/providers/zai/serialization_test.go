@@ -9,7 +9,7 @@ func TestZaiSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := model.(*LanguageModel).Serialize()
-	if serialized.Provider != "zai" || serialized.ModelID != "glm-4.6" {
+	if serialized.Provider != "zai.chat" || serialized.ModelID != "glm-4.6" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestZaiSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "zai" || restored.ModelID() != "glm-4.6" {
+	if restored.Provider() != "zai.chat" || restored.ModelID() != "glm-4.6" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

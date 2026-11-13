@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	stdhttp "net/http"
 	"os"
@@ -46,7 +48,7 @@ func applyMaasMaxTokensDefault(body []byte) []byte {
 		return body
 	}
 	m["max_tokens"] = maxTokens
-	out, err := json.Marshal(m)
+	out, err := jsonstr.Marshal(m)
 	if err != nil {
 		return body
 	}
@@ -106,32 +108,59 @@ type maasAuthTransport struct {
 	base        stdhttp.RoundTripper
 	headersFunc func(ctx context.Context) (map[string]string, error)
 	authToken   func(ctx context.Context) (string, error)
+	// baseURL is the MaaS API base URL. Credentials and custom headers go
+	// only to requests with the same origin (TS 977231e913
+	// google-vertex-maas-provider-node.ts isSameOrigin check), so a
+	// cross-origin redirect hop or a foreign URL never receives them.
+	baseURL string
 }
 
 func (t *maasAuthTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *maasAuthTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	clone := req.Clone(req.Context())
 	if clone.Body != nil && clone.Method == stdhttp.MethodPost {
 		bodyBytes, err := io.ReadAll(clone.Body)
 		_ = clone.Body.Close()
 		if err != nil {
-			return nil, err
+			return nil, internalhttp.RejectFetch(err)
 		}
 		bodyBytes = applyMaasMaxTokensDefault(bodyBytes)
 		clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		clone.ContentLength = int64(len(bodyBytes))
 	}
+	// Credentials only go to the MaaS API. Other URLs (e.g. image URLs from
+	// a response, or the hops of a redirect to another origin) are fetched
+	// without them. IsSameOrigin fails closed on a parse error, as TS does.
+	if !providerutils.IsSameOrigin(clone.URL.String(), t.baseURL) {
+		return t.base.RoundTrip(clone)
+	}
 	if t.headersFunc != nil {
 		headers, err := t.headersFunc(req.Context())
 		if err != nil {
-			return nil, err
+			return nil, internalhttp.RejectFetch(err)
 		}
 		for k, v := range headers {
 			clone.Header.Set(k, v)
 		}
 	}
+	// A hop back to the API origin after a foreign hop (A -> B -> A) gets
+	// no token: fetch dropped Authorization on the foreign hop and never
+	// adds it back.
+	if providerutils.IsCrossOriginRedirectHop(req) {
+		return t.base.RoundTrip(clone)
+	}
 	token, err := t.authToken(req.Context())
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	clone.Header.Set("Authorization", "Bearer "+token)
 	return t.base.RoundTrip(clone)
@@ -154,14 +183,14 @@ func (p *MaaSProvider) init() error {
 		return p.initErr
 	}
 
-	baseURL := strings.TrimRight(p.config.BaseURL, "/")
+	baseURL := strings.TrimSuffix(p.config.BaseURL, "/")
 	if baseURL == "" {
 		project := p.config.Project
 		if project == "" {
 			project = os.Getenv("GOOGLE_VERTEX_PROJECT")
 		}
 		if project == "" {
-			p.initErr = fmt.Errorf("project is required for Google Vertex MaaS")
+			p.initErr = providererrors.NewLoadSettingError("Google Vertex project", "project", "GOOGLE_VERTEX_PROJECT") // TS loadSetting
 			return p.initErr
 		}
 
@@ -176,10 +205,7 @@ func (p *MaaSProvider) init() error {
 		// single DNS label is accepted; ports TS
 		// google-vertex-maas-provider.ts (TS #21842).
 		if !providerutils.IsValidHostnamePart(location) {
-			p.initErr = &providererrors.InvalidArgumentError{
-				Field:   "location",
-				Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-			}
+			p.initErr = providererrors.NewArgumentError("location", "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)
 			return p.initErr
 		}
 
@@ -232,20 +258,25 @@ func (p *MaaSProvider) init() error {
 		base:        baseTransport,
 		headersFunc: headersFunc,
 		authToken:   authToken,
+		baseURL:     baseURL,
 	}
 
 	p.provider = openai.New(openai.Config{
-		Name:             "vertex.maas",
-		NoAPIKey:         true,
-		BaseURL:          baseURL,
-		HTTPClient:       httpClient,
-		ChatProviderName: "vertex.maas",
+		Name:       "vertex.maas",
+		NoAPIKey:   true,
+		BaseURL:    baseURL,
+		HTTPClient: httpClient,
+		// TS createOpenAICompatible({name: 'vertex.maas'}) chat models report
+		// `${name}.chat`.
+		ChatProviderName: "vertex.maas.chat",
+		AllowVideo:       true,
+		OpenAICompatible: true,
+		// createOpenAICompatible without errorStructure: the default one.
+		CompatErrorStructure: providerutils.OpenAICompatibleAPIError,
 		// TS google-vertex-maas-provider.ts builds on @ai-sdk/openai-compatible's
 		// createOpenAICompatible, which tags requests with its own
 		// `ai-sdk-openai-compatible/VERSION` (not `ai-sdk-google-vertex`).
 		UserAgentName: "openai-compatible",
-		// TS createOpenAICompatible without includeUsage sends no stream_options.
-		OmitStreamUsage: true,
 	})
 	return nil
 }
@@ -304,8 +335,16 @@ func (p *MaaSProvider) ChatModel(modelID string) (provider.LanguageModel, error)
 	return p.LanguageModel(modelID)
 }
 
+// CompletionModel returns a model for the /completions endpoint (TS
+// provider.completionModel); ChatModel/LanguageModel use /chat/completions.
 func (p *MaaSProvider) CompletionModel(modelID string) (provider.LanguageModel, error) {
-	return p.LanguageModel(modelID)
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	if err := p.init(); err != nil {
+		return nil, err
+	}
+	return p.provider.CompletionModel(modelID)
 }
 
 func (p *MaaSProvider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
@@ -333,15 +372,15 @@ func (p *MaaSProvider) ImageModel(modelID string) (provider.ImageModel, error) {
 }
 
 func (p *MaaSProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("Google Vertex MaaS does not support speech synthesis") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 func (p *MaaSProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Google Vertex MaaS does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 func (p *MaaSProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Google Vertex MaaS does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // VertexMaaS is the default Google Vertex MaaS provider instance.

@@ -3,15 +3,23 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for AI Gateway
@@ -45,7 +53,8 @@ func (m *ImageModel) ModelID() string {
 
 // MaxImagesPerCall returns the maximum number of images accepted in one request.
 func (m *ImageModel) MaxImagesPerCall() int {
-	return 9007199254740991
+	// JavaScript Number.MAX_SAFE_INTEGER, clamped so 32-bit builds compile.
+	return min(9007199254740991, math.MaxInt)
 }
 
 // DoGenerate generates an image based on the given options
@@ -56,7 +65,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		opts = &provider.ImageGenerateOptions{}
 	}
 
-	body["prompt"] = opts.Prompt
+	// TS sends `prompt` unconditionally, but an image-only edit has an
+	// undefined prompt that JSON.stringify drops. Go cannot tell "" from
+	// unset, so an empty prompt accompanied by input files is treated as unset.
+	if opts.Prompt != "" || len(opts.Files) == 0 {
+		body["prompt"] = opts.Prompt
+	}
 
 	if opts.N != nil {
 		body["n"] = *opts.N
@@ -70,12 +84,16 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		body["aspectRatio"] = opts.AspectRatio
 	}
 
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
 
-	if opts.ProviderOptions != nil {
-		body["providerOptions"] = opts.ProviderOptions
+	// TS 89aff56165: experimental_streamingImageDecoding is a client option;
+	// it is removed from the request (an empty gateway entry and an empty
+	// providerOptions with it) without changing the caller's map.
+	requestProviderOptions, streamingImageDecoding := gatewayStripStreamingImageDecoding(opts.ProviderOptions)
+	if requestProviderOptions != nil {
+		body["providerOptions"] = requestProviderOptions
 	}
 
 	if opts.Files != nil {
@@ -90,29 +108,187 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		body["mask"] = gatewayImageFile(*opts.Mask)
 	}
 
-	// Add headers
-	headers := m.getModelConfigHeaders()
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	// TS combineHeaders(config, options.headers, model headers, o11y)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
-	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
+	request := internalhttp.Request{
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayImage),
+		Method:           http.MethodPost,
+		Path:             "/image-model",
+		Body:             body,
+		Headers:          headers,
+	}
+	if streamingImageDecoding {
+		response, binaries, respHeaders, err := m.doStreamingImageRequest(ctx, request)
+		if err != nil {
+			return nil, m.handleErrorWithContext(ctx, err)
+		}
+		return m.convertStreamingResponse(response, binaries, respHeaders), nil
+	}
 
 	// Make API request
 	var response gatewayImageResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/image-model",
-		Body:    body,
-		Headers: headers,
-	}, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, request, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
 
 	return m.convertResponse(response, httpResp.Headers), nil
+}
+
+// gatewayStreamingImageDecodingKey is the client-only Gateway image option
+// (TS gateway-provider-options.ts experimental_streamingImageDecoding).
+const gatewayStreamingImageDecodingKey = "experimental_streamingImageDecoding"
+
+// gatewayStripStreamingImageDecoding is TS gateway-image-model.ts 74-94: it
+// reports whether providerOptions.gateway.experimental_streamingImageDecoding
+// is true and returns the provider options to send, without that key; a
+// gateway entry left empty is removed, and so is a providerOptions left empty
+// (nil: not sent). The caller's maps are not modified.
+func gatewayStripStreamingImageDecoding(providerOptions map[string]interface{}) (map[string]interface{}, bool) {
+	raw, ok := providerOptions["gateway"]
+	if !ok || raw == nil {
+		return providerOptions, false
+	}
+	var gatewayOptions map[string]interface{}
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		gatewayOptions = v
+	case GatewayProviderOptions:
+		gatewayOptions = v.toMap()
+	case *GatewayProviderOptions:
+		if v == nil {
+			return providerOptions, false
+		}
+		gatewayOptions = v.toMap()
+	default:
+		normalized, _ := providerutils.NormalizeOptionsJSON(map[string]interface{}{"gateway": raw})["gateway"].(map[string]interface{})
+		gatewayOptions = normalized
+	}
+	value, present := gatewayOptions[gatewayStreamingImageDecodingKey]
+	if !present {
+		return providerOptions, false
+	}
+	enabled, _ := value.(bool)
+	serviceOptions := make(map[string]interface{}, len(gatewayOptions))
+	for k, v := range gatewayOptions {
+		if k != gatewayStreamingImageDecodingKey {
+			serviceOptions[k] = v
+		}
+	}
+	out := make(map[string]interface{}, len(providerOptions))
+	for k, v := range providerOptions {
+		out[k] = v
+	}
+	if len(serviceOptions) > 0 {
+		out["gateway"] = serviceOptions
+	} else {
+		delete(out, "gateway")
+	}
+	if len(out) == 0 {
+		return nil, enabled
+	}
+	return out, enabled
+}
+
+// doStreamingImageRequest is TS createJsonResponseHandler with
+// experimental_binaryFields ['images[*]'] (89aff56165): the body is read in
+// chunks under the response size limit, canonical base64 images of at least
+// 64 KiB are decoded while they arrive, and the skeleton (with placeholders
+// for them) is validated and parsed. A validation or parse error carries the
+// skeleton, never the image bytes.
+func (m *ImageModel) doStreamingImageRequest(ctx context.Context, request internalhttp.Request) (gatewayImageResponse, map[string][]byte, http.Header, error) {
+	var response gatewayImageResponse
+	httpResp, err := m.provider.client.DoStream(ctx, request)
+	if err != nil {
+		return response, nil, nil, err
+	}
+	defer httpResp.Body.Close() //nolint:errcheck
+
+	paths, err := compileBinaryFieldPaths([]string{"images[*]"})
+	if err != nil {
+		return response, nil, nil, err
+	}
+	scanner := newJSONBinaryFieldScanner(paths, binaryFieldMinBytes)
+	url := m.provider.baseURL + request.Path
+	if err := gatewayReadResponseChunks(httpResp, url, fileutil.DefaultMaxDownloadSize, scanner.push); err != nil {
+		return response, nil, nil, err
+	}
+	text, binaries := scanner.finish()
+	skeleton := []byte(text)
+	if err := request.ValidateResponse(httpResp.StatusCode, httpResp.Header, skeleton); err != nil {
+		return response, nil, nil, err
+	}
+	if err := jsonexact.Unmarshal(skeleton, &response); err != nil {
+		// Like internalhttp's decodeJSONBody: a z.number() count sent as
+		// 1.0 or 1e3 is truncated instead of failing the Go int field.
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") || providerutils.UnmarshalChunk(skeleton, &response) != nil {
+			return response, nil, nil, fmt.Errorf("failed to decode JSON response: %w", err)
+		}
+	}
+	return response, binaries, httpResp.Header, nil
+}
+
+// gatewayReadResponseChunks is TS readResponseWithSizeLimit with onChunk: the
+// Content-Length check first, then every chunk is handed to onChunk instead of
+// being collected; a read error or a body over maxBytes is a DownloadError.
+func gatewayReadResponseChunks(resp *http.Response, url string, maxBytes int64, onChunk func([]byte)) error {
+	statusText := fileutil.ResponseStatusText(resp)
+	if raw := strings.TrimSpace(resp.Header.Get("Content-Length")); raw != "" {
+		if contentLength, err := strconv.ParseInt(raw, 10, 64); err == nil && contentLength > maxBytes {
+			return providererrors.NewDownloadError(url, resp.StatusCode, statusText,
+				fmt.Sprintf("Download of %s exceeded maximum size of %d bytes (Content-Length: %d).", url, maxBytes, contentLength), nil)
+		}
+	}
+	buf := make([]byte, 64*1024)
+	var total int64
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			total += int64(n)
+			if total > maxBytes {
+				return providererrors.NewDownloadError(url, resp.StatusCode, statusText,
+					fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", url, maxBytes), nil)
+			}
+			onChunk(buf[:n])
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return providererrors.NewDownloadError(url, resp.StatusCode, statusText, "", err)
+		}
+	}
+}
+
+// convertStreamingResponse is convertResponse for a streaming-decoded body.
+// TS toImageModelImages: a result holds either strings or bytes; when any
+// image was decoded while reading, every image is returned as bytes (Images)
+// and Base64Images stays empty; otherwise the result is the regular one.
+func (m *ImageModel) convertStreamingResponse(response gatewayImageResponse, binaries map[string][]byte, headers http.Header) *types.ImageResult {
+	extracted := false
+	for _, image := range response.Images {
+		if _, ok := binaries[image]; ok {
+			extracted = true
+			break
+		}
+	}
+	result := m.convertResponse(response, headers)
+	if !extracted {
+		return result
+	}
+	for i, image := range response.Images {
+		if data, ok := binaries[image]; ok {
+			result.Images[i] = data
+		}
+	}
+	result.Base64Images = nil
+	result.Base64Image = ""
+	if len(result.Images) > 0 {
+		result.Image = result.Images[0]
+	}
+	return result
 }
 
 // getModelConfigHeaders returns headers specific to the gateway model configuration
@@ -147,12 +323,16 @@ type gatewayImageResponse struct {
 func (m *ImageModel) convertResponse(response gatewayImageResponse, headers http.Header) *types.ImageResult {
 	images := make([][]byte, 0, len(response.Images))
 	for _, image := range response.Images {
-		images = append(images, []byte(image))
+		// The wire format is always base64; Images carries the decoded bytes
+		// (Base64Images keeps the strings). Undecodable payloads are passed
+		// through unchanged rather than dropped.
+		if decoded, err := types.DecodeFileDataString(image); err == nil {
+			images = append(images, decoded)
+		} else {
+			images = append(images, []byte(image))
+		}
 	}
-	warnings := response.Warnings
-	if warnings == nil {
-		warnings = []types.Warning{}
-	}
+	warnings := warningsOrEmpty(response.Warnings)
 	providerMetadata := response.ProviderMetadata
 	if response.IsRetryable != nil {
 		providerMetadata = cloneMapStringInterface(providerMetadata)
@@ -211,17 +391,19 @@ func gatewayImageFile(file provider.ImageFile) map[string]interface{} {
 	if file.MediaType != "" {
 		result["mediaType"] = file.MediaType
 	}
+	if len(file.ProviderOptions) > 0 {
+		result["providerOptions"] = file.ProviderOptions
+	}
 	return result
 }
 
+// flattenHeaders is TS extractResponseHeaders: a repeated header joins its
+// values with ", " (fetch Headers semantics), never just the first value.
 func flattenHeaders(headers http.Header) map[string]string {
-	out := make(map[string]string, len(headers))
-	for key, values := range headers {
-		if len(values) > 0 {
-			out[key] = values[0]
-		}
+	if len(headers) == 0 {
+		return map[string]string{}
 	}
-	return out
+	return providerutils.ExtractHeaders(headers)
 }
 
 // handleError converts errors to appropriate provider errors
@@ -230,32 +412,5 @@ func (m *ImageModel) handleError(err error) error {
 }
 
 func (m *ImageModel) handleErrorWithContext(ctx context.Context, err error) error {
-	if err == nil {
-		return nil
-	}
-
-	// Check if it's a timeout error and convert to GatewayTimeoutError
-	if gatewayerrors.IsTimeoutError(err) {
-		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
-	}
-
-	if gatewayerrors.IsGatewayError(err) {
-		return err
-	}
-
-	// Check if it's already a provider error
-	if providererrors.IsProviderError(err) {
-		return err
-	}
-
-	var httpStatusErr *internalhttp.HTTPStatusError
-	if errors.As(err, &httpStatusErr) {
-		return m.provider.gatewayAPIErrorWithContext(ctx, &internalhttp.Response{
-			StatusCode: httpStatusErr.StatusCode,
-			Headers:    httpStatusErr.Headers,
-			Body:       httpStatusErr.Body,
-		})
-	}
-
-	return m.provider.gatewayUnknownError(err)
+	return m.provider.handleErrorWithContext(ctx, err)
 }

@@ -4,14 +4,12 @@ import (
 	"context"
 	stdhttp "net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -53,12 +51,14 @@ var azureOutputFormatShorthands = map[string]string{
 var azureNativeOutputFormatPattern = regexp.MustCompile(`^(?:amr|audio|g722|ogg|raw|riff|webm)-[a-z0-9-]+$`)
 
 // azureVoiceLocalePattern extracts a voice name's locale prefix, mirroring
-// TS's /^([a-z]{2,3}-[a-z]{2,4})-/i (used to derive the SSML xml:lang).
-var azureVoiceLocalePattern = regexp.MustCompile(`(?i)^([a-z]{2,3}-[a-z]{2,4})-`)
+// TS's /^([a-z]{2,3}-[a-z]{2,4})-/i (used to derive the SSML xml:lang). The
+// class is spelled out: JS /i without /u matches only ASCII letters here, RE2
+// (?i) also the Kelvin sign and the long s.
+var azureVoiceLocalePattern = regexp.MustCompile(`^([a-zA-Z]{2,3}-[a-zA-Z]{2,4})-`)
 
 // azureVoiceLanguagePattern extracts a voice name's ISO 639-1 language code,
 // mirroring TS's /^([a-z]{2,3})-[a-z]{2,4}-/i.
-var azureVoiceLanguagePattern = regexp.MustCompile(`(?i)^([a-z]{2,3})-[a-z]{2,4}-`)
+var azureVoiceLanguagePattern = regexp.MustCompile(`^([a-zA-Z]{2,3})-[a-zA-Z]{2,4}-`)
 
 // AzureSpeechSpeechModel is the Azure Speech SSML text-to-speech backend for
 // MAI-Voice-2, MAI-Voice-2-Flash, MAI-Voice-2.1, and MAI-Voice-2.1-Flash,
@@ -111,7 +111,7 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 
 	outputFormat := azureDefaultOutputFormat
 	if opts.OutputFormat != "" {
-		format := strings.ToLower(opts.OutputFormat)
+		format := providerutils.JSToLower(opts.OutputFormat)
 		if shorthand, ok := azureOutputFormatShorthands[format]; ok {
 			outputFormat = shorthand
 		} else if azureNativeOutputFormatPattern.MatchString(format) {
@@ -164,16 +164,19 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range internalhttp.MergeHeaders(headers, map[string]string{
+	// TS postToApi appends the runtime user-agent tag.
+	for k, v := range providerutils.WithUserAgentSuffix(internalhttp.MergeHeaders(headers, map[string]string{
 		"Content-Type":             "application/ssml+xml",
 		"X-Microsoft-OutputFormat": outputFormat,
-	}, opts.Headers) {
+	}, opts.Headers), providerutils.RuntimeEnvironmentUserAgent()) {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := m.httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(m.httpClient).Do(req)
 	if err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+		// TS handleFetchError: abort and timeout unchanged, a rejected fetch
+		// wrapper unchanged, else the retryable "Cannot connect to API" error.
+		return nil, internalhttp.TransportErrorCtx(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -182,8 +185,8 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 
-	if resp.StatusCode != stdhttp.StatusOK {
-		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, azureSpeechAPIErrorText(m.Provider(), resp.StatusCode, fileutil.ResponseStatusText(resp), resp.Header, respBody, true)
 	}
 
 	if warnings == nil {
@@ -197,7 +200,8 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Header),
-			Body:      respBody,
+			// TS createBinaryResponseHandler returns no rawValue, so
+			// response.body is undefined.
 		},
 	}, nil
 }
@@ -207,12 +211,15 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 // used, falling back to azureDefaultVoice with a warning for "auto" or an
 // unmapped language.
 func azureResolveVoice(voice, language string) (resolved string, languageWarning string) {
-	code := ""
-	if language != "" {
-		code = strings.ToLower(strings.SplitN(language, "-", 2)[0])
+	// TS `language ? language.split('-')[0].toLowerCase() : undefined`: a
+	// set language whose first part is empty (e.g. "-US") is the code "",
+	// not "no language".
+	code, hasCode := "", language != ""
+	if hasCode {
+		code = providerutils.JSToLower(strings.SplitN(language, "-", 2)[0])
 	}
 	if voice == "" {
-		if code == "" {
+		if !hasCode {
 			return azureDefaultVoice, ""
 		}
 		if code == "auto" {
@@ -225,9 +232,9 @@ func azureResolveVoice(voice, language string) (resolved string, languageWarning
 	}
 	voiceLanguage := ""
 	if match := azureVoiceLanguagePattern.FindStringSubmatch(voice); match != nil {
-		voiceLanguage = strings.ToLower(match[1])
+		voiceLanguage = providerutils.JSToLower(match[1])
 	}
-	if code != "" && code != "auto" && voiceLanguage != "" && code != voiceLanguage {
+	if hasCode && code != "auto" && voiceLanguage != "" && code != voiceLanguage {
 		return voice, "The voice " + voice + " selects the language. Language \"" + language + "\" was ignored."
 	}
 	return voice, ""
@@ -247,12 +254,12 @@ type azureSSMLOptions struct {
 func buildAzureSSML(opts azureSSMLOptions) string {
 	content := azureEscapeXML(opts.text)
 	if opts.speed != nil {
-		content = `<prosody rate="` + strconv.FormatFloat(*opts.speed, 'g', -1, 64) + `">` + content + `</prosody>`
+		content = `<prosody rate="` + providerutils.JSNumberString(*opts.speed) + `">` + content + `</prosody>`
 	}
 	if opts.style != "" {
 		degree := ""
 		if opts.styleDegree != nil {
-			degree = ` styledegree="` + strconv.FormatFloat(*opts.styleDegree, 'g', -1, 64) + `"`
+			degree = ` styledegree="` + providerutils.JSNumberString(*opts.styleDegree) + `"`
 		}
 		content = `<mstts:express-as style="` + azureEscapeXML(opts.style) + `"` + degree + `>` + content + `</mstts:express-as>`
 	}

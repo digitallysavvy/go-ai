@@ -1,6 +1,8 @@
 package providerutils
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -174,5 +176,37 @@ func TestInjectJSONInstructionIntoMessages_CustomPrefixSuffix(t *testing.T) {
 	want := "Generate data\n\nCustom schema:\n" + basicSchemaJSON + "\nFollow this format exactly."
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestInjectJSONInstructionDoesNotHTMLEscapeSchema(t *testing.T) {
+	got := InjectJSONInstruction("", map[string]interface{}{"description": "a < b && c > d"}, InjectJSONInstructionOptions{})
+	if !strings.Contains(got, `{"description":"a < b && c > d"}`) {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestInjectJSONInstructionSchema_NullSchemaIsNoSchema(t *testing.T) {
+	want := InjectJSONInstructionSchema("p", nil, InjectJSONInstructionOptions{})
+	var nilMap map[string]interface{}
+	for name, s := range map[string]interface{}{"nil map": nilMap, "json null": json.RawMessage("null")} {
+		if got := InjectJSONInstructionSchema("p", s, InjectJSONInstructionOptions{}); got != want {
+			t.Errorf("%s: got %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestInjectJSONInstructionIntoMessagesKeepsSystemProviderOptions(t *testing.T) {
+	sys := types.Message{
+		Role:            types.RoleSystem,
+		Content:         []types.ContentPart{types.TextContent{Text: "be brief"}},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": "ephemeral"}},
+	}
+	out := InjectJSONInstructionIntoMessages([]types.Message{sys}, nil, InjectJSONInstructionOptions{})
+	if len(out) != 1 || out[0].ProviderOptions["anthropic"] == nil {
+		t.Fatalf("provider options lost: %+v", out)
+	}
+	if len(sys.Content) != 1 || sys.Content[0].(types.TextContent).Text != "be brief" {
+		t.Fatal("input mutated")
 	}
 }

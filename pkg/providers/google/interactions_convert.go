@@ -4,9 +4,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -33,10 +40,10 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 		messages = append([]types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: p.System}}}}, messages...)
 	}
 
-	if opts.PreviousInteractionID != "" && opts.Store != nil && !*opts.Store {
+	if opts.hasPreviousInteractionID() && opts.Store != nil && !*opts.Store {
 		msg := "google.interactions: providerOptions.google.previousInteractionId was set together with store: false. These are incoherent (the prior interaction cannot be referenced when nothing was stored on the server); the full history will be sent and previous_interaction_id will still be emitted."
 		warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
-	} else if opts.PreviousInteractionID != "" {
+	} else if opts.hasPreviousInteractionID() {
 		messages = compactMessagesForInteraction(messages, opts.PreviousInteractionID)
 	}
 
@@ -146,11 +153,10 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			pending = append(pending, map[string]interface{}{"type": "text", "text": p.Text})
 		case types.ReasoningContent:
 			flush()
-			steps = append(steps, pruneMap(map[string]interface{}{
-				"type":      "thought",
-				"signature": emptyToNil(firstNonEmpty(p.Signature, googleSignature(p.ProviderMetadata))),
-				"summary":   reasoningSummary(p.Text),
-			}))
+			steps = append(steps, withSignature(pruneMap(map[string]interface{}{
+				"type":    "thought",
+				"summary": reasoningSummary(p.Text),
+			}), inputSignature(p.ProviderOptions, p.Signature, extractGoogleMetadata(p.ProviderMetadata))))
 		case types.FileContent:
 			block, ws, err := fileContentToInteractionBlock(p, mediaResolution)
 			if err != nil {
@@ -166,48 +172,55 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			if p.ToolCallID != "" {
 				seenToolCallIDs[p.ToolCallID] = true
 			}
-			args := p.Arguments
-			if args == nil && p.Input != "" {
-				_ = json.Unmarshal([]byte(p.Input), &args)
-			}
-			if args == nil {
-				args = map[string]interface{}{}
-			}
-			steps = append(steps, pruneMap(map[string]interface{}{
+			args, orderRaw := interactionToolArgs(p.Arguments, p.Input)
+			// TS sends id, name and arguments as given: an empty id or
+			// name and an empty arguments object are kept.
+			steps = append(steps, withSignature(map[string]interface{}{
 				"type":      "function_call",
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
-				"arguments": args,
-				"signature": emptyToNil(firstNonEmpty(p.ThoughtSignature, signatureFromRawMetadata(p.ProviderMetadata))),
-			}))
+				"arguments": orderedArguments(args, orderRaw),
+			}, inputSignature(p.ProviderOptions, p.ThoughtSignature, extractGoogleMetadata(p.ProviderMetadata))))
 		case types.CustomContent:
 			flush()
 			google := extractGoogleMetadata(p.ProviderMetadata)
-			signature, _ := google["signature"].(string)
+			if opt, ok := providerutils.NormalizeOptionsJSON(p.ProviderOptions)["google"].(map[string]interface{}); ok {
+				// TS reads these from providerOptions.google; options win.
+				merged := map[string]interface{}{}
+				for k, v := range google {
+					merged[k] = v
+				}
+				for k, v := range opt {
+					merged[k] = v
+				}
+				google = merged
+			}
+			// TS: typeof google?.signature === 'string' (an empty one is sent).
+			signature := inputSignature(nil, "", google)
 			switch p.Kind {
+			// TS `typeof google?.processingId === 'string'`: an empty id is
+			// sent too.
 			case "google.processing_call":
-				if processingID, _ := google["processingId"].(string); processingID != "" {
-					steps = append(steps, pruneMap(map[string]interface{}{
-						"type":      "processing_call",
-						"id":        processingID,
-						"signature": emptyToNil(signature),
-					}))
+				if processingID, ok := google["processingId"].(string); ok {
+					steps = append(steps, withSignature(map[string]interface{}{
+						"type": "processing_call",
+						"id":   processingID,
+					}, signature))
 					continue
 				}
 			case "google.processing_result":
-				if processingCallID, _ := google["processingCallId"].(string); processingCallID != "" {
-					steps = append(steps, pruneMap(map[string]interface{}{
-						"type":      "processing_result",
-						"call_id":   processingCallID,
-						"signature": emptyToNil(signature),
-					}))
+				if processingCallID, ok := google["processingCallId"].(string); ok {
+					steps = append(steps, withSignature(map[string]interface{}{
+						"type":    "processing_result",
+						"call_id": processingCallID,
+					}, signature))
 					continue
 				}
 			}
-			msg := fmt.Sprintf("google.interactions: unsupported or invalid custom assistant content part %q; part dropped.", p.Kind)
+			msg := fmt.Sprintf("google.interactions: unsupported or invalid custom assistant content part \"%s\"; part dropped.", p.Kind)
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 		default:
-			msg := fmt.Sprintf("google.interactions: unsupported assistant content part type %q; part dropped.", part.ContentType())
+			msg := fmt.Sprintf("google.interactions: unsupported assistant content part type \"%s\"; part dropped.", part.ContentType())
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 		}
 	}
@@ -216,17 +229,14 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			continue
 		}
 		flush()
-		args := call.Arguments
-		if args == nil {
-			args = map[string]interface{}{}
-		}
-		steps = append(steps, pruneMap(map[string]interface{}{
+		args, orderRaw := interactionToolArgs(call.Arguments, call.RawArguments)
+		callGoogle, _ := call.ProviderMetadata["google"].(map[string]interface{})
+		steps = append(steps, withSignature(map[string]interface{}{
 			"type":      "function_call",
 			"id":        call.ID,
 			"name":      call.ToolName,
-			"arguments": args,
-			"signature": emptyToNil(firstNonEmpty(call.ThoughtSignature, signatureFromMetadataMap(call.ProviderMetadata))),
-		}))
+			"arguments": orderedArguments(args, orderRaw),
+		}, inputSignature(nil, call.ThoughtSignature, callGoogle)))
 	}
 	flush()
 	return steps, warnings, nil
@@ -239,7 +249,7 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 		return map[string]interface{}{"type": "text", "text": firstNonEmpty(part.FileData.Text, part.Text)}, nil, nil
 	}
 	if kind == "" {
-		msg := fmt.Sprintf("google.interactions: unsupported file media type %q; part dropped.", mediaType)
+		msg := fmt.Sprintf("google.interactions: unsupported file media type \"%s\"; part dropped.", mediaType)
 		return nil, []types.Warning{{Type: "other", Message: msg, Details: msg}}, nil
 	}
 	var warnings []types.Warning
@@ -249,10 +259,18 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 	switch {
 	case part.FileData.Type == types.FileDataTypeData:
 		block["data"] = encodeData(part.FileData.Data, part.FileData.DataString)
-		block["mime_type"] = mediaType
+		resolved, err := resolveInteractionMediaType(mediaType, part.FileData.Data, part.FileData.DataString)
+		if err != nil {
+			return nil, nil, err
+		}
+		block["mime_type"] = resolved
 	case len(part.Data) > 0:
 		block["data"] = base64.StdEncoding.EncodeToString(part.Data)
-		block["mime_type"] = mediaType
+		resolved, err := resolveInteractionMediaType(mediaType, part.Data, "")
+		if err != nil {
+			return nil, nil, err
+		}
+		block["mime_type"] = resolved
 	case part.FileData.Type == types.FileDataTypeURL:
 		block["uri"] = part.FileData.URL
 		if isFullMediaType(mediaType) {
@@ -264,7 +282,13 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 			block["mime_type"] = mediaType
 		}
 	case part.FileData.Type == types.FileDataTypeReference:
-		block["uri"] = resolveGoogleReference(part.FileData.Reference)
+		// TS resolveProviderReference throws when the reference has no google
+		// entry; no other provider's file id is a valid Files API URI.
+		uri, err := providerutils.ResolveProviderReference(part.FileData.Reference, "google")
+		if err != nil {
+			return nil, nil, err
+		}
+		block["uri"] = uri
 		if isFullMediaType(mediaType) {
 			block["mime_type"] = mediaType
 		}
@@ -299,7 +323,8 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 // when unset, and (nil, warning) for an invalid value (option dropped, block
 // still emitted).
 func videoProcessingField(providerOptions map[string]interface{}) (interface{}, *types.Warning) {
-	google, _ := providerOptions["google"].(map[string]interface{})
+	// Typed-option ruling: part options are read in their JSON form.
+	google, _ := providerutils.NormalizeOptionsJSON(providerOptions)["google"].(map[string]interface{})
 	if google == nil {
 		return nil, nil
 	}
@@ -339,12 +364,10 @@ func numericOrNil(v interface{}) interface{} {
 
 // videoOffsetString formats a numeric video start/end offset as a duration
 // string like "10.5s", mirroring TS `${config.startOffset}s` (a template
-// literal, which coerces the number via JS's Number-to-string algorithm).
-// strconv.FormatFloat with precision -1 (shortest round-tripping decimal, no
-// exponential notation for this typical offset range) matches that output
-// for realistic values (no trailing zeros, no redundant decimal point for
-// whole numbers). Returns nil for non-numeric values so pruneMap drops the
-// key, matching TS's `typeof config.startOffset === 'number'` guard.
+// literal, which coerces the number via JS's Number-to-string algorithm,
+// providerutils.JSNumberString: exponent notation outside 1e-7..1e21, "0"
+// for negative zero). Returns nil for non-numeric values so pruneMap drops
+// the key, matching TS's `typeof config.startOffset === 'number'` guard.
 func videoOffsetString(v interface{}) interface{} {
 	var f float64
 	switch n := v.(type) {
@@ -361,7 +384,7 @@ func videoOffsetString(v interface{}) interface{} {
 	default:
 		return nil
 	}
-	return strconv.FormatFloat(f, 'f', -1, 64) + "s"
+	return providerutils.JSNumberString(f) + "s"
 }
 
 func convertToolResults(parts []types.ContentPart) ([]map[string]interface{}, []types.Warning, error) {
@@ -370,7 +393,7 @@ func convertToolResults(parts []types.ContentPart) ([]map[string]interface{}, []
 	for _, part := range parts {
 		tr, ok := part.(types.ToolResultContent)
 		if !ok {
-			msg := fmt.Sprintf("google.interactions: unsupported tool message part type %q; part dropped.", part.ContentType())
+			msg := fmt.Sprintf("google.interactions: unsupported tool message part type \"%s\"; part dropped.", part.ContentType())
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 			continue
 		}
@@ -390,27 +413,33 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 		"call_id": part.ToolCallID,
 		"name":    part.ToolName,
 	}
+	if sig := inputSignature(part.ProviderOptions, "", nil); sig != nil {
+		base["signature"] = *sig
+	}
 	if part.Output == nil {
 		if part.Error != "" {
 			base["is_error"] = true
 			base["result"] = part.Error
 		} else {
-			base["result"] = fmt.Sprintf("%v", part.Result)
+			base["result"] = interactionResultText(part.Result)
 		}
 		return base, nil, nil
 	}
 	switch part.Output.Type {
 	case types.ToolResultOutputText:
-		base["result"] = fmt.Sprintf("%v", part.Output.Value)
+		base["result"] = interactionResultText(part.Output.Value)
 	case types.ToolResultOutputJSON:
-		b, _ := json.Marshal(part.Output.Value)
-		base["result"] = string(b)
-	case types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
+		base["result"] = jsonStringify(part.Output.Value)
+	case types.ToolResultOutputErrorJSON:
+		// TS: is_error + JSON.stringify(output.value).
 		base["is_error"] = true
-		base["result"] = fmt.Sprintf("%v", part.Output.Value)
+		base["result"] = jsonStringify(part.Output.Value)
+	case types.ToolResultOutputError, types.ToolResultOutputErrorText:
+		base["is_error"] = true
+		base["result"] = interactionResultText(part.Output.Value)
 	case types.ToolResultOutputExecutionDenied:
 		base["is_error"] = true
-		base["result"] = firstNonEmpty(part.Output.Reason, "Tool execution denied by user.")
+		base["result"] = part.Output.ReasonOr("Tool execution denied by user.")
 	case types.ToolResultOutputContent:
 		blocks, warnings, err := toolResultContentBlocks(part.Output.Content)
 		if err != nil {
@@ -419,23 +448,47 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 		base["result"] = blocks
 		return base, warnings, nil
 	default:
-		base["result"] = fmt.Sprintf("%v", part.Output.Value)
+		base["result"] = interactionResultText(part.Output.Value)
 	}
 	return base, nil, nil
+}
+
+// interactionResultText renders a tool result value for function_result.result:
+// a string is passed through, anything else is JSON.stringify(value) (never
+// Go's %v rendering, which prints maps as map[k:v]).
+func interactionResultText(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if v == nil {
+		return ""
+	}
+	return jsonStringify(v)
 }
 
 func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	out := make([]map[string]interface{}, 0, len(blocks))
 	for _, block := range blocks {
+		// The legacy image block is TS's file item with inline data, so it
+		// takes the file path: a bare "image" or "image/*" type is sniffed
+		// (resolveFullMediaType) and a non-image type is dropped.
+		if img, ok := block.(types.ImageContentBlock); ok {
+			block = types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeData, Data: img.Data}, MediaType: firstNonEmpty(img.MediaType, "image"), ProviderOptions: img.ProviderOptions}
+		}
 		switch b := block.(type) {
 		case types.TextContentBlock:
 			out = append(out, map[string]interface{}{"type": "text", "text": b.Text})
-		case types.ImageContentBlock:
-			out = append(out, map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString(b.Data), "mime_type": b.MediaType})
 		case types.FileContentBlock:
-			if !strings.HasPrefix(b.MediaType, "image/") {
-				msg := fmt.Sprintf("google.interactions: tool-result file with mediaType %q is not supported (Interactions function_result.result accepts only text and image content); part dropped.", b.MediaType)
+			// TS getTopLevelMediaType(mediaType) !== 'image'.
+			if top, _, _ := strings.Cut(b.MediaType, "/"); top != "image" {
+				msg := fmt.Sprintf("google.interactions: tool-result file with mediaType \"%s\" is not supported (Interactions %s accepts only text and image content); part dropped.", b.MediaType, "`function_result.result`")
+				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
+				continue
+			}
+			// TS filePartToImageBlock: text data is not representable as an image.
+			if b.FileData.Type == types.FileDataTypeText || (b.FileData.Type == "" && b.Text != "") {
+				msg := "google.interactions: tool-result image part with `data.type === \"text\"` is not representable as an image; part dropped."
 				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 				continue
 			}
@@ -450,7 +503,7 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 			}
 			out = append(out, ib)
 		default:
-			msg := fmt.Sprintf("google.interactions: tool-result content part type %q is not supported; part dropped.", block.ToolResultContentType())
+			msg := fmt.Sprintf("google.interactions: tool-result content part type \"%s\" is not supported; part dropped.", block.ToolResultContentType())
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 		}
 	}
@@ -461,6 +514,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 	content := make([]types.ContentPart, 0, len(outputs))
 	toolCalls := make([]types.ToolCall, 0)
 	hasFunctionCall := false
+	gen := m.generateID
 	for _, block := range outputs {
 		switch block.Type {
 		case "user_input":
@@ -471,53 +525,42 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				_ = json.Unmarshal(block.ContentRaw, &innerBlocks)
 			}
 			for _, inner := range innerBlocks {
-				meta := providerMetaRaw("", interactionID)
+				meta := providerMetaRaw(nil, interactionID)
 				switch inner.Type {
 				case "text":
 					content = append(content, types.TextContent{Text: inner.Text, ProviderMetadata: meta})
-					content = append(content, annotationsToSources(inner.Annotations)...)
+					content = append(content, annotationsToSources(inner.Annotations, gen)...)
 				case "image":
 					if inner.Data != "" {
-						data, _ := base64.StdEncoding.DecodeString(inner.Data)
-						content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(inner.MimeType, "image/png"), Data: data, ProviderMetadata: meta})
+						data, _ := fileutil.ConvertBase64ToBytes(inner.Data)
+						content = append(content, types.GeneratedFileContent{MediaType: inner.mimeTypeOr("image/png"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
-						mediaType := firstNonEmpty(inner.MimeType, "image/png")
-						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
+						mediaType := inner.mimeTypeOr("image/png")
+						uri := interactionsFileURL(inner.URI)
+						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}, URL: uri, ProviderMetadata: meta})
 					}
 				case "video":
 					if inner.Data != "" {
-						data, _ := base64.StdEncoding.DecodeString(inner.Data)
-						content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(inner.MimeType, "video/mp4"), Data: data, ProviderMetadata: meta})
+						data, _ := fileutil.ConvertBase64ToBytes(inner.Data)
+						content = append(content, types.GeneratedFileContent{MediaType: inner.mimeTypeOr("video/mp4"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
-						mediaType := firstNonEmpty(inner.MimeType, "video/mp4")
-						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
+						mediaType := inner.mimeTypeOr("video/mp4")
+						uri := interactionsFileURL(inner.URI)
+						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}, URL: uri, ProviderMetadata: meta})
 					}
 				}
 			}
-		case "text":
-			meta := providerMetaRaw("", interactionID)
-			content = append(content, types.TextContent{Text: block.Text, ProviderMetadata: meta})
-			content = append(content, annotationsToSources(block.Annotations)...)
 		case "thought":
 			meta := providerMetaRaw(block.Signature, interactionID)
-			content = append(content, types.ReasoningContent{Text: thoughtText(block.Summary), Signature: block.Signature, ProviderMetadata: meta})
-		case "image":
-			meta := providerMetaRaw("", interactionID)
-			if block.Data != "" {
-				data, _ := base64.StdEncoding.DecodeString(block.Data)
-				content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(block.MimeType, "image/png"), Data: data, ProviderMetadata: meta})
-			} else if block.URI != "" {
-				mediaType := firstNonEmpty(block.MimeType, "image/png")
-				content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: block.URI, MediaType: mediaType}, URL: block.URI, ProviderMetadata: meta})
-			}
+			content = append(content, types.ReasoningContent{Text: thoughtText(block.Summary), Signature: signatureText(block.Signature), ProviderMetadata: meta})
 		case "processing_call":
-			processingID := firstNonEmpty(block.ID, fmt.Sprintf("processing_%d", len(content)+1))
+			processingID := idOrGenerate(block.ID, gen)
 			content = append(content, types.CustomContent{
 				Kind:             "google.processing_call",
 				ProviderMetadata: processingMeta(block.Signature, interactionID, processingID, ""),
 			})
 		case "processing_result":
-			processingCallID := firstNonEmpty(block.CallID, fmt.Sprintf("processing_%d", len(content)+1))
+			processingCallID := idOrGenerate(block.CallID, gen)
 			content = append(content, types.CustomContent{
 				Kind:             "google.processing_result",
 				ProviderMetadata: processingMeta(block.Signature, interactionID, "", processingCallID),
@@ -526,13 +569,15 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			hasFunctionCall = true
 			var args map[string]interface{}
 			if len(block.Arguments) > 0 {
-				_ = json.Unmarshal(block.Arguments, &args)
+				_ = jsonexact.Unmarshal(block.Arguments, &args)
 			}
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			id := firstNonEmpty(block.ID, "call_"+fmt.Sprint(len(toolCalls)+1))
-			argsJSON, _ := json.Marshal(args)
+			// TS parse-google-interactions-outputs.ts: toolCallId: call.id,
+			// so an empty or missing id stays empty (no generated ID).
+			id := block.ID
+			argsJSON := jsonorder.Text(block.Arguments, args)
 			metaRaw := providerMetaRaw(block.Signature, interactionID)
 			content = append(content, types.ToolCallContent{
 				ToolCallID:       id,
@@ -540,7 +585,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				Input:            string(argsJSON),
 				Arguments:        args,
 				ProviderMetadata: metaRaw,
-				ThoughtSignature: block.Signature,
+				ThoughtSignature: signatureText(block.Signature),
 			})
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               id,
@@ -548,19 +593,19 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				Arguments:        args,
 				RawArguments:     string(argsJSON),
 				ProviderMetadata: providerMetaMap(block.Signature, interactionID),
-				ThoughtSignature: block.Signature,
+				ThoughtSignature: signatureText(block.Signature),
 			})
 		default:
 			if isBuiltinInteractionsToolCall(block.Type) {
 				var args map[string]interface{}
 				if len(block.Arguments) > 0 {
-					_ = json.Unmarshal(block.Arguments, &args)
+					_ = jsonexact.Unmarshal(block.Arguments, &args)
 				}
 				if args == nil {
 					args = map[string]interface{}{}
 				}
-				id := firstNonEmpty(block.ID, fmt.Sprintf("call_%d", len(toolCalls)+1))
-				argsJSON, _ := json.Marshal(args)
+				id := idOrGenerate(block.ID, gen)
+				argsJSON := jsonorder.Text(block.Arguments, args)
 				content = append(content, types.ToolCallContent{
 					ToolCallID:       id,
 					ToolName:         builtinToolName(block),
@@ -574,16 +619,16 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 					Arguments:        args,
 					RawArguments:     string(argsJSON),
 					ProviderExecuted: true,
-					ProviderMetadata: providerMetaMap(block.Signature, interactionID),
+					// TS: a built-in tool call carries no providerMetadata.
 				})
 			}
 			if isBuiltinInteractionsToolResult(block.Type) {
 				content = append(content, types.ToolResultContent{
-					ToolCallID: block.CallID,
+					ToolCallID: idOrGenerate(block.CallID, gen),
 					ToolName:   builtinResultToolName(block),
 					Result:     block.Result,
 				})
-				content = append(content, builtinToolResultSources(block)...)
+				content = append(content, builtinToolResultSources(block, gen)...)
 			}
 		}
 	}
@@ -599,19 +644,36 @@ func compactMessagesForInteraction(messages []types.Message, interactionID strin
 			for _, part := range msg.Content {
 				switch p := part.(type) {
 				case types.TextContent:
-					matches = matches || googleInteractionID(p.ProviderMetadata) == interactionID
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
 				case types.ReasoningContent:
-					matches = matches || googleInteractionID(p.ProviderMetadata) == interactionID
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
 				case types.ToolCallContent:
-					matches = matches || googleInteractionID(p.ProviderMetadata) == interactionID
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
+				case types.CustomContent:
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
+				case types.FileContent:
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
+				// TS checks every assistant part's providerOptions, so a
+				// tool-result or reasoning-file part links the turn too.
+				case types.ToolResultContent:
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
+				case types.ReasoningFileContent:
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
 				}
 			}
 			for _, call := range msg.ToolCalls {
-				if googleInteractionFromMap(call.ProviderMetadata) == interactionID {
+				if callGoogle, _ := call.ProviderMetadata["google"].(map[string]interface{}); interactionIDMatches(callGoogle, interactionID) {
 					matches = true
 				}
 			}
 			if matches {
+				// TS drops the results of the message's tool-call parts; Go
+				// carries them inline and in msg.ToolCalls.
+				for _, part := range msg.Content {
+					if tc, ok := part.(types.ToolCallContent); ok {
+						droppedToolCalls[tc.ToolCallID] = true
+					}
+				}
 				for _, call := range msg.ToolCalls {
 					droppedToolCalls[call.ID] = true
 				}
@@ -647,15 +709,14 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// interactionMediaKind maps the top-level media type (TS getTopLevelMediaType:
+// the text before the first "/", or the whole string) to a content block kind.
 func interactionMediaKind(mediaType string) string {
-	switch {
-	case strings.HasPrefix(mediaType, "image"):
-		return "image"
-	case strings.HasPrefix(mediaType, "audio"):
-		return "audio"
-	case strings.HasPrefix(mediaType, "video"):
-		return "video"
-	case strings.HasPrefix(mediaType, "application"), strings.HasPrefix(mediaType, "text"):
+	top, _, _ := strings.Cut(mediaType, "/")
+	switch top {
+	case "image", "audio", "video":
+		return top
+	case "application", "text":
 		return "document"
 	default:
 		return ""
@@ -663,25 +724,13 @@ func interactionMediaKind(mediaType string) string {
 }
 
 func isFullMediaType(mediaType string) bool {
-	return strings.Contains(mediaType, "/")
-}
-
-func resolveGoogleReference(ref types.ProviderReference) string {
-	if ref == nil {
-		return ""
+	// TS: has a slash, a non-empty subtype, and the subtype is not "*".
+	i := strings.Index(mediaType, "/")
+	if i < 0 {
+		return false
 	}
-	if v := ref["google"]; v != "" {
-		return v
-	}
-	if v := ref[""]; v != "" {
-		return v
-	}
-	for _, v := range ref {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+	sub := mediaType[i+1:]
+	return sub != "" && sub != "*"
 }
 
 func reasoningSummary(text string) interface{} {
@@ -694,7 +743,8 @@ func reasoningSummary(text string) interface{} {
 func thoughtText(summary []interactionsContentBlock) string {
 	var parts []string
 	for _, item := range summary {
-		if item.Type == "text" && item.Text != "" {
+		// TS: item.type === 'text' && typeof item.text === 'string'.
+		if item.Type == "text" && !item.textAbsent {
 			parts = append(parts, item.Text)
 		}
 	}
@@ -720,24 +770,6 @@ func mergeAdjacentInteractionText(content []map[string]interface{}) []map[string
 	return out
 }
 
-func signatureFromMetadataMap(meta map[string]interface{}) string {
-	if google, ok := meta["google"].(map[string]interface{}); ok {
-		if s, ok := google["signature"].(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-func googleInteractionFromMap(meta map[string]interface{}) string {
-	if google, ok := meta["google"].(map[string]interface{}); ok {
-		if s, ok := google["interactionId"].(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
 func isBuiltinInteractionsToolCall(t string) bool {
 	switch t {
 	case "google_search_call", "code_execution_call", "url_context_call", "file_search_call", "google_maps_call", "mcp_server_tool_call":
@@ -758,69 +790,121 @@ func isBuiltinInteractionsToolResult(t string) bool {
 
 func builtinToolName(block interactionsContentBlock) string {
 	if block.Type == "mcp_server_tool_call" {
-		return firstNonEmpty(block.Name, "mcp_server_tool")
+		return block.nameOr("mcp_server_tool")
 	}
 	return strings.TrimSuffix(block.Type, "_call")
 }
 
 func builtinResultToolName(block interactionsContentBlock) string {
 	if block.Type == "mcp_server_tool_result" {
-		return firstNonEmpty(block.Name, "mcp_server_tool")
+		return block.nameOr("mcp_server_tool")
 	}
 	return strings.TrimSuffix(block.Type, "_result")
 }
 
-func annotationsToSources(annotations []interactionsAnnotation) []types.ContentPart {
+// idOrGenerate is TS `id || generateId()`: the generator runs only when the
+// id is empty, so a custom GenerateID's later ids do not shift.
+func idOrGenerate(id string, gen func() string) string {
+	if id != "" {
+		return id
+	}
+	return gen()
+}
+
+// annotationsToSources maps the annotations of one text block to sources,
+// de-duplicated by URL or document filename/title (TS annotationsToSources).
+func annotationsToSources(annotations []interactionsAnnotation, generateID func() string) []types.ContentPart {
 	out := make([]types.ContentPart, 0)
-	for i, ann := range annotations {
-		id := fmt.Sprintf("source-%d", i+1)
+	seen := map[string]bool{}
+	for _, ann := range annotations {
+		var src types.SourceContent
 		switch ann.Type {
 		case "url_citation":
-			if ann.URL != "" {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: ann.URL, Title: ann.Title})
+			if ann.URL == "" {
+				continue
 			}
+			src = types.SourceContent{SourceType: "url", ID: generateID(), URL: ann.URL, Title: ann.Title}
 		case "file_citation":
-			uri := firstNonEmpty(ann.DocumentURI, ann.Source, ann.FileName)
+			// TS: url ?? document_uri ?? file_name. `??` keeps a present
+			// empty string, which then yields no source.
+			uri := ann.FileName
+			switch {
+			case ann.present.url || ann.URL != "":
+				uri = ann.URL
+			case ann.present.documentURI || ann.DocumentURI != "":
+				uri = ann.DocumentURI
+			}
+			if uri == "" {
+				continue
+			}
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: uri, Title: ann.FileName})
+				src = types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: ann.FileName}
 			} else {
-				out = append(out, types.SourceContent{SourceType: "document", ID: id, MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(ann.FileName, baseName(uri), uri), Filename: firstNonEmpty(ann.FileName, baseName(uri))})
+				// TS file_name ?? basename(uri); title file_name ?? filename
+				// ?? uri (basename is undefined for a trailing "/").
+				filename := baseName(uri)
+				if ann.present.fileName || ann.FileName != "" {
+					filename = ann.FileName
+				}
+				title := filename
+				if filename == "" && !ann.present.fileName {
+					title = uri
+				}
+				src = types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: title, Filename: filename}
 			}
 		case "place_citation":
-			out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: ann.URL, Title: ann.Name})
+			if ann.URL == "" {
+				continue
+			}
+			src = types.SourceContent{SourceType: "url", ID: generateID(), URL: ann.URL, Title: ann.Name}
+		default:
+			continue
 		}
+		key := "url:" + src.URL
+		if src.SourceType != "url" {
+			key = "doc:" + firstNonEmpty(src.Filename, src.Title)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, src)
 	}
 	return out
 }
 
-func builtinToolResultSources(block interactionsContentBlock) []types.ContentPart {
+func builtinToolResultSources(block interactionsContentBlock, generateID func() string) []types.ContentPart {
 	entries, ok := block.Result.([]interface{})
 	if !ok {
 		return nil
 	}
 	out := make([]types.ContentPart, 0)
-	for i, raw := range entries {
+	for _, raw := range entries {
 		entry, ok := raw.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		id := fmt.Sprintf("source-%d", i+1)
 		switch block.Type {
 		case "url_context_result":
 			urlValue, _ := entry["url"].(string)
-			status, _ := entry["status"].(string)
-			if urlValue != "" && (status == "" || status == "success") {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: urlValue})
+			// TS `status != null && status !== 'success'` skips the entry,
+			// so a present empty status does too.
+			status, hasStatus := entry["status"], false
+			if status != nil {
+				hasStatus = true
+			}
+			if urlValue != "" && (!hasStatus || status == "success") {
+				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: urlValue})
 			}
 		case "google_search_result":
 			urlValue, _ := entry["url"].(string)
 			title, _ := entry["title"].(string)
 			if urlValue != "" {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: urlValue, Title: title})
+				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: urlValue, Title: title})
 			}
 		case "google_maps_result":
 			places, _ := entry["places"].([]interface{})
-			for j, rawPlace := range places {
+			for _, rawPlace := range places {
 				place, ok := rawPlace.(map[string]interface{})
 				if !ok {
 					continue
@@ -828,26 +912,42 @@ func builtinToolResultSources(block interactionsContentBlock) []types.ContentPar
 				urlValue, _ := place["url"].(string)
 				name, _ := place["name"].(string)
 				if urlValue != "" {
-					out = append(out, types.SourceContent{SourceType: "url", ID: fmt.Sprintf("%s-%d", id, j+1), URL: urlValue, Title: name})
+					out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: urlValue, Title: name})
 				}
 			}
 		case "file_search_result":
-			uri, _ := entry["document_uri"].(string)
-			if uri == "" {
-				uri, _ = entry["source"].(string)
-			}
+			// TS: url ?? document_uri ?? file_name. `??` keeps a present
+			// empty string, which then yields no source.
 			fileName, _ := entry["file_name"].(string)
 			title, _ := entry["title"].(string)
-			if uri == "" {
-				uri = fileName
+			uri := fileName
+			if v, ok := entry["url"]; ok && v != nil {
+				uri, _ = v.(string)
+			} else if v, ok := entry["document_uri"]; ok && v != nil {
+				uri, _ = v.(string)
 			}
 			if uri == "" {
 				continue
 			}
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: uri, Title: title})
+				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: title})
 			} else {
-				out = append(out, types.SourceContent{SourceType: "document", ID: id, MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(title, fileName, baseName(uri), uri), Filename: firstNonEmpty(fileName, baseName(uri))})
+				// TS filename = file_name ?? basename(uri); title = title ??
+				// file_name ?? filename ?? uri (presence, not emptiness;
+				// basename is undefined for a trailing "/").
+				filename := baseName(uri)
+				fileNamePresent := false
+				if v, ok := entry["file_name"]; ok && v != nil {
+					filename, fileNamePresent = fileName, true
+				}
+				docTitle := filename
+				if filename == "" && !fileNamePresent {
+					docTitle = uri
+				}
+				if v, ok := entry["title"]; ok && v != nil {
+					docTitle = title
+				}
+				out = append(out, types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: docTitle, Filename: filename})
 			}
 		}
 	}
@@ -855,7 +955,7 @@ func builtinToolResultSources(block interactionsContentBlock) []types.ContentPar
 }
 
 func inferDocumentMediaType(uriOrName string) string {
-	lower := strings.ToLower(uriOrName)
+	lower := providerutils.JSToLower(uriOrName)
 	switch {
 	case strings.HasSuffix(lower, ".pdf"):
 		return "application/pdf"
@@ -878,4 +978,183 @@ func baseName(uriOrName string) string {
 		return ""
 	}
 	return parts[len(parts)-1]
+}
+
+// inputSignature is the signature a converted step carries (TS
+// `...(signature != null ? { signature } : {})` over
+// providerOptions.google.signature): a string option, even "", wins; then the
+// Go field; then a string google metadata signature (parts that came back
+// from this provider carry it there). nil leaves the field out.
+func inputSignature(opts map[string]interface{}, field string, googleMeta map[string]interface{}) *string {
+	// Typed-option ruling: part options are read in their JSON form.
+	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
+		if v, ok := google["signature"].(string); ok {
+			return &v
+		}
+	}
+	if field != "" {
+		return &field
+	}
+	if v, ok := googleMeta["signature"].(string); ok {
+		return &v
+	}
+	return nil
+}
+
+// partMatchesInteraction: TS compares providerOptions.google.interactionId; Go
+// parts that came back from this provider carry it in providerMetadata.
+// Only a present string id is compared (TS `===`: an absent id is undefined,
+// never equal to a given "").
+func partMatchesInteraction(opts map[string]interface{}, meta json.RawMessage, interactionID string) bool {
+	if google, ok := providerutils.NormalizeOptionsJSON(opts)["google"].(map[string]interface{}); ok {
+		if v, ok := google["interactionId"].(string); ok && v == interactionID {
+			return true
+		}
+	}
+	return interactionIDMatches(extractGoogleMetadata(meta), interactionID)
+}
+
+// interactionIDMatches reports whether google metadata carries interactionId
+// as a string equal to interactionID.
+func interactionIDMatches(google map[string]interface{}, interactionID string) bool {
+	v, ok := google["interactionId"].(string)
+	return ok && v == interactionID
+}
+
+// orderedArguments returns args so that it marshals with the key order of raw,
+// the wire text of the tool input (TS replays the parsed input as is). Go maps
+// have no order; without raw JSON args is returned unchanged.
+func orderedArguments(args map[string]interface{}, raw string) interface{} {
+	if raw == "" || len(args) == 0 {
+		return args
+	}
+	hint, ok := jsonorder.Parse([]byte(raw))
+	if !ok {
+		return args
+	}
+	return jsonorder.Hinted{V: args, Hint: hint}
+}
+
+// interactionToolArgs ports TS's assistant tool-call input handling: an object
+// input is used as is, a string input goes through safeParseToolArgs (a
+// non-object JSON value becomes {value: parsed}, unparsable text {value:
+// input}). orderRaw is the wire text to take key order from, empty when the
+// result is not that object.
+func interactionToolArgs(args map[string]interface{}, input string) (map[string]interface{}, string) {
+	if args != nil {
+		return args, input
+	}
+	if input == "" {
+		return map[string]interface{}{}, ""
+	}
+	var parsed interface{}
+	// TS secureJsonParse throws on a forbidden prototype key, and the catch
+	// sends the raw text as {value: input}. A number beyond the double range
+	// parses as Infinity (ruling 4), not a parse failure.
+	if err := jsonexact.Decode([]byte(input), &parsed); err != nil || hasForbiddenPrototypeKey(parsed) {
+		return map[string]interface{}{"value": input}, ""
+	}
+	if obj, ok := parsed.(map[string]interface{}); ok {
+		return obj, input
+	}
+	return map[string]interface{}{"value": parsed}, ""
+}
+
+// hasForbiddenPrototypeKey reports whether a parsed JSON value holds, at any
+// depth, an object with an own `__proto__` key or a `constructor` object with
+// an own `prototype` key (the keys secure-json-parse rejects).
+func hasForbiddenPrototypeKey(v interface{}) bool {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		if _, ok := x["__proto__"]; ok {
+			return true
+		}
+		if c, ok := x["constructor"].(map[string]interface{}); ok {
+			if _, has := c["prototype"]; has {
+				return true
+			}
+		}
+		for _, e := range x {
+			if hasForbiddenPrototypeKey(e) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, e := range x {
+			if hasForbiddenPrototypeKey(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resolveInteractionMediaType ports TS resolveFullMediaType for inline file
+// data: a full media type is kept, a bare top-level type ("image",
+// "image/*") is completed by sniffing the bytes and fails when it cannot be.
+func resolveInteractionMediaType(mediaType string, data []byte, dataString string) (string, error) {
+	if isFullMediaType(mediaType) {
+		return mediaType, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	var detected string
+	var ok bool
+	if len(data) == 0 && dataString != "" {
+		// TS detectMediaType decodes only the sniffed prefix of a string
+		// (decodePrefix); a prefix that is not base64 throws (atob).
+		var err error
+		if detected, ok, err = fileutil.DetectMediaTypeSignatureBase64(dataString, top); err != nil {
+			return "", err
+		}
+	} else {
+		detected, ok = fileutil.DetectMediaTypeSignature(data, top)
+	}
+	if ok {
+		return detected, nil
+	}
+	functionality := fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType)
+	return "", &providererrors.UnsupportedFunctionalityError{
+		Functionality: functionality,
+		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+	}
+}
+
+// generateID returns a fresh id for fallback tool-call, processing and source
+// ids (TS config.generateId()): the configured generator, else a random id.
+func (m *InteractionsLanguageModel) generateID() string {
+	if m != nil && m.cfg.GenerateID != nil {
+		return m.cfg.GenerateID()
+	}
+	return streaming.GenerateID()
+}
+
+// interactionsFileURL is TS `new URL(uri)` for a generated file URL: the
+// WHATWG serialization (lower-cased host, default port dropped, ...). A URI
+// that does not parse is reported by interactionsOutputsURLError first.
+func interactionsFileURL(uri string) string {
+	if href, err := urlnorm.Href(uri); err == nil {
+		return href
+	}
+	return uri
+}
+
+// interactionsOutputsURLError is the TypeError TS parseGoogleInteractionsOutputs
+// throws from `new URL(uri)` for a model_output image or video block that has
+// no inline data and a URI that does not parse.
+func interactionsOutputsURLError(steps []interactionsContentBlock) error {
+	for _, block := range steps {
+		if block.Type != "model_output" || len(block.ContentRaw) == 0 {
+			continue
+		}
+		var inner []interactionsContentBlock
+		_ = json.Unmarshal(block.ContentRaw, &inner)
+		for _, b := range inner {
+			if (b.Type == "image" || b.Type == "video") && b.Data == "" && b.URI != "" {
+				if _, err := urlnorm.Href(b.URI); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }

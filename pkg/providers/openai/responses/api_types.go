@@ -1,6 +1,12 @@
 package responses
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Responses API message item types
@@ -29,15 +35,22 @@ type AssistantMessageItem struct {
 
 // AssistantMessageContent is a single content part in an assistant message.
 type AssistantMessageContent struct {
-	// Type is "output_text".
+	// Type is "output_text" or "refusal".
 	Type string `json:"type"`
 
 	// Text is the text content.
 	Text string `json:"text"`
 
+	// Refusal is the refusal text of a "refusal" part (TS 6b97088662).
+	Refusal string `json:"refusal,omitempty"`
+
 	// Annotations holds citations attached to this text part (url_citation,
 	// file_citation, container_file_citation, file_path).
 	Annotations []TextAnnotation `json:"annotations,omitempty"`
+
+	// Logprobs is the raw per-token logprobs array, present when the request
+	// asked for message.output_text.logprobs.
+	Logprobs json.RawMessage `json:"logprobs,omitempty"`
 }
 
 // FunctionCallItem represents a function call output item.
@@ -50,6 +63,10 @@ type FunctionCallItem struct {
 
 	// CallID links this call to its output.
 	CallID string `json:"call_id"`
+
+	// Status is set by providers whose input items carry one (xAI sends
+	// "completed" on replayed function calls).
+	Status string `json:"status,omitempty"`
 
 	// Name is the function name.
 	Name string `json:"name"`
@@ -194,6 +211,9 @@ type CustomToolCallOutputPart struct {
 
 	// FileID is a provider file reference (input_file with uploaded file id).
 	FileID string `json:"file_id,omitempty"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // CompactionEvent is received in the Responses API SSE stream when the server
@@ -204,7 +224,11 @@ type CompactionEvent struct {
 	// Type is always "compaction".
 	Type string `json:"type"`
 
-	// ItemID is the unique identifier of the compacted item.
+	// ID is the item id as the API sends it on the wire ("id").
+	ID string `json:"id,omitempty"`
+
+	// ItemID is the unique identifier of the compacted item. Older callers
+	// populate it directly; ID (the wire field) is used when it is empty.
 	ItemID string `json:"item_id,omitempty"`
 
 	// EncryptedContent is the opaque encrypted context blob.
@@ -261,7 +285,7 @@ type ToolSearchOutputItem struct {
 	CallID *string `json:"call_id"`
 
 	// Tools is the list of matched tool definitions returned by the search.
-	Tools []json.RawMessage `json:"tools,omitempty"`
+	Tools []json.RawMessage `json:"tools"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -300,6 +324,20 @@ type FunctionToolDef struct {
 	// OutputSchema, when set, tells OpenAI to parse the function's
 	// function_call_output.output as JSON against this schema.
 	OutputSchema interface{} `json:"output_schema,omitempty"`
+}
+
+// MarshalJSON sends an empty, non-nil AllowedCallers as "allowed_callers":
+// [] (TS forwards `options.allowedCallers` whenever it is not null); nil is
+// omitted.
+func (d FunctionToolDef) MarshalJSON() ([]byte, error) {
+	type plain FunctionToolDef
+	if d.AllowedCallers == nil || len(d.AllowedCallers) > 0 {
+		return jsonstr.Marshal(plain(d))
+	}
+	return jsonstr.Marshal(struct {
+		plain
+		AllowedCallers []string `json:"allowed_callers"`
+	}{plain(d), d.AllowedCallers})
 }
 
 // NamespaceToolDef groups function tools under an OpenAI Responses namespace.
@@ -367,6 +405,47 @@ type ShellToolDefEnvironment struct {
 
 	// ContainerID is an existing container reference (container_reference only).
 	ContainerID *string `json:"container_id,omitempty"`
+}
+
+// MarshalJSON keeps an empty, non-nil FileIDs or Skills list as [] (TS
+// mapShellEnvironment forwards file_ids and skills as given); nil is
+// omitted.
+func (e ShellToolDefEnvironment) MarshalJSON() ([]byte, error) {
+	type plain ShellToolDefEnvironment
+	return marshalKeepingEmpty(plain(e), map[string]bool{
+		"file_ids": e.FileIDs != nil && len(e.FileIDs) == 0,
+		"skills":   e.Skills != nil && len(e.Skills) == 0,
+	})
+}
+
+// MarshalJSON keeps an empty, non-nil AllowedDomains or DomainSecrets list
+// as [] (TS sends allowed_domains and domain_secrets as given); nil is
+// omitted.
+func (p ShellNetworkPolicy) MarshalJSON() ([]byte, error) {
+	type plain ShellNetworkPolicy
+	return marshalKeepingEmpty(plain(p), map[string]bool{
+		"allowed_domains": p.AllowedDomains != nil && len(p.AllowedDomains) == 0,
+		"domain_secrets":  p.DomainSecrets != nil && len(p.DomainSecrets) == 0,
+	})
+}
+
+// marshalKeepingEmpty marshals v and, for each key marked true in keep,
+// adds the empty list omitempty dropped (appended after v's own keys).
+func marshalKeepingEmpty(v interface{}, keep map[string]bool) ([]byte, error) {
+	b, err := jsonstr.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range []string{"file_ids", "skills", "allowed_domains", "domain_secrets"} {
+		if keep[k] && len(b) >= 2 && b[len(b)-1] == '}' {
+			sep := ","
+			if len(b) == 2 {
+				sep = ""
+			}
+			b = append(b[:len(b)-1], []byte(sep+`"`+k+`":[]}`)...)
+		}
+	}
+	return b, nil
 }
 
 // CustomToolDef represents a custom tool in an API request.
@@ -463,6 +542,10 @@ type UserMessage struct {
 type UserTextPart struct {
 	Type string `json:"type"` // "input_text"
 	Text string `json:"text"`
+
+	// PromptCacheBreakpoint is the per-part providerOptions.<name>.
+	// promptCacheBreakpoint value ({mode: "explicit"}), forwarded verbatim.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // UserImageURLPart is an image content part in a user message.
@@ -470,12 +553,18 @@ type UserImageURLPart struct {
 	Type     string `json:"type"` // "input_image"
 	ImageURL string `json:"image_url"`
 	Detail   string `json:"detail,omitempty"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // UserFilePart references a file by URL in a user message.
 type UserFilePart struct {
 	Type    string `json:"type"` // "input_file"
 	FileURL string `json:"file_url"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // FunctionCallOutputItem sends a function tool result back to the Responses API.
@@ -484,6 +573,27 @@ type FunctionCallOutputItem struct {
 	Type   string      `json:"type"` // "function_call_output"
 	CallID string      `json:"call_id"`
 	Output interface{} `json:"output"` // string or []CustomToolCallOutputPart
+	// Caller echoes the result's caller (providerOptions.<name>.caller) so a
+	// programmatic-tool-calling result stays attributed to its program.
+	Caller *ToolCaller `json:"caller,omitempty"`
+}
+
+// AdditionalToolsItem loads extra function definitions immediately after an
+// ordinary function tool result (TS `additional_tools` input item), for tools
+// a result discovered at runtime (providerOptions.openai.additionalTools).
+type AdditionalToolsItem struct {
+	Type  string              `json:"type"` // "additional_tools"
+	Role  string              `json:"role"` // "developer"
+	Tools []AdditionalToolDef `json:"tools"`
+}
+
+// AdditionalToolDef is one function definition inside an AdditionalToolsItem.
+type AdditionalToolDef struct {
+	Type        string                 `json:"type"` // "function"
+	Name        string                 `json:"name"`
+	Description *string                `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters"`
+	Strict      *bool                  `json:"strict,omitempty"`
 }
 
 // ImageGenerationCallItem represents a hosted image_generation tool call
@@ -583,7 +693,7 @@ func (e McpErrorValue) MarshalJSON() ([]byte, error) {
 	if e.Raw != nil {
 		return e.Raw, nil
 	}
-	return json.Marshal(e.Message)
+	return jsonstr.Marshal(e.Message)
 }
 
 // AsJSONValue returns the error as a value suitable for a tool-result JSON
@@ -591,7 +701,7 @@ func (e McpErrorValue) MarshalJSON() ([]byte, error) {
 func (e McpErrorValue) AsJSONValue() interface{} {
 	if e.Raw != nil {
 		var v interface{}
-		if err := json.Unmarshal(e.Raw, &v); err == nil {
+		if err := jsonexact.Unmarshal(e.Raw, &v); err == nil {
 			return v
 		}
 		return string(e.Raw)
@@ -638,10 +748,11 @@ type McpApprovalRequestItem struct {
 
 // ResponsesAPIResponse is the body returned by a non-streaming POST /responses.
 type ResponsesAPIResponse struct {
-	ID          string `json:"id"`
-	CreatedAt   int64  `json:"created_at"`
-	Model       string `json:"model"`
-	ServiceTier string `json:"service_tier,omitempty"`
+	ID                     string          `json:"id"`
+	CreatedAt              int64           `json:"created_at"`
+	Model                  string          `json:"model"`
+	ServiceTier            string          `json:"service_tier,omitempty"`
+	PromptCacheDiagnostics json.RawMessage `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
 
 	// PromptCacheKey and SafetyIdentifier are echoed back verbatim when the
 	// request set them (xAI Responses API; row 0a5dd0f9c3).
@@ -712,12 +823,22 @@ type ResponsesAPIUsage struct {
 func (u *ResponsesAPIUsage) UnmarshalJSON(data []byte) error {
 	type responsesAPIUsageAlias ResponsesAPIUsage
 	var alias responsesAPIUsageAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
-		return err
+	if err := jsonexact.Unmarshal(data, &alias); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return err
+		}
+		// TS z.number() accepts a fractional count; read it truncated (as
+		// the DoJSON decoder does for non-streaming bodies).
+		fractional, ferr := decodeFractionalUsage(data)
+		if ferr != nil {
+			return err
+		}
+		alias = responsesAPIUsageAlias(fractional)
 	}
 	*u = ResponsesAPIUsage(alias)
 	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err == nil {
+	if err := jsonexact.Unmarshal(data, &raw); err == nil {
 		u.Raw = raw
 	}
 	return nil
@@ -789,8 +910,12 @@ type OutputItemAddedEvent struct {
 // OutputTextDeltaEvent carries an incremental text chunk.
 type OutputTextDeltaEvent struct {
 	Type        string `json:"type"` // "response.output_text.delta"
+	ItemID      string `json:"item_id,omitempty"`
 	OutputIndex int    `json:"output_index"`
 	Delta       string `json:"delta"`
+
+	// Logprobs is the raw per-token logprobs array for this delta.
+	Logprobs json.RawMessage `json:"logprobs,omitempty"`
 }
 
 // FunctionCallArgumentsDeltaEvent carries an incremental tool input chunk.
@@ -909,6 +1034,46 @@ type TextAnnotation struct {
 	ContainerID string `json:"container_id,omitempty"`
 }
 
+// MarshalJSON emits exactly the fields the TS schema declares for each
+// annotation type, keeping zero-valued indexes (start_index 0, index 0) that
+// the omitempty struct tags would otherwise drop from providerMetadata.
+func (a TextAnnotation) MarshalJSON() ([]byte, error) {
+	switch a.Type {
+	case "url_citation":
+		return jsonstr.Marshal(struct {
+			Type       string `json:"type"`
+			StartIndex int    `json:"start_index"`
+			EndIndex   int    `json:"end_index"`
+			URL        string `json:"url"`
+			Title      string `json:"title"`
+		}{a.Type, a.StartIndex, a.EndIndex, a.URL, a.Title})
+	case "file_citation":
+		return jsonstr.Marshal(struct {
+			Type     string `json:"type"`
+			FileID   string `json:"file_id"`
+			Filename string `json:"filename"`
+			Index    int    `json:"index"`
+		}{a.Type, a.FileID, a.Filename, a.Index})
+	case "container_file_citation":
+		return jsonstr.Marshal(struct {
+			Type        string `json:"type"`
+			ContainerID string `json:"container_id"`
+			FileID      string `json:"file_id"`
+			Filename    string `json:"filename"`
+			StartIndex  int    `json:"start_index"`
+			EndIndex    int    `json:"end_index"`
+		}{a.Type, a.ContainerID, a.FileID, a.Filename, a.StartIndex, a.EndIndex})
+	case "file_path":
+		return jsonstr.Marshal(struct {
+			Type   string `json:"type"`
+			FileID string `json:"file_id"`
+			Index  int    `json:"index"`
+		}{a.Type, a.FileID, a.Index})
+	}
+	type plain TextAnnotation
+	return jsonstr.Marshal(plain(a))
+}
+
 // OutputItemDoneEvent is emitted when an output item is fully assembled.
 // Item holds the complete item as raw JSON for type-specific parsing.
 type OutputItemDoneEvent struct {
@@ -923,13 +1088,14 @@ type ResponseCompletedEvent struct {
 	Response struct {
 		ID string `json:"id"`
 		// Status is "completed", "incomplete", or "failed". Primary finish-reason signal.
-		Status            string                  `json:"status,omitempty"`
-		Usage             *ResponsesAPIUsage      `json:"usage,omitempty"`
-		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
-		ServiceTier       string                  `json:"service_tier,omitempty"`
-		PromptCacheKey    string                  `json:"prompt_cache_key,omitempty"`
-		SafetyIdentifier  string                  `json:"safety_identifier,omitempty"`
-		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
+		Status                 string                  `json:"status,omitempty"`
+		Usage                  *ResponsesAPIUsage      `json:"usage,omitempty"`
+		IncompleteDetails      *IncompleteDetails      `json:"incomplete_details,omitempty"`
+		ServiceTier            string                  `json:"service_tier,omitempty"`
+		PromptCacheDiagnostics json.RawMessage         `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
+		PromptCacheKey         string                  `json:"prompt_cache_key,omitempty"`
+		SafetyIdentifier       string                  `json:"safety_identifier,omitempty"`
+		Reasoning              *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }
 
@@ -937,10 +1103,11 @@ type ResponseCompletedEvent struct {
 type ResponseFailedEvent struct {
 	Type     string `json:"type"` // "response.failed"
 	Response struct {
-		ID          string             `json:"id"`
-		ServiceTier string             `json:"service_tier,omitempty"`
-		Usage       *ResponsesAPIUsage `json:"usage,omitempty"`
-		Error       *struct {
+		ID                     string             `json:"id"`
+		ServiceTier            string             `json:"service_tier,omitempty"`
+		PromptCacheDiagnostics json.RawMessage    `json:"prompt_cache_diagnostics,omitempty"` // TS 5a645e92d2
+		Usage                  *ResponsesAPIUsage `json:"usage,omitempty"`
+		Error                  *struct {
 			Code    string `json:"code,omitempty"`
 			Message string `json:"message,omitempty"`
 		} `json:"error,omitempty"`
@@ -954,4 +1121,52 @@ type ResponsesStreamErrorEvent struct {
 	Type    string `json:"type"` // "error"
 	Message string `json:"message"`
 	Code    string `json:"code,omitempty"`
+}
+
+// decodeFractionalUsage decodes a usage object whose token counts may be
+// fractional numbers, truncating them into the int fields.
+func decodeFractionalUsage(data []byte) (ResponsesAPIUsage, error) {
+	var w struct {
+		InputTokens        float64  `json:"input_tokens"`
+		OutputTokens       float64  `json:"output_tokens"`
+		CostInUsdTicks     *float64 `json:"cost_in_usd_ticks"`
+		InputTokensCost    *float64 `json:"input_tokens_cost"`
+		OutputTokensCost   *float64 `json:"output_tokens_cost"`
+		InputTokensDetails *struct {
+			CachedTokens     float64  `json:"cached_tokens"`
+			CacheWriteTokens *float64 `json:"cache_write_tokens"`
+		} `json:"input_tokens_details"`
+		OutputTokensDetails *struct {
+			ReasoningTokens float64 `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
+	}
+	if err := jsonexact.Unmarshal(data, &w); err != nil {
+		return ResponsesAPIUsage{}, err
+	}
+	u := ResponsesAPIUsage{
+		InputTokens:      int(w.InputTokens),
+		OutputTokens:     int(w.OutputTokens),
+		InputTokensCost:  w.InputTokensCost,
+		OutputTokensCost: w.OutputTokensCost,
+	}
+	if w.CostInUsdTicks != nil {
+		v := int64(*w.CostInUsdTicks)
+		u.CostInUsdTicks = &v
+	}
+	if d := w.InputTokensDetails; d != nil {
+		u.InputTokensDetails = &struct {
+			CachedTokens     int  `json:"cached_tokens,omitempty"`
+			CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+		}{CachedTokens: int(d.CachedTokens)}
+		if d.CacheWriteTokens != nil {
+			v := int(*d.CacheWriteTokens)
+			u.InputTokensDetails.CacheWriteTokens = &v
+		}
+	}
+	if d := w.OutputTokensDetails; d != nil {
+		u.OutputTokensDetails = &struct {
+			ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+		}{ReasoningTokens: int(d.ReasoningTokens)}
+	}
+	return u, nil
 }

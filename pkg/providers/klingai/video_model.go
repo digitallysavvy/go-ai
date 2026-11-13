@@ -6,17 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for KlingAI
@@ -28,10 +35,10 @@ type VideoModel struct {
 
 // newVideoModel creates a new KlingAI video generation model
 func newVideoModel(prov *Provider, modelID string) (*VideoModel, error) {
-	mode, err := detectMode(modelID)
-	if err != nil {
-		return nil, err
-	}
+	// TS resolves the mode (and throws NoSuchModelError) in doStart, not at
+	// construction, so an unknown model ID still yields a model here and
+	// DoStart reports the error. The error return is kept for v0.5.2 callers.
+	mode, _ := detectMode(modelID)
 
 	return &VideoModel{
 		prov:    prov,
@@ -74,6 +81,14 @@ type klingaiOperation struct {
 // KlingAI endpoint and returns an opaque operation reference
 // (TS KlingAIVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	currentDate := time.Now() // TS: taken before the request is built and sent
+	// TS: const mode = detectMode(this.modelId) is the first fallible step.
+	if _, err := detectMode(m.modelID); err != nil {
+		return nil, err
+	}
+	if err := validateProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	provOpts, err := extractProviderOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, err
@@ -95,31 +110,44 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	authToken, err := m.prov.GenerateAuthToken()
 	if err != nil {
+		if providererrors.IsLoadAPIKeyError(err) || providererrors.IsLoadSettingError(err) {
+			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError / LoadSettingError
+		}
 		return nil, NewAuthError(err.Error())
 	}
 
 	submitResp, err := m.prov.client.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Path:    endpointPath,
-		Body:    body,
-		Headers: mergeKlingAIHeaders(authToken, opts.Headers),
+		Body:    orderedVideoBody(endpointPath, body, provOpts.Additional),
+		Headers: m.prov.requestHeaders(authToken, opts.Headers),
 	})
 	if err != nil {
-		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
+		// TS postJsonToApi lets the transport failure (an abort, or the
+		// "Cannot connect to API" APICallError) propagate unchanged, so
+		// errors.Is(err, context.Canceled) and retry classification keep
+		// working.
+		return nil, err
 	}
-	if submitResp.StatusCode != 200 {
-		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Body)
+	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
+		return nil, parseKlingAIErrorBodyText(submitResp.StatusCode, submitResp.HTTPStatusText(), submitResp.Headers, submitResp.Body)
 	}
 
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	submitBody := []byte(textdecode.UTF8(submitResp.Body))
+	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAICreate)(submitResp.StatusCode, submitResp.Headers, submitBody); err != nil {
+		return nil, err
+	}
+	// code / created_at / updated_at are z.number(): a fractional value
+	// truncates into the integer fields instead of failing the call.
 	var createResp createTaskResponse
-	if err := json.Unmarshal(submitResp.Body, &createResp); err != nil {
+	if err := providerutils.UnmarshalChunk(submitBody, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse response: %v", err))
 	}
-	if createResp.Code != 0 {
-		return nil, NewError(createResp.Code, createResp.Message, "")
-	}
+	// TS has no `code != 0` check on a 2xx response; a missing task_id is
+	// reported with the (schema-parsed) response.
 	if createResp.Data == nil || createResp.Data.TaskID == "" {
-		return nil, NewVideoGenerationError("no task ID in response")
+		return nil, newVideoGenerationErrorText("No task_id returned from KlingAI API. Response: " + zodStringify(submitBody, klingaiCreateSpec))
 	}
 
 	operation, _ := json.Marshal(klingaiOperation{TaskID: createResp.Data.TaskID, EndpointPath: endpointPath})
@@ -128,7 +156,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Operation: operation,
 		Warnings:  warnings,
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   convertHTTPHeaders(submitResp.Headers),
 		},
@@ -143,6 +171,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // dialed through a DNS-pinning transport, and credentials are only
 // forwarded on the trusted hop.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now() // TS: taken before the status request
 	var op klingaiOperation
 	if err := json.Unmarshal(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("klingai: invalid operation reference: %w", err)
@@ -150,49 +179,56 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	authToken, err := m.prov.GenerateAuthToken()
 	if err != nil {
+		if providererrors.IsLoadAPIKeyError(err) || providererrors.IsLoadSettingError(err) {
+			return nil, newMissingCredentialsError(err) // TS throws LoadAPIKeyError / LoadSettingError
+		}
 		return nil, NewAuthError(err.Error())
 	}
 
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, nil)
-	downloadOpts.Headers = mergeKlingAIHeaders(authToken, opts.Headers)
+	downloadOpts.Headers = m.prov.requestHeaders(authToken, opts.Headers)
 
-	statusURL := strings.TrimRight(m.prov.config.BaseURL, "/") + op.EndpointPath + "/" + op.TaskID
+	statusURL := m.prov.config.BaseURL + op.EndpointPath + "/" + providerutils.EncodePathSegment(op.TaskID)
 
-	var statusResp taskStatusResponse
-	result, err := fileutil.PollJSON(ctx, statusURL, downloadOpts, &statusResp)
+	downloaded, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {
-		return nil, m.handlePollError(err)
+		return nil, m.handlePollError(ctx, err)
 	}
+	// TS createJsonResponseHandler(klingaiTaskStatusSchema).
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	statusBody := []byte(textdecode.UTF8(downloaded.Data))
+	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAIStatus)(http.StatusOK, http.Header(downloaded.Headers), statusBody); err != nil {
+		return nil, err
+	}
+	var statusResp taskStatusResponse
+	if err := providerutils.UnmarshalChunk(statusBody, &statusResp); err != nil {
+		return nil, fmt.Errorf("klingai: failed to decode status response: %w", err)
+	}
+	result := downloaded
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
-		Timestamp: time.Now(),
+		Timestamp: currentDate,
 		ModelID:   m.modelID,
 		Headers:   flattenKlingAIHeaders(result.Headers),
 	}
 
-	if statusResp.Code != 0 {
-		return &provider.VideoModelV3OperationStatusResult{
-			Status:   provider.VideoOperationStatusError,
-			Error:    statusResp.Message,
-			Response: responseInfo,
-		}, nil
-	}
-	if statusResp.Data == nil {
-		return &provider.VideoModelV3OperationStatusResult{
-			Status:   provider.VideoOperationStatusError,
-			Error:    "no data in status response",
-			Response: responseInfo,
-		}, nil
+	// TS reads `statusResponse.data?.task_status` only: a non-zero `code` or
+	// a missing `data` is not an error, the task is still pending.
+	taskStatus := ""
+	var taskStatusMsg *string
+	if statusResp.Data != nil {
+		taskStatus, taskStatusMsg = statusResp.Data.TaskStatus, statusResp.Data.TaskStatusMsg
 	}
 
-	switch statusResp.Data.TaskStatus {
+	switch taskStatus {
 	case "succeed":
-		return m.buildCompletedStatusResult(&statusResp, op.TaskID, responseInfo)
+		return m.buildCompletedStatusResult(&statusResp, op.TaskID, responseInfo, statusBody)
 
 	case "failed":
-		msg := statusResp.Data.TaskStatusMsg
-		if msg == "" {
-			msg = "Unknown error"
+		// TS `task_status_msg ?? 'Unknown error'`: only null/absent falls back.
+		msg := "Unknown error"
+		if taskStatusMsg != nil {
+			msg = *taskStatusMsg
 		}
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
@@ -212,9 +248,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 // a completed operation result, returning an error (mirroring TS's thrown
 // AISDKError from buildCompletedResult) when the task carries no videos or
 // no valid video URLs at all.
-func (m *VideoModel) buildCompletedStatusResult(resp *taskStatusResponse, taskID string, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+func (m *VideoModel) buildCompletedStatusResult(resp *taskStatusResponse, taskID string, responseInfo provider.VideoModelV3ResponseInfo, rawBody []byte) (*provider.VideoModelV3OperationStatusResult, error) {
 	if resp.Data == nil || resp.Data.TaskResult == nil || len(resp.Data.TaskResult.Videos) == 0 {
-		return nil, NewVideoGenerationError("No videos were returned in the response.")
+		return nil, newVideoGenerationErrorText("No videos in response. Response: " + zodStringify(rawBody, klingaiStatusSpec))
 	}
 
 	videos := []provider.VideoModelV3VideoData{}
@@ -236,7 +272,7 @@ func (m *VideoModel) buildCompletedStatusResult(resp *taskStatusResponse, taskID
 	}
 
 	if len(videos) == 0 {
-		return nil, NewVideoGenerationError("No valid video URLs in response.")
+		return nil, newVideoGenerationErrorText("No valid video URLs in response")
 	}
 
 	return &provider.VideoModelV3OperationStatusResult{
@@ -316,27 +352,44 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
 // for a non-2xx HTTP response, or a validation/network error) into a
 // KlingAI API error where possible.
-func (m *VideoModel) handlePollError(err error) error {
+func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return parseKlingAIErrorBody(dlErr.StatusCode, dlErr.Body)
+		return parseKlingAIErrorBodyText(dlErr.StatusCode, dlErr.StatusText, http.Header(dlErr.Headers), dlErr.Body)
 	}
-	return fmt.Errorf("failed to check status: %w", err)
+	// TS getFromApi handleFetchError: a network failure is the retryable
+	// "Cannot connect to API" error and an abort stays as is; a URL or
+	// redirect rejected by validateUrl keeps its DownloadError.
+	if cause, ok := fileutil.TransportFailure(err); ok {
+		return internalhttp.TransportErrorCtx(ctx, cause)
+	}
+	return err
 }
 
 // parseKlingAIErrorBody decodes a non-2xx KlingAI response body into the
 // {code, message} error envelope (TS klingaiFailedResponseHandler /
 // klingaiErrorDataSchema), falling back to a generic error carrying the raw
 // body when the envelope cannot be parsed or carries no message.
-func parseKlingAIErrorBody(statusCode int, body []byte) error {
+func parseKlingAIErrorBody(statusCode int, headers http.Header, body []byte) error {
+	return parseKlingAIErrorBodyText(statusCode, http.StatusText(statusCode), headers, body)
+}
+
+// parseKlingAIErrorBodyText is parseKlingAIErrorBody with the response's own
+// status text (TS response.statusText, the server's reason phrase).
+func parseKlingAIErrorBodyText(statusCode int, statusText string, headers http.Header, body []byte) error {
 	var envelope struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code    *float64 `json:"code"`
+		Message *string  `json:"message"`
 	}
-	if jsonErr := json.Unmarshal(body, &envelope); jsonErr == nil && envelope.Message != "" {
-		return NewError(envelope.Code, envelope.Message, "")
+	if jsonErr := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil &&
+		!math.IsInf(*envelope.Code, 0) && !math.IsNaN(*envelope.Code) { // z.number() rejects Infinity
+		e := NewError(int(*envelope.Code), *envelope.Message, "")
+		e.httpStatus, e.httpBody, e.httpHeaders = statusCode, body, providerutils.ExtractHeaders(headers)
+		return e
 	}
-	return NewVideoGenerationError(fmt.Sprintf("API returned status %d: %s", statusCode, string(body)))
+	// TS createJsonErrorResponseHandler: a body that does not match the
+	// error schema gives the HTTP status text as the message.
+	return &Error{Code: statusCode, Message: statusText, httpStatus: statusCode, httpBody: body, httpHeaders: providerutils.ExtractHeaders(headers)}
 }
 
 // detectMode detects the video generation mode from the model ID suffix
@@ -350,7 +403,8 @@ func detectMode(modelID string) (VideoMode, error) {
 	if strings.HasSuffix(modelID, "-motion-control") {
 		return VideoModeMotionControl, nil
 	}
-	return "", fmt.Errorf("unsupported model ID: %s (must end with -t2v, -i2v, or -motion-control)", modelID)
+	// TS detectMode throws NoSuchModelError({ modelId, modelType: 'videoModel' }).
+	return "", providererrors.NewNoSuchModelError(modelID, "videoModel")
 }
 
 // endpointForMode returns the API endpoint path for a (possibly effective,
@@ -408,7 +462,10 @@ func (m *VideoModel) IsImageToVideo() bool {
 // klingaiIsVideoFile reports whether a file's top-level media type is
 // "video" (KlingAI does not accept video as a frame image or reference).
 func klingaiIsVideoFile(f *provider.VideoModelV3File) bool {
-	return f.MediaType != "" && strings.HasPrefix(f.MediaType, "video/")
+	// TS getTopLevelMediaType(mediaType) === 'video': the part before the
+	// first "/", or the whole string when there is none.
+	top, _, _ := strings.Cut(f.MediaType, "/")
+	return f.MediaType != "" && top == "video"
 }
 
 func klingaiGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
@@ -570,7 +627,7 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 	warnings := []types.Warning{}
 
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" { // TS `prompt != null`: "" is sent
 		body["prompt"] = opts.Prompt
 	}
 
@@ -599,7 +656,7 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	// v3.0 multi-shot
@@ -611,12 +668,12 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 		body["shot_type"] = *provOpts.ShotType
 	}
 
-	if len(provOpts.MultiPrompt) > 0 {
+	if provOpts.MultiPrompt != nil {
 		body["multi_prompt"] = provOpts.MultiPrompt
 	}
 
 	// v3.0 voice control
-	if len(provOpts.VoiceList) > 0 {
+	if provOpts.VoiceList != nil {
 		body["voice_list"] = provOpts.VoiceList
 	}
 
@@ -651,7 +708,7 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 	warnings := []types.Warning{}
 
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" { // TS `prompt != null`: "" is sent
 		body["prompt"] = opts.Prompt
 	}
 
@@ -695,12 +752,12 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 		body["static_mask"] = *provOpts.StaticMask
 	}
 
-	if len(provOpts.DynamicMasks) > 0 {
+	if provOpts.DynamicMasks != nil {
 		body["dynamic_masks"] = provOpts.DynamicMasks
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	// v3.0 multi-shot
@@ -712,17 +769,17 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 		body["shot_type"] = *provOpts.ShotType
 	}
 
-	if len(provOpts.MultiPrompt) > 0 {
+	if provOpts.MultiPrompt != nil {
 		body["multi_prompt"] = provOpts.MultiPrompt
 	}
 
 	// v3.0 element control (I2V only)
-	if len(provOpts.ElementList) > 0 {
+	if provOpts.ElementList != nil {
 		body["element_list"] = provOpts.ElementList
 	}
 
 	// v3.0 voice control
-	if len(provOpts.VoiceList) > 0 {
+	if provOpts.VoiceList != nil {
 		body["voice_list"] = provOpts.VoiceList
 	}
 
@@ -769,7 +826,7 @@ func (m *VideoModel) buildMultiImageBody(opts *provider.VideoModelV3CallOptions,
 	}
 	warnings := []types.Warning{}
 
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" { // TS `prompt != null`: "" is sent
 		body["prompt"] = opts.Prompt
 	}
 
@@ -790,7 +847,7 @@ func (m *VideoModel) buildMultiImageBody(opts *provider.VideoModelV3CallOptions,
 	}
 
 	if opts.Duration != nil {
-		body["duration"] = strconv.FormatFloat(*opts.Duration, 'f', -1, 64)
+		body["duration"] = providerutils.JSNumberString(*opts.Duration) // TS String(duration)
 	}
 
 	if provOpts.WatermarkEnabled != nil {
@@ -826,15 +883,17 @@ func (m *VideoModel) buildMultiImageBody(opts *provider.VideoModelV3CallOptions,
 func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, []types.Warning, error) {
 	warnings := []types.Warning{}
 
-	// Validate required options
-	if provOpts.VideoUrl == nil || *provOpts.VideoUrl == "" {
-		return nil, nil, NewMissingVideoOptionsError("videoUrl")
-	}
-	if provOpts.CharacterOrientation == nil || *provOpts.CharacterOrientation == "" {
-		return nil, nil, NewMissingVideoOptionsError("characterOrientation")
-	}
-	if provOpts.Mode == nil || *provOpts.Mode == "" {
-		return nil, nil, NewMissingVideoOptionsError("mode")
+	// Validate required options (TS checks all three at once and throws one
+	// KLINGAI_VIDEO_MISSING_OPTIONS error).
+	if provOpts.VideoUrl == nil || *provOpts.VideoUrl == "" ||
+		provOpts.CharacterOrientation == nil || *provOpts.CharacterOrientation == "" ||
+		provOpts.Mode == nil || *provOpts.Mode == "" {
+		return nil, nil, &Error{
+			Code:      400,
+			ErrorCode: ErrCodeKlingVideoMissingOptions,
+			Message:   "KlingAI Motion Control requires providerOptions.klingai with videoUrl, characterOrientation, and mode.",
+			textOnly:  true, // TS AISDKError text
+		}
 	}
 
 	body := map[string]interface{}{
@@ -844,7 +903,7 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 		"mode":                  *provOpts.Mode,
 	}
 
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" { // TS `prompt != null`: "" is sent
 		body["prompt"] = opts.Prompt
 	}
 
@@ -868,7 +927,7 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 	}
 
 	// v3.0 element control
-	if len(provOpts.ElementList) > 0 {
+	if provOpts.ElementList != nil {
 		body["element_list"] = provOpts.ElementList
 	}
 
@@ -881,7 +940,8 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 		})
 	}
 
-	if opts.Duration != nil {
+	// TS `if (options.duration)`: 0 and NaN are falsy.
+	if opts.Duration != nil && *opts.Duration != 0 && !math.IsNaN(*opts.Duration) {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "duration",
@@ -925,9 +985,10 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 		})
 	}
 
-	// TS checks `if (options.seed)` / `if (options.fps)`: a truthy check, so
-	// an explicit zero (like an omitted value) does not warn.
-	if opts.Seed != nil && *opts.Seed != 0 {
+	// TS checks `options.seed != null` (ef2dfb5e9f), so an explicit zero
+	// warns too; fps stays a truthy check (`if (options.fps)`), so an explicit
+	// zero fps does not warn.
+	if opts.Seed != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "seed",
@@ -954,6 +1015,25 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 	return warnings
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// KlingAIVideoModel has no doGenerate), so ai.GenerateVideo drives it through
+// the core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, err := extractProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
+}
+
 // getPollOptions extracts polling options from provider options
 func (m *VideoModel) getPollOptions(provOpts *ProviderOptions) polling.PollOptions {
 	opts := polling.DefaultPollOptions()
@@ -977,14 +1057,57 @@ func (m *VideoModel) getPollOptions(provOpts *ProviderOptions) polling.PollOptio
 // map[string]string expected by VideoModelV3ResponseInfo.Headers, taking the
 // first value for each header key (matching the TS SDK's single-value behavior).
 func convertHTTPHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
+	// TS extractResponseHeaders: repeated values joined with ", ".
+	if out := providerutils.ExtractHeaders(h); out != nil {
+		return out
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
+	return map[string]string{}
+}
+
+// videoBodyKeyOrder is the TS insertion order of each builder
+// (klingai-video-model.ts:461-786), keyed by endpoint path.
+var videoBodyKeyOrder = map[string][]string{
+	"/v1/videos/text2video": {"model_name", "prompt", "negative_prompt", "sound", "cfg_scale", "mode", "camera_control",
+		"aspect_ratio", "duration", "multi_shot", "shot_type", "multi_prompt", "voice_list", "watermark_info"},
+	"/v1/videos/image2video": {"model_name", "prompt", "image", "image_tail", "negative_prompt", "sound", "cfg_scale", "mode",
+		"camera_control", "static_mask", "dynamic_masks", "multi_shot", "shot_type", "multi_prompt", "element_list",
+		"voice_list", "watermark_info", "duration"},
+	"/v1/videos/multi-image2video": {"model_name", "image_list", "prompt", "negative_prompt", "cfg_scale", "mode",
+		"aspect_ratio", "duration", "watermark_info"},
+	"/v1/videos/motion-control": {"model_name", "video_url", "character_orientation", "mode", "prompt", "image_url",
+		"keep_original_sound", "watermark_info", "element_list"},
+}
+
+// orderedVideoBody sends body in the TS JSON.stringify order: the builder's
+// keys, then the passthrough option keys (sorted: a Go map has no caller
+// order; one that repeats a built key keeps that key's position), then
+// doStart's callback_url.
+func orderedVideoBody(endpoint string, body, passthrough map[string]interface{}) *jsonorder.Object {
+	out := jsonorder.New()
+	for _, k := range videoBodyKeyOrder[endpoint] {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
 		}
+	}
+	extra := make([]string, 0, len(passthrough))
+	for k := range passthrough {
+		extra = append(extra, k)
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		if v, ok := body[k]; ok {
+			out.Set(k, v)
+		}
+	}
+	rest := make([]string, 0)
+	for k := range body {
+		if _, done := out.Get(k); !done {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		out.Set(k, body[k])
 	}
 	return out
 }
@@ -993,21 +1116,33 @@ func convertHTTPHeaders(h http.Header) map[string]string {
 // (map[string][]string) the same way convertHTTPHeaders does for
 // net/http.Header.
 func flattenKlingAIHeaders(h map[string][]string) map[string]string {
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
-	}
-	return out
+	return convertHTTPHeaders(http.Header(h))
 }
 
-// mergeKlingAIHeaders builds the request headers for a KlingAI call: a fresh
-// bearer token followed by any caller-supplied headers.
-func mergeKlingAIHeaders(authToken string, headers map[string]string) map[string]string {
-	out := map[string]string{"Authorization": "Bearer " + authToken}
-	for k, v := range headers {
+// requestHeaders builds the request headers for a KlingAI call like the TS
+// provider's getHeaders plus combineHeaders: a fresh bearer token, then the
+// provider-configured headers (which may override it), the SDK user-agent
+// suffix, and finally the per-call headers. Header names compare
+// case-insensitively.
+func (p *Provider) requestHeaders(authToken string, callHeaders map[string]string) map[string]string {
+	out := map[string]string{}
+	set := func(k, v string) {
+		for existing := range out {
+			if strings.EqualFold(existing, k) {
+				delete(out, existing)
+			}
+		}
 		out[k] = v
+	}
+	set("Authorization", "Bearer "+authToken)
+	for k, v := range p.config.Headers {
+		set(k, v)
+	}
+	for k, v := range providerutils.WithUserAgentSuffix(out, version.ProviderUserAgent("klingai")) {
+		set(k, v)
+	}
+	for k, v := range callHeaders {
+		set(k, v)
 	}
 	return out
 }

@@ -4,11 +4,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -34,9 +37,15 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 			})
 
 		case types.RoleUser:
-			converted := make([]map[string]interface{}, 0, len(msg.Content))
+			// Legacy ImageContent parts are the TS image file parts; core
+			// normalizes them, but direct provider callers may not.
+			userParts, err := prompt.NormalizeContentParts(msg.Content)
+			if err != nil {
+				return nil, nil, err
+			}
+			converted := make([]map[string]interface{}, 0, len(userParts))
 			isTextOnly := true
-			for _, part := range msg.Content {
+			for _, part := range userParts {
 				item, err := convertPerplexityUserPart(part)
 				if err != nil {
 					return nil, nil, err
@@ -93,7 +102,7 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 						"name":      p.ToolName,
 						"arguments": perplexityToolCallArguments(p),
 					}
-					if sig := perplexityThoughtSignature(p.ProviderOptions); sig != "" {
+					if sig, ok := perplexityThoughtSignature(p.ProviderOptions); ok {
 						item["thought_signature"] = sig
 					}
 					input = append(input, item)
@@ -108,7 +117,7 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 						"name":    p.ToolName,
 						"output":  out,
 					}
-					if sig := perplexityThoughtSignature(p.ProviderOptions); sig != "" {
+					if sig, ok := perplexityThoughtSignature(p.ProviderOptions); ok {
 						item["thought_signature"] = sig
 					}
 					input = append(input, item)
@@ -145,14 +154,14 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 					"name":    toolResult.ToolName,
 					"output":  out,
 				}
-				if sig := perplexityThoughtSignature(toolResult.ProviderOptions); sig != "" {
+				if sig, ok := perplexityThoughtSignature(toolResult.ProviderOptions); ok {
 					item["thought_signature"] = sig
 				}
 				input = append(input, item)
 			}
 
 		default:
-			return nil, nil, fmt.Errorf("perplexity: unsupported role %q", msg.Role)
+			return nil, nil, fmt.Errorf("Unsupported role: %s", msg.Role) //nolint:staticcheck // TS text
 		}
 	}
 
@@ -197,11 +206,19 @@ func convertPerplexityUserPart(part types.ContentPart) (map[string]interface{}, 
 		case types.FileDataTypeURL:
 			return map[string]interface{}{"type": "input_image", "image_url": normalized.FileData.URL}, nil
 		case types.FileDataTypeData:
-			fullMediaType, err := resolvePerplexityImageMediaType(declaredMediaType, normalized.Data)
+			// TS convertToBase64(part.data.data): a base64 string payload
+			// (DataString) is embedded as is; detection decodes only its
+			// sniffed prefix (TS detectMediaType decodePrefix).
+			payload, sniff, sniffString := base64.StdEncoding.EncodeToString(normalized.Data), normalized.Data, ""
+			if len(normalized.Data) == 0 && normalized.FileData.DataString != "" {
+				payload = normalized.FileData.DataString
+				sniffString = normalized.FileData.DataString
+			}
+			fullMediaType, err := resolvePerplexityImageMediaType(declaredMediaType, sniff, sniffString)
 			if err != nil {
 				return nil, err
 			}
-			url := fmt.Sprintf("data:%s;base64,%s", fullMediaType, base64.StdEncoding.EncodeToString(normalized.Data))
+			url := fmt.Sprintf("data:%s;base64,%s", fullMediaType, payload)
 			return map[string]interface{}{"type": "input_image", "image_url": url}, nil
 		case types.FileDataTypeReference:
 			return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
@@ -226,15 +243,27 @@ func isFullMediaType(mediaType string) bool {
 // resolvePerplexityImageMediaType resolves a bare/wildcard image media type
 // via signature detection from inline bytes, mirroring TS resolveFullMediaType
 // for the image-only case the Agent API supports.
-func resolvePerplexityImageMediaType(mediaType string, data []byte) (string, error) {
+// A non-empty dataString is a base64 payload of which only the sniffed prefix
+// is decoded; its decode failure is returned (TS atob throws).
+func resolvePerplexityImageMediaType(mediaType string, data []byte, dataString string) (string, error) {
 	if isFullMediaType(mediaType) {
 		return mediaType, nil
 	}
-	if detected, ok := fileutil.DetectMediaTypeSignature(data, "image"); ok {
+	var detected string
+	var ok bool
+	if dataString != "" {
+		var err error
+		if detected, ok, err = fileutil.DetectMediaTypeSignatureBase64(dataString, "image"); err != nil {
+			return "", err
+		}
+	} else {
+		detected, ok = fileutil.DetectMediaTypeSignature(data, "image")
+	}
+	if ok {
 		return detected, nil
 	}
 	return "", &providererrors.UnsupportedFunctionalityError{
-		Functionality: fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType),
+		Functionality: fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType),
 	}
 }
 
@@ -261,18 +290,30 @@ func firstNonEmptyPerplexity(values ...string) string {
 // types.ToolCallContent.MarshalJSON's toolCallContentInput resolves the same
 // field for wire serialization elsewhere.
 func perplexityToolCallArguments(part types.ToolCallContent) string {
+	// TS part.input keeps the input's own key order and JS number text, so a
+	// valid JSON Input is re-stringified in order (convert-to-perplexity-input.ts:143).
+	if part.Input != "" {
+		if parsed, ok := jsonorder.Parse([]byte(part.Input)); ok {
+			if parsed == nil { // JSON null falls back to {} like `input ?? {}`
+				return "{}"
+			}
+			return jsonorder.Stringify(parsed)
+		}
+	}
 	var value interface{} = map[string]interface{}{}
 	if part.Arguments != nil {
 		value = part.Arguments
 	} else if part.Input != "" {
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(part.Input), &parsed); err == nil {
-			value = parsed
+			if parsed != nil { // JSON null falls back to {} like `input ?? {}`
+				value = parsed
+			}
 		} else {
 			value = part.Input
 		}
 	}
-	b, err := json.Marshal(value)
+	b, err := jsonstr.Marshal(value)
 	if err != nil {
 		return "{}"
 	}
@@ -280,20 +321,16 @@ func perplexityToolCallArguments(part types.ToolCallContent) string {
 }
 
 // perplexityThoughtSignature mirrors TS getThoughtSignature: it reads
-// providerOptions.perplexity.thoughtSignature, returning "" (unset) unless
-// the value is a non-null string.
-func perplexityThoughtSignature(providerOptions map[string]interface{}) string {
-	if providerOptions == nil {
-		return ""
-	}
-	perp, ok := providerOptions["perplexity"].(map[string]interface{})
+// providerOptions.perplexity.thoughtSignature and reports whether it is a
+// string (TS `typeof thoughtSignature === 'string'`, so "" is sent too).
+func perplexityThoughtSignature(providerOptions map[string]interface{}) (string, bool) {
+	// Typed-option ruling: part options are read in their JSON form.
+	perp, ok := providerutils.NormalizeOptionsJSON(providerOptions)["perplexity"].(map[string]interface{})
 	if !ok {
-		return ""
+		return "", false
 	}
-	if s, ok := perp["thoughtSignature"].(string); ok {
-		return s
-	}
-	return ""
+	s, ok := perp["thoughtSignature"].(string)
+	return s, ok
 }
 
 // perplexityToolOutput is the TS LanguageModelV4ToolResultOutput resolved
@@ -303,6 +340,8 @@ type perplexityToolOutput struct {
 	value   interface{}
 	content []types.ToolResultContentBlock
 	reason  string
+	// hasReason is TS output.reason != null (an empty reason included).
+	hasReason bool
 }
 
 func resolvePerplexityToolOutput(p types.ToolResultContent) perplexityToolOutput {
@@ -324,7 +363,7 @@ func resolvePerplexityToolOutput(p types.ToolResultContent) perplexityToolOutput
 	}
 
 	o := p.Output
-	out := perplexityToolOutput{value: o.Value, content: o.Content, reason: o.Reason}
+	out := perplexityToolOutput{value: o.Value, content: o.Content, reason: o.Reason, hasReason: o.HasReason()}
 	switch o.Type {
 	case types.ToolResultOutputError:
 		if _, ok := o.Value.(string); ok {
@@ -353,10 +392,10 @@ func serializePerplexityToolOutput(p types.ToolResultContent) (string, error) {
 		if s, ok := out.value.(string); ok {
 			return s, nil
 		}
-		b, err := json.Marshal(out.value)
+		b, err := jsonstr.Marshal(out.value)
 		return string(b), err
 	case "execution-denied":
-		if out.reason != "" {
+		if out.hasReason {
 			return out.reason, nil
 		}
 		return "Tool call execution denied.", nil
@@ -376,7 +415,7 @@ func serializePerplexityToolOutput(p types.ToolResultContent) (string, error) {
 		}
 		return b.String(), nil
 	default: // json, error-json
-		b, err := json.Marshal(out.value)
+		b, err := jsonstr.Marshal(out.value)
 		return string(b), err
 	}
 }

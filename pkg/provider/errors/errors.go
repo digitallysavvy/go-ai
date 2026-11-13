@@ -1,10 +1,17 @@
 package errors
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"reflect"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // Error types for the AI SDK
@@ -115,6 +122,29 @@ func (e *ProviderError) Unwrap() error {
 	return e.Cause
 }
 
+// ResponseHeader returns the response header value for name, matched
+// case-insensitively, or "" when absent. Use it instead of indexing
+// ResponseHeaders directly: NewProviderErrorFromResponse keeps the v0.5.2
+// Go canonical keys ("Retry-After") while every other constructor uses the
+// TS lower-case keys ("retry-after").
+func (e *ProviderError) ResponseHeader(name string) string {
+	if e == nil || len(e.ResponseHeaders) == 0 {
+		return ""
+	}
+	if v, ok := e.ResponseHeaders[strings.ToLower(name)]; ok {
+		return v
+	}
+	if v, ok := e.ResponseHeaders[http.CanonicalHeaderKey(name)]; ok {
+		return v
+	}
+	for k, v := range e.ResponseHeaders {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
 // IsRetryable reports whether the provider error represents a retryable
 // condition. Unknown/no-status errors preserve the SDK's historical generic
 // retry behavior, while HTTP responses follow the TypeScript SDK default:
@@ -126,6 +156,7 @@ func (e *ProviderError) IsRetryable() bool {
 	if e.Retryable != nil {
 		return *e.Retryable
 	}
+	// TS APICallError default: 408 (request timeout), 409 (conflict), 429, 5xx.
 	return e.StatusCode == 0 || e.StatusCode == 408 || e.StatusCode == 409 || e.StatusCode == 429 || e.StatusCode >= 500
 }
 
@@ -135,6 +166,10 @@ func IsProviderError(err error) bool {
 	return errors.As(err, &providerErr)
 }
 
+// InvalidJSONResponseMessage is the TS createJsonResponseHandler failure
+// message (an APICallError for a successful body that fails its schema).
+const InvalidJSONResponseMessage = "Invalid JSON response"
+
 // HTTPStatusDetails is implemented by errors that carry a non-2xx HTTP
 // response (internal/http.HTTPStatusError). NewProviderError uses it to
 // populate the status code, response headers and body, mirroring the data TS
@@ -142,6 +177,38 @@ func IsProviderError(err error) bool {
 type HTTPStatusDetails interface {
 	error
 	HTTPStatusDetails() (statusCode int, headers map[string]string, body []byte)
+}
+
+// HTTPStatusTextDetails is implemented by an HTTP status cause that can
+// carry the response's reason phrase (TS response.statusText). fromResponse
+// reports that text came from a status line (it may then be empty).
+type HTTPStatusTextDetails interface {
+	HTTPStatusText() (text string, fromResponse bool)
+}
+
+// StatusText is TS response.statusText for a failed response: the reason
+// phrase carried by cause (see HTTPStatusTextDetails), else the standard
+// text for code. TS createJsonErrorResponseHandler and
+// createStatusCodeErrorResponseHandler fall back to it.
+func StatusText(cause error, code int) string {
+	if text, ok := responseStatusText(cause); ok {
+		return text
+	}
+	return http.StatusText(code)
+}
+
+// ResponseStatusText is the reason phrase cause carries (see
+// HTTPStatusTextDetails); ok is false when it carries none.
+func ResponseStatusText(cause error) (text string, ok bool) {
+	return responseStatusText(cause)
+}
+
+func responseStatusText(cause error) (string, bool) {
+	var st HTTPStatusTextDetails
+	if cause == nil || !errors.As(cause, &st) {
+		return "", false
+	}
+	return st.HTTPStatusText()
 }
 
 // NewProviderError creates a new provider error.
@@ -153,6 +220,31 @@ type HTTPStatusDetails interface {
 // retryability honest: a 401 must not be classified as a retryable
 // no-status error.
 func NewProviderError(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
+	return newProviderError(provider, statusCode, errorCode, message, cause, true, false)
+}
+
+// NewProviderErrorFromResponse is NewProviderError for a caller that has
+// already applied its provider's failed-response handler to the body: the
+// message is final and is kept verbatim, even when it is empty (TS
+// APICallError keeps "" from a body such as {"error":{"message":""}}). The
+// status code, headers and body are still taken from the HTTP cause.
+func NewProviderErrorFromResponse(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
+	return newProviderError(provider, statusCode, errorCode, message, cause, false, true)
+}
+
+// newProviderError builds a ProviderError. replaceEmpty replaces an empty or
+// raw-cause message with the body's message; canonicalHeaders keeps the
+// v0.5.2 Go canonical ResponseHeaders keys (NewProviderErrorFromResponse
+// only). Every other constructor uses the TS lower-case keys
+// (extract-response-headers.ts: Object.fromEntries(response.headers)).
+func newProviderError(provider string, statusCode int, errorCode, message string, cause error, replaceEmpty, canonicalHeaders bool) *ProviderError {
+	// A body that failed its response schema (TS createJsonResponseHandler)
+	// is already the final APICallError "Invalid JSON response"; it is not
+	// re-wrapped.
+	var inner *ProviderError
+	if errors.As(cause, &inner) && inner.Message == InvalidJSONResponseMessage {
+		return inner
+	}
 	e := &ProviderError{
 		Provider:   provider,
 		StatusCode: statusCode,
@@ -173,17 +265,99 @@ func NewProviderError(provider string, statusCode int, errorCode, message string
 	}
 	e.StatusCode = code
 	e.ResponseHeaders = headers
+	if canonicalHeaders {
+		// NewProviderErrorFromResponse replaces provider code that built
+		// ResponseHeaders with Go canonical keys and comma-joined values in
+		// v0.5.2; keep that shape (accepted deviation from TS lower-case keys).
+		e.ResponseHeaders = canonicalResponseHeaders(cause, headers)
+	}
+	// TS createJsonErrorResponseHandler reads response.text(): a leading
+	// BOM is dropped and each maximal invalid UTF-8 subpart is one U+FFFD.
+	if textdecode.HasBOM(body) || !utf8.Valid(body) {
+		body = []byte(textdecode.UTF8(body))
+	}
 	e.ResponseBody = string(body)
 	if len(body) > 0 {
 		var data interface{}
-		if json.Unmarshal(body, &data) == nil {
+		// TS safeParseJSON: a body with a __proto__ / constructor.prototype
+		// key does not parse (no data, status text message).
+		if securejson.Unmarshal(body, &data) == nil {
 			e.Data = data
 		}
 	}
-	if message == "" || message == cause.Error() || message == hs.Error() {
+	if message == cause.Error() || message == hs.Error() || (replaceEmpty && message == "") {
 		if msg := ExtractAPIErrorMessage(body); msg != "" {
 			e.Message = msg
+		} else if text, ok := responseStatusText(cause); ok {
+			// TS createJsonErrorResponseHandler: response.statusText, the
+			// server's reason phrase (empty when the line has none).
+			e.Message = text
+		} else if text := http.StatusText(code); text != "" {
+			// TS createJsonErrorResponseHandler: an empty or unparseable
+			// body falls back to the response status text. The body stays
+			// available on ResponseBody.
+			e.Message = text
 		}
+	}
+	return e
+}
+
+// canonicalResponseHeaders returns the response headers with Go canonical keys
+// (the v0.5.2 ResponseHeaders shape) and repeated values joined by ", ",
+// except Set-Cookie, whose last line wins (TS extractResponseHeaders,
+// Object.fromEntries over fetch's Headers iterator). It uses the raw header
+// when the cause keeps one, else canonicalizes headers.
+func canonicalResponseHeaders(cause error, headers map[string]string) map[string]string {
+	var raw interface{ HTTPResponseHeader() http.Header }
+	if errors.As(cause, &raw) {
+		if h := raw.HTTPResponseHeader(); len(h) > 0 {
+			out := make(map[string]string, len(h))
+			for k, vs := range h {
+				out[http.CanonicalHeaderKey(k)] = fetchHeaderEntry(k, vs)
+			}
+			return out
+		}
+	}
+	if len(headers) == 0 {
+		return headers
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		out[http.CanonicalHeaderKey(k)] = v
+	}
+	return out
+}
+
+// ErrorSchema is a provider's TS error response schema with its
+// errorToMessage: given the securely parsed JSON body, it reports whether the
+// body matches the schema, the message, and the parsed data (zod output, with
+// undeclared keys stripped).
+type ErrorSchema func(body interface{}) (message string, data interface{}, ok bool)
+
+// NewSchemaProviderError builds the error of a provider whose TS model uses
+// createJsonErrorResponseHandler({errorSchema, errorToMessage}). For an HTTP
+// status cause it keeps the status, response headers and body; Message and
+// Data come from schema when the body is JSON that matches it, and otherwise
+// Message is the HTTP status text and Data is nil, exactly as TS. A schema of
+// nil gives the TS createStatusCodeErrorResponseHandler shape (status text,
+// no data). Any other cause gives NewProviderError(provider, 0, "",
+// cause.Error(), cause). ResponseHeaders has the TS lower-case keys.
+func NewSchemaProviderError(provider string, cause error, schema ErrorSchema) *ProviderError {
+	e := newProviderError(provider, 0, "", cause.Error(), cause, false, false)
+	var hs HTTPStatusDetails
+	if e.StatusCode == 0 || !errors.As(cause, &hs) || e.Message == InvalidJSONResponseMessage {
+		return e
+	}
+	e.Message, e.Data = StatusText(cause, e.StatusCode), nil
+	if schema == nil || strings.TrimSpace(e.ResponseBody) == "" {
+		return e
+	}
+	var parsed interface{}
+	if securejson.Unmarshal([]byte(e.ResponseBody), &parsed) != nil {
+		return e
+	}
+	if msg, data, ok := schema(parsed); ok {
+		e.Message, e.Data = msg, data
 	}
 	return e
 }
@@ -191,15 +365,17 @@ func NewProviderError(provider string, statusCode int, errorCode, message string
 // ExtractAPIErrorMessage pulls a human-readable message out of a JSON error
 // body using the shapes common to provider APIs: {"error":{"message"}},
 // {"error":"msg"}, {"message"}, {"detail"}, {"errors":[{"message"}]}.
-// It returns "" when no message is found.
+// It returns "" when no message is found. The message is returned as sent,
+// without trimming, like the TS providers' errorToMessage (for example
+// openai-compatible `data.error.message`).
 func ExtractAPIErrorMessage(body []byte) string {
 	var v map[string]interface{}
-	if err := json.Unmarshal(body, &v); err != nil {
+	if err := securejson.Unmarshal(body, &v); err != nil {
 		return ""
 	}
 	str := func(x interface{}) string {
 		s, _ := x.(string)
-		return strings.TrimSpace(s)
+		return s
 	}
 	switch e := v["error"].(type) {
 	case map[string]interface{}:
@@ -279,13 +455,34 @@ type InvalidArgumentError struct {
 	Field   string
 	Message string
 	Cause   error
+	// Value is the TS error's `value`: the argument value that was rejected,
+	// when the check reports one (for example ai.CosineSimilarity's
+	// {vector1Length, vector2Length}). It is not part of Error().
+	Value interface{}
+
+	// bare marks the @ai-sdk/provider class (NewArgumentError): Error() is
+	// the message alone.
+	bare bool
+}
+
+// NewArgumentError is TS `@ai-sdk/provider` `new InvalidArgumentError({
+// argument, message, cause })`, which providers throw: its Error() is the
+// message alone, without the `Invalid argument for parameter <x>: ` prefix
+// of the `ai` package's class (a struct literal). Field holds the argument.
+// The type, its fields and errors.As matching are the same for both.
+func NewArgumentError(argument, message string, cause error) *InvalidArgumentError {
+	return &InvalidArgumentError{Field: argument, Message: message, Cause: cause, bare: true}
 }
 
 func (e *InvalidArgumentError) Error() string {
-	if e.Field == "" {
-		return "invalid argument: " + e.Message
+	if e.bare {
+		return e.Message
 	}
-	return fmt.Sprintf("invalid argument for %s: %s", e.Field, e.Message)
+	if e.Field == "" {
+		return "Invalid argument: " + e.Message
+	}
+	// TS InvalidArgumentError: `Invalid argument for parameter ${parameter}: ${message}`.
+	return fmt.Sprintf("Invalid argument for parameter %s: %s", e.Field, e.Message)
 }
 
 func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
@@ -293,6 +490,69 @@ func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
 // IsInvalidArgumentError checks if an error is an InvalidArgumentError.
 func IsInvalidArgumentError(err error) bool {
 	var target *InvalidArgumentError
+	return errors.As(err, &target)
+}
+
+// InvalidPromptError signals an invalid prompt (TS AI_InvalidPromptError):
+// the standardizePrompt checks (neither or both of prompt and messages,
+// empty messages, system messages without the opt-in).
+type InvalidPromptError struct {
+	// Prompt is the offending prompt value, when there is one.
+	Prompt  interface{}
+	Message string
+	Cause   error
+}
+
+func (e *InvalidPromptError) Error() string { return "Invalid prompt: " + e.Message }
+
+func (e *InvalidPromptError) Unwrap() error { return e.Cause }
+
+// IsInvalidPromptError checks if an error is an InvalidPromptError.
+func IsInvalidPromptError(err error) bool {
+	var target *InvalidPromptError
+	return errors.As(err, &target)
+}
+
+// LoadAPIKeyError signals that a required API key was neither passed
+// explicitly nor found in its environment variable (TS AI_LoadAPIKeyError).
+type LoadAPIKeyError struct {
+	Message string
+}
+
+func (e *LoadAPIKeyError) Error() string { return e.Message }
+
+// NewLoadAPIKeyError builds the TS loadApiKey error text:
+// "<description> API key is missing. Pass it using the 'apiKey' parameter or
+// the <ENV> environment variable."
+func NewLoadAPIKeyError(description, envVar string) *LoadAPIKeyError {
+	return &LoadAPIKeyError{Message: fmt.Sprintf("%s API key is missing. Pass it using the 'apiKey' parameter or the %s environment variable.", description, envVar)}
+}
+
+// IsLoadAPIKeyError checks if an error is a LoadAPIKeyError.
+func IsLoadAPIKeyError(err error) bool {
+	var target *LoadAPIKeyError
+	return errors.As(err, &target)
+}
+
+// LoadSettingError signals that a required provider setting was neither
+// passed explicitly nor found in its environment variable (TS
+// AI_LoadSettingError).
+type LoadSettingError struct {
+	Message string
+}
+
+func (e *LoadSettingError) Error() string { return e.Message }
+
+// NewLoadSettingError builds the TS loadSetting error text:
+// "<description> setting is missing. Pass it using the '<settingName>'
+// parameter or the <ENV> environment variable."
+func NewLoadSettingError(description, settingName, envVar string) *LoadSettingError {
+	return &LoadSettingError{Message: fmt.Sprintf("%s setting is missing. Pass it using the '%s' parameter or the %s environment variable.", description, settingName, envVar)}
+}
+
+// IsLoadSettingError checks if an error is a LoadSettingError.
+func IsLoadSettingError(err error) bool {
+	var target *LoadSettingError
 	return errors.As(err, &target)
 }
 
@@ -322,11 +582,17 @@ type UnsupportedFunctionalityError struct {
 	Message       string
 }
 
+// Is reports a match with ErrUnsupportedFeature so callers that matched the
+// sentinel keep working when a provider raises the typed error.
+func (e *UnsupportedFunctionalityError) Is(target error) bool {
+	return target == ErrUnsupportedFeature
+}
+
 func (e *UnsupportedFunctionalityError) Error() string {
 	if e.Message != "" {
 		return e.Message
 	}
-	return fmt.Sprintf("%q functionality not supported.", e.Functionality)
+	return fmt.Sprintf("'%s' functionality not supported.", e.Functionality)
 }
 
 // IsUnsupportedFunctionalityError checks if an error is an UnsupportedFunctionalityError.
@@ -356,7 +622,8 @@ func (e *ValidationError) Error() string {
 				parts = append(parts, e.Context.EntityName)
 			}
 			if e.Context.EntityID != "" {
-				parts = append(parts, fmt.Sprintf("id: %q", e.Context.EntityID))
+				// TS: `id: "${entityId}"` (no escaping).
+				parts = append(parts, `id: "`+e.Context.EntityID+`"`)
 			}
 			for i, part := range parts {
 				if i > 0 {
@@ -372,7 +639,8 @@ func (e *ValidationError) Error() string {
 		// Format the full error message
 		msg := contextPrefix
 		if e.Value != nil {
-			msg += fmt.Sprintf("\nValue: %+v.", e.Value)
+			// TS: `${contextPrefix}: Value: ${JSON.stringify(value)}.\n...`
+			msg += " Value: " + validationValueText(e.Value) + "."
 		}
 		if e.Message != "" {
 			msg += fmt.Sprintf("\nError message: %s", e.Message)
@@ -387,6 +655,19 @@ func (e *ValidationError) Error() string {
 		return fmt.Sprintf("validation error on field '%s': %s", e.Field, e.Message)
 	}
 	return fmt.Sprintf("validation error: %s", e.Message)
+}
+
+// validationValueText renders the failing value like TS's JSON.stringify(value)
+// in TypeValidationError's message. A string is used as-is because callers pass
+// the already-compacted JSON text of the value there.
+func validationValueText(value interface{}) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	if b, err := jsonstr.Marshal(value); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%+v", value)
 }
 
 // Unwrap returns the underlying cause
@@ -424,13 +705,13 @@ func NewValidationErrorWithContext(value interface{}, message string, cause erro
 func WrapValidationError(value interface{}, cause error, context *ValidationContext) *ValidationError {
 	// Check if it's already a ValidationError with matching context
 	var existingErr *ValidationError
+	// TS: cause.value === value && cause.context?.field === context?.field
+	// && ... (type-validation-error.ts 109-115). A nil context reads as
+	// all-undefined fields, and the value comparison must never panic on
+	// uncomparable dynamic types (maps, slices, funcs).
 	if errors.As(cause, &existingErr) &&
-		existingErr.Value == value &&
-		existingErr.Context != nil &&
-		context != nil &&
-		existingErr.Context.Field == context.Field &&
-		existingErr.Context.EntityName == context.EntityName &&
-		existingErr.Context.EntityID == context.EntityID {
+		sameJSValue(existingErr.Value, value) &&
+		sameValidationContext(existingErr.Context, context) {
 		return existingErr
 	}
 
@@ -446,6 +727,49 @@ func WrapValidationError(value interface{}, cause error, context *ValidationCont
 		Cause:   cause,
 		Context: context,
 	}
+}
+
+// sameValidationContext compares two contexts like TS optional chaining:
+// a nil context has empty (undefined) fields.
+func sameValidationContext(a, b *ValidationContext) bool {
+	var za, zb ValidationContext
+	if a != nil {
+		za = *a
+	}
+	if b != nil {
+		zb = *b
+	}
+	return za.Field == zb.Field && za.EntityName == zb.EntityName && za.EntityID == zb.EntityID
+}
+
+// sameJSValue reports whether a and b are the same value in the sense of
+// JS ===: comparable values compare with ==, while maps, slices, funcs
+// and pointers-like references compare by identity. It never panics.
+func sameJSValue(a, b interface{}) (same bool) {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	if va.Type() != vb.Type() {
+		return false
+	}
+	switch va.Kind() {
+	case reflect.Map, reflect.Func, reflect.Chan, reflect.Pointer, reflect.UnsafePointer:
+		return va.Pointer() == vb.Pointer()
+	case reflect.Slice:
+		return va.Pointer() == vb.Pointer() && va.Len() == vb.Len()
+	}
+	if !va.Type().Comparable() {
+		return false
+	}
+	// A comparable struct or array can still hold an uncomparable value in
+	// an interface field; == panics then. Treat that as "not the same".
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a == b
 }
 
 // ToolExecutionError represents an error during tool execution
@@ -652,11 +976,13 @@ func (e *DownloadError) Error() string {
 	if e.Message != "" {
 		return e.Message
 	}
-	if e.StatusCode > 0 {
-		return fmt.Sprintf("Failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
-	}
+	// TS download-error.ts 19-21: the cause wins whenever it is set; the
+	// status line is the default only without a cause.
 	if e.Cause != nil {
 		return fmt.Sprintf("Failed to download %s: %v", e.URL, e.Cause)
+	}
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("Failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
 	}
 	return fmt.Sprintf("Failed to download %s", e.URL)
 }
@@ -681,4 +1007,14 @@ func NewDownloadError(url string, statusCode int, statusText, message string, ca
 		Message:    message,
 		Cause:      cause,
 	}
+}
+
+// fetchHeaderEntry is providerutils.FetchHeaderEntry (this package cannot
+// import providerutils): the last Set-Cookie line, every other repeated
+// header joined with ", ".
+func fetchHeaderEntry(name string, values []string) string {
+	if len(values) > 0 && strings.EqualFold(name, "Set-Cookie") {
+		return values[len(values)-1]
+	}
+	return strings.Join(values, ", ")
 }

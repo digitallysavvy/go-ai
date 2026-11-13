@@ -313,7 +313,7 @@ func TestGenerateText_PerToolApprovalValidatesContextBeforeCallback(t *testing.T
 		},
 	}
 
-	result, err := GenerateText(context.Background(), GenerateTextOptions{
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "hi",
 		Tools: []types.Tool{{
@@ -334,13 +334,33 @@ func TestGenerateText_PerToolApprovalValidatesContextBeforeCallback(t *testing.T
 		},
 		StopWhen: []StopCondition{StepCountIs(1)},
 	})
-	if err != nil {
-		t.Fatalf("GenerateText() error = %v", err)
+	// TS resolveToolApproval validates the context before the callback and
+	// throws: GenerateText fails with the validation error (owner decision
+	// 2026-10-28; it was a tool-error result sent to the model).
+	var validationErr *providererrors.ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Context == nil || validationErr.Context.Field != "tool context" {
+		t.Fatalf("GenerateText() error = %T %v, want the tool context ValidationError", err, err)
 	}
 	if called {
 		t.Fatal("approval callback should not run when context validation fails")
 	}
-	if len(result.ToolResults) == 0 || result.ToolResults[0].Error == nil {
-		t.Fatalf("expected validation error tool result, got %+v", result.ToolResults)
+}
+
+// TS resolveToolApproval treats a null/undefined per-tool entry as not
+// configured and falls through to the tool's own needsApproval setting.
+func TestResolveToolApprovalNilPerToolEntryFallsThroughToTool(t *testing.T) {
+	call := types.ToolCall{ID: "c1", ToolName: "danger", Arguments: map[string]interface{}{}}
+	tools := []types.Tool{{Name: "danger", NeedsApproval: true}}
+	for name, cfg := range map[string]interface{}{
+		"map[string]interface{}":             map[string]interface{}{"danger": nil},
+		"map[string]types.ToolApprovalValue": map[string]types.ToolApprovalValue{"danger": nil},
+	} {
+		got, err := resolveToolApproval(context.Background(), call, tools, nil, nil, nil, cfg)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.Status != types.ToolApprovalStatusUserApproval {
+			t.Errorf("%s: status = %q, want user-approval from the tool's own setting", name, got.Status)
+		}
 	}
 }

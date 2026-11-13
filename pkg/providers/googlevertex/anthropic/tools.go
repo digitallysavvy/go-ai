@@ -38,6 +38,12 @@ var GoogleVertexAnthropicTools = struct {
 	ToolSearchBm2520251119:  anthropictools.ToolSearchBm2520251119,
 }
 
+// WithExecute re-exports anthropictools.WithExecute for the client-executed
+// computer, text editor and memory tools.
+func WithExecute(tool types.Tool, execute types.ToolExecutor) types.Tool {
+	return anthropictools.WithExecute(tool, execute)
+}
+
 func Bash20241022() types.Tool { return anthropictools.Bash20241022() }
 
 func Bash20250124() types.Tool { return anthropictools.Bash20250124() }

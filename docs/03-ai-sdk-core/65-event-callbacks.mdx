@@ -57,6 +57,7 @@ func main() {
 |----------|-----------|-------------|
 | `OnStart` | `OnStartEvent` | Called when generation begins, before any LLM calls. |
 | `OnStepStart` | `OnStepStartEvent` | Called when a step (LLM call) begins, before the provider is called. |
+| `OnStepError` | `OnStepErrorEvent` | Called instead of `OnStepEnd` when a step that started fails before it produces a step result. |
 | `OnToolExecutionStart` | `OnToolCallStartEvent` | Called when a tool's Execute function is about to run. |
 | `OnToolExecutionEnd` | `OnToolCallFinishEvent` | Called when a tool's Execute function completes or errors. |
 | `OnStepFinishEvent` | `OnStepFinishEvent` | Called when a step (LLM call) completes. |
@@ -156,6 +157,26 @@ Called after a tool's `Execute` function completes or errors. Exactly one of `Re
 | `Messages` | `[]types.Message` | The conversation messages at tool execution time. |
 | `ExperimentalContext` | `interface{}` | User-defined context object. |
 
+#### OnStepErrorEvent
+
+Called when a step that started fails before it produces a step result, instead of `OnStepEnd`. This happens when the provider call fails or the model stream ends without output (`NoOutputGeneratedError`). A provider error chunk does not fail the step: it still ends with `OnStepEnd` and finish reason `"error"`. Aborts and timeouts end the step differently: `GenerateText` reports them here (the event's `Error` is the abort or timeout error), while `StreamText` calls `OnAbort` instead. The call then returns the error.
+
+The event embeds the `OnStepStartEvent` of the failed step (`CallID`, `StepNumber`, `ModelID`, `Messages`, `Steps`, `RuntimeContext`, and so on) and adds:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Error` | `error` | The error that ended the step. |
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Hello",
+    OnStepError: func(ctx context.Context, e ai.OnStepErrorEvent) {
+        log.Printf("step %d failed: %v", e.StepNumber, e.Error)
+    },
+})
+```
+
 #### OnStepFinishEvent
 
 Called after each step (LLM call) completes.
@@ -166,11 +187,14 @@ Called after each step (LLM call) completes.
 | `ModelProvider` | `string` | The provider name. |
 | `ModelID` | `string` | The model identifier. |
 | `Text` | `string` | The generated text from this step. |
+| `Content` | `[]types.ContentPart` | The step's content parts in order (text, reasoning, tool calls, results and errors, approvals, sources, files). |
 | `ToolCalls` | `[]types.ToolCall` | Tool calls made during this step. |
-| `ToolResults` | `[]types.ToolResult` | Results of tool calls from this step. |
+| `ToolResults` | `[]types.ToolResult` | Results of the successful tool calls of this step. A failed call is a `types.ToolErrorContent` part in the step's content. |
 | `FinishReason` | `types.FinishReason` | Why the generation finished (`"stop"`, `"length"`, `"tool-calls"`, etc.). |
 | `Usage` | `types.Usage` | Token usage for this step. |
+| `Performance` | `types.StepPerformance` | The step's performance metrics. |
 | `Warnings` | `[]types.Warning` | Warnings from the provider. |
+| `ExperimentalSteeringMessages` | `[]types.Message` | Steering user messages sent with this step (experimental). |
 | `ExperimentalContext` | `interface{}` | User-defined context object. |
 
 #### OnFinishEvent
@@ -181,8 +205,8 @@ Called when the entire generation completes (all steps finished). Includes aggre
 |-------|------|-------------|
 | `Text` | `string` | The full generated text. |
 | `ToolCalls` | `[]types.ToolCall` | Tool calls aggregated across all steps. |
-| `ToolResults` | `[]types.ToolResult` | Tool results aggregated across all steps. |
-| `FinishReason` | `types.FinishReason` | Why the final step finished. |
+| `ToolResults` | `[]types.ToolResult` | Results of the successful tool calls, aggregated across all steps. Failed calls are `types.ToolErrorContent` parts. |
+| `FinishReason` | `types.FinishReason` | Why the final step finished (TS `finalStep.finishReason`). For `StreamText` this can differ from `StreamTextResult.FinishReason()`, the call-level reason, when a continuation step fails to open. |
 | `Steps` | `[]types.StepResult` | Results from all steps in the generation. |
 | `TotalUsage` | `types.Usage` | Aggregated token usage across all steps. |
 | `Warnings` | `[]types.Warning` | Warnings aggregated across all steps. |

@@ -1,7 +1,8 @@
 package deepseek
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	stdhttp "net/http"
 	"strings"
 
@@ -22,6 +23,13 @@ type Provider struct {
 type Config struct {
 	// APIKey is the Deepseek API key
 	APIKey string
+
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the Deepseek API (optional)
 	BaseURL string
@@ -54,16 +62,43 @@ type Config struct {
 	// support this; the upstream DeepSeek API does not. Defaults to false.
 	SupportsStructuredOutputs *bool
 
+	// UncheckedStrictToolCalls skips the strict tool call checks (a
+	// `strict: true` tool needing a /beta base URL, and no mixing of strict
+	// and non-strict tools), as TS DeepSeekChatLanguageModel does when its
+	// supportsStrictToolCalls config is unset (Azure-hosted DeepSeek).
+	// createDeepSeek derives it from the base URL, as New does by default.
+	UncheckedStrictToolCalls bool
+
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *stdhttp.Client `json:"-"`
+
+	// NoAPIKey marks a wrapper that authenticates through its own Headers or
+	// HTTP transport (Azure-hosted DeepSeek): no API key is loaded or required
+	// and DEEPSEEK_API_KEY is never forwarded.
+	NoAPIKey bool
+
+	// HeadersFunc, when set on a NoAPIKey wrapper, resolves its credential
+	// headers for every request (Azure api-key). An error fails the request.
+	HeadersFunc func() (map[string]string, error) `json:"-"`
+
+	// HeadersFuncCtx is HeadersFunc with the request's context, for a
+	// NoAPIKey wrapper whose credential comes from an APIKeyFunc (Azure,
+	// TS 7716e189ee). It is called after HeadersFunc and layered over it.
+	HeadersFuncCtx func(ctx context.Context) (map[string]string, error) `json:"-"`
 }
 
 // New creates a new Deepseek provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the DEEPSEEK_API_KEY environment variable.
+	if !cfg.NoAPIKey && cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "DEEPSEEK_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.deepseek.com"
 	}
+	// TS withoutTrailingSlash(baseURL).
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 
 	headers := map[string]string{"Content-Type": "application/json"}
 	if cfg.APIKey != "" {
@@ -80,11 +115,26 @@ func New(cfg Config) *Provider {
 		mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent("deepseek"))
 	}
 
-	client := http.NewClient(http.Config{
+	clientCfg := http.Config{
 		BaseURL:    baseURL,
 		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
-	})
+	}
+	if cfg.NoAPIKey {
+		clientCfg.HeadersFunc = cfg.HeadersFunc
+		clientCfg.HeadersFuncCtx = cfg.HeadersFuncCtx
+	} else {
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		clientCfg.HeadersFuncCtx = func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "DEEPSEEK_API_KEY", Description: "DeepSeek API key",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "DEEPSEEK_API_KEY", "DeepSeek API key", "Authorization", "Bearer ")
+		}
+	}
+	client := http.NewClient(clientCfg)
 
 	return &Provider{
 		config:  cfg,
@@ -120,7 +170,7 @@ func (p *Provider) chatCompletionsPath() string {
 	if p.config.ChatCompletionsPath != "" {
 		return p.config.ChatCompletionsPath
 	}
-	return "/v1/chat/completions"
+	return "/chat/completions" // TS: ${baseURL}/chat/completions (beta: .../beta/chat/completions)
 }
 
 func (p *Provider) supportsThinking() bool {
@@ -156,27 +206,27 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("Deepseek does not support embeddings") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("Deepseek does not support image generation") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("Deepseek does not support speech synthesis") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Deepseek does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Deepseek does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

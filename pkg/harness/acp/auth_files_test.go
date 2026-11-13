@@ -61,3 +61,12 @@ func TestWriteAuthenticationFilesChmodFailure(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// JSON.stringify leaves <, > and & literal; Go's json.Marshal would escape them.
+func TestWriteAuthenticationFilesTraversalMessageQuotesLikeJSONStringify(t *testing.T) {
+	err := writeAuthenticationFiles(context.Background(), &chmodSandbox{}, "/home/u", []AuthenticationFile{{Path: "../a<b>&c", Content: "x"}})
+	want := `ACP authentication file path must be relative without traversal: "../a<b>&c".`
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}

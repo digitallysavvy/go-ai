@@ -55,6 +55,7 @@ func TestOpenAIReasoningAllLevels(t *testing.T) {
 		{types.ReasoningMedium, "medium", true},
 		{types.ReasoningHigh, "high", true},
 		{types.ReasoningXHigh, "xhigh", true},
+		{types.ReasoningMax, "max", true},
 		{types.ReasoningDefault, "", false},
 	}
 

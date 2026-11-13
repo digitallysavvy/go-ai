@@ -65,6 +65,11 @@ type ChatTransportSendMessagesRequest struct {
 
 	// Messages is the full message history sent to the transport.
 	Messages []types.Message
+
+	// Body holds extra request body fields (TS ChatRequestOptions.body).
+	// The workflow chat transport merges them into the default POST body
+	// after "messages".
+	Body map[string]interface{}
 }
 
 // ChatTransportReconnectToStreamRequest is the request payload passed to
@@ -75,4 +80,10 @@ type ChatTransportReconnectToStreamRequest struct {
 	// ChatID identifies the conversation whose in-progress stream should be
 	// resumed.
 	ChatID string
+
+	// StartIndex overrides the transport's default start index for this
+	// reconnect (TS ReconnectToStreamOptions.startIndex). Negative values read
+	// the tail of the stream. nil keeps the transport default; an explicit
+	// 0 replays from the beginning. Only the workflow chat transport reads it.
+	StartIndex *int
 }

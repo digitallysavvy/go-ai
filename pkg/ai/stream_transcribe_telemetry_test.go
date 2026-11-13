@@ -54,8 +54,8 @@ func TestStreamTranscribe_Telemetry_OpenTelemetry(t *testing.T) {
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
 		Telemetry: &TelemetrySettings{
 			IsEnabled:     telemetry.Bool(true),
-			RecordInputs:  true,
-			RecordOutputs: true,
+			RecordInputs:  telemetry.Bool(true),
+			RecordOutputs: telemetry.Bool(true),
 			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer, Usage: true})},
 		},
 	})
@@ -160,8 +160,8 @@ func TestStreamTranscribe_Telemetry_LegacyOpenTelemetry(t *testing.T) {
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
 		Telemetry: &TelemetrySettings{
 			IsEnabled:     telemetry.Bool(true),
-			RecordInputs:  true,
-			RecordOutputs: true,
+			RecordInputs:  telemetry.Bool(true),
+			RecordOutputs: telemetry.Bool(true),
 			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
 	})
@@ -186,7 +186,7 @@ func TestStreamTranscribe_Telemetry_LegacyOpenTelemetry(t *testing.T) {
 	}
 	// input_tokens alias: normalizeUsageKey("inputTokens") matches the
 	// "inputtokens" alias and normalizes to "input_tokens".
-	if got, ok := gotAttrs["ai.usage.input_tokens"]; !ok || got != 4.0 {
+	if got, ok := gotAttrs["ai.usage.input_tokens"]; !ok || got != int64(4) {
 		t.Errorf("ai.usage.input_tokens = %v (ok=%v), want 4", got, ok)
 	}
 }

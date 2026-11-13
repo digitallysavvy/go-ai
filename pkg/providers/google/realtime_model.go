@@ -4,14 +4,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
-	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
@@ -19,9 +31,19 @@ import (
 
 const realtimeWebSocketPath = "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
 
+// realtimeServerWebSocketPath is the unconstrained Bidi endpoint used by
+// server-side connections: a trusted server holds the API key and sends the
+// session setup over the socket (TS 892af4dab7).
+const realtimeServerWebSocketPath = "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+
 type GoogleRealtimeModel struct {
 	provider *Provider
 	modelID  string
+	// mapperMu guards mapper: the model-level ParseServerEvent /
+	// SerializeClientEvent share one stateful mapper (TS this.mapper), so
+	// concurrent direct callers must not race on it. Sessions should use
+	// NewServerEventParser, which gives each connection its own mapper.
+	mapperMu sync.Mutex
 	mapper   *googleRealtimeEventMapper
 }
 
@@ -61,13 +83,81 @@ func (m *GoogleRealtimeModel) ModelID() string              { return m.modelID }
 // DoCreateClientSecret directly on the concrete type, so losing either
 // method would otherwise only surface as a runtime failure elsewhere.
 var (
-	_ provider.Experimental_RealtimeModelV4    = (*GoogleRealtimeModel)(nil)
-	_ provider.RealtimeClientSecretCreator     = (*GoogleRealtimeModel)(nil)
-	_ provider.RealtimeWebSocketConfigProvider = (*GoogleRealtimeModel)(nil)
+	_ provider.Experimental_RealtimeModelV4     = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator      = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider  = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeServerEventParserFactory = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeServerConnectionProvider = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeIntentCodec              = (*GoogleRealtimeModel)(nil)
 )
 
+// googleRealtimeAssertConversationIntent mirrors TS assertConversationIntent:
+// Gemini Live exposes only the conversational endpoint, so another intent
+// fails fast instead of silently downgrading. The empty intent is
+// conversation.
+func googleRealtimeAssertConversationIntent(intent provider.RealtimeSessionIntent) error {
+	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
+		return fmt.Errorf("Google realtime does not support the '%s' session intent.", intent) //nolint:staticcheck // matches the TS error text
+	}
+	return nil
+}
+
+// GetServerConnection returns the server-side WebSocket connection (TS
+// getServerWebSocketConfig, 892af4dab7): the unconstrained v1beta Bidi
+// endpoint with the provider's resolved headers (x-goog-api-key, custom
+// headers, user agent). Conversation intent only. ConnectRealtime uses it
+// only when RealtimeSessionOptions.Intent is set (coordinator ruling 1).
+func (m *GoogleRealtimeModel) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	if err := googleRealtimeAssertConversationIntent(opts.Intent); err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	headers, err := m.provider.authHeaders(ctx)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	wsURL, err := googleServerWebSocketURL(m.provider.config.BaseURL)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: headers}, nil
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent
+// (conversation only).
+func (m *GoogleRealtimeModel) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	if err := googleRealtimeAssertConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.BuildSessionConfig(config), nil
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent
+// (conversation only).
+func (m *GoogleRealtimeModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	if err := googleRealtimeAssertConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.SerializeClientEvent(event)
+}
+
+// NewServerEventParser returns a parser with its own event mapper, so each
+// connection keeps its turn and transcription state apart (TS
+// createServerEventParser, 892af4dab7).
+func (m *GoogleRealtimeModel) NewServerEventParser() func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	mapper := &googleRealtimeEventMapper{inputAudioRate: 16000}
+	return func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+		if err := googleRealtimeNullEventError(raw); err != nil {
+			return nil, err
+		}
+		return mapper.parseServerEvent(raw), nil
+	}
+}
+
 func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	apiKey := m.googleRealtimeAPIKey()
+	apiKey, err := m.googleRealtimeAPIKey(ctx)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	if apiKey == "" {
 		return provider.ClientSecretResult{}, fmt.Errorf("Google Generative AI API key is required for realtime token creation.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
@@ -75,28 +165,49 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	if opts.ExpiresAfterSeconds != nil {
 		seconds = *opts.ExpiresAfterSeconds
 	}
-	now := time.Now()
-	body := map[string]interface{}{
-		"uses":                     0,
-		"expireTime":               googleRealtimeISOString(now.Add(time.Duration(seconds)*time.Second + 30*time.Minute)),
-		"newSessionExpireTime":     googleRealtimeISOString(now.Add(time.Duration(seconds) * time.Second)),
-		"bidiGenerateContentSetup": m.BuildSessionConfig(valueOrZero(opts.SessionConfig)),
-	}
-	payload, err := json.Marshal(body)
+	// TS: now = Date.now(); openWindowMs = expiresAfterSeconds * 1000;
+	// new Date(now + openWindowMs).toISOString(), then the same + 30 min.
+	// JS number arithmetic (no int64 overflow); an out-of-range time is the
+	// toISOString RangeError, newSessionExpireTime first.
+	now := float64(time.Now().UnixMilli())
+	openWindowMs := float64(seconds) * 1000
+	newSessionExpireTime, err := googleRealtimeISOString(now + openWindowMs)
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, googleAuthTokenURL(m.provider.config.BaseURL, apiKey), bytes.NewReader(payload))
+	expireTime, err := googleRealtimeISOString(now + openWindowMs + 30*60*1000)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
+	body := map[string]interface{}{
+		"uses":                     0,
+		"expireTime":               expireTime,
+		"newSessionExpireTime":     newSessionExpireTime,
+		"bidiGenerateContentSetup": m.BuildSessionConfig(valueOrZero(opts.SessionConfig)),
+	}
+	// TS JSON.stringify of the literal: uses, expireTime,
+	// newSessionExpireTime, then the setup in buildGoogleSessionConfig order.
+	orders := googleRealtimeSetupOrders("bidiGenerateContentSetup")
+	orders[""] = []string{"uses", "expireTime", "newSessionExpireTime", "bidiGenerateContentSetup"}
+	payload := []byte(providerutils.StringifyOrdered(body, orders))
+	authTokenURL, err := googleAuthTokenURL(m.provider.config.BaseURL, apiKey)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authTokenURL, bytes.NewReader(payload))
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := m.provider.client.HTTPClient().Do(req)
 	if err != nil {
-		return provider.ClientSecretResult{}, err
+		// TS calls fetchFn directly (no handleFetchError), so the rejection
+		// is returned as is. The URL carries ?key=<API key>; a TS fetch
+		// rejection never names the URL, so strip the query first.
+		return provider.ClientSecretResult{}, googleRawFetchError(redactURLErrorQuery(err))
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
@@ -107,56 +218,109 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		Name       string `json:"name"`
 		ExpireTime string `json:"expireTime"`
 	}
-	if err := json.Unmarshal(respBody, &data); err != nil {
+	// TS response.json(): plain JSON.parse, not secureJsonParse.
+	if err := jsonexact.UnmarshalPlain([]byte(textdecode.UTF8(respBody)), &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	var expiresAt *int64
 	if data.ExpireTime != "" {
-		if t, err := time.Parse(time.RFC3339Nano, data.ExpireTime); err == nil {
-			sec := t.Unix()
+		// TS Math.floor(new Date(expireTime).getTime() / 1000); a NaN date
+		// has no Go value and leaves expiresAt unset.
+		if ms, ok := jsdate.Parse(data.ExpireTime); ok {
+			sec := ms / 1000
+			if ms%1000 < 0 {
+				sec--
+			}
 			expiresAt = &sec
 		}
 	}
+	wsURL, err := googleWebSocketURL(m.provider.config.BaseURL)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	return provider.ClientSecretResult{
 		Token:     data.Name,
-		URL:       googleWebSocketURL(m.provider.config.BaseURL),
+		URL:       wsURL,
 		ExpiresAt: expiresAt,
 	}, nil
 }
 
-func (m *GoogleRealtimeModel) googleRealtimeAPIKey() string {
-	headers := map[string]string{"x-goog-api-key": m.provider.APIKey()}
-	for k, v := range m.provider.config.Headers {
-		headers[k] = v
+// googleRealtimeAPIKey mirrors TS `this.config.headers()['x-goog-api-key']`:
+// the provider's getHeaders loads the key (a missing key is a
+// LoadAPIKeyError), and a configured x-goog-api-key header wins.
+func (m *GoogleRealtimeModel) googleRealtimeAPIKey(ctx context.Context) (string, error) {
+	headers, err := m.provider.authHeaders(ctx)
+	if err != nil {
+		return "", err
 	}
-	return headers["x-goog-api-key"]
+	return headers["x-goog-api-key"], nil
 }
 
 func (m *GoogleRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
-	return provider.WebSocketConfig{URL: wsURL + "?access_token=" + url.QueryEscape(token)}
+	// TS `${options.url}?access_token=${encodeURIComponent(options.token)}`.
+	return provider.WebSocketConfig{URL: wsURL + "?access_token=" + providerutils.EncodeURIComponent(token)}
 }
 
 // thinkingLiveModelRe matches Live models that reason in the background
 // (e.g. "gemini-3.8-live-extended-thinking"). Google requires exactly one of
 // thinkingLevel/thinkingBudget in their setup and rejects thinkingConfig on
-// every other Live model (TS isThinkingLiveModel).
-var thinkingLiveModelRe = regexp.MustCompile(`^gemini-\d+\.\d+-live\b.*thinking`)
+// every other Live model (TS isThinkingLiveModel). The TS `.` does not match
+// a line terminator (\r, U+2028, U+2029 as well as \n).
+var thinkingLiveModelRe = regexp.MustCompile(`^gemini-\d+\.\d+-live\b[^\n\r\x{2028}\x{2029}]*thinking`)
 
 // isThinkingLiveModel reports whether modelID names a background-reasoning
 // Live model, matching only the last "/"-separated path segment.
 func isThinkingLiveModel(modelID string) bool {
 	segments := strings.Split(modelID, "/")
-	name := strings.ToLower(segments[len(segments)-1])
+	name := providerutils.JSToLower(segments[len(segments)-1])
 	return thinkingLiveModelRe.MatchString(name)
 }
 
+// redactURLErrorQuery drops the query (the API key) from a *url.Error's URL.
+func redactURLErrorQuery(err error) error {
+	ue, ok := err.(*url.Error)
+	if !ok {
+		return err
+	}
+	redacted := *ue
+	if u, perr := url.Parse(ue.URL); perr == nil {
+		u.RawQuery = ""
+		u.ForceQuery = false
+		redacted.URL = u.String()
+	} else {
+		redacted.URL = "<redacted>"
+	}
+	return &redacted
+}
+
+// googleRealtimeSetupOrders is the JS insertion order of the
+// buildGoogleSessionConfig object at path prefix (for StringifyOrdered):
+// model, generationConfig, systemInstruction, tools, the transcription
+// configs, then the provider option keys Object.assign appends (sorted: a Go
+// map has no order). generationConfig adds translationConfig and then
+// thinkingConfig after its own keys; a function declaration is name,
+// description, parametersJsonSchema, behavior.
+func googleRealtimeSetupOrders(prefix string) map[string][]string {
+	return map[string][]string{
+		prefix:                                 {"model", "generationConfig", "systemInstruction", "tools", "inputAudioTranscription", "outputAudioTranscription"},
+		prefix + ".generationConfig":           {"responseModalities", "speechConfig", "translationConfig", "thinkingConfig"},
+		prefix + ".tools.functionDeclarations": {"name", "description", "parametersJsonSchema", "behavior"},
+	}
+}
+
+// BuildSessionConfig ports TS buildGoogleSessionConfig
+// (realtime/google-realtime-event-mapper.ts).
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	config.ProviderOptions = providerutils.NormalizeOptionsJSON(config.ProviderOptions)
+	googleOptions, _ := config.ProviderOptions["google"].(map[string]interface{})
+
 	generation := map[string]interface{}{}
 	if config.OutputModalities != nil {
 		modalities := make([]string, len(config.OutputModalities))
 		for i, modality := range config.OutputModalities {
-			modalities[i] = strings.ToUpper(modality)
+			modalities[i] = providerutils.JSToUpper(modality)
 		}
 		generation["responseModalities"] = modalities
 	} else {
@@ -169,29 +333,24 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 			},
 		}
 	}
-	if rawGeneration, ok := config.ProviderOptions["generationConfig"].(map[string]interface{}); ok {
-		for k, v := range rawGeneration {
-			generation[k] = v
-		}
-	}
-	googleOptions, _ := config.ProviderOptions["google"].(map[string]interface{})
-	if translationConfig, ok := googleOptions["translationConfig"].(map[string]interface{}); ok {
-		generation["translationConfig"] = translationConfig
-	}
 	setup["generationConfig"] = generation
 	if config.Instructions != nil {
 		setup["systemInstruction"] = map[string]interface{}{"parts": []map[string]interface{}{{"text": *config.Instructions}}}
 	}
-	defaultToolBehavior, hasDefaultToolBehavior := googleOptions["defaultToolBehavior"]
+	// TS `defaultToolBehavior != null`.
+	defaultToolBehavior := googleOptions["defaultToolBehavior"]
+	hasDefaultToolBehavior := defaultToolBehavior != nil
 	if len(config.Tools) > 0 {
 		decls := make([]map[string]interface{}, 0, len(config.Tools))
 		for _, tool := range config.Tools {
+			// TS sends the JSON Schema untouched as parametersJsonSchema (it no
+			// longer converts it to an OpenAPI schema).
 			decl := map[string]interface{}{"name": tool.Name}
-			if params := convertJSONSchemaToOpenAPISchema(tool.Parameters); params != nil {
-				decl["parameters"] = params
-			}
 			if tool.Description != nil {
 				decl["description"] = *tool.Description
+			}
+			if tool.Parameters != nil {
+				decl["parametersJsonSchema"] = tool.Parameters
 			}
 			if hasDefaultToolBehavior {
 				decl["behavior"] = defaultToolBehavior
@@ -214,7 +373,9 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 	// merged below) so it survives a raw providerOptions.generationConfig,
 	// while an explicit level/budget (typed or raw) is never replaced.
 	rawGenerationConfig, _ := config.ProviderOptions["generationConfig"].(map[string]interface{})
-	googleThinkingConfig, hasGoogleThinkingConfig := googleOptions["thinkingConfig"]
+	// TS `googleOptions?.thinkingConfig ?? raw...`: a null option is absent.
+	googleThinkingConfig := googleOptions["thinkingConfig"]
+	hasGoogleThinkingConfig := googleThinkingConfig != nil
 	var explicitThinkingConfig map[string]interface{}
 	if hasGoogleThinkingConfig {
 		explicitThinkingConfig, _ = googleThinkingConfig.(map[string]interface{})
@@ -232,16 +393,24 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 	} else if hasGoogleThinkingConfig {
 		thinkingConfig = googleThinkingConfig
 	}
-	applyThinkingConfig := func() {
-		if thinkingConfig == nil {
-			return
-		}
+	// withGenerationField copies the effective generationConfig (the raw one
+	// that replaced the default when it is an object) before adding a field.
+	withGenerationField := func(key string, value interface{}) {
 		target, ok := setup["generationConfig"].(map[string]interface{})
 		if !ok {
 			target = generation
 		}
-		target["thinkingConfig"] = thinkingConfig
-		setup["generationConfig"] = target
+		next := make(map[string]interface{}, len(target)+1)
+		for k, v := range target {
+			next[k] = v
+		}
+		next[key] = value
+		setup["generationConfig"] = next
+	}
+	applyThinkingConfig := func() {
+		if thinkingConfig != nil {
+			withGenerationField("thinkingConfig", thinkingConfig)
+		}
 	}
 
 	if config.ProviderOptions == nil {
@@ -249,11 +418,18 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 		return setup
 	}
 
+	// TS Object.assign(setup, restProviderOptions): every provider option
+	// except `google` replaces the setup key of the same name, so a raw
+	// generationConfig replaces the default one.
 	for k, v := range config.ProviderOptions {
-		if k == "google" || k == "generationConfig" {
+		if k == "google" {
 			continue
 		}
 		setup[k] = v
+	}
+
+	if translationConfig, ok := googleOptions["translationConfig"]; ok && translationConfig != nil {
+		withGenerationField("translationConfig", translationConfig)
 	}
 
 	applyThinkingConfig()
@@ -261,10 +437,27 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 }
 
 func (m *GoogleRealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	if err := googleRealtimeNullEventError(raw); err != nil {
+		return nil, err
+	}
+	m.mapperMu.Lock()
+	defer m.mapperMu.Unlock()
 	return m.mapper.parseServerEvent(raw), nil
 }
 
+// googleRealtimeNullEventError is the TypeError TS parseEvent throws reading
+// `data.setupComplete` of a JSON null server message; the realtime event
+// channel treats it as fatal.
+func googleRealtimeNullEventError(raw json.RawMessage) error {
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return errors.New("Cannot read properties of null (reading 'setupComplete')") //nolint:staticcheck // TS V8 TypeError text
+	}
+	return nil
+}
+
 func (m *GoogleRealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent) (json.RawMessage, error) {
+	m.mapperMu.Lock()
+	defer m.mapperMu.Unlock()
 	return m.mapper.serializeClientEvent(event, m.modelID)
 }
 
@@ -359,20 +552,155 @@ func googleOptionalBool(m map[string]interface{}, key string) *bool {
 	return &b
 }
 
+// parseServerEvent ports TS parseServerEvent (892af4dab7): the frame's
+// usageMetadata goes on the response-done event of the same frame, or else
+// into a custom "usageMetadata" event (only a shared frame associates usage
+// with a completion).
 func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
+	events := m.parseEvent(raw)
+	var data struct {
+		UsageMetadata *googleRealtimeUsageMetadata `json:"usageMetadata"`
+	}
+	_ = jsonexact.Unmarshal(raw, &data)
+	usage := mapGoogleRealtimeUsage(data.UsageMetadata)
+	if usage == nil {
+		return events
+	}
+	hasDone := false
+	for _, ev := range events {
+		if ev.Type == "response-done" {
+			hasDone = true
+		}
+	}
+	if hasDone {
+		out := make([]provider.RealtimeServerEvent, len(events))
+		for i, ev := range events {
+			if ev.Type == "response-done" {
+				u := *usage
+				ev.Usage = &u
+			}
+			out[i] = ev
+		}
+		return out
+	}
+	update := provider.RealtimeServerEvent{Type: "custom", RawType: "usageMetadata", Usage: usage, Raw: raw}
+	if len(events) == 1 && events[0].Type == "custom" && events[0].RawType == "usageMetadata" {
+		return []provider.RealtimeServerEvent{update}
+	}
+	return append(events, update)
+}
+
+type googleRealtimeTokenDetail struct {
+	Modality   *string  `json:"modality"`
+	TokenCount *float64 `json:"tokenCount"`
+}
+
+// googleRealtimeUsageMetadata is the Gemini Live usageMetadata (Live uses
+// responseTokenCount / responseTokensDetails for output, not the candidates*
+// fields of generateContent).
+type googleRealtimeUsageMetadata struct {
+	PromptTokenCount        *float64                    `json:"promptTokenCount"`
+	ResponseTokenCount      *float64                    `json:"responseTokenCount"`
+	ToolUsePromptTokenCount *float64                    `json:"toolUsePromptTokenCount"`
+	ThoughtsTokenCount      *float64                    `json:"thoughtsTokenCount"`
+	CachedContentTokenCount *float64                    `json:"cachedContentTokenCount"`
+	PromptTokensDetails     []googleRealtimeTokenDetail `json:"promptTokensDetails"`
+	ResponseTokensDetails   []googleRealtimeTokenDetail `json:"responseTokensDetails"`
+}
+
+// mapGoogleRealtimeUsage ports TS mapGoogleUsage: gross totals include tool
+// use prompt tokens (input) and thoughts (output); per-modality TEXT / AUDIO
+// sums; nil when nothing is observable. A text/audio split is never guessed.
+func mapGoogleRealtimeUsage(u *googleRealtimeUsageMetadata) *provider.RealtimeUsage {
+	if u == nil {
+		return nil
+	}
+	count := func(v float64) *float64 { return &v } // TS keeps the JS number
+	usage := &provider.RealtimeUsage{}
+	seen := false
+	if u.PromptTokenCount != nil {
+		v := *u.PromptTokenCount
+		if u.ToolUsePromptTokenCount != nil {
+			v += *u.ToolUsePromptTokenCount
+		}
+		usage.InputTokens, seen = count(v), true
+	}
+	if u.ResponseTokenCount != nil {
+		v := *u.ResponseTokenCount
+		if u.ThoughtsTokenCount != nil {
+			v += *u.ThoughtsTokenCount
+		}
+		usage.OutputTokens, seen = count(v), true
+	}
+	if u.CachedContentTokenCount != nil {
+		usage.CachedInputTokens, seen = count(*u.CachedContentTokenCount), true
+	}
+	sum := func(details []googleRealtimeTokenDetail) (text, audio *float64) {
+		var t, a float64
+		hasT, hasA := false, false
+		for _, d := range details {
+			if d.TokenCount == nil {
+				continue
+			}
+			modality := ""
+			if d.Modality != nil {
+				modality = providerutils.JSToUpper(*d.Modality)
+			}
+			switch modality {
+			case "AUDIO":
+				a += *d.TokenCount
+				hasA = true
+			case "TEXT":
+				t += *d.TokenCount
+				hasT = true
+			}
+		}
+		if hasT {
+			text = count(t)
+		}
+		if hasA {
+			audio = count(a)
+		}
+		return text, audio
+	}
+	usage.InputTextTokens, usage.InputAudioTokens = sum(u.PromptTokensDetails)
+	usage.OutputTextTokens, usage.OutputAudioTokens = sum(u.ResponseTokensDetails)
+	if usage.InputTextTokens != nil || usage.InputAudioTokens != nil || usage.OutputTextTokens != nil || usage.OutputAudioTokens != nil {
+		seen = true
+	}
+	if !seen {
+		return nil
+	}
+	return usage
+}
+
+func (m *googleRealtimeEventMapper) parseEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
 	var data map[string]interface{}
-	_ = json.Unmarshal(raw, &data)
+	_ = jsonexact.Unmarshal(raw, &data)
 	if value, ok := data["setupComplete"]; ok && value != nil {
 		return []provider.RealtimeServerEvent{{Type: "session-created", Raw: raw}}
 	}
 	if toolCall, ok := data["toolCall"].(map[string]interface{}); ok {
 		m.beginTurnIfClosed()
 		calls, _ := toolCall["functionCalls"].([]interface{})
+		// TS JSON.stringify(functionCall.args ?? {}) keeps the wire key order.
+		var ordered struct {
+			ToolCall struct {
+				FunctionCalls []struct {
+					Args json.RawMessage `json:"args"`
+				} `json:"functionCalls"`
+			} `json:"toolCall"`
+		}
+		_ = jsonexact.Unmarshal(raw, &ordered)
 		events := make([]provider.RealtimeServerEvent, 0, len(calls)*2)
-		for _, rawCall := range calls {
+		for i, rawCall := range calls {
 			call, _ := rawCall.(map[string]interface{})
-			argsBytes, _ := json.Marshal(valueOrEmptyMap(call["args"]))
-			args := string(argsBytes)
+			args := jsonStringify(valueOrEmptyMap(call["args"]))
+			if i < len(ordered.ToolCall.FunctionCalls) {
+				if v, ok := jsonorder.Parse(ordered.ToolCall.FunctionCalls[i].Args); ok && v != nil {
+					args = jsonorder.Stringify(v)
+				}
+			}
 			id := googleString(call, "id")
 			name := googleString(call, "name")
 			events = append(events,
@@ -509,7 +837,10 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 			m.inputAudioRate = *event.Config.InputAudioFormat.Rate
 		}
 		setup := (&GoogleRealtimeModel{modelID: modelID}).BuildSessionConfig(event.Config)
-		out = map[string]interface{}{"setup": setup}
+		// TS JSON.stringify keeps the buildGoogleSessionConfig key order.
+		return json.RawMessage(providerutils.StringifyOrdered(map[string]interface{}{"setup": setup}, googleRealtimeSetupOrders("setup"))), nil
+	case "input-audio-commit":
+		out = map[string]interface{}{"realtimeInput": map[string]interface{}{"audioStreamEnd": true}}
 	case "input-audio-append":
 		out = map[string]interface{}{"realtimeInput": map[string]interface{}{"audio": map[string]interface{}{"data": event.Audio, "mimeType": fmt.Sprintf("audio/pcm;rate=%d", m.inputAudioRate)}}}
 	case "conversation-item-create":
@@ -528,7 +859,7 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 		default:
 			out = nil
 		}
-	case "input-audio-commit", "input-audio-clear", "response-create", "response-cancel", "conversation-item-truncate":
+	case "input-audio-clear", "response-create", "response-cancel", "conversation-item-truncate":
 		out = nil
 	default:
 		out = nil
@@ -536,46 +867,88 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 	if out == nil {
 		return json.RawMessage("null"), nil
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
-func googleAuthTokenURL(base, apiKey string) string {
-	u := googleRealtimeBaseURL(base)
-	u.Path = strings.TrimRight(u.Path, "/") + "/v1alpha/auth_tokens"
-	q := u.Query()
-	q.Set("key", apiKey)
-	u.RawQuery = q.Encode()
-	return u.String()
+// googleAuthTokenURL is TS getAuthTokensURL plus the key query:
+// `${getAuthTokensURL(baseURL)}?key=${encodeURIComponent(apiKey)}`.
+func googleAuthTokenURL(base, apiKey string) (string, error) {
+	u, err := googleRealtimeBaseURL(base)
+	if err != nil {
+		return "", err
+	}
+	u.SetPathname(strings.TrimSuffix(u.Pathname(), "/") + "/v1alpha/auth_tokens") // TS replace(/\/$/, '')
+	return u.String() + "?key=" + providerutils.EncodeURIComponent(apiKey), nil
 }
 
-func googleWebSocketURL(base string) string {
-	baseURL := googleRealtimeBaseURL(base)
-	baseURL.Scheme = strings.Replace(baseURL.Scheme, "http", "ws", 1)
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/ws/" + realtimeWebSocketPath
-	return baseURL.String()
+// googleWebSocketURL is TS getWebSocketURL (the constrained endpoint).
+func googleWebSocketURL(base string) (string, error) {
+	u, err := googleRealtimeWebSocketURL(base, realtimeWebSocketPath)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
 
-func googleRealtimeBaseURL(base string) *url.URL {
+// googleServerWebSocketURL is TS getServerWebSocketURL.
+func googleServerWebSocketURL(base string) (string, error) {
+	u, err := googleRealtimeWebSocketURL(base, realtimeServerWebSocketPath)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
+// googleRealtimeWebSocketURL is TS getRealtimeWebSocketURL:
+// url.protocol = protocol === 'https:' ? 'wss:' : 'ws:', then
+// url.pathname = `${pathname.replace(/\/$/, ”)}/ws/${webSocketPath}`.
+func googleRealtimeWebSocketURL(base, webSocketPath string) (*urlnorm.URL, error) {
+	u, err := googleRealtimeBaseURL(base)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "https" {
+		u.SetProtocol("wss")
+	} else {
+		u.SetProtocol("ws")
+	}
+	u.SetPathname(strings.TrimSuffix(u.Pathname(), "/") + "/ws/" + webSocketPath)
+	return u, nil
+}
+
+// googleRealtimeBaseURL is TS getRealtimeBaseURL: new URL(baseURL) (WHATWG,
+// "Invalid URL" for a base URL it rejects), with a trailing v1beta or
+// v1alpha path segment removed through the pathname setter.
+func googleRealtimeBaseURL(base string) (*urlnorm.URL, error) {
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	u, _ := url.Parse(base)
-	segments := strings.Split(u.Path, "/")
-	if len(segments) > 0 {
-		last := segments[len(segments)-1]
-		if last == "v1beta" || last == "v1alpha" {
-			segments = segments[:len(segments)-1]
-			u.Path = strings.Join(segments, "/")
-			if u.Path == "" {
-				u.Path = "/"
-			}
-		}
+	u, err := urlnorm.Parse(base)
+	if err != nil {
+		return nil, err
 	}
-	return u
+	segments := strings.Split(u.Pathname(), "/")
+	if last := segments[len(segments)-1]; last == "v1beta" || last == "v1alpha" {
+		joined := strings.Join(segments[:len(segments)-1], "/")
+		if joined == "" {
+			joined = "/"
+		}
+		u.SetPathname(joined)
+	}
+	return u, nil
 }
 
-func googleRealtimeISOString(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000Z")
+// googleRealtimeISOString is new Date(ms).toISOString(): TimeClip (an
+// integral time value, truncated toward zero), jsdate.ISOString (expanded
+// years outside 0..9999), and RangeError "Invalid time value" outside the
+// ECMAScript time range.
+func googleRealtimeISOString(ms float64) (string, error) {
+	if !math.IsNaN(ms) && !math.IsInf(ms, 0) && math.Abs(ms) <= 8.64e15 {
+		if s, ok := jsdate.ISOString(time.UnixMilli(int64(ms))); ok {
+			return s, nil
+		}
+	}
+	return "", errors.New("Invalid time value") //nolint:staticcheck // TS RangeError text
 }
 
 func firstGoogleRawType(raw json.RawMessage) string {
@@ -619,15 +992,23 @@ func valueOrEmptyMap(v interface{}) interface{} {
 // the socket with 1007. An object is passed through unchanged; everything
 // else (including malformed JSON, preserved as the raw string) is wrapped
 // under an "output" key.
-func toFunctionResponseStruct(output string) map[string]interface{} {
-	var parsed interface{}
-	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+func toFunctionResponseStruct(output string) interface{} {
+	// TS safeParseJSON keeps the object's key order (and rejects
+	// __proto__ / constructor.prototype keys, like securejson).
+	var probe interface{}
+	if securejson.Unmarshal([]byte(output), &probe) != nil {
 		return map[string]interface{}{"output": output}
 	}
-	if m, ok := parsed.(map[string]interface{}); ok {
-		return m
+	parsed, ok := jsonorder.Parse([]byte(output))
+	if !ok {
+		return map[string]interface{}{"output": output}
 	}
-	return map[string]interface{}{"output": parsed}
+	if obj, isObj := parsed.(*jsonorder.Object); isObj {
+		return obj
+	}
+	wrapped := jsonorder.New()
+	wrapped.Set("output", parsed)
+	return wrapped
 }
 
 func valueOrZero(config *provider.RealtimeSessionConfig) provider.RealtimeSessionConfig {
@@ -635,211 +1016,4 @@ func valueOrZero(config *provider.RealtimeSessionConfig) provider.RealtimeSessio
 		return provider.RealtimeSessionConfig{}
 	}
 	return *config
-}
-
-func convertJSONSchemaToOpenAPISchema(schema map[string]interface{}) interface{} {
-	return convertJSONSchemaToOpenAPISchemaValue(schema, true)
-}
-
-func convertJSONSchemaToOpenAPISchemaValue(schema interface{}, isRoot bool) interface{} {
-	if schema == nil {
-		return nil
-	}
-	if isEmptyObjectSchema(schema) {
-		if isRoot {
-			return nil
-		}
-		if schemaMap, ok := schema.(map[string]interface{}); ok {
-			if description, ok := schemaMap["description"].(string); ok && description != "" {
-				return map[string]interface{}{"type": "object", "description": description}
-			}
-		}
-		return map[string]interface{}{"type": "object"}
-	}
-	if _, ok := schema.(bool); ok {
-		return map[string]interface{}{"type": "boolean", "properties": map[string]interface{}{}}
-	}
-	schemaMap, ok := schema.(map[string]interface{})
-	if !ok {
-		return schema
-	}
-	result := map[string]interface{}{}
-	if description, ok := schemaMap["description"].(string); ok && description != "" {
-		result["description"] = description
-	}
-	if required, ok := schemaMap["required"]; ok && required != nil {
-		result["required"] = required
-	}
-	if format, ok := schemaMap["format"].(string); ok && format != "" {
-		result["format"] = format
-	}
-	if constValue, ok := schemaMap["const"]; ok {
-		result["enum"] = []interface{}{constValue}
-	}
-	if rawType, ok := schemaMap["type"]; ok && rawType != nil {
-		if typeList, ok := stringList(rawType); ok {
-			hasNull := false
-			nonNull := make([]string, 0, len(typeList))
-			for _, t := range typeList {
-				if t == "null" {
-					hasNull = true
-				} else {
-					nonNull = append(nonNull, t)
-				}
-			}
-			switch len(nonNull) {
-			case 0:
-				result["type"] = "null"
-			default:
-				anyOf := make([]interface{}, 0, len(nonNull))
-				for _, t := range nonNull {
-					anyOf = append(anyOf, map[string]interface{}{"type": t})
-				}
-				result["anyOf"] = anyOf
-				if hasNull {
-					result["nullable"] = true
-				}
-			}
-		} else if typeString, ok := rawType.(string); ok && typeString != "" {
-			result["type"] = typeString
-		}
-	}
-	if enumValues, ok := schemaMap["enum"]; ok {
-		result["enum"] = enumValues
-	}
-	if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-		converted := map[string]interface{}{}
-		for key, value := range properties {
-			converted[key] = convertJSONSchemaToOpenAPISchemaValue(value, false)
-		}
-		result["properties"] = converted
-	}
-	if items, ok := schemaMap["items"]; ok && items != nil {
-		if itemList, ok := schemaSlice(items); ok {
-			converted := make([]interface{}, 0, len(itemList))
-			for _, item := range itemList {
-				converted = append(converted, convertJSONSchemaToOpenAPISchemaValue(item, false))
-			}
-			result["items"] = converted
-		} else {
-			result["items"] = convertJSONSchemaToOpenAPISchemaValue(items, false)
-		}
-	}
-	if allOf, ok := schemaList(schemaMap["allOf"]); ok {
-		result["allOf"] = convertSchemaList(allOf)
-	}
-	if anyOf, ok := schemaList(schemaMap["anyOf"]); ok {
-		nonNull := make([]interface{}, 0, len(anyOf))
-		hasNull := false
-		for _, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok && itemMap["type"] == "null" {
-				hasNull = true
-			} else {
-				nonNull = append(nonNull, item)
-			}
-		}
-		if hasNull {
-			if len(nonNull) == 1 {
-				converted := convertJSONSchemaToOpenAPISchemaValue(nonNull[0], false)
-				if convertedMap, ok := converted.(map[string]interface{}); ok {
-					result["nullable"] = true
-					for key, value := range convertedMap {
-						result[key] = value
-					}
-				}
-			} else {
-				result["anyOf"] = convertSchemaList(nonNull)
-				result["nullable"] = true
-			}
-		} else {
-			result["anyOf"] = convertSchemaList(anyOf)
-		}
-	}
-	if oneOf, ok := schemaList(schemaMap["oneOf"]); ok {
-		result["oneOf"] = convertSchemaList(oneOf)
-	}
-	if minLength, ok := schemaMap["minLength"]; ok {
-		result["minLength"] = minLength
-	}
-	return result
-}
-
-func isEmptyObjectSchema(schema interface{}) bool {
-	schemaMap, ok := schema.(map[string]interface{})
-	if !ok || schemaMap == nil || schemaMap["type"] != "object" {
-		return false
-	}
-	if additional, ok := schemaMap["additionalProperties"]; ok && truthy(additional) {
-		return false
-	}
-	properties, ok := schemaMap["properties"]
-	if !ok || properties == nil {
-		return true
-	}
-	if propertyMap, ok := properties.(map[string]interface{}); ok {
-		return len(propertyMap) == 0
-	}
-	return false
-}
-
-func truthy(value interface{}) bool {
-	switch v := value.(type) {
-	case bool:
-		return v
-	case string:
-		return v != ""
-	case nil:
-		return false
-	default:
-		return true
-	}
-}
-
-func stringList(value interface{}) ([]string, bool) {
-	switch v := value.(type) {
-	case []string:
-		return v, true
-	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, false
-			}
-			out = append(out, s)
-		}
-		return out, true
-	default:
-		return nil, false
-	}
-}
-
-func schemaList(value interface{}) ([]interface{}, bool) {
-	if value == nil {
-		return nil, false
-	}
-	if list, ok := value.([]interface{}); ok {
-		return list, true
-	}
-	return schemaSlice(value)
-}
-
-func schemaSlice(value interface{}) ([]interface{}, bool) {
-	rv := reflect.ValueOf(value)
-	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
-		return nil, false
-	}
-	out := make([]interface{}, 0, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		out = append(out, rv.Index(i).Interface())
-	}
-	return out, true
-}
-
-func convertSchemaList(values []interface{}) []interface{} {
-	converted := make([]interface{}, 0, len(values))
-	for _, value := range values {
-		converted = append(converted, convertJSONSchemaToOpenAPISchemaValue(value, false))
-	}
-	return converted
 }

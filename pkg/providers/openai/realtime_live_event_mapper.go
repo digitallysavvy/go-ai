@@ -3,9 +3,12 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // openAILiveOptions is the parsed form of
@@ -35,17 +38,74 @@ func parseOpenAILiveOptions(providerOptions map[string]interface{}) (openAILiveO
 	if !ok || raw == nil {
 		return out, nil
 	}
-	m, ok := raw.(map[string]interface{})
+	// Read through the JSON form (TS options are JSON values), so Go-typed
+	// literals ([]map[string]interface{} input, map[string]string voice)
+	// validate like the map[string]interface{} form.
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
+	}
+	// TS checks the loose {delegation: {type: 'responses'}} shape before the
+	// strict schema (openai-live-session-config.ts:41-49), so it wins over
+	// an unknown key.
+	if d, ok := m["delegation"].(map[string]interface{}); ok && d["type"] == "responses" {
+		out.HasDelegation = true
+		out.DelegationResp = true
+		return out, nil
 	}
 	for key := range m {
 		if !openAILiveOptionKeys[key] {
 			return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai." + key, Message: "unrecognized key"}
 		}
 	}
+	// strictObject members (openai-realtime-model-live-options.ts:17-65).
+	strict := func(field string, obj map[string]interface{}, keys ...string) error {
+		for k := range obj {
+			known := false
+			for _, want := range keys {
+				known = known || k == want
+			}
+			if !known {
+				return &providererrors.InvalidArgumentError{Field: field + "." + k, Message: "unrecognized key"}
+			}
+		}
+		return nil
+	}
+	if d, ok := m["delegation"].(map[string]interface{}); ok {
+		if err := strict("providerOptions.openai.delegation", d, "type"); err != nil {
+			return out, err
+		}
+	}
+	if v, ok := m["voice"].(map[string]interface{}); ok {
+		if err := strict("providerOptions.openai.voice", v, "id"); err != nil {
+			return out, err
+		}
+	}
+	if items, ok := m["input"].([]interface{}); ok {
+		for _, raw := range items {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if err := strict("providerOptions.openai.input", item, "type", "role", "content"); err != nil {
+				return out, err
+			}
+			if content, ok := item["content"].([]interface{}); ok && len(content) == 1 {
+				if part, ok := content[0].(map[string]interface{}); ok {
+					if err := strict("providerOptions.openai.input.content", part, "type", "text"); err != nil {
+						return out, err
+					}
+				}
+			}
+		}
+	}
 
-	if _, ok := m["client"]; ok {
+	if client, ok := m["client"]; ok {
+		// TS parses the strict client schema before rejecting client
+		// permissions outside WebRTC, so a malformed value is a schema error.
+		if err := validateOpenAILiveClientOption(client); err != nil {
+			return out, err
+		}
 		out.HasClient = true
 	}
 
@@ -146,6 +206,82 @@ func parseOpenAILiveOptions(providerOptions map[string]interface{}) (openAILiveO
 	return out, nil
 }
 
+// validateOpenAILiveClientOption is the strict client member of TS
+// openaiRealtimeModelLiveOptionsSchema: {dataChannel: {allowedClientEvents?:
+// 'all' | string[], allowedServerEvents?: 'all' | {type, responseEvent?}[]}},
+// where responseEvent is required exactly for type "response.event".
+func validateOpenAILiveClientOption(v interface{}) error {
+	invalid := func(field, msg string) error {
+		return &providererrors.InvalidArgumentError{Field: "providerOptions.openai.client" + field, Message: msg}
+	}
+	strictKeys := func(field string, obj map[string]interface{}, keys ...string) error {
+		for k := range obj {
+			known := false
+			for _, want := range keys {
+				known = known || k == want
+			}
+			if !known {
+				return invalid(field+"."+k, "unrecognized key")
+			}
+		}
+		return nil
+	}
+	client, ok := v.(map[string]interface{})
+	if !ok {
+		return invalid("", "must be an object")
+	}
+	if err := strictKeys("", client, "dataChannel"); err != nil {
+		return err
+	}
+	dc, ok := client["dataChannel"].(map[string]interface{})
+	if !ok {
+		return invalid(".dataChannel", "must be an object")
+	}
+	if err := strictKeys(".dataChannel", dc, "allowedClientEvents", "allowedServerEvents"); err != nil {
+		return err
+	}
+	if ev, present := dc["allowedClientEvents"]; present && ev != "all" {
+		list, ok := ev.([]interface{})
+		if !ok {
+			return invalid(".dataChannel.allowedClientEvents", `must be "all" or an array of strings`)
+		}
+		for _, item := range list {
+			if _, ok := item.(string); !ok {
+				return invalid(".dataChannel.allowedClientEvents", `must be "all" or an array of strings`)
+			}
+		}
+	}
+	if ev, present := dc["allowedServerEvents"]; present && ev != "all" {
+		list, ok := ev.([]interface{})
+		if !ok {
+			return invalid(".dataChannel.allowedServerEvents", `must be "all" or an array of selectors`)
+		}
+		for _, item := range list {
+			sel, ok := item.(map[string]interface{})
+			if !ok {
+				return invalid(".dataChannel.allowedServerEvents", "each selector must be an object")
+			}
+			if err := strictKeys(".dataChannel.allowedServerEvents", sel, "type", "responseEvent"); err != nil {
+				return err
+			}
+			t, ok := sel["type"].(string)
+			if !ok {
+				return invalid(".dataChannel.allowedServerEvents.type", "must be a string")
+			}
+			re, hasRE := sel["responseEvent"]
+			if hasRE {
+				if _, ok := re.(string); !ok {
+					return invalid(".dataChannel.allowedServerEvents.responseEvent", "must be a string")
+				}
+			}
+			if (t == "response.event") != hasRE {
+				return invalid(".dataChannel.allowedServerEvents", "responseEvent is required for response.event and forbidden for other event types.")
+			}
+		}
+	}
+	return nil
+}
+
 func liveUnsupported(feature string) error {
 	return &providererrors.UnsupportedFunctionalityError{Functionality: feature}
 }
@@ -178,7 +314,8 @@ func liveAudioFormat(f *provider.RealtimeAudioFormat) (map[string]interface{}, e
 // only (WebRTC is TS-only). Mirrors the TypeScript SDK's
 // buildOpenAILiveSessionConfig (transport = 'websocket').
 func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID string) (map[string]interface{}, error) {
-	if len(config.OutputModalities) > 0 {
+	// TS rejects any present key (Object.keys(config)), an empty list too.
+	if config.OutputModalities != nil {
 		return nil, liveUnsupported("OpenAI Live session setting: outputModalities")
 	}
 	if config.InputAudioTranscription != nil {
@@ -190,7 +327,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 	if config.TurnDetection != nil {
 		return nil, liveUnsupported("OpenAI Live session setting: turnDetection")
 	}
-	if len(config.Tools) > 0 {
+	if config.Tools != nil {
 		return nil, liveUnsupported("OpenAI Live session setting: tools")
 	}
 
@@ -205,7 +342,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 		return nil, liveUnsupported("OpenAI Live client permissions outside WebRTC startup")
 	}
 	if options.Voice != nil && config.Voice != nil {
-		return nil, &providererrors.InvalidArgumentError{Field: "voice", Message: "Choose either voice or providerOptions.openai.voice."}
+		return nil, providererrors.NewArgumentError("voice", "Choose either voice or providerOptions.openai.voice.", nil)
 	}
 
 	inputFormat, err := liveAudioFormat(config.InputAudioFormat)
@@ -218,7 +355,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 	}
 	if inputFormat != nil && outputFormat != nil &&
 		(inputFormat["type"] != outputFormat["type"] || inputFormat["rate"] != outputFormat["rate"]) {
-		return nil, &providererrors.InvalidArgumentError{Field: "outputAudioFormat", Message: "OpenAI Live requires the same input and output audio format."}
+		return nil, providererrors.NewArgumentError("outputAudioFormat", "OpenAI Live requires the same input and output audio format.", nil)
 	}
 
 	session := map[string]interface{}{"model": modelID}
@@ -254,7 +391,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 			session["delegation"] = nil
 		}
 	}
-	if len(options.Input) > 0 {
+	if options.Input != nil {
 		session["input"] = options.Input
 	}
 	if options.Store != nil {
@@ -292,14 +429,32 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 	case "input-audio-unmute":
 		out = map[string]interface{}{"type": "session.input_audio.unmute"}
 	case "context-append":
+		// TS: z.strictObject({ channel: z.enum([instructions, thinking,
+		// commentary]).optional() }).parse(providerOptions.openai ?? {}) and
+		// delegationId: z.string().min(1).nullable().
 		channel := "thinking"
-		if openaiOpts, ok := event.ProviderOptions["openai"].(map[string]interface{}); ok {
-			if c, _ := openaiOpts["channel"].(string); c != "" {
+		if raw, present := event.ProviderOptions["openai"]; present && raw != nil {
+			openaiOpts, ok := providerutils.NormalizeProviderOptionsObject(raw)
+			if !ok {
+				return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
+			}
+			for key, value := range openaiOpts {
+				if key != "channel" {
+					return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai." + key, Message: "unrecognized key"}
+				}
+				// z.enum(...).optional(): a present null is invalid too.
+				c, _ := value.(string)
+				if c != "instructions" && c != "thinking" && c != "commentary" {
+					return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.channel", Message: `must be "instructions", "thinking" or "commentary"`}
+				}
 				channel = c
 			}
 		}
 		var delegationID interface{}
 		if event.DelegationID != nil {
+			if *event.DelegationID == "" {
+				return nil, &providererrors.InvalidArgumentError{Field: "delegationId", Message: "must be a non-empty string or null"}
+			}
 			delegationID = *event.DelegationID
 		}
 		out = map[string]interface{}{
@@ -314,7 +469,21 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 	for k, v := range eventID {
 		out[k] = v
 	}
-	return json.Marshal(out)
+	// TS JSON.stringify of the event object literal: its key order.
+	return json.RawMessage(providerutils.StringifyOrdered(out, openAILiveClientEventOrder)), nil
+}
+
+// openAILiveClientEventOrder is the key order of TS
+// serializeOpenAILiveClientEvent's object literals and
+// buildOpenAILiveSessionConfig's session (event_id is spread last).
+var openAILiveClientEventOrder = map[string][]string{
+	"":                           {"type", "session", "audio", "content", "delegation_id", "event_id"},
+	"session":                    {"model", "instructions", "audio", "delegation", "client", "input", "store"},
+	"session.audio":              {"format", "output"},
+	"session.audio.format":       {"type", "rate"},
+	"session.audio.output":       {"voice"},
+	"session.audio.output.voice": {"id"},
+	"session.delegation":         {"type"},
 }
 
 var openAILiveKnownServerTypes = map[string]bool{
@@ -331,7 +500,7 @@ var openAILiveKnownServerTypes = map[string]bool{
 // unknown types, then strict per-type field validation).
 func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
 	var envelope map[string]interface{}
-	hasEnvelope := json.Unmarshal(raw, &envelope) == nil && envelope != nil
+	hasEnvelope := jsonexact.Unmarshal(raw, &envelope) == nil && envelope != nil
 	rawType, hasType := "", false
 	if hasEnvelope {
 		rawType, hasType = envelope["type"].(string)
@@ -431,7 +600,7 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 			e.Speaker = "assistant"
 		}
 		e.Delta = delta
-		start, end := int(startMs), int(endMs)
+		start, end := liveMsInt(startMs), liveMsInt(endMs)
 		e.StartMs, e.EndMs = &start, &end
 	case "session.delegation.created":
 		delegation, ok := envelope["delegation"].(map[string]interface{})
@@ -464,10 +633,10 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 		}
 		if offsetRaw, present := envelope["offset_ms"]; present && offsetRaw != nil {
 			offset, ok := offsetRaw.(float64)
-			if !ok || offset < 0 {
+			if !ok || offset < 0 || math.IsInf(offset, 1) { // z.number(): Infinity is invalid
 				return invalidLiveServerEvent(raw)
 			}
-			off := int(offset)
+			off := liveMsInt(offset)
 			e.OffsetMs = &off
 		}
 	case "error":
@@ -546,6 +715,17 @@ func invalidLiveEventTimeInterval(raw json.RawMessage) []provider.RealtimeServer
 // numbers. ok is false when either field is missing/malformed (schema
 // failure -> invalidLiveServerEvent); when ok is true, intervalOK reports
 // whether end_ms >= start_ms (false -> invalidLiveEventTimeInterval).
+// liveMsInt is a validated (finite, non-negative) millisecond count in the
+// v0.5.2 int field: truncated, and clamped to the platform int (a Go
+// conversion of a double beyond it is implementation-defined, and 32-bit
+// targets overflow past 2^31-1).
+func liveMsInt(v float64) int {
+	if v >= math.MaxInt {
+		return math.MaxInt
+	}
+	return int(v)
+}
+
 func reqLiveInterval(envelope map[string]interface{}) (startMs, endMs float64, ok, intervalOK bool) {
 	startMs, ok = reqLiveFloat(envelope, "start_ms")
 	if !ok {
@@ -564,7 +744,7 @@ func reqLiveUsage(envelope map[string]interface{}) (*provider.RealtimeUsage, boo
 		return nil, false
 	}
 	seconds, ok := usageMap["seconds"].(float64)
-	if !ok || seconds < 0 {
+	if !ok || seconds < 0 || math.IsInf(seconds, 1) { // z.number(): Infinity is invalid
 		return nil, false
 	}
 	return &provider.RealtimeUsage{Seconds: seconds}, true
@@ -594,7 +774,7 @@ func reqLiveTopString(envelope map[string]interface{}, key string, minLen int) (
 
 func reqLiveFloat(envelope map[string]interface{}, key string) (float64, bool) {
 	v, ok := envelope[key].(float64)
-	if !ok || v < 0 {
+	if !ok || v < 0 || math.IsInf(v, 1) { // z.number().nonnegative(): Infinity is invalid
 		return 0, false
 	}
 	return v, true

@@ -3,9 +3,8 @@ package fx
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,7 +13,14 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
+
+// This file is the v0.5.x subscription support of the sandbox-ACP runtime
+// (RuntimeSandboxACP): brokered environment records and the ~/.fx readers.
+// The libfx runtime discovers subscriptions with TS's newer precedence and
+// stores in subscription_store.go.
 
 // Environment variable names used for fx's brokered subscription records.
 // Mirrors TS constants in fx-subscription.ts.
@@ -156,14 +162,7 @@ func CreateSubscriptionAuthenticationFiles(env, sandboxEnv map[string]string, cr
 		if provider == providerChatGPT {
 			path = ".fx/chatgpt-auth.json"
 		}
-		content, _ := json.Marshal(map[string]any{
-			"version":       1,
-			"access_token":  accessToken,
-			"refresh_token": sandboxRefreshToken,
-			"expires_at_ms": int64(9007199254740991), // Number.MAX_SAFE_INTEGER
-			"account_id":    accountID,
-		})
-		files = append(files, acp.AuthenticationFile{Path: path, Content: string(content) + "\n"})
+		files = append(files, acp.AuthenticationFile{Path: path, Content: credentialFileContent(accessToken, sandboxRefreshToken, 9007199254740991 /* Number.MAX_SAFE_INTEGER */, accountID)})
 	}
 	return files
 }
@@ -209,7 +208,7 @@ func readSubscription(ctx context.Context, provider subscriptionProvider, fxDire
 		return nil, nil
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(text, &parsed); err != nil {
+	if err := securejson.Unmarshal(text, &parsed); err != nil {
 		return nil, nil
 	}
 	cred := readCredential(parsed)
@@ -217,8 +216,13 @@ func readSubscription(ctx context.Context, provider subscriptionProvider, fxDire
 		return nil, nil
 	}
 	if provider == providerChatGPT {
+		// TS awaits extractChatGptAccountId without a catch: a token with no
+		// account id fails the whole resolution instead of being skipped.
 		accountID, err := extractChatGPTAccountID(cred.AccessToken)
-		if err != nil || accountID != cred.AccountID {
+		if err != nil {
+			return nil, err
+		}
+		if accountID != cred.AccountID {
 			return nil, nil
 		}
 	}
@@ -285,17 +289,7 @@ func readSubscription(ctx context.Context, provider subscriptionProvider, fxDire
 }
 
 func persistCredential(path string, cred *Credential) error {
-	data, err := json.Marshal(map[string]any{
-		"version":       1,
-		"access_token":  cred.AccessToken,
-		"refresh_token": cred.RefreshToken,
-		"expires_at_ms": cred.ExpiresAt,
-		"account_id":    cred.AccountID,
-	})
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
+	data := []byte(credentialFileContent(cred.AccessToken, cred.RefreshToken, cred.ExpiresAt, cred.AccountID))
 	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
@@ -304,6 +298,20 @@ func persistCredential(path string, cred *Credential) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// credentialFileContent renders `JSON.stringify({version, access_token,
+// refresh_token, expires_at_ms, account_id}) + "\n"`: TS key order and no
+// HTML escaping (a Go map would sort the keys and escape <, > and &).
+func credentialFileContent(accessToken, refreshToken string, expiresAt int64, accountID string) string {
+	b, _ := jsstr.Marshal(struct {
+		Version      int    `json:"version"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresAtMs  int64  `json:"expires_at_ms"`
+		AccountID    string `json:"account_id"`
+	}{1, accessToken, refreshToken, expiresAt, accountID})
+	return string(b) + "\n"
 }
 
 func readCredential(value map[string]any) *Credential {
@@ -320,7 +328,8 @@ func readCredential(value map[string]any) *Credential {
 		return nil
 	}
 	expiresAt, ok := value["expires_at_ms"].(float64)
-	if !ok {
+	// Number.isSafeInteger
+	if !ok || expiresAt != math.Trunc(expiresAt) || math.Abs(expiresAt) > 9007199254740991 {
 		return nil
 	}
 	accountID, ok := value["account_id"].(string)
@@ -346,7 +355,7 @@ func fetchGrokAccountID(ctx context.Context, accessToken string, client *http.Cl
 		return "", err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(resp.Body)
+	body, err := harnessutil.ReadBoundedResponse(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -354,7 +363,7 @@ func fetchGrokAccountID(ctx context.Context, accessToken string, client *http.Cl
 		return "", fmt.Errorf("fx Grok user info request failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := securejson.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("fx Grok user info request returned an invalid account.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	sub, ok := parsed["sub"].(string)
@@ -376,7 +385,8 @@ func extractChatGPTAccountID(accessToken string) (string, error) {
 
 func createChatGPTSandboxAccessToken(credential, accountID string) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	payloadJSON, _ := json.Marshal(map[string]any{
+	// JSON.stringify: no HTML escaping of `<`, `>`, `&` or U+2028/9.
+	payloadJSON, _ := jsstr.Marshal(map[string]any{
 		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": accountID},
 	})
 	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)

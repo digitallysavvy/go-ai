@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -76,19 +78,37 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 	if err != nil {
 		return nil, err
 	}
-	httpClient := p.httpClient()
+	httpClient := p.httpClient(baseURL)
 
-	nativeStructuredOutput := false
+	// Native output is default-denied by GCP policy and requires Claude 4.5+.
+	nativeStructuredOutput := p.options.SupportsNativeStructuredOutput && vertexAnthropicSupportsNativeStructuredOutput(modelID)
 	supportsImageInput := true
+	noMessageThreads := false
 	supportsStrictTools := false
+	// TS reads a configured anthropic-beta as user-supplied betas
+	// (getBetasFromHeaders over the config headers), which take their place
+	// in the beta set after the computed and tool betas and before the call
+	// and anthropicBeta-option betas. The model sees the static value here,
+	// and a HeadersResolver value through ResolveConfigHeaders (resolved
+	// once per call, then reused by the auth transport).
+	var configBetaHeaders map[string]string
+	for k, v := range p.options.Headers {
+		if strings.EqualFold(k, "anthropic-beta") {
+			configBetaHeaders = map[string]string{"anthropic-beta": v}
+		}
+	}
 	anthropicProvider := anthropicprovider.New(anthropicprovider.Config{
 		Name:                           DefaultProviderName,
+		Headers:                        configBetaHeaders,
+		ResolveConfigHeaders:           resolveConfigHeadersWith(p.options.HeadersResolver),
 		BaseURL:                        baseURL,
 		OmitAPIVersionHeader:           true,
 		HTTPClient:                     httpClient,
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsImageInput:             &supportsImageInput,
 		SupportsStrictTools:            &supportsStrictTools,
+		// Not a platform with Anthropic message threads (TS 6b101ac076).
+		SupportsMessageThreads: &noMessageThreads,
 		// TS google-vertex-anthropic-provider.ts builds AnthropicLanguageModel
 		// directly rather than through createAnthropic, so it never gets
 		// @ai-sdk/anthropic's own "ai-sdk-anthropic/VERSION" tag. Only the
@@ -105,6 +125,7 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 			}
 			return fmt.Sprintf("/%s:%s", id, action)
 		},
+		TransformRequestHeaders: transformRequestHeadersWith(p.options.Headers),
 		TransformRequestBody: func(body map[string]interface{}, stream bool) map[string]interface{} {
 			out := make(map[string]interface{}, len(body)+1)
 			for k, v := range body {
@@ -142,7 +163,7 @@ func (p *GoogleVertexAnthropicProvider) Messages(modelID string) (provider.Langu
 }
 
 func (p *GoogleVertexAnthropicProvider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // TextEmbeddingModel is a deprecated alias for EmbeddingModel.
@@ -153,24 +174,24 @@ func (p *GoogleVertexAnthropicProvider) TextEmbeddingModel(modelID string) (prov
 }
 
 func (p *GoogleVertexAnthropicProvider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support image models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 func (p *GoogleVertexAnthropicProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 func (p *GoogleVertexAnthropicProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 func (p *GoogleVertexAnthropicProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 func (p *GoogleVertexAnthropicProvider) baseURL() (string, error) {
 	if p.options.BaseURL != "" {
-		return strings.TrimRight(p.options.BaseURL, "/"), nil
+		return strings.TrimSuffix(p.options.BaseURL, "/"), nil
 	}
 
 	project := p.options.Project
@@ -192,10 +213,7 @@ func (p *GoogleVertexAnthropicProvider) baseURL() (string, error) {
 	// single DNS label is accepted; ports TS
 	// google-vertex-anthropic-provider.ts (TS #21842).
 	if !providerutils.IsValidHostnamePart(location) {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "location",
-			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
+		return "", providererrors.NewArgumentError("location", "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)
 	}
 
 	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models", vertexAnthropicHost(location), project, location), nil
@@ -212,7 +230,7 @@ func vertexAnthropicHost(location string) string {
 	}
 }
 
-func (p *GoogleVertexAnthropicProvider) httpClient() *http.Client {
+func (p *GoogleVertexAnthropicProvider) httpClient(baseURL string) *http.Client {
 	baseClient := http.DefaultClient
 	if p.options.HTTPClient != nil {
 		baseClient = p.options.HTTPClient
@@ -233,9 +251,35 @@ func (p *GoogleVertexAnthropicProvider) httpClient() *http.Client {
 
 	clone.Transport = &authTransport{
 		base:        baseTransport,
+		baseURL:     baseURL,
 		tokenFunc:   tokenFunc,
 		headers:     p.options.Headers,
 		headersFunc: p.options.HeadersResolver,
 	}
 	return &clone
+}
+
+// vertexAnthropicNativeOutputModel is TS
+// /^claude-[a-z]+-(\d+)(?:-(\d+))?(?:@|$)/.
+var vertexAnthropicNativeOutputModel = regexp.MustCompile(`^claude-[a-z]+-(\d+)(?:-(\d+))?(?:@|$)`)
+
+// vertexAnthropicSupportsNativeStructuredOutput reports Claude 4.5 or newer
+// (a missing minor version is NaN in TS: false for major 4).
+func vertexAnthropicSupportsNativeStructuredOutput(modelID string) bool {
+	m := vertexAnthropicNativeOutputModel.FindStringSubmatch(modelID)
+	if m == nil {
+		return false
+	}
+	major, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return false
+	}
+	if major > 4 {
+		return true
+	}
+	if major != 4 || m[2] == "" {
+		return false
+	}
+	minor, err := strconv.ParseFloat(m[2], 64)
+	return err == nil && minor >= 5
 }

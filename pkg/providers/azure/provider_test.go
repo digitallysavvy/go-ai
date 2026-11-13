@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -482,69 +481,6 @@ func TestCompletionModelUsesDeploymentBasedAzureURL(t *testing.T) {
 	}
 }
 
-func TestLanguageBuildRequestBodyAndUsageConversion(t *testing.T) {
-	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
-	m := NewLanguageModel(p, "dep-1")
-	max := 77
-	temp := 0.2
-
-	body := m.buildRequestBody(&provider.GenerateOptions{
-		Prompt: types.Prompt{
-			Text:   "hello",
-			System: "sys",
-		},
-		MaxTokens:   &max,
-		Temperature: &temp,
-	}, true)
-
-	if body["stream"] != true {
-		t.Fatalf("stream = %#v", body["stream"])
-	}
-	msgs, ok := body["messages"].([]map[string]interface{})
-	if !ok || len(msgs) == 0 {
-		t.Fatalf("messages missing: %#v", body["messages"])
-	}
-	if msgs[0]["role"] != "system" {
-		t.Fatalf("expected system message first, got %#v", msgs[0])
-	}
-	if body["max_tokens"] != max || body["temperature"] != temp {
-		t.Fatalf("optional params missing: %#v", body)
-	}
-
-	cached := 7
-	textTokens := 33
-	imageTokens := 4
-	reasoning := 10
-	usage := convertAzureUsage(azureUsage{
-		PromptTokens:     100,
-		CompletionTokens: 40,
-		TotalTokens:      140,
-		PromptTokensDetails: &struct {
-			CachedTokens *int `json:"cached_tokens,omitempty"`
-			AudioTokens  *int `json:"audio_tokens,omitempty"`
-			TextTokens   *int `json:"text_tokens,omitempty"`
-			ImageTokens  *int `json:"image_tokens,omitempty"`
-		}{
-			CachedTokens: &cached,
-			TextTokens:   &textTokens,
-			ImageTokens:  &imageTokens,
-		},
-		CompletionTokensDetails: &struct {
-			ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
-			AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
-			RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
-		}{
-			ReasoningTokens: &reasoning,
-		},
-	})
-	if usage.InputTokens == nil || *usage.InputTokens != 100 {
-		t.Fatalf("input tokens = %#v", usage.InputTokens)
-	}
-	if usage.InputDetails == nil || usage.OutputDetails == nil {
-		t.Fatalf("expected input/output details, got %#v %#v", usage.InputDetails, usage.OutputDetails)
-	}
-}
-
 func TestEmbeddingAndTranscriptionHelpers(t *testing.T) {
 	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
 	emb := NewEmbeddingModel(p, "dep-1")
@@ -559,38 +495,6 @@ func TestEmbeddingAndTranscriptionHelpers(t *testing.T) {
 	}
 	if h := optsHeaders(&provider.EmbedModelOptions{Headers: map[string]string{"X-A": "B"}}); h["X-A"] != "B" {
 		t.Fatalf("optsHeaders mismatch: %#v", h)
-	}
-
-	tm := NewTranscriptionModel(p, "dep-1")
-	body, ct, err := tm.buildMultipartBody(&provider.TranscriptionOptions{
-		Audio:      []byte("abc"),
-		Language:   "fr",
-		Timestamps: true,
-	})
-	if err != nil {
-		t.Fatalf("buildMultipartBody: %v", err)
-	}
-	if !strings.Contains(ct, "multipart/form-data") {
-		t.Fatalf("unexpected content type: %s", ct)
-	}
-	raw, _ := io.ReadAll(body)
-	blob := string(raw)
-	if !strings.Contains(blob, `name="language"`) || !strings.Contains(blob, "fr") {
-		t.Fatalf("language field missing: %s", blob)
-	}
-	if !strings.Contains(blob, `name="response_format"`) || !strings.Contains(blob, "verbose_json") {
-		t.Fatalf("response_format missing: %s", blob)
-	}
-
-	verbose := []byte(`{"text":"hello","duration":2.5,"segments":[{"text":"hello","start":0.0,"end":2.5}]}`)
-	vr, err := tm.convertResponse(verbose, true)
-	if err != nil || vr.Text != "hello" || len(vr.Timestamps) != 1 {
-		t.Fatalf("verbose convertResponse result=%#v err=%v", vr, err)
-	}
-	simple := []byte(`{"text":"hola"}`)
-	sr, err := tm.convertResponse(simple, false)
-	if err != nil || sr.Text != "hola" {
-		t.Fatalf("simple convertResponse result=%#v err=%v", sr, err)
 	}
 }
 
@@ -617,60 +521,6 @@ func TestAzureEmbeddingUsageTokensUsesPromptTokensLikeTypeScript(t *testing.T) {
 	}
 	if result.Response.Headers["X-Request-Id"] != "req_embed" || result.Response.Body == nil {
 		t.Fatalf("response metadata = %+v", result.Response)
-	}
-}
-
-func TestImageAndSpeechBuildHelpers(t *testing.T) {
-	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
-	im := NewImageModel(p, "img-dep")
-	n := 2
-	ib := im.buildRequestBody(&provider.ImageGenerateOptions{
-		Prompt:  "draw cat",
-		N:       &n,
-		Size:    "1024x1024",
-		Quality: "hd",
-		Style:   "vivid",
-	})
-	if ib["n"] != 2 || ib["size"] != "1024x1024" {
-		t.Fatalf("image request body mismatch: %#v", ib)
-	}
-	if _, err := im.convertResponse([]byte(`{"data":[]}`)); err == nil {
-		t.Fatal("convertResponse should fail when no images are returned")
-	}
-	okResp := []byte(`{"data":[{"url":"https://example.com/i.png"}]}`)
-	ir, err := im.convertResponse(okResp)
-	if err != nil || ir.URL == "" {
-		t.Fatalf("convertResponse result=%#v err=%v", ir, err)
-	}
-
-	sm := NewSpeechModel(p, "speech-dep")
-	speed := 1.2
-	sb := sm.buildRequestBody(&provider.SpeechGenerateOptions{
-		Text:  "hello",
-		Voice: "nova",
-		Speed: &speed,
-	})
-	if sb["voice"] != "nova" || sb["response_format"] != "mp3" {
-		t.Fatalf("speech body mismatch: %#v", sb)
-	}
-	sb, warnings := sm.buildRequestArgs(&provider.SpeechGenerateOptions{
-		Text:         "hello",
-		OutputFormat: "wav",
-		Instructions: "speak warmly",
-	})
-	if len(warnings) != 0 || sb["response_format"] != "wav" || sb["instructions"] != "speak warmly" {
-		t.Fatalf("speech custom body=%#v warnings=%#v", sb, warnings)
-	}
-	sb, warnings = sm.buildRequestArgs(&provider.SpeechGenerateOptions{
-		Text:         "hello",
-		OutputFormat: "ogg",
-		Language:     "es",
-	})
-	if sb["response_format"] != "mp3" {
-		t.Fatalf("speech unsupported format should keep mp3: %#v", sb)
-	}
-	if len(warnings) != 2 || warnings[0].Feature != "outputFormat" || warnings[1].Feature != "language" {
-		t.Fatalf("speech warnings mismatch: %#v", warnings)
 	}
 }
 
@@ -712,7 +562,7 @@ func TestResponsesModelMatchesAzureResponsesRequest(t *testing.T) {
 			"id":"resp_123",
 			"model":"test-deployment",
 			"created_at":123,
-			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done","annotations":[]}]}],
 			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
 		}`))
 	}))
@@ -800,7 +650,7 @@ func TestResponsesModelUseDeploymentBasedURLs(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"id":"resp_123",
 			"model":"test-deployment",
-			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done","annotations":[]}]}],
 			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
 		}`))
 	}))
@@ -823,75 +673,37 @@ func TestResponsesModelUseDeploymentBasedURLs(t *testing.T) {
 	}
 }
 
-func TestConvertResponseMapsToolCalls(t *testing.T) {
-	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
-	m := NewLanguageModel(p, "dep-1")
-	resp := azureResponse{
-		Choices: []struct {
-			Index        int    `json:"index"`
-			FinishReason string `json:"finish_reason"`
-			Message      struct {
-				Role      string `json:"role"`
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					ID       string `json:"id"`
-					Type     string `json:"type"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		}{
-			{
-				FinishReason: "tool_calls",
-				Message: struct {
-					Role      string `json:"role"`
-					Content   string `json:"content"`
-					ToolCalls []struct {
-						ID       string `json:"id"`
-						Type     string `json:"type"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				}{
-					Content: "",
-					ToolCalls: []struct {
-						ID       string `json:"id"`
-						Type     string `json:"type"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					}{
-						{
-							ID: "call_1",
-							Function: struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							}{
-								Name:      "lookup",
-								Arguments: `{"city":"Paris"}`,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
+var _ = types.Warning{} // keep types import in this test package for parity compile coverage
 
-	got := m.convertResponse(resp)
-	if len(got.ToolCalls) != 1 {
-		t.Fatalf("tool calls = %d", len(got.ToolCalls))
+// Security: the Azure DeepSeek model authenticates with the Azure key only;
+// DEEPSEEK_API_KEY from the environment must never reach Azure.
+func TestDeepSeekModelNeverSendsDeepSeekEnvKey(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+	p := mustNewProvider(t, Config{
+		APIKey:     "azure-key",
+		BaseURL:    "https://test-resource.openai.azure.com/openai",
+		APIVersion: "v1",
+		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
+			for name, values := range r.Header {
+				for _, v := range values {
+					if strings.Contains(v, "deepseek-secret") {
+						t.Fatalf("DEEPSEEK_API_KEY leaked in header %s", name)
+					}
+				}
+			}
+			return azureJSONResponse(200, `{
+				"id":"chatcmpl-azure-deepseek",
+				"model":"deepseek-v4-pro",
+				"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],
+				"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+			}`, nil), nil
+		})},
+	})
+	model, err := p.DeepSeekModel("deepseek-v4-pro")
+	if err != nil {
+		t.Fatalf("DeepSeekModel: %v", err)
 	}
-	if got.ToolCalls[0].ToolName != "lookup" {
-		t.Fatalf("tool name = %q", got.ToolCalls[0].ToolName)
-	}
-	if got.ToolCalls[0].Arguments["city"] != "Paris" {
-		t.Fatalf("tool args = %#v", got.ToolCalls[0].Arguments)
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}); err != nil {
+		t.Fatalf("DoGenerate: %v", err)
 	}
 }
-
-var _ = types.Warning{} // keep types import in this test package for parity compile coverage

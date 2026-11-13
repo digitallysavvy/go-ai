@@ -6,6 +6,7 @@ package minimax
 // at ai@7.0.113. Any model ID string is accepted; these constants exist for
 // convenience and IDE support.
 const (
+	ModelM31Flash     = "minimax-m3.1-flash"
 	ModelM3           = "minimax-m3"
 	ModelM27          = "minimax-m2.7"
 	ModelM27HighSpeed = "minimax-m2.7-highspeed"

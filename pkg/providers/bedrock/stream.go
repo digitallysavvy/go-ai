@@ -2,15 +2,19 @@ package bedrock
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // bedrockStreamErrorMetadata maps a modeled Converse-stream exception type to
@@ -55,7 +59,9 @@ type bedrockConverseStream struct {
 
 	isMistral            bool
 	usesJSONResponseTool bool
-	extractor            *jsonObjectTextExtractor
+	// toolNames maps toolSpec names back to tool names.
+	toolNames map[string]string
+	extractor *jsonObjectTextExtractor
 
 	warnings          []types.Warning
 	modelID           string
@@ -65,6 +71,10 @@ type bedrockConverseStream struct {
 
 	contentBlocks map[int]*bedrockStreamContentBlock
 	queue         []*provider.StreamChunk
+
+	// includeRawChunks emits a ChunkTypeRaw chunk ({payloadType: payload},
+	// TS rawValue) ahead of the parts each event produces.
+	includeRawChunks bool
 
 	startEmitted    bool
 	finishReason    types.FinishReason
@@ -134,37 +144,88 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
-		payloadType := ""
+		// TS `payloadType == null`: only a missing header skips the frame;
+		// an empty event or exception type is still a payload key.
+		payloadType, hasPayloadType := "", false
 		switch event.MessageType {
 		case "event":
-			payloadType = event.EventType
+			payloadType, hasPayloadType = event.EventType, event.HasEventType
 		case "exception":
-			payloadType = event.ExceptionType
+			payloadType, hasPayloadType = event.ExceptionType, event.HasExceptionType
 		}
-		if payloadType == "" {
+		if !hasPayloadType {
 			continue
 		}
 
-		var payload map[string]interface{}
-		if err := json.Unmarshal(event.Data, &payload); err != nil {
+		// Decode into interface{} like TS safeParseJSON: a payload that is valid
+		// JSON but not an object (5, "x", []) is not a parse error; it is wrapped
+		// under its payload type and then fails (or, for an unknown payload type,
+		// passes) schema validation below.
+		// TS createAmazonBedrockEventStreamDecoder: data is
+		// textDecoder.decode(body) (BOM dropped, invalid UTF-8 as U+FFFD).
+		data := prompt.DecodeUTF8Text(event.Data)
+		var rawPayload interface{}
+		if err := jsonexact.Unmarshal([]byte(data), &rawPayload); err != nil {
 			// Mirrors TS doStream's !chunk.success branch (amazon-bedrock-chat-
 			// language-model.ts): report the error but keep reading — the stream
 			// is not aborted — and mark finishReason as error in case the stream
 			// ends (via decoder EOF) before any later messageStop overwrites it.
 			s.finishReason = types.FinishReasonError
-			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse Amazon Bedrock stream event: %v", err)}, nil
+			s.rawFinishReason = "" // TS: {unified: 'error', raw: undefined}
+			if s.includeRawChunks {
+				// TS safeParseJSON: rawValue is undefined for unparsable JSON.
+				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: nil})
+			}
+			parseErr := jsonParseFailure(data, err)
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: parseErr.Error(), Err: parseErr})
+			continue
 		}
+		if rawPayload == nil {
+			// TS runs `delete (parsedDataResult.value as any).p` on the parsed
+			// value, which throws a TypeError for a JSON null and errors the whole
+			// stream (no error part, no finish part).
+			s.err = errors.New("Cannot convert undefined or null to object") //nolint:staticcheck // TS TypeError text
+			s.done = true
+			return nil, s.err
+		}
+		payload, _ := rawPayload.(map[string]interface{})
 		delete(payload, "p") // AWS event-stream padding hint; irrelevant to consumers.
+
+		// TS validates {payloadType: payload} against AmazonBedrockStreamSchema; a
+		// mismatch is an error part (the event is skipped) and the finish reason
+		// becomes error, like the unparsable-JSON branch above.
+		if verr := validateConverseStreamEvent(payloadType, rawPayload); verr != nil {
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: {unified: 'error', raw: undefined}
+			if s.includeRawChunks {
+				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{payloadType: rawPayload}})
+			}
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: verr.Message, Err: invalidConverseResponseError(verr)})
+			continue
+		}
 
 		// Wrap the raw payload under its event/exception type key, mirroring TS
 		// amazon-bedrock-event-stream-response-handler.ts's
 		// `{ [payloadType]: parsedDataResult.value }`, so downstream handling
 		// matches the documented AmazonBedrockStreamSchema shape.
-		value := map[string]interface{}{payloadType: payload}
+		value := map[string]interface{}{payloadType: rawPayload}
+		if payload == nil {
+			// Only an unknown payload type can pass validation with a non-object
+			// payload; zod strips the unknown key, so TS emits the raw chunk and
+			// nothing else.
+			if s.includeRawChunks {
+				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: value})
+			}
+			continue
+		}
+		if s.includeRawChunks {
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: value})
+		}
 
 		switch payloadType {
 		case "internalServerException", "modelStreamErrorException", "serviceUnavailableException", "throttlingException", "validationException":
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: {unified: 'error', raw: undefined}
 			// Do NOT set s.done here. TS's enqueueError (amazon-bedrock-chat-
 			// language-model.ts) records the error and sets finishReason but lets
 			// the ReadableStream's own flush() run when the underlying connection
@@ -174,7 +235,8 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			// call naturally returns io.EOF once AWS closes the stream after the
 			// exception frame, which drives s.done=true and s.flush() below.
 			message := fmt.Sprintf("Amazon Bedrock stream failed with %s", payloadType)
-			if m, ok := payload["message"].(string); ok && m != "" {
+			// TS: `typeof error.message === 'string'`, so an empty message is kept.
+			if m, ok := payload["message"].(string); ok {
 				message = m
 			}
 			statusCode, isRetryable := bedrockStreamErrorMetadata(payloadType)
@@ -203,14 +265,19 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			// message/type/statusCode/isRetryable/data via
 			// `...getAmazonBedrockStreamErrorMetadata(type)`) — leave Code nil
 			// rather than duplicating the exception type into it.
-			chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, payload)
-			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr}, nil
+			// TS passes `data: chunk.rawValue`, the wrapped {[payloadType]: payload}.
+			chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, value)
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr})
+			continue
 
 		case "messageStop":
 			if stopReason, ok := payload["stopReason"].(string); ok {
 				s.finishReason = mapBedrockFinishReason(stopReason, s.isJSONResponseFromTool)
 				s.rawFinishReason = stopReason
 			}
+			// TS reassigns stopSequence on every messageStop (`?? null`).
+			s.stopSequence = nil
+			s.stopSequenceSet = false
 			if amf, ok := payload["additionalModelResponseFields"].(map[string]interface{}); ok {
 				if delta, ok := amf["delta"].(map[string]interface{}); ok {
 					if ss, ok := delta["stop_sequence"].(string); ok {
@@ -243,35 +310,65 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
+// jsonParseFailure is TS safeParseJSON's JSONParseError for text: a
+// secureJsonParse rejection, which jsonexact already reports as a
+// JSONParseError, keeps its SyntaxError as the cause instead of nesting a
+// second JSONParseError.
+func jsonParseFailure(text string, err error) *providererrors.JSONParseError {
+	var parseErr *providererrors.JSONParseError
+	if errors.As(err, &parseErr) {
+		return providererrors.NewJSONParseError(text, parseErr.Cause)
+	}
+	return providererrors.NewJSONParseError(text, err)
+}
+
 func (s *bedrockConverseStream) handleMetadata(metadata map[string]interface{}) {
+	// TS builds a fresh metadata payload for each metadata event and, when it
+	// is non-empty, replaces providerMetadata with it (no merge across events).
+	payload := map[string]interface{}{}
 	if usage, ok := metadata["usage"].(map[string]interface{}); ok {
-		usageBytes, _ := json.Marshal(usage)
+		usageBytes, _ := jsonstr.Marshal(usage)
 		s.usage = convertBedrockConverseUsage(usageBytes)
 		s.hasUsage = true
 
 		meta := map[string]interface{}{}
-		if v, ok := usage["cacheWriteInputTokens"]; ok {
+		if v := usage["cacheWriteInputTokens"]; v != nil {
 			meta["cacheWriteInputTokens"] = v
 		}
-		if v, ok := usage["cacheDetails"]; ok {
+		if v := usage["cacheDetails"]; v != nil {
 			meta["cacheDetails"] = v
 		}
 		if len(meta) > 0 {
-			s.ensureProviderMetadata()
-			s.providerMetadataPayload["usage"] = meta
+			payload["usage"] = meta
 		}
 	}
-	if trace, ok := metadata["trace"]; ok && trace != nil {
-		s.ensureProviderMetadata()
-		s.providerMetadataPayload["trace"] = trace
+	if trace := metadata["trace"]; jsTruthy(trace) {
+		payload["trace"] = trace
 	}
-	if pc, ok := metadata["performanceConfig"]; ok && pc != nil {
-		s.ensureProviderMetadata()
-		s.providerMetadataPayload["performanceConfig"] = pc
+	if pc := metadata["performanceConfig"]; pc != nil {
+		payload["performanceConfig"] = schemaKeys(pc, "latency")
 	}
-	if st, ok := metadata["serviceTier"]; ok && st != nil {
-		s.ensureProviderMetadata()
-		s.providerMetadataPayload["serviceTier"] = st
+	if st := metadata["serviceTier"]; st != nil {
+		payload["serviceTier"] = schemaKeys(st, "type")
+	}
+	if len(payload) > 0 {
+		s.providerMetadataPayload = payload
+	}
+}
+
+// jsTruthy reports whether a decoded JSON value is truthy in JavaScript.
+func jsTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case string:
+		return x != ""
+	default:
+		return true // objects and arrays
 	}
 }
 
@@ -296,16 +393,18 @@ func (s *bedrockConverseStream) handleContentBlockStart(value map[string]interfa
 	toolUse, hasToolUse := start["toolUse"].(map[string]interface{})
 
 	if !hasToolUse {
-		if _, exists := s.contentBlocks[idx]; !exists {
-			s.contentBlocks[idx] = &bedrockStreamContentBlock{Kind: "text"}
-			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: strconv.Itoa(idx)})
-		}
+		// TS sets the block and emits text-start unconditionally.
+		s.contentBlocks[idx] = &bedrockStreamContentBlock{Kind: "text"}
+		s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: strconv.Itoa(idx)})
 		return
 	}
 
 	toolUseID, _ := toolUse["toolUseId"].(string)
 	name, _ := toolUse["name"].(string)
 	isJSONResponseTool := s.usesJSONResponseTool && name == "json"
+	if !isJSONResponseTool {
+		name = bedrockToolName(name, s.toolNames)
+	}
 	normalizedID := normalizeToolCallID(toolUseID, s.isMistral)
 
 	s.contentBlocks[idx] = &bedrockStreamContentBlock{
@@ -335,7 +434,13 @@ func (s *bedrockConverseStream) handleContentBlockDelta(value map[string]interfa
 		return
 	}
 
-	if text, ok := delta["text"].(string); ok && text != "" {
+	// TS parses delta with a zod union: the first matching member wins and
+	// strips every other key, so pick the member in union order before acting
+	// (an empty text with a toolUse beside it is still the text member).
+	if text, ok := delta["text"].(string); ok {
+		if text == "" {
+			return
+		}
 		if _, exists := s.contentBlocks[idx]; !exists {
 			s.contentBlocks[idx] = &bedrockStreamContentBlock{Kind: "text"}
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: strconv.Itoa(idx)})
@@ -350,7 +455,13 @@ func (s *bedrockConverseStream) handleContentBlockDelta(value map[string]interfa
 		return
 	}
 
-	if toolUse, ok := delta["toolUse"].(map[string]interface{}); ok {
+	if _, ok := delta["citation"].(map[string]interface{}); ok {
+		return
+	}
+
+	// A toolUse without a string input is not the toolUse member, so the
+	// union goes on to the reasoningContent members.
+	if toolUse, ok := delta["toolUse"].(map[string]interface{}); ok && isString(toolUse["input"]) {
 		block, exists := s.contentBlocks[idx]
 		if !exists || block.Kind != "tool-call" {
 			return
@@ -372,6 +483,11 @@ func (s *bedrockConverseStream) handleContentBlockDelta(value map[string]interfa
 	// erroring but currently produce no stream chunk.
 }
 
+func isString(v interface{}) bool {
+	_, ok := v.(string)
+	return ok
+}
+
 func (s *bedrockConverseStream) handleReasoningDelta(idx int, rc map[string]interface{}) {
 	ensureReasoningBlock := func() {
 		if _, exists := s.contentBlocks[idx]; !exists {
@@ -380,12 +496,20 @@ func (s *bedrockConverseStream) handleReasoningDelta(idx int, rc map[string]inte
 		}
 	}
 
-	if text, ok := rc["text"].(string); ok && text != "" {
+	// Union order: the first reasoningContent member whose string field is
+	// present wins, even when that field is empty.
+	if text, ok := rc["text"].(string); ok {
+		if text == "" {
+			return
+		}
 		ensureReasoningBlock()
 		s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: strconv.Itoa(idx), Reasoning: text})
 		return
 	}
-	if signature, ok := rc["signature"].(string); ok && signature != "" {
+	if signature, ok := rc["signature"].(string); ok {
+		if signature == "" {
+			return
+		}
 		ensureReasoningBlock()
 		meta := map[string]interface{}{
 			"amazonBedrock": map[string]interface{}{"signature": signature},
@@ -395,7 +519,10 @@ func (s *bedrockConverseStream) handleReasoningDelta(idx int, rc map[string]inte
 		s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: strconv.Itoa(idx), Reasoning: "", ProviderMetadata: data})
 		return
 	}
-	if redactedData, ok := rc["data"].(string); ok && redactedData != "" {
+	if redactedData, ok := rc["data"].(string); ok {
+		if redactedData == "" {
+			return
+		}
 		ensureReasoningBlock()
 		meta := map[string]interface{}{
 			"amazonBedrock": map[string]interface{}{"redactedData": redactedData},
@@ -459,16 +586,28 @@ func (s *bedrockConverseStream) handleContentBlockStop(value map[string]interfac
 			input = "{}"
 		}
 		var args map[string]interface{}
-		_ = json.Unmarshal([]byte(input), &args)
-		if args == nil {
+		rawInvalid := ""
+		if err := jsonexact.Unmarshal([]byte(input), &args); err != nil {
+			// Truncated or malformed input: hand the raw text to the core so
+			// the call is marked invalid (or repaired) instead of running
+			// with silently emptied arguments (TS emits the input string).
+			args = nil
+			rawInvalid = input
+		}
+		if args == nil && rawInvalid == "" {
 			args = map[string]interface{}{}
+		}
+		if rawInvalid == "" {
+			// TS emits the accumulated input string as the tool call input.
+			rawInvalid = input
 		}
 		s.enqueue(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
-				ID:        block.ToolCallID,
-				ToolName:  block.ToolName,
-				Arguments: args,
+				ID:           block.ToolCallID,
+				ToolName:     block.ToolName,
+				Arguments:    args,
+				RawArguments: rawInvalid,
 			},
 		})
 	}
@@ -499,7 +638,7 @@ func (s *bedrockConverseStream) flush() (*provider.StreamChunk, error) {
 		Usage:           &usage,
 	}
 	if s.providerMetadataPayload != nil {
-		data, _ := json.Marshal(map[string]interface{}{
+		data, _ := jsonstr.Marshal(map[string]interface{}{
 			"amazonBedrock": s.providerMetadataPayload,
 			"bedrock":       s.providerMetadataPayload,
 		})

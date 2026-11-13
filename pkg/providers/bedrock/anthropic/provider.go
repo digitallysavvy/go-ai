@@ -17,7 +17,10 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"os"
@@ -65,6 +68,12 @@ type Config struct {
 	// over SigV4 credentials when non-empty.
 	BearerToken string
 
+	// BearerTokenFunc resolves the bearer API key before each request (TS apiKey given
+	// as a function, 7716e189ee). It must return a non-empty key ("Amazon
+	// Bedrock API key must be a non-empty string." otherwise), is trimmed,
+	// wins over the environment and SigV4, and cannot be combined with BearerToken.
+	BearerTokenFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL overrides the default Bedrock endpoint
 	// (default: https://bedrock-runtime.{region}.amazonaws.com).
 	BaseURL string
@@ -83,13 +92,26 @@ type Config struct {
 // via AWS Bedrock.
 type BedrockAnthropicProvider struct {
 	config Config
-	region string
+	// bearerToken is the trimmed bearer API key (Config.BearerToken, else
+	// AWS_BEARER_TOKEN_BEDROCK), read once when the provider is created like
+	// TS createAmazonBedrockAnthropic (loadOptionalSetting); "" selects SigV4.
+	bearerToken string
 }
 
 // New creates a new Bedrock Anthropic provider.
 func New(config Config) *BedrockAnthropicProvider {
-	region := firstNonEmpty(config.Region, os.Getenv("AWS_REGION"))
-	return &BedrockAnthropicProvider{config: config, region: region}
+	p := &BedrockAnthropicProvider{config: config}
+	if config.BearerTokenFunc == nil {
+		// TS rawApiKey.trim() is a JavaScript trim.
+		p.bearerToken = providerutils.JSTrim(firstNonEmpty(config.BearerToken, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
+	}
+	return p
+}
+
+// awsRegion resolves the region on every use (TS loadSetting reads AWS_REGION
+// lazily), so a region exported after New is still honored.
+func (p *BedrockAnthropicProvider) awsRegion() string {
+	return firstNonEmpty(p.config.Region, os.Getenv("AWS_REGION"))
 }
 
 // CreateAmazonBedrockAnthropic mirrors the TypeScript SDK's
@@ -112,7 +134,7 @@ func (p *BedrockAnthropicProvider) Name() string { return providerName }
 func (p *BedrockAnthropicProvider) runtimeBaseURL() (string, error) {
 	return bedrock.ResolveAmazonBedrockBaseURL(bedrock.ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
-		Region:                               p.region,
+		Region:                               p.awsRegion(),
 		Service:                              "bedrock-runtime",
 		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
 	})
@@ -139,6 +161,7 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 	nativeStructuredOutput := supportsNativeStructuredOutput(modelID)
 	strictTools := supportsStrictTools(modelID)
 	supportsImageInput := true
+	noMessageThreads := false
 
 	inner := anthropicprovider.New(anthropicprovider.Config{
 		Name:                           providerName,
@@ -148,7 +171,9 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 		OmitAPIVersionHeader:           true, // anthropic_version goes in the body, not a header.
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsStrictTools:            &strictTools,
-		SupportsImageInput:             &supportsImageInput,
+		// Not a platform with Anthropic message threads (TS 6b101ac076).
+		SupportsMessageThreads: &noMessageThreads,
+		SupportsImageInput:     &supportsImageInput,
 		// TS amazon-bedrock-anthropic-provider.ts tags requests
 		// "ai-sdk-amazon-bedrock/VERSION" (its own package's tag, shared with
 		// the Converse-API amazon-bedrock provider), not "ai-sdk-anthropic".
@@ -184,21 +209,21 @@ func (p *BedrockAnthropicProvider) ImageModel(modelID string) (provider.ImageMod
 
 // SpeechModel returns a speech model (not supported).
 func (p *BedrockAnthropicProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support speech models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a transcription model (not supported).
 func (p *BedrockAnthropicProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support transcription models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model (not supported).
 func (p *BedrockAnthropicProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 func noSuchModelError(modelID, modelType string) error {
-	return fmt.Errorf("%w: bedrock-anthropic %s %q", providererrors.ErrModelNotFound, modelType, modelID)
+	return providererrors.NewNoSuchModelError(modelID, modelType)
 }
 
 // --- authentication ---------------------------------------------------------
@@ -231,12 +256,46 @@ type bedrockAnthropicTransport struct {
 }
 
 func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response, error) {
+	// Credentials go only to the Bedrock runtime origin: a redirect hop to
+	// another origin is sent unchanged, without a bearer token or a SigV4
+	// signature (fails closed when the endpoint cannot be resolved).
+	if baseURL, err := t.provider.runtimeBaseURL(); err != nil || !providerutils.IsSameOrigin(req.URL.String(), baseURL) {
+		return t.base.RoundTrip(req)
+	}
+	// A RoundTripper must not modify the caller's request.
+	req = req.Clone(req.Context())
 	if strings.Contains(req.URL.Path, "invoke-with-response-stream") {
 		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	}
+	// A hop back to the runtime origin after a foreign hop (A -> B -> A)
+	// gets no bearer token or signature: fetch dropped Authorization on the
+	// foreign hop and never adds it back.
+	if providerutils.IsCrossOriginRedirectHop(req) {
+		return t.base.RoundTrip(req)
+	}
 
-	bearerToken := strings.TrimSpace(firstNonEmpty(t.provider.config.BearerToken, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
-	if bearerToken != "" {
+	if t.provider.config.BearerTokenFunc != nil {
+		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
+			APIKey: t.provider.config.BearerToken, APIKeyFunc: t.provider.config.BearerTokenFunc,
+			ParameterName: "bearerToken", Description: "Amazon Bedrock", RequireNonEmpty: true,
+		})
+		if err != nil {
+			return nil, internalhttp.RejectFetch(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
+		return t.base.RoundTrip(req)
+	}
+	if bearerToken := t.provider.bearerToken; bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+bearerToken)
 		return t.base.RoundTrip(req)
 	}
@@ -246,20 +305,28 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	_ = req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 
-	creds, err := t.provider.resolveCredentials(req.Context())
-	if err != nil {
-		return nil, err
+	// TS loads the region first (createSigV4FetchFunction's credentials
+	// callback), so a missing region is reported before any credential
+	// problem. It matters with an explicit BaseURL, which needs no region.
+	region := t.provider.awsRegion()
+	if region == "" {
+		return nil, internalhttp.RejectFetch(providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION"))
 	}
 
-	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.provider.region)
+	creds, err := t.provider.resolveCredentials(req.Context())
+	if err != nil {
+		return nil, internalhttp.RejectFetch(err)
+	}
+
+	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region)
 	if err := signer.SignRequest(req, body); err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return t.base.RoundTrip(req)
@@ -267,17 +334,21 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 
 // resolveCredentials resolves SigV4 credentials: CredentialProvider first,
 // then explicit Config.Credentials, then environment variables. The ambient
-// AWS_SESSION_TOKEN is only used as a fallback when the caller did not
-// explicitly supply both an access key and a secret key (TS row 6732c16;
-// matches pkg/providers/bedrock.Provider's resolveCredentials).
+// AWS_SESSION_TOKEN is always the fallback when Config does not supply a
+// session token (TS amazon-bedrock-anthropic-provider.ts loadOptionalSetting).
 func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSCredentials, error) {
 	if p.config.CredentialProvider != nil {
 		creds, err := p.config.CredentialProvider(ctx)
 		if err != nil {
-			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields", err)
+			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err) //nolint:staticcheck // message text matches TS
 		}
-		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")
+		// TS signs with the provider's credentials as returned; aws4fetch's
+		// AwsV4Signer then throws its TypeError for a missing key.
+		if creds.AccessKeyID == "" {
+			return AWSCredentials{}, errors.New("accessKeyId is a required option")
+		}
+		if creds.SecretAccessKey == "" {
+			return AWSCredentials{}, errors.New("secretAccessKey is a required option")
 		}
 		return AWSCredentials{AccessKeyID: creds.AccessKeyID, SecretAccessKey: creds.SecretAccessKey, SessionToken: creds.SessionToken}, nil
 	}
@@ -291,20 +362,20 @@ func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSC
 
 	accessKeyID := firstNonEmpty(explicitAccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
 	secretAccessKey := firstNonEmpty(explicitSecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
-	sessionToken := explicitSessionToken
-	if sessionToken == "" && (explicitAccessKeyID == "" || explicitSecretAccessKey == "") {
-		sessionToken = os.Getenv("AWS_SESSION_TOKEN")
-	}
+	// TS (amazon-bedrock-anthropic-provider.ts) always falls back to the
+	// AWS_SESSION_TOKEN environment variable via loadOptionalSetting.
+	sessionToken := firstNonEmpty(explicitSessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 
 	if accessKeyID == "" {
-		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" +
+		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" + //nolint:staticcheck // message text matches TS
 			"1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n" +
-			"2. Provide Credentials in Config\n" +
-			"3. Use a CredentialProvider function\n" +
-			"4. Use API key authentication with BearerToken or AWS_BEARER_TOKEN_BEDROCK")
+			"2. Provide accessKeyId and secretAccessKey in options\n" +
+			"3. Use a credentialProvider function\n" +
+			"4. Use API key authentication with AWS_BEARER_TOKEN_BEDROCK or apiKey option\n" +
+			"Original error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	if secretAccessKey == "" {
-		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided")
+		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
 	}
 
 	return AWSCredentials{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, SessionToken: sessionToken}, nil
@@ -319,32 +390,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// encodeURIComponent mirrors JavaScript's encodeURIComponent, which Go's
-// url.PathEscape does not: encodeURIComponent percent-encodes ':' and '/'
-// (both allowed, unencoded, in a URL path segment per RFC 3986), which
-// matters for Bedrock model IDs/ARNs such as
-// "anthropic.claude-3-sonnet-20240229-v1:0".
-func encodeURIComponent(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if isURIComponentUnreserved(c) {
-			b.WriteByte(c)
-		} else {
-			_, _ = fmt.Fprintf(&b, "%%%02X", c)
-		}
-	}
-	return b.String()
-}
-
-func isURIComponentUnreserved(c byte) bool {
-	switch {
-	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		return true
-	}
-	switch c {
-	case '-', '_', '.', '!', '~', '*', '\'', '(', ')':
-		return true
-	}
-	return false
-}
+// encodeURIComponent is JavaScript encodeURIComponent (the shared helper);
+// unlike url.PathEscape it encodes ':' and '/', which matters for Bedrock
+// model IDs/ARNs such as "anthropic.claude-3-sonnet-20240229-v1:0".
+func encodeURIComponent(s string) string { return providerutils.EncodeURIComponent(s) }

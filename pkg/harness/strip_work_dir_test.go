@@ -235,3 +235,19 @@ func TestStripWorkDir_PassesThroughUnrelatedVariants(t *testing.T) {
 		t.Fatalf("expected the same part instance back")
 	}
 }
+
+// JS `\s` (the TS path-boundary class) includes the no-break space and other
+// Unicode separators that Go's ASCII-only `\s` misses.
+func TestStripWorkDirUnicodeWhitespaceBoundary(t *testing.T) {
+	const wd = "/work/dir"
+	for _, sep := range []string{"\u00a0", "\u3000", "\u2003", "\v", "\ufeff"} {
+		got := stripString("cat"+sep+wd+"/src/a.ts"+sep+wd, wd)
+		want := "cat" + sep + "src/a.ts" + sep + "."
+		if got != want {
+			t.Errorf("sep %q: got %q, want %q", sep, got, want)
+		}
+	}
+	if got := stripString("x"+wd+"/a", wd); got != "x"+wd+"/a" {
+		t.Errorf("non-boundary prefix stripped: %q", got)
+	}
+}

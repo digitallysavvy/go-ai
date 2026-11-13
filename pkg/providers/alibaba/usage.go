@@ -1,9 +1,9 @@
 package alibaba
 
 import (
-	"encoding/json"
-
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // AlibabaUsage mirrors the declared fields of Alibaba's OpenAI-compatible
@@ -45,12 +45,14 @@ type AlibabaCompletionTokensDetails struct {
 func (u *AlibabaUsage) UnmarshalJSON(data []byte) error {
 	type alias AlibabaUsage
 	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
+	// TS z.number(): a fractional count decodes (truncated into the int
+	// fields), while raw keeps the exact number (TS raw: usage).
+	if err := providerutils.UnmarshalChunk(data, &a); err != nil {
 		return err
 	}
 	*u = AlibabaUsage(a)
 	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err == nil {
+	if err := jsonexact.Unmarshal(data, &raw); err == nil {
 		u.raw = raw
 	}
 	return nil
@@ -61,7 +63,7 @@ func (u *AlibabaUsage) UnmarshalJSON(data []byte) error {
 func ConvertAlibabaUsage(usage AlibabaUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 
 	var cacheReadTokens, cacheWriteTokens int64
 	if usage.PromptTokensDetails != nil {

@@ -3,11 +3,15 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -91,6 +95,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 	if raw == nil {
 		return fail(&providererrors.InvalidArgumentError{
 			Field:   "messages",
+			Value:   opts.Messages,
 			Message: "messages parameter must be provided",
 		})
 	}
@@ -168,7 +173,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 				return fail(uiValidationError(toolPart.Input, fmt.Errorf("No tool schema found for tool part %s", toolName), inputField, toolName, toolPart.ToolCallID)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 
-			hasInputSchemaInput := toolPart.Approval != nil && toolPart.Approval.InputSchemaInput != nil
+			hasInputSchemaInput := toolPart.Approval.hasInputSchemaInput()
 			inputToValidate := toolPart.Input
 			if hasInputSchemaInput {
 				inputToValidate = toolPart.Approval.InputSchemaInput
@@ -176,7 +181,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 			convertToDynamic := false
 
 			if toolPart.State != ToolStateInputStreaming &&
-				(toolPart.State != ToolStateOutputError || hasInputSchemaInput || toolPart.Input != nil) {
+				(toolPart.State != ToolStateOutputError || hasInputSchemaInput || toolPart.hasInput()) {
 				inputErr := validateUIToolInput(ctx, tool, toolPart, inputToValidate, hasInputSchemaInput, opts.ExperimentalRefineToolInput[toolName], inputField)
 				if inputErr != nil {
 					// Failed calls and empty terminal inputs must remain
@@ -216,12 +221,26 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 func validateUIToolInput(ctx context.Context, tool *types.Tool, toolPart *ToolUIPart, value interface{}, hasInputSchemaInput bool, refine ToolInputRefiner, field string) error {
 	toolName := GetStaticToolName(toolPart)
 	parsed := value
-	if validator := toolInputValidator(tool); validator != nil {
+	if tool.ValidateInput != nil {
+		// TS safeValidateTypes runs the jsonSchema validate function: the
+		// tool's validator replaces the schema check, and its error shows as
+		// getErrorMessage(cause) ("Error: <message>").
+		validated, err := tool.ValidateInput(value)
+		if err != nil {
+			return providererrors.NewValidationErrorWithContext(value, providerutils.ToolErrorText(err), err, &providererrors.ValidationContext{
+				Field:      field,
+				EntityName: toolName,
+				EntityID:   toolPart.ToolCallID,
+			})
+		}
+		parsed = validated
+	} else if validator := toolInputValidator(tool); validator != nil {
 		// Apply defaults before validating (see the metadata handling in
 		// SafeValidateUIMessages for why): a missing field with a default
 		// must not fail validation, and the defaulted value is what gets
 		// parsed on.
-		defaulted := applyDefaultsForValidator(value, validator)
+		// Audited provider tools strip undeclared keys (TS zod z.object).
+		defaulted := applyDefaultsForValidator(stripUndeclaredProviderToolInput(tool, value), validator)
 		if err := validator.Validate(defaulted); err != nil {
 			return uiValidationError(value, err, field, toolName, toolPart.ToolCallID)
 		}
@@ -298,7 +317,7 @@ func asDynamicToolPart(part *ToolUIPart) *ToolUIPart {
 	dynamic := *part
 	dynamic.ToolName = GetStaticToolName(part)
 	dynamic.Type = "dynamic-tool"
-	return &dynamic
+	return markToolPartAsUnavailable(&dynamic)
 }
 
 // uiMessagesToJSONValue converts the caller-supplied messages into decoded
@@ -315,17 +334,83 @@ func uiMessagesToJSONValue(messages interface{}) (interface{}, error) {
 	case string:
 		data = []byte(v)
 	default:
+		// TS reports a non-finite number in metadata as one issue
+		// (11323f9894). The UIMessage marshalers write such a number as
+		// null (JSON.stringify, ruling 4), so look for it in the Go value
+		// first.
+		if uiValueHasNonFinite(reflect.ValueOf(v), 0) {
+			return nil, providererrors.NewValidationErrorWithContext(nil, uiInvalidJSONValueMessage, nil, &providererrors.ValidationContext{})
+		}
 		encoded, err := json.Marshal(v)
 		if err != nil {
+			// TS reports a non-finite number in metadata as one issue
+			// (11323f9894); a Go value cannot reach JSON with one, so the
+			// whole value fails with that issue.
+			var unsupported *json.UnsupportedValueError
+			if errors.As(err, &unsupported) {
+				return nil, providererrors.NewValidationErrorWithContext(nil, uiInvalidJSONValueMessage, err, &providererrors.ValidationContext{})
+			}
 			return nil, &providererrors.InvalidArgumentError{Field: "messages", Message: err.Error(), Cause: err}
 		}
 		data = encoded
 	}
 	var out interface{}
 	if err := json.Unmarshal(data, &out); err != nil {
+		// A JSON number out of float64 range (1e999) is TS Infinity, an
+		// invalid JSON value.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && strings.HasPrefix(typeErr.Value, "number") {
+			return nil, providererrors.NewValidationErrorWithContext(nil, uiInvalidJSONValueMessage, err, &providererrors.ValidationContext{})
+		}
 		return nil, &providererrors.InvalidArgumentError{Field: "messages", Message: err.Error(), Cause: err}
 	}
 	return out, nil
+}
+
+// uiValueHasNonFinite reports whether a NaN or +-Inf float is reachable the
+// way encoding/json reaches values (exported struct fields not tagged "-",
+// map values, slice and array elements, pointer and interface targets). A
+// field tagged "-" is never encoded, so it holds no JSON value. (An
+// unexported embedded struct's fields fail json.Marshal below instead.)
+func uiValueHasNonFinite(rv reflect.Value, depth int) bool {
+	if depth > 512 || !rv.IsValid() {
+		return false
+	}
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		f := rv.Float()
+		return math.IsNaN(f) || math.IsInf(f, 0)
+	case reflect.Pointer, reflect.Interface:
+		return !rv.IsNil() && uiValueHasNonFinite(rv.Elem(), depth+1)
+	case reflect.Struct:
+		t := rv.Type()
+		for i := 0; i < rv.NumField(); i++ {
+			field := t.Field(i)
+			if field.Tag.Get("json") == "-" {
+				continue
+			}
+			if field.IsExported() && uiValueHasNonFinite(rv.Field(i), depth+1) {
+				return true
+			}
+		}
+	case reflect.Map:
+		iter := rv.MapRange()
+		for iter.Next() {
+			if uiValueHasNonFinite(iter.Value(), depth+1) {
+				return true
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return false
+		}
+		for i := 0; i < rv.Len(); i++ {
+			if uiValueHasNonFinite(rv.Index(i), depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // decodeValidatedUIMessages decodes structurally valid messages and drops
@@ -341,12 +426,31 @@ func decodeValidatedUIMessages(raw interface{}) ([]UIMessage, error) {
 	}
 	for i := range messages {
 		for _, part := range messages[i].Parts {
+			if steering, ok := asSteeringMessageUIPart(part); ok {
+				// TS steering text parts are {type, text, providerMetadata?}
+				// (validate-ui-messages.ts 144-164): zod strips state and
+				// citations.
+				for _, nested := range steering.Parts {
+					if text, ok := nested.(*TextUIPart); ok {
+						text.State = ""
+						text.Citations = nil
+					}
+				}
+				continue
+			}
 			tool, ok := AsToolUIPart(part)
 			if !ok {
 				continue
 			}
-			if tool.State != ToolStateOutputError {
+			// TS declares rawInput on input-streaming (the partial input a
+			// resumed stream continues from) and output-error parts, and
+			// inputEncoding only on input-streaming parts.
+			if tool.State != ToolStateOutputError && tool.State != ToolStateInputStreaming {
 				tool.RawInput = nil
+				tool.rawInputNull = false
+			}
+			if tool.State != ToolStateInputStreaming {
+				tool.InputEncoding = ""
 			}
 			if tool.State != ToolStateOutputAvailable && tool.State != ToolStateOutputError {
 				tool.ResultProviderMetadata = nil
@@ -409,6 +513,13 @@ func uiMessagesStructureIssue(raw interface{}) *uiSchemaIssue {
 			return &uiSchemaIssue{path: path + ".parts", message: "Invalid input: expected array"}
 		}
 		for j, rawPart := range parts {
+			// TS validates a part only against the schema its type (and,
+			// for tool parts, its state) selects (11323f9894): a missing or
+			// unknown type, or an unknown tool state, is the selector's
+			// issue on that key.
+			if key, msg := uiPartSelectorIssue(rawPart); msg != "" {
+				return &uiSchemaIssue{path: fmt.Sprintf("%s.parts[%d].%s", path, j, key), message: msg}
+			}
 			if msg := uiPartIssue(rawPart); msg != "" {
 				return &uiSchemaIssue{path: fmt.Sprintf("%s.parts[%d]", path, j), message: msg}
 			}
@@ -418,6 +529,44 @@ func uiMessagesStructureIssue(raw interface{}) *uiSchemaIssue {
 		}
 	}
 	return nil
+}
+
+// uiInvalidJSONValueMessage is the TS issue for an invalid JSON value in
+// provider or tool metadata (11323f9894).
+const uiInvalidJSONValueMessage = "Invalid JSON value. Expected null, a string, a finite number, a boolean, an array, or an object."
+
+// uiPartTypeMessage and uiToolStateMessage are the TS selector issue texts
+// (validate-ui-messages.ts, 11323f9894).
+const (
+	uiPartTypeMessage  = `Invalid UI message part type. Expected a known part type (for example "text" or "dynamic-tool") or a type starting with "data-" or "tool-".`
+	uiToolStateMessage = `Invalid discriminator value. Expected 'input-streaming' | 'input-available' | 'approval-requested' | 'approval-responded' | 'output-available' | 'output-error' | 'output-denied'`
+)
+
+// uiPartSelectorIssue reports the key and TS issue text when an object part
+// has no known type, or a tool / dynamic-tool part no known state.
+func uiPartSelectorIssue(raw interface{}) (string, string) {
+	part, ok := raw.(map[string]interface{})
+	if !ok {
+		return "", ""
+	}
+	partType, _ := part["type"].(string)
+	switch partType {
+	case "text", "reasoning", "custom", "source-url", "source-document", "file", "reasoning-file", "steering-message", "step-start":
+		return "", ""
+	}
+	if strings.HasPrefix(partType, "data-") {
+		return "", ""
+	}
+	if partType != "dynamic-tool" && !strings.HasPrefix(partType, "tool-") {
+		return "type", uiPartTypeMessage
+	}
+	state, _ := part["state"].(string)
+	switch ToolUIPartState(state) {
+	case ToolStateInputStreaming, ToolStateInputAvailable, ToolStateApprovalRequested, ToolStateApprovalResponded,
+		ToolStateOutputAvailable, ToolStateOutputError, ToolStateOutputDenied:
+		return "", ""
+	}
+	return "state", uiToolStateMessage
 }
 
 // uiPartIssue returns an empty string when the part matches one of the TS
@@ -451,7 +600,7 @@ func uiPartIssue(raw interface{}) string {
 
 	switch {
 	case partType == "text":
-		return checks(str("text"), optState, optPM("providerMetadata"))
+		return checks(str("text"), func() string { return citationsIssue(part) }, optState, optPM("providerMetadata"))
 	case partType == "reasoning":
 		return checks(optStr("id"), str("text"), optState, optPM("providerMetadata"))
 	case partType == "custom":
@@ -461,34 +610,149 @@ func uiPartIssue(raw interface{}) string {
 	case partType == "source-document":
 		return checks(str("sourceId"), str("mediaType"), str("title"), optStr("filename"), optPM("providerMetadata"))
 	case partType == "file":
-		return checks(str("mediaType"), optStr("filename"), str("url"), func() string {
-			v, exists := part["providerReference"]
-			if !exists {
-				return ""
-			}
-			m, ok := v.(map[string]interface{})
-			if !ok {
-				return "Invalid input: expected record for providerReference"
-			}
-			for key, value := range m {
-				if _, ok := value.(string); !ok {
-					return fmt.Sprintf("Invalid input: expected string for providerReference.%s", key)
-				}
-			}
-			return ""
-		}, optPM("providerMetadata"))
+		return checks(str("mediaType"), optStr("filename"), str("url"), func() string { return providerReferenceIssue(part) }, optPM("providerMetadata"))
 	case partType == "reasoning-file":
 		return checks(str("mediaType"), str("url"), optPM("providerMetadata"))
+	case partType == "steering-message":
+		// TS validate-ui-messages.ts 144-164: an id and text / file parts.
+		return checks(str("id"), func() string { return steeringPartsIssue(part) })
 	case partType == "step-start":
 		return ""
 	case strings.HasPrefix(partType, "data-"):
-		return optionalString(part, "id")
+		// TS `data: z.unknown()` is required under zod 4 (owner ruling
+		// 2026-11-02, pending decision 1 option b): a data part without a
+		// `data` key fails with zod 4.4.3's invalid_type issue
+		// ("expected nonoptional, received undefined"); any value, null
+		// included, satisfies it.
+		return checks(optStr("id"), func() string {
+			if _, exists := part["data"]; !exists {
+				return "Invalid input: expected nonoptional, received undefined for data"
+			}
+			return ""
+		})
 	case partType == "dynamic-tool":
-		return checks(str("toolName"), func() string { return uiToolPartIssue(part) })
+		return checks(str("toolName"), func() string {
+			// TS z.literal(false).optional(): a present null is rejected too.
+			if v, ok := part["dynamic"]; ok && v != false {
+				return "Invalid input: dynamic must be false"
+			}
+			return ""
+		}, func() string { return uiToolPartIssue(part) })
 	case strings.HasPrefix(partType, "tool-"):
 		return uiToolPartIssue(part)
 	}
 	return fmt.Sprintf("Invalid input: unsupported part type %q", partType)
+}
+
+// steeringPartsIssue checks a steering-message part's parts: each a text part
+// (text, optional provider metadata) or a file part (mediaType, optional
+// filename, url, optional provider reference and metadata).
+func steeringPartsIssue(part map[string]interface{}) string {
+	parts, ok := part["parts"].([]interface{})
+	if !ok {
+		return "Invalid input: expected array for parts"
+	}
+	for i, raw := range parts {
+		nested, ok := raw.(map[string]interface{})
+		if !ok {
+			return fmt.Sprintf("Invalid input: expected object for parts[%d]", i)
+		}
+		var issue string
+		switch nested["type"] {
+		case "text":
+			issue = firstIssue(requireString(nested, "text"), optionalProviderMetadata(nested, "providerMetadata"))
+		case "file":
+			issue = firstIssue(requireString(nested, "mediaType"), optionalString(nested, "filename"), requireString(nested, "url"),
+				providerReferenceIssue(nested), optionalProviderMetadata(nested, "providerMetadata"))
+		default:
+			issue = "Invalid input: expected a text or file part"
+		}
+		if issue != "" {
+			return fmt.Sprintf("parts[%d]: %s", i, issue)
+		}
+	}
+	return ""
+}
+
+// providerReferenceIssue checks an optional record<string, string>
+// providerReference.
+func providerReferenceIssue(part map[string]interface{}) string {
+	v, exists := part["providerReference"]
+	if !exists {
+		return ""
+	}
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return "Invalid input: expected record for providerReference"
+	}
+	for key, value := range m {
+		if _, ok := value.(string); !ok {
+			return fmt.Sprintf("Invalid input: expected string for providerReference.%s", key)
+		}
+	}
+	return ""
+}
+
+// citationsIssue checks a text part's optional citations against the TS
+// citationSchema: a url or document source and optional non-negative integer
+// offsets and cited text.
+func citationsIssue(part map[string]interface{}) string {
+	raw, exists := part["citations"]
+	if !exists {
+		return ""
+	}
+	citations, ok := raw.([]interface{})
+	if !ok {
+		return "Invalid input: expected array for citations"
+	}
+	for i, rawCitation := range citations {
+		prefix := fmt.Sprintf("citations[%d].", i)
+		citation, ok := rawCitation.(map[string]interface{})
+		if !ok {
+			return fmt.Sprintf("Invalid input: expected object for citations[%d]", i)
+		}
+		source, ok := citation["source"].(map[string]interface{})
+		if !ok {
+			return "Invalid input: expected object for " + prefix + "source"
+		}
+		if source["type"] != "source" {
+			return `Invalid input: expected "source" for ` + prefix + "source.type"
+		}
+		var msg string
+		switch source["sourceType"] {
+		case "url":
+			msg = firstIssue(requireString(source, "id"), requireString(source, "url"), optionalString(source, "title"),
+				optionalProviderMetadata(source, "providerMetadata"))
+		case "document":
+			msg = firstIssue(requireString(source, "id"), requireString(source, "mediaType"), requireString(source, "title"),
+				optionalString(source, "filename"), optionalProviderMetadata(source, "providerMetadata"))
+		default:
+			return `Invalid option: expected one of "url"|"document" for ` + prefix + "source.sourceType"
+		}
+		if msg != "" {
+			return strings.Replace(msg, " for ", " for "+prefix+"source.", 1)
+		}
+		for _, key := range []string{"startIndex", "endIndex"} {
+			if v, exists := citation[key]; exists {
+				if n, ok := v.(float64); !ok || n != float64(int64(n)) || n < 0 {
+					return "Invalid input: expected non-negative integer for " + prefix + key
+				}
+			}
+		}
+		if msg := optionalString(citation, "citedText"); msg != "" {
+			return strings.Replace(msg, " for ", " for "+prefix, 1)
+		}
+	}
+	return ""
+}
+
+func firstIssue(issues ...string) string {
+	for _, issue := range issues {
+		if issue != "" {
+			return issue
+		}
+	}
+	return ""
 }
 
 func uiToolPartIssue(part map[string]interface{}) string {
@@ -529,6 +793,13 @@ func uiToolPartIssue(part map[string]interface{}) string {
 	}
 	switch ToolUIPartState(state) {
 	case ToolStateInputStreaming:
+		if v, exists := part["inputEncoding"]; exists && v != "json" && v != "text" {
+			return "Invalid input: inputEncoding must be json or text"
+		}
+		// TS: rawInput: z.string().optional() in this state only.
+		if msg := optionalString(part, "rawInput"); msg != "" {
+			return msg
+		}
 		return never("output", "errorText", "approval")
 	case ToolStateInputAvailable:
 		if msg := required("input"); msg != "" {
@@ -690,4 +961,18 @@ func optionalProviderMetadata(obj map[string]interface{}, key string) string {
 		}
 	}
 	return ""
+}
+
+// markToolPartAsUnavailable records that a dynamic-tool part was normalized
+// from a static tool part, so model-message conversion never falls back to
+// the tool's unfiltered raw output. Mirrors TS markToolPartAsUnavailable.
+func markToolPartAsUnavailable(part *ToolUIPart) *ToolUIPart {
+	f := false
+	part.Dynamic = &f
+	return part
+}
+
+// isToolPartFromUnavailableTool mirrors TS isToolPartFromUnavailableTool.
+func isToolPartFromUnavailableTool(part *ToolUIPart) bool {
+	return part.Type == "dynamic-tool" && part.Dynamic != nil && !*part.Dynamic
 }

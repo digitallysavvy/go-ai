@@ -104,7 +104,9 @@ func TestEmbeddingModel_DoEmbed_ErrorPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("empty embedding response", func(t *testing.T) {
+	t.Run("empty embedding values are returned as is", func(t *testing.T) {
+		// TS returns `embeddings: [response.embedding.values]`; embed()
+		// rejects only a missing embedding, not an empty vector.
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"embedding":{"values":[]}}`))
 		}))
@@ -112,9 +114,9 @@ func TestEmbeddingModel_DoEmbed_ErrorPaths(t *testing.T) {
 
 		p := New(Config{APIKey: "test-key", BaseURL: server.URL})
 		m := NewEmbeddingModel(p, EmbeddingModelGeminiEmbedding001)
-		_, err := m.DoEmbed(context.Background(), "x", nil)
-		if err == nil || !strings.Contains(err.Error(), "no embedding data in response") {
-			t.Fatalf("expected no embedding data error, got %v", err)
+		res, err := m.DoEmbed(context.Background(), "x", nil)
+		if err != nil || res.Embedding == nil || len(res.Embedding) != 0 {
+			t.Fatalf("got %+v, %v; want an empty non-nil embedding", res, err)
 		}
 	})
 }
@@ -122,8 +124,16 @@ func TestEmbeddingModel_DoEmbed_ErrorPaths(t *testing.T) {
 func TestEmbeddingModel_DoEmbedMany(t *testing.T) {
 	t.Parallel()
 
-	t.Run("empty inputs", func(t *testing.T) {
-		p := New(Config{APIKey: "test-key"})
+	t.Run("empty inputs sends an empty batch like TS", func(t *testing.T) {
+		var gotPath string
+		var gotBody map[string]interface{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_, _ = w.Write([]byte(`{"embeddings":[]}`))
+		}))
+		defer server.Close()
+		p := New(Config{APIKey: "test-key", BaseURL: server.URL})
 		m := NewEmbeddingModel(p, EmbeddingModelGeminiEmbedding001)
 		res, err := m.DoEmbedMany(context.Background(), nil, nil)
 		if err != nil {
@@ -131,6 +141,13 @@ func TestEmbeddingModel_DoEmbedMany(t *testing.T) {
 		}
 		if len(res.Embeddings) != 0 {
 			t.Fatalf("expected empty embeddings, got %d", len(res.Embeddings))
+		}
+		if !strings.HasSuffix(gotPath, ":batchEmbedContents") {
+			t.Fatalf("path = %q, want batchEmbedContents", gotPath)
+		}
+		reqs, ok := gotBody["requests"].([]interface{})
+		if !ok || len(reqs) != 0 {
+			t.Fatalf("requests = %#v, want empty array", gotBody["requests"])
 		}
 	})
 
@@ -186,7 +203,7 @@ func TestEmbeddingModel_DoEmbedMany(t *testing.T) {
 		}
 	})
 
-	t.Run("too many values returns provider error", func(t *testing.T) {
+	t.Run("too many values returns TooManyEmbeddingValuesForCallError", func(t *testing.T) {
 		p := New(Config{APIKey: "test-key"})
 		m := NewEmbeddingModel(p, EmbeddingModelGeminiEmbedding001)
 		inputs := make([]string, m.MaxEmbeddingsPerCall()+1)
@@ -194,12 +211,12 @@ func TestEmbeddingModel_DoEmbedMany(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error")
 		}
-		var pe *providererrors.ProviderError
-		if !errors.As(err, &pe) {
-			t.Fatalf("expected ProviderError, got %T", err)
+		var tm *providererrors.TooManyEmbeddingValuesForCallError
+		if !errors.As(err, &tm) {
+			t.Fatalf("expected TooManyEmbeddingValuesForCallError, got %T", err)
 		}
-		if pe.ErrorCode != "too_many_embedding_values_for_call" {
-			t.Fatalf("error code = %q", pe.ErrorCode)
+		if tm.MaxEmbeddingsPerCall != 100 || tm.ModelID != EmbeddingModelGeminiEmbedding001 {
+			t.Fatalf("error fields = %+v", tm)
 		}
 	})
 }

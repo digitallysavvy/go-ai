@@ -8,7 +8,9 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("together", deserializeModel)
+	provider.RegisterModelDeserializer("togetherai.chat", deserializeModel)
 	provider.RegisterImageModelDeserializer("together", deserializeImageModel)
+	provider.RegisterImageModelDeserializer("togetherai.image", deserializeImageModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

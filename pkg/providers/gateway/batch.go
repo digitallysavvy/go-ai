@@ -2,17 +2,22 @@ package gateway
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Batch implements provider.BatchV4 for the AI Gateway's async batch routes
@@ -56,15 +61,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		return nil, err
 	}
 
-	idempotencyKey, forwardedProviderOptions := extractGatewayBatchIdempotencyKey(opts.ProviderOptions)
+	// Typed-option ruling: a Go-typed gateway entry is read in its JSON form.
+	idempotencyKey, forwardedProviderOptions := extractGatewayBatchIdempotencyKey(providerutils.NormalizeOptionsJSON(opts.ProviderOptions))
 
-	headers := map[string]string{"ai-model-id": modelID}
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
+	// TS combineHeaders(config, options.headers, {ai-model-id}, o11y, idempotency-key)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, map[string]string{"ai-model-id": modelID})
 	if idempotencyKey != "" {
 		headers["idempotency-key"] = idempotencyKey
-	}
-	for k, v := range opts.Headers {
-		headers[k] = v
 	}
 
 	wireRequests := make([]map[string]interface{}, 0, len(opts.Requests))
@@ -80,16 +83,20 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	if opts.WebhookURL != "" {
 		body["callbackUrl"] = opts.WebhookURL
 	}
-	if len(forwardedProviderOptions) > 0 {
+	// TS `...(forwardedProviderOptions != null && {providerOptions})`: a
+	// caller's empty map is forwarded as `{}`; only an omitted map, or one
+	// that held nothing but gateway.idempotencyKey, is left out.
+	if forwardedProviderOptions != nil {
 		body["providerOptions"] = forwardedProviderOptions
 	}
 
 	var response gatewayBatchStartResponse
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/batch/start",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayBatchStart),
+		Method:           http.MethodPost,
+		Path:             "/batch/start",
+		Body:             body,
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(ctx, err)
 	}
@@ -109,18 +116,15 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 // DoGetBatchStatus retrieves the lifecycle status of a Gateway batch job
 // (`POST {baseURL}/batch/status`).
 func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4Status, error) {
-	headers := map[string]string{}
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, nil)
 
 	var response gatewayBatchStatusFields
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/batch/status",
-		Body:    map[string]interface{}{"batchId": opts.BatchID},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayBatchState),
+		Method:           http.MethodPost,
+		Path:             "/batch/status",
+		Body:             map[string]interface{}{"batchId": opts.BatchID},
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(ctx, err)
 	}
@@ -132,18 +136,15 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 // DoCancelBatch requests cancellation of a Gateway batch job (`POST
 // {baseURL}/batch/cancel`). Status and partial results remain separate reads.
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
-	headers := map[string]string{}
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, nil)
 
 	var response gatewayBatchStatusFields
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/batch/cancel",
-		Body:    map[string]interface{}{"batchId": opts.BatchID},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayBatchState),
+		Method:           http.MethodPost,
+		Path:             "/batch/cancel",
+		Body:             map[string]interface{}{"batchId": opts.BatchID},
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(ctx, err)
 	}
@@ -156,10 +157,11 @@ func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4Operatio
 // result JSON object per line). The route responds with an error while the
 // batch is non-terminal.
 func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4OperationOptions) (provider.BatchV4ItemResultStream, error) {
-	headers := map[string]string{}
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
+	headers := gatewayRequestHeaders(ctx, opts.Headers, nil)
+
+	maxLineBytes, err := b.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
+		return nil, err
 	}
 
 	httpResp, err := b.provider.client.DoStream(ctx, internalhttp.Request{
@@ -172,10 +174,16 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, b.handleError(ctx, err)
 	}
 
-	return newGatewayBatchResultsStream(httpResp.Body), nil
+	return newGatewayBatchResultsStream(httpResp.Body, b.provider.baseURL+"/batch/results", maxLineBytes), nil
 }
 
 func (b *Batch) handleError(ctx context.Context, err error) error {
+	// TS isAbortOrTimeoutError: an aborted or timed-out batch call keeps its
+	// own error (a start may still have been accepted server-side) instead of
+	// becoming a retryable Gateway 500 / client-timeout error.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	lm := &LanguageModel{provider: b.provider}
 	return lm.handleErrorWithContext(ctx, err)
 }
@@ -208,29 +216,23 @@ func (b *Batch) gatewayBatchWireRequest(req provider.BatchV4Request) (map[string
 // and every request in the batch must use the same model.
 func validateGatewayTextBatchRequests(requests []provider.BatchV4Request) (string, error) {
 	if len(requests) == 0 {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "requests",
-			Message: "The AI Gateway Batch API requires at least one request.",
-		}
+		return "", providererrors.NewArgumentError("requests", "The AI Gateway Batch API requires at least one request.", nil)
 	}
 
-	var modelID string
+	// TS asserts every request is text before validating the shared model.
 	for _, req := range requests {
 		if req.Type != provider.BatchRequestTypeText || req.Text == nil {
 			return "", unsupportedGatewayBatchRequestType(req.Type)
 		}
-		if modelID == "" {
-			modelID = req.Text.ModelID
-			continue
-		}
+	}
+
+	modelID := requests[0].Text.ModelID
+	for _, req := range requests {
 		if req.Text.ModelID != modelID {
-			return "", &providererrors.InvalidArgumentError{
-				Field: "requests",
-				Message: fmt.Sprintf(
-					"The AI Gateway Batch API requires all requests in a batch to use the same model. Found %q and %q.",
-					modelID, req.Text.ModelID,
-				),
-			}
+			return "", providererrors.NewArgumentError("requests", fmt.Sprintf(
+				"The AI Gateway Batch API requires all requests in a batch to use the same model. Found \"%s\" and \"%s\".",
+				modelID, req.Text.ModelID,
+			), nil)
 		}
 	}
 	return modelID, nil
@@ -239,7 +241,7 @@ func validateGatewayTextBatchRequests(requests []provider.BatchV4Request) (strin
 func unsupportedGatewayBatchRequestType(requestType provider.BatchRequestType) error {
 	return &providererrors.UnsupportedFunctionalityError{
 		Functionality: fmt.Sprintf("batch request type: %s", requestType),
-		Message:       fmt.Sprintf("The AI Gateway Batch API does not support batch requests with type %q.", requestType),
+		Message:       fmt.Sprintf("The AI Gateway Batch API does not support batch requests with type \"%s\".", requestType),
 	}
 }
 
@@ -249,8 +251,8 @@ func unsupportedGatewayBatchRequestType(requestType provider.BatchRequestType) e
 // starts — and stripped from the forwarded body so equivalent retries don't
 // produce different request digests.
 func extractGatewayBatchIdempotencyKey(providerOptions map[string]interface{}) (string, map[string]interface{}) {
-	if len(providerOptions) == 0 {
-		return "", providerOptions
+	if providerOptions == nil {
+		return "", nil
 	}
 	gatewayRaw, ok := providerOptions["gateway"]
 	if !ok {
@@ -282,17 +284,37 @@ func extractGatewayBatchIdempotencyKey(providerOptions map[string]interface{}) (
 	} else {
 		restProviderOptions["gateway"] = restGateway
 	}
+	// TS omitGatewayIdempotencyKey returns undefined when stripping the key
+	// leaves no provider options at all.
+	if len(restProviderOptions) == 0 {
+		return key, nil
+	}
 	return key, restProviderOptions
 }
 
 // --- Wire types -------------------------------------------------------
 
 type gatewayBatchRequestCountsWire struct {
-	Total     *int `json:"total"`
-	Pending   *int `json:"pending"`
-	Completed *int `json:"completed"`
-	Failed    *int `json:"failed"`
+	Total     *float64 `json:"total"`
+	Pending   *float64 `json:"pending"`
+	Completed *float64 `json:"completed"`
+	Failed    *float64 `json:"failed"`
 }
+
+// gatewayBatchCount keeps a wire count only when it is a safe integer, the
+// values TS normalizeBatchRequestCounts accepts (Number.isSafeInteger).
+func gatewayBatchCount(v *float64) *int {
+	if v == nil || *v != math.Trunc(*v) || math.Abs(*v) > maxSafeInteger {
+		return nil
+	}
+	n := int(*v)
+	if float64(n) != *v {
+		return nil
+	}
+	return &n
+}
+
+const maxSafeInteger = 1<<53 - 1
 
 type gatewayBatchErrorWire struct {
 	Message    string  `json:"message"`
@@ -333,21 +355,13 @@ func (f gatewayBatchStatusFields) toStatus() provider.BatchV4Status {
 	if f.RawStatus != nil {
 		status.RawStatus = *f.RawStatus
 	}
-	if f.RequestCounts != nil {
-		rc := &provider.BatchRequestCounts{}
-		if f.RequestCounts.Total != nil {
-			rc.Total = *f.RequestCounts.Total
-		}
-		if f.RequestCounts.Pending != nil {
-			rc.Pending = *f.RequestCounts.Pending
-		}
-		if f.RequestCounts.Completed != nil {
-			rc.Completed = *f.RequestCounts.Completed
-		}
-		if f.RequestCounts.Failed != nil {
-			rc.Failed = *f.RequestCounts.Failed
-		}
-		status.RequestCounts = rc
+	// TS normalizeBatchRequestCounts: requestCounts is reported only when
+	// all four counters are non-negative safe integers and
+	// pending+completed+failed == total.
+	if rc := f.RequestCounts; rc != nil {
+		status.RequestCounts = providerutils.NormalizeBatchRequestCounts(
+			gatewayBatchCount(rc.Total), gatewayBatchCount(rc.Pending),
+			gatewayBatchCount(rc.Completed), gatewayBatchCount(rc.Failed))
 	}
 	status.Error = f.Error.toBatchError()
 	if f.CreatedAt != nil {
@@ -360,8 +374,10 @@ func (f gatewayBatchStatusFields) toStatus() provider.BatchV4Status {
 	return status
 }
 
+// copyGatewayProviderMetadata is TS `providerMetadata != null`: an empty
+// object is reported, an absent or null one is not.
 func copyGatewayProviderMetadata(in map[string]map[string]interface{}) map[string]interface{} {
-	if len(in) == 0 {
+	if in == nil {
 		return nil
 	}
 	out := make(map[string]interface{}, len(in))
@@ -382,21 +398,22 @@ type gatewayBatchStartResponse struct {
 	Warnings []gatewayBatchWarningWire `json:"warnings"`
 }
 
-// gatewayBatchItemResultBody decodes a succeeded text batch item's `result`
-// field. Its shape matches the non-streaming `/language-model` response
-// decoded by LanguageModel.DoGenerate: warnings are decoded separately as raw
-// JSON so an absent field defaults to empty and a malformed one does not fail
-// the whole line.
-type gatewayBatchItemResultBody struct {
-	types.GenerateResult
-	Warnings json.RawMessage `json:"warnings,omitempty"`
+// gatewayBatchItemResultResponse is a succeeded item's `result.response`
+// ({id, modelId, timestamp, headers, body}). TS passes it through and
+// revives the ISO `timestamp` string into a Date.
+type gatewayBatchItemResultResponse struct {
+	ID        *string           `json:"id"`
+	ModelID   *string           `json:"modelId"`
+	Timestamp interface{}       `json:"timestamp"`
+	Headers   map[string]string `json:"headers"`
+	Body      interface{}       `json:"body"`
 }
 
 type gatewayBatchItemResultLine struct {
 	Type             string                            `json:"type"`
 	ID               string                            `json:"id"`
 	Status           string                            `json:"status"`
-	Result           *gatewayBatchItemResultBody       `json:"result,omitempty"`
+	Result           json.RawMessage                   `json:"result,omitempty"`
 	Error            *gatewayBatchErrorWire            `json:"error,omitempty"`
 	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata,omitempty"`
 }
@@ -409,46 +426,96 @@ func (w gatewayBatchItemResultLine) toItemResult() *provider.BatchV4ItemResult {
 		Error:            w.Error.toBatchError(),
 		ProviderMetadata: copyGatewayProviderMetadata(w.ProviderMetadata),
 	}
-	if item.Status == provider.BatchItemSucceeded && w.Result != nil {
-		result := w.Result.GenerateResult
-		result.Warnings = parseGatewayWarnings(w.Result.Warnings)
-		item.TextResult = &result
+	if item.Status == provider.BatchItemSucceeded && len(w.Result) > 0 && string(w.Result) != "null" {
+		item.TextResult = decodeGatewayBatchItemResult(w.Result)
 	}
 	return item
 }
 
+// decodeGatewayBatchItemResult decodes a succeeded item's `result`, a
+// LanguageModelV4GenerateResult in the same V4 shape the non-streaming
+// `/language-model` route returns (TS gateway-batch.ts
+// convertGatewayBatchResultLines passes it through). Unlike doGenerate, the
+// batch result keeps its `response` ({id, modelId, timestamp}).
+func decodeGatewayBatchItemResult(raw json.RawMessage) *types.GenerateResult {
+	result, err := decodeV4GenerateResult(raw)
+	if err != nil || result == nil {
+		// The line schema already accepted the JSON; a non-object result is
+		// passed through by TS untouched, so report an empty result.
+		return &types.GenerateResult{Warnings: []types.Warning{}}
+	}
+	var wire struct {
+		Response *gatewayBatchItemResultResponse `json:"response"`
+	}
+	if jsonexact.Unmarshal(raw, &wire) == nil && wire.Response != nil {
+		meta := &types.ResponseMetadata{Headers: wire.Response.Headers, Body: wire.Response.Body}
+		if wire.Response.ID != nil {
+			meta.ID = *wire.Response.ID
+		}
+		if wire.Response.ModelID != nil {
+			meta.ModelID = *wire.Response.ModelID
+		}
+		// TS: `typeof response.timestamp === 'string'` → new Date(timestamp).
+		if ts, ok := wire.Response.Timestamp.(string); ok {
+			if ms, ok := jsdate.Parse(ts); ok {
+				meta.Timestamp = time.UnixMilli(ms)
+			}
+		}
+		result.ResponseMetadata = meta
+		result.ResponseHeaders = meta.Headers
+	}
+	return result
+}
+
+var gatewayBatchItemSchema = providerutils.MediaSchemaParser(providerutils.SchemaGatewayBatchItem)
+
 // gatewayBatchResultsStream implements provider.BatchV4ItemResultStream over
 // the NDJSON body returned by `/batch/results`.
 type gatewayBatchResultsStream struct {
-	scanner *bufio.Scanner
-	body    io.ReadCloser
-	err     error
+	scanner      *bufio.Scanner
+	body         io.ReadCloser
+	url          string
+	maxLineBytes int
+	err          error
 }
 
-func newGatewayBatchResultsStream(body io.ReadCloser) *gatewayBatchResultsStream {
-	scanner := bufio.NewScanner(body)
-	// Allow individual result lines (a full LanguageModelV4GenerateResult) to
-	// exceed bufio.Scanner's 64KiB default.
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	return &gatewayBatchResultsStream{scanner: scanner, body: body}
+func newGatewayBatchResultsStream(body io.ReadCloser, url string, maxLineBytes int) *gatewayBatchResultsStream {
+	// Individual result lines (a full LanguageModelV4GenerateResult) may
+	// exceed bufio.Scanner's 64KiB default; rows are bounded by maxLineBytes.
+	scanner := providerutils.NewJSONLinesScanner(body, maxLineBytes)
+	return &gatewayBatchResultsStream{scanner: scanner, body: body, url: url, maxLineBytes: maxLineBytes}
 }
 
 func (s *gatewayBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 	for {
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, s.url, s.maxLineBytes)
 				s.err = err
+				_ = s.body.Close()
 				return nil, err
 			}
 			return nil, io.EOF
 		}
-		line := bytes.TrimSpace(s.scanner.Bytes())
-		if len(line) == 0 {
+		// TS parseJsonLines skips a line only when line.trim() is empty and
+		// parses the line as read, so JS whitespace around a JSON value
+		// (U+00A0, U+0085 alone, ...) is a JSONParseError.
+		line := s.scanner.Bytes()
+		if providerutils.JSONLineIsBlank(line) {
 			continue
 		}
-		var wire gatewayBatchItemResultLine
-		if err := json.Unmarshal(line, &wire); err != nil {
+		// TS createJsonLinesResponseHandler(gatewayBatchItemResultLineSchema):
+		// a line that is not JSON (JSONParseError) or lacks a text type, a
+		// string id or a known status (TypeValidationError) fails the stream.
+		if err := gatewayBatchItemSchema(0, nil, line); err != nil {
 			s.err = err
+			_ = s.body.Close()
+			return nil, err
+		}
+		var wire gatewayBatchItemResultLine
+		if err := jsonexact.Unmarshal(line, &wire); err != nil {
+			s.err = err
+			_ = s.body.Close()
 			return nil, err
 		}
 		return wire.toItemResult(), nil

@@ -7,9 +7,12 @@ import (
 	"io"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -49,7 +52,7 @@ func newHFStream(reader io.ReadCloser, warnings []types.Warning, providerName st
 		parser:       streaming.NewSSEParser(reader),
 		warnings:     warnings,
 		providerName: providerName,
-		finishReason: types.FinishReasonOther,
+		finishReason: types.FinishReasonInterrupted,
 	}
 }
 
@@ -98,12 +101,16 @@ func (s *hfStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
-			s.finished = true
-			return s.buildFinishChunk(), nil
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// the finish part comes at the end of the body (the io.EOF branch
+			// above).
+			continue
 		}
 
 		chunk, err := s.handleEvent(event.Data)
 		if err != nil {
+			s.finished = true
+			s.err = err
 			return nil, err
 		}
 		if chunk != nil {
@@ -120,14 +127,29 @@ func (s *hfStream) Next() (*provider.StreamChunk, error) {
 // chunks beyond the first are queued on s.pending.
 func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(data), &raw); err != nil {
 		// Mirrors TS's `if (!chunk.success) { ... enqueue({type:'error', error: chunk.error}); return; }`
+		s.finishReason = types.FinishReasonError
+		s.rawFinishReason = ""
+		msg, perr := providerutils.ChunkParseFailure(data, err)
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: msg,
+			Err:  perr,
+		}, nil
+	}
+
+	// TS huggingfaceResponsesChunkSchema ends in `z.object({type: z.string()})
+	// .loose()`: every frame must be an object with a string `type`, anything
+	// else fails the parse and becomes an error part.
+	if _, ok := raw["type"].(string); !ok {
+		msg, perr := providerutils.CheckTypedFrame(data)
 		s.finishReason = types.FinishReasonError
 		s.rawFinishReason = ""
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
-			Text: err.Error(),
-			Err:  providererrors.NewStreamProviderError(err.Error(), s.providerName, "", nil, nil, nil, nil),
+			Text: msg,
+			Err:  perr,
 		}, nil
 	}
 
@@ -145,9 +167,27 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 		}, nil
 	}
 
+	// A frame with a string type always passes TS's chunk schema (its last
+	// member is the loose {type} fallback), and transform then reads the
+	// members as sent: keep what decodes (a fractional count truncated into
+	// the int fields) instead of skipping the frame.
 	var event hfStreamEvent
-	if err := json.Unmarshal([]byte(data), &event); err != nil {
-		return nil, nil //nolint:nilerr // malformed known-shape event: skip, matching TS's silent fallthrough
+	// A member that is not an object decodes as an empty struct: TS reads
+	// undefined from each of its fields (no TypeError).
+	_ = providerutils.UnmarshalChunk([]byte(data), &event)
+
+	// TS reads value.response.* / value.item.* of a frame that matched the
+	// loose {type} fallback member: a missing or null member is a TypeError
+	// that errors the stream.
+	switch event.Type {
+	case "response.created", "response.completed":
+		if err := hfMemberTypeError(raw, "response", "id"); err != nil {
+			return nil, err
+		}
+	case "response.output_item.added", "response.output_item.done":
+		if err := hfMemberTypeError(raw, "item", "type"); err != nil {
+			return nil, err
+		}
 	}
 
 	switch event.Type {
@@ -158,7 +198,7 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 				Type: provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: &provider.ResponseMetadata{
 					ID:        event.Response.ID,
-					Timestamp: time.Unix(event.Response.CreatedAt, 0).UTC(),
+					Timestamp: hfStreamCreatedTimestamp(event.Response.CreatedAt),
 					ModelID:   event.Response.Model,
 					Headers:   s.responseHeaders,
 				},
@@ -204,7 +244,7 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 			}
 		case "function_call":
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(event.Item.Arguments), &args) //nolint:errcheck
+			_ = jsonexact.Unmarshal([]byte(event.Item.Arguments), &args) //nolint:errcheck
 
 			extra := []*provider.StreamChunk{
 				{
@@ -239,8 +279,8 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 		if event.Response != nil {
 			s.responseID = event.Response.ID
 			reason := "stop"
-			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason != "" {
-				reason = event.Response.IncompleteDetails.Reason
+			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason != nil {
+				reason = *event.Response.IncompleteDetails.Reason
 				s.rawFinishReason = reason
 			} else {
 				s.rawFinishReason = ""
@@ -266,6 +306,20 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 	}
 }
 
+// hfMemberTypeError is the TypeError TS raises reading property prop of a
+// missing (undefined) or null frame member key; nil when the member is set.
+func hfMemberTypeError(raw map[string]interface{}, key, prop string) error {
+	v, ok := raw[key]
+	if ok && v != nil {
+		return nil
+	}
+	what := "undefined"
+	if ok {
+		what = "null"
+	}
+	return fmt.Errorf("Cannot read properties of %s (reading '%s')", what, prop) //nolint:staticcheck // ST1005: TypeError text from TS
+}
+
 // buildFinishChunk mirrors TS's flush(): always exactly one terminal
 // "finish" chunk carrying the finishReason/usage/providerMetadata state
 // accumulated across every event seen so far.
@@ -274,7 +328,7 @@ func (s *hfStream) buildFinishChunk() *provider.StreamChunk {
 	if s.responseID != "" {
 		responseID = s.responseID
 	}
-	meta, _ := json.Marshal(map[string]interface{}{
+	meta, _ := jsonstr.Marshal(map[string]interface{}{
 		hfProviderOptionsKey: map[string]interface{}{"responseId": responseID},
 	})
 	usage := convertHuggingFaceResponsesUsage(s.usage)
@@ -319,7 +373,7 @@ func createHFStreamError(raw map[string]interface{}, providerName string) *provi
 		return nil
 	}
 	message, ok := details["message"].(string)
-	if !ok || message == "" {
+	if !ok { // TS typeof details.message !== 'string'; an empty message is still an error
 		return nil
 	}
 
@@ -332,4 +386,23 @@ func createHFStreamError(raw map[string]interface{}, providerName string) *provi
 	}
 
 	return providererrors.NewStreamProviderError(message, providerName, outerType, code, nil, nil, raw)
+}
+
+// hfStreamCreatedTimestamp is TS new Date(value.response.created_at * 1000)
+// for a response.created chunk. The chunk union ends in a loose fallback, so
+// the value is not validated: a number is the timestamp, null is the epoch
+// (null * 1000 is 0), and an absent or non-numeric one is an Invalid Date
+// (no timestamp).
+func hfStreamCreatedTimestamp(raw json.RawMessage) time.Time {
+	if len(raw) == 0 {
+		return time.Time{}
+	}
+	var v *float64
+	if json.Unmarshal(raw, &v) != nil {
+		return time.Time{}
+	}
+	if v == nil {
+		return time.UnixMilli(0).UTC()
+	}
+	return hfCreatedTimestamp(*v)
 }

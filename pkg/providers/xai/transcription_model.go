@@ -3,19 +3,20 @@ package xai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
-	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -33,6 +34,10 @@ func (m *TranscriptionModel) Provider() string             { return "xai.transcr
 func (m *TranscriptionModel) ModelID() string              { return m.modelID }
 
 type XAITranscriptionProviderOptions struct {
+	// AudioFormat is the input audio encoding for raw, headerless audio:
+	// "pcm", "mulaw", or "alaw". Container formats such as Ogg/Opus are
+	// auto-detected, so do not set this for them. "opus" is for streaming
+	// only, with one raw Opus packet per chunk.
 	AudioFormat  *string     `json:"audioFormat,omitempty"`
 	SampleRate   *int        `json:"sampleRate,omitempty"`
 	Language     *string     `json:"language,omitempty"`
@@ -42,6 +47,11 @@ type XAITranscriptionProviderOptions struct {
 	Diarize      *bool       `json:"diarize,omitempty"`
 	Keyterm      interface{} `json:"keyterm,omitempty"`
 	FillerWords  *bool       `json:"fillerWords,omitempty"`
+
+	// VadThreshold is the voice activity detection threshold between 0 and
+	// 1. xAI defaults to 0.5 for batch transcription and 0.08 for streaming;
+	// 0 disables the filter.
+	VadThreshold *float64 `json:"vadThreshold,omitempty"`
 
 	// Streaming holds options specific to streaming speech-to-text over
 	// WebSocket (DoStream). Ignored by DoTranscribe.
@@ -74,14 +84,25 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	})
 	if err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		return nil, err // TS handleFetchError: abort as is, else "Cannot connect to API"
 	}
-	if resp.StatusCode >= 400 {
-		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, newXAIProviderErrorFrom(m.Provider(), resp.StatusError(resp.Body))
+	}
+
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaXAITranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	var parsed xaiTranscriptionResponse
-	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode xAI transcription response: %w", err)
 	}
 
@@ -94,17 +115,67 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		})
 	}
 
+	// Preserve diarized words (those carrying a speaker) in provider
+	// metadata (TS #22048).
+	var providerMetadata map[string]interface{}
+	for _, word := range parsed.Words {
+		if word.Speaker == nil {
+			continue
+		}
+		// TS reports the zod-parsed words: a present `speaker: null` stays.
+		var rawWords struct {
+			Words []map[string]json.RawMessage `json:"words"`
+		}
+		_ = jsonexact.Unmarshal(resp.Body, &rawWords)
+		words := make([]map[string]interface{}, 0, len(parsed.Words))
+		for i, w := range parsed.Words {
+			entry := map[string]interface{}{"text": w.Text, "start": w.Start, "end": w.End}
+			if w.Speaker != nil {
+				entry["speaker"] = *w.Speaker
+			} else if i < len(rawWords.Words) {
+				if _, present := rawWords.Words[i]["speaker"]; present {
+					entry["speaker"] = nil
+				}
+			}
+			words = append(words, entry)
+		}
+		providerMetadata = map[string]interface{}{"xai": map[string]interface{}{"words": words}}
+		break
+	}
+
+	// TS 41465fd1b6: xAI returns word timings only; a segment request warns,
+	// a word request answered without words (for non-blank text) warns, and
+	// the words are reported separately when present.
+	warnings := []types.Warning{}
+	if containsGranularity(opts.TimestampGranularities, provider.TranscriptionTimestampGranularitySegment) {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "timestampGranularities",
+			Details: "xAI transcription returns word timings and does not provide separate caption segments."})
+	}
+	if containsGranularity(opts.TimestampGranularities, provider.TranscriptionTimestampGranularityWord) &&
+		len(parsed.Words) == 0 && providerutils.JSTrim(parsed.Text) != "" {
+		warnings = append(warnings, types.Warning{Type: "other", Message: "The xAI transcription response omitted the requested word timings."})
+	}
+	var words []types.TranscriptionWord
+	if len(parsed.Words) > 0 {
+		words = make([]types.TranscriptionWord, len(parsed.Words))
+		for i, w := range parsed.Words {
+			words[i] = types.TranscriptionWord{Text: w.Text, StartSecond: w.Start, EndSecond: w.End}
+		}
+	}
+
 	return &types.TranscriptionResult{
 		Text:              parsed.Text,
 		Segments:          segments,
+		Words:             words,
 		Language:          parsed.Language,
 		DurationInSeconds: parsed.Duration,
-		Warnings:          []types.Warning{},
+		Warnings:          warnings,
+		ProviderMetadata:  providerMetadata,
 		Response: &types.ResponseMetadata{
 			Timestamp: timestamp,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(resp.Headers),
-			Body:      resp.Body,
+			Body:      providerutils.RawJSONBody(resp.Body),
 		},
 	}, nil
 }
@@ -117,29 +188,41 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
+	// Field order mirrors TS getXaiSttParams + audio_format/format; xAI
+	// requires `file` to be the final multipart field.
 	fields := []struct {
 		key   string
 		value string
 		ok    bool
 	}{
-		{"audio_format", stringPtrValue(xaiOpts.AudioFormat), xaiOpts.AudioFormat != nil},
+		{"model", m.modelID, m.modelID != ""},
 		{"sample_rate", intPtrValue(xaiOpts.SampleRate), xaiOpts.SampleRate != nil},
 		{"language", stringPtrValue(xaiOpts.Language), xaiOpts.Language != nil},
-		{"format", boolPtrValue(xaiOpts.Format), xaiOpts.Format != nil},
 		{"multichannel", boolPtrValue(xaiOpts.Multichannel), xaiOpts.Multichannel != nil},
 		{"channels", intPtrValue(xaiOpts.Channels), xaiOpts.Channels != nil},
 		{"diarize", boolPtrValue(xaiOpts.Diarize), xaiOpts.Diarize != nil},
 		{"filler_words", boolPtrValue(xaiOpts.FillerWords), xaiOpts.FillerWords != nil},
+		{"vad_threshold", floatPtrValue(xaiOpts.VadThreshold), xaiOpts.VadThreshold != nil},
 	}
 	for _, field := range fields {
 		if field.ok {
-			if err := writer.WriteField(field.key, field.value); err != nil {
+			if err := providerutils.WriteFormDataField(writer, field.key, field.value); err != nil {
 				return nil, "", err
 			}
 		}
 	}
 	for _, keyterm := range xaiKeyterms(xaiOpts.Keyterm) {
-		if err := writer.WriteField("keyterm", keyterm); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "keyterm", keyterm); err != nil {
+			return nil, "", err
+		}
+	}
+	if xaiOpts.AudioFormat != nil {
+		if err := providerutils.WriteFormDataField(writer, "audio_format", *xaiOpts.AudioFormat); err != nil {
+			return nil, "", err
+		}
+	}
+	if xaiOpts.Format != nil {
+		if err := providerutils.WriteFormDataField(writer, "format", boolPtrValue(xaiOpts.Format)); err != nil {
 			return nil, "", err
 		}
 	}
@@ -152,15 +235,12 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		}
 		audio = decoded
 	}
+	// TS File type is the media type (an empty one is sent as
+	// application/octet-stream by FormData) and the name is
+	// audio.<mediaTypeToExtension(mediaType)>.
 	mediaType := opts.MimeType
-	if mediaType == "" {
-		mediaType = "application/octet-stream"
-	}
 	filename := "audio." + xaiAudioExtension(mediaType)
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, filename))
-	header.Set("Content-Type", mediaType)
-	part, err := writer.CreatePart(header)
+	part, err := providerutils.CreateFormDataFile(writer, "file", filename, mediaType)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create audio file part: %w", err)
 	}
@@ -179,15 +259,36 @@ func extractXAITranscriptionProviderOptions(providerOptions map[string]interface
 	if !ok || raw == nil {
 		return opts, nil
 	}
-	b, err := json.Marshal(raw)
+	b, err := json.Marshal(raw) // caller options: a non-finite number is invalid (zod), not null
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}
 	if err := json.Unmarshal(b, &opts); err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}
-	if opts.AudioFormat != nil && !xaiStringIn(*opts.AudioFormat, "pcm", "mulaw", "alaw") {
-		return opts, invalidXAIProviderOptions(fmt.Errorf("audioFormat must be \"pcm\", \"mulaw\", or \"alaw\""))
+	// TS vadThreshold, streaming and the streaming members are .optional()
+	// (not nullish): a present null is invalid.
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(b, &probe) == nil {
+		for _, key := range []string{"vadThreshold", "streaming"} {
+			if string(probe[key]) == "null" {
+				return opts, invalidXAIProviderOptions(fmt.Errorf("%s must not be null", key))
+			}
+		}
+		var streaming map[string]json.RawMessage
+		if json.Unmarshal(probe["streaming"], &streaming) == nil {
+			for _, key := range []string{"interimResults", "endpointing", "smartTurn", "smartTurnTimeout"} {
+				if string(streaming[key]) == "null" {
+					return opts, invalidXAIProviderOptions(fmt.Errorf("streaming.%s must not be null", key))
+				}
+			}
+		}
+	}
+	if opts.AudioFormat != nil && !xaiStringIn(*opts.AudioFormat, "pcm", "mulaw", "alaw", "opus") {
+		return opts, invalidXAIProviderOptions(fmt.Errorf("audioFormat must be \"pcm\", \"mulaw\", \"alaw\", or \"opus\""))
+	}
+	if opts.VadThreshold != nil && (*opts.VadThreshold < 0 || *opts.VadThreshold > 1) {
+		return opts, invalidXAIProviderOptions(fmt.Errorf("vadThreshold must be between 0 and 1"))
 	}
 	if opts.SampleRate != nil && !xaiIntIn(*opts.SampleRate, 8000, 16000, 22050, 24000, 44100, 48000) {
 		return opts, invalidXAIProviderOptions(fmt.Errorf("sampleRate must be one of 8000, 16000, 22050, 24000, 44100, or 48000"))
@@ -235,37 +336,12 @@ func xaiKeyterms(raw interface{}) []string {
 }
 
 func xaiAudioExtension(mediaType string) string {
-	switch strings.ToLower(mediaType) {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/opus":
-		return "ogg"
-	case "audio/mp4", "audio/m4a", "audio/x-m4a":
-		return "m4a"
-	case "audio/pcm":
-		return "pcm"
-	case "audio/mulaw":
-		return "mulaw"
-	case "audio/alaw":
-		return "alaw"
-	default:
-		if slash := strings.LastIndex(mediaType, "/"); slash >= 0 && slash < len(mediaType)-1 {
-			return mediaType[slash+1:]
-		}
-		return ""
-	}
+	return providerutils.MediaTypeToExtension(mediaType) // TS mediaTypeToExtension
 }
 
 func decodeXAITranscriptionAudioBase64(content string) ([]byte, error) {
-	normalized := strings.NewReplacer("-", "+", "_", "/").Replace(content)
-	if decoded, err := base64.StdEncoding.DecodeString(normalized); err == nil {
-		return decoded, nil
-	}
-	return base64.RawStdEncoding.DecodeString(normalized)
+	// TS convertBase64ToUint8Array: base64url mapped, atob's forgiving rules.
+	return fileutil.ConvertBase64ToBytes(content)
 }
 
 func stringPtrValue(v *string) string {
@@ -280,6 +356,13 @@ func intPtrValue(v *int) string {
 		return ""
 	}
 	return fmt.Sprintf("%d", *v)
+}
+
+func floatPtrValue(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	return providerutils.JSNumberString(*v) // TS String(number), as the stream query does
 }
 
 func boolPtrValue(v *bool) string {
@@ -297,8 +380,18 @@ type xaiTranscriptionResponse struct {
 	Language string   `json:"language,omitempty"`
 	Duration *float64 `json:"duration,omitempty"`
 	Words    []struct {
-		Text  string  `json:"text"`
-		Start float64 `json:"start"`
-		End   float64 `json:"end"`
+		Text    string   `json:"text"`
+		Start   float64  `json:"start"`
+		End     float64  `json:"end"`
+		Speaker *float64 `json:"speaker"`
 	} `json:"words,omitempty"`
+}
+
+func containsGranularity(list []string, g string) bool {
+	for _, v := range list {
+		if v == g {
+			return true
+		}
+	}
+	return false
 }

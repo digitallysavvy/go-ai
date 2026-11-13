@@ -1,0 +1,147 @@
+package cohere
+
+import (
+	"errors"
+	"fmt"
+	"math"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
+// validateCohereChunk mirrors the TS cohereChatChunkSchema discriminated
+// union: an unknown or missing `type`, or a member with a missing/ill-typed
+// required field, fails the parse (TS then emits an error part and finishes
+// with "error").
+func validateCohereChunk(data []byte) error {
+	var top map[string]interface{}
+	if err := securejson.Unmarshal(data, &top); err != nil { // TS safeParseJSON (secureJsonParse)
+		return err
+	}
+	if top == nil {
+		return errors.New("invalid input: expected object")
+	}
+	typ, _ := top["type"].(string)
+	// z.number(): a non-finite number (JSON.parse of 1e400) is rejected.
+	num := func(v interface{}) bool { f, ok := v.(float64); return ok && !math.IsInf(f, 0) && !math.IsNaN(f) }
+	str := func(v interface{}) bool { _, ok := v.(string); return ok }
+	obj := func(v interface{}) map[string]interface{} { m, _ := v.(map[string]interface{}); return m }
+	// path walks nested objects and returns the value (nil when absent).
+	path := func(v map[string]interface{}, keys ...string) interface{} {
+		var cur interface{} = v
+		for _, k := range keys {
+			m := obj(cur)
+			if m == nil {
+				return nil
+			}
+			cur = m[k]
+		}
+		return cur
+	}
+	fail := func(field, want string) error {
+		return fmt.Errorf("%s: Invalid input: expected %s (chunk type %q)", field, want, typ)
+	}
+
+	switch typ {
+	case "citation-end", "tool-call-end":
+		return nil
+	case "citation-start":
+		// TS 033a980fee: index nullish number; delta / message nullish
+		// objects; citations nullish, one citation or an array of them.
+		if v, ok := top["index"]; ok && v != nil && !num(v) {
+			return fail("index", "number")
+		}
+		if v, ok := top["delta"]; ok && v != nil {
+			delta := obj(v)
+			if delta == nil {
+				return fail("delta", "object")
+			}
+			if mv, ok := delta["message"]; ok && mv != nil {
+				message := obj(mv)
+				if message == nil {
+					return fail("delta.message", "object")
+				}
+				if err := providerutils.ValidateCohereCitations(message["citations"]); err != nil {
+					return err
+				}
+			}
+		}
+	case "content-start":
+		if !num(top["index"]) {
+			return fail("index", "number")
+		}
+		content := obj(path(top, "delta", "message", "content"))
+		switch {
+		case content == nil:
+			return fail("delta.message.content", "object")
+		case content["type"] == "text" && str(content["text"]):
+		case content["type"] == "thinking" && str(content["thinking"]):
+		default:
+			return fail("delta.message.content", "text or thinking content")
+		}
+	case "content-delta":
+		if !num(top["index"]) {
+			return fail("index", "number")
+		}
+		content := obj(path(top, "delta", "message", "content"))
+		if content == nil || (!str(content["text"]) && !str(content["thinking"])) {
+			return fail("delta.message.content", "text or thinking")
+		}
+	case "content-end":
+		if !num(top["index"]) {
+			return fail("index", "number")
+		}
+	case "message-start":
+		if id, ok := top["id"]; ok && id != nil && !str(id) {
+			return fail("id", "string")
+		}
+	case "message-end":
+		if !str(path(top, "delta", "finish_reason")) {
+			return fail("delta.finish_reason", "string")
+		}
+		usage := obj(path(top, "delta", "usage"))
+		if usage == nil {
+			return fail("delta.usage", "object")
+		}
+		// cohereUsageSchema (TS 3aad18a417): tokens and billed_units are
+		// nullish objects whose counts are nullish numbers.
+		for _, key := range []string{"tokens", "billed_units"} {
+			v, ok := usage[key]
+			if !ok || v == nil {
+				continue
+			}
+			b := obj(v)
+			if b == nil {
+				return fail("delta.usage."+key, "object")
+			}
+			for _, f := range []string{"input_tokens", "output_tokens"} {
+				if c, ok := b[f]; ok && c != nil && !num(c) {
+					return fail("delta.usage."+key+"."+f, "number")
+				}
+			}
+		}
+		if c, ok := usage["cached_tokens"]; ok && c != nil && !num(c) {
+			return fail("delta.usage.cached_tokens", "number")
+		}
+	case "tool-plan-delta":
+		if !str(path(top, "delta", "message", "tool_plan")) {
+			return fail("delta.message.tool_plan", "string")
+		}
+	case "tool-call-start":
+		call := obj(path(top, "delta", "message", "tool_calls"))
+		if call == nil || !str(call["id"]) || call["type"] != "function" {
+			return fail("delta.message.tool_calls", "function tool call")
+		}
+		fn := obj(call["function"])
+		if fn == nil || !str(fn["name"]) || !str(fn["arguments"]) {
+			return fail("delta.message.tool_calls.function", "name and arguments strings")
+		}
+	case "tool-call-delta":
+		if !str(path(top, "delta", "message", "tool_calls", "function", "arguments")) {
+			return fail("delta.message.tool_calls.function.arguments", "string")
+		}
+	default:
+		return fmt.Errorf("type: Invalid discriminator value %v", top["type"])
+	}
+	return nil
+}

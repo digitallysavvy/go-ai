@@ -112,8 +112,19 @@ func GetCodeModeApprovalResponse(messages []types.Message, interrupt ApprovalInt
 			continue
 		}
 		for _, part := range message.Content {
-			response, ok := part.(types.ToolApprovalResponseContent)
-			if !ok || response.ApprovalID != interrupt.InterruptID {
+			var response types.ToolApprovalResponseContent
+			switch p := part.(type) {
+			case types.ToolApprovalResponseContent:
+				response = p
+			case *types.ToolApprovalResponseContent:
+				if p == nil {
+					continue
+				}
+				response = *p
+			default:
+				continue
+			}
+			if response.ApprovalID != interrupt.InterruptID {
 				continue
 			}
 			return &ApprovalResponse{

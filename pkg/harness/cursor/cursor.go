@@ -1,5 +1,5 @@
 // Package cursor is the Go port of the TypeScript `@ai-sdk/harness-cursor`
-// package (pinned to ai@7.0.113, hashes ac1384b).
+// package (pinned to ai@7.0.167, TS 9f7a842ae1).
 //
 // Cursor is one of the "ACP-derived" harness adapters (see
 // state/parity/sep_23_2026/harness.md §2): TS `createCursor()` is a thin
@@ -23,15 +23,16 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 )
 
 // ClientAppName / ClientAppVersion are the ai-sdk client-app identity Cursor
-// requests are made with. VERSION mirrors the TS package's own version; the
-// Go SDK does not (yet) stamp a package version into adapter packages, so it
-// is fixed to "0.0.0-go" until a release process defines one.
+// requests are made with. ClientAppVersion is TS VERSION, the
+// @ai-sdk/harness-cursor package version at the TS release this SDK tracks
+// (9f7a842ae1); bump it with the harness bridges.
 const (
-	ClientAppName    = "ai-sdk/harness-cursor"
-	ClientAppVersion = "0.0.0-go"
+	ClientAppName    = "ai-sdk-harness-cursor"
+	ClientAppVersion = "1.0.96"
 	HarnessID        = "cursor"
 )
 
@@ -60,14 +61,22 @@ type Settings struct {
 	// StartupTimeoutMS is the maximum time to wait for the ACP bridge to
 	// start.
 	StartupTimeoutMS *int
+	// HostDisconnectTimeoutMS aborts a running turn when its host
+	// disconnects and does not reconnect within this many milliseconds. A
+	// suspended turn is exempt. Unset (or a value that is not positive)
+	// keeps the turn running until it finishes (TS a54f0fd8c6).
+	HostDisconnectTimeoutMS *int
 	// Reconnect configures reconnection attempts after an established bridge
 	// connection drops.
 	Reconnect *bridge.ReconnectOptions
 	// MCPServers are MCP server definitions keyed by server name, in
 	// Cursor's native ACP MCP server configuration format.
 	MCPServers map[string]any
-	// MintBridgeToken creates the bridge channel token for the session.
-	// Defaults to a random 32-byte hexadecimal token.
+	// MintBridgeToken is forwarded to the ACP adapter, which ignores it and
+	// logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
 	MintBridgeToken harness.MintBridgeTokenCallback
 }
 
@@ -91,6 +100,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		WarnAuthenticationConfiguration(settings.Auth.Mode)
 	}
 	cfg := acp.Settings{
+		NonTextContentTypes:              []acp.NonTextContentType{acp.NonTextContentImage},
 		HarnessID:                        HarnessID,
 		ClientApp:                        acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
 		Auth:                             settings.Auth,
@@ -99,14 +109,15 @@ func BuildConfig(settings Settings) acp.Settings {
 		PortEndpoint:                     settings.PortEndpoint,
 		MCPServers:                       settings.MCPServers,
 		IsMcpToolCall:                    IsMCPToolCall,
-		MintBridgeToken:                  settings.MintBridgeToken,
+		ResolveHostToolCall:              ResolveHostToolCall,
+		MintBridgeToken:                  settings.MintBridgeToken, //nolint:staticcheck // forwarded so ACP warns, as TS
 		BuiltinTools:                     BuiltinTools,
 		Source: acp.Source{
 			Type:    acp.SourceInstallCommand,
 			Command: "curl https://cursor.com/install -fsS | bash",
 		},
 		Executable: "agent",
-		Args:       []string{"--disable-auto-update", "acp"},
+		Args:       []string{"--disable-auto-update", "--disable-project-configs", "acp"},
 		ModelMapping: acp.ModelMapping{
 			Type: acp.ModelMappingSessionConfigOption,
 			Path: "model",
@@ -124,6 +135,9 @@ func BuildConfig(settings Settings) acp.Settings {
 	}
 	if settings.StartupTimeoutMS != nil {
 		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.HostDisconnectTimeoutMS != nil {
+		cfg.HostDisconnectTimeout = time.Duration(*settings.HostDisconnectTimeoutMS) * time.Millisecond
 	}
 	if settings.Reconnect != nil {
 		cfg.Reconnect = *settings.Reconnect
@@ -150,6 +164,38 @@ func IsMCPToolCall(call acp.ToolCall) bool {
 	return ok
 }
 
+// ResolveHostToolCall resolves a Cursor ACP tool call to a host tool. Cursor
+// reports host tool calls with a `{providerIdentifier, toolName, args}` raw
+// input, where providerIdentifier is the MCP server name. Mirrors TS
+// `resolveCursorHostToolCall` (cursor-harness.ts, 03dac28304).
+func ResolveHostToolCall(opts acp.ResolveHostToolCallOptions) *acp.ResolvedHostToolCall {
+	raw, ok := opts.ToolCall.RawInput.(map[string]any)
+	if !ok || raw == nil {
+		return nil
+	}
+	if provider, ok := raw["providerIdentifier"].(string); !ok || provider != opts.ServerName {
+		return nil
+	}
+	toolName, ok := raw["toolName"].(string)
+	if !ok || !containsString(opts.ToolNames, toolName) {
+		return nil
+	}
+	args, ok := raw["args"].(map[string]any)
+	if !ok || args == nil {
+		return nil
+	}
+	return &acp.ResolvedHostToolCall{ToolName: toolName, Input: args}
+}
+
+func containsString(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
 // WarnAuthenticationConfiguration logs the TS
 // `warnCursorAuthenticationConfiguration` warning for an explicit
 // (non-"auto") auth mode.
@@ -158,7 +204,8 @@ func WarnAuthenticationConfiguration(auth string) {
 	if auth == harness.AuthModeAIGateway {
 		detail = "Configure an AI Gateway API key as Cursor's OpenAI API key and set Override OpenAI Base URL to https://ai-gateway.vercel.sh/cursor/v1."
 	}
-	Warn(fmt.Sprintf("[cursor] auth: %q cannot configure Cursor provider authentication. %s CURSOR_API_KEY is still required for Cursor CLI authentication.", auth, detail))
+	quoted, _ := jsstr.Marshal(auth) // TS JSON.stringify(auth)
+	Warn(fmt.Sprintf("[cursor] auth: %s cannot configure Cursor provider authentication. %s CURSOR_API_KEY is still required for Cursor CLI authentication.", quoted, detail))
 }
 
 // Warn receives adapter warnings (TS console.warn). Replaceable for tests.

@@ -2,7 +2,6 @@ package mistral
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -28,12 +27,12 @@ func NewEmbeddingModel(provider *Provider, modelID string) *EmbeddingModel {
 
 // SpecificationVersion returns the specification version
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "mistral"
+	return "mistral.embedding"
 }
 
 // ModelID returns the model ID
@@ -55,15 +54,24 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 
 // DoEmbed performs embedding for a single input
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
 	result, err := m.DoEmbedMany(ctx, []string{input}, opts)
 	if err != nil {
 		return nil, err
 	}
 	if len(result.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
+	embedding := result.Embeddings[0]
 	r := &types.EmbeddingResult{
-		Embedding: result.Embeddings[0],
+		Embedding: embedding,
 		Usage:     result.Usage,
 	}
 	if len(result.Responses) > 0 {
@@ -74,6 +82,25 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// Typed-option ruling: read Go-typed option literals in their JSON form.
+	if opts != nil && opts.ProviderOptions != nil {
+		normalized := *opts
+		normalized.ProviderOptions = providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+		opts = &normalized
+	}
+	if len(inputs) > m.MaxEmbeddingsPerCall() {
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
+	}
+	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
+	}
 	reqBody := map[string]interface{}{
 		"input": inputs,
 		"model": m.modelID,
@@ -91,15 +118,29 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			reqBody["output_dtype"] = mistralOpts.OutputDtype
 		}
 	}
+	// Top-level dimensions (TS #22338); providerOptions.mistral.outputDimension wins.
+	if _, ok := reqBody["output_dimension"]; !ok && opts != nil && opts.Dimensions != nil {
+		reqBody["output_dimension"] = *opts.Dimensions
+	}
 	var response mistralEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/v1/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS: loadApiKey throws LoadAPIKeyError unchanged
+		}
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		return nil, providererrors.NewSchemaProviderError("mistral", err, mistralErrorSchema)
 	}
 	embeddings := make([][]float64, len(response.Data))
 	for i, item := range response.Data {
@@ -107,12 +148,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.TotalTokens,
-		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Usage:      response.embeddingUsage(),
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }
 
@@ -157,8 +194,7 @@ func extractMistralEmbeddingOptions(opts *provider.EmbedModelOptions) *mistralEm
 	if v, ok := m["metadata"].(map[string]interface{}); ok {
 		result.Metadata = v
 	}
-	if v, ok := m["outputDimension"].(float64); ok {
-		iv := int(v)
+	if iv, ok := providerutils.CoerceInt(m["outputDimension"]); ok {
 		result.OutputDimension = &iv
 	}
 	if v, ok := m["outputDtype"].(string); ok {
@@ -175,8 +211,24 @@ type mistralEmbedResponse struct {
 		Index     int       `json:"index"`
 	} `json:"data"`
 	Model string `json:"model"`
-	Usage struct {
-		PromptTokens int `json:"prompt_tokens"`
-		TotalTokens  int `json:"total_tokens"`
+	Usage *struct {
+		// TS z.number(): a fractional count is valid; Tokens keeps it.
+		PromptTokens float64 `json:"prompt_tokens"`
+		TotalTokens  float64 `json:"total_tokens"`
 	} `json:"usage"`
+}
+
+// embeddingUsage maps the wire usage as TS `response.usage ? { tokens:
+// response.usage.prompt_tokens } : undefined`: Reported only when the
+// response carried a usage object.
+func (r mistralEmbedResponse) embeddingUsage() types.EmbeddingUsage {
+	if r.Usage == nil {
+		return types.EmbeddingUsage{}
+	}
+	return types.EmbeddingUsage{
+		Tokens:      r.Usage.PromptTokens,
+		InputTokens: int(r.Usage.PromptTokens),
+		TotalTokens: int(r.Usage.TotalTokens),
+		Reported:    true,
+	}
 }

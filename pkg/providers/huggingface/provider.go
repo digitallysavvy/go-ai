@@ -8,7 +8,9 @@
 package huggingface
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	stdhttp "net/http"
 	"os"
 
@@ -38,6 +40,13 @@ type Config struct {
 	// HUGGINGFACE_API_KEY environment variable.
 	APIKey string
 
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the Hugging Face Router API. Defaults to
 	// https://router.huggingface.co/v1.
 	BaseURL string
@@ -58,13 +67,15 @@ type Config struct {
 // Config.APIKey is empty, the API key is loaded from the HUGGINGFACE_API_KEY
 // environment variable.
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("HUGGINGFACE_API_KEY")
 	}
 
@@ -74,6 +85,15 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 		}, cfg.Headers),
 		HTTPClient: cfg.HTTPClient,
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "HUGGINGFACE_API_KEY", Description: "Hugging Face",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "HUGGINGFACE_API_KEY", "Hugging Face", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -110,32 +130,32 @@ func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error
 // support text embeddings (TS createHuggingFace throws NoSuchModelError with
 // this exact message for embeddingModel/textEmbeddingModel).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("Hugging Face Responses API does not support text embeddings. Use the Hugging Face Inference API directly for embeddings.") //nolint:staticcheck // matches TS SDK's exact error text
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "Hugging Face Responses API does not support text embeddings. Use the Hugging Face Inference API directly for embeddings."}
 }
 
 // ImageModel returns an error: the Hugging Face Responses API does not
 // support image generation (TS createHuggingFace throws NoSuchModelError
 // with this exact message for imageModel).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("Hugging Face Responses API does not support image generation. Use the Hugging Face Inference API directly for image models.") //nolint:staticcheck // matches TS SDK's exact error text
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "Hugging Face Responses API does not support image generation. Use the Hugging Face Inference API directly for image models."}
 }
 
 // SpeechModel returns an error: Hugging Face does not provide a unified
 // speech synthesis API through the Responses model.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("huggingface provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns an error: Hugging Face does not provide a
 // unified transcription API through the Responses model.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("huggingface provider does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns an error: Hugging Face does not support reranking
 // through this interface.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("huggingface provider does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client used for API requests.

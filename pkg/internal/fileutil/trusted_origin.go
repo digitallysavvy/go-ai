@@ -27,6 +27,8 @@ func IsSameOrigin(a, b string) bool {
 // is validated with ValidateDownloadURL and dialed through SafeTransport.
 func TrustedOriginDownloadOptions(trustedOrigin string, trustedTransport http.RoundTripper) DownloadOptions {
 	opts := DefaultDownloadOptions()
+	// TS getFromApi sets no timeout; the caller's context bounds the request.
+	opts.Timeout = NoTimeout
 	if trustedTransport == nil {
 		trustedTransport = http.DefaultTransport
 	}

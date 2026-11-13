@@ -3,6 +3,8 @@ package alibaba
 import (
 	"fmt"
 	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Config contains configuration for the Alibaba Cloud (DashScope) provider
@@ -10,6 +12,13 @@ type Config struct {
 	// APIKey is the Alibaba Cloud API key
 	// Can be obtained from https://dashscope.console.aliyun.com/
 	APIKey string
+
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the chat API (optional)
 	// Default: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
@@ -25,6 +34,11 @@ type Config struct {
 	// Default: https://dashscope-intl.aliyuncs.com/api/v1
 	// This is the DashScope native endpoint for embedding models
 	EmbeddingBaseURL string
+
+	// IncludeUsage sends stream_options.include_usage on streaming chat
+	// requests so token usage arrives in the final chunk (TS includeUsage).
+	// nil means the TS default, true.
+	IncludeUsage *bool `json:"includeUsage,omitempty"`
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`

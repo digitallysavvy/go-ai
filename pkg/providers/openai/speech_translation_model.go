@@ -3,14 +3,13 @@ package openai
 import (
 	"context"
 	"fmt"
-	"net/url"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // SpeechTranslationModel implements provider.SpeechTranslationModel over the
@@ -53,10 +52,7 @@ func (m *SpeechTranslationModel) ModelID() string { return m.modelID }
 // translation API only accepts 24kHz 16-bit PCM input audio.
 func validateOpenAISpeechTranslationInputAudioFormat(format provider.AudioFormat) error {
 	if format.Type != "audio/pcm" || (format.Rate != nil && *format.Rate != 24000) {
-		return &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: "The OpenAI Realtime translation API only supports 24kHz 16-bit PCM input audio.",
-		}
+		return providererrors.NewArgumentError("inputAudioFormat", "The OpenAI Realtime translation API only supports 24kHz 16-bit PCM input audio.", nil)
 	}
 	return nil
 }
@@ -81,11 +77,13 @@ func buildOpenAISpeechTranslationSession(targetLanguage string) map[string]inter
 // realtimeSpeechTranslationWebSocketURL builds the wss:// realtime
 // translations URL, mirroring TS `this.config.url({ path:
 // '/realtime/translations?model=...' })`.
-func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
-	wsBase := strings.Replace(baseURL, "https://", "wss://", 1)
-	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
-	return wsBase + "/realtime/translations?model=" + url.QueryEscape(modelID)
+func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) (string, error) {
+	return openAIToWebSocketURL(baseURL + "/realtime/translations?model=" + encodeURIComponent(modelID))
 }
+
+// encodeURIComponent is ECMAScript encodeURIComponent (TS encodes the model
+// id with it).
+func encodeURIComponent(s string) string { return providerutils.EncodeURIComponent(s) }
 
 // baseSpeechTranslationWSHeaders rebuilds the provider's default headers
 // (Authorization, organization, project, custom config headers) for the
@@ -96,8 +94,8 @@ func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
 // mirroring TS openai-speech-translation-model.ts's doStream, which reuses
 // `this.config.headers()` -- the same tagged getHeaders() closure used for
 // REST calls -- rather than rebuilding an untagged header set.
-func (m *SpeechTranslationModel) baseSpeechTranslationWSHeaders() map[string]string {
-	return m.provider.client.Headers()
+func (m *SpeechTranslationModel) baseSpeechTranslationWSHeaders(ctx context.Context) (map[string]string, error) {
+	return m.provider.client.RequestHeadersCtx(ctx)
 }
 
 // DoStream streams a speech-to-speech translation over the OpenAI realtime
@@ -107,17 +105,20 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		opts = &provider.SpeechTranslationStreamOptions{}
 	}
 	if opts.TargetLanguage == "" {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "targetLanguage",
-			Message: fmt.Sprintf("targetLanguage is required for translation model '%s'.", m.modelID),
-		}
+		return nil, providererrors.NewArgumentError("targetLanguage", fmt.Sprintf("targetLanguage is required for translation model '%s'.", m.modelID), nil)
+	}
+
+	// TS parseProviderOptions({provider: 'openai', schema: z.object({})}):
+	// no member is declared, but a non-object value is invalid.
+	if _, err := providerutils.ParseProviderOptions("openai", opts.ProviderOptions, providerutils.OptionSchema{}); err != nil {
+		return nil, err
 	}
 
 	if err := validateOpenAISpeechTranslationInputAudioFormat(opts.InputAudioFormat); err != nil {
 		return nil, err
 	}
 
-	var warnings []types.Warning
+	warnings := []types.Warning{}
 	if opts.SourceLanguage != "" {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
@@ -133,9 +134,16 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		})
 	}
 
-	headers := internalhttp.MergeHeaders(m.baseSpeechTranslationWSHeaders(), opts.Headers)
+	baseHeaders, err := m.baseSpeechTranslationWSHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 	sessionUpdate := buildOpenAISpeechTranslationSession(opts.TargetLanguage)
-	wsURL := realtimeSpeechTranslationWebSocketURL(m.provider.config.BaseURL, m.modelID)
+	wsURL, err := realtimeSpeechTranslationWebSocketURL(m.provider.config.BaseURL, m.modelID)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {

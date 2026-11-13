@@ -243,6 +243,10 @@ The FileSearch tool enables Retrieval Augmented Generation (RAG) by searching ve
 - Returns file IDs, filenames, relevance scores, and text snippets
 - Provider-executed (no local implementation needed)
 
+`VectorStoreIDs` is required (an empty, non-nil slice is accepted): the
+Responses model rejects a file search tool without it before sending the
+request, like the TypeScript SDK's `fileSearchArgsSchema`.
+
 ### Usage
 
 #### Basic Example

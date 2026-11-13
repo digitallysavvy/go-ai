@@ -1,0 +1,109 @@
+package gateway
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+)
+
+// TS combineHeaders(config, options.headers, model headers, o11y): the model's
+// own headers and the o11y headers win over a per-call header of the same name,
+// for every Gateway model type and the batch surface.
+func TestGatewayModelAndO11yHeadersWinOverCallHeaders(t *testing.T) {
+	t.Setenv("VERCEL_ENV", "production")
+	var mu sync.Mutex
+	seen := map[string]http.Header{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := map[string]string{"X-Call": "kept", "ai-o11y-environment": "spoofed", "ai-model-id": "spoofed"}
+	ctx := context.Background()
+
+	_, _ = NewEmbeddingModel(p, "openai/e").DoEmbed(ctx, "hi", &provider.EmbedModelOptions{Headers: call})
+	_, _ = NewRerankingModel(p, "cohere/r").DoRerank(ctx, &provider.RerankOptions{Query: "q", Documents: []string{"a"}, Headers: call})
+	_, _ = NewSpeechModel(p, "openai/s").DoGenerate(ctx, &provider.SpeechGenerateOptions{Text: "hi", Headers: call})
+	b := p.ExperimentalBatch()
+	_, _ = b.DoStartBatch(ctx, provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{testBatchTextRequest("a", "openai/gpt-5")}, Headers: call})
+	_, _ = b.DoGetBatchStatus(ctx, provider.BatchV4OperationOptions{BatchID: "b1", Headers: call})
+
+	wantModel := map[string]string{
+		"/embedding-model": "openai/e", "/reranking-model": "cohere/r", "/speech-model": "openai/s",
+		"/batch/start": "openai/gpt-5",
+	}
+	for path, h := range seen {
+		if h.Get("X-Call") != "kept" {
+			t.Errorf("%s: per-call header dropped: %v", path, h)
+		}
+		if h.Get("ai-o11y-environment") != "production" {
+			t.Errorf("%s: o11y header overridden by call header: %q", path, h.Get("ai-o11y-environment"))
+		}
+		if want, ok := wantModel[path]; ok && h.Get("ai-model-id") != want {
+			t.Errorf("%s: ai-model-id = %q, want %q (model header must win)", path, h.Get("ai-model-id"), want)
+		}
+	}
+	if len(seen) < 5 {
+		t.Fatalf("expected 5 distinct requests, saw %d: %v", len(seen), seen)
+	}
+}
+
+func TestGatewayRealtimeSerializeKeepsEventID(t *testing.T) {
+	p, err := New(Config{APIKey: "k", BaseURL: "https://example.test/v4/ai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := p.ExperimentalRealtime("openai/gpt-realtime")
+	raw, err := m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "AA==", EventID: "e1"})
+	if err != nil || string(raw) != `{"audio":"AA==","eventId":"e1","type":"input-audio-append"}` {
+		t.Fatalf("%s %v", raw, err)
+	}
+	raw, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-mute", EventID: "m1"})
+	if string(raw) != `{"eventId":"m1","type":"input-audio-mute"}` {
+		t.Fatalf("%s", raw)
+	}
+}
+
+// TS createAuthHeaders spreads options.headers after Authorization, the auth
+// method and the team header, so custom headers of those names win.
+func TestGatewayConfigHeadersOverrideAuthAndTeamHeaders(t *testing.T) {
+	var mu sync.Mutex
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: srv.URL, TeamIDOrSlug: "team_a", Headers: map[string]string{
+		"Authorization": "Bearer custom", "x-vercel-ai-gateway-team": "team_b",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = NewEmbeddingModel(p, "openai/e").DoEmbed(context.Background(), "hi", &provider.EmbedModelOptions{})
+	mu.Lock()
+	defer mu.Unlock()
+	if got.Get("Authorization") != "Bearer custom" {
+		t.Errorf("Authorization = %q, want the custom header", got.Get("Authorization"))
+	}
+	if got.Get("x-vercel-ai-gateway-team") != "team_b" {
+		t.Errorf("team header = %q, want the custom header", got.Get("x-vercel-ai-gateway-team"))
+	}
+	if got.Get("ai-gateway-auth-method") != "api-key" {
+		t.Errorf("auth method = %q", got.Get("ai-gateway-auth-method"))
+	}
+}

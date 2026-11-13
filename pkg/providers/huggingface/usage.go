@@ -1,9 +1,9 @@
 package huggingface
 
 import (
-	"encoding/json"
-
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // convertHuggingFaceResponsesUsage mirrors TS convertHuggingFaceResponsesUsage.
@@ -16,7 +16,7 @@ func convertHuggingFaceResponsesUsage(usage *hfUsage) types.Usage {
 
 	inputTokens := usage.InputTokens
 	outputTokens := usage.OutputTokens
-	totalTokens := usage.TotalTokens
+	totalTokens := inputTokens + outputTokens // TS core: input total + output total
 
 	var cachedTokens int64
 	if usage.InputTokensDetails != nil {
@@ -30,12 +30,15 @@ func convertHuggingFaceResponsesUsage(usage *hfUsage) types.Usage {
 	noCache := inputTokens - cachedTokens
 	textTokens := outputTokens - reasoningTokens
 
-	// raw mirrors TS's `raw: usage` -- the exact usage object as received,
+	// raw mirrors TS's `raw: usage` -- the usage object as received (the
+	// schema's declared keys, numbers exact); a usage built in Go is
 	// re-marshaled through hfUsage so absent optional sub-objects are
 	// omitted rather than appearing as null/zero.
-	var raw map[string]interface{}
-	if data, err := json.Marshal(usage); err == nil {
-		_ = json.Unmarshal(data, &raw)
+	raw := usage.raw
+	if raw == nil {
+		if data, err := jsonstr.Marshal(usage); err == nil {
+			_ = jsonexact.Unmarshal(data, &raw)
+		}
 	}
 
 	return types.Usage{

@@ -1,18 +1,23 @@
-// Package youcom provides You.com AI SDK plugin tool factories.
+// Package youcom provides the You.com AI SDK plugin: CreateYouClient (the
+// hosted MCP client of plugin 3.x) and the YouSearch, YouResearch and
+// YouContents tool factories.
 package youcom
 
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -148,7 +153,7 @@ func executeYouAPI(ctx context.Context, config YouToolsConfig, endpoint endpoint
 		input = normalizeContentsInput(input)
 	}
 
-	body, err := json.Marshal(input)
+	body, err := jsonstr.Marshal(input)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +179,7 @@ func executeYouAPI(ctx context.Context, config YouToolsConfig, endpoint endpoint
 	}
 
 	var result interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeYouJSON(resp.Body, &result); err != nil {
 		return nil, err
 	}
 	if err := checkResponseForErrors(result); err != nil {
@@ -497,6 +502,19 @@ var languageValues = []string{
 	"AR", "EU", "BN", "BG", "CA", "ZH-HANS", "ZH-HANT", "HR", "CS", "DA", "NL", "EN", "EN-GB", "ET", "FI", "FR", "GL", "DE", "EL", "GU", "HE", "HI", "HU", "IS", "IT", "JP", "KN", "KO", "LV", "LT", "MS", "ML", "MR", "NB", "PL", "PT-BR", "PT-PT", "PA", "RO", "RU", "SR", "SK", "SL", "ES", "SV", "TA", "TE", "TH", "TR", "UK", "VI",
 }
 
+// decodeYouJSON is fetch's response.json(): the body is UTF-8 decoded
+// (WHATWG TextDecoder: a leading BOM dropped, invalid bytes replaced) and
+// then parsed as one JSON text (JSON.parse rejects trailing data). Plain
+// JSON.parse keeps a __proto__ key as an ordinary property (no
+// secureJsonParse).
+func decodeYouJSON(r io.Reader, v interface{}) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	return jsonexact.UnmarshalPlain([]byte(textdecode.UTF8(data)), v)
+}
+
 func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {
 	code := resp.StatusCode
 	if code == http.StatusTooManyRequests {
@@ -505,7 +523,7 @@ func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {
 	if endpoint == endpointContents {
 		detail := fmt.Sprintf("Failed to fetch contents. HTTP %d", code)
 		var body map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+		if err := decodeYouJSON(resp.Body, &body); err == nil {
 			if v, ok := body["detail"]; ok {
 				detail = fmt.Sprint(v)
 			}
@@ -531,15 +549,17 @@ func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {
 		message := "Free tier limit exceeded. Please upgrade to continue."
 		upgradeURL := "https://you.com/platform"
 		var body map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
-			if v, ok := body["message"].(string); ok && v != "" {
-				message = v
+		if err := decodeYouJSON(resp.Body, &body); err == nil {
+			// JS `body.message || default`: any truthy value is used, and
+			// the template interpolates it with String().
+			if v := body["message"]; providerutils.JSTruthy(v) {
+				message = providerutils.JSString(v)
 			}
-			if v, ok := body["upgrade_url"].(string); ok && v != "" {
-				upgradeURL = v
+			if v := body["upgrade_url"]; providerutils.JSTruthy(v) {
+				upgradeURL = providerutils.JSString(v)
 			}
-			if v, ok := body["reset_at"].(string); ok && v != "" {
-				message += " Limit resets on " + v + "."
+			if v := body["reset_at"]; providerutils.JSTruthy(v) {
+				message += " Limit resets on " + providerutils.JSString(v) + "."
 			}
 		}
 		return fmt.Errorf("%s Upgrade at: %s", message, upgradeURL)
@@ -559,7 +579,7 @@ func checkResponseForErrors(responseData interface{}) error {
 		if s, ok := errValue.(string); ok {
 			return fmt.Errorf("You.com API Error: %s", s) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}
-		data, err := json.Marshal(errValue)
+		data, err := jsonstr.Marshal(errValue)
 		if err != nil {
 			return fmt.Errorf("You.com API Error: %v", errValue) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}

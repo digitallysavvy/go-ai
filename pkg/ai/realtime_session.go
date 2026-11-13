@@ -40,7 +40,28 @@ type RealtimeSessionOptions struct {
 	ClientSecret  *provider.ClientSecretResult
 	SessionConfig *provider.RealtimeSessionConfig
 	Dialer        RealtimeDialer
+
+	// Intent, when set, connects server-side to the endpoint variant for
+	// that intent through the model's provider.RealtimeServerConnectionProvider
+	// (the long-lived provider credential, never a client secret; meant for
+	// trusted servers) and serializes client events with its
+	// provider.RealtimeIntentCodec when it has one. ClientSecret is then
+	// ignored. Empty (the default) keeps the existing connection flow, so
+	// existing callers never switch to the long-lived key. Mirrors the TS
+	// getServerWebSocketConfig({ intent }) / serializeClientEvent(event,
+	// { intent }) server flow (892af4dab7).
+	Intent RealtimeSessionIntent
 }
+
+// RealtimeSessionIntent selects the realtime endpoint variant (TS
+// Experimental_RealtimeSessionIntent).
+type RealtimeSessionIntent = provider.RealtimeSessionIntent
+
+// Realtime session intents (TS 'conversation' | 'transcription').
+const (
+	RealtimeSessionIntentConversation  = provider.RealtimeSessionIntentConversation
+	RealtimeSessionIntentTranscription = provider.RealtimeSessionIntentTranscription
+)
 
 type RealtimeSession struct {
 	model     provider.Experimental_RealtimeModelV4
@@ -50,6 +71,7 @@ type RealtimeSession struct {
 	closeOnce sync.Once
 	parser    func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error)
 	lifecycle provider.RealtimeLifecycle
+	intent    RealtimeSessionIntent
 }
 
 func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeModelV4, opts RealtimeSessionOptions) (*RealtimeSession, error) {
@@ -66,7 +88,17 @@ func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeMo
 	// token minted via DoCreateClientSecret, matching TS
 	// getServerWebSocketConfig().
 	var cfg provider.WebSocketConfig
-	if serverModel, ok := model.(provider.RealtimeServerWebSocketConfigProvider); ok {
+	if opts.Intent != "" {
+		connector, ok := model.(provider.RealtimeServerConnectionProvider)
+		if !ok {
+			return nil, fmt.Errorf("realtime model does not support server connections for the '%s' session intent (RealtimeServerConnectionProvider)", opts.Intent)
+		}
+		built, err := connector.GetServerConnection(ctx, provider.RealtimeServerConnectionOptions{Intent: opts.Intent})
+		if err != nil {
+			return nil, err
+		}
+		cfg = built
+	} else if serverModel, ok := model.(provider.RealtimeServerWebSocketConfigProvider); ok {
 		built, err := serverModel.GetServerWebSocketConfig()
 		if err != nil {
 			return nil, err
@@ -97,7 +129,7 @@ func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeMo
 		return nil, err
 	}
 
-	s := &RealtimeSession{model: model, conn: conn, done: make(chan struct{})}
+	s := &RealtimeSession{model: model, conn: conn, done: make(chan struct{}), intent: opts.Intent}
 	if factory, ok := model.(provider.RealtimeServerEventParserFactory); ok {
 		s.parser = factory.NewServerEventParser()
 	}
@@ -166,7 +198,13 @@ func (s *RealtimeSession) Send(ctx context.Context, event provider.RealtimeClien
 			return s.conn.Send(ctx, data)
 		}
 	}
-	raw, err := s.model.SerializeClientEvent(event)
+	var raw json.RawMessage
+	var err error
+	if codec, ok := s.model.(provider.RealtimeIntentCodec); ok && s.intent != "" {
+		raw, err = codec.SerializeClientEventForIntent(event, s.intent)
+	} else {
+		raw, err = s.model.SerializeClientEvent(event)
+	}
 	if err != nil {
 		return err
 	}
@@ -176,6 +214,15 @@ func (s *RealtimeSession) Send(ctx context.Context, event provider.RealtimeClien
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conn.Send(ctx, raw)
+}
+
+// sendLocked writes a text frame under the session's send lock, so a
+// health-check response written from Read never overlaps a Send from another
+// goroutine (a RealtimeWebSocketConn is not required to be write-safe).
+func (s *RealtimeSession) sendLocked(ctx context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conn.Send(ctx, data)
 }
 
 func (s *RealtimeSession) Read(ctx context.Context) ([]provider.RealtimeServerEvent, error) {
@@ -212,7 +259,7 @@ func (s *RealtimeSession) Read(ctx context.Context) ([]provider.RealtimeServerEv
 					if checker, ok := s.model.(provider.RealtimeHealthCheckResponder); ok {
 						response, ok := checker.GetHealthCheckResponse(raw)
 						if ok && len(response) > 0 && string(response) != "null" {
-							if err := s.conn.Send(ctx, response); err != nil {
+							if err := s.sendLocked(ctx, response); err != nil {
 								return nil, err
 							}
 						}
@@ -235,7 +282,7 @@ func (s *RealtimeSession) Read(ctx context.Context) ([]provider.RealtimeServerEv
 		if checker, ok := s.model.(provider.RealtimeHealthCheckResponder); ok {
 			response, ok := checker.GetHealthCheckResponse(raw)
 			if ok && len(response) > 0 && string(response) != "null" {
-				if err := s.conn.Send(ctx, response); err != nil {
+				if err := s.sendLocked(ctx, response); err != nil {
 					return nil, err
 				}
 			}
@@ -302,10 +349,16 @@ type xNetWebSocketConn struct {
 	// before the ctx select, so a stalled concurrent send could block a
 	// subsequent call's ctx cancellation indefinitely).
 	sendSem chan struct{}
+
+	// recvSem serializes receives; pending holds the single in-flight read
+	// started by a receive whose ctx ended first, so the frame it eventually
+	// reads goes to the next receive instead of being dropped.
+	recvSem chan struct{}
+	pending chan realtimeFrameResult
 }
 
 func newXNetWebSocketConn(conn *websocket.Conn) *xNetWebSocketConn {
-	return &xNetWebSocketConn{conn: conn, sendSem: make(chan struct{}, 1)}
+	return &xNetWebSocketConn{conn: conn, sendSem: make(chan struct{}, 1), recvSem: make(chan struct{}, 1)}
 }
 
 // lockSend acquires the send semaphore, respecting ctx cancellation while
@@ -337,14 +390,53 @@ func (c *xNetWebSocketConn) Send(ctx context.Context, message []byte) error {
 }
 
 func (c *xNetWebSocketConn) Receive(ctx context.Context) ([]byte, error) {
-	text, err := wsutil.Receive(ctx, c.conn)
+	frame, err := c.receiveFrame(ctx)
 	if err != nil {
-		if wsutil.IsCleanClose(err) {
+		if errors.Is(err, io.EOF) || wsutil.IsCleanClose(err) {
 			return nil, io.EOF
+		}
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil, err
 		}
 		return nil, fmt.Errorf("realtime websocket receive failed: %w", err)
 	}
-	return []byte(text), nil
+	return frame.data, nil
+}
+
+type realtimeFrameResult struct {
+	frame realtimeFrame
+	err   error
+}
+
+// receiveFrame returns the next frame. The read runs on its own goroutine so
+// ctx can end the wait; when it does, that read stays pending and its frame
+// is handed to the next call (a second concurrent reader would race it and
+// drop or reorder frames).
+func (c *xNetWebSocketConn) receiveFrame(ctx context.Context) (realtimeFrame, error) {
+	select {
+	case c.recvSem <- struct{}{}:
+	case <-ctx.Done():
+		return realtimeFrame{}, ctx.Err()
+	}
+	defer func() { <-c.recvSem }()
+	if c.pending == nil {
+		ch := make(chan realtimeFrameResult, 1)
+		c.pending = ch
+		go func() {
+			// One whole message: continuation frames are joined and the
+			// UTF-8 check runs on the whole text, as the TS WebSocket
+			// message event delivers it (core2-02).
+			data, binary, err := wsutil.ReceiveMessage(c.conn)
+			ch <- realtimeFrameResult{frame: realtimeFrame{data: data, binary: binary}, err: err}
+		}()
+	}
+	select {
+	case <-ctx.Done():
+		return realtimeFrame{}, ctx.Err()
+	case res := <-c.pending:
+		c.pending = nil
+		return res.frame, res.err
+	}
 }
 
 func (c *xNetWebSocketConn) Close() error {
@@ -378,8 +470,9 @@ func (c *xNetWebSocketConn) SendBinary(ctx context.Context, message []byte) erro
 // realtimeFrameTypeCodec mirrors websocket.Message but additionally reports
 // the frame's payload type. websocket.Message discards it: its Unmarshal
 // only inspects the target's Go type (*string/*[]byte), never the frame's
-// actual TextFrame/BinaryFrame opcode, so there is no way to learn whether a
-// received frame was binary through the public Codec API.
+// actual TextFrame/BinaryFrame opcode. It reads a single frame, so the
+// session receives with wsutil.ReceiveMessage; the codec remains for the
+// frame-level test servers.
 var realtimeFrameTypeCodec = websocket.Codec{
 	Marshal: func(v interface{}) (msg []byte, payloadType byte, err error) {
 		switch data := v.(type) {
@@ -409,26 +502,15 @@ type realtimeFrame struct {
 // ReceiveFrame implements RealtimeBinaryConn, reporting whether the received
 // frame was a binary (vs. text) WS frame.
 func (c *xNetWebSocketConn) ReceiveFrame(ctx context.Context) ([]byte, bool, error) {
-	type result struct {
-		frame realtimeFrame
-		err   error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		var frame realtimeFrame
-		err := realtimeFrameTypeCodec.Receive(c.conn, &frame)
-		ch <- result{frame: frame, err: err}
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, false, ctx.Err()
-	case res := <-ch:
-		if res.err != nil {
-			if errors.Is(res.err, io.EOF) {
-				return nil, false, io.EOF
-			}
-			return nil, false, fmt.Errorf("realtime websocket receive failed: %w", res.err)
+	frame, err := c.receiveFrame(ctx)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil, false, err
 		}
-		return res.frame.data, res.frame.binary, nil
+		if errors.Is(err, io.EOF) {
+			return nil, false, io.EOF
+		}
+		return nil, false, fmt.Errorf("realtime websocket receive failed: %w", err)
 	}
+	return frame.data, frame.binary, nil
 }

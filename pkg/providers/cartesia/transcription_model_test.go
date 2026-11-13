@@ -216,3 +216,24 @@ func TestTranscriptionModel_APIErrors(t *testing.T) {
 		t.Fatalf("message = %q", providerErr.Message)
 	}
 }
+
+// TestTranscriptionModel_FutureModelsAreStreamingOnly mirrors "routes %s
+// through streaming transcription instead of the batch endpoint".
+func TestTranscriptionModel_FutureModelsAreStreamingOnly(t *testing.T) {
+	for _, id := range []string{"ink-3", "new-streaming-model"} {
+		p := New(Config{APIKey: "test-api-key"})
+		model, _ := p.TranscriptionModel(id)
+		_, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{}, MimeType: "audio/wav"})
+		if !errors.Is(err, providererrors.ErrUnsupportedFeature) {
+			t.Fatalf("%s: error = %v, want ErrUnsupportedFeature", id, err)
+		}
+	}
+	for id, want := range map[string]bool{
+		"ink-whisper": false, "ink-whisper-2025-06-04": false,
+		"ink-2": true, "ink-2-x": true, "ink-3": true,
+	} {
+		if got := isStreamingTranscriptionModelID(id); got != want {
+			t.Errorf("isStreamingTranscriptionModelID(%q) = %v, want %v", id, got, want)
+		}
+	}
+}

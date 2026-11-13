@@ -34,7 +34,7 @@ func main() {
 
 	// Create basic parallel search tool
 	basicSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
-		Mode:       "one-shot",
+		Mode:       tools.ParallelSearchModeBasic,
 		MaxResults: intPtr(5),
 	})
 
@@ -67,7 +67,7 @@ func main() {
 
 	// Create parallel search with source policy
 	filteredSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
-		Mode:       "one-shot",
+		Mode:       tools.ParallelSearchModeBasic,
 		MaxResults: intPtr(10),
 		SourcePolicy: &tools.ParallelSearchSourcePolicy{
 			IncludeDomains: []string{"wikipedia.org", "nature.com", "science.org"},
@@ -90,20 +90,23 @@ func main() {
 	fmt.Println(result2.Text)
 
 	fmt.Println("\n=======================================================")
-	fmt.Println("Example 3: Agentic Mode with Excerpt Control")
+	fmt.Println("Example 3: Advanced Mode with Location and Fetch Policy")
 	fmt.Println("=======================================================")
 
-	// Create agentic mode search with excerpt control
-	maxAgeSeconds := 0
-	agenticSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
-		Mode:       "agentic",
-		MaxResults: intPtr(3),
+	// Create an advanced mode search with a location and fetch policy
+	maxAgeSeconds := 600
+	timeoutSeconds := 10
+	advancedSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
+		Mode:          tools.ParallelSearchModeAdvanced,
+		MaxResults:    intPtr(3),
+		Location:      "us",
+		MaxCharsTotal: intPtr(2000),
 		Excerpts: &tools.ParallelSearchExcerpts{
 			MaxCharsPerResult: intPtr(500),
-			MaxCharsTotal:     intPtr(2000),
 		},
 		FetchPolicy: &tools.ParallelSearchFetchPolicy{
-			MaxAgeSeconds: &maxAgeSeconds, // Always fetch fresh content
+			MaxAgeSeconds:  &maxAgeSeconds,
+			TimeoutSeconds: &timeoutSeconds,
 		},
 	})
 
@@ -111,7 +114,7 @@ func main() {
 		Model:  model,
 		Prompt: "Find recent news about AI safety regulations.",
 		Tools: []types.Tool{
-			agenticSearch.ToTool(),
+			advancedSearch.ToTool(),
 		},
 	})
 	if err != nil {
@@ -126,7 +129,7 @@ func main() {
 	fmt.Println("=======================================================")
 
 	searchTool := tools.NewParallelSearch(tools.ParallelSearchConfig{
-		Mode:       "one-shot",
+		Mode:       tools.ParallelSearchModeBasic,
 		MaxResults: intPtr(5),
 	})
 

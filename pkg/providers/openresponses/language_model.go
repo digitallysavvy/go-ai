@@ -3,15 +3,26 @@ package openresponses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -93,11 +104,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	// Make API request
-	var response OpenResponsesResponse
-	err = m.provider.client.PostJSON(ctx, "", reqBody, &response)
+	var wire openResponsesResponseWire
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "",
+		Body:    reqBody,
+		Headers: opts.Headers,
+	}, &wire)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
+	response := wire.response()
 
 	// Row 75f86f4: a 200 response with an embedded error object maps to a
 	// ProviderError, classified via Config.GetResponseErrorMetadata when set
@@ -107,6 +124,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		perr := providererrors.NewProviderError(m.provider.config.Name, statusCode, response.Error.Code, response.Error.Message, nil)
 		perr.Retryable = retryable
 		perr.Data = response.Error
+		perr.ResponseHeaders, perr.ResponseBody = openResponsesErrorResponse(httpResp)
 		return nil, perr
 	}
 
@@ -115,18 +133,25 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// with, and must raise a descriptive error rather than silently
 	// producing an empty result.
 	if response.Output == nil {
+		// TS `incomplete_details?.reason ?? status`: a present empty reason
+		// is kept (and then adds no detail).
 		detail := ""
 		if response.IncompleteDetails != nil {
 			detail = response.IncompleteDetails.Reason
 		}
-		if detail == "" {
+		if detail == "" && !openResponsesHasIncompleteReason(httpResp.Body) {
 			detail = response.Status
 		}
 		message := "Responses API returned no output"
 		if detail != "" {
 			message = fmt.Sprintf("Responses API returned no output (%s)", detail)
 		}
-		return nil, providererrors.NewProviderError(m.provider.config.Name, 500, "", message, nil)
+		// TS APICallError({statusCode: 500, isRetryable: false}).
+		noOutput := providererrors.NewProviderError(m.provider.config.Name, 500, "", message, nil)
+		notRetryable := false
+		noOutput.Retryable = &notRetryable
+		noOutput.ResponseHeaders, noOutput.ResponseBody = openResponsesErrorResponse(httpResp)
+		return nil, noOutput
 	}
 
 	// Convert response to GenerateResult
@@ -135,6 +160,24 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result.Warnings = warnings
+	if response.IncompleteDetails == nil || response.IncompleteDetails.Reason == "" {
+		// TS incomplete_details?.reason: a present "" (or non-string) reason
+		// is an unknown reason, not a missing one.
+		result.FinishReason = mapOpenResponsesFinishReasonTS("", openResponsesHasIncompleteReason(httpResp.Body), len(result.ToolCalls) > 0)
+	}
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(httpResp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
+	}
+	result.ResponseMetadata = providerutils.BuildResponseMetadata(response.ID, response.Model, response.CreatedAt)
+	if ts, ok := openResponsesCreatedAt(httpResp.Body); ok {
+		// TS new Date(response.created_at * 1000): a present 0 is the epoch.
+		result.ResponseMetadata.Timestamp = ts
+	}
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 
 	return result, nil
 }
@@ -149,12 +192,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -165,13 +206,23 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.extensionRegistry = m.provider.extensionRegistry
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
 	stream.requestBody = reqBody
-	return stream, nil
+	stream.includeRawChunks = opts.IncludeRawChunks
+	stream.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	// TS enqueues stream-start with the warnings first.
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(stream, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Open Responses API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	provOpts := extractOpenResponsesProviderOptions(opts.ProviderOptions, m.provider.config.Name)
+	// TS parseProviderOptions(openResponsesLanguageModelOptions): a mistyped
+	// reasoningEffort / reasoningSummary is an InvalidArgumentError.
+	if provOpts.Raw != nil {
+		if _, err := providerutils.ParseProviderOptions(m.provider.config.Name, map[string]interface{}{m.provider.config.Name: provOpts.Raw}, openResponsesOptionsSchema); err != nil {
+			return nil, nil, err
+		}
+	}
 	if openResponsesTruthyString(provOpts.Raw["conversation"]) && openResponsesTruthyString(provOpts.Raw["previousResponseId"]) {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
@@ -180,52 +231,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		})
 	}
 
-	// Convert messages to Open Responses format
-	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
-	if err != nil {
-		return nil, warnings, err
-	}
-	warnings = append(warnings, conversionWarnings...)
-
-	body := map[string]interface{}{
-		"model": m.modelID,
-		"input": input,
-	}
-	if stream {
-		body["stream"] = true
-	}
-
-	// Add instructions if present
-	if instructions != "" {
-		body["instructions"] = instructions
-	}
-
-	// Add optional parameters
-	if opts.Temperature != nil {
-		body["temperature"] = *opts.Temperature
-	}
-	if opts.MaxTokens != nil {
-		body["max_output_tokens"] = *opts.MaxTokens
-	}
-	if opts.TopP != nil {
-		body["top_p"] = *opts.TopP
-	}
-	// Note: Open Responses doesn't support frequencyPenalty, presencePenalty,
-	// stopSequences, topK, or seed. These are ignored with TS-shaped warnings.
-	if opts.FrequencyPenalty != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "frequencyPenalty",
-		})
-	}
-	if opts.PresencePenalty != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "presencePenalty",
-		})
-	}
-
-	// These are ignored with warnings
+	// These are ignored with warnings (TS reports them before the input
+	// conversion warnings).
 	if opts.StopSequences != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
@@ -243,6 +250,52 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			Type:    "unsupported",
 			Feature: "seed",
 		})
+	}
+
+	// Convert messages to Open Responses format. A Go Prompt.Text prompt is
+	// one user text message, as every other converter reads it (TS prompts
+	// are always messages; Go sent input: null).
+	promptMessages := opts.Prompt.Messages
+	if opts.Prompt.IsSimple() {
+		promptMessages = prompt.SimpleTextToMessages(opts.Prompt.Text)
+	}
+	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(promptMessages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
+	if err != nil {
+		return nil, warnings, err
+	}
+	warnings = append(warnings, conversionWarnings...)
+
+	body := map[string]interface{}{
+		"model": m.modelID,
+		"input": input,
+	}
+	if stream {
+		body["stream"] = true
+	}
+
+	// TS instructions: systemMessages.join('\n') whenever the prompt has a
+	// system message, so a system message of "" sends instructions: "".
+	if instructions != "" || openResponsesHasSystemMessage(promptMessages) {
+		body["instructions"] = instructions
+	}
+
+	// Add optional parameters
+	if opts.Temperature != nil {
+		body["temperature"] = *opts.Temperature
+	}
+	if opts.MaxTokens != nil {
+		body["max_output_tokens"] = *opts.MaxTokens
+	}
+	if opts.TopP != nil {
+		body["top_p"] = *opts.TopP
+	}
+	// TS forwards presence_penalty / frequency_penalty; stopSequences, topK
+	// and seed are ignored with warnings.
+	if opts.PresencePenalty != nil {
+		body["presence_penalty"] = *opts.PresencePenalty
+	}
+	if opts.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *opts.FrequencyPenalty
 	}
 
 	// Convert tools. Provider-defined tools are encoded via a registered
@@ -317,52 +370,22 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// option (reasoningEffort raw string) always takes precedence and is
 	// passed through verbatim, matching TS's
 	// `openResponsesOptions?.reasoningEffort ?? mapReasoningToProviderEffort(...)`.
-	var reasoningEffort string
-	if opts.Reasoning != nil {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			reasoningEffort = "none"
-		case types.ReasoningMinimal:
-			// TS effortMap maps minimal -> low for Open Responses (there is no
-			// "minimal" effort value on this API) and reports a compatibility
-			// warning when the mapped value differs from the requested one.
-			reasoningEffort = "low"
-			warnings = append(warnings, types.Warning{
-				Type:    "compatibility",
-				Feature: "reasoning",
-				Details: `reasoning "minimal" is not directly supported by this model. mapped to effort "low".`,
-			})
-		case types.ReasoningLow:
-			reasoningEffort = "low"
-		case types.ReasoningMedium:
-			reasoningEffort = "medium"
-		case types.ReasoningHigh:
-			reasoningEffort = "high"
-		case types.ReasoningXHigh:
-			reasoningEffort = "xhigh"
-			// ReasoningDefault ("provider-default"): omit.
-		}
+	// TS 61a315e333: mapReasoningToProviderEffort with the provider option
+	// (TS `!= null`: an empty string is a resolved value and is sent as is)
+	// and the Open Responses efforts plus max; minimal rounds up to low with
+	// a compatibility warning.
+	var providerEffort *string
+	if effortOption, ok := provOpts.Raw["reasoningEffort"].(string); ok {
+		providerEffort = &effortOption
 	}
+	reasoningEffort, hasReasoningEffort := providerutils.MapReasoningToProviderEffort(opts.Reasoning, map[types.ReasoningLevel]string{
+		types.ReasoningNone: "none", types.ReasoningLow: "low", types.ReasoningMedium: "medium",
+		types.ReasoningHigh: "high", types.ReasoningXHigh: "xhigh", types.ReasoningMax: "max",
+	}, providerEffort, &warnings)
 	resolvedReasoningSummary := provOpts.ReasoningSummary
-	if provOpts.ReasoningSummarySet && resolvedReasoningSummary != "" {
-		switch resolvedReasoningSummary {
-		case "concise", "detailed", "auto":
-			// valid
-		default:
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningSummary",
-				Details: fmt.Sprintf("reasoningSummary %q is not a supported value (concise, detailed, auto)", resolvedReasoningSummary),
-			})
-			resolvedReasoningSummary = ""
-		}
-	}
-	if provOpts.ReasoningEffort != "" {
-		reasoningEffort = provOpts.ReasoningEffort
-	}
-	if reasoningEffort != "" || resolvedReasoningSummary != "" {
+	if hasReasoningEffort || resolvedReasoningSummary != "" {
 		reasoning := map[string]interface{}{}
-		if reasoningEffort != "" {
+		if hasReasoningEffort {
 			reasoning["effort"] = reasoningEffort
 		}
 		if resolvedReasoningSummary != "" {
@@ -420,8 +443,9 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 	if providerOptions == nil {
 		return OpenResponsesProviderOptions{}
 	}
-	keys := []string{"openai", providerName, "openResponses", "open-responses"}
-	for _, key := range keys {
+	// TS reads providerOptions[providerOptionsName]; the v0.5 aliases follow,
+	// so the TS key wins when both are given (open-responses-language-model.ts:333).
+	for _, key := range openResponsesProviderKeys(providerName) {
 		raw, ok := providerOptions[key]
 		if !ok {
 			continue
@@ -431,18 +455,23 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 			continue
 		}
 		var opts OpenResponsesProviderOptions
-		if err := json.Unmarshal(data, &opts); err == nil {
-			if values, ok := raw.(map[string]interface{}); ok {
-				opts.Raw = values
-				if summary, ok := values["reasoningSummary"]; ok {
-					opts.ReasoningSummarySet = true
-					if text, ok := summary.(string); ok {
-						opts.ReasoningSummary = text
-					}
+		// A member of the wrong type fails the struct decode; the raw map is
+		// kept regardless so buildRequestBody can report it (TS
+		// parseProviderOptions throws).
+		_ = json.Unmarshal(data, &opts)
+		// Raw is read through the JSON form (TS options are JSON objects), so
+		// a Go-typed literal (map[string]string, map[string][]string,
+		// []map[string]string, int32) is read like the map form.
+		if values, ok := providerutils.NormalizeProviderOptionsObject(raw); ok {
+			opts.Raw = values
+			if summary, ok := values["reasoningSummary"]; ok {
+				opts.ReasoningSummarySet = true
+				if text, ok := summary.(string); ok {
+					opts.ReasoningSummary = text
 				}
 			}
-			return opts
 		}
+		return opts
 	}
 	return OpenResponsesProviderOptions{}
 }
@@ -648,7 +677,9 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 	result = make([]interface{}, 0, len(tools))
 	encodedProviderTools = map[string]encodedProviderTool{}
 
-	for _, t := range tools {
+	// A schema.Schema Parameters value is sent as its JSON Schema (TS
+	// parameters: tool.inputSchema), not dropped.
+	for _, t := range providertool.ResolveToolSchemas(tools) {
 		if t.Type == "provider" {
 			// Caller-executed "custom" tool (Config.CustomToolID), matched by
 			// provider-tool ID before the Extensions registry. Mirrors TS's
@@ -656,11 +687,16 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			// the expected shape, otherwise omitted (not defaulted).
 			if customToolID != "" && t.ProviderID == customToolID {
 				custom := CustomToolItem{Type: "custom", Name: t.Name}
-				if desc, ok := t.ProviderArgs["description"].(string); ok {
-					custom.Description = desc
-				}
+				desc, hasDesc := t.ProviderArgs["description"].(string)
+				custom.Description = desc
 				custom.Format = openResponsesCustomToolFormat(t.ProviderArgs["format"])
-				result = append(result, custom)
+				if hasDesc && desc == "" {
+					// TS typeof description === 'string' keeps an empty
+					// description, which CustomToolItem's omitempty drops.
+					result = append(result, openResponsesCustomToolEmptyDescription{Type: custom.Type, Name: custom.Name, Format: custom.Format})
+				} else {
+					result = append(result, custom)
+				}
 				encodedProviderTools[t.Name] = encodedProviderTool{args: t.ProviderArgs, custom: true}
 				continue
 			}
@@ -705,6 +741,9 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			// Convert parameters to map if possible
 			if paramsMap, ok := t.Parameters.(map[string]interface{}); ok {
 				ft.Parameters = paramsMap
+			} else if raw, ok := providerutils.RawJSONObject(t.Parameters); ok {
+				ft.Parameters = providerutils.DecodeRawJSONObject(raw)
+				ft.rawParameters = raw
 			}
 		}
 
@@ -812,7 +851,9 @@ func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProvid
 			"name": toolChoice.ToolName,
 		}, nil
 	default:
-		return "auto", nil
+		// TS convertedToolChoice = toolChoice?.type: any other type is sent
+		// as given.
+		return string(toolChoice.Type), nil
 	}
 }
 
@@ -830,6 +871,15 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 	// Convert usage information
 	if response.Usage != nil {
 		result.Usage = convertOpenResponsesUsage(response.Usage)
+	} else {
+		// TS doGenerate builds the usage from `response.usage?.x` with
+		// `(inputTokens ?? 0) - ...` fallbacks, so a response without usage
+		// still reports noCache 0 and text 0 (totals stay undefined).
+		noCache, text := int64(0), int64(0)
+		result.Usage = types.Usage{
+			InputDetails:  &types.InputTokenDetails{NoCacheTokens: &noCache},
+			OutputDetails: &types.OutputTokenDetails{TextTokens: &text},
+		}
 	}
 
 	// Extract content from output items
@@ -849,36 +899,39 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// item id a later turn needs to replay this text under
 			// Config.StrictResponseInput.
 			itemCopy := item
-			for _, part := range item.Content {
-				if part.Type == "output_text" {
-					textParts = append(textParts, part.Text)
-					result.Content = append(result.Content, types.TextContent{
-						Text:             part.Text,
-						ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, part.Annotations),
-					})
-				}
+			validAnnotations := openResponsesOutputTextAnnotations(item.Raw, item.Content)
+			// TS pushes a text part for EVERY content part, whatever its
+			// type: a refusal part has no `text`, so it becomes an empty
+			// text part that still carries the item id.
+			for i, part := range item.Content {
+				textParts = append(textParts, part.Text)
+				result.Content = append(result.Content, types.TextContent{
+					Text:             part.Text,
+					ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), &itemCopy, validAnnotations[i]),
+				})
 			}
 
 		case "reasoning":
-			// Include reasoning parts when the item has an ID or encrypted_content (#12869).
-			// Previously these were skipped when ItemID was absent; now we include them
-			// as long as either the ID or EncryptedContent is non-empty.
-			if item.ID != "" || item.EncryptedContent != "" {
-				// Reasoning items expose their text through Summary, not Content.
+			// TS emits one reasoning part per reasoning_text content part, or a
+			// single part with the joined summary when there is no content,
+			// for every reasoning item (including one with no id and no
+			// encrypted_content).
+			itemCopy := item
+			if len(item.Content) > 0 {
+				for _, cp := range item.Content {
+					one := itemCopy
+					one.Content = []ContentPart{cp}
+					result.Content = append(result.Content, types.ReasoningContent{
+						Text:             cp.Text,
+						EncryptedContent: item.EncryptedContent,
+						ProviderMetadata: openResponsesReasoningProviderMetadata(m.providerName(), &one),
+					})
+				}
+			} else {
 				var summaryText string
 				for _, part := range item.Summary {
-					if part.Type == "summary_text" || part.Type == "text" {
-						summaryText += part.Text
-					}
+					summaryText += part.Text
 				}
-				if summaryText != "" {
-					textParts = append(textParts, summaryText)
-				}
-				itemCopy := item
-				// Preserve EncryptedContent so callers can forward this reasoning
-				// block in subsequent turns (input-side round-trip, #12869), plus
-				// full itemId/reasoningSummary/reasoningContent metadata (row
-				// 1c1a9d1) so replay can reconstruct the original item exactly.
 				result.Content = append(result.Content, types.ReasoningContent{
 					Text:             summaryText,
 					EncryptedContent: item.EncryptedContent,
@@ -892,14 +945,15 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 
 			var args map[string]interface{}
 			if item.Arguments != "" {
-				_ = json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			}
 
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushOpenResponsesCall(&toolCalls, &result.Content, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
-				ProviderMetadata: openResponsesToolCallMetadata(m.providerName(), item.ID, item.Namespace),
+				RawArguments:     item.Arguments,
+				ProviderMetadata: openResponsesItemToolCallMetadata(m.providerName(), &item, item.Namespace),
 			})
 
 		case "custom_tool_call":
@@ -908,13 +962,13 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// literal for RawArguments/ContentPart.Input, distinct from
 			// Arguments (a synthetic {"input": ...} map used only internally).
 			hasToolCalls = true
-			rawArgs, _ := json.Marshal(item.Input) //nolint:errcheck
-			toolCalls = append(toolCalls, types.ToolCall{
+			rawArgs, _ := jsonstr.Marshal(item.Input) //nolint:errcheck // TS JSON.stringify: <, > and & stay literal
+			pushOpenResponsesCall(&toolCalls, &result.Content, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
 				RawArguments:     string(rawArgs),
-				ProviderMetadata: openResponsesToolCallMetadata(m.providerName(), item.ID, ""),
+				ProviderMetadata: openResponsesItemToolCallMetadata(m.providerName(), &item, ""),
 			})
 
 		default:
@@ -939,12 +993,17 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 						continue
 					}
 					hasToolCalls = true
+					// Core rebuilds the content's tool-call part from this
+					// call, so it keeps every field of the decoded part (TS
+					// pushes the part as is).
 					toolCalls = append(toolCalls, types.ToolCall{
 						ID:               tc.ToolCallID,
 						ToolName:         tc.ToolName,
+						Title:            tc.Title,
 						Arguments:        tc.Arguments,
 						RawArguments:     tc.Input,
 						ProviderExecuted: tc.ProviderExecuted,
+						Dynamic:          tc.Dynamic,
 						ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
 					})
 				}
@@ -975,59 +1034,107 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 	if response.IncompleteDetails != nil {
 		finishReason = response.IncompleteDetails.Reason
 	}
-	result.FinishReason = MapOpenResponsesFinishReason(finishReason, hasToolCalls)
+	// DoGenerate corrects the presence of a "" or non-string reason from
+	// the body (openResponsesHasIncompleteReason).
+	result.FinishReason = mapOpenResponsesFinishReasonTS(finishReason, finishReason != "", hasToolCalls)
 	result.RawFinishReason = finishReason
 
 	return result, nil
+}
+
+// pushOpenResponsesCall records a tool call and puts its tool-call part in
+// the content at the output item's position (TS doGenerate pushes every part
+// in output order; core would otherwise append the call after the text).
+func pushOpenResponsesCall(calls *[]types.ToolCall, content *[]types.ContentPart, tc types.ToolCall) {
+	*calls = append(*calls, tc)
+	var meta json.RawMessage
+	if len(tc.ProviderMetadata) > 0 {
+		meta, _ = jsonstr.Marshal(tc.ProviderMetadata)
+	}
+	*content = append(*content, types.ToolCallContent{
+		ToolCallID:       tc.ID,
+		ToolName:         tc.ToolName,
+		Input:            tc.RawArguments,
+		Arguments:        tc.Arguments,
+		ProviderMetadata: meta,
+	})
 }
 
 // convertOpenResponsesUsage converts Open Responses usage to AI SDK usage
 func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	inputTokens := int64(usage.InputTokens)
 	outputTokens := int64(usage.OutputTokens)
-	totalTokens := int64(usage.TotalTokens)
 
-	result := types.Usage{
-		InputTokens:  &inputTokens,
-		OutputTokens: &outputTokens,
-		TotalTokens:  &totalTokens,
+	result := types.Usage{}
+	// TS total: usage.input_tokens / output_tokens as read (absent stays
+	// undefined); core's totalTokens adds the totals that are present.
+	inputPresent, outputPresent := true, true
+	if wire := usage.wire(); wire != nil {
+		_, inputPresent = wire["input_tokens"].(float64)
+		_, outputPresent = wire["output_tokens"].(float64)
+	}
+	if inputPresent {
+		result.InputTokens = &inputTokens
+	}
+	if outputPresent {
+		result.OutputTokens = &outputTokens
+	}
+	if inputPresent || outputPresent {
+		totalTokens := inputTokens + outputTokens
+		result.TotalTokens = &totalTokens
 	}
 
-	// Calculate cached tokens
-	var cachedTokens int64
+	// TS reads cached_tokens / cache_write_tokens / reasoning_tokens as
+	// optional values: absent stays undefined, a reported 0 stays 0. The
+	// typed struct cannot tell them apart, so consult the wire object when
+	// present (hand-built usage keeps the details it carries).
+	cachedPresent, reasoningPresent := true, true
+	if wire := usage.wire(); wire != nil {
+		cachedPresent = wireNumberPresent(wire, "input_tokens_details", "cached_tokens")
+		reasoningPresent = wireNumberPresent(wire, "output_tokens_details", "reasoning_tokens")
+	}
+	var cachedTokens, reasoningTokens int64
 	if usage.InputTokensDetails != nil {
 		cachedTokens = int64(usage.InputTokensDetails.CachedTokens)
 	}
-
-	// Calculate reasoning tokens
-	var reasoningTokens int64
 	if usage.OutputTokensDetails != nil {
 		reasoningTokens = int64(usage.OutputTokensDetails.ReasoningTokens)
 	}
 
-	// Set input token details
-	if cachedTokens > 0 {
+	// TS: noCache = input - cached - cacheWrite, text = output - reasoning.
+	{
 		noCacheTokens := inputTokens - cachedTokens
+		var cacheWrite *int64
+		if usage.InputTokensDetails != nil && usage.InputTokensDetails.CacheWriteTokens != nil {
+			cw := int64(*usage.InputTokensDetails.CacheWriteTokens)
+			cacheWrite = &cw
+			noCacheTokens -= cw
+		}
 		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:   &noCacheTokens,
-			CacheReadTokens: &cachedTokens,
+			NoCacheTokens:    &noCacheTokens,
+			CacheWriteTokens: cacheWrite,
+		}
+		if cachedPresent {
+			result.InputDetails.CacheReadTokens = &cachedTokens
 		}
 	}
-
-	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := outputTokens - reasoningTokens
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &textTokens,
-			ReasoningTokens: &reasoningTokens,
+		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &textTokens}
+		if reasoningPresent {
+			result.OutputDetails.ReasoningTokens = &reasoningTokens
 		}
 	}
 
-	// Store raw usage
-	result.Raw = map[string]interface{}{
-		"input_tokens":  usage.InputTokens,
-		"output_tokens": usage.OutputTokens,
-		"total_tokens":  usage.TotalTokens,
+	// Store raw usage: the wire object verbatim (TS raw: response.usage).
+	if wire := usage.wire(); wire != nil {
+		result.Raw = wire
+	} else {
+		result.Raw = map[string]interface{}{
+			"input_tokens":  usage.InputTokens,
+			"output_tokens": usage.OutputTokens,
+			"total_tokens":  usage.TotalTokens,
+		}
 	}
 
 	return result
@@ -1039,6 +1146,15 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 // `failedResponseHandler` provider setting); returning nil falls back to the
 // default generic wrapping.
 func (m *LanguageModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if m.provider.config.FailedResponseHandler != nil {
 		if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
 			if mapped := m.provider.config.FailedResponseHandler(statusErr); mapped != nil {
@@ -1046,7 +1162,43 @@ func (m *LanguageModel) handleError(err error) error {
 			}
 		}
 	}
-	return providererrors.NewProviderError(m.provider.config.Name, 0, "", err.Error(), err)
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return openResponsesStatusError(m.provider.config.Name, statusErr, err)
+	}
+	// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+	return err
+}
+
+// openResponsesStatusError is TS defaultFailedResponseHandler
+// (createJsonErrorResponseHandler over openResponsesErrorSchema): a body
+// {error: {message: string, type?, param?, code?: string | null}} gives
+// error.message and the schema output as data; any other body gives the
+// status text and no data.
+func openResponsesStatusError(name string, statusErr *internalhttp.HTTPStatusError, err error) error {
+	message := statusErr.Text()
+	var data interface{}
+	var raw map[string]interface{}
+	if securejson.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &raw) == nil {
+		if errObj, ok := raw["error"].(map[string]interface{}); ok {
+			msg, isString := errObj["message"].(string)
+			valid := isString
+			for _, k := range []string{"type", "param", "code"} {
+				switch errObj[k].(type) {
+				case nil, string:
+				default:
+					valid = false
+				}
+			}
+			if valid {
+				message = msg
+				data = map[string]interface{}{"error": providerutils.PickSchemaKeys(errObj, "message", "type", "param", "code")}
+			}
+		}
+	}
+	pe := providererrors.NewProviderErrorFromResponse(name, 0, "", message, err)
+	pe.Data = data
+	return pe
 }
 
 // responseErrorMetadata classifies a `response.error` embedded in a
@@ -1078,6 +1230,10 @@ type openResponsesStream struct {
 	toolCallsByItemID map[string]*toolCallState
 	hasToolCalls      bool
 	finishReason      types.FinishReason
+	// rawFinishReason and finishUsage are what the last terminal event
+	// recorded; flush() puts them on the finish chunk.
+	rawFinishReason string
+	finishUsage     *types.Usage
 
 	// customToolCallsByItemID mirrors toolCallsByItemID for caller-executed
 	// "custom" tool calls (Config.CustomToolID), whose input streams as raw
@@ -1108,10 +1264,22 @@ type openResponsesStream struct {
 	extensionRegistry *ExtensionRegistry
 	extensionState    map[string]interface{}
 
+	// includeRawChunks emits a raw chunk before each event is processed
+	// (LanguageModelV4CallOptions.includeRawChunks); pendingEventData holds the
+	// event whose raw chunk was just returned.
+	includeRawChunks bool
+	pendingEventData string
+	hasPendingEvent  bool
+
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
 	requestBody interface{}
+
+	// responseHeaders are the HTTP response headers, carried on the
+	// response-metadata chunk of a response.created event so it does not
+	// clear the headers the leading header chunk reported.
+	responseHeaders map[string]string
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
@@ -1120,10 +1288,22 @@ func (s *openResponsesStream) RequestBody() interface{} { return s.requestBody }
 
 // toolCallState tracks the state of a tool call during streaming
 type toolCallState struct {
-	ID               string
-	ToolName         string
-	ArgsJSON         string // Accumulated JSON string
-	ProviderMetadata map[string]interface{}
+	ID       string
+	ToolName string
+	ArgsJSON string // Accumulated JSON string
+	// hasID / hasToolName: output_item.added carried call_id / name (not
+	// null), "" included, so TS `toolCall?.toolCallId ?? item.call_id`
+	// keeps it.
+	hasID       bool
+	hasToolName bool
+	// Namespace is the Go-only v0.5 namespace of the added item.
+	Namespace string
+}
+
+// id / toolName return the accumulated value when TS `??` would keep it.
+func (t *toolCallState) id() (string, bool) { return t.ID, t.hasID || t.ID != "" }
+func (t *toolCallState) toolName() (string, bool) {
+	return t.ToolName, t.hasToolName || t.ToolName != ""
 }
 
 // newOpenResponsesStream creates a new Open Responses stream
@@ -1139,7 +1319,7 @@ func newOpenResponsesStream(reader io.ReadCloser, warnings []types.Warning, prov
 		providerName:            name,
 		toolCallsByItemID:       make(map[string]*toolCallState),
 		customToolCallsByItemID: make(map[string]*toolCallState),
-		finishReason:            types.FinishReasonOther,
+		finishReason:            types.FinishReasonInterrupted,
 		extensionState:          make(map[string]interface{}),
 	}
 }
@@ -1161,23 +1341,78 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, s.err
 		}
 
-		// Get next SSE event
-		event, err := s.parser.Next()
-		if err != nil {
-			s.err = err
-			return nil, err
+		var eventData string
+		if s.hasPendingEvent {
+			// The raw chunk for this event was returned by the previous call.
+			eventData = s.pendingEventData
+			s.pendingEventData, s.hasPendingEvent = "", false
+		} else {
+			// Get next SSE event
+			event, err := s.parser.Next()
+			if err != nil {
+				if err == io.EOF {
+					s.queueFlush()
+					continue
+				}
+				s.err = err
+				return nil, err
+			}
+
+			// TS parseJsonEventStream drops the [DONE] frame and keeps
+			// reading; flush() runs at the end of the body (the io.EOF branch
+			// above).
+			if streaming.IsStreamDone(event) {
+				continue
+			}
+			eventData = event.Data
+
+			// TS enqueues {type: 'raw', rawValue} for every parse result
+			// before processing it when includeRawChunks is set.
+			if s.includeRawChunks {
+				s.pendingEventData, s.hasPendingEvent = eventData, true
+				raw := streaming.RawChunkValue(eventData)
+				return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}, nil
+			}
 		}
 
-		// Check for stream completion
-		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+		// TS parseJsonEventStream parses each frame with safeParseJSON
+		// (secureJsonParse): a forbidden __proto__ / constructor.prototype key
+		// at any depth is a JSONParseError part, also for a frame that is not
+		// an object.
+		if perr := securejson.Check([]byte(eventData)); perr != nil {
+			parseErr := providererrors.NewJSONParseError(eventData, perr)
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = ""
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: parseErr.Error(), Err: parseErr}, nil
 		}
 
-		// Parse the event data as JSON
+		// TS validates each chunk with z.any(), so JSON that is not an object
+		// (a number, string, array or boolean) passes and matches no event
+		// type; null passes validation too but `chunk.type` then throws a
+		// TypeError that errors the whole stream.
+		if trimmed := strings.TrimLeft(eventData, " \t\r\n"); trimmed != "" && trimmed[0] != '{' {
+			var probe interface{}
+			if jsonexact.Unmarshal([]byte(eventData), &probe) == nil {
+				if probe == nil {
+					s.err = errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
+					return nil, s.err
+				}
+				continue
+			}
+		}
+
+		// Parse the event data as JSON. TS enqueues an error part for an
+		// event that does not parse and keeps reading.
 		var streamEvent StreamEvent
-		if err := json.Unmarshal([]byte(event.Data), &streamEvent); err != nil {
-			return nil, fmt.Errorf("failed to parse stream event: %w", err)
+		if err := json.Unmarshal([]byte(eventData), &streamEvent); err != nil {
+			msg, perr := providerutils.ChunkParseFailure(eventData, err)
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = ""
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  perr,
+			}, nil
 		}
 
 		// Handle different event types
@@ -1190,18 +1425,72 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
+// openResponsesConcatDelta is the text TS appends to an existing
+// accumulator (`acc + chunk.delta` after `?? ""`): JS string concatenation, so an absent delta appends
+// "undefined" and a null one "null" (StreamEvent.Delta holds "" for both).
+func openResponsesConcatDelta(event *StreamEvent) string {
+	if event.Delta != "" || len(event.Raw) == 0 {
+		return event.Delta
+	}
+	var w struct {
+		Delta json.RawMessage `json:"delta"`
+	}
+	if jsonexact.Unmarshal(event.Raw, &w) != nil {
+		return ""
+	}
+	switch string(w.Delta) {
+	case "":
+		return "undefined"
+	case "null":
+		return "null"
+	}
+	return ""
+}
+
 // handleStreamEvent processes a stream event and returns appropriate chunk
 func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, bool) {
+	// TS validates chunks with z.any() and then reads chunk.item.type,
+	// chunk.response.* or chunk.error.code: a missing or null member is a
+	// TypeError that errors the stream.
+	member, prop := "", ""
 	switch event.Type {
+	case "response.output_item.added", "response.output_item.done":
+		member, prop = "item", "type"
+	case "response.completed", "response.incomplete":
+		member, prop = "response", "incomplete_details"
+	case "response.failed":
+		member, prop = "response", "error"
+	case "error":
+		member, prop = "error", "code"
+	}
+	if member != "" {
+		if what, missing := openResponsesMissingMember(event.Raw, member); missing {
+			s.err = fmt.Errorf("Cannot read properties of %s (reading '%s')", what, prop) //nolint:staticcheck // ST1005: TypeError text from TS
+			return nil, false
+		}
+	}
+	switch event.Type {
+	case "response.created":
+		// TS 4b16915083: {type: 'response-metadata', id: chunk.response.id,
+		// timestamp: new Date(chunk.response.created_at * 1000), modelId:
+		// chunk.response.model}.
+		return s.responseCreatedMetadata(event)
+
 	case "response.output_item.added":
 		// New output item started
 		if event.Item != nil && event.Item.Type == "function_call" {
 			// Initialize tool call tracking
-			s.toolCallsByItemID[event.Item.ID] = &toolCallState{
-				ID:               event.Item.CallID,
-				ToolName:         event.Item.Name,
-				ArgsJSON:         "",
-				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace),
+			_, hasID := event.Item.rawField("call_id", event.Item.CallID)
+			_, hasName := event.Item.rawField("name", event.Item.Name)
+			s.toolCallsByItemID[event.Item.mapKey()] = &toolCallState{
+				ID:       event.Item.CallID,
+				ToolName: event.Item.Name,
+				// TS seeds the accumulator with the item's own arguments;
+				// later deltas append to them.
+				ArgsJSON:    event.Item.Arguments,
+				hasID:       hasID,
+				hasToolName: hasName,
+				Namespace:   event.Item.Namespace,
 			}
 			return nil, false
 		}
@@ -1225,10 +1514,14 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// A caller-executed "custom" tool call starts streaming its raw text
 		// input. Keyed by item id, mirroring the function_call accumulator.
 		if event.Item != nil && event.Item.Type == "custom_tool_call" {
-			s.customToolCallsByItemID[event.Item.ID] = &toolCallState{
-				ID:       event.Item.CallID,
-				ToolName: event.Item.Name,
-				ArgsJSON: event.Item.Input,
+			_, hasID := event.Item.rawField("call_id", event.Item.CallID)
+			_, hasName := event.Item.rawField("name", event.Item.Name)
+			s.customToolCallsByItemID[event.Item.mapKey()] = &toolCallState{
+				ID:          event.Item.CallID,
+				ToolName:    event.Item.Name,
+				ArgsJSON:    event.Item.Input,
+				hasID:       hasID,
+				hasToolName: hasName,
 			}
 			return &provider.StreamChunk{
 				Type:     provider.ChunkTypeToolInputStart,
@@ -1261,44 +1554,41 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 	case "response.function_call_arguments.delta":
 		// Tool call arguments delta. Row fb82a6c: create the accumulator
 		// lazily if a delta arrives without a prior output_item.added.
-		state, ok := s.toolCallsByItemID[event.ItemID]
+		state, ok := s.toolCallsByItemID[event.mapItemKey()]
 		if !ok {
-			state = &toolCallState{
-				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
-			}
-			s.toolCallsByItemID[event.ItemID] = state
+			state = &toolCallState{ArgsJSON: event.Delta}
+			s.toolCallsByItemID[event.mapItemKey()] = state
+			return nil, false
 		}
-		state.ArgsJSON += event.Delta
+		state.ArgsJSON += openResponsesConcatDelta(event)
 		return nil, false
 
 	case "response.function_call_arguments.done":
 		// Tool call arguments complete. Row fb82a6c: create the accumulator
 		// lazily if this arrives without a prior output_item.added.
-		state, ok := s.toolCallsByItemID[event.ItemID]
+		state, ok := s.toolCallsByItemID[event.mapItemKey()]
 		if !ok {
-			state = &toolCallState{
-				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
-			}
-			s.toolCallsByItemID[event.ItemID] = state
+			state = &toolCallState{}
+			s.toolCallsByItemID[event.mapItemKey()] = state
 		}
-		// Use the final arguments from the event if provided
-		if event.Arguments != "" {
-			state.ArgsJSON = event.Arguments
-		}
+		// TS: toolCall.arguments = chunk.arguments, even when it is "".
+		state.ArgsJSON = event.Arguments
 		return nil, false
 
 	case "response.custom_tool_call_input.delta":
 		// Caller-executed custom tool input delta (raw text, not JSON).
 		// Row fb82a6c-equivalent: create the accumulator lazily if a delta
 		// arrives without a prior output_item.added.
-		state, ok := s.customToolCallsByItemID[event.ItemID]
+		state, ok := s.customToolCallsByItemID[event.mapItemKey()]
 		if !ok {
-			state = &toolCallState{}
-			s.customToolCallsByItemID[event.ItemID] = state
+			state = &toolCallState{ArgsJSON: event.Delta}
+			s.customToolCallsByItemID[event.mapItemKey()] = state
+		} else {
+			state.ArgsJSON += openResponsesConcatDelta(event)
 		}
-		state.ArgsJSON += event.Delta
-		id := state.ID
-		if id == "" {
+		// TS `toolCall?.toolCallId ?? chunk.item_id`.
+		id, ok := state.id()
+		if !ok {
 			id = event.ItemID
 		}
 		return &provider.StreamChunk{
@@ -1311,10 +1601,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// Final raw input for a caller-executed custom tool call. No chunk is
 		// emitted here (mirrors TS): the terminal tool-call chunk is built
 		// from response.output_item.done below.
-		state, ok := s.customToolCallsByItemID[event.ItemID]
+		state, ok := s.customToolCallsByItemID[event.mapItemKey()]
 		if !ok {
 			state = &toolCallState{}
-			s.customToolCallsByItemID[event.ItemID] = state
+			s.customToolCallsByItemID[event.mapItemKey()] = state
 		}
 		state.ArgsJSON = event.Input
 		return nil, false
@@ -1332,29 +1622,37 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			// output_item.added and/or delta events, if any were seen) only
 			// for provider metadata and for arguments when the done event
 			// itself doesn't carry them.
-			state, ok := s.toolCallsByItemID[event.Item.ID]
+			state, ok := s.toolCallsByItemID[event.Item.mapKey()]
 			id := event.Item.CallID
 			toolName := event.Item.Name
 			argsJSON := event.Item.Arguments
-			providerMetadata := openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace)
+			namespace := event.Item.Namespace
 			if ok {
-				if id == "" {
-					id = state.ID
+				// TS: toolCall?.toolCallId ?? item.call_id and
+				// toolCall?.toolName ?? item.name -- the id and name seen when
+				// the item was added win over those of the done item, "" included.
+				if v, has := state.id(); has {
+					id = v
 				}
-				if toolName == "" {
-					toolName = state.ToolName
+				if v, has := state.toolName(); has {
+					toolName = v
 				}
 				if argsJSON == "" {
 					argsJSON = state.ArgsJSON
 				}
-				if state.ProviderMetadata != nil {
-					providerMetadata = state.ProviderMetadata
+				if namespace == "" {
+					namespace = state.Namespace
 				}
 			}
+			// TS {itemId: chunk.item.id} of the done item.
+			providerMetadata := openResponsesItemToolCallMetadata(s.providerName, event.Item, namespace)
 			var args map[string]interface{}
 			if argsJSON != "" {
-				_ = json.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
 			}
+			// TS toolCallsByItemId.delete(item.id): a repeated done event for
+			// the same item must not reuse the accumulated arguments.
+			delete(s.toolCallsByItemID, event.Item.mapKey())
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
@@ -1371,23 +1669,24 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			// output_item.added and/or custom_tool_call_input.delta/.done
 			// events) only when the done event itself doesn't carry them.
 			s.hasToolCalls = true
-			custom, ok := s.customToolCallsByItemID[event.Item.ID]
+			custom, ok := s.customToolCallsByItemID[event.Item.mapKey()]
 			customToolCallID := event.Item.CallID
 			toolName := event.Item.Name
 			input := event.Item.Input
 			if ok {
-				if customToolCallID == "" {
-					customToolCallID = custom.ID
+				// TS: toolCall?.toolCallId ?? item.call_id (likewise the name).
+				if v, has := custom.id(); has {
+					customToolCallID = v
 				}
-				if toolName == "" {
-					toolName = custom.ToolName
+				if v, has := custom.toolName(); has {
+					toolName = v
 				}
 				if input == "" {
 					input = custom.ArgsJSON
 				}
 			}
-			delete(s.customToolCallsByItemID, event.Item.ID)
-			rawArgs, _ := json.Marshal(input) //nolint:errcheck
+			delete(s.customToolCallsByItemID, event.Item.mapKey())
+			rawArgs, _ := jsonstr.Marshal(input) //nolint:errcheck // TS JSON.stringify: <, > and & stay literal
 			// TS enqueues tool-input-end then tool-call as two separate parts;
 			// queue the tool-call chunk for the next Next() call and return
 			// tool-input-end first, mirroring that ordering.
@@ -1397,7 +1696,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 					ID:               customToolCallID,
 					ToolName:         toolName,
 					RawArguments:     string(rawArgs),
-					ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, ""),
+					ProviderMetadata: openResponsesItemToolCallMetadata(s.providerName, event.Item, ""),
 					Arguments:        map[string]interface{}{"input": input},
 				},
 			})
@@ -1443,8 +1742,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			}
 			if err != nil {
 				// Mirrors TS's try/catch around decodeExtensionItem: a
-				// decode failure doesn't abort the whole stream.
-				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, true
+				// decode failure doesn't abort the whole stream, and the
+				// finish reason is error (open-responses-language-model.ts:876).
+				s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
+				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 			}
 			for _, part := range decoded {
 				if tc, ok := part.(types.ToolCallContent); ok {
@@ -1454,21 +1755,31 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 						ToolCall: &types.ToolCall{
 							ID:               tc.ToolCallID,
 							ToolName:         tc.ToolName,
+							Title:            tc.Title,
 							Arguments:        tc.Arguments,
 							RawArguments:     tc.Input,
 							ProviderExecuted: tc.ProviderExecuted,
+							Dynamic:          tc.Dynamic,
 							ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
 						},
 					})
 					continue
 				}
 				if tr, ok := part.(types.ToolResultContent); ok {
+					// TS enqueues the decoded part as is: its providerMetadata
+					// carries the {id, itemId} extension reference.
 					s.pending = append(s.pending, &provider.StreamChunk{
 						Type: provider.ChunkTypeToolResult,
 						ToolResult: &types.ToolResult{
-							ToolCallID: tr.ToolCallID,
-							ToolName:   tr.ToolName,
-							Result:     tr.Result,
+							ToolCallID:          tr.ToolCallID,
+							ToolName:            tr.ToolName,
+							Title:               tr.Title,
+							Input:               tr.Input,
+							Result:              tr.Result,
+							IsError:             tr.IsError,
+							ProviderExecuted:    tr.ProviderExecuted,
+							ProviderExecutedSet: tr.ProviderExecuted,
+							ProviderMetadata:    extensionToolCallProviderMetadata(tr.ProviderMetadata),
 						},
 					})
 					continue
@@ -1518,102 +1829,64 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		return nil, false
 
 	case "response.completed", "response.incomplete":
+		// TS only records the finish reason and usage here; `finish` is
+		// enqueued by flush() when the stream ends.
 		finishReason := ""
 		if event.Response != nil && event.Response.IncompleteDetails != nil {
 			finishReason = event.Response.IncompleteDetails.Reason
 		}
-		fr := MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
-
-		var usage *types.Usage
+		present := finishReason != "" || openResponsesEventHasIncompleteReason(event.Raw)
+		s.finishReason = mapOpenResponsesFinishReasonTS(finishReason, present, s.hasToolCalls)
+		s.rawFinishReason = finishReason
 		if event.Response != nil && event.Response.Usage != nil {
 			u := convertOpenResponsesUsage(event.Response.Usage)
-			usage = &u
+			s.finishUsage = &u
 		}
-
-		s.err = io.EOF
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    fr,
-			RawFinishReason: finishReason,
-			Usage:           usage,
-		}
-		// Row 6fe187f: close an unfinished reasoning block (using its
-		// original item id) before the finish chunk, mirroring TS's
-		// transform stream flush().
-		if s.activeReasoningID != "" {
-			reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
-			s.activeReasoningID = ""
-			s.pending = append(s.pending, finishChunk)
-			return reasoningEnd, true
-		}
-		return finishChunk, true
+		return nil, false
 
 	case "response.failed":
 		// Response failed. The error lives inside the nested response object
-		// (response.error), not a top-level event.error field. Mirrors TS: a
-		// response.failed event still ends the stream with a finish chunk
-		// (via flush()); the error, if present, is enqueued as a separate
-		// mid-stream error chunk immediately before it (not thrown/fatal).
+		// (response.error), not a top-level event.error field. Mirrors TS: the
+		// finish reason is recorded (finish itself comes from flush()); the
+		// error, if present, is enqueued as a mid-stream error chunk.
 		s.finishReason = types.FinishReasonError
 		var respErr *ResponseError
 		var status string
-		var usage *types.Usage
 		if event.Response != nil {
 			respErr = event.Response.Error
 			status = event.Response.Status
 			if event.Response.Usage != nil {
 				u := convertOpenResponsesUsage(event.Response.Usage)
-				usage = &u
+				s.finishUsage = &u
 			}
 		}
-		rawReason := status
-		if respErr != nil && respErr.Code != "" {
-			rawReason = respErr.Code
+		// TS `chunk.response.error?.code ?? chunk.response.status`: a present
+		// non-null code wins, an empty string included.
+		s.rawFinishReason = status
+		if respErr != nil && (respErr.Code != "" || responseFailedHasCode(event.Raw)) {
+			s.rawFinishReason = respErr.Code
 		}
-		s.err = io.EOF
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    types.FinishReasonError,
-			RawFinishReason: rawReason,
-			Usage:           usage,
-		}
-		// Row 6fe187f (extended to response.failed): close an unfinished
-		// reasoning block before the finish chunk here too, mirroring TS's
-		// flush() running unconditionally regardless of what ended the
-		// stream.
-		tail := s.finishChunksAfterReasoningClose(finishChunk)
 		if respErr == nil {
-			first := tail[0]
-			s.pending = append(s.pending, tail[1:]...)
-			return first, true
+			return nil, false
 		}
-		s.pending = append(s.pending, tail...)
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: respErr.Message,
-			Err:  s.streamProviderError(respErr),
+			Err:  s.streamProviderError(event, respErr),
 		}, true
 
 	case "error":
-		// A bare error event (no response wrapper). Mirrors TS: enqueued as a
-		// mid-stream error chunk; the stream still ends normally via a later
-		// [DONE]/flush, so a finish chunk (with any still-open reasoning
-		// block closed first, same as response.failed above) is queued
-		// behind it here too.
+		// A bare error event (no response wrapper). Mirrors TS: the finish
+		// reason becomes error and the error is enqueued as a mid-stream chunk.
 		if event.Error == nil {
 			return nil, false
 		}
 		s.finishReason = types.FinishReasonError
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    types.FinishReasonError,
-			RawFinishReason: event.Error.Code,
-		}
-		s.pending = append(s.pending, s.finishChunksAfterReasoningClose(finishChunk)...)
+		s.rawFinishReason = event.Error.Code
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: event.Error.Message,
-			Err:  s.streamProviderError(event.Error),
+			Err:  s.streamProviderError(event, event.Error),
 		}, true
 
 	default:
@@ -1625,8 +1898,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		}
 		if err != nil {
 			// Mirrors TS's try/catch around extension.decodeEvent: a decode
-			// failure doesn't abort the whole stream.
-			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, true
+			// failure doesn't abort the whole stream, and the finish reason
+			// is error (open-responses-language-model.ts:716).
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 		}
 		for _, chunk := range decoded {
 			if chunk.Type == provider.ChunkTypeToolCall || chunk.Type == provider.ChunkTypeToolInputStart {
@@ -1650,8 +1925,9 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 	for _, part := range item.Summary {
 		summary = append(summary, map[string]interface{}{"type": "summary_text", "text": part.Text})
 	}
+	// TS: reasoningContent == null ? null : [...]; an empty array stays [].
 	var reasoningContent interface{}
-	if len(item.Content) > 0 {
+	if item.Content != nil {
 		content := make([]map[string]interface{}, 0, len(item.Content))
 		for _, part := range item.Content {
 			content = append(content, map[string]interface{}{"type": "reasoning_text", "text": part.Text})
@@ -1659,14 +1935,18 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 		reasoningContent = content
 	}
 	payload := map[string]interface{}{
-		"itemId":           item.ID,
 		"reasoningSummary": summary,
 		"reasoningContent": reasoningContent,
 	}
-	if item.EncryptedContent != "" {
+	if id, ok := item.idValue(); ok {
+		payload["itemId"] = id
+	}
+	// TS encrypted_content != null: an empty string is kept
+	// (open-responses-language-model.ts:1012).
+	if _, ok := item.rawField("encrypted_content", item.EncryptedContent); ok {
 		payload["reasoningEncryptedContent"] = item.EncryptedContent
 	}
-	raw, err := json.Marshal(map[string]interface{}{providerName: payload})
+	raw, err := jsonstr.Marshal(map[string]interface{}{providerName: payload})
 	if err != nil {
 		return nil
 	}
@@ -1680,12 +1960,15 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 // all of the item's content parts), mirroring TS's
 // `{[providerOptionsName]: {itemId, ...(annotations.length > 0 &&
 // {annotations})}}`.
-func openResponsesTextMetadataPayload(providerName, itemID string, annotations []Annotation) json.RawMessage {
-	payload := map[string]interface{}{"itemId": itemID}
+func openResponsesTextMetadataPayload(providerName string, item *OutputItem, annotations []Annotation) json.RawMessage {
+	payload := map[string]interface{}{}
+	if id, ok := item.idValue(); ok {
+		payload["itemId"] = id
+	}
 	if len(annotations) > 0 {
 		payload["annotations"] = annotations
 	}
-	raw, err := json.Marshal(map[string]interface{}{providerName: payload})
+	raw, err := jsonstr.Marshal(map[string]interface{}{providerName: payload})
 	if err != nil {
 		return nil
 	}
@@ -1703,19 +1986,69 @@ func openResponsesTextProviderMetadata(providerName string, item *OutputItem) js
 		return nil
 	}
 	var annotations []Annotation
-	for _, part := range item.Content {
-		annotations = append(annotations, part.Annotations...)
+	for _, partAnnotations := range openResponsesOutputTextAnnotations(item.Raw, item.Content) {
+		annotations = append(annotations, partAnnotations...)
 	}
-	return openResponsesTextMetadataPayload(providerName, item.ID, annotations)
+	return openResponsesTextMetadataPayload(providerName, item, annotations)
 }
 
-func openResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
-	if itemID == "" && namespace == "" {
-		return nil
+// openResponsesOutputTextAnnotations is TS getOutputTextAnnotations applied to
+// every content part of a message item: a part's annotations are kept only
+// when every one of them is a well-formed url_citation (numeric start_index and
+// end_index, string url and title), otherwise the whole part contributes none.
+// The raw item JSON is consulted so a missing member is told apart from a zero
+// value; an item built without raw JSON keeps its typed annotations.
+func openResponsesOutputTextAnnotations(rawItem json.RawMessage, content []ContentPart) [][]Annotation {
+	out := make([][]Annotation, len(content))
+	var rawParts []struct {
+		Annotations json.RawMessage `json:"annotations"`
 	}
+	if len(rawItem) > 0 {
+		var item struct {
+			Content []struct {
+				Annotations json.RawMessage `json:"annotations"`
+			} `json:"content"`
+		}
+		if jsonexact.Unmarshal(rawItem, &item) == nil {
+			rawParts = item.Content
+		}
+	}
+	if len(rawParts) != len(content) {
+		for i, part := range content {
+			out[i] = part.Annotations
+		}
+		return out
+	}
+	for i, rawPart := range rawParts {
+		var entries []map[string]interface{}
+		if len(rawPart.Annotations) == 0 || jsonexact.Unmarshal(rawPart.Annotations, &entries) != nil {
+			continue
+		}
+		valid := make([]Annotation, 0, len(entries))
+		for _, entry := range entries {
+			startIndex, startOK := entry["start_index"].(float64)
+			endIndex, endOK := entry["end_index"].(float64)
+			url, urlOK := entry["url"].(string)
+			title, titleOK := entry["title"].(string)
+			if entry["type"] != "url_citation" || !startOK || !endOK || !urlOK || !titleOK {
+				valid = nil
+				break
+			}
+			valid = append(valid, Annotation{Type: "url_citation", URL: url, StartIndex: int(startIndex), EndIndex: int(endIndex), Title: title})
+		}
+		out[i] = valid
+	}
+	return out
+}
+
+// openResponsesItemToolCallMetadata is TS `{[providerOptionsName]: {itemId:
+// item.id}}`: the id keeps its JSON value ("" and numbers included) and is
+// left out only when the item has no id key (undefined). namespace is the
+// Go-only v0.5 namespace (kept, known difference).
+func openResponsesItemToolCallMetadata(providerName string, item *OutputItem, namespace string) map[string]interface{} {
 	payload := map[string]interface{}{}
-	if itemID != "" {
-		payload["itemId"] = itemID
+	if id, ok := item.idValue(); ok {
+		payload["itemId"] = id
 	}
 	if namespace != "" {
 		payload["namespace"] = namespace
@@ -1738,34 +2071,221 @@ func (s *openResponsesStream) Err() error {
 	return s.err
 }
 
-// finishChunksAfterReasoningClose returns finishChunk alone, or -- when a
-// reasoning block is still open (s.activeReasoningID != "") -- a
-// reasoning-end chunk for it followed by finishChunk, closing s's active
-// reasoning state either way. Used by response.failed and a bare error
-// event (response.completed/incomplete apply the same reasoning-close
-// ordering inline above) so an interrupted reasoning block always closes
-// before the finish chunk, no matter which event ended the stream, mirroring
-// TS's flush() (which runs unconditionally at the end of the ReadableStream
-// regardless of the reason) closing `activeReasoningId` before enqueuing
-// `finish`.
-func (s *openResponsesStream) finishChunksAfterReasoningClose(finishChunk *provider.StreamChunk) []*provider.StreamChunk {
-	if s.activeReasoningID == "" {
-		return []*provider.StreamChunk{finishChunk}
+// queueFlush is TS flush(): close a still-open reasoning block, then enqueue
+// `finish` with what the stream recorded (other / no usage when it ended
+// without a terminal response event), and end the stream.
+func (s *openResponsesStream) queueFlush() {
+	if s.activeReasoningID != "" {
+		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID})
+		s.activeReasoningID = ""
 	}
-	reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
-	s.activeReasoningID = ""
-	return []*provider.StreamChunk{reasoningEnd, finishChunk}
+	s.pending = append(s.pending, &provider.StreamChunk{
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    s.finishReason,
+		RawFinishReason: s.rawFinishReason,
+		Usage:           s.finishUsage,
+	})
+	s.err = io.EOF
 }
 
 // streamProviderError classifies a streamed response.failed/error event's
 // embedded ResponseError into a *providererrors.StreamProviderError,
 // applying getResponseErrorMetadata when set. Mirrors TS's
 // createOpenResponsesStreamError.
-func (s *openResponsesStream) streamProviderError(respErr *ResponseError) *providererrors.StreamProviderError {
+func (s *openResponsesStream) streamProviderError(event *StreamEvent, respErr *ResponseError) *providererrors.StreamProviderError {
 	var statusCode *int
 	var retryable *bool
 	if s.getResponseErrorMetadata != nil {
 		statusCode, retryable = s.getResponseErrorMetadata(respErr)
 	}
-	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, "", respErr.Code, statusCode, retryable, respErr)
+	// TS createProviderStreamError({message, type: chunk.type, code, ...metadata,
+	// data: chunk}): the type is the event type and the data is the whole chunk.
+	var data interface{} = respErr
+	// TS `code: error.code`: an absent or null code is no code (an empty
+	// string is kept).
+	var code interface{} = respErr.Code
+	if len(event.Raw) > 0 {
+		var chunk interface{}
+		if jsonexact.Unmarshal(event.Raw, &chunk) == nil {
+			data = chunk
+			errObj := chunk
+			if event.Type == "response.failed" {
+				errObj = openResponsesWireField(chunk, "response")
+			}
+			if respErr.Code == "" && openResponsesWireField(openResponsesWireField(errObj, "error"), "code") == nil {
+				code = nil
+			}
+		}
+	}
+	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, event.Type, code, statusCode, retryable, data)
+}
+
+// openResponsesCustomToolEmptyDescription is a CustomToolItem whose
+// description is a present empty string (written as "description": "").
+type openResponsesCustomToolEmptyDescription struct {
+	Type        string                 `json:"type"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Format      map[string]interface{} `json:"format,omitempty"`
+}
+
+// openResponsesWireField is value[key] for a decoded JSON object (nil
+// otherwise).
+func openResponsesWireField(value interface{}, key string) interface{} {
+	m, _ := value.(map[string]interface{})
+	return m[key]
+}
+
+// wireNumberPresent reports whether raw[object][key] is a JSON number.
+func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
+	m, ok := raw[object].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, ok = m[key].(float64)
+	return ok
+}
+
+// openResponsesOptionsSchema is openResponsesLanguageModelOptions: both
+// members are nullish (a null summary suppresses it); other keys pass.
+var openResponsesOptionsSchema = providerutils.OptionSchema{
+	"reasoningEffort":  providerutils.OptNullable(providerutils.OptString),
+	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
+}
+
+// openResponsesHasIncompleteReason reports whether a response body carries a
+// non-null incomplete_details.reason.
+func openResponsesHasIncompleteReason(body []byte) bool {
+	var w struct {
+		IncompleteDetails struct {
+			Reason json.RawMessage `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	if jsonexact.Unmarshal(body, &w) != nil {
+		return false
+	}
+	return len(w.IncompleteDetails.Reason) > 0 && string(w.IncompleteDetails.Reason) != "null"
+}
+
+// openResponsesEventHasIncompleteReason is openResponsesHasIncompleteReason
+// for a stream event's response member.
+func openResponsesEventHasIncompleteReason(raw json.RawMessage) bool {
+	var w struct {
+		Response json.RawMessage `json:"response"`
+	}
+	if jsonexact.Unmarshal(raw, &w) != nil || len(w.Response) == 0 {
+		return false
+	}
+	return openResponsesHasIncompleteReason(w.Response)
+}
+
+// responseFailedHasCode reports whether a response.failed event carries a
+// non-null response.error.code.
+func responseFailedHasCode(raw json.RawMessage) bool {
+	var w struct {
+		Response struct {
+			Error struct {
+				Code json.RawMessage `json:"code"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if jsonexact.Unmarshal(raw, &w) != nil {
+		return false
+	}
+	return len(w.Response.Error.Code) > 0 && string(w.Response.Error.Code) != "null"
+}
+
+// openResponsesMissingMember reports whether raw (a JSON object) has no key
+// member ("undefined") or a null one ("null"), the values whose property
+// read throws in JS.
+func openResponsesMissingMember(raw json.RawMessage, member string) (string, bool) {
+	var fields map[string]json.RawMessage
+	if len(raw) == 0 || jsonexact.Unmarshal(raw, &fields) != nil {
+		return "", false
+	}
+	v, ok := fields[member]
+	if !ok {
+		return "undefined", true
+	}
+	if string(v) == "null" {
+		return "null", true
+	}
+	return "", false
+}
+
+// responseCreatedMetadata maps a response.created event to the
+// response-metadata chunk TS enqueues. A missing or null `response` is the
+// TypeError TS throws reading `chunk.response.id`, which errors the stream.
+func (s *openResponsesStream) responseCreatedMetadata(event *StreamEvent) (*provider.StreamChunk, bool) {
+	var wire struct {
+		Response json.RawMessage `json:"response"`
+	}
+	_ = jsonexact.Unmarshal(event.Raw, &wire)
+	if event.Response == nil {
+		what := "undefined"
+		if string(wire.Response) == "null" {
+			what = "null"
+		}
+		s.err = fmt.Errorf("Cannot read properties of %s (reading 'id')", what) //nolint:staticcheck // ST1005: TypeError text from TS
+		return nil, false
+	}
+	meta := &provider.ResponseMetadata{
+		ID:      event.Response.ID,
+		ModelID: event.Response.Model,
+		Headers: s.responseHeaders,
+	}
+	if ts, ok := openResponsesCreatedAt(wire.Response); ok {
+		meta.Timestamp = ts
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta}, true
+}
+
+// openResponsesCreatedAt reads `created_at` (unix seconds) from the raw
+// response body, as TS `new Date(response.created_at * 1000)`: 0 is the
+// epoch, which the int64 OpenResponsesResponse.CreatedAt cannot tell from an
+// absent value, and null is the epoch too (null * 1000 is 0 in JS). An
+// absent, non-numeric or out-of-range value is an Invalid Date in TS: no
+// timestamp.
+func openResponsesCreatedAt(body []byte) (time.Time, bool) {
+	var v struct {
+		CreatedAt json.RawMessage `json:"created_at"`
+	}
+	if len(body) == 0 || jsonexact.Unmarshal(body, &v) != nil || len(v.CreatedAt) == 0 {
+		return time.Time{}, false
+	}
+	var f *float64
+	if json.Unmarshal(v.CreatedAt, &f) != nil {
+		return time.Time{}, false
+	}
+	if f == nil {
+		return time.UnixMilli(0), true
+	}
+	ms := *f * 1000
+	// TS TimeClip: NaN, ±Inf and |t| > 8.64e15 ms are an Invalid Date.
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(int64(ms)), true
+}
+
+// openResponsesErrorResponse is the responseHeaders (lower-case keys, TS
+// extractResponseHeaders) and responseBody of an APICallError TS throws for a
+// successful HTTP response.
+func openResponsesErrorResponse(resp *internalhttp.Response) (map[string]string, string) {
+	if resp == nil {
+		return nil, ""
+	}
+	_, headers, _ := (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails()
+	return headers, string(resp.Body)
+}
+
+// openResponsesHasSystemMessage reports whether the prompt has a system
+// message (TS pushes each one's content, even "", into the instructions).
+func openResponsesHasSystemMessage(messages []types.Message) bool {
+	for _, msg := range messages {
+		if msg.Role == types.RoleSystem {
+			return true
+		}
+	}
+	return false
 }

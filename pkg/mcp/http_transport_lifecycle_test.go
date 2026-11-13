@@ -172,7 +172,7 @@ func TestHTTPTransportCloseCancelsPOSTResponseSSEReader(t *testing.T) {
 		t.Fatal("timed out waiting for Close to return (it must wait for the SSE reader goroutine)")
 	}
 
-	// Close() already waited for postSSEWG, so the reader goroutine is gone
+	// Close() already waited for its background goroutines, so the reader goroutine is gone
 	// by construction; this additionally guards against any other lingering
 	// goroutine from this test (e.g. the inbound SSE lifecycle) leaking.
 	eventuallyNoExtraGoroutines(t, baseline, 2*time.Second)

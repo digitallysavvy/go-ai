@@ -14,9 +14,12 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -43,43 +46,99 @@ func cartesiaEncodingFromInputAudioFormat(inputType string) (string, error) {
 	case "audio/pcma":
 		return "pcm_alaw", nil
 	default:
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: fmt.Sprintf("Unsupported Cartesia streaming audio format: %s", inputType),
-		}
+		return "", providererrors.NewArgumentError("inputAudioFormat", fmt.Sprintf("Unsupported Cartesia streaming audio format: %s", inputType), nil)
 	}
 }
 
 // buildCartesiaStreamingTranscriptionURL mirrors TS
-// buildCartesiaStreamingTranscriptionUrl.
-func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding string, sampleRate int, language *string, token string, useTurnDetection bool) (*url.URL, error) {
+// buildCartesiaStreamingTranscriptionUrl: the path is resolved against the
+// origin of baseURL (`new URL('/stt/websocket', baseURL)`), and the query
+// keeps TS's insertion order (model, encoding, sample_rate, cartesia_version,
+// access_token, language) because the request body echoes the URL.
+// withToken=false drops access_token (`searchParams.delete`).
+//
+// TS 467b299146: then one keyterm per streaming.keyterms entry (both
+// endpoints), and, on the turn detection endpoint, turn_start_threshold,
+// turn_eager_end_threshold, turn_end_threshold and turn_end_timeout_ms
+// (String(value)) for each option set.
+func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding string, sampleRate int, language *string, token string, useTurnDetection, withToken bool, streaming *StreamingOptions) (*url.URL, error) {
 	path := "/stt/websocket"
 	if useTurnDetection {
 		path = "/stt/turns/websocket"
 	}
-	full := strings.TrimRight(baseURL, "/") + path
-	u, err := url.Parse(full)
+	// TS toWebSocketUrl(new URL(path, baseURL)): the base URL's origin and
+	// credentials with the absolute path, WHATWG serialization, "Invalid URL"
+	// for a base URL it rejects; http: to ws:, https: to wss:.
+	base, err := urlnorm.Parse(baseURL)
 	if err != nil {
 		return nil, err
 	}
-	switch u.Scheme {
-	case "https":
-		u.Scheme = "wss"
-	case "http":
-		u.Scheme = "ws"
+	resolved, err := base.ResolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+	normalized, err := wsutil.ToWebSocketURL(resolved.String())
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return nil, err
 	}
 
-	q := url.Values{}
-	q.Set("model", modelID)
-	q.Set("encoding", encoding)
-	q.Set("sample_rate", strconv.Itoa(sampleRate))
-	q.Set("cartesia_version", version)
-	q.Set("access_token", token)
+	pairs := [][2]string{
+		{"model", modelID},
+		{"encoding", encoding},
+		{"sample_rate", strconv.Itoa(sampleRate)},
+		{"cartesia_version", version},
+	}
+	if withToken {
+		pairs = append(pairs, [2]string{"access_token", token})
+	}
 	if !useTurnDetection && language != nil {
-		q.Set("language", *language)
+		pairs = append(pairs, [2]string{"language", *language})
+	}
+	// TS url.searchParams.set on a fresh URL: insertion order, URLSearchParams
+	// escaping ("~" as %7E, "*" literal).
+	q := &internalhttp.SearchParams{}
+	for _, kv := range pairs {
+		q.Set(kv[0], kv[1])
+	}
+	if streaming != nil {
+		for _, keyterm := range streaming.Keyterms {
+			q.Append("keyterm", keyterm)
+		}
+		if useTurnDetection {
+			for _, t := range cartesiaTurnThresholds(streaming) {
+				if t.value != nil {
+					q.Set(t.param, providerutils.JSNumberString(*t.value))
+				}
+			}
+		}
 	}
 	u.RawQuery = q.Encode()
 	return u, nil
+}
+
+type cartesiaTurnThreshold struct {
+	option, param string
+	value         *float64
+}
+
+// cartesiaTurnThresholds is TS TURN_THRESHOLD_PARAMS with the values set on
+// streaming, in TS order.
+func cartesiaTurnThresholds(streaming *StreamingOptions) []cartesiaTurnThreshold {
+	var timeout *float64
+	if streaming.TurnEndTimeoutMs != nil {
+		v := float64(*streaming.TurnEndTimeoutMs)
+		timeout = &v
+	}
+	return []cartesiaTurnThreshold{
+		{"turnStartThreshold", "turn_start_threshold", streaming.TurnStartThreshold},
+		{"turnEagerEndThreshold", "turn_eager_end_threshold", streaming.TurnEagerEndThreshold},
+		{"turnEndThreshold", "turn_end_threshold", streaming.TurnEndThreshold},
+		{"turnEndTimeoutMs", "turn_end_timeout_ms", timeout},
+	}
 }
 
 // createStreamingAccessToken mirrors TS
@@ -90,10 +149,11 @@ func (m *TranscriptionModel) createStreamingAccessToken(ctx context.Context, hea
 		Token string `json:"token"`
 	}
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/access-token",
-		Body:    map[string]interface{}{"grants": map[string]interface{}{"stt": true}},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCartesiaAccessToken),
+		Method:           http.MethodPost,
+		Path:             "/access-token",
+		Body:             map[string]interface{}{"grants": map[string]interface{}{"stt": true}},
+		Headers:          headers,
 	}, &resp); err != nil {
 		return "", handleError(err)
 	}
@@ -108,26 +168,27 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		opts = &provider.TranscriptionStreamOptions{}
 	}
 	if !isStreamingTranscriptionModelID(m.modelID) {
-		return nil, fmt.Errorf("%w: streaming transcription with %s", providererrors.ErrUnsupportedFeature, m.modelID)
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming transcription with " + m.modelID}
 	}
 
 	currentDate := time.Now()
 	warnings := []types.Warning{}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	cartesiaOpts := extractTranscriptionModelOptions(opts.ProviderOptions)
 
+	// TS `language != null && language !== 'en'`: an empty string is
+	// rejected too.
 	var language *string
-	if cartesiaOpts != nil && cartesiaOpts.Language != "" {
-		l := cartesiaOpts.Language
+	if l, ok := transcriptionLanguageOption(opts.ProviderOptions, cartesiaOpts); ok {
 		language = &l
 	}
 	if language != nil && *language != "en" {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "Cartesia Ink 2 currently supports English only.",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "Cartesia Ink 2 currently supports English only.", nil)
 	}
 
-	if cartesiaOpts != nil && len(cartesiaOpts.TimestampGranularities) > 0 {
+	if cartesiaOpts != nil && cartesiaOpts.TimestampGranularities != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "providerOptions.cartesia.timestampGranularities",
@@ -135,16 +196,29 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		})
 	}
 
+	var streaming *StreamingOptions
+	if cartesiaOpts != nil {
+		streaming = cartesiaOpts.Streaming
+	}
+
+	// TS 467b299146: turn thresholds need the turn detection endpoint.
+	if streaming != nil && streaming.TurnDetection != nil && !*streaming.TurnDetection {
+		for _, t := range cartesiaTurnThresholds(streaming) {
+			if t.value != nil {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "providerOptions.cartesia.streaming." + t.option,
+					Details: "Turn thresholds require turnDetection to be enabled.",
+				})
+			}
+		}
+	}
+
 	// Always validate the declared media type — an explicit
 	// streaming.encoding override must not bypass the allowlist.
 	inferredEncoding, err := cartesiaEncodingFromInputAudioFormat(opts.InputAudioFormat.Type)
 	if err != nil {
 		return nil, err
-	}
-
-	var streaming *StreamingOptions
-	if cartesiaOpts != nil {
-		streaming = cartesiaOpts.Streaming
 	}
 
 	encoding := inferredEncoding
@@ -190,17 +264,17 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		urlLanguage = language
 	}
 
-	wsURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection)
+	wsURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection, true, streaming)
 	if err != nil {
 		return nil, err
 	}
 
 	// The request body echoes the connection URL with the access token
 	// stripped, matching TS's `requestUrl.searchParams.delete('access_token')`.
-	requestURL := *wsURL
-	strippedQuery := requestURL.Query()
-	strippedQuery.Del("access_token")
-	requestURL.RawQuery = strippedQuery.Encode()
+	requestURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection, false, streaming)
+	if err != nil {
+		return nil, err
+	}
 
 	resolvedLanguage := "en"
 	if language != nil {
@@ -310,19 +384,6 @@ func (s *cartesiaTranscriptionStream) pumpAudio(conn *websocket.Conn, cfg cartes
 	}
 }
 
-// cartesiaStreamingTranscriptionEvent is a server->client realtime
-// transcription event, mirroring TS CartesiaStreamingTranscriptionEvent.
-type cartesiaStreamingTranscriptionEvent struct {
-	Type       string   `json:"type,omitempty"`
-	RequestID  string   `json:"request_id,omitempty"`
-	Transcript string   `json:"transcript,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	IsFinal    *bool    `json:"is_final,omitempty"`
-	Duration   *float64 `json:"duration,omitempty"`
-	Message    string   `json:"message,omitempty"`
-	ErrorCode  string   `json:"error_code,omitempty"`
-}
-
 func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig) {
 	defer s.CloseParts()
 	// Release the session's resources as soon as run() returns for any
@@ -341,7 +402,14 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 
 	conn, err := s.dial(cfg.url)
 	if err != nil {
-		fail(err)
+		// TS connectToWebSocket: an abort before or during the handshake is
+		// onAbort(abortSignal.reason); a socket that fails to open (a refused
+		// handshake, an unreachable host) fires onSocketError.
+		if cause := context.Cause(s.Context()); cause != nil {
+			fail(cause)
+		} else {
+			fail(errors.New("Cartesia streaming transcription error")) //nolint:staticcheck // TS onSocketError text
+		}
 		return
 	}
 	s.SetConn(conn)
@@ -388,7 +456,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 	for {
 		select {
 		case <-s.Context().Done():
-			fail(s.Context().Err())
+			fail(context.Cause(s.Context())) // TS onAbort(abortSignal.reason)
 			return
 
 		case audioErr := <-audioErrCh:
@@ -424,46 +492,57 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 				continue
 			}
 
-			var raw cartesiaStreamingTranscriptionEvent
-			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+			// TS safeParseJSON then a cast: any parsed JSON value is used as
+			// is, so a field of another type does not drop the event.
+			var parsed interface{}
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &parsed); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: parsed}) {
 					return
 				}
 			}
 
-			switch raw.Type {
+			if parsed == nil {
+				// TS reads raw.type of null: the TypeError fails the stream
+				// through onProcessingError.
+				fail(errors.New("Cannot read properties of null (reading 'type')")) //nolint:staticcheck // matches the TS runtime error text
+				return
+			}
+			raw, _ := parsed.(map[string]interface{})
+			eventType, _ := raw["type"].(string)
+			requestID := cartesiaJSString(raw["request_id"])
+
+			switch eventType {
 			case "turn.update", "turn.eager_end":
-				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: raw.RequestID, Text: raw.Transcript}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: requestID, Text: cartesiaJSString(raw["transcript"])}) {
 					return
 				}
 
 			case "turn.end":
-				text := raw.Transcript
+				text := cartesiaJSString(raw["transcript"])
 				finalTexts = append(finalTexts, text)
-				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: raw.RequestID, Text: text}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: requestID, Text: text}) {
 					return
 				}
 
 			case "transcript":
-				transcript := raw.Text
-				if raw.IsFinal != nil && *raw.IsFinal {
+				transcript := cartesiaJSString(raw["text"])
+				duration, hasDuration := raw["duration"].(float64)
+				if isFinal, _ := raw["is_final"].(bool); isFinal {
 					finalTexts = append(finalTexts, transcript)
-					if raw.Duration != nil {
-						durationSeconds += *raw.Duration
+					if hasDuration {
+						durationSeconds += duration
 					}
-					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: raw.RequestID, Text: transcript}) {
+					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: requestID, Text: transcript}) {
 						return
 					}
 				} else {
-					part := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: raw.RequestID, Text: transcript}
-					if raw.Duration != nil {
-						d := *raw.Duration
+					part := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: requestID, Text: transcript}
+					if hasDuration {
+						d := duration
 						part.DurationInSeconds = &d
 					}
 					if !s.Emit(part) {
@@ -479,18 +558,34 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 				return
 
 			case "error":
-				msg := raw.Message
-				if msg == "" {
-					msg = raw.ErrorCode
-				}
-				if msg == "" {
-					msg = "Cartesia streaming transcription error"
+				// TS `message ?? error_code ?? default`: a present message
+				// (even "") wins.
+				msg := "Cartesia streaming transcription error"
+				if v, ok := raw["message"]; ok && v != nil {
+					msg = cartesiaJSString(v)
+				} else if v, ok := raw["error_code"]; ok && v != nil {
+					msg = cartesiaJSString(v)
 				}
 				fail(errors.New(msg))
 				return
 			}
 		}
 	}
+}
+
+// cartesiaJSString reads a decoded JSON scalar as the string TS uses (a
+// string as is, a number as String(n), a boolean as "true"/"false"); null,
+// absent and other values are "" (the TS empty-string default).
+func cartesiaJSString(v interface{}) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return providerutils.JSNumberString(x)
+	case bool:
+		return strconv.FormatBool(x)
+	}
+	return ""
 }
 
 func (s *cartesiaTranscriptionStream) dial(wsURL *url.URL) (*websocket.Conn, error) {

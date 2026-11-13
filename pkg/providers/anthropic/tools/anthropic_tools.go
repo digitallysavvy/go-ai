@@ -11,7 +11,10 @@
 //   - Search the web for current information (WebSearch)
 //   - Fetch and read content from URLs (WebFetch)
 //
-// Most tools in this package are executed by the Anthropic API. Bash tools are
+// The computer, computer toolset, text editor and memory tools are client-executed
+// (as in the TypeScript SDK): they are not ProviderExecuted and have no built-in
+// Execute; install one with WithExecute. Most other tools in this package are
+// executed by the Anthropic API. Bash tools are
 // provider-defined but can execute locally through the configured sandbox, matching
 // the TypeScript SDK default behavior.
 package tools

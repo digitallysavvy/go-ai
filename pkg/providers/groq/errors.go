@@ -4,8 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // groqErrorPayload mirrors TS groqErrorDataSchema:
@@ -13,8 +18,8 @@ import (
 // uses error.message as the surfaced error text.
 type groqErrorPayload struct {
 	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type,omitempty"`
+		Message *string `json:"message"`
+		Type    *string `json:"type,omitempty"`
 	} `json:"error"`
 }
 
@@ -27,11 +32,43 @@ func parseGroqProviderError(err error) error {
 	if !errors.As(err, &statusErr) {
 		return nil
 	}
-	var payload groqErrorPayload
-	if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr != nil || payload.Error.Message == "" {
-		return nil
+	if perr, matched := groqHTTPError(statusErr, err); matched {
+		return perr
 	}
-	return providererrors.NewProviderError("groq", statusErr.StatusCode, payload.Error.Type, payload.Error.Message, err)
+	return nil
+}
+
+// groqHTTPError applies TS groqFailedResponseHandler
+// (createJsonErrorResponseHandler) to a failed response: the APICallError
+// keeps the status, response headers and decoded body in both branches; a
+// body matching groqErrorDataSchema gives error.message, error.type as the
+// code and the parsed error as data, any other body (empty, not JSON, or
+// another shape) the response status text and no data. matched reports the
+// schema branch.
+func groqHTTPError(statusErr *internalhttp.HTTPStatusError, cause error) (perr *providererrors.ProviderError, matched bool) {
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	body := textdecode.UTF8(statusErr.Body)
+	var payload groqErrorPayload
+	// The TS schema requires both as strings; "" is a valid message
+	// (errorToMessage: data.error.message).
+	matched = securejson.Unmarshal([]byte(body), &payload) == nil && payload.Error.Message != nil && payload.Error.Type != nil
+	if matched {
+		perr = providererrors.NewProviderErrorFromResponse("groq", statusErr.StatusCode, *payload.Error.Type, *payload.Error.Message, cause)
+		// zod strips the keys the schema does not declare.
+		perr.Data = map[string]interface{}{"error": map[string]interface{}{
+			"message": *payload.Error.Message, "type": *payload.Error.Type,
+		}}
+	} else {
+		message := statusErr.Text()
+		if message == "" && cause != nil {
+			message = cause.Error()
+		}
+		perr = providererrors.NewProviderErrorFromResponse("groq", statusErr.StatusCode, "", message, cause)
+	}
+	perr.ResponseBody = body
+	perr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
+	return perr, matched
 }
 
 // groqStreamErrorMetadata returns the inferred (statusCode, isRetryable)
@@ -69,12 +106,16 @@ func groqStreamErrorMetadata(errType string) (statusCode int, isRetryable bool) 
 // be nil/empty, in which case raw is used as a fallback.
 func newGroqStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.RawMessage) *providererrors.StreamProviderError {
 	var payload struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
+		Message *string `json:"message"`
+		Type    string  `json:"type"`
 	}
-	_ = json.Unmarshal(raw, &payload)
-	message := payload.Message
-	if message == "" {
+	_ = jsonexact.Unmarshal(raw, &payload)
+	// TS createGroqStreamError uses error.message as is: a present "" is the
+	// message; only a frame without a string message falls back.
+	var message string
+	if payload.Message != nil {
+		message = *payload.Message
+	} else {
 		message = groqStreamErrorText(raw)
 	}
 	statusCode, isRetryable := groqStreamErrorMetadata(payload.Type)
@@ -83,7 +124,7 @@ func newGroqStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.RawMess
 		dataSrc = raw
 	}
 	var data interface{}
-	_ = json.Unmarshal(dataSrc, &data)
+	_ = jsonexact.Unmarshal(dataSrc, &data)
 	// A zero statusCode means the type wasn't recognized (TS's
 	// getGroqStreamErrorMetadata returns {}); leave both statusCode and
 	// isRetryable unset so NewStreamProviderError falls back to its own

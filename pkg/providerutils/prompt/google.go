@@ -4,11 +4,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // GoogleSkipThoughtSignatureValidator is the sentinel value Google documents
@@ -114,7 +119,7 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 		switch msg.Role {
 		case types.RoleSystem:
 			if !systemMessagesAllowed {
-				return GooglePrompt{}, fmt.Errorf("unsupported functionality: system messages are only supported at the beginning of the conversation")
+				return GooglePrompt{}, googleUnsupported("system messages are only supported at the beginning of the conversation")
 			}
 			text := googleSystemText(msg)
 			systemParts = append(systemParts, map[string]interface{}{"text": text})
@@ -143,11 +148,14 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 					last := contents[len(contents)-1]
 					if last["role"] == "model" {
 						lastParts, _ := last["parts"].([]map[string]interface{})
-						last["parts"] = append(lastParts, googleServerToolResponse(p, serverToolType, serverToolCallID, stringOpt(opts, "thoughtSignature")))
+						sig, hasSig := optStringPresent(opts, "thoughtSignature")
+						last["parts"] = append(lastParts, googleServerToolResponse(p, serverToolType, serverToolCallID, sig, hasSig))
 						continue
 					}
 				}
-				c.appendFunctionResponse(&parts, p)
+				if err := c.appendFunctionResponse(&parts, p); err != nil {
+					return GooglePrompt{}, err
+				}
 			}
 			contents = append(contents, map[string]interface{}{"role": "user", "parts": parts})
 
@@ -213,7 +221,8 @@ func containsString(list []string, s string) bool {
 // readProviderOpts returns the per-part Google options/metadata. ProviderOptions
 // take precedence over ProviderMetadata (the output-direction mirror).
 func (c *googleConverter) readProviderOpts(providerOptions map[string]interface{}, providerMetadata interface{}) map[string]interface{} {
-	sources := []map[string]interface{}{providerOptions, googleMetadataMap(providerMetadata)}
+	// Typed-option ruling: Go-typed part options are read in their JSON form.
+	sources := []map[string]interface{}{providerutils.NormalizeOptionsJSON(providerOptions), googleMetadataMap(providerMetadata)}
 	for _, src := range sources {
 		if src == nil {
 			continue
@@ -278,6 +287,22 @@ func stringOpt(opts map[string]interface{}, key string) string {
 	return fmt.Sprint(v)
 }
 
+// optStringPresent is TS `opts?.[key] != null ? String(opts[key]) :
+// undefined`: a present empty string counts.
+func optStringPresent(opts map[string]interface{}, key string) (string, bool) {
+	if opts == nil {
+		return "", false
+	}
+	v, ok := opts[key]
+	if !ok || v == nil {
+		return "", false
+	}
+	if s, ok := v.(string); ok {
+		return s, true
+	}
+	return fmt.Sprint(v), true
+}
+
 func asToolResult(part types.ContentPart) (types.ToolResultContent, bool) {
 	switch p := part.(type) {
 	case types.ToolResultContent:
@@ -301,7 +326,9 @@ func (c *googleConverter) convertUser(msg types.Message) ([]map[string]interface
 		case types.ImageContent:
 			if p.URL != "" {
 				mimeType := p.MimeType
-				if mimeType == "" || mimeType == "image/*" || mimeType == "image" {
+				// TS isFullMediaType: "", "image", "image/" and "image/*" are
+				// not full media types.
+				if !fileutil.IsFullMediaType(mimeType) {
 					mimeType = "image/jpeg"
 				}
 				parts = append(parts, map[string]interface{}{
@@ -319,7 +346,7 @@ func (c *googleConverter) convertUser(msg types.Message) ([]map[string]interface
 			}
 			parts = append(parts, fp)
 		case types.CustomContent:
-			if googleOpts, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
+			if googleOpts, ok := providerutils.NormalizeOptionsJSON(p.ProviderOptions)["google"].(map[string]interface{}); ok {
 				block := map[string]interface{}{}
 				for k, v := range googleOpts {
 					block[k] = v
@@ -334,24 +361,52 @@ func (c *googleConverter) convertUser(msg types.Message) ([]map[string]interface
 type googleFile struct {
 	mediaType string
 	url       string
-	reference string
-	text      string
-	hasText   bool
-	data      []byte
+	// originalURL is FileData.OriginalURL: the caller's URL string when its
+	// WHATWG serialization (url) differs (TS data.originalUrl).
+	originalURL string
+	reference   string
+	// referenceMap is the provider reference map (TS data.reference); the
+	// legacy single-id reference stays in reference.
+	referenceMap types.ProviderReference
+	text         string
+	hasText      bool
+	// data is the inline bytes (empty for a base64 string payload).
+	data []byte
+	// raw is a base64 string payload (FileData.DataString), sent unchanged
+	// (TS convertToBase64 returns a string as is); media type detection
+	// decodes only its sniffed prefix (TS detectMediaType decodePrefix).
+	raw string
+}
+
+// fileURI is TS `url.protocol === 'gs:' && originalUrl != null ?
+// originalUrl : url.toString()`: a Cloud Storage object name is sent as the
+// caller wrote it. f.url is the serialized URL, so its scheme is lowercase.
+func (f googleFile) fileURI() string {
+	if f.originalURL != "" && strings.HasPrefix(f.url, "gs:") {
+		return f.originalURL
+	}
+	return f.url
+}
+
+// hasData reports whether the file carries inline data.
+func (f googleFile) hasData() bool { return len(f.data) > 0 || f.raw != "" }
+
+// base64Data is TS convertToBase64(part.data.data): a string payload as is,
+// bytes encoded.
+func (f googleFile) base64Data() string {
+	if f.raw != "" {
+		return f.raw
+	}
+	return base64.StdEncoding.EncodeToString(f.data)
 }
 
 func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 	f := googleFile{mediaType: firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)}
 	f.url = firstNonEmpty(file.URL, file.FileData.URL)
+	f.originalURL = file.FileData.OriginalURL
 	f.reference = file.Reference
-	if f.reference == "" && file.FileData.Reference != nil {
-		f.reference = file.FileData.Reference["google"]
-		if f.reference == "" {
-			for _, v := range file.FileData.Reference {
-				f.reference = v
-				break
-			}
-		}
+	if f.reference == "" && len(file.FileData.Reference) > 0 {
+		f.referenceMap = file.FileData.Reference
 	}
 	if file.Text != "" || file.FileData.Type == types.FileDataTypeText {
 		f.text = firstNonEmpty(file.Text, file.FileData.Text)
@@ -361,32 +416,119 @@ func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 	if len(f.data) == 0 {
 		f.data = file.FileData.Data
 		if len(f.data) == 0 && file.FileData.DataString != "" {
-			if decoded, err := base64.StdEncoding.DecodeString(file.FileData.DataString); err == nil {
-				f.data = decoded
-			}
+			f.raw = file.FileData.DataString
 		}
 	}
 	return f
 }
 
+// googleVideoFPS is z.number().gt(0).max(24) (TS googleVideoMetadataSchema
+// fps).
+func googleVideoFPS(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+	if bad := zodlite.Max(zodlite.Number, 24)(v, present, path); bad != nil {
+		return bad
+	}
+	if f, ok := v.(float64); ok && f <= 0 {
+		return &zodlite.Issue{Path: path, Code: "too_small", Origin: "number", Minimum: 0, Exclusive: true, Continue: true, Message: "Too small: expected number to be >0"}
+	}
+	return nil
+}
+
+// googleVideoMetadataSchema mirrors TS googleVideoMetadataSchema
+// (google-prompt.ts): z.object({startOffset, endOffset, fps}).
+var googleVideoMetadataSchema = zodlite.Object(
+	zodlite.F("startOffset", zodlite.Optional(zodlite.String)),
+	zodlite.F("endOffset", zodlite.Optional(zodlite.String)),
+	zodlite.F("fps", zodlite.Optional(googleVideoFPS)),
+)
+
+// googleVideoMetadata parses a user file part's
+// providerOptions.<google>.videoMetadata (TS b1bcea13b8). It returns nil when
+// the option is absent or null. Like TS googleVideoMetadataSchema.parse, only
+// the known keys are kept, in schema order, and an invalid value is an error
+// (TS throws the ZodError; Go returns a validation error with its issues).
+func (c *googleConverter) googleVideoMetadata(providerOptions map[string]interface{}) (interface{}, error) {
+	raw, ok := c.readProviderOpts(providerOptions, nil)["videoMetadata"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	data := jsonStringify(raw)
+	// TS schema.parse of the caller's object: no secureJsonParse, so a
+	// __proto__ / constructor.prototype key is an ordinary (stripped) key.
+	if message := zodlite.ValidationMessagePlain(googleVideoMetadataSchema, data); message != "" {
+		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+		return nil, err
+	}
+	out := jsonorder.New()
+	for _, key := range []string{"startOffset", "endOffset", "fps"} {
+		if v, ok := parsed[key]; ok {
+			out.Set(key, v)
+		}
+	}
+	return out, nil
+}
+
 // fileContentPart converts a file part. assistant=true applies the TS
 // assistant-side rules (URLs rejected, thought flag honored).
 func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool) (map[string]interface{}, error) {
+	if !assistant {
+		videoMetadata, err := c.googleVideoMetadata(file.ProviderOptions)
+		if err != nil {
+			return nil, err
+		}
+		part, err := c.fileContentPartData(file, assistant)
+		if err == nil && videoMetadata != nil {
+			// TS spreads videoMetadata next to fileData / inlineData in all
+			// four user file branches.
+			part["videoMetadata"] = videoMetadata
+		}
+		return part, err
+	}
+	return c.fileContentPartData(file, assistant)
+}
+
+func (c *googleConverter) fileContentPartData(file types.FileContent, assistant bool) (map[string]interface{}, error) {
 	f := c.resolveFile(file)
 	switch {
 	case f.url != "":
 		if assistant {
-			return nil, fmt.Errorf("unsupported functionality: File data URLs in assistant messages are not supported")
+			return nil, googleUnsupported("File data URLs in assistant messages are not supported")
+		}
+		// TS resolveFullMediaType: a top-level-only media type ("image",
+		// "image/*") on a URL part fails, since it is not inline bytes.
+		mimeType, err := googleResolveFullMediaType(f.mediaType, nil, false)
+		if err != nil {
+			return nil, err
 		}
 		return map[string]interface{}{
-			"fileData": map[string]interface{}{"mimeType": googleFullMediaType(f.mediaType, f.url), "fileUri": f.url},
+			"fileData": map[string]interface{}{"mimeType": mimeType, "fileUri": f.fileURI()},
 		}, nil
-	case f.reference != "":
+	case f.reference != "" || len(f.referenceMap) > 0:
 		if c.isVertexLike {
-			return nil, fmt.Errorf("unsupported functionality: file parts with provider references")
+			return nil, googleUnsupported("file parts with provider references")
+		}
+		mimeType := f.mediaType
+		if !assistant {
+			// TS user parts: resolveFullMediaType, which throws for a
+			// top-level-only type that is not inline bytes.
+			var err error
+			if mimeType, err = googleResolveFullMediaType(f.mediaType, nil, false); err != nil {
+				return nil, err
+			}
+		}
+		fileURI := f.reference
+		if len(f.referenceMap) > 0 {
+			id, err := providerutils.ResolveProviderReference(f.referenceMap, "google")
+			if err != nil {
+				return nil, err
+			}
+			fileURI = id
 		}
 		return map[string]interface{}{
-			"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": f.reference},
+			"fileData": map[string]interface{}{"mimeType": mimeType, "fileUri": fileURI},
 		}, nil
 	case f.hasText:
 		mimeType := "text/plain"
@@ -397,34 +539,61 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString([]byte(f.text))},
 		}, nil
 	default:
+		mimeType := f.mediaType
+		if !assistant {
+			var err error
+			if mimeType, err = f.resolveInlineMediaType(); err != nil {
+				return nil, err
+			}
+		}
 		return map[string]interface{}{
-			"inlineData": map[string]interface{}{"mimeType": f.mediaType, "data": base64.StdEncoding.EncodeToString(f.data)},
+			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": f.base64Data()},
 		}, nil
 	}
 }
 
-// googleFullMediaType resolves a top-level media type ("image") to a full one
-// using the URL extension when possible (TS resolveFullMediaType).
-func googleFullMediaType(mediaType, url string) string {
-	if isFullMediaType(mediaType) {
-		return mediaType
+// resolveInlineMediaType is googleResolveFullMediaType for the file's inline
+// payload: bytes, or a base64 string of which TS detectMediaType decodes only
+// the sniffed prefix (decodePrefix), so a bad tail is still detected and a
+// bad prefix is the decode error (atob throws).
+func (f googleFile) resolveInlineMediaType() (string, error) {
+	if f.raw == "" || isFullMediaType(f.mediaType) || f.mediaType == "" {
+		return googleResolveFullMediaType(f.mediaType, f.data, true)
 	}
-	if mediaType == "image" || mediaType == "image/*" || mediaType == "" {
-		lower := strings.ToLower(url)
-		switch {
-		case strings.HasSuffix(lower, ".png"):
-			return "image/png"
-		case strings.HasSuffix(lower, ".gif"):
-			return "image/gif"
-		case strings.HasSuffix(lower, ".webp"):
-			return "image/webp"
-		}
-		if mediaType == "" {
-			return mediaType
-		}
-		return "image/jpeg"
+	top, _, _ := strings.Cut(f.mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(f.raw, top)
+	if err != nil {
+		return "", err
 	}
-	return mediaType
+	if ok {
+		return detected, nil
+	}
+	return "", googleUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", f.mediaType))
+}
+
+// googleResolveFullMediaType ports TS resolveFullMediaType for a user file
+// part: a full media type is kept; a top-level type ("image", "image/*") is
+// completed by sniffing inline bytes, and fails otherwise.
+func googleResolveFullMediaType(mediaType string, data []byte, inline bool) (string, error) {
+	if isFullMediaType(mediaType) || mediaType == "" {
+		return mediaType, nil
+	}
+	if inline {
+		top, _, _ := strings.Cut(mediaType, "/")
+		if detected, ok := fileutil.DetectMediaTypeSignature(data, top); ok {
+			return detected, nil
+		}
+		return "", googleUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType))
+	}
+	return "", googleUnsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it is not passed as inline bytes", mediaType))
+}
+
+// googleUnsupported is the UnsupportedFunctionalityError TS throws.
+func googleUnsupported(functionality string) error {
+	return &providererrors.UnsupportedFunctionalityError{
+		Functionality: functionality,
+		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+	}
 }
 
 // ── assistant ────────────────────────────────────────────────────────────────
@@ -433,6 +602,7 @@ type googleToolCall struct {
 	id               string
 	toolName         string
 	input            interface{}
+	inputRaw         string // wire text of the input; gives the key order
 	providerExecuted bool
 	opts             map[string]interface{}
 	thoughtSignature string
@@ -473,12 +643,16 @@ func (c *googleConverter) toolCallFrom(part interface{}) (googleToolCall, bool) 
 		if p.Arguments != nil {
 			input = p.Arguments
 		} else if p.Input != "" {
-			if err := json.Unmarshal([]byte(p.Input), &input); err != nil {
+			// TS secureJsonParse: a forbidden prototype key is a parse
+			// failure, so the input stays the raw string.
+			if v, ok := SecureJSONParse(p.Input); ok {
+				input = v
+			} else {
 				input = p.Input
 			}
 		}
 		return googleToolCall{
-			id: p.ToolCallID, toolName: p.ToolName, input: input, providerExecuted: p.ProviderExecuted,
+			id: p.ToolCallID, toolName: p.ToolName, input: input, inputRaw: p.Input, providerExecuted: p.ProviderExecuted,
 			opts: c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), thoughtSignature: p.ThoughtSignature,
 		}, true
 	case types.ToolCall:
@@ -486,12 +660,16 @@ func (c *googleConverter) toolCallFrom(part interface{}) (googleToolCall, bool) 
 		if p.Arguments != nil {
 			input = p.Arguments
 		} else if p.RawArguments != "" {
-			if err := json.Unmarshal([]byte(p.RawArguments), &input); err != nil {
+			// TS secureJsonParse: a forbidden prototype key is a parse
+			// failure, so the input stays the raw string.
+			if v, ok := SecureJSONParse(p.RawArguments); ok {
+				input = v
+			} else {
 				input = p.RawArguments
 			}
 		}
 		return googleToolCall{
-			id: p.ID, toolName: p.ToolName, input: input, providerExecuted: p.ProviderExecuted,
+			id: p.ID, toolName: p.ToolName, input: input, inputRaw: p.RawArguments, providerExecuted: p.ProviderExecuted,
 			opts: c.readProviderOpts(nil, p.ProviderMetadata), thoughtSignature: p.ThoughtSignature,
 		}, true
 	}
@@ -505,42 +683,51 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 	for _, raw := range c.assistantParts(msg) {
 		switch p := raw.(type) {
 		case types.TextContent:
-			if p.Text == "" {
+			// TS fd7e8a75d7: an empty text part is kept when it carries a
+			// thoughtSignature (a standalone signature keeps its position).
+			sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature")
+			if p.Text == "" && !ok {
 				continue
 			}
 			part := map[string]interface{}{"text": p.Text}
-			if sig := stringOpt(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); sig != "" {
+			if ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
 
 		case types.ReasoningContent:
-			if p.Text == "" {
+			sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature")
+			if !ok && p.Signature != "" {
+				sig, ok = p.Signature, true
+			}
+			if p.Text == "" && !ok {
 				continue
 			}
 			part := map[string]interface{}{"text": p.Text, "thought": true}
-			sig := stringOpt(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature")
-			if sig == "" {
-				sig = p.Signature
-			}
-			if sig != "" {
+			if ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
 
 		case types.ReasoningFileContent:
 			if p.FileData.URL != "" {
-				return nil, fmt.Errorf("unsupported functionality: File data URLs in assistant messages are not supported")
+				return nil, googleUnsupported("File data URLs in assistant messages are not supported")
 			}
 			data := p.Data
 			if len(data) == 0 {
 				data = p.FileData.Data
 			}
+			// TS convertToBase64(part.data.data) returns a base64 string
+			// as is (convert-to-google-messages.ts:430-438).
+			encoded := base64.StdEncoding.EncodeToString(data)
+			if len(data) == 0 && p.FileData.DataString != "" {
+				encoded = p.FileData.DataString
+			}
 			part := map[string]interface{}{
-				"inlineData": map[string]interface{}{"mimeType": firstNonEmpty(p.MediaType, p.FileData.MediaType), "data": base64.StdEncoding.EncodeToString(data)},
+				"inlineData": map[string]interface{}{"mimeType": firstNonEmpty(p.MediaType, p.FileData.MediaType), "data": encoded},
 				"thought":    true,
 			}
-			if sig := stringOpt(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); sig != "" {
+			if sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
@@ -559,13 +746,13 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 			if thought, _ := opts["thought"].(bool); thought {
 				part["thought"] = true
 			}
-			if sig := stringOpt(opts, "thoughtSignature"); sig != "" {
+			if sig, ok := optStringPresent(opts, "thoughtSignature"); ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
 
 		case types.CustomContent:
-			if googleOpts, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
+			if googleOpts, ok := providerutils.NormalizeOptionsJSON(p.ProviderOptions)["google"].(map[string]interface{}); ok {
 				block := map[string]interface{}{}
 				for k, v := range googleOpts {
 					block[k] = v
@@ -575,7 +762,11 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 
 		case types.ToolResultContent, *types.ToolResultContent:
 			tr, _ := asToolResult(raw.(types.ContentPart))
-			if part := c.assistantToolResult(tr); part != nil {
+			part, err := c.assistantToolResult(tr)
+			if err != nil {
+				return nil, err
+			}
+			if part != nil {
 				parts = append(parts, part)
 			}
 
@@ -584,88 +775,150 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 			if !ok {
 				continue
 			}
-			parts = append(parts, c.assistantToolCall(tc, &modelResponseHasSignedFunctionCall))
+			part, err := c.assistantToolCall(tc, &modelResponseHasSignedFunctionCall)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
 		}
 	}
 	return parts, nil
 }
 
-func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) map[string]interface{} {
+func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) (map[string]interface{}, error) {
 	if tc.providerExecuted && tc.toolName == "code_execution" {
-		input, _ := tc.input.(map[string]interface{})
-		if s, ok := tc.input.(string); ok {
-			_ = json.Unmarshal([]byte(s), &input)
+		// TS codeExecutionInputSchema.parse(typeof input === 'string' ?
+		// secureJsonParse(input) : input): language and code are required
+		// strings; other keys are stripped.
+		input := tc.input
+		if s, ok := input.(string); ok {
+			v, ok := SecureJSONParse(s)
+			if !ok {
+				return nil, &providererrors.JSONParseError{Text: s, Cause: fmt.Errorf("invalid JSON in code execution input")}
+			}
+			input = v
+		}
+		value, err := googleParseCodeExecution(googleCodeExecutionInputSchema, input)
+		if err != nil {
+			return nil, err
 		}
 		return map[string]interface{}{
-			"executableCode": map[string]interface{}{
-				"language": stringOpt(input, "language"),
-				"code":     stringOpt(input, "code"),
-			},
-		}
+			"executableCode": map[string]interface{}{"language": value["language"], "code": value["code"]},
+		}, nil
 	}
 
-	thoughtSignature := stringOpt(tc.opts, "thoughtSignature")
-	if thoughtSignature == "" {
-		thoughtSignature = tc.thoughtSignature
+	// TS `!= null` checks: a present empty string counts (no sentinel for
+	// an empty thoughtSignature; an empty server tool id is still one).
+	thoughtSignature, hasSig := optStringPresent(tc.opts, "thoughtSignature")
+	if !hasSig && tc.thoughtSignature != "" {
+		thoughtSignature, hasSig = tc.thoughtSignature, true
 	}
-	serverToolCallID := stringOpt(tc.opts, "serverToolCallId")
-	serverToolType := stringOpt(tc.opts, "serverToolType")
-	isServerToolCall := serverToolCallID != "" && serverToolType != ""
+	serverToolCallID, hasServerID := optStringPresent(tc.opts, "serverToolCallId")
+	serverToolType, hasServerType := optStringPresent(tc.opts, "serverToolType")
+	isServerToolCall := hasServerID && hasServerType
 	// Gemini 3 returns a single signature for a parallel function-call response
 	// on the first standard function call; later ones legitimately have none.
-	skipMitigation := !isServerToolCall && thoughtSignature == "" && *hasSigned
-	effective := thoughtSignature
-	if effective == "" && c.opts.IsGemini3Model && !skipMitigation {
+	skipMitigation := !isServerToolCall && !hasSig && *hasSigned
+	effective, hasEffective := thoughtSignature, hasSig
+	if !hasSig && c.opts.IsGemini3Model && !skipMitigation {
 		c.missingSignatureToolNames = append(c.missingSignatureToolNames, tc.toolName)
-		effective = GoogleSkipThoughtSignatureValidator
+		effective, hasEffective = GoogleSkipThoughtSignatureValidator, true
 	}
-	if !isServerToolCall && thoughtSignature != "" {
+	if !isServerToolCall && hasSig {
 		*hasSigned = true
 	}
 
 	var part map[string]interface{}
 	if isServerToolCall {
+		// TS: a string input is secureJsonParse'd, which throws for text
+		// that is not JSON.
+		args, argsRaw := tc.input, tc.inputRaw
+		if s, ok := args.(string); ok {
+			v, ok := SecureJSONParse(s)
+			if !ok {
+				return nil, &providererrors.JSONParseError{Text: s, Cause: fmt.Errorf("invalid JSON in server tool call input")}
+			}
+			args, argsRaw = v, s
+		}
 		part = map[string]interface{}{
-			"toolCall": map[string]interface{}{"toolType": serverToolType, "args": tc.input, "id": serverToolCallID},
+			"toolCall": map[string]interface{}{"toolType": serverToolType, "args": orderedInput(args, argsRaw), "id": serverToolCallID},
 		}
 	} else {
-		args := tc.input
-		if args == nil {
-			args = map[string]interface{}{}
+		// TS 4ae6986cd8 parseToolCallInput: a string input that is valid
+		// JSON is sent as the value it holds.
+		args, argsRaw := tc.input, tc.inputRaw
+		// A JSON null input (or a string input holding "null") parses to
+		// null, which TS sends as `args: null`; only a call with no input at
+		// all gets {}.
+		parsedNull := args == nil && strings.TrimSpace(argsRaw) != ""
+		if s, ok := args.(string); ok {
+			if v, ok := SecureJSONParse(s); ok {
+				args, argsRaw = v, s
+				parsedNull = v == nil
+			}
 		}
-		fc := map[string]interface{}{"name": tc.toolName, "args": args}
+		var fcArgs interface{}
+		if !parsedNull {
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			fcArgs = orderedInput(args, argsRaw)
+		}
+		fc := map[string]interface{}{"name": tc.toolName, "args": fcArgs}
 		if c.opts.IncludeFunctionCallIDs && tc.id != "" {
 			fc["id"] = tc.id
 		}
 		part = map[string]interface{}{"functionCall": fc}
 	}
-	if effective != "" {
+	if hasEffective {
 		part["thoughtSignature"] = effective
 	}
-	return part
+	return part, nil
 }
 
-func (c *googleConverter) assistantToolResult(p types.ToolResultContent) map[string]interface{} {
+// TS tool/code-execution.ts codeExecutionInputSchema / codeExecutionOutputSchema.
+var (
+	googleCodeExecutionInputSchema  = zodlite.Object(zodlite.F("language", zodlite.String), zodlite.F("code", zodlite.String))
+	googleCodeExecutionOutputSchema = zodlite.Object(zodlite.F("outcome", zodlite.String), zodlite.F("output", zodlite.String))
+)
+
+// googleParseCodeExecution is schema.parse(value): an invalid value is the
+// validation error (TS throws the ZodError).
+func googleParseCodeExecution(schema zodlite.Node, value interface{}) (map[string]interface{}, error) {
+	data := jsonStringify(value)
+	// TS schema.parse of the prompt value (no secureJsonParse).
+	if message := zodlite.ValidationMessagePlain(schema, data); message != "" {
+		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
+func (c *googleConverter) assistantToolResult(p types.ToolResultContent) (map[string]interface{}, error) {
 	out := resolveGoogleToolOutput(p)
 	if p.ToolName == "code_execution" && out.kind == "json" {
-		value, _ := out.value.(map[string]interface{})
-		return map[string]interface{}{
-			"codeExecutionResult": map[string]interface{}{
-				"outcome": stringOpt(value, "outcome"),
-				"output":  stringOpt(value, "output"),
-			},
+		value, err := googleParseCodeExecution(googleCodeExecutionOutputSchema, out.value)
+		if err != nil {
+			return nil, err
 		}
+		return map[string]interface{}{
+			"codeExecutionResult": map[string]interface{}{"outcome": value["outcome"], "output": value["output"]},
+		}, nil
 	}
 	opts := c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata)
 	serverToolCallID := stringOpt(opts, "serverToolCallId")
 	serverToolType := stringOpt(opts, "serverToolType")
 	if serverToolCallID != "" && serverToolType != "" {
-		return googleServerToolResponse(p, serverToolType, serverToolCallID, stringOpt(opts, "thoughtSignature"))
+		sig, hasSig := optStringPresent(opts, "thoughtSignature")
+		return googleServerToolResponse(p, serverToolType, serverToolCallID, sig, hasSig), nil
 	}
-	return nil
+	return nil, nil
 }
 
-func googleServerToolResponse(p types.ToolResultContent, toolType, id, thoughtSignature string) map[string]interface{} {
+func googleServerToolResponse(p types.ToolResultContent, toolType, id, thoughtSignature string, hasThoughtSignature bool) map[string]interface{} {
 	out := resolveGoogleToolOutput(p)
 	var response interface{} = map[string]interface{}{}
 	if out.kind == "json" {
@@ -674,7 +927,7 @@ func googleServerToolResponse(p types.ToolResultContent, toolType, id, thoughtSi
 	part := map[string]interface{}{
 		"toolResponse": map[string]interface{}{"toolType": toolType, "response": response, "id": id},
 	}
-	if thoughtSignature != "" {
+	if hasThoughtSignature {
 		part["thoughtSignature"] = thoughtSignature
 	}
 	return part
@@ -687,6 +940,8 @@ type googleToolOutput struct {
 	value   interface{}
 	content []types.ToolResultContentBlock
 	reason  string
+	// hasReason is TS output.reason != null (an empty reason included).
+	hasReason bool
 }
 
 func resolveGoogleToolOutput(p types.ToolResultContent) googleToolOutput {
@@ -707,7 +962,7 @@ func resolveGoogleToolOutput(p types.ToolResultContent) googleToolOutput {
 		return googleToolOutput{kind: "json", value: p.Result}
 	}
 	o := p.Output
-	out := googleToolOutput{value: o.Value, content: o.Content, reason: o.Reason}
+	out := googleToolOutput{value: o.Value, content: o.Content, reason: o.Reason, hasReason: o.HasReason()}
 	switch o.Type {
 	case types.ToolResultOutputError:
 		if _, ok := o.Value.(string); ok {
@@ -723,26 +978,29 @@ func resolveGoogleToolOutput(p types.ToolResultContent) googleToolOutput {
 	return out
 }
 
-func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}, p types.ToolResultContent) {
+func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}, p types.ToolResultContent) error {
 	out := resolveGoogleToolOutput(p)
 	if out.kind == "content" {
 		if c.opts.SupportsFunctionResponseParts {
-			c.appendToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
-		} else {
-			c.appendLegacyToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
+			return c.appendToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
 		}
-		return
+		return c.appendLegacyToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
 	}
 	var content interface{}
+	isError := out.kind == "error-text" || out.kind == "error-json" || out.kind == "execution-denied"
 	if out.kind == "execution-denied" {
 		content = "Tool call execution denied."
-		if out.reason != "" {
+		if out.hasReason {
 			content = out.reason
 		}
 	} else {
 		content = serializeFunctionResponseContent(out.value)
 	}
-	*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponse(p.ToolName, p.ToolCallID, content)})
+	// Errors are sent under response.error and successful results under
+	// response.content so the model can tell a failed tool from a result
+	// (TS #22209).
+	*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponseWithKey(p.ToolName, p.ToolCallID, content, isError)})
+	return nil
 }
 
 // containsJSONSchemaReference reports whether value (a decoded JSON value:
@@ -779,7 +1037,7 @@ func serializeFunctionResponseContent(value interface{}) interface{} {
 	if !containsJSONSchemaReference(value) {
 		return value
 	}
-	encoded, err := json.Marshal(value)
+	encoded, err := jsonstr.Marshal(value)
 	if err != nil {
 		return value
 	}
@@ -787,9 +1045,19 @@ func serializeFunctionResponseContent(value interface{}) interface{} {
 }
 
 func (c *googleConverter) functionResponse(toolName, toolCallID string, content interface{}) map[string]interface{} {
+	return c.functionResponseWithKey(toolName, toolCallID, content, false)
+}
+
+// functionResponseWithKey builds a functionResponse part whose payload is
+// response.error when isError, else response.content.
+func (c *googleConverter) functionResponseWithKey(toolName, toolCallID string, content interface{}, isError bool) map[string]interface{} {
+	key := "content"
+	if isError {
+		key = "error"
+	}
 	fr := map[string]interface{}{
 		"name":     toolName,
-		"response": map[string]interface{}{"name": toolName, "content": content},
+		"response": map[string]interface{}{"name": toolName, key: content},
 	}
 	if c.opts.IncludeFunctionCallIDs && toolCallID != "" {
 		fr["id"] = toolCallID
@@ -803,7 +1071,7 @@ var googleDataURLRegex = regexp.MustCompile(`(?s)^data:([^;,]+);base64,(.+)$`)
 // directly as functionResponse.parts[].fileData for mediaType, per TS
 // isUrlSupported (provider-utils/src/is-url-supported.ts): a pattern under
 // the exact media type, its `type/*` prefix, or the wildcard "*"/"*/*" must
-// match the (lowercased) URL. The matching algorithm itself is shared with
+// match the URL (scheme and host lowercased, path and query case-sensitive). The matching algorithm itself is shared with
 // pkg/ai's SupportedURLCheckerFromPatterns via providerutils.MatchesSupportedURL
 // (pkg/ai cannot import this package without an import cycle, so the shared
 // logic lives in pkg/providerutils, which both already import).
@@ -813,7 +1081,7 @@ func (c *googleConverter) isFunctionResponseURLSupported(mediaType, url string) 
 
 // appendToolResultParts implements the Gemini 3+ multimodal functionResponse
 // format: text goes into response.content, inline files into parts[].
-func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) {
+func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) error {
 	var textParts []string
 	var responseParts []map[string]interface{}
 
@@ -833,20 +1101,26 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 					responseParts = append(responseParts, map[string]interface{}{
 						"inlineData": map[string]interface{}{"mimeType": m[1], "data": m[2]},
 					})
-				} else if isFullMediaType(f.mediaType) && c.isFunctionResponseURLSupported(f.mediaType, f.url) {
+				} else if supported := f.fileURI(); isFullMediaType(f.mediaType) && c.isFunctionResponseURLSupported(f.mediaType, supported) {
 					// Forward a supported non-data URL (e.g. gs:// on Vertex,
 					// Gemini 3+) directly instead of inlining it as text.
 					// Ports TS convert-to-google-messages.ts appendToolResultParts
 					// (ai@7.0.118 commit bc49f786f0).
 					responseParts = append(responseParts, map[string]interface{}{
-						"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": f.url},
+						"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": supported},
 					})
 				} else {
 					textParts = append(textParts, googleJSONText(b))
 				}
-			case len(f.data) > 0:
+			case f.hasData():
+				// TS resolveFullMediaType: complete a top-level media type by
+				// sniffing the bytes; it throws when that fails.
+				mediaType, err := f.resolveInlineMediaType()
+				if err != nil {
+					return err
+				}
 				responseParts = append(responseParts, map[string]interface{}{
-					"inlineData": map[string]interface{}{"mimeType": f.mediaType, "data": base64.StdEncoding.EncodeToString(f.data)},
+					"inlineData": map[string]interface{}{"mimeType": mediaType, "data": f.base64Data()},
 				})
 			default:
 				textParts = append(textParts, googleJSONText(b))
@@ -865,20 +1139,21 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 		fr["parts"] = responseParts
 	}
 	*parts = append(*parts, map[string]interface{}{"functionResponse": fr})
+	return nil
 }
 
 // appendLegacyToolResultParts implements the pre-Gemini-3 fallback: text
 // becomes a functionResponse; inline files become top-level inlineData parts
 // followed by a descriptive text part.
-func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) {
-	appendInline := func(mediaType string, data []byte) {
+func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) error {
+	appendInline := func(mediaType, data string) {
 		kind := "file"
 		if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 			kind = "image"
 		}
 		*parts = append(*parts,
 			map[string]interface{}{
-				"inlineData": map[string]interface{}{"mimeType": mediaType, "data": base64.StdEncoding.EncodeToString(data)},
+				"inlineData": map[string]interface{}{"mimeType": mediaType, "data": data},
 			},
 			map[string]interface{}{"text": "Tool executed successfully and returned this " + kind + " as a response"},
 		)
@@ -888,11 +1163,15 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 		case types.TextContentBlock:
 			*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponse(toolName, toolCallID, b.Text)})
 		case types.ImageContentBlock:
-			appendInline(b.MediaType, b.Data)
+			appendInline(b.MediaType, base64.StdEncoding.EncodeToString(b.Data))
 		case types.FileContentBlock:
 			f := c.resolveFile(fileBlockToContent(b))
-			if f.url == "" && f.reference == "" && !f.hasText && len(f.data) > 0 {
-				appendInline(f.mediaType, f.data)
+			if f.url == "" && f.reference == "" && !f.hasText && f.hasData() {
+				mediaType, err := f.resolveInlineMediaType()
+				if err != nil {
+					return err
+				}
+				appendInline(mediaType, f.base64Data())
 			} else {
 				*parts = append(*parts, map[string]interface{}{"text": googleJSONText(b)})
 			}
@@ -900,6 +1179,7 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 			*parts = append(*parts, map[string]interface{}{"text": googleJSONText(block)})
 		}
 	}
+	return nil
 }
 
 func fileBlockToContent(b types.FileContentBlock) types.FileContent {
@@ -910,7 +1190,7 @@ func fileBlockToContent(b types.FileContentBlock) types.FileContent {
 }
 
 func googleJSONText(v interface{}) string {
-	data, err := json.Marshal(v)
+	data, err := jsonstr.Marshal(v)
 	if err != nil {
 		return fmt.Sprint(v)
 	}

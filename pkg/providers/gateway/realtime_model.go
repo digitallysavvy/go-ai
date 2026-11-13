@@ -1,9 +1,14 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"net/url"
+	"errors"
+	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -52,22 +57,25 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
+	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/realtime-model", m.modelID)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	return provider.ClientSecretResult{
 		Token:     secret.Token,
-		URL:       ToGatewayRealtimeURL(m.provider.baseURL, m.modelID),
+		URL:       wsURL,
 		ExpiresAt: secret.ExpiresAt,
 	}, nil
 }
 
-// GetWebSocketConfig mirrors TS GatewayRealtimeModel#getWebSocketConfig. The
-// team scope rides the subprotocol from the provider's resolved header set
-// (gatewayTeamFromHeaders), not the raw TeamIDOrSlug config field directly,
-// matching how transcription_stream.go sources it so the two handshakes
-// can't drift if a header override is layered on later.
+// GetWebSocketConfig mirrors TS GatewayRealtimeModel#getWebSocketConfig:
+// the team scope is the provider's teamIdOrSlug setting (TS
+// config.teamIdOrSlug), not a custom x-vercel-ai-gateway-team header (which
+// only the streaming transcription and speech handshakes read).
 func (m *RealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
 	return provider.WebSocketConfig{
 		URL:       wsURL,
-		Protocols: GetGatewayRealtimeProtocols(token, gatewayTeamFromHeaders(m.provider.headers)),
+		Protocols: GetGatewayRealtimeProtocols(token, m.provider.config.TeamIDOrSlug),
 	}
 }
 
@@ -80,8 +88,13 @@ func (m *RealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSock
 // other realtime model's convention (OpenAI/Google/xAI) of attaching the
 // entire received frame.
 func (m *RealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	// TS returns the null as the event, and the session's handleServerEvent
+	// then throws reading event.type, which fails the session.
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return nil, errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // TS V8 TypeError text
+	}
 	var event provider.RealtimeServerEvent
-	if err := json.Unmarshal(raw, &event); err != nil {
+	if err := jsonexact.Unmarshal(raw, &event); err != nil {
 		return nil, err
 	}
 	event.Raw = raw
@@ -123,10 +136,64 @@ func (m *RealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent)
 		if event.Options != nil {
 			out["options"] = event.Options
 		}
+	case "session-start":
+		out = map[string]interface{}{"type": event.Type, "config": m.BuildSessionConfig(event.Config)}
+	case "session-close", "input-audio-mute", "input-audio-unmute":
+		out = map[string]interface{}{"type": event.Type}
+	case "context-append":
+		out = map[string]interface{}{"type": event.Type, "content": event.Content}
+		if event.DelegationID != nil {
+			out["delegationId"] = *event.DelegationID
+		} else {
+			out["delegationId"] = nil
+		}
+		if len(event.ProviderOptions) > 0 {
+			out["providerOptions"] = event.ProviderOptions
+		}
 	default:
-		return nil, nil
+		// TS returns the event itself (`return event`), so an event type
+		// this SDK doesn't model still reaches the Gateway, carrying
+		// whichever of its fields are set.
+		if event.Type == "" {
+			return nil, nil
+		}
+		out = map[string]interface{}{"type": event.Type}
+		if !reflect.ValueOf(event.Config).IsZero() {
+			out["config"] = event.Config
+		}
+		if event.Audio != "" {
+			out["audio"] = event.Audio
+		}
+		if item := gatewayRealtimeConversationItem(event.Item); item != nil {
+			out["item"] = item
+		}
+		if event.ItemID != "" {
+			out["itemId"] = event.ItemID
+		}
+		if event.ContentIndex != 0 {
+			out["contentIndex"] = event.ContentIndex
+		}
+		if event.AudioEndMs != 0 {
+			out["audioEndMs"] = event.AudioEndMs
+		}
+		if event.Options != nil {
+			out["options"] = event.Options
+		}
+		if event.Content != "" {
+			out["content"] = event.Content
+		}
+		if event.DelegationID != nil {
+			out["delegationId"] = *event.DelegationID
+		}
+		if len(event.ProviderOptions) > 0 {
+			out["providerOptions"] = event.ProviderOptions
+		}
 	}
-	return json.Marshal(out)
+	// TS returns the event itself, so an optional eventId rides along.
+	if event.EventID != "" {
+		out["eventId"] = event.EventID
+	}
+	return jsonstr.Marshal(out)
 }
 
 // gatewayRealtimeConversationItem builds the wire object for one
@@ -158,6 +225,72 @@ func (m *RealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig
 	return config
 }
 
+var (
+	_ provider.RealtimeServerConnectionProvider = (*RealtimeModel)(nil)
+	_ provider.RealtimeIntentCodec              = (*RealtimeModel)(nil)
+)
+
+// gatewayRealtimeAssertConversationIntent mirrors TS assertConversationIntent
+// (892af4dab7): the normalized realtime route is conversational only. The
+// empty intent is conversation.
+func gatewayRealtimeAssertConversationIntent(intent provider.RealtimeSessionIntent) error {
+	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
+		return fmt.Errorf("AI Gateway realtime does not support the '%s' session intent on the normalized realtime route.", intent) //nolint:staticcheck // matches the TS error text
+	}
+	return nil
+}
+
+// GetServerConnection returns the server-side WebSocket connection (TS
+// getServerWebSocketConfig, 892af4dab7): the realtime-model route with the
+// provider's resolved HTTP auth headers (Authorization, auth method,
+// protocol version, team and custom headers). Conversation intent only.
+// ConnectRealtime uses it only when RealtimeSessionOptions.Intent is set
+// (coordinator ruling 1).
+func (m *RealtimeModel) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	if err := gatewayRealtimeAssertConversationIntent(opts.Intent); err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	token, authMethod, err := m.provider.authResolver(ctx)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	headers := mergeHeadersFold(
+		map[string]string{"Authorization": "Bearer " + token, "ai-gateway-auth-method": authMethod},
+		m.provider.headers,
+	)
+	// TS getHeaders goes through withUserAgentSuffix, which lower-cases the
+	// header names; removeUndefinedEntries drops unset values.
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if v != "" {
+			out[strings.ToLower(k)] = v
+		}
+	}
+	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/realtime-model", m.modelID)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: out}, nil
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent
+// (conversation only).
+func (m *RealtimeModel) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	if err := gatewayRealtimeAssertConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.BuildSessionConfig(config), nil
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent
+// (conversation only).
+func (m *RealtimeModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	if err := gatewayRealtimeAssertConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.SerializeClientEvent(event)
+}
+
 var _ provider.Experimental_RealtimeModelV4 = (*RealtimeModel)(nil)
 
 // Compile-time checks that *RealtimeModel still satisfies the optional
@@ -178,14 +311,9 @@ var (
 // ?ai-model-id= query — the WS transport of the ai-model-id header the HTTP
 // routes use, since a browser WebSocket cannot set headers. The model id is
 // passed through verbatim; the Gateway owns resolution (including the bare
-// -> "openai/" qualification), exactly like the non-realtime routes.
+// -> "openai/" qualification), exactly like the non-realtime routes. The URL
+// is the WHATWG serialization of TS new URL(...); it is "" when the base URL
+// does not parse (TS throws "Invalid URL").
 func ToGatewayRealtimeURL(baseURL string, modelID string) string {
-	u, err := url.Parse(strings.Replace(baseURL, "http", "ws", 1) + "/realtime-model")
-	if err != nil {
-		return ""
-	}
-	query := u.Query()
-	query.Set("ai-model-id", modelID)
-	u.RawQuery = query.Encode()
-	return u.String()
+	return gatewayWebSocketURL(baseURL, "/realtime-model", modelID)
 }

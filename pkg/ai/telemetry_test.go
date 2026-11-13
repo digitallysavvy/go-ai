@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 
@@ -13,17 +12,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
-
-// mustMarshalJSON JSON-encodes v for building expected ai.prompt/ai.value/etc.
-// attribute values in tests, failing the test on error.
-func mustMarshalJSON(t *testing.T, v interface{}) string {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("mustMarshalJSON: %v", err)
-	}
-	return string(b)
-}
 
 // valuesEqual compares two values, handling numeric type conversions
 func valuesEqual(expected, actual interface{}) bool {
@@ -192,8 +180,8 @@ func TestGenerateText_Telemetry(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "test-function",
 	}
 
@@ -228,15 +216,10 @@ func TestGenerateText_Telemetry(t *testing.T) {
 	}
 
 	// Verify attributes. ai.prompt is JSON-encoded as {system, messages}
-	// (TS legacy-open-telemetry.ts onGenerateStart), where a bare `prompt`
-	// string call option normalizes into a single user message — matching
-	// TS's `initialPrompt.messages` (always normalized via
-	// standardizePrompt regardless of whether prompt or messages was used).
-	wantPromptJSON := mustMarshalJSON(t, map[string]interface{}{
-		"messages": []types.Message{
-			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Test prompt"}}},
-		},
-	})
+	// (TS legacy-open-telemetry.ts onGenerateStart); a bare `prompt` string
+	// is the user message TS standardizePrompt builds,
+	// [{role: 'user', content: prompt}] (string content, r91 core1-R02).
+	wantPromptJSON := `{"messages":[{"role":"user","content":"Test prompt"}]}`
 	attrs := generateTextSpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":           "ai.generateText",
@@ -309,8 +292,8 @@ func TestGenerateText_TelemetryRecordInputsDisabled(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  false, // Don't record inputs
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(false), // Don't record inputs
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "test-function",
 	}
 
@@ -349,8 +332,8 @@ func TestEmbed_Telemetry(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "embed-test",
 	}
 
@@ -425,14 +408,14 @@ func TestEmbed_Telemetry(t *testing.T) {
 	}
 }
 
-// Evaluate's OTel span assertions (root "ai.evaluate" / nested
-// "ai.evaluate.doEvaluate" spans, attribute gating) now live in
-// pkg/telemetry (TestLegacyOpenTelemetryEvaluateSpans and friends), since
-// evaluate.go no longer creates spans directly — it dispatches
-// experimental_onEvaluateStart/End and
-// experimental_onEvaluationModelCallStart/End events that a registered
+// Decide's OTel span assertions (root "ai.decide" / nested
+// "ai.decide.doDecide" spans, attribute gating) now live in
+// pkg/telemetry (TestLegacyOpenTelemetryDecideSpans and friends), since
+// decide.go no longer creates spans directly — it dispatches
+// experimental_onDecideStart/End and
+// experimental_onDecisionModelCallStart/End events that a registered
 // integration (e.g. LegacyOpenTelemetry) turns into spans. See
-// pkg/ai/evaluate_telemetry_test.go for the pkg/ai-level dispatch tests
+// pkg/ai/decide_telemetry_test.go for the pkg/ai-level dispatch tests
 // (no span without an integration; exactly the expected spans with one).
 
 func TestEmbedMany_Telemetry(t *testing.T) {
@@ -443,8 +426,8 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "embed-many-test",
 	}
 

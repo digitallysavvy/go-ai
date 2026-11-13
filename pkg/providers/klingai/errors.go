@@ -2,6 +2,10 @@ package klingai
 
 import (
 	"fmt"
+	"math"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // ErrCodeKlingVideoMissingOptions is the error code returned when required motion-control
@@ -14,10 +18,67 @@ type Error struct {
 	ErrorCode string // semantic error code (e.g. ErrCodeKlingVideoMissingOptions)
 	Message   string
 	Details   string
+
+	// httpStatus and httpBody carry the non-2xx HTTP response this error was
+	// built from, so retry classification follows the TS APICallError rule
+	// (only 408, 409, 429 and 5xx are retryable) instead of retrying every
+	// error. Zero for errors that are not an HTTP response.
+	httpStatus  int
+	httpBody    []byte
+	httpHeaders map[string]string
+
+	// textOnly makes Error() the bare Message: the text of the AISDKError
+	// TS throws (KLINGAI_VIDEO_GENERATION_ERROR,
+	// KLINGAI_VIDEO_MISSING_OPTIONS), with no Go prefix.
+	textOnly bool
+}
+
+// HTTPStatusDetails implements providererrors.HTTPStatusDetails.
+func (e *Error) HTTPStatusDetails() (int, map[string]string, []byte) {
+	return e.httpStatus, e.httpHeaders, e.httpBody
+}
+
+// Unwrap exposes an HTTP response error as the *providererrors.ProviderError
+// TS reports (APICallError with statusCode, responseHeaders, responseBody,
+// data), so the retry delay honors retry-after-ms / retry-after like TS
+// (pkg/internal/retry reads ProviderError.ResponseHeaders) and callers can
+// match it with errors.As. nil for errors that are not an HTTP response.
+func (e *Error) Unwrap() error {
+	if e == nil || e.httpStatus == 0 {
+		return nil
+	}
+	pe := &providererrors.ProviderError{
+		Provider:        "klingai",
+		StatusCode:      e.httpStatus,
+		Message:         e.Message,
+		ResponseHeaders: e.httpHeaders,
+		ResponseBody:    string(e.httpBody),
+	}
+	pe.Data = klingaiErrorData(e.httpBody)
+	return pe
+}
+
+// klingaiErrorData is the zod output of klingaiErrorDataSchema ({code,
+// message}, undeclared keys stripped) for a matching body, else nil (TS
+// APICallError.data is undefined for an off-schema body).
+func klingaiErrorData(body []byte) interface{} {
+	var obj map[string]interface{}
+	if len(body) == 0 || securejson.Unmarshal(body, &obj) != nil {
+		return nil
+	}
+	code, okCode := obj["code"].(float64)
+	message, okMessage := obj["message"].(string)
+	if !okCode || !okMessage || math.IsInf(code, 0) || math.IsNaN(code) { // z.number() rejects Infinity
+		return nil
+	}
+	return map[string]interface{}{"code": code, "message": message}
 }
 
 // Error implements the error interface
 func (e *Error) Error() string {
+	if e.textOnly {
+		return e.Message
+	}
 	if e.ErrorCode != "" {
 		if e.Details != "" {
 			return fmt.Sprintf("klingai error (%s): %s - %s", e.ErrorCode, e.Message, e.Details)
@@ -99,3 +160,26 @@ func NewMissingVideoOptionsError(field string) *Error {
 		Message:   fmt.Sprintf("%s is required for motion control", field),
 	}
 }
+
+// newVideoGenerationErrorText is a KLINGAI_VIDEO_GENERATION_ERROR whose whole
+// text is the TS AISDKError message (no "Video generation failed" prefix).
+func newVideoGenerationErrorText(message string) *Error {
+	return &Error{Code: 500, ErrorCode: "KLINGAI_VIDEO_GENERATION_ERROR", Message: message, textOnly: true}
+}
+
+// missingCredentialsError is the error DoStart and DoStatus return when no
+// credentials are configured: TS throws LoadAPIKeyError, while v0.5.2 returned
+// the *Error from NewAuthError. Both match with errors.As; the text is the TS
+// LoadAPIKeyError message.
+type missingCredentialsError struct {
+	loadErr error
+	auth    *Error
+}
+
+func newMissingCredentialsError(loadErr error) error {
+	return &missingCredentialsError{loadErr: loadErr, auth: NewAuthError(loadErr.Error())}
+}
+
+func (e *missingCredentialsError) Error() string { return e.loadErr.Error() }
+
+func (e *missingCredentialsError) Unwrap() []error { return []error{e.loadErr, e.auth} }

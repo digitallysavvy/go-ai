@@ -254,3 +254,30 @@ func TestClientHeadersAndBaseURLRace(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestQueryValuesAreURLEncoded(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		got = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL})
+	q := map[string]string{"after": "batch_a+b/c=d e&f", "limit": "5"}
+	if _, err := c.Do(context.Background(), Request{Method: "GET", Path: "/x", Query: q}); err != nil {
+		t.Fatal(err)
+	}
+	want := "after=batch_a%2Bb%2Fc%3Dd+e%26f&limit=5"
+	if got != want {
+		t.Fatalf("Do query = %q, want %q", got, want)
+	}
+	got = ""
+	resp, err := c.DoStream(context.Background(), Request{Method: "GET", Path: "/x", Query: q})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got != want {
+		t.Fatalf("DoStream query = %q, want %q", got, want)
+	}
+}

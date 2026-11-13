@@ -8,7 +8,9 @@ import (
 
 func init() {
 	provider.RegisterSpeechModelDeserializer("elevenlabs", deserializeSpeechModel)
+	provider.RegisterSpeechModelDeserializer("elevenlabs.speech", deserializeSpeechModel)
 	provider.RegisterTranscriptionModelDeserializer("elevenlabs", deserializeTranscriptionModel)
+	provider.RegisterTranscriptionModelDeserializer("elevenlabs.transcription", deserializeTranscriptionModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

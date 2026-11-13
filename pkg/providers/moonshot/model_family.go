@@ -26,7 +26,7 @@ func GetModelFamily(modelID string) ModelFamily {
 		return FamilyKimiK26
 	case "kimi-k2.7-code", "kimi-k2.7-code-highspeed":
 		return FamilyKimiK27
-	case "kimi-k3":
+	case "kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed":
 		return FamilyKimiK3
 	}
 	if strings.HasPrefix(modelID, "moonshot-v1-") {
@@ -43,21 +43,9 @@ func IsKimiModel(modelID string) bool {
 
 // SupportsStructuredOutputs reports whether native json_schema response
 // format is supported for modelID. Mirrors TS getModelStructuredOutputSupport
-// in moonshotai-provider.ts: all "kimi-k*" models, plus the specific
-// non-preview and vision-preview Moonshot V1 models.
+// in moonshotai-provider.ts: all known Moonshot models support structured
+// output, and future IDs inherit that support instead of depending on a
+// specific family name (TS #22497).
 func SupportsStructuredOutputs(modelID string) bool {
-	if strings.HasPrefix(modelID, "kimi-k") {
-		return true
-	}
-	switch modelID {
-	case "moonshot-v1-8k",
-		"moonshot-v1-32k",
-		"moonshot-v1-128k",
-		"moonshot-v1-auto",
-		"moonshot-v1-8k-vision-preview",
-		"moonshot-v1-32k-vision-preview",
-		"moonshot-v1-128k-vision-preview":
-		return true
-	}
-	return false
+	return true
 }

@@ -2,16 +2,22 @@ package luma
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	stdhttp "net/http"
+	"sort"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	"github.com/digitallysavvy/go-ai/pkg/internal/media"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Default polling configuration (TS LumaImageModel.pollIntervalMillis /
@@ -90,6 +96,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		})
 	}
 
+	if err := validateLumaImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	lumaOpts := parseImageModelOptions(opts.ProviderOptions)
 
 	editingOptions, err := m.getEditingOptions(opts.Files, opts.Mask, lumaOpts)
@@ -97,19 +106,28 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 
-	body := map[string]interface{}{
-		"prompt": opts.Prompt,
-		"model":  m.modelID,
-	}
+	// TS body literal: prompt, aspect_ratio, model, ...editingOptions,
+	// ...providerRequestOptions (sorted: a Go map has no caller order; a
+	// repeated key keeps its first position, as a JS spread does).
+	body := jsonorder.New()
+	body.Set("prompt", opts.Prompt)
 	if opts.AspectRatio != "" {
-		body["aspect_ratio"] = opts.AspectRatio
+		body.Set("aspect_ratio", opts.AspectRatio)
 	}
-	for k, v := range editingOptions {
-		body[k] = v
+	body.Set("model", m.modelID)
+	for _, k := range []string{"image", "style", "character", "modify_image"} {
+		if v, ok := editingOptions[k]; ok {
+			body.Set(k, orderedEditingValue(k, v, opts.Files, lumaOpts))
+		}
 	}
 	if lumaOpts != nil {
-		for k, v := range lumaOpts.Additional {
-			body[k] = v
+		keys := make([]string, 0, len(lumaOpts.Additional))
+		for k := range lumaOpts.Additional {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			body.Set(k, lumaOpts.Additional[k])
 		}
 	}
 
@@ -121,25 +139,35 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("luma: failed to submit generation request: %w", err)
+		// TS postJsonToApi lets a transport failure propagate unchanged.
+		return nil, err
 	}
-	if resp.StatusCode >= 400 {
-		return nil, m.parseErrorResponse(resp.Body, resp.StatusCode)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, m.parseStatusError(resp.StatusError(resp.Body))
 	}
 
+	// TS createJsonResponseHandler(lumaGenerationResponseSchema).
+	// TS createJsonResponseHandler reads response.text() (TextDecoder).
+	if err := validateLumaGeneration(resp.StatusCode, resp.Headers, []byte(textdecode.UTF8(resp.Body))); err != nil {
+		return nil, err
+	}
 	var genResp lumaGenerationResponse
-	if err := json.Unmarshal(resp.Body, &genResp); err != nil {
+	if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &genResp); err != nil {
 		return nil, fmt.Errorf("luma: failed to decode generation response: %w", err)
 	}
 
-	pollIntervalMillis := defaultPollIntervalMillis
-	maxPollAttempts := defaultMaxPollAttempts
+	pollIntervalMillis := float64(defaultPollIntervalMillis)
+	maxPollAttempts := float64(defaultMaxPollAttempts)
 	if lumaOpts != nil {
-		if lumaOpts.PollIntervalMillis != nil {
-			pollIntervalMillis = *lumaOpts.PollIntervalMillis
+		if lumaOpts.pollIntervalMillisF != nil {
+			pollIntervalMillis = *lumaOpts.pollIntervalMillisF
+		} else if lumaOpts.PollIntervalMillis != nil {
+			pollIntervalMillis = float64(*lumaOpts.PollIntervalMillis)
 		}
-		if lumaOpts.MaxPollAttempts != nil {
-			maxPollAttempts = *lumaOpts.MaxPollAttempts
+		if lumaOpts.maxPollAttemptsF != nil {
+			maxPollAttempts = *lumaOpts.maxPollAttemptsF
+		} else if lumaOpts.MaxPollAttempts != nil {
+			maxPollAttempts = float64(*lumaOpts.MaxPollAttempts)
 		}
 	}
 
@@ -150,12 +178,18 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	imageData, contentType, err := m.downloadImage(ctx, imageURL)
 	if err != nil {
-		return nil, fmt.Errorf("luma: failed to download generated image: %w", err)
+		// TS getFromApi with createStatusCodeErrorResponseHandler.
+		return nil, providerutils.StatusCodeDownloadError("luma", err)
 	}
 
 	mimeType := contentType
 	if mimeType == "" || mimeType == "application/octet-stream" {
-		mimeType = media.DetectImageMediaType(imageData)
+		// TS signature tables (also bmp/tiff/avif/heic); undetected bytes
+		// fall through to the image/png default below, as in TS.
+		mimeType = ""
+		if detected, ok := fileutil.DetectMediaTypeSignature(imageData, "image"); ok {
+			mimeType = detected
+		}
 	}
 	if mimeType == "" {
 		mimeType = "image/png"
@@ -183,13 +217,13 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // `getFromApi({ validateUrl: false })` for this call, so no additional SSRF
 // validation is required here -- only the final image download (below) needs
 // it, since that URL comes from the response body.
-func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, headers map[string]string, pollIntervalMillis, maxPollAttempts int) (string, error) {
-	path := "/dream-machine/v1/generations/" + generationID
+func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, headers map[string]string, pollIntervalMillis, maxPollAttempts float64) (string, error) {
+	path := "/dream-machine/v1/generations/" + providerutils.EncodePathSegment(generationID)
 
-	for i := 0; i < maxPollAttempts; i++ {
+	for i := 0; float64(i) < maxPollAttempts; i++ {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", context.Cause(ctx) // TS getFromApi rejects with the abort reason
 		default:
 		}
 
@@ -199,14 +233,17 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			Headers: headers,
 		})
 		if err != nil {
-			return "", fmt.Errorf("luma: failed to check generation status: %w", err)
+			return "", err // TS getFromApi lets a transport failure propagate unchanged
 		}
-		if resp.StatusCode >= 400 {
-			return "", m.parseErrorResponse(resp.Body, resp.StatusCode)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", m.parseStatusError(resp.StatusError(resp.Body))
 		}
 
+		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, []byte(textdecode.UTF8(resp.Body))); err != nil {
+			return "", err
+		}
 		var status lumaGenerationResponse
-		if err := json.Unmarshal(resp.Body, &status); err != nil {
+		if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &status); err != nil {
 			return "", fmt.Errorf("luma: failed to parse status response: %w", err)
 		}
 
@@ -222,8 +259,10 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(time.Duration(pollIntervalMillis) * time.Millisecond):
+			// TS delay(pollIntervalMillis) has no signal: the next getFromApi
+			// rejects with the abort reason.
+			return "", context.Cause(ctx)
+		case <-time.After(time.Duration(pollIntervalMillis * float64(time.Millisecond))):
 		}
 	}
 
@@ -241,6 +280,11 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) ([]byte
 	opts := fileutil.TrustedOriginDownloadOptions(m.prov.baseURL(), nil)
 	result, err := fileutil.DownloadWithMetadata(ctx, imageURL, opts)
 	if err != nil {
+		// TS getFromApi handleFetchError: a network failure is the retryable
+		// "Cannot connect to API" error, an abort stays as is.
+		if cause, ok := fileutil.TransportFailure(err); ok {
+			return nil, "", internalhttp.TransportErrorCtx(ctx, cause)
+		}
 		return nil, "", err
 	}
 	return result.Data, result.ContentType, nil
@@ -318,7 +362,12 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 			}
 			identities[id] = append(identities[id], f.URL)
 		}
-		for id, imgs := range identities {
+		// TS validates in insertion order, so the first oversized identity
+		// is the one reported.
+		// Object.entries(identities) lists integer-like ids first, ascending.
+		order = jsonorder.JSKeyOrder(order)
+		for _, id := range order {
+			imgs := identities[id]
 			if len(imgs) > 4 {
 				return nil, fmt.Errorf("Luma AI character supports up to 4 images per identity. Identity '%s' has %d images.", id, len(imgs)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
@@ -346,22 +395,122 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 // parseErrorResponse converts a Luma error envelope
 // ({detail: [{msg, ...}]}) into a provider error.
 func (m *ImageModel) parseErrorResponse(body []byte, statusCode int) error {
-	var errResp lumaErrorResponse
-	msg := "Unknown error"
-	if err := json.Unmarshal(body, &errResp); err == nil && len(errResp.Detail) > 0 && errResp.Detail[0].Msg != "" {
-		msg = errResp.Detail[0].Msg
-	}
-	return providererrors.NewProviderError("luma", statusCode, "", msg, nil)
+	return m.parseErrorResponseWithHeaders(body, statusCode, nil)
 }
 
-func flattenHeaders(headers map[string][]string) map[string]string {
-	out := make(map[string]string, len(headers))
-	for k, vs := range headers {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
+// parseErrorResponseWithHeaders is parseErrorResponse keeping the failed
+// response's headers on the error (TS APICallError.responseHeaders).
+func (m *ImageModel) parseErrorResponseWithHeaders(body []byte, statusCode int, headers stdhttp.Header) error {
+	return m.parseStatusError(&internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body})
+}
+
+// parseStatusError is parseErrorResponse for the failed response's status
+// error.
+func (m *ImageModel) parseStatusError(cause *internalhttp.HTTPStatusError) error {
+	body := cause.Body
+	// TS createJsonErrorResponseHandler: a body that does not match the error
+	// schema (or is empty) gives the response status text (the server's
+	// reason phrase) as the message.
+	msg := cause.Text()
+	var data interface{}
+	var errResp lumaErrorResponse
+	if err := securejson.Unmarshal([]byte(textdecode.UTF8(body)), &errResp); err == nil && errResp.valid() {
+		// detail[0].msg is a required string, so `?? 'Unknown error'` never
+		// applies; an empty detail array makes errorToMessage throw, which
+		// the handler also turns into the status text.
+		msg = *errResp.Detail[0].Msg
+		data = lumaErrorData(body)
 	}
-	return out
+	perr := providererrors.NewProviderErrorFromResponse("luma", 0, "", msg, cause)
+	// TS APICallError.data: the zod-parsed body when it matches
+	// lumaErrorSchema (undeclared keys stripped), else undefined.
+	perr.Data = data
+	return perr
+}
+
+// lumaErrorData is the zod output of lumaErrorSchema for a body that
+// matched it (valid): each detail entry keeps type, loc, msg, input and a
+// present ctx ({expected}, or an explicit null), nothing else.
+func lumaErrorData(body []byte) interface{} {
+	var top struct {
+		Detail []map[string]interface{} `json:"detail"`
+	}
+	if securejson.Unmarshal([]byte(textdecode.UTF8(body)), &top) != nil {
+		return nil
+	}
+	detail := make([]interface{}, 0, len(top.Detail))
+	for _, d := range top.Detail {
+		entry := map[string]interface{}{"type": d["type"], "loc": d["loc"], "msg": d["msg"], "input": d["input"]}
+		if ctx, ok := d["ctx"]; ok {
+			if obj, isObj := ctx.(map[string]interface{}); isObj {
+				entry["ctx"] = map[string]interface{}{"expected": obj["expected"]}
+			} else {
+				entry["ctx"] = nil
+			}
+		}
+		detail = append(detail, entry)
+	}
+	return map[string]interface{}{"detail": detail}
+}
+
+// flattenHeaders is TS extractResponseHeaders: repeated values joined with
+// ", " (providerutils.ExtractHeaders); an empty set is an empty map.
+func flattenHeaders(headers map[string][]string) map[string]string {
+	if out := providerutils.ExtractHeaders(stdhttp.Header(headers)); out != nil {
+		return out
+	}
+	return map[string]string{}
+}
+
+// orderedEditingValue writes an editing option the way TS builds it:
+// image / style entries and modify_image as {url, weight}, character
+// identities in Object.entries order.
+func orderedEditingValue(key string, v interface{}, files []provider.ImageFile, lumaOpts *ImageModelOptions) interface{} {
+	urlWeight := func(m map[string]interface{}) *jsonorder.Object {
+		o := jsonorder.New()
+		o.Set("url", m["url"])
+		o.Set("weight", m["weight"])
+		return o
+	}
+	switch key {
+	case "image", "style":
+		if entries, ok := v.([]map[string]interface{}); ok {
+			out := make([]interface{}, len(entries))
+			for i, e := range entries {
+				out[i] = urlWeight(e)
+			}
+			return out
+		}
+	case "modify_image":
+		if m, ok := v.(map[string]interface{}); ok {
+			return urlWeight(m)
+		}
+	case "character":
+		character, ok := v.(map[string]interface{})
+		if !ok {
+			return v
+		}
+		var order []string
+		seen := map[string]bool{}
+		for i := range files {
+			id := "identity0"
+			if cfg := lumaOpts.imageConfig(i); cfg.ID != nil {
+				id = *cfg.ID
+			}
+			if !seen[id] {
+				seen[id] = true
+				order = append(order, id)
+			}
+		}
+		o := jsonorder.New()
+		for _, id := range jsonorder.JSKeyOrder(order) {
+			if entry, ok := character[id]; ok {
+				o.Set(id, entry)
+			}
+		}
+		return o
+	}
+	return v
 }
 
 // lumaGenerationResponse is a limited version of Luma's generation response
@@ -376,12 +525,37 @@ type lumaGenerationResponse struct {
 	} `json:"assets"`
 }
 
+// lumaErrorDetail mirrors one entry of TS lumaErrorSchema.detail: type, loc
+// (string array), msg and input are all required strings, ctx is an optional
+// object with a required string `expected`. Pointers distinguish absent from
+// zero.
 type lumaErrorDetail struct {
-	Type  string `json:"type"`
-	Msg   string `json:"msg"`
-	Input string `json:"input"`
+	Type  *string   `json:"type"`
+	Loc   *[]string `json:"loc"`
+	Msg   *string   `json:"msg"`
+	Input *string   `json:"input"`
+	Ctx   *struct {
+		Expected *string `json:"expected"`
+	} `json:"ctx"`
 }
 
 type lumaErrorResponse struct {
 	Detail []lumaErrorDetail `json:"detail"`
+}
+
+// valid reports whether the body matches lumaErrorSchema and detail[0]
+// exists.
+func (r lumaErrorResponse) valid() bool {
+	if len(r.Detail) == 0 {
+		return false
+	}
+	for _, d := range r.Detail {
+		if d.Type == nil || d.Loc == nil || d.Msg == nil || d.Input == nil {
+			return false
+		}
+		if d.Ctx != nil && d.Ctx.Expected == nil {
+			return false
+		}
+	}
+	return true
 }

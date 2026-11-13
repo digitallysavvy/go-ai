@@ -1,5 +1,6 @@
 // Package codex is the Go host-side port of TS `@ai-sdk/harness-codex`
-// (`createCodex`), pinned to ai@7.0.127.
+// (`createCodex`), pinned to
+// ai@7.0.167, TS 9f7a842ae1.
 //
 // It implements harness.Harness/Session/PromptControl by launching the
 // embedded TS bridge (pkg/harness/bridges, WG6) as `node bridge.mjs` inside
@@ -54,22 +55,13 @@
 // window for even a zero-latency bridge response to race. No Go port is
 // needed; this is a concrete architectural reason; not a scope omission.
 //
-// Deferred versus TS (see the claudecode package doc for the shared
-// rationale, and the Sep-23-2026 WG8 report):
-//   - Native subscription credential discovery reads the same
-//     `~/.codex/auth.json` file TS reads (subscription.go: `auth_mode ==
-//     "chatgpt"`, `tokens.access_token`/`refresh_token`, OAuth refresh,
-//     write-back). NOT ported: the OS-keyring storage mode (macOS Keychain /
-//     Linux Secret Service / Windows Credential Manager, gated by a
-//     `cli_auth_credentials_store` config.toml value TS also reads) — this
-//     SDK's sandbox providers run Linux containers with no `secret-tool`
-//     daemon in a headless sandbox, and TS defaults to the file store unless
-//     that key is explicitly set. Also NOT ported: the `ChatGPT-Account-ID`
-//     request header TS derives from the credential's `account_id` — it
-//     requires extending the request-transformation machinery beyond a
-//     single credential-header swap, and no MUST-CHECK row calls for it;
-//     forwarding just `CODEX_API_KEY`/`OPENAI_BASE_URL` is enough for the
-//     ChatGPT backend to authenticate the request.
+// Native subscription credential discovery matches TS: `auth.json` and the
+// OS keyring (macOS Keychain, Linux Secret Service, Windows Credential
+// Manager) chosen by `cli_auth_credentials_store` (CodexConfig, else
+// config.toml, else "file"), OAuth refresh with write-back, and the
+// `ChatGPT-Account-ID` header added to the brokered credential
+// transformation (subscription.go).
+
 package codex
 
 import (
@@ -89,7 +81,8 @@ type Settings struct {
 	CredentialForwarding harness.CredentialForwarding
 	// CodexConfig is additional configuration passed through to Codex
 	// as-is (snake_case config.toml keys). Values managed by this adapter
-	// take precedence over conflicting entries.
+	// take precedence over conflicting entries, except for the
+	// model_reasoning_summary default, which callers can override.
 	CodexConfig map[string]any
 	// MCPServers are additional MCP server definitions, keyed by name, in
 	// Codex's native configuration format.
@@ -107,11 +100,18 @@ type Settings struct {
 	// StartupTimeout bounds how long to wait for the bridge to announce its
 	// port. Defaults to 120s.
 	StartupTimeout time.Duration
+	// HostDisconnectTimeout aborts a running turn when its host disconnects
+	// and does not reconnect within this time, so the turn stops spending.
+	// A suspended turn is exempt. Zero keeps the turn running until it
+	// finishes. Mirrors TS `hostDisconnectTimeoutMs` (a54f0fd8c6).
+	HostDisconnectTimeout time.Duration
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions
-	// MintBridgeToken creates the bridge channel token. Defaults to a random
-	// 32-byte hex token. Requires the sandbox to expose an ID.
+	// MintBridgeToken is ignored; New logs a warning when it is set.
+	//
+	// Deprecated: sandbox bridge authentication now uses an
+	// adapter-generated Ed25519 key pair (TS c849d37dac).
 	MintBridgeToken harness.MintBridgeTokenCallback
 }
 

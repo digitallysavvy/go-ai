@@ -54,15 +54,23 @@ func runGroqStreamRecursionChild() {
 		// No "id"/"model"/"created" (no response-metadata) and no "choices":
 		// falls through every branch to the final `return s.Next()` (now
 		// `continue`).
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
 
 	s := newGroqStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per choices-less event -- 300,000 deep
 	// -- before reaching the real text chunk.
 	chunk, err := s.Next()
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeResponseMetadata {
+		// TS emits response-metadata on the first valid chunk.
+		chunk, err = s.Next()
+	}
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		// TS opens the "txt-0" text block before the first delta.
+		chunk, err = s.Next()
+	}
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return

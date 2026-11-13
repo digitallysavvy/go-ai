@@ -9,13 +9,14 @@ import (
 	"io"
 	"mime/multipart"
 	stdhttp "net/http"
-	"net/textproto"
-	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -80,7 +81,7 @@ func assertXAISupportedBatchRequests(requests []provider.BatchV4Request) error {
 		if req.Type != provider.BatchRequestTypeText && req.Type != provider.BatchRequestTypeImage {
 			return &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("batch request type: %s", req.Type),
-				Message:       fmt.Sprintf("The xAI Batch API does not support batch requests with type %q.", req.Type),
+				Message:       fmt.Sprintf("The xAI Batch API does not support batch requests with type \"%s\".", req.Type),
 			}
 		}
 	}
@@ -98,12 +99,17 @@ func extractXAIBatchProviderOptions(providerOptions map[string]interface{}) (xai
 	if !ok || raw == nil {
 		return opts, nil
 	}
-	b, err := json.Marshal(raw)
+	b, err := json.Marshal(raw) // caller options: a non-finite number is invalid (zod), not null
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}
 	if err := json.Unmarshal(b, &opts); err != nil {
 		return opts, invalidXAIProviderOptions(err)
+	}
+	// TS z.number().optional(): a present null is invalid.
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(b, &probe) == nil && string(probe["inputFileExpiresAfter"]) == "null" {
+		return opts, invalidXAIProviderOptions(fmt.Errorf("inputFileExpiresAfter must be a number"))
 	}
 	if opts.InputFileExpiresAfter != nil && (*opts.InputFileExpiresAfter < 3600 || *opts.InputFileExpiresAfter > 2_592_000) {
 		return opts, invalidXAIProviderOptions(fmt.Errorf("inputFileExpiresAfter must be between 3600 and 2592000"))
@@ -141,12 +147,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		if err != nil {
 			return nil, err
 		}
-		line, err := json.Marshal(map[string]interface{}{
-			"custom_id": req.RequestID(),
-			"method":    "POST",
-			"url":       endpoint,
-			"body":      body,
-		})
+		line, err := providerutils.BatchJSONLLine(req.RequestID(), "POST", endpoint, body)
 		if err != nil {
 			return nil, err
 		}
@@ -164,17 +165,14 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	// xAI rejects uploads where expires_after arrives after the file part,
 	// so all fields precede the file.
 	if batchOptions.InputFileExpiresAfter != nil {
-		if err := writer.WriteField("expires_after", strconv.Itoa(*batchOptions.InputFileExpiresAfter)); err != nil {
+		if err := providerutils.WriteFormDataField(writer, "expires_after", strconv.Itoa(*batchOptions.InputFileExpiresAfter)); err != nil {
 			return nil, err
 		}
 	}
 	// CreateFormFile hardcodes Content-Type: application/octet-stream; TS
 	// uploads the JSONL body as `new Blob(fileParts, {type:
 	// 'application/jsonl'})`, so the part header is built manually to match.
-	fileHeader := textproto.MIMEHeader{}
-	fileHeader.Set("Content-Disposition", `form-data; name="file"; filename="batch.jsonl"`)
-	fileHeader.Set("Content-Type", "application/jsonl")
-	part, err := writer.CreatePart(fileHeader)
+	part, err := providerutils.CreateFormDataFile(writer, "file", "batch.jsonl", "application/jsonl")
 	if err != nil {
 		return nil, err
 	}
@@ -196,20 +194,25 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	if err != nil {
 		return nil, b.handleError(err)
 	}
-	if uploadResp.StatusCode >= 400 {
-		return nil, newXAIProviderError(b.Provider(), uploadResp.StatusCode, uploadResp.Body)
+	if uploadResp.StatusCode < 200 || uploadResp.StatusCode >= 300 { // TS !response.ok
+		return nil, newXAIProviderErrorFrom(b.Provider(), uploadResp.StatusError(uploadResp.Body))
+	}
+	uploadResp.Body = []byte(textdecode.UTF8(uploadResp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIFile)(uploadResp.StatusCode, uploadResp.Headers, uploadResp.Body); err != nil {
+		return nil, err
 	}
 	var uploadedFile xaiFileResponse
-	if err := json.Unmarshal(uploadResp.Body, &uploadedFile); err != nil {
+	if err := providerutils.UnmarshalChunk(uploadResp.Body, &uploadedFile); err != nil {
 		return nil, err
 	}
 
 	var createResp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/batches",
-		Body:    map[string]interface{}{"name": xaiBatchName, "input_file_id": uploadedFile.ID},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodPost,
+		Path:             "/batches",
+		Body:             map[string]interface{}{"name": xaiBatchName, "input_file_id": uploadedFile.ID},
+		Headers:          headers,
 	}, &createResp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -217,7 +220,16 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	status := convertXAIBatchStatus(createResp)
 	meta := map[string]interface{}{"inputFileId": uploadedFile.ID}
 	if uploadedFile.ExpiresAt != nil {
-		meta["inputFileExpiresAt"] = time.Unix(*uploadedFile.ExpiresAt, 0).UTC().Format("2006-01-02T15:04:05.000Z")
+		// TS `new Date(expires_at * 1000).toISOString()` with no range guard:
+		// an out-of-range time throws RangeError "Invalid time value".
+		iso, ok := "", false
+		if t := xaiUnixSecondsToTime(uploadedFile.ExpiresAt); t != nil {
+			iso, ok = jsdate.ISOString(*t)
+		}
+		if !ok {
+			return nil, errors.New("Invalid time value") //nolint:staticcheck // TS RangeError text
+		}
+		meta["inputFileExpiresAt"] = iso
 	}
 	status.ProviderMetadata = map[string]interface{}{"xai": meta}
 
@@ -233,10 +245,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 func (b *Batch) prepareBatchRequest(req provider.BatchV4Request) (endpoint string, body map[string]interface{}, warnings []types.Warning, err error) {
 	if req.Type == provider.BatchRequestTypeText {
 		lm := NewResponsesLanguageModel(b.provider, req.Text.ModelID)
-		reqBody, reqWarnings, err := lm.buildRequestBody(&req.Text.Options, false)
+		reqBody, bodyWarnings, err := lm.buildRequestBody(&req.Text.Options, false)
 		if err != nil {
 			return "", nil, nil, err
 		}
+		// TS prepareRequest returns the full warning list: the unsupported
+		// penalty/stop settings first, then the body warnings.
+		reqWarnings := append(xaiResponsesWarnings(&req.Text.Options), bodyWarnings...)
 		// The batch sub-request URL already encodes the intent (a
 		// non-streaming Responses call); the wire body itself carries no
 		// `stream` key in TS.
@@ -277,10 +292,11 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var resp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + ":cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodPost,
+		Path:             "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + ":cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -295,17 +311,16 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 		query["limit"] = strconv.Itoa(*opts.Limit)
 	}
 	if opts.Cursor != "" {
-		// Pre-escaped: internalhttp.Client.Do concatenates query values
-		// verbatim without percent-encoding them.
-		query["pagination_token"] = url.QueryEscape(opts.Cursor)
+		query["pagination_token"] = opts.Cursor
 	}
 
 	var page xaiBatchListResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatchList),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &page); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -331,10 +346,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, err
 	}
 	if convertXAIBatchStatus(*resp).Status == provider.BatchStatusPending {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("xAI batch %q is not complete.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("xAI batch \"%s\" is not complete.", opts.BatchID), nil)
 	}
 	return newXAIBatchResultsStream(ctx, b, opts.BatchID, opts.Headers), nil
 }
@@ -344,9 +356,10 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*xaiBatchResponseWire, error) {
 	var resp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches/" + providerutils.EncodePathSegment(batchID),
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches/" + providerutils.EncodePathSegment(batchID),
+		Headers:          headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -354,9 +367,18 @@ func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[s
 }
 
 func (b *Batch) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return newXAIProviderError(b.Provider(), statusErr.StatusCode, statusErr.Body)
+		return newXAIProviderErrorFrom(b.Provider(), statusErr)
 	}
 	return err
 }
@@ -402,7 +424,9 @@ func convertXAIBatchStatus(b xaiBatchResponseWire) provider.BatchV4Status {
 	}
 	counts := providerutils.NormalizeBatchRequestCounts(total, pending, completed, failed)
 
-	isCancelled := (b.CancelTime != nil && *b.CancelTime != "") || (b.CancelByXAIMessage != nil && *b.CancelByXAIMessage != "")
+	// TS: cancel_time != null || cancel_by_xai_message != null (an empty
+	// string still counts).
+	isCancelled := b.CancelTime != nil || b.CancelByXAIMessage != nil
 	isExpired := xaiIsPastDate(b.ExpireTime)
 
 	var status provider.BatchStatusValue
@@ -423,27 +447,21 @@ func convertXAIBatchStatus(b xaiBatchResponseWire) provider.BatchV4Status {
 	}
 	switch {
 	case isCancelled:
-		msg := fmt.Sprintf("xAI batch %q was cancelled.", b.BatchID)
-		if b.CancelByXAIMessage != nil && *b.CancelByXAIMessage != "" {
+		msg := fmt.Sprintf("xAI batch \"%s\" was cancelled.", b.BatchID)
+		if b.CancelByXAIMessage != nil {
 			msg = *b.CancelByXAIMessage
 		}
 		result.Error = &provider.BatchError{Message: msg, Code: "batch_cancelled"}
 	case isExpired:
-		result.Error = &provider.BatchError{Message: fmt.Sprintf("xAI batch %q expired.", b.BatchID), Code: "batch_expired"}
+		result.Error = &provider.BatchError{Message: fmt.Sprintf("xAI batch \"%s\" expired.", b.BatchID), Code: "batch_expired"}
 	}
 	return result
 }
 
-// xaiIsPastDate mirrors TS isPastDate.
+// xaiIsPastDate mirrors TS isPastDate: Date.parse(value), NaN is not past.
 func xaiIsPastDate(value string) bool {
-	if value == "" {
-		return false
-	}
-	t, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return false
-	}
-	return !t.After(time.Now())
+	ms, ok := jsdate.Parse(value)
+	return ok && ms <= time.Now().UnixMilli()
 }
 
 // --- Batch results streaming --------------------------------------------
@@ -496,7 +514,16 @@ func (s *xaiBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 		if s.idx < len(s.buffer) {
 			item := s.buffer[s.idx]
 			s.idx++
-			return s.batch.convertBatchResult(s.ctx, item), nil
+			result, err := s.batch.convertBatchResult(s.ctx, item)
+			if err != nil {
+				// TS throws from the result generator (image download or
+				// missing image data), which errors the whole stream.
+				s.err = err
+				s.done = true
+				s.buffer, s.idx = nil, 0
+				return nil, err
+			}
+			return result, nil
 		}
 		if s.done {
 			return nil, io.EOF
@@ -512,24 +539,25 @@ func (s *xaiBatchResultsStream) fetchPage() error {
 	s.started = true
 	query := map[string]string{"limit": strconv.Itoa(xaiBatchResultsPageSize)}
 	if s.nextToken != nil {
-		// Pre-escaped: internalhttp.Client.Do concatenates query values
-		// verbatim without percent-encoding them.
-		query["pagination_token"] = url.QueryEscape(*s.nextToken)
+		query["pagination_token"] = *s.nextToken
 	}
 
 	var page xaiBatchResultsPageWire
 	if err := s.batch.provider.client.DoJSON(s.ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches/" + providerutils.EncodePathSegment(s.batchID) + "/results",
-		Query:   query,
-		Headers: s.headers,
+		ValidateResponse: providerutils.MediaResponseValidator(s.batch.Provider(), providerutils.SchemaXAIBatchResults),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches/" + providerutils.EncodePathSegment(s.batchID) + "/results",
+		Query:            query,
+		Headers:          s.headers,
 	}, &page); err != nil {
 		return s.batch.handleError(err)
 	}
 
 	s.buffer = page.Results
 	s.idx = 0
-	if page.PaginationToken != nil && *page.PaginationToken != "" {
+	// TS: `paginationToken = page.pagination_token ?? undefined` — only a
+	// null/absent token ends the loop; an empty string keeps paging.
+	if page.PaginationToken != nil {
 		s.nextToken = page.PaginationToken
 	} else {
 		s.nextToken = nil
@@ -543,7 +571,7 @@ func (s *xaiBatchResultsStream) Err() error { return s.err }
 func (s *xaiBatchResultsStream) Close() error { return nil }
 
 // convertBatchResult mirrors TS XaiBatch#convertBatchResult.
-func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire) *provider.BatchV4ItemResult {
+func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire) (*provider.BatchV4ItemResult, error) {
 	var errWire *xaiBatchErrorWire
 	if wire.BatchResult != nil {
 		errWire = wire.BatchResult.Error
@@ -558,7 +586,7 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 			ID:     wire.BatchRequestID,
 			Status: status,
 			Error:  convertXAIBatchError(wire.ErrorMessage, errWire),
-		}
+		}, nil
 	}
 
 	var response *struct {
@@ -569,25 +597,31 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 		response = wire.BatchResult.Response
 	}
 	if response == nil {
-		return invalidXAIBatchTextResult(wire.BatchRequestID)
+		return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 	}
 
 	if isPresentRawJSON(response.ChatGetCompletion) {
 		var textResp xaiBatchTextResponseWire
-		if err := json.Unmarshal(response.ChatGetCompletion, &textResp); err != nil {
-			return invalidXAIBatchTextResult(wire.BatchRequestID)
+		if err := providerutils.MediaSchemaParser(providerutils.SchemaXAIBatchText)(0, nil, response.ChatGetCompletion); err != nil {
+			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
+		}
+		if err := providerutils.UnmarshalChunk(response.ChatGetCompletion, &textResp); err != nil {
+			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 		}
 		genResult, convErr := convertXAIBatchTextResponse(textResp)
 		if convErr != nil {
-			return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemFailed, Error: convErr}
+			return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemFailed, Error: convErr}, nil
 		}
-		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, TextResult: genResult}
+		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, TextResult: genResult}, nil
 	}
 
 	if isPresentRawJSON(response.ImageGeneration) {
 		var imgResp xaiImageResponse
-		if err := json.Unmarshal(response.ImageGeneration, &imgResp); err != nil {
-			return invalidXAIBatchImageResult(wire.BatchRequestID)
+		if err := providerutils.MediaSchemaParser(providerutils.SchemaXAIImage)(0, nil, response.ImageGeneration); err != nil {
+			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
+		}
+		if err := providerutils.UnmarshalChunk(response.ImageGeneration, &imgResp); err != nil {
+			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
 		}
 		for _, d := range imgResp.Data {
 			if d.RespectModeration != nil && !*d.RespectModeration {
@@ -596,17 +630,17 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 					ID:     wire.BatchRequestID,
 					Status: provider.BatchItemFailed,
 					Error:  &provider.BatchError{Message: "Image generation was blocked due to a content policy violation."},
-				}
+				}, nil
 			}
 		}
 		imgResult, err := b.convertImageBatchResponse(ctx, imgResp)
 		if err != nil {
-			return invalidXAIBatchImageResult(wire.BatchRequestID)
+			return nil, err
 		}
-		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeImage, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, ImageResult: imgResult}
+		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeImage, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, ImageResult: imgResult}, nil
 	}
 
-	return invalidXAIBatchTextResult(wire.BatchRequestID)
+	return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 }
 
 func isPresentRawJSON(raw json.RawMessage) bool {
@@ -650,7 +684,7 @@ func isXAICancellationError(code interface{}) bool {
 	case float64:
 		return v == 1
 	case string:
-		lower := strings.ToLower(v)
+		lower := providerutils.JSToLower(v)
 		return lower == "1" || lower == "cancelled" || lower == "batch_cancelled"
 	default:
 		return false
@@ -670,7 +704,7 @@ func convertXAIBatchError(errorMessage string, errWire *xaiBatchErrorWire) *prov
 	if errWire != nil && errWire.Code != nil && !isZeroXAIBatchErrorCode(errWire.Code) {
 		switch v := errWire.Code.(type) {
 		case float64:
-			result.Code = strconv.FormatFloat(v, 'f', -1, 64)
+			result.Code = providerutils.JSNumberString(v)
 		case string:
 			result.Code = v
 		default:
@@ -736,18 +770,40 @@ type xaiBatchTextUsageWire struct {
 	CostInUsdTicks          *int64                    `json:"cost_in_usd_ticks,omitempty"`
 	PromptTokensDetails     *xaiBatchUsageDetailsWire `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *xaiBatchUsageDetailsWire `json:"completion_tokens_details,omitempty"`
+
+	// Raw is the complete usage object (TS `raw: usage`).
+	Raw map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the full object in Raw.
+func (u *xaiBatchTextUsageWire) UnmarshalJSON(data []byte) error {
+	type alias xaiBatchTextUsageWire
+	var a alias
+	// TS z.number(): a fractional count decodes (truncated into the int
+	// fields), while Raw keeps the exact number (TS raw: usage).
+	if err := providerutils.UnmarshalChunk(data, &a); err != nil {
+		return err
+	}
+	*u = xaiBatchTextUsageWire(a)
+	var raw map[string]interface{}
+	if err := jsonexact.Unmarshal(data, &raw); err == nil {
+		u.Raw = raw
+	}
+	return nil
 }
 
 type xaiBatchTextResponseWire struct {
 	ID          string                 `json:"id"`
-	Created     *int64                 `json:"created"`
+	Created     *float64               `json:"created"`
 	Model       string                 `json:"model"`
 	Choices     []xaiBatchChoiceWire   `json:"choices"`
 	Usage       *xaiBatchTextUsageWire `json:"usage"`
 	Citations   []string               `json:"citations"`
-	ServiceTier string                 `json:"service_tier"`
-	Code        string                 `json:"code"`
-	Error       string                 `json:"error"`
+	ServiceTier *string                `json:"service_tier"` // TS != null: a present "" is reported
+	// Code and Error are pointers: TS checks `error != null` / `code !=
+	// null`, so a present "" counts.
+	Code  *string `json:"code"`
+	Error *string `json:"error"`
 }
 
 // mapXAIChatFinishReason mirrors TS mapXaiFinishReason (Chat Completions
@@ -802,15 +858,16 @@ func convertXAIBatchTextUsage(u xaiBatchTextUsageWire) types.Usage {
 			TextTokens:      &textOut,
 			ReasoningTokens: &reasoning,
 		},
+		Raw: u.Raw,
 	}
 }
 
 // convertXAIBatchTextResponse mirrors TS convertXaiBatchTextResponse.
 func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.GenerateResult, *provider.BatchError) {
-	if resp.Error != "" {
-		berr := &provider.BatchError{Message: resp.Error}
-		if resp.Code != "" {
-			berr.Code = resp.Code
+	if resp.Error != nil {
+		berr := &provider.BatchError{Message: *resp.Error}
+		if resp.Code != nil {
+			berr.Code = *resp.Code
 		}
 		return nil, berr
 	}
@@ -859,7 +916,7 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 		}
 		for _, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args)
 			call := types.ToolCall{
 				ID:           tc.ID,
 				ToolName:     tc.Function.Name,
@@ -871,6 +928,16 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 				call.Dynamic = true
 			}
 			toolCalls = append(toolCalls, call)
+			// TS pushes the tool-call part in place, ahead of later choices'
+			// parts and the citation sources.
+			content = append(content, types.ToolCallContent{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Input:            call.RawArguments,
+				Arguments:        call.Arguments,
+				ProviderExecuted: call.ProviderExecuted,
+				Dynamic:          call.Dynamic,
+			})
 		}
 	}
 	for _, u := range resp.Citations {
@@ -893,20 +960,20 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 	if resp.Usage != nil {
 		result.Usage = convertXAIBatchTextUsage(*resp.Usage)
 	}
-	if resp.ID != "" || resp.Model != "" || resp.Created != nil {
-		rm := &types.ResponseMetadata{ID: resp.ID, ModelID: resp.Model}
-		if resp.Created != nil {
-			rm.Timestamp = time.Unix(*resp.Created, 0).UTC()
-		}
-		result.ResponseMetadata = rm
+	// TS response: getResponseMetadata(response), always an object (its
+	// fields undefined when absent).
+	rm := &types.ResponseMetadata{ID: resp.ID, ModelID: resp.Model}
+	if t := xaiUnixSecondsToTime(resp.Created); t != nil {
+		rm.Timestamp = *t
 	}
-	if (resp.Usage != nil && resp.Usage.CostInUsdTicks != nil) || resp.ServiceTier != "" {
+	result.ResponseMetadata = rm
+	if (resp.Usage != nil && resp.Usage.CostInUsdTicks != nil) || resp.ServiceTier != nil {
 		meta := map[string]interface{}{}
 		if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
 			meta["costInUsdTicks"] = *resp.Usage.CostInUsdTicks
 		}
-		if resp.ServiceTier != "" {
-			meta["serviceTier"] = resp.ServiceTier
+		if resp.ServiceTier != nil {
+			meta["serviceTier"] = *resp.ServiceTier
 		}
 		result.ProviderMetadata = map[string]interface{}{"xai": meta}
 	}
@@ -927,9 +994,49 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 // ImageModel.buildRequestBody).
 func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResponse) (*types.ImageResult, error) {
 	im := NewImageModel(b.provider, "")
-	images, base64Images, err := im.responseImages(ctx, resp.Data)
-	if err != nil {
-		return nil, err
+	// TS: when every image has b64_json they are used as-is; otherwise each
+	// image decodes its b64_json or, lacking it, downloads its url, and one
+	// with neither is an InvalidArgumentError.
+	var images [][]byte
+	var base64Images []string
+	allBase64 := true
+	for _, d := range resp.Data {
+		if d.B64JSON == nil { // TS b64_json != null: "" is data
+			allBase64 = false
+			break
+		}
+	}
+	for _, d := range resp.Data {
+		switch {
+		case d.B64JSON != nil:
+			decoded, err := fileutil.ConvertBase64ToBytes(*d.B64JSON)
+			if err != nil {
+				return nil, err
+			}
+			images = append(images, decoded)
+			if allBase64 {
+				base64Images = append(base64Images, *d.B64JSON)
+			}
+		case d.URL == "":
+			return nil, providererrors.NewArgumentError("batchResult", "xAI returned an image without data or a URL.", nil)
+		default:
+			data, err := im.downloadImage(ctx, d.URL)
+			if err != nil {
+				// TS getFromApi with xaiFailedResponseHandler: a network
+				// failure is the retryable "Cannot connect to API" error and
+				// an HTTP failure is the xAI API error; anything else (URL
+				// validation, abort) propagates unchanged.
+				if cause, ok := fileutil.TransportFailure(err); ok {
+					return nil, internalhttp.TransportErrorCtx(ctx, cause)
+				}
+				var dl *providererrors.DownloadError
+				if errors.As(err, &dl) && dl.StatusCode >= 100 && (dl.StatusCode < 200 || dl.StatusCode >= 300) {
+					return nil, newXAIProviderErrorFrom(b.Provider(), internalhttp.StatusErrorFromDownload(dl, dl.Body))
+				}
+				return nil, err
+			}
+			images = append(images, data)
+		}
 	}
 
 	imagesMeta := make([]XAIImageItemMetadata, len(resp.Data))

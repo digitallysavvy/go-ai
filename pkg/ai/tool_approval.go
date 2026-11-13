@@ -65,7 +65,8 @@ func normalizeToolApprovalStatus(status types.ToolApprovalStatus) types.ToolAppr
 
 // resolveToolApproval decides whether a tool call needs approval. It fails
 // closed: a configuration value or status it doesn't recognize is an error,
-// which reaches the model as a tool error instead of running the tool.
+// which fails the call (as a TS resolveToolApproval throw does) instead of
+// running the tool.
 func resolveToolApproval(
 	ctx context.Context,
 	call types.ToolCall,
@@ -132,11 +133,13 @@ func resolveToolApprovalValue(
 		case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 			return normalizeToolApprovalResult(v(call, tools, messages, runtimeCtx, toolsCtx)), nil
 		case map[string]interface{}:
-			if value, ok := v[call.ToolName]; ok {
+			// A nil entry is "not configured" (TS: `!= null`), so the tool's
+			// own approval setting still applies.
+			if value, ok := v[call.ToolName]; ok && value != nil {
 				return normalizePerToolApprovalValue(call, tool, tools, messages, value, runtimeCtx, toolsCtx)
 			}
 		case map[string]types.ToolApprovalValue:
-			if value, ok := v[call.ToolName]; ok {
+			if value, ok := v[call.ToolName]; ok && value != nil {
 				return normalizePerToolApprovalValue(call, tool, tools, messages, value, runtimeCtx, toolsCtx)
 			}
 		default:
@@ -241,7 +244,12 @@ func normalizePerToolApprovalValue(
 	}
 }
 
-func validateToolContextFor(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
+// validateToolContext is TS resolveToolContext for one tool: the tool's entry in
+// the tools context with its context schema's defaults applied, validated
+// against that schema. A tool without a context schema gets the value back
+// unchanged. A schema failure is a ValidationError carrying the field
+// "tool context" and the tool name.
+func validateToolContext(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
 	if tool == nil || tool.ContextSchema == nil {
 		return ctxValue, nil
 	}
@@ -255,6 +263,10 @@ func validateToolContextFor(tool *types.Tool, toolName string, ctxValue interfac
 		)
 	}
 	return normalized, nil
+}
+
+func validateToolContextFor(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
+	return validateToolContext(tool, toolName, ctxValue)
 }
 
 func mergeProviderMetadataMaps(primary, fallback map[string]interface{}) map[string]interface{} {

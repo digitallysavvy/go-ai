@@ -140,7 +140,7 @@ func TestPerplexityDoGenerate_PresetRequest(t *testing.T) {
 func TestPerplexityDoGenerate_DirectModelID(t *testing.T) {
 	var captured map[string]interface{}
 	srv, _ := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, &captured))
-	prov := New(Config{BaseURL: srv.URL})
+	prov := New(Config{BaseURL: srv.URL, APIKey: "test-key"})
 	model := NewLanguageModel(prov, "openai/gpt-5.1")
 
 	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}})
@@ -159,7 +159,7 @@ func TestPerplexityDoGenerate_DirectModelID(t *testing.T) {
 func TestPerplexityDoGenerate_LegacySonarModelIsNotAPreset(t *testing.T) {
 	var captured map[string]interface{}
 	srv, _ := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, &captured))
-	prov := New(Config{BaseURL: srv.URL})
+	prov := New(Config{BaseURL: srv.URL, APIKey: "test-key"})
 	model := NewLanguageModel(prov, "sonar-pro")
 
 	result, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}})
@@ -442,23 +442,27 @@ func TestPerplexityDoGenerate_RejectsMalformedNativeTool(t *testing.T) {
 	}
 }
 
-// A future/unrecognized native tool type is forwarded unchecked, matching
-// the forward-compatible passthrough for the rest of providerOptions.perplexity.
-func TestPerplexityDoGenerate_AllowsUnrecognizedNativeToolType(t *testing.T) {
-	var captured map[string]interface{}
-	_, model := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, &captured))
+// TS nativeToolSchema is a closed union: an unrecognized native tool type
+// fails providerOptions validation instead of passing through.
+func TestPerplexityDoGenerate_RejectsUnrecognizedNativeToolType(t *testing.T) {
+	_, model := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, nil))
 	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: testPrompt},
 		ProviderOptions: map[string]interface{}{
 			"perplexity": map[string]interface{}{"tools": []interface{}{map[string]interface{}{"type": "future_tool", "config": "x"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("DoGenerate() error = %v, want unrecognized native tool type to pass through", err)
+	if err == nil {
+		t.Fatal("expected error for unrecognized native tool type")
 	}
-	tools, ok := captured["tools"].([]interface{})
-	if !ok || len(tools) != 1 {
-		t.Fatalf("tools = %v", captured["tools"])
+	_, err = model.DoGenerate(t.Context(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: testPrompt},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{"tools": []interface{}{map[string]interface{}{"type": "web_search", "max_results": 0}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for non-positive web_search.max_results")
 	}
 }
 
@@ -631,7 +635,7 @@ func TestPerplexityDoGenerate_HeadersRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prov := New(Config{BaseURL: srv.URL, Headers: map[string]string{"Custom-Provider-Header": "provider-value"}})
+	prov := New(Config{BaseURL: srv.URL, APIKey: "test-key", Headers: map[string]string{"Custom-Provider-Header": "provider-value"}})
 	model := NewLanguageModel(prov, "fast")
 
 	result, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{
@@ -1209,7 +1213,7 @@ func TestPerplexityConvertUsage_ReasoningTokensAreSubsetOfOutput(t *testing.T) {
 	usage := &perplexityUsage{
 		InputTokens:         33,
 		OutputTokens:        205342,
-		OutputTokensDetails: &perplexityOutputTokensDetails{ReasoningTokens: int64Ptr(193947)},
+		OutputTokensDetails: &perplexityOutputTokensDetails{ReasoningTokens: pplxNumberPtr(193947)},
 	}
 	got := convertPerplexityUsage(usage, nil)
 	if *got.InputTokens != 33 || *got.InputDetails.NoCacheTokens != 33 {
@@ -1219,8 +1223,6 @@ func TestPerplexityConvertUsage_ReasoningTokensAreSubsetOfOutput(t *testing.T) {
 		t.Fatalf("output = %+v, want total=205342 text=11395 reasoning=193947", got.OutputDetails)
 	}
 }
-
-func int64Ptr(v int64) *int64 { return &v }
 
 // TS: "preserves citation annotations from output items and %s" (it.each over
 // response.completed / response.incomplete). A message with a citation is
@@ -1351,3 +1353,58 @@ func TestPerplexityDoStream_PreservesNativeToolTracesInRawChunks(t *testing.T) {
 		t.Fatalf("finish = %+v, want stop/completed", finish)
 	}
 }
+
+// TS perplexityAgentChunkSchema requires `type: z.string()`: a frame without it
+// fails the parse and becomes an error part with finishReason "error".
+func TestPerplexityDoStream_FrameWithoutTypeIsAnError(t *testing.T) {
+	_, model := newPerplexityTestServer(t, streamHandler(t, []map[string]interface{}{{"foo": 1}}, nil))
+	stream, err := model.DoStream(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	var sawError bool
+	var finish *provider.StreamChunk
+	for _, c := range collectChunks(t, stream) {
+		switch c.Type {
+		case provider.ChunkTypeError:
+			sawError = true
+		case provider.ChunkTypeFinish:
+			finish = c
+		}
+	}
+	if !sawError || finish == nil || finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("sawError=%v finish=%+v, want an error part and finish reason error", sawError, finish)
+	}
+}
+
+// TS enqueues a raw part for every frame, including a non-JSON one
+// (rawValue undefined) that is followed by an error part.
+func TestPerplexityDoStream_IncludeRawChunksNonJSONFrame(t *testing.T) {
+	_, model := newPerplexityTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: not json\n\n")
+	})
+	stream, err := model.DoStream(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}, IncludeRawChunks: true})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	var order []provider.ChunkType
+	for _, c := range collectChunks(t, stream) {
+		if c.Type == provider.ChunkTypeRaw || c.Type == provider.ChunkTypeError {
+			order = append(order, c.Type)
+		}
+	}
+	if len(order) != 2 || order[0] != provider.ChunkTypeRaw || order[1] != provider.ChunkTypeError {
+		t.Fatalf("raw/error order = %v, want [raw error]", order)
+	}
+}
+
+func TestConvertPerplexityUsageTotalIsInputPlusOutput(t *testing.T) {
+	u := convertPerplexityUsage(&perplexityUsage{InputTokens: 10, OutputTokens: 5}, nil)
+	if u.TotalTokens == nil || *u.TotalTokens != 15 {
+		t.Fatalf("total = %v, want 15 when total_tokens is absent", u.TotalTokens)
+	}
+}
+func pplxNumberPtr(v float64) *pplxNumber { n := pplxNumber(v); return &n }

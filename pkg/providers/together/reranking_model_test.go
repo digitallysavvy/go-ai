@@ -107,7 +107,7 @@ func TestTogetherRerankingModel_RequestBodyAndResponse(t *testing.T) {
 func TestTogetherRerankingModel_ModelIDAbsent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"results": [{"index": 0, "relevance_score": 0.5}]}`))
+		_, _ = w.Write([]byte(`{"results": [{"index": 0, "relevance_score": 0.5}], "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1}}`))
 	}))
 	defer server.Close()
 
@@ -136,7 +136,7 @@ func TestTogetherRerankingModel_RankFieldsProviderOption(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_ = json.NewDecoder(r.Body).Decode(&gotBody)
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"results": [{"index": 0, "relevance_score": 0.5}]}`))
+				_, _ = w.Write([]byte(`{"results": [{"index": 0, "relevance_score": 0.5}], "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1}}`))
 			}))
 			defer server.Close()
 

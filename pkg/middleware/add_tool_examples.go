@@ -2,12 +2,12 @@ package middleware
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // AddToolInputExamplesOptions configures the tool input examples middleware
@@ -42,7 +42,7 @@ func removeInputExamples(options *AddToolInputExamplesOptions) bool {
 
 // defaultFormatExample formats an example as JSON
 func defaultFormatExample(example types.ToolInputExample, index int) string {
-	data, err := json.Marshal(example.Input)
+	data, err := jsonstr.Marshal(example.Input)
 	if err != nil {
 		return fmt.Sprintf("%v", example.Input)
 	}

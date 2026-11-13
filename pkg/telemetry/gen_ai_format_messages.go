@@ -1,11 +1,15 @@
 package telemetry
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -16,24 +20,94 @@ import (
 // (fc15550, 5ad6abf, 12cfe40). Tests in gen_ai_format_messages_test.go port
 // TS's gen-ai-format-messages.test.ts cases as goldens.
 
-// semConvPart is a single {type, ...} part in a SemConv message, mirroring
-// TS's SemConvPart discriminated union. Field sets vary by "type", so a plain
-// map (rather than a Go struct per variant) mirrors the TS union most
-// directly and keeps JSON output byte-identical in shape.
-type semConvPart = map[string]interface{}
+// SemConvPart is a single {type, ...} part of an OTel GenAI semantic
+// convention message, mirroring TS's exported SemConvPart union
+// (@ai-sdk/otel). Field sets vary by "type", so a map (rather than a Go
+// struct per variant) mirrors the TS union most directly. It marshals its
+// keys in the order the TS object literals declare them, not sorted.
+type SemConvPart map[string]interface{}
 
-// semConvInputMessage mirrors TS's SemConvInputMessage ({role, parts}).
-type semConvInputMessage struct {
-	Role  string        `json:"role"`
-	Parts []semConvPart `json:"parts"`
+// semConvPart is the unexported name the integration uses.
+type semConvPart = SemConvPart
+
+// semConvPartKeyOrder is the key order of every TS SemConvPart literal:
+// {type, content}, {type, id, name, arguments}, {type, id, response},
+// {type, modality, mime_type, uri|content}, {type, approval_id, approved,
+// reason} and {type, kind} all follow it.
+var semConvPartKeyOrder = []string{"type", "id", "name", "arguments", "response", "modality", "mime_type", "uri", "content", "approval_id", "approved", "reason", "kind"}
+
+// MarshalJSON writes the part's keys in TS literal order; keys outside that
+// order follow, sorted.
+func (p SemConvPart) MarshalJSON() ([]byte, error) {
+	keys := make([]string, 0, len(p))
+	seen := make(map[string]bool, len(p))
+	for _, k := range semConvPartKeyOrder {
+		if _, ok := p[k]; ok {
+			keys = append(keys, k)
+			seen[k] = true
+		}
+	}
+	var rest []string
+	for k := range p {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	keys = append(keys, rest...)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	out := []byte{'{'}
+	for i, k := range keys {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		buf.Reset()
+		if err := enc.Encode(k); err != nil {
+			return nil, err
+		}
+		out = append(out, bytes.TrimRight(buf.Bytes(), "\n")...)
+		out = append(out, ':')
+		buf.Reset()
+		if err := enc.Encode(p[k]); err != nil {
+			return nil, err
+		}
+		out = append(out, bytes.TrimRight(buf.Bytes(), "\n")...)
+	}
+	return append(out, '}'), nil
 }
 
-// semConvOutputMessage mirrors TS's SemConvOutputMessage ({role, parts, finish_reason}).
-type semConvOutputMessage struct {
+// SemConvSystemInstruction is one entry of gen_ai.system_instructions
+// ({type, content?, ...}), mirroring TS's exported SemConvSystemInstruction.
+// It marshals like a SemConvPart.
+type SemConvSystemInstruction map[string]interface{}
+
+// MarshalJSON writes the instruction's keys in the SemConvPart order.
+func (s SemConvSystemInstruction) MarshalJSON() ([]byte, error) {
+	return SemConvPart(s).MarshalJSON()
+}
+
+// SemConvInputMessage is one gen_ai.input.messages entry ({role, parts}),
+// mirroring TS's exported SemConvInputMessage.
+type SemConvInputMessage struct {
+	Role  string        `json:"role"`
+	Parts []SemConvPart `json:"parts"`
+}
+
+// semConvInputMessage is the unexported name the integration uses.
+type semConvInputMessage = SemConvInputMessage
+
+// SemConvOutputMessage is one gen_ai.output.messages entry ({role, parts,
+// finish_reason}), mirroring TS's exported SemConvOutputMessage.
+type SemConvOutputMessage struct {
 	Role         string        `json:"role"`
-	Parts        []semConvPart `json:"parts"`
+	Parts        []SemConvPart `json:"parts"`
 	FinishReason string        `json:"finish_reason"`
 }
+
+// semConvOutputMessage is the unexported name the integration uses.
+type semConvOutputMessage = SemConvOutputMessage
 
 // ---------------------------------------------------------------------------
 // mapProviderName / mapOperationName
@@ -67,7 +141,7 @@ var wellKnownProviderPrefixes = []providerNameMapping{
 // gen_ai.provider.name value per the OTel GenAI SemConv, mirroring TS's
 // mapProviderName (eb70e72, fc15550).
 func mapProviderName(provider string) string {
-	lower := strings.ToLower(provider)
+	lower := jscase.ToLower(provider)
 	for _, m := range wellKnownProviderPrefixes {
 		if lower == m.prefix || strings.HasPrefix(lower, m.prefix+".") || strings.HasPrefix(lower, m.prefix+"-") {
 			return m.mapped
@@ -81,9 +155,11 @@ var operationNameMapping = map[string]string{
 	"ai.streamText":     "invoke_agent",
 	"ai.generateObject": "invoke_agent",
 	"ai.streamObject":   "invoke_agent",
-	"ai.embed":          "embeddings",
-	"ai.embedMany":      "embeddings",
-	"ai.rerank":         "rerank",
+	// The WorkflowAgent root (TS 4d6d830c14).
+	"ai.workflowAgent.stream": "invoke_agent",
+	"ai.embed":                "embeddings",
+	"ai.embedMany":            "embeddings",
+	"ai.rerank":               "rerank",
 	// generateSpeech/transcribe have no standardized GenAI operation name
 	// yet, so TS maps them to themselves (identity); mapOperationName's
 	// default fallback already does this without an explicit entry, but
@@ -118,6 +194,26 @@ func formatSystemInstructions(system string) []semConvPart {
 	return []semConvPart{{"type": "text", "content": system}}
 }
 
+// FormatSystemInstructions converts a system string to the
+// gen_ai.system_instructions SemConv format ([{type: "text", content}]),
+// mirroring TS's exported formatSystemInstructions(string). An empty string
+// gives one empty text instruction, as in TS.
+func FormatSystemInstructions(system string) []SemConvSystemInstruction {
+	return []SemConvSystemInstruction{{"type": "text", "content": system}}
+}
+
+// FormatSystemMessages converts system messages to the
+// gen_ai.system_instructions SemConv format, one text instruction per
+// message, mirroring TS's formatSystemInstructions for a system message or
+// an array of them.
+func FormatSystemMessages(messages []types.Message) []SemConvSystemInstruction {
+	out := make([]SemConvSystemInstruction, 0, len(messages))
+	for _, m := range messages {
+		out = append(out, SemConvSystemInstruction{"type": "text", "content": systemMessageText(m)})
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Content-part conversion
 // ---------------------------------------------------------------------------
@@ -144,17 +240,29 @@ func firstNonEmptyStr(values ...string) string {
 // types.ToolCallContent.MarshalJSON does (Arguments when present, else the
 // raw JSON string parsed, else nil), matching TS's `part.input`.
 func toolCallArgumentsValue(t types.ToolCallContent) interface{} {
-	if t.Arguments != nil {
-		return t.Arguments
+	return orderedToolInput(t.Arguments, t.Input)
+}
+
+// orderedToolInput is TS `toolCall.input` for telemetry: the parsed input in
+// the key order the model sent it (raw, the call's input text), with the
+// values of args when set (the parsed, possibly refined input), else the raw
+// text parsed, else the raw text itself (an input that is not JSON), else
+// nil. A Go map alone would be written in sorted key order.
+func orderedToolInput(args map[string]interface{}, raw string) interface{} {
+	tree, parsed := jsonorder.Parse([]byte(raw))
+	if args != nil {
+		if parsed {
+			return jsonorder.Hinted{V: args, Hint: tree}
+		}
+		return args
 	}
-	if t.Input == "" {
+	if raw == "" {
 		return nil
 	}
-	var parsed interface{}
-	if err := json.Unmarshal([]byte(t.Input), &parsed); err == nil {
-		return parsed
+	if parsed {
+		return tree
 	}
-	return t.Input
+	return raw
 }
 
 // toolResultResponseValue derives the "response" field for a tool_call_response
@@ -174,7 +282,13 @@ func toolResultResponseValue(t types.ToolResultContent) interface{} {
 		types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
 		return out.Value
 	case types.ToolResultOutputExecutionDenied:
-		return map[string]interface{}{"denied": true, "reason": out.Reason}
+		// TS {denied: true, reason: output.reason}: JSON.stringify drops an
+		// undefined reason and keeps an empty one.
+		denied := map[string]interface{}{"denied": true}
+		if out.HasReason() {
+			denied["reason"] = out.Reason
+		}
+		return denied
 	default:
 		return out
 	}
@@ -197,29 +311,112 @@ func fileMediaType(f types.FileContent) string {
 }
 
 // convertFilePartToSemConv converts a FileContent part to a "uri" or "blob"
-// SemConv part, mirroring TS's 'file' case in convertMessagePartToSemConv.
+// SemConv part, mirroring TS's 'file' case in convertMessagePartToSemConv
+// (and in convertModelMessageToSemConv, which is the same).
 func convertFilePartToSemConv(f types.FileContent) semConvPart {
 	mediaType := fileMediaType(f)
 	modality := modalityForMediaType(mediaType)
 	mimeType := nullableString(mediaType)
+	uri := func(u string) semConvPart {
+		return semConvPart{"type": "uri", "modality": modality, "mime_type": mimeType, "uri": u}
+	}
+	// TS: a string datum that starts with http:// or https:// is a uri, any
+	// other string is the blob content as is.
+	fromString := func(s string) semConvPart {
+		if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+			return uri(s)
+		}
+		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": s}
+	}
 
 	switch f.FileData.Type {
 	case types.FileDataTypeURL:
-		return semConvPart{"type": "uri", "modality": modality, "mime_type": mimeType, "uri": firstNonEmptyStr(f.FileData.URL, f.URL)}
+		return uri(firstNonEmptyStr(f.FileData.URL, f.URL))
 	case types.FileDataTypeText:
-		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": f.FileData.Text}
+		return fromString(f.FileData.Text)
+	case types.FileDataTypeReference:
+		// TS: a reference has no data, so the datum is ''.
+		return fromString("")
 	case types.FileDataTypeData:
-		content := f.FileData.DataString
-		if content == "" && len(f.FileData.Data) > 0 {
-			content = base64.StdEncoding.EncodeToString(f.FileData.Data)
+		if f.FileData.DataString != "" {
+			return fromString(f.FileData.DataString)
 		}
-		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": content}
+		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": base64.StdEncoding.EncodeToString(f.FileData.Data)}
 	default:
 		if f.URL != "" {
-			return semConvPart{"type": "uri", "modality": modality, "mime_type": mimeType, "uri": f.URL}
+			return uri(f.URL)
 		}
 		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": base64.StdEncoding.EncodeToString(f.Data)}
 	}
+}
+
+// convertImagePartToSemConv converts a user message image part, mirroring
+// the 'image' case of TS convertModelMessageToSemConv: always the image
+// modality, a URL as a uri, a string datum as a uri when it is an http(s)
+// URL and as blob content otherwise, bytes as base64 blob content.
+func convertImagePartToSemConv(img types.ImageContent) semConvPart {
+	mimeType := nullableString(img.MimeType)
+	if img.URL != "" {
+		return semConvPart{"type": "uri", "modality": "image", "mime_type": mimeType, "uri": img.URL}
+	}
+	return semConvPart{"type": "blob", "modality": "image", "mime_type": mimeType, "content": base64.StdEncoding.EncodeToString(img.Image)}
+}
+
+// formatModelMessages converts caller-facing messages (and an optional
+// string prompt, first, as a user message) into the gen_ai.input.messages
+// SemConv format, mirroring TS formatModelMessages /
+// convertModelMessageToSemConv. Unlike formatInputMessages (the language
+// model prompt), a part the TS ModelMessage converter does not map (for
+// example an assistant file or custom part, or a tool approval response) is
+// reported by its type only.
+func formatModelMessages(prompt string, messages []types.Message) []semConvInputMessage {
+	result := make([]semConvInputMessage, 0, len(messages)+1)
+	if prompt != "" {
+		result = append(result, semConvInputMessage{Role: "user", Parts: []semConvPart{{"type": "text", "content": prompt}}})
+	}
+	for _, m := range messages {
+		if m.Role == types.RoleSystem {
+			result = append(result, semConvInputMessage{
+				Role:  "system",
+				Parts: []semConvPart{{"type": "text", "content": systemMessageText(m)}},
+			})
+			continue
+		}
+		parts := make([]semConvPart, 0, len(m.Content))
+		for _, c := range m.Content {
+			parts = append(parts, convertModelPartToSemConv(m.Role, c))
+		}
+		result = append(result, semConvInputMessage{Role: string(m.Role), Parts: parts})
+	}
+	return result
+}
+
+func convertModelPartToSemConv(role types.MessageRole, part types.ContentPart) semConvPart {
+	switch role {
+	case types.RoleUser:
+		switch p := part.(type) {
+		case types.TextContent:
+			return semConvPart{"type": "text", "content": p.Text}
+		case types.ImageContent:
+			return convertImagePartToSemConv(p)
+		case types.FileContent:
+			return convertFilePartToSemConv(p)
+		}
+	case types.RoleAssistant:
+		switch p := part.(type) {
+		case types.TextContent:
+			return semConvPart{"type": "text", "content": p.Text}
+		case types.ReasoningContent:
+			return semConvPart{"type": "reasoning", "content": p.Text}
+		case types.ToolCallContent, types.ToolResultContent:
+			return convertMessagePartToSemConv(p)
+		}
+	case types.RoleTool:
+		if p, ok := part.(types.ToolResultContent); ok {
+			return convertMessagePartToSemConv(p)
+		}
+	}
+	return semConvPart{"type": part.ContentType()}
 }
 
 // convertMessagePartToSemConv converts a single content part to its SemConv
@@ -246,12 +443,16 @@ func convertMessagePartToSemConv(part types.ContentPart) semConvPart {
 	case types.FileContent:
 		return convertFilePartToSemConv(p)
 	case types.ToolApprovalResponseContent:
-		return semConvPart{
+		out := semConvPart{
 			"type":        "tool_approval_response",
 			"approval_id": p.ApprovalID,
 			"approved":    p.Approved,
-			"reason":      p.Reason,
 		}
+		// TS `reason: part.reason` serializes away when undefined.
+		if p.HasReason() {
+			out["reason"] = p.Reason
+		}
+		return out
 	case types.CustomContent:
 		return semConvPart{"type": "custom", "kind": p.Kind}
 	case types.ReasoningFileContent:
@@ -335,7 +536,8 @@ func generatedFileToSemConv(f types.GeneratedFileContent) semConvPart {
 	case len(f.Data) > 0:
 		content = base64.StdEncoding.EncodeToString(f.Data)
 	}
-	return semConvPart{"type": "blob", "modality": modalityForMediaType(mediaType), "mime_type": nullableString(mediaType), "content": content}
+	// TS formatOutputMessages: `mime_type: file.mediaType`, as given.
+	return semConvPart{"type": "blob", "modality": modalityForMediaType(mediaType), "mime_type": mediaType, "content": content}
 }
 
 // formatOutputMessagesFromContent converts an ordered content-part list (as
@@ -358,16 +560,17 @@ func formatOutputMessagesFromContent(content []types.ContentPart, finishReason s
 				reasoningParts = append(reasoningParts, semConvPart{"type": "reasoning", "content": p.Text})
 			}
 		case types.ToolCallContent:
+			// TS formatOutputMessages: `id: tc.toolCallId`, as given.
 			toolCallParts = append(toolCallParts, semConvPart{
 				"type":      "tool_call",
-				"id":        nullableString(p.ToolCallID),
+				"id":        p.ToolCallID,
 				"name":      p.ToolName,
 				"arguments": toolCallArgumentsValue(p),
 			})
 		case types.ToolResultContent:
 			toolResultParts = append(toolResultParts, semConvPart{
 				"type":     "tool_call_response",
-				"id":       nullableString(p.ToolCallID),
+				"id":       p.ToolCallID,
 				"response": toolResultResponseValue(p),
 			})
 		case types.GeneratedFileContent:
@@ -421,4 +624,98 @@ func promptMessages(prompt interface{}) ([]types.Message, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Exported formatters (TS 382d0b8eaf exports them from @ai-sdk/otel)
+// ---------------------------------------------------------------------------
+
+// FormatInputMessages converts a language model prompt (the provider-level
+// message list) to the gen_ai.input.messages SemConv format, preserving
+// message order, mirroring TS's exported formatInputMessages.
+func FormatInputMessages(prompt []types.Message) []SemConvInputMessage {
+	return formatInputMessages(prompt)
+}
+
+// FormatModelMessagesOptions are the inputs of FormatModelMessages (TS
+// `{prompt, messages}`).
+type FormatModelMessagesOptions struct {
+	// Prompt is a string prompt, reported first as a user text message. An
+	// empty Prompt is treated as absent. TS's array form of `prompt` maps
+	// to Messages.
+	Prompt string
+	// Messages are the caller-facing messages, reported in order after
+	// Prompt.
+	Messages []types.Message
+}
+
+// FormatModelMessages converts caller-facing messages (and an optional
+// string prompt) to the gen_ai.input.messages SemConv format, preserving
+// message order, mirroring TS's exported formatModelMessages. With neither
+// a prompt nor messages it returns an empty slice.
+func FormatModelMessages(opts FormatModelMessagesOptions) []SemConvInputMessage {
+	return formatModelMessages(opts.Prompt, opts.Messages)
+}
+
+// FormatOutputMessagesOptions are the inputs of FormatOutputMessages (TS
+// `{text, reasoning, toolCalls, toolResults, files, finishReason}`).
+type FormatOutputMessagesOptions struct {
+	// Text is the generated text; an empty Text adds no text part.
+	Text string
+	// Reasoning parts; one with empty Text adds no part.
+	Reasoning []types.ReasoningContent
+	// ToolCalls become tool_call parts ({id, name, arguments}).
+	ToolCalls []types.ToolCall
+	// ToolResults become tool_call_response parts ({id, response}, the
+	// response being ToolResult.Result). Results with an Error and
+	// preliminary results are skipped: TS's toolResults hold final
+	// successful results only (errors are separate tool-error parts).
+	ToolResults []types.ToolResult
+	// Files become blob parts with their base64 content.
+	Files []types.GeneratedFileContent
+	// FinishReason is the AI SDK finish reason, mapped to the SemConv value
+	// ("tool-calls" -> "tool_call", "content-filter" -> "content_filter",
+	// "other" / "unknown" -> "stop").
+	FinishReason string
+}
+
+// FormatOutputMessages converts step result data to the
+// gen_ai.output.messages SemConv format, mirroring TS's exported
+// formatOutputMessages: one assistant message whose parts are the
+// reasoning, the text, the tool calls, the tool results and the files, in
+// that order.
+func FormatOutputMessages(opts FormatOutputMessagesOptions) []SemConvOutputMessage {
+	parts := make([]SemConvPart, 0)
+	for _, r := range opts.Reasoning {
+		if r.Text != "" {
+			parts = append(parts, SemConvPart{"type": "reasoning", "content": r.Text})
+		}
+	}
+	if opts.Text != "" {
+		parts = append(parts, SemConvPart{"type": "text", "content": opts.Text})
+	}
+	for _, tc := range opts.ToolCalls {
+		parts = append(parts, SemConvPart{"type": "tool_call", "id": tc.ID, "name": tc.ToolName, "arguments": orderedToolInput(tc.Arguments, tc.RawArguments)})
+	}
+	for _, tr := range opts.ToolResults {
+		if tr.Error != nil || tr.Preliminary {
+			continue
+		}
+		parts = append(parts, SemConvPart{"type": "tool_call_response", "id": tr.ToolCallID, "response": tr.Result})
+	}
+	for _, f := range opts.Files {
+		parts = append(parts, generatedFileToSemConv(f))
+	}
+	return []SemConvOutputMessage{{
+		Role:         "assistant",
+		Parts:        parts,
+		FinishReason: mapFinishReasonSemConv(opts.FinishReason),
+	}}
+}
+
+// FormatObjectOutputMessages converts a generateObject / streamObject
+// result's object text to the gen_ai.output.messages SemConv format,
+// mirroring TS's exported formatObjectOutputMessages.
+func FormatObjectOutputMessages(objectText, finishReason string) []SemConvOutputMessage {
+	return formatObjectOutputMessages(objectText, finishReason)
 }

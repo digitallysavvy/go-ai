@@ -2,15 +2,22 @@ package bytedance
 
 import (
 	"testing"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestNewProvider(t *testing.T) {
-	t.Run("returns error when no API key", func(t *testing.T) {
+	t.Run("no API key is a request-time LoadAPIKeyError, not a constructor error", func(t *testing.T) {
 		t.Setenv("BYTEDANCE_API_KEY", "")
+		t.Setenv("ARK_API_KEY", "")
 
-		_, err := New(Config{})
-		if err == nil {
-			t.Error("expected error when no API key provided")
+		prov, err := New(Config{})
+		if err != nil {
+			t.Fatalf("New must not fail without a key (TS loadApiKey runs per request): %v", err)
+		}
+		_, err = prov.client.Get(t.Context(), "/x")
+		if !providererrors.IsLoadAPIKeyError(err) {
+			t.Fatalf("request error = %v, want LoadAPIKeyError", err)
 		}
 	})
 
@@ -47,16 +54,6 @@ func TestNewProvider(t *testing.T) {
 		}
 		if prov == nil {
 			t.Fatal("expected non-nil provider")
-		}
-	})
-
-	t.Run("returns error when neither env var set", func(t *testing.T) {
-		t.Setenv("BYTEDANCE_API_KEY", "")
-		t.Setenv("ARK_API_KEY", "")
-
-		_, err := New(Config{})
-		if err == nil {
-			t.Error("expected error when no API key provided")
 		}
 	})
 

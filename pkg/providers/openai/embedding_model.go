@@ -2,10 +2,11 @@ package openai
 
 import (
 	"context"
-	"fmt"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -33,7 +34,7 @@ func (m *EmbeddingModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return m.provider.Name()
+	return m.provider.Name() + ".embedding"
 }
 
 // ModelID returns the model ID
@@ -50,7 +51,14 @@ func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
 // MaxInputBytesPerCall returns the conservative UTF-8 input byte budget for a
 // single embeddings request. ai.EmbedMany uses it to split large requests.
 // Mirrors the TS SDK's EXPERIMENTAL_EMBEDDING_MODEL_MAX_INPUT_BYTES_PER_CALL = 300_000.
+// An OpenAI-compatible wrapper (Config.OpenAICompatible: Baseten, DeepInfra,
+// Vertex MaaS, ...) has no byte budget, like TS
+// OpenAICompatibleEmbeddingModel (openai-compatible-embedding-model.ts:61):
+// it returns 0, so EmbedMany splits only by MaxEmbeddingsPerCall.
 func (m *EmbeddingModel) MaxInputBytesPerCall() int {
+	if m.provider.config.OpenAICompatible {
+		return 0
+	}
 	return 300_000
 }
 
@@ -59,41 +67,60 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 	return true
 }
 
-// DoEmbed performs embedding for a single input
+// DoEmbed performs embedding for a single input. TS has only doEmbed({values}),
+// so this sends the same wire request as a one-value batch (array input,
+// encoding_format float).
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
-	reqBody := map[string]interface{}{
-		"model": m.modelID,
-		"input": input,
-	}
-
-	var response openAIEmbeddingResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
-	}, &response)
+	many, err := m.DoEmbedMany(ctx, []string{input}, opts)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, err
 	}
-
-	if len(response.Data) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+	if len(many.Embeddings) == 0 {
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
-
-	return &types.EmbeddingResult{
-		Embedding: response.Data[0].Embedding,
-		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.TotalTokens,
-		},
-		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response},
-	}, nil
+	embedding := many.Embeddings[0]
+	result := &types.EmbeddingResult{
+		Embedding:        embedding,
+		Usage:            many.Usage,
+		Warnings:         many.Warnings,
+		ProviderMetadata: many.ProviderMetadata,
+	}
+	if len(many.Responses) > 0 {
+		result.Response = many.Responses[0]
+	}
+	return result, nil
 }
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// TS OpenAICompatibleEmbeddingModel parses provider options before the
+	// too-many-values check; OpenAIEmbeddingModel checks the count first.
+	validate := func() error {
+		if opts == nil {
+			return nil
+		}
+		return m.validateEmbeddingProviderOptions(opts.ProviderOptions)
+	}
+	if m.provider.config.OpenAICompatible {
+		if err := validate(); err != nil {
+			return nil, err
+		}
+	}
+	if len(inputs) > m.MaxEmbeddingsPerCall() {
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
+	}
+	if !m.provider.config.OpenAICompatible {
+		if err := validate(); err != nil {
+			return nil, err
+		}
+	}
 	if len(inputs) == 0 {
 		return &types.EmbeddingsResult{
 			Embeddings: [][]float64{},
@@ -102,46 +129,75 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 
 	reqBody := map[string]interface{}{
-		"model": m.modelID,
-		"input": inputs,
+		"model":           m.modelID,
+		"input":           inputs,
+		"encoding_format": "float",
 	}
+	warnings := m.applyDimensions(reqBody, opts)
 
 	var response openAIEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: m.responseValidator(),
+		Method:           http.MethodPost,
+		Path:             "/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	if len(response.Data) != len(inputs) {
-		return nil, fmt.Errorf("expected %d embeddings, got %d", len(inputs), len(response.Data))
-	}
-
+	// TS maps response.data in order and checks neither the count nor the
+	// per-item index.
 	embeddings := make([][]float64, len(response.Data))
 	for i, data := range response.Data {
-		if data.Index != i {
-			return nil, fmt.Errorf("embedding index mismatch: expected %d, got %d", i, data.Index)
-		}
 		embeddings[i] = data.Embedding
 	}
 
-	return &types.EmbeddingsResult{
+	// TS response.body is the raw parsed JSON.
+	var rawBody interface{} = response
+	_ = jsonexact.Unmarshal(httpResp.Body, &rawBody)
+	result := &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.TotalTokens,
-		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
-	}, nil
+		Warnings:   warnings,
+		Usage:      response.embeddingUsage(),
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawBody}},
+	}
+	if m.provider.config.OpenAICompatible && len(response.ProviderMetadata) > 0 {
+		// OpenAICompatibleEmbeddingModel passes the response providerMetadata through.
+		result.ProviderMetadata = map[string]interface{}{}
+		for k, v := range response.ProviderMetadata {
+			result.ProviderMetadata[k] = v
+		}
+	}
+	return result, nil
+}
+
+// responseValidator is the TS response schema of the embeddings call:
+// openaiTextEmbeddingResponseSchema, or the openai-compatible variant (with
+// providerMetadata) for the compatible wrappers.
+func (m *EmbeddingModel) responseValidator() func(int, http.Header, []byte) error {
+	schema := providerutils.SchemaOpenAIEmbedding
+	if m.provider.config.OpenAICompatible {
+		schema = providerutils.SchemaCompatEmbedding
+	}
+	return providerutils.MediaResponseValidator(m.Provider(), schema)
 }
 
 // handleError converts various errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if pe, ok := m.provider.apiError(m.Provider(), err); ok {
+		return pe // TS openaiFailedResponseHandler / defaultOpenAICompatibleErrorStructure
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
@@ -162,8 +218,57 @@ type openAIEmbeddingResponse struct {
 		Embedding []float64 `json:"embedding"`
 	} `json:"data"`
 	Model string `json:"model"`
-	Usage struct {
+	Usage *struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata"`
+}
+
+// embeddingUsage maps the wire usage as TS `response.usage ? { tokens:
+// response.usage.prompt_tokens } : undefined`: Reported only when the
+// response carried a usage object.
+func (r openAIEmbeddingResponse) embeddingUsage() types.EmbeddingUsage {
+	if r.Usage == nil {
+		return types.EmbeddingUsage{}
+	}
+	return types.EmbeddingUsage{
+		Tokens:      float64(r.Usage.PromptTokens),
+		InputTokens: r.Usage.PromptTokens,
+		TotalTokens: r.Usage.TotalTokens,
+		Reported:    true,
+	}
+}
+
+// applyDimensions sets the request's dimensions and user. Native OpenAI reads
+// providerOptions.openai; the openai-compatible wrappers (baseten, deepinfra)
+// read openaiCompatible and their own provider-name namespace, like TS
+// OpenAICompatibleEmbeddingModel. The provider option wins over the top-level
+// dimensions setting (TS #22338).
+func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) []types.Warning {
+	if opts == nil {
+		return nil
+	}
+	var dimensionsOption, userOption interface{}
+	var warnings []types.Warning
+	if m.provider.config.OpenAICompatible {
+		name, _, _ := strings.Cut(m.provider.Name(), ".")
+		name = providerutils.JSTrim(name) // TS providerOptionsName: split('.')[0].trim()
+		var resolved map[string]interface{}
+		resolved, warnings = providerutils.ResolveOpenAICompatibleProviderOptions(name, opts.ProviderOptions)
+		dimensionsOption, userOption = resolved["dimensions"], resolved["user"]
+	} else {
+		// Read through the JSON form so a Go-typed literal
+		// (map[string]int, map[string]string) is read like the map form.
+		openaiOpts, _ := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["openai"])
+		dimensionsOption, userOption = openaiOpts["dimensions"], openaiOpts["user"]
+	}
+	if d, ok := providerutils.ResolveEmbeddingDimensions(dimensionsOption, opts.Dimensions); ok {
+		reqBody["dimensions"] = d
+	}
+	// An empty string is kept (JSON.stringify keeps user: '').
+	if u, ok := userOption.(string); ok {
+		reqBody["user"] = u
+	}
+	return warnings
 }

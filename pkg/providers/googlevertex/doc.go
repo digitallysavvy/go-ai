@@ -22,7 +22,8 @@
 //
 // Project and Location are required. Authenticate with one of AccessToken,
 // AuthToken (a function that returns a fresh token) or TokenSource, or set
-// APIKey for Vertex express mode. The Gemini request and streaming code that
+// APIKey for Vertex express mode. With none of these set, Application
+// Default Credentials are used (like TS createVertex). The Gemini request and streaming code that
 // this package shares with package google lives in package gemini.
 //
 // Guide: https://goaisdk.com/docs/providers/google-vertex.

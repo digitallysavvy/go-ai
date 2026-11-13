@@ -5,18 +5,23 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for XAI
@@ -42,12 +47,12 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 
 // SpecificationVersion returns the specification version
 func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *VideoModel) Provider() string {
-	return "xai"
+	return "xai.video"
 }
 
 // ModelID returns the model ID
@@ -111,6 +116,21 @@ type XAIVideoProviderOptions struct {
 	// User is a unique identifier representing the end user, for abuse
 	// monitoring. Not sent for video extension requests.
 	User *string `json:"user,omitempty"`
+
+	// Output delivers the video directly to caller-managed storage through
+	// an HTTPS signed PUT URL (TS 2e44144812). The completed result then
+	// reports an uploaded video (provider.VideoDataTypeUploaded) with no
+	// URL, and the signed URL never appears in errors, warnings, provider
+	// metadata or the operation reference. The raw form
+	// {"output": {"upload_url": ...}} that v0.5.2 passed through is still
+	// accepted and validated the same way; uploadUrl wins.
+	Output *XAIVideoOutput `json:"output,omitempty"`
+}
+
+// XAIVideoOutput is the upload delivery destination.
+type XAIVideoOutput struct {
+	// UploadURL is an https URL without userinfo or fragment.
+	UploadURL string `json:"uploadUrl"`
 }
 
 // XAIVideoKeyframe is a mid-video image anchor.
@@ -141,6 +161,21 @@ type XAIVideoPublicURLOptions struct {
 // and passed back into DoStatus.
 type xaiVideoOperation struct {
 	RequestID string `json:"requestId"`
+	// HasUploadURL marks an upload delivery (TS operation.hasUploadUrl); the
+	// signed URL itself is never stored.
+	HasUploadURL bool `json:"hasUploadUrl,omitempty"`
+}
+
+// xaiUploadError rebuilds an API error of an upload delivery call without
+// the request, response body or cause, keeping the status and retryability
+// (TS 2e44144812: the error could echo the signed URL).
+func xaiUploadError(err error, message string) error {
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.StatusCode == 0 {
+		return err // a transport failure (cancel included) stays as is
+	}
+	retryable := pe.IsRetryable()
+	return &providererrors.ProviderError{Provider: "xai", StatusCode: pe.StatusCode, Message: message, Retryable: &retryable}
 }
 
 // DoStart starts an asynchronous video generation/edit/extension via the
@@ -179,21 +214,25 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	// Submit video generation/edit/extension request
 	var createResp xaiVideoCreateResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    endpoint,
-		Body:    body,
-		Headers: callOpts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator("xai", providerutils.SchemaXAIVideoCreate),
+		Method:           http.MethodPost,
+		Path:             endpoint,
+		Body:             body,
+		Headers:          callOpts.Headers,
 	}, &createResp)
 	if err != nil {
+		if provOpts.Output != nil {
+			return nil, xaiUploadError(m.handleError(err), "xAI video upload request failed.")
+		}
 		return nil, m.handleError(err)
 	}
 
 	if createResp.RequestID == "" {
-		return nil, providererrors.NewProviderError("xai", 0, "",
-			fmt.Sprintf("No request_id returned from xAI API. Response: %+v", createResp), nil)
+		// TS AISDKError XAI_VIDEO_GENERATION_ERROR (xai-video-model.ts:640-646).
+		return nil, providererrors.NewVideoGenerationError("xai", m.modelID, "No request_id returned from xAI API.", nil)
 	}
 
-	operation, _ := json.Marshal(xaiVideoOperation(createResp))
+	operation, _ := json.Marshal(xaiVideoOperation{RequestID: createResp.RequestID, HasUploadURL: provOpts.Output != nil})
 
 	return &provider.VideoModelV3OperationStartResult{
 		Operation: operation,
@@ -219,6 +258,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	status, headers, err := m.checkVideoStatus(ctx, op.RequestID, opts.Headers)
 	if err != nil {
+		if op.HasUploadURL {
+			return nil, xaiUploadError(m.handleError(err), "xAI video upload status request failed.")
+		}
 		return nil, m.handleError(err)
 	}
 
@@ -228,7 +270,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		Headers:   headers,
 	}
 
-	if status.Status == "expired" {
+	if status.is("expired") {
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
 			Error:    "Video generation request expired.",
@@ -236,18 +278,18 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}, nil
 	}
 
-	if status.Status == "failed" {
-		errDetails := ""
+	if status.is("failed") {
+		// TS statusResponse.error?.message ?? statusResponse.error?.code.
+		var errDetails *string
 		if status.Error != nil {
-			if status.Error.Message != "" {
-				errDetails = status.Error.Message
-			} else {
+			errDetails = status.Error.Message
+			if errDetails == nil {
 				errDetails = status.Error.Code
 			}
 		}
 		msg := "Video generation failed."
-		if errDetails != "" {
-			msg = fmt.Sprintf("Video generation failed: %s", errDetails)
+		if errDetails != nil && !op.HasUploadURL {
+			msg = fmt.Sprintf("Video generation failed: %s", *errDetails)
 		}
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
@@ -256,7 +298,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}, nil
 	}
 
-	if status.Status == "done" || (status.Status == "" && status.Video != nil && resolveVideoURL(status.Video) != "") {
+	// TS completes a status-less response only on video.url (not file_output.public_url).
+	if status.is("done") || (status.Status == nil && status.Video != nil && status.Video.URL != nil && *status.Video.URL != "") {
 		// Terminal outcomes (moderation rejection, missing URL) are reported
 		// as an error status rather than a thrown Go error, so they surface
 		// the same way as any other job failure.
@@ -269,7 +312,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}
 
 		videoURL := resolveVideoURL(status.Video)
-		if videoURL == "" {
+		if videoURL == "" && !op.HasUploadURL {
 			return &provider.VideoModelV3OperationStatusResult{
 				Status:   provider.VideoOperationStatusError,
 				Error:    "Video generation completed but no video URL was returned.",
@@ -294,11 +337,19 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			}
 		}
 
+		videos := []provider.VideoModelV3VideoData{{Type: provider.VideoDataTypeURL, URL: videoURL, MediaType: "video/mp4"}}
+		meta := buildXAIVideoMetadata(op.RequestID, status)
+		if op.HasUploadURL {
+			// TS 2e44144812: an upload delivery reports the uploaded outcome
+			// and never exposes a video URL.
+			videos = []provider.VideoModelV3VideoData{{Type: provider.VideoDataTypeUploaded, MediaType: "video/mp4"}}
+			delete(meta, "videoUrl")
+		}
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:           provider.VideoOperationStatusCompleted,
-			Videos:           []provider.VideoModelV3VideoData{{Type: "url", URL: videoURL, MediaType: "video/mp4"}},
+			Videos:           videos,
 			Warnings:         statusWarnings,
-			ProviderMetadata: map[string]interface{}{"xai": buildXAIVideoMetadata(op.RequestID, status)},
+			ProviderMetadata: map[string]interface{}{"xai": meta},
 			Response:         responseInfo,
 		}, nil
 	}
@@ -326,7 +377,12 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 		meta["costInUsdTicks"] = *status.Usage.CostInUsdTicks
 	}
 	if status.Progress != nil {
-		meta["progress"] = *status.Progress
+		// Whole-number progress stays an int (the pre-existing metadata type).
+		if p := *status.Progress; p == math.Trunc(p) {
+			meta["progress"] = int(p)
+		} else {
+			meta["progress"] = p
+		}
 	}
 	if videoData != nil && videoData.FileOutput != nil {
 		fileOutput := map[string]interface{}{
@@ -334,7 +390,7 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 			"filename": videoData.FileOutput.Filename,
 		}
 		if videoData.FileOutput.ExpiresAt != nil {
-			fileOutput["expiresAt"] = *videoData.FileOutput.ExpiresAt
+			fileOutput["expiresAt"] = xaiUnixSecondsMetadataValue(*videoData.FileOutput.ExpiresAt)
 		}
 		if videoData.FileOutput.PublicURL != nil {
 			fileOutput["publicUrl"] = *videoData.FileOutput.PublicURL
@@ -343,7 +399,7 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 			fileOutput["publicUrlError"] = *videoData.FileOutput.PublicURLError
 		}
 		if videoData.FileOutput.PublicURLExpiresAt != nil {
-			fileOutput["publicUrlExpiresAt"] = *videoData.FileOutput.PublicURLExpiresAt
+			fileOutput["publicUrlExpiresAt"] = xaiUnixSecondsMetadataValue(*videoData.FileOutput.PublicURLExpiresAt)
 		}
 		meta["fileOutput"] = fileOutput
 	}
@@ -353,19 +409,14 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 	return meta
 }
 
-// convertXAIHeaders flattens net/http.Header into map[string]string, taking
-// the first value for each header key.
+// convertXAIHeaders is the response headers of a video call: TS
+// extractResponseHeaders joins repeated lines with ", " (the last Set-Cookie
+// wins). Keys keep the Go canonical form of v0.5.2 (TS: lower case; S6).
 func convertXAIHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
-		return map[string]string{}
+	if out := providerutils.ExtractHeaders(h); out != nil {
+		return out
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	return map[string]string{}
 }
 
 // DoGenerate generates a video synchronously by starting the operation and
@@ -422,6 +473,25 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}, nil
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// XaiVideoModel has no doGenerate), so ai.GenerateVideo drives it through the
+// core start/status flow. It returns the v0.5.2 pollIntervalMs /
+// pollTimeoutMs provider options (0 when unset: the core 5000 / 600000
+// defaults), which TS ignores; Go keeps honoring them (v0.5.2 contract, S6).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	provOpts, _, err := extractVideoProviderOptions(providerOptions)
+	if err != nil || provOpts == nil {
+		return 0, 0
+	}
+	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs > 0 {
+		intervalMs = *provOpts.PollIntervalMs
+	}
+	if provOpts.PollTimeoutMs != nil && *provOpts.PollTimeoutMs > 0 {
+		timeoutMs = *provOpts.PollTimeoutMs
+	}
+	return intervalMs, timeoutMs
+}
+
 // getPollOptions extracts polling options from XAIVideoProviderOptions,
 // applying the same 5s/600s defaults DoGenerate previously hardcoded.
 func (m *VideoModel) getPollOptions(provOpts *XAIVideoProviderOptions) polling.PollOptions {
@@ -458,7 +528,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 		Headers: headers,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, internalhttp.UnwrapFetchRejection(err)
 	}
 
 	respHeaders := convertXAIHeaders(resp.Headers)
@@ -472,33 +542,44 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 		// "pending" for a payload that large.
 		limited, readErr := io.ReadAll(io.LimitReader(bytes.NewReader(resp.Body), maxPendingStatusBodyBytes+1))
 		if readErr != nil {
-			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
+			return &xaiVideoStatusResponse{Status: &xaiVideoPending}, respHeaders, nil
 		}
 		if len(limited) > maxPendingStatusBodyBytes {
 			return nil, nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
 				fmt.Sprintf("xAI video status response exceeded %d bytes", maxPendingStatusBodyBytes), nil)
 		}
-		if len(limited) == 0 {
-			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
+		// TS readPendingBody decodes with TextDecoder (leading BOM dropped,
+		// one U+FFFD per invalid subpart) and treats text.trim() == "" as
+		// pending.
+		text := prompt.DecodeUTF8Text(limited)
+		if providerutils.JSTrim(text) == "" {
+			return &xaiVideoStatusResponse{Status: &xaiVideoPending}, respHeaders, nil
 		}
 
-		var status xaiVideoStatusResponse
-		if err := json.Unmarshal(limited, &status); err != nil {
-			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
+		// TS safeParseJSON({text, schema}): a body that fails the status
+		// schema is pending too.
+		if providerutils.MediaSchemaParser(providerutils.SchemaXAIVideoStatus)(resp.StatusCode, resp.Headers, []byte(text)) != nil {
+			return &xaiVideoStatusResponse{Status: &xaiVideoPending}, respHeaders, nil
 		}
-		if status.Status == "" && (status.Video == nil || resolveVideoURL(status.Video) == "") {
-			status.Status = "pending"
+		var status xaiVideoStatusResponse
+		if err := providerutils.UnmarshalChunk([]byte(text), &status); err != nil {
+			return &xaiVideoStatusResponse{Status: &xaiVideoPending}, respHeaders, nil
 		}
 		return &status, respHeaders, nil
 	}
 
-	if resp.StatusCode >= 400 {
-		return nil, nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
-			parseXAIErrorMessage(resp.Body), nil)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, nil, newXAIProviderErrorFrom("xai", resp.StatusError(resp.Body))
 	}
 
+	// TS xaiVideoStatusJsonResponseHandler: createJsonResponseHandler(schema),
+	// which parses response.text() (UTF-8 decoded, leading BOM dropped).
+	body := []byte(prompt.DecodeUTF8Text(resp.Body))
+	if err := providerutils.MediaResponseValidator("xai", providerutils.SchemaXAIVideoStatus)(resp.StatusCode, resp.Headers, body); err != nil {
+		return nil, nil, err
+	}
 	var status xaiVideoStatusResponse
-	if err := json.Unmarshal(resp.Body, &status); err != nil {
+	if err := providerutils.UnmarshalChunk(body, &status); err != nil {
 		return nil, nil, fmt.Errorf("failed to decode JSON response: %w", err)
 	}
 	return &status, respHeaders, nil
@@ -554,6 +635,11 @@ func (m *VideoModel) buildRequestBody(
 			fmt.Sprintf("xAI %s does not support generateAudio.", mode)))
 	}
 
+	// TS 2e44144812: upload delivery.
+	if provOpts.Output != nil {
+		body["output"] = map[string]interface{}{"upload_url": provOpts.Output.UploadURL}
+	}
+
 	// Persist the generated video in the xAI Files API.
 	if provOpts.StorageOptions != nil {
 		body["storage_options"] = storageOptionsToWire(provOpts.StorageOptions)
@@ -584,11 +670,15 @@ func (m *VideoModel) buildRequestBody(
 		}
 	}
 
-	// Video editing/extension: add source video URL
-	if (isEdit || isExtension) && provOpts.VideoURL != nil {
-		body["video"] = map[string]interface{}{
-			"url": *provOpts.VideoURL,
+	// Video editing/extension: add source video URL. TS always sends
+	// video: { url: xaiOptions!.videoUrl }, so an explicit mode without
+	// videoUrl sends "video": {}.
+	if isEdit || isExtension {
+		video := map[string]interface{}{}
+		if provOpts.VideoURL != nil {
+			video["url"] = *provOpts.VideoURL
 		}
+		body["video"] = video
 	}
 
 	// Convert the start image (first_frame or legacy image-to-video input)
@@ -797,7 +887,7 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 	if !isEdit && !isExtension && provOpts.Resolution == nil && opts.Resolution != "" && mapResolution(opts.Resolution) == "" {
 		warnings = append(warnings, unsupportedVideoWarning(
 			"resolution",
-			fmt.Sprintf("Unrecognized resolution %q. Use providerOptions.xai.resolution with \"480p\", \"720p\", or \"1080p\" instead.", opts.Resolution),
+			fmt.Sprintf("Unrecognized resolution \"%s\". Use providerOptions.xai.resolution with \"480p\", \"720p\", or \"1080p\" instead.", opts.Resolution),
 		))
 	}
 
@@ -981,12 +1071,34 @@ func mapResolution(resolution string) string {
 // extractVideoProviderOptions extracts XAI-specific provider options and any
 // unrecognized keys (which are passed through to the API request body).
 func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProviderOptions, map[string]interface{}, error) {
+	provOpts, extra, err := parseVideoProviderOptions(opts)
+	if err != nil {
+		// TS 2e44144812: validation errors carry the options; with upload
+		// delivery the signed URL must not reach diagnostics, so any option
+		// error is reported without them.
+		if raw, ok := opts["xai"]; ok && xaiVideoOptionsHaveOutput(raw) {
+			return nil, nil, providererrors.NewArgumentError("providerOptions.xai", "Invalid xAI video provider options for upload delivery.", nil)
+		}
+	}
+	var already *providererrors.InvalidArgumentError
+	if errors.As(err, &already) {
+		return nil, nil, err
+	}
+	if err != nil {
+		// TS parseProviderOptions: any schema violation is an
+		// InvalidArgumentError("invalid xai provider options").
+		return nil, nil, providererrors.NewArgumentError("providerOptions", "invalid xai provider options", err)
+	}
+	return provOpts, extra, nil
+}
+
+func parseVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProviderOptions, map[string]interface{}, error) {
 	if opts == nil {
 		return &XAIVideoProviderOptions{}, nil, nil
 	}
 
 	xaiRaw, ok := opts["xai"]
-	if !ok {
+	if !ok || xaiRaw == nil {
 		return &XAIVideoProviderOptions{}, nil, nil
 	}
 
@@ -1005,6 +1117,9 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 	if err := json.Unmarshal(jsonData, &rawMap); err != nil {
 		return nil, nil, fmt.Errorf("failed to unmarshal provider options map: %w", err)
 	}
+	if err := resolveXAIVideoOutput(rawMap, &provOpts); err != nil {
+		return nil, nil, err
+	}
 	if err := validateVideoProviderOptions(rawMap, &provOpts); err != nil {
 		return nil, nil, err
 	}
@@ -1016,6 +1131,7 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 		"mode": true, "referenceImageUrls": true,
 		"referenceVoiceIds": true, "user": true,
 		"keyframes": true, "storageOptions": true,
+		"output": true, // TS 2e44144812: never passed through raw
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
@@ -1028,6 +1144,36 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 }
 
 func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVideoProviderOptions) error {
+	// TS runtimeSchema: these members are .optional() (not nullish), so a
+	// present null is invalid; pollIntervalMs, pollTimeoutMs and resolution
+	// are nullish.
+	for _, key := range []string{"mode", "videoUrl", "referenceVoiceIds", "keyframes", "storageOptions", "user"} {
+		if v, present := rawMap[key]; present && v == nil {
+			return fmt.Errorf("xai provider option %s must not be null", key)
+		}
+	}
+	if storage, ok := rawMap["storageOptions"].(map[string]interface{}); ok {
+		if err := validateXAIVideoStorageOptions(storage); err != nil {
+			return err
+		}
+	}
+	if provOpts.Mode != nil {
+		switch *provOpts.Mode {
+		case "edit-video", "extend-video", "reference-to-video":
+		default:
+			return fmt.Errorf("xai provider option mode must be one of edit-video, extend-video, reference-to-video")
+		}
+	}
+	if provOpts.Resolution != nil {
+		switch *provOpts.Resolution {
+		case "480p", "720p", "1080p":
+		default:
+			return fmt.Errorf("xai provider option resolution must be one of 480p, 720p, 1080p")
+		}
+	}
+	if provOpts.VideoURL != nil && *provOpts.VideoURL == "" {
+		return fmt.Errorf("xai provider option videoUrl must not be empty")
+	}
 	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs <= 0 {
 		return fmt.Errorf("xai provider option pollIntervalMs must be positive")
 	}
@@ -1054,10 +1200,7 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 		// is a hard validation error (InvalidArgumentError), not a warning
 		// with silent truncation.
 		if len(provOpts.ReferenceVoiceIDs) > 3 {
-			return &providererrors.InvalidArgumentError{
-				Field:   "referenceVoiceIds",
-				Message: "xai provider option referenceVoiceIds accepts at most 3 voice ids",
-			}
+			return fmt.Errorf("xai provider option referenceVoiceIds accepts at most 3 voice ids")
 		}
 		for _, voiceID := range provOpts.ReferenceVoiceIDs {
 			if voiceID == "" {
@@ -1067,10 +1210,9 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 	}
 
 	if len(provOpts.Keyframes) > 4 {
-		return &providererrors.InvalidArgumentError{
-			Field:   "keyframes",
-			Message: "xai provider option keyframes accepts at most 4 entries",
-		}
+		// TS z.array(...).max(4) fails parseProviderOptions: the caller wraps
+		// this as "invalid xai provider options" (argument providerOptions).
+		return fmt.Errorf("xai provider option keyframes accepts at most 4 entries")
 	}
 	for _, kf := range provOpts.Keyframes {
 		if kf.ImageURL == "" {
@@ -1100,6 +1242,37 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 	return nil
 }
 
+// validateXAIVideoStorageOptions checks the JSON form of storageOptions
+// against TS storageOptionsSchema where the typed decode cannot: expiresAfter
+// and publicUrl are .optional() (a present null is invalid), publicUrl is a
+// boolean or an object, and its expiresAfter is an integer
+// (z.number().int()).
+func validateXAIVideoStorageOptions(storage map[string]interface{}) error {
+	if v, present := storage["expiresAfter"]; present && v == nil {
+		return fmt.Errorf("xai provider option storageOptions.expiresAfter must not be null")
+	}
+	publicURL, present := storage["publicUrl"]
+	if !present {
+		return nil
+	}
+	switch v := publicURL.(type) {
+	case bool:
+		return nil
+	case map[string]interface{}:
+		raw, has := v["expiresAfter"]
+		if !has {
+			return nil
+		}
+		f, isNumber := raw.(float64)
+		if !isNumber || f != math.Trunc(f) {
+			return fmt.Errorf("xai provider option storageOptions.publicUrl.expiresAfter must be an integer")
+		}
+		return nil
+	default:
+		return fmt.Errorf("xai provider option storageOptions.publicUrl must be a boolean or an object")
+	}
+}
+
 // publicURLObjectExpiresAfter extracts the expiresAfter field from a
 // StorageOptions.PublicURL value when it is the object form (as opposed to
 // a plain bool). ok is false when PublicURL is a bool or nil.
@@ -1125,12 +1298,76 @@ func publicURLObjectExpiresAfter(publicURL interface{}) (expiresAfter *int, ok b
 	}
 }
 
+// xaiVideoOptionsHaveOutput reports whether the raw xai options carry an
+// output key (TS providerOptions.xai.output !== undefined).
+func xaiVideoOptionsHaveOutput(raw interface{}) bool {
+	if m, ok := raw.(map[string]interface{}); ok {
+		_, has := m["output"]
+		return has
+	}
+	if o, ok := raw.(*XAIVideoProviderOptions); ok {
+		return o != nil && o.Output != nil
+	}
+	if o, ok := raw.(XAIVideoProviderOptions); ok {
+		return o.Output != nil
+	}
+	return false
+}
+
+// resolveXAIVideoOutput reads and validates output: uploadUrl (TS
+// z.url({protocol: /^https$/}) without username, password or hash), or the
+// raw upload_url v0.5.2 forwarded (same validation; uploadUrl wins).
+func resolveXAIVideoOutput(rawMap map[string]interface{}, provOpts *XAIVideoProviderOptions) error {
+	raw, has := rawMap["output"]
+	if !has {
+		return nil
+	}
+	out, ok := raw.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("xai provider option output must be an object")
+	}
+	value, ok := out["uploadUrl"].(string)
+	if _, present := out["uploadUrl"]; !present {
+		value, ok = out["upload_url"].(string)
+	}
+	if !ok || !validXAIUploadURL(value) {
+		return fmt.Errorf("xai provider option output.uploadUrl must be an https URL without credentials or fragment")
+	}
+	provOpts.Output = &XAIVideoOutput{UploadURL: value}
+	return nil
+}
+
+func validXAIUploadURL(value string) bool {
+	u, err := url.Parse(value)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.Fragment != "" {
+		return false
+	}
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); u.User.Username() != "" || hasPassword {
+			return false
+		}
+	}
+	return true
+}
+
 // handleError converts provider errors
 func (m *VideoModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if provErr, ok := err.(*providererrors.ProviderError); ok {
 		return provErr
 	}
-	return providererrors.NewProviderError("xai", 0, "", err.Error(), err)
+	if provErr, ok := xaiStatusError("xai", err); ok {
+		return provErr // TS xaiFailedResponseHandler
+	}
+	return err // TS handleFetchError: no HTTP response, returned unchanged
 }
 
 // xaiVideoCreateResponse represents the video creation API response
@@ -1140,19 +1377,30 @@ type xaiVideoCreateResponse struct {
 
 // xaiVideoStatusResponse represents the video status API response
 type xaiVideoStatusResponse struct {
-	Status   string             `json:"status"`
+	// Status, the error fields and the video URL are pointers: TS tests
+	// them with == null / ??, so an empty string is a value, not absence.
+	Status   *string            `json:"status"`
 	Video    *xaiVideoData      `json:"video,omitempty"`
 	Model    string             `json:"model,omitempty"`
 	Usage    *xaiVideoUsage     `json:"usage,omitempty"`
-	Progress *int               `json:"progress,omitempty"`
-	Warnings []xaiWarning       `json:"warnings,omitempty"`
+	Progress *float64           `json:"progress,omitempty"`
+	Warnings xaiWarnings        `json:"warnings,omitempty"`
 	Error    *xaiVideoStatusErr `json:"error,omitempty"`
+}
+
+// xaiVideoPending is the status of a 202 response TS reads as
+// { status: 'pending' }.
+var xaiVideoPending = "pending"
+
+// is reports whether the response status is s.
+func (r *xaiVideoStatusResponse) is(s string) bool {
+	return r.Status != nil && *r.Status == s
 }
 
 // xaiVideoStatusErr holds the error details from a failed video status response.
 type xaiVideoStatusErr struct {
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
+	Code    *string `json:"code,omitempty"`
+	Message *string `json:"message,omitempty"`
 }
 
 // xaiVideoUsage holds top-level usage data from the video status response.
@@ -1162,7 +1410,7 @@ type xaiVideoUsage struct {
 
 // xaiVideoData represents video data in the status response
 type xaiVideoData struct {
-	URL               string              `json:"url"`
+	URL               *string             `json:"url"`
 	Duration          *float64            `json:"duration,omitempty"`
 	RespectModeration *bool               `json:"respect_moderation,omitempty"`
 	FileOutput        *xaiVideoFileOutput `json:"file_output,omitempty"`
@@ -1172,12 +1420,13 @@ type xaiVideoData struct {
 // xaiVideoFileOutput describes a video persisted via storageOptions to the
 // xAI Files API.
 type xaiVideoFileOutput struct {
-	FileID             string  `json:"file_id"`
-	Filename           string  `json:"filename"`
-	ExpiresAt          *int64  `json:"expires_at,omitempty"`
-	PublicURL          *string `json:"public_url,omitempty"`
-	PublicURLError     *string `json:"public_url_error,omitempty"`
-	PublicURLExpiresAt *int64  `json:"public_url_expires_at,omitempty"`
+	FileID   string `json:"file_id"`
+	Filename string `json:"filename"`
+	// The times are z.number(): a fraction is kept in the metadata.
+	ExpiresAt          *float64 `json:"expires_at,omitempty"`
+	PublicURL          *string  `json:"public_url,omitempty"`
+	PublicURLError     *string  `json:"public_url_error,omitempty"`
+	PublicURLExpiresAt *float64 `json:"public_url_expires_at,omitempty"`
 }
 
 // resolveVideoURL mirrors TS `video?.url ?? video?.file_output?.public_url
@@ -1187,8 +1436,8 @@ func resolveVideoURL(video *xaiVideoData) string {
 	if video == nil {
 		return ""
 	}
-	if video.URL != "" {
-		return video.URL
+	if video.URL != nil {
+		return *video.URL
 	}
 	if video.FileOutput != nil && video.FileOutput.PublicURL != nil {
 		return *video.FileOutput.PublicURL
@@ -1199,4 +1448,27 @@ func resolveVideoURL(video *xaiVideoData) string {
 type xaiWarning struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+
+// xaiWarnings is the status response's warnings (a Go-only reading, see
+// "xAI video response warnings"). TS's schema has no warnings member and
+// strips it, so a value of any other shape (not an array, or entries that
+// are not {code, message} objects) never fails the status parse: such
+// entries are skipped.
+type xaiWarnings []xaiWarning
+
+// UnmarshalJSON decodes the entries that are warning objects.
+func (w *xaiWarnings) UnmarshalJSON(data []byte) error {
+	*w = nil
+	var entries []json.RawMessage
+	if json.Unmarshal(data, &entries) != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		var warning xaiWarning
+		if jsonexact.Unmarshal(entry, &warning) == nil {
+			*w = append(*w, warning)
+		}
+	}
+	return nil
 }

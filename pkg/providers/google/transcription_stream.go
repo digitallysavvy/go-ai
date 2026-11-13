@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -35,14 +39,20 @@ const defaultFinishGraceDuration = 3 * time.Second
 // trailing /v1beta or /v1alpha segment is stripped (googleRealtimeBaseURL),
 // the scheme is upgraded to ws(s), and the API key rides the `key` query
 // parameter.
-func getLiveTranscriptionWebSocketURL(baseURL, apiKey string) string {
-	u := googleRealtimeBaseURL(baseURL)
-	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
-	u.Path = strings.TrimRight(u.Path, "/") + "/ws/" + liveTranscriptionWebSocketPath
-	q := u.Query()
-	q.Set("key", apiKey)
-	u.RawQuery = q.Encode()
-	return u.String()
+func getLiveTranscriptionWebSocketURL(baseURL, apiKey string) (string, error) {
+	u, err := googleRealtimeWebSocketURL(baseURL, liveTranscriptionWebSocketPath)
+	if err != nil {
+		return "", err
+	}
+	// TS url.searchParams.set('key', apiKey): the base URL's own parameters
+	// keep their order and the whole query uses URLSearchParams escaping.
+	query := ""
+	if u.Query != nil {
+		query = *u.Query
+	}
+	query = internalhttp.SetSearchParam(query, "key", apiKey)
+	u.Query = &query
+	return u.String(), nil
 }
 
 // baseTranscriptionHeaders returns the provider's default headers
@@ -51,7 +61,7 @@ func getLiveTranscriptionWebSocketURL(baseURL, apiKey string) string {
 // per-call options.headers -- the same tagged getHeaders() closure used for
 // REST calls, not a freshly rebuilt untagged header set.
 func (m *TranscriptionModel) baseTranscriptionHeaders() map[string]string {
-	return m.prov.client.Headers()
+	return m.prov.headersSnapshot()
 }
 
 // extractGoogleAPIKeyHeader pulls the x-goog-api-key header value out of a
@@ -81,10 +91,7 @@ func extractGoogleAPIKeyHeader(headers map[string]string) (apiKey string, filter
 // Gemini Live transcription API only accepts 16kHz 16-bit PCM input audio.
 func validateLiveInputAudioFormat(format provider.AudioFormat) error {
 	if format.Type != "audio/pcm" || (format.Rate != nil && *format.Rate != 16000) {
-		return &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: "The Gemini Live transcription API only supports 16kHz 16-bit PCM input audio.",
-		}
+		return providererrors.NewArgumentError("inputAudioFormat", "The Gemini Live transcription API only supports 16kHz 16-bit PCM input audio.", nil)
 	}
 	return nil
 }
@@ -96,10 +103,10 @@ func validateLiveInputAudioFormat(format provider.AudioFormat) error {
 // options are set. Mirrors TS buildAudioTranscriptionConfig exactly.
 func buildAudioTranscriptionConfig(opts transcriptionModelOptions) map[string]interface{} {
 	config := map[string]interface{}{}
-	if len(opts.LanguageCodes) > 0 {
+	if opts.LanguageCodes != nil {
 		config["languageCodes"] = opts.LanguageCodes
 	}
-	if len(opts.CustomVocabulary) > 0 {
+	if opts.CustomVocabulary != nil {
 		config["customVocabulary"] = opts.CustomVocabulary
 	}
 	if opts.WordTimestamp != nil {
@@ -126,20 +133,19 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 
 	if !isLiveTranscriptionModelID(m.modelID) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "modelId",
-			Message: fmt.Sprintf(
-				"Model '%s' does not support streaming transcription. Use a live model such as '%s'.",
-				m.modelID, ModelGemini35TranscribeLive,
-			),
-		}
+		return nil, providererrors.NewArgumentError("modelId", fmt.Sprintf(
+			"Model '%s' does not support streaming transcription. Use a live model such as '%s'.",
+			m.modelID, ModelGemini35TranscribeLive,
+		), nil)
 	}
 
+	transcriptionOpts, err := parseTranscriptionModelOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateLiveInputAudioFormat(opts.InputAudioFormat); err != nil {
 		return nil, err
 	}
-
-	transcriptionOpts := parseTranscriptionModelOptions(opts.ProviderOptions)
 
 	// Resolve the API key from the provider-level and per-call header maps
 	// separately, with the per-call value taking precedence, before merging
@@ -148,7 +154,12 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// whenever a per-call header overrides a differently-cased provider
 	// header (TS's combineHeaders is deterministic here because JS object
 	// spread preserves insertion order).
-	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(m.baseTranscriptionHeaders())
+	// TS getHeaders() loads the key first: a missing key is a LoadAPIKeyError.
+	baseHeaders, err := m.prov.requestHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(baseHeaders)
 	callAPIKey, filteredCallHeaders := extractGoogleAPIKeyHeader(opts.Headers)
 	apiKey := baseAPIKey
 	if callAPIKey != "" {
@@ -185,7 +196,10 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		finishGrace = defaultFinishGraceDuration
 	}
 
-	wsURL := getLiveTranscriptionWebSocketURL(m.prov.config.BaseURL, apiKey)
+	wsURL, err := getLiveTranscriptionWebSocketURL(m.prov.config.BaseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {
@@ -228,10 +242,13 @@ type googleLiveTranscriptionStreamConfig struct {
 // run()/pumpAudio()/dial()/send() below are local to Google.
 type googleLiveTranscriptionStream struct {
 	*wsutil.Session[provider.TranscriptionStreamPart]
+	// abortCtx is the caller's context (TS abortSignal).
+	abortCtx context.Context
 }
 
 func newGoogleLiveTranscriptionStream(parentCtx context.Context, cfg googleLiveTranscriptionStreamConfig) *googleLiveTranscriptionStream {
 	s := &googleLiveTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
+	s.abortCtx = parentCtx
 	go s.run(cfg)
 	return s
 }
@@ -283,24 +300,37 @@ type googleLiveServerMessage struct {
 		InterimInputTranscription *googleLiveTranscription `json:"interimInputTranscription,omitempty"`
 		TurnComplete              bool                     `json:"turnComplete,omitempty"`
 		GenerationComplete        bool                     `json:"generationComplete,omitempty"`
-		InteractionStatus         string                   `json:"interactionStatus,omitempty"`
+		// InteractionStatus is a pointer: TS `interactionStatus == null` is
+		// false for a present "".
+		InteractionStatus *string `json:"interactionStatus,omitempty"`
 	} `json:"serverContent,omitempty"`
 	InputTranscription *googleLiveTranscription `json:"inputTranscription,omitempty"`
 	UsageMetadata      map[string]interface{}   `json:"usageMetadata,omitempty"`
 	Error              *struct {
-		Message string `json:"message,omitempty"`
+		// Message is a pointer: TS `message.error.message ?? default`
+		// keeps an empty message.
+		Message *string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
 }
 
 type googleLiveTranscription struct {
-	Text         string `json:"text,omitempty"`
-	Finished     bool   `json:"finished,omitempty"`
-	LanguageCode string `json:"languageCode,omitempty"`
-	SpeakerLabel string `json:"speakerLabel,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Finished bool   `json:"finished,omitempty"`
+	// LanguageCode is a pointer: TS `languageCode != null` also takes an
+	// empty code.
+	LanguageCode *string `json:"languageCode,omitempty"`
+	SpeakerLabel string  `json:"speakerLabel,omitempty"`
 }
 
 func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamConfig) {
 	defer s.CloseParts()
+	defer failOnAbort(s.SetErr, s.abortCtx)
+	// TS cleanup() cancels the caller's audio on every terminal path, also a
+	// consumer cancel or an abort that unblocks a pending emit.
+	if cfg.audio != nil {
+		cfg.audio = &googleLiveAudioCancelOnce{AudioStream: cfg.audio}
+		defer cfg.audio.Cancel(nil)
+	}
 	// Release the session's resources as soon as run() returns for any
 	// reason instead of only on an explicit Close() call, which a consumer
 	// that only drains Next() to io.EOF may never make.
@@ -325,23 +355,33 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 		cfg.audio.Cancel(err)
 	}
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	// CloseInfo reads the close frame's code and reason off the raw
+	// connection (TS ws close event).
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
-		fail(err)
+		fail(googleLiveDialError(s.Context(), "Google Live transcription error", err))
 		return
 	}
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	payload, err := json.Marshal(map[string]interface{}{"setup": cfg.setup})
-	if err != nil {
-		fail(err)
-		return
-	}
+	// TS JSON.stringify({ setup }): model, then inputAudioTranscription
+	// (buildAudioTranscriptionConfig order).
+	payload := []byte(providerutils.StringifyOrdered(map[string]interface{}{"setup": cfg.setup}, map[string][]string{
+		"setup":                         {"model", "inputAudioTranscription"},
+		"setup.inputAudioTranscription": {"languageCodes", "customVocabulary", "wordTimestamp", "diarization", "mode"},
+	}))
 	// Setup is sent (and stream-start emitted) before waiting on a consumer
 	// to start reading, mirroring TS onOpen where controller.enqueue does not
 	// block on a reader before the socket send that follows it.
+	streamStart := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}
 	if err := s.send(conn, payload); err != nil {
+		// TS onOpen enqueues stream-start before it sends the setup, so a
+		// failed send errors the stream after that part.
+		if !s.Emit(streamStart) {
+			err = context.Cause(s.Context())
+		}
 		fail(err)
 		return
 	}
@@ -354,7 +394,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
 
-	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(streamStart) {
 		return
 	}
 
@@ -433,11 +473,30 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 		cfg.audio.Cancel(nil)
 	}
 
+	// drainAudioEnded consumes an already-delivered audio-ended signal that
+	// lost the select race against a clean close arriving in the same tick;
+	// TS processes events in order so audioEnded is already set there.
+	drainAudioEnded := func() bool {
+		select {
+		case <-audioEndedCh:
+			audioEnded = true
+			audioEndedCh = nil
+			schedulePendingFinish()
+		default:
+		}
+		return false
+	}
+
 	for {
+		audioEndedSel := audioEndedCh
+		if testHideAudioEnded.Load() {
+			audioEndedSel = nil
+		}
 		select {
 		case <-s.Context().Done():
-			cause := s.Context().Err()
-			fail(cause)
+			// TS onAbort: finishWithError(abortSignal.reason) -- surface the
+			// cancellation cause, not the generic context.Canceled.
+			fail(context.Cause(s.Context()))
 			return
 
 		case <-finishTimerC:
@@ -445,7 +504,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			finish()
 			return
 
-		case <-audioEndedCh:
+		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil // consumed once; a nil channel blocks forever in future selects
 			schedulePendingFinish()
@@ -473,7 +532,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					// onClose), which finishes successfully once a finish is
 					// pending.
 					fail(errors.New("Google Live transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-				} else if finishTimer != nil {
+				} else if drainAudioEnded() || finishTimer != nil {
 					// Gate on the pending finish-grace timer, not the
 					// audioEnded boolean directly: schedulePendingFinish only
 					// arms finishTimer once audioEnded is true (mirrors TS
@@ -485,7 +544,13 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					// consistency across the two Live API streams).
 					finish()
 				} else {
-					fail(fmt.Errorf("Google Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+					// TS: (code ${code}${reason ? `, reason: ${reason}` : ''}); ws
+					// reports 1006 when the connection ended without a close frame.
+					detail := " (code " + strconv.Itoa(closeInfo.Code())
+					if reason := closeInfo.Reason(); reason != "" {
+						detail += ", reason: " + reason
+					}
+					fail(errors.New("Google Live transcription WebSocket closed unexpectedly before finishing" + detail + ").")) //nolint:staticcheck // TS text
 				}
 				return
 			}
@@ -493,17 +558,29 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 				continue
 			}
 
-			var message googleLiveServerMessage
-			if jsonErr := json.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
+			// TS safeParseJSON: any message that parses (prototype keys
+			// rejected) is reported raw, even when a field does not fit the
+			// expected shape; the known fields are read after that.
+			var rawValue interface{}
+			if jsonErr := securejson.Unmarshal([]byte(res.Text), &rawValue); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
+			}
+			// TS reads message.setupComplete of the parsed value: a JSON null
+			// message throws a TypeError, which onProcessingError reports.
+			if rawValue == nil {
+				fail(errors.New("Cannot read properties of null (reading 'setupComplete')")) //nolint:staticcheck // TS V8 TypeError text
+				return
+			}
+
+			var message googleLiveServerMessage
+			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
+				continue
 			}
 
 			if len(message.SetupComplete) > 0 && string(message.SetupComplete) != "null" {
@@ -515,9 +592,9 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			}
 
 			if message.Error != nil {
-				msg := message.Error.Message
-				if msg == "" {
-					msg = "Google Live API error"
+				msg := "Google Live API error"
+				if message.Error.Message != nil {
+					msg = *message.Error.Message
 				}
 				fail(errors.New(msg))
 				return
@@ -538,8 +615,8 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 				transcription = serverContent.InputTranscription
 			}
 			if transcription != nil {
-				if transcription.LanguageCode != "" {
-					language = transcription.LanguageCode
+				if transcription.LanguageCode != nil {
+					language = *transcription.LanguageCode
 				}
 				if transcription.Text != "" {
 					schedulePendingFinish()
@@ -567,7 +644,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			// as the input audio has ended.
 			if serverContent != nil && audioEnded {
 				status := serverContent.InteractionStatus
-				if status == "IDLE" || status == "REQUIRES_ACTION" || (serverContent.TurnComplete && status == "") {
+				if (status != nil && (*status == "IDLE" || *status == "REQUIRES_ACTION")) || (serverContent.TurnComplete && status == nil) {
 					finish()
 					return
 				}
@@ -576,8 +653,8 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	}
 }
 
-func (s *googleLiveTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
+func (s *googleLiveTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: liveWrapConn(closeInfo.Wrap)})
 }
 
 func (s *googleLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
@@ -588,3 +665,46 @@ var (
 	_ provider.TranscriptionStreamer = (*TranscriptionModel)(nil)
 	_ provider.TranscriptionStream   = (*googleLiveTranscriptionStream)(nil)
 )
+
+// failOnAbort is TS connectToWebSocket onAbort(abortSignal.reason): when the
+// caller's context is cancelled the stream fails with its cancel cause, also
+// when run() returns from an emit the cancellation unblocked. An error set
+// earlier wins (SetErr keeps the first).
+func failOnAbort(setErr func(error), ctx context.Context) {
+	if ctx != nil && ctx.Err() != nil {
+		setErr(context.Cause(ctx))
+	}
+}
+
+// googleLiveSocketOpenError is TS onSocketError for a WebSocket that fails to open (a refused
+// handshake, an unreachable host): the provider's socket error text, with the
+// dial error kept reachable through Unwrap. An abort while the handshake is
+// pending is the abort reason instead (TS onAbort).
+type googleLiveSocketOpenError struct {
+	msg   string
+	cause error
+}
+
+func (e *googleLiveSocketOpenError) Error() string { return e.msg }
+func (e *googleLiveSocketOpenError) Unwrap() error { return e.cause }
+
+// googleLiveDialError is the error of a failed dial: the cancel cause when the stream's
+// context is done (TS onAbort(abortSignal.reason)), else the socket error.
+func googleLiveDialError(ctx context.Context, msg string, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return &googleLiveSocketOpenError{msg: msg, cause: err}
+}
+
+// googleLiveAudioCancelOnce cancels the caller's audio input once: the first reason wins and a
+// later Cancel is a no-op, so a deferred Cancel(nil) on every terminal path
+// (TS cleanup / cancel()) cannot replace a failure's reason.
+type googleLiveAudioCancelOnce struct {
+	provider.AudioStream
+	once sync.Once
+}
+
+func (a *googleLiveAudioCancelOnce) Cancel(reason error) {
+	a.once.Do(func() { a.AudioStream.Cancel(reason) })
+}

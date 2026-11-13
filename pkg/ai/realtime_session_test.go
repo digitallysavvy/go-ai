@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -478,5 +479,46 @@ func TestXNetWebSocketConn_LockSendRespectsContext(t *testing.T) {
 	// deadline, not block indefinitely waiting on the held lock.
 	if elapsed > time.Second {
 		t.Fatalf("lockSend blocked for %v past a 50ms ctx deadline; it did not respect context cancellation while waiting for the lock", elapsed)
+	}
+}
+
+// slowSendConn reports overlapping Send calls: a conn is not required to be
+// write-safe, so the session must serialize its own writes (Send and the
+// health-check response written from Read).
+type slowSendConn struct {
+	mockRealtimeConn
+	inFlight   int32
+	overlapped int32
+}
+
+func (c *slowSendConn) Send(ctx context.Context, message []byte) error {
+	if atomic.AddInt32(&c.inFlight, 1) > 1 {
+		atomic.StoreInt32(&c.overlapped, 1)
+	}
+	time.Sleep(40 * time.Millisecond)
+	atomic.AddInt32(&c.inFlight, -1)
+	return c.mockRealtimeConn.Send(ctx, message)
+}
+
+func TestRealtimeSessionHealthCheckResponseDoesNotOverlapSend(t *testing.T) {
+	conn := &slowSendConn{mockRealtimeConn: mockRealtimeConn{incoming: [][]byte{[]byte(`{"type":"ping"}`), []byte(`{"type":"server-event"}`)}}}
+	session, err := ConnectRealtime(context.Background(), mockRealtimeModel{}, RealtimeSessionOptions{Dialer: &mockRealtimeDialer{conn: conn}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close() //nolint:errcheck
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Send(context.Background(), provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "abc"})
+	}()
+	time.Sleep(10 * time.Millisecond)
+	if _, err := session.Read(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&conn.overlapped) != 0 {
+		t.Fatal("health-check response overlapped a concurrent Send")
 	}
 }

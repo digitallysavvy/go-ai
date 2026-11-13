@@ -57,6 +57,11 @@ type PruneModelMessagesOptions struct {
 // content (reasoning, tool calls/results/approvals) regardless of size, to
 // keep replayed history small or avoid re-sending stale tool context.
 //
+// Reasoning and reasoning-file parts in assistant messages are also removed
+// when all content that follows them (up to the next reasoning part) was
+// pruned, so tool-call pruning never leaves orphaned reasoning behind (TS
+// #23128). Reasoning followed by retained content, or by nothing, is kept.
+//
 // # "before-last-0-messages" equals "all" (TS #21732)
 //
 // TS's pruneMessages used to compute the protected window as
@@ -250,7 +255,7 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 			if keptToolCallIDs[toolCallID] {
 				return true
 			}
-			return len(rule.Tools) > 0 && toolName != "" && !containsString(rule.Tools, toolName)
+			return rule.Tools != nil && toolName != "" && !containsString(rule.Tools, toolName)
 		}
 		switch p := part.(type) {
 		case types.ToolApprovalRequestContent:
@@ -259,13 +264,13 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 				return true
 			}
 			toolName := approvalIDToToolName[approvalID]
-			return len(rule.Tools) > 0 && toolName != "" && !containsString(rule.Tools, toolName)
+			return rule.Tools != nil && toolName != "" && !containsString(rule.Tools, toolName)
 		case types.ToolApprovalResponseContent:
 			if keptApprovalIDs[p.ApprovalID] {
 				return true
 			}
 			toolName := approvalIDToToolName[p.ApprovalID]
-			return len(rule.Tools) > 0 && toolName != "" && !containsString(rule.Tools, toolName)
+			return rule.Tools != nil && toolName != "" && !containsString(rule.Tools, toolName)
 		default:
 			// Not a tool-related part: always kept.
 			return true
@@ -287,9 +292,16 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 		}
 
 		if len(msg.Content) > 0 {
+			keep := make([]bool, len(msg.Content))
+			for j, part := range msg.Content {
+				keep[j] = shouldKeepPart(part)
+			}
+			if msg.Role == types.RoleAssistant {
+				dropOrphanedReasoning(msg.Content, keep)
+			}
 			newContent := make([]types.ContentPart, 0, len(msg.Content))
-			for _, part := range msg.Content {
-				if shouldKeepPart(part) {
+			for j, part := range msg.Content {
+				if keep[j] {
 					newContent = append(newContent, part)
 				}
 			}
@@ -305,7 +317,7 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 					newCalls = append(newCalls, call)
 					continue
 				}
-				if len(rule.Tools) > 0 && call.ToolName != "" && !containsString(rule.Tools, call.ToolName) {
+				if rule.Tools != nil && call.ToolName != "" && !containsString(rule.Tools, call.ToolName) {
 					newCalls = append(newCalls, call)
 				}
 			}
@@ -316,6 +328,41 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 	}
 
 	return out, nil
+}
+
+func isReasoningPart(part types.ContentPart) bool {
+	t := part.ContentType()
+	return t == "reasoning" || t == "reasoning-file"
+}
+
+// dropOrphanedReasoning clears keep for every run of consecutive reasoning
+// parts whose following content (up to the next reasoning part) was pruned
+// entirely. Consecutive reasoning parts can belong to the same provider item,
+// so the whole run is removed together. A run with no following content is
+// retained. Mirrors TS pruneMessages (#23128).
+func dropOrphanedReasoning(content []types.ContentPart, keep []bool) {
+	for i := 0; i < len(content); i++ {
+		if !isReasoningPart(content[i]) {
+			continue
+		}
+		end := i + 1
+		for end < len(content) && isReasoningPart(content[end]) {
+			end++
+		}
+		next := end
+		hasFollowing, hasKeptFollowing := false, false
+		for next < len(content) && !isReasoningPart(content[next]) {
+			hasFollowing = true
+			hasKeptFollowing = hasKeptFollowing || keep[next]
+			next++
+		}
+		if hasFollowing && !hasKeptFollowing {
+			for j := i; j < end; j++ {
+				keep[j] = false
+			}
+		}
+		i = next - 1
+	}
 }
 
 // resolveKeepLastMessagesCount parses a PruneToolCallsRule.Type into the

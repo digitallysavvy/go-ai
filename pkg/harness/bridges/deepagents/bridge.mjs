@@ -1,18 +1,146 @@
-import { randomUUID } from "node:crypto";
+import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
+import path, { dirname } from "node:path";
 import { argv, env, pid, stdout } from "node:process";
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { rgPath } from "@vscode/ripgrep";
+import { appendFile, lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { WebSocketServer } from "ws";
+import { Buffer as Buffer$1 } from "node:buffer";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { tool } from "@langchain/core/tools";
 import { Command, MemorySaver, Overwrite } from "@langchain/langgraph";
 import { MultiServerMCPClient } from "@langchain/mcp-adapters";
-import { LocalShellBackend, createDeepAgent } from "deepagents";
+import { CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend, createDeepAgent, createMemoryMiddleware, createSkillsMiddleware } from "deepagents";
 import { createMiddleware, toolStrategy } from "langchain";
 import { z } from "zod/v4";
-import { dirname } from "node:path";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 //#region ../harness/dist/bridge/index.js
+const BRIDGE_AUTH_TIMEOUT_MS = 1e4;
+const BRIDGE_AUTH_MESSAGE_PREFIX = "ai-sdk-harness-bridge-auth-v1\0";
+const PROOF_FRAME_REGEXP = /^\{"type":"bridge-auth-proof","signature":"([A-Za-z0-9_-]{86})"\}$/;
+function createBridgeAuthMessage({ challenge }) {
+	return Buffer$1.from(`${BRIDGE_AUTH_MESSAGE_PREFIX}${challenge}`, "utf8");
+}
+function serializeBridgeAuthChallengeFrame({ challenge }) {
+	return JSON.stringify({
+		type: "bridge-auth-challenge",
+		challenge
+	});
+}
+function parseBridgeAuthProofFrame({ text }) {
+	return PROOF_FRAME_REGEXP.exec(text)?.[1];
+}
+const PUBLIC_KEY_REGEXP = /^[A-Za-z0-9_-]{43}$/;
+const UNAUTHORIZED_CLOSE_CODE = 1008;
+const INVALID_PUBLIC_KEY_MESSAGE = "The bridge requires a valid Ed25519 public key for authentication.";
+function parseBridgeAuthPublicKey({ publicKey }) {
+	if (publicKey == null || !PUBLIC_KEY_REGEXP.test(publicKey)) throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	let key;
+	try {
+		key = createPublicKey({
+			key: {
+				kty: "OKP",
+				crv: "Ed25519",
+				x: publicKey
+			},
+			format: "jwk"
+		});
+	} catch {
+		throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	}
+	if (key.asymmetricKeyType !== "ed25519") throw new Error(INVALID_PUBLIC_KEY_MESSAGE);
+	return key;
+}
+function authenticateBridgeConnection({ ws, publicKey, timeoutMs = BRIDGE_AUTH_TIMEOUT_MS, onAuthenticated }) {
+	const challenge = randomBytes(32).toString("hex");
+	const timeout = setTimeout(() => ws.terminate(), timeoutMs);
+	timeout.unref?.();
+	const onError = () => {};
+	ws.on("error", onError);
+	ws.once("close", () => clearTimeout(timeout));
+	ws.once("message", (raw, isBinary) => {
+		clearTimeout(timeout);
+		const text = isBinary ? void 0 : rawDataToString(raw);
+		const signature = text == null ? void 0 : parseBridgeAuthProofFrame({ text });
+		if (signature == null || !verify(null, createBridgeAuthMessage({ challenge }), publicKey, Buffer$1.from(signature, "base64url"))) {
+			ws.close(UNAUTHORIZED_CLOSE_CODE, "unauthorized");
+			return;
+		}
+		ws.off("error", onError);
+		onAuthenticated();
+	});
+	ws.send(serializeBridgeAuthChallengeFrame({ challenge }));
+}
+function rawDataToString(raw) {
+	const buffer = Array.isArray(raw) ? Buffer$1.concat(raw) : Buffer$1.isBuffer(raw) ? raw : Buffer$1.from(raw);
+	if (buffer.byteLength > 1024) return void 0;
+	return buffer.toString("utf8");
+}
+const name = "AI_HarnessBridgeCapabilityUnsupportedError";
+/**
+* Signals an unsupported capability discovered inside a sandbox bridge.
+* `isInstance` also recognizes the serialized error shape received by the
+* host, where it can be translated to `HarnessCapabilityUnsupportedError`.
+*/
+var HarnessBridgeCapabilityUnsupportedError = class extends Error {
+	constructor({ message, harnessId, cause }) {
+		super(message);
+		Object.defineProperty(this, "name", { value: name });
+		this.harnessId = harnessId;
+		this.cause = cause;
+	}
+	static isInstance(error) {
+		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
+	}
+};
+function getNormalizedInlineImage(part) {
+	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
+		data: part.data.data,
+		mediaType: part.mediaType
+	};
+}
+function convertHarnessToolModelOutput({ output }) {
+	switch (output.type) {
+		case "text":
+		case "error-text": return {
+			content: [{
+				type: "text",
+				text: output.value
+			}],
+			isError: output.type === "error-text"
+		};
+		case "json":
+		case "error-json": return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output.value)
+			}],
+			isError: output.type === "error-json"
+		};
+		case "execution-denied": return {
+			content: [{
+				type: "text",
+				text: output.reason ?? "Tool execution denied."
+			}],
+			isError: true
+		};
+		case "content": return {
+			content: output.value.map((part) => {
+				if (part.type === "text") return {
+					type: "text",
+					text: part.text
+				};
+				const image = getNormalizedInlineImage(part);
+				if (image != null) return {
+					type: "image",
+					...image
+				};
+				throw new HarnessBridgeCapabilityUnsupportedError({ message: `Harnesses support only text and inline images in tool model output; unsupported content '${part.type}'.` });
+			}),
+			isError: false
+		};
+	}
+}
 const DEBUG_LEVEL_WEIGHT = {
 	error: 0,
 	warn: 1,
@@ -140,7 +268,13 @@ const WS_OPEN = 1;
 async function runBridge(options) {
 	const { bridgeType, bridgeStateDir, onStart, onStop, onDestroy } = options;
 	const teardownGraceMs = options.turnTeardownGraceMs ?? 1e4;
-	const expectedToken = options.token ?? env.BRIDGE_CHANNEL_TOKEN ?? "";
+	const hostDisconnectTimeoutMs = options.hostDisconnectTimeoutMs != null && Number.isFinite(options.hostDisconnectTimeoutMs) && options.hostDisconnectTimeoutMs > 0 ? Math.min(options.hostDisconnectTimeoutMs, 2147483647) : void 0;
+	let hostDisconnectTimer;
+	const clearHostDisconnectTimer = () => {
+		clearTimeout(hostDisconnectTimer);
+		hostDisconnectTimer = void 0;
+	};
+	const authPublicKey = parseBridgeAuthPublicKey({ publicKey: options.publicKey ?? env["BRIDGE_AUTH_PUBLIC_KEY"] });
 	const bridgeWsPort = options.port ?? parseInt(env.BRIDGE_WS_PORT ?? "0", 10);
 	const bridgeMetaPath = `${bridgeStateDir}/bridge-meta.json`;
 	const startConfigPath = `${bridgeStateDir}/start-config.json`;
@@ -161,6 +295,7 @@ async function runBridge(options) {
 	* between turns. A new `start` fences on this so turns never overlap.
 	*/
 	let activeTurn;
+	let lastStartId;
 	let debugConfig;
 	let consoleCaptureInstalled = false;
 	const envDebugEnabled = ENV_TRUTHY.has((env.HARNESS_DEBUG ?? "").toLowerCase());
@@ -304,6 +439,11 @@ async function runBridge(options) {
 	const handleInbound = async (msg, ws) => {
 		switch (msg.type) {
 			case "start": {
+				const startId = msg.startId;
+				if (startId != null) {
+					if (startId === lastStartId) return;
+					lastStartId = startId;
+				}
 				for (;;) {
 					const pendingTurn = activeTurn;
 					if (pendingTurn == null) break;
@@ -321,6 +461,7 @@ async function runBridge(options) {
 				const thisTurn = new Promise((resolve) => turnFinished = resolve);
 				activeTurn = thisTurn;
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				const firstTurn = isFirstTurn;
 				isFirstTurn = false;
 				eventLog = [];
@@ -387,6 +528,7 @@ async function runBridge(options) {
 						activeTurn = void 0;
 						currentTurnState = "waiting";
 						writeBridgeMeta("waiting");
+						clearHostDisconnectTimer();
 					}
 					turnFinished();
 				}
@@ -453,6 +595,7 @@ async function runBridge(options) {
 				return;
 			case "resume":
 				activeSocket = ws;
+				clearHostDisconnectTimer();
 				replay(ws, msg.lastSeenEventId);
 				return;
 			case "destroy":
@@ -512,16 +655,20 @@ async function runBridge(options) {
 		}) + "\n");
 		options.onListening?.(currentBoundPort);
 	});
-	wss.on("connection", (ws, req) => {
-		if (new URL(req.url ?? "/", "http://localhost").searchParams.get("agent_bridge_token") !== expectedToken) {
-			ws.close(1008, "unauthorized");
-			return;
-		}
+	wss.on("connection", (ws) => authenticateBridgeConnection({
+		ws,
+		publicKey: authPublicKey,
+		onAuthenticated: () => acceptConnection(ws)
+	}));
+	const acceptConnection = (ws) => {
 		sendControl(ws, {
 			type: "bridge-hello",
 			state: currentTurnState,
 			lastSeq: seqCounter,
-			capabilities: { experimental_userMessageResponses: true }
+			capabilities: {
+				idempotentStart: true,
+				experimental_userMessageResponses: true
+			}
 		});
 		ws.on("message", (raw) => {
 			let parsed;
@@ -537,11 +684,21 @@ async function runBridge(options) {
 			}
 			handleInbound(parsed, ws);
 		});
-		ws.on("close", () => {
-			if (activeSocket === ws) activeSocket = void 0;
+		ws.on("close", (_code, reason) => {
+			if (activeSocket === ws) {
+				activeSocket = void 0;
+				if (hostDisconnectTimeoutMs != null && activeTurn != null && reason.toString() !== "suspended") {
+					clearHostDisconnectTimer();
+					hostDisconnectTimer = setTimeout(() => {
+						hostDisconnectTimer = void 0;
+						if (activeSocket == null) turnAbort?.abort();
+					}, hostDisconnectTimeoutMs);
+					hostDisconnectTimer.unref?.();
+				}
+			}
 		});
 		ws.on("error", () => {});
-	});
+	};
 	process.on("uncaughtException", (err) => {
 		emitError({
 			error: err,
@@ -583,11 +740,59 @@ function serialiseError(err) {
 	return err;
 }
 //#endregion
+//#region src/bridge/permission-paths.ts
+async function areFileToolPathsTrusted(options) {
+	if (options.paths.length === 0) return false;
+	try {
+		const roots = [await realpath(options.workDir)];
+		if (options.access === "read") for (const root of options.readableSkillRoots) try {
+			roots.push(await realpath(root));
+		} catch {
+			continue;
+		}
+		for (const filePath of options.paths) {
+			if (typeof filePath !== "string" || filePath.trim().length === 0) return false;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(options.cwd)) return false;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${options.cwd}/${filePath}`;
+			for (const candidatePath of [absolutePath, path.posix.normalize(absolutePath)]) {
+				const candidate = await resolvePermissionPath({ filePath: candidatePath });
+				if (!roots.some((root) => {
+					const relative = path.posix.relative(root, candidate);
+					return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+				})) return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function resolvePermissionPath(options) {
+	let existingPath = options.filePath;
+	const missing = [];
+	for (;;) {
+		let exists = true;
+		try {
+			await lstat(existingPath);
+		} catch (error) {
+			if (error == null || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+			exists = false;
+		}
+		if (exists) return path.posix.join(await realpath(existingPath), ...missing);
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === "." || segment === "..") throw new Error("Unable to resolve permission path.");
+		missing.unshift(segment);
+		existingPath = parent;
+	}
+}
+//#endregion
 //#region src/bridge/approvals.ts
 const NATIVE_TOOL_KIND = {
 	read_file: "readonly",
 	write_file: "edit",
 	edit_file: "edit",
+	delete: "edit",
 	execute: "bash",
 	grep: "readonly",
 	glob: "readonly",
@@ -614,12 +819,51 @@ function builtinToolRequiresApproval(kind, permissionMode) {
 	if (permissionMode === "allow-edits") return kind === "bash";
 	return kind === "edit" || kind === "bash";
 }
-function buildInterruptOn(permissionMode, builtinToolFiltering) {
+function buildInterruptOn(options) {
+	if (options.permissionMode == null || options.permissionMode === "allow-all") return void 0;
 	const config = {};
-	for (const [nativeName, kind] of Object.entries(NATIVE_TOOL_KIND)) if (permissionMode != null && isBuiltinToolIncluded({
-		nativeName,
-		toolFiltering: builtinToolFiltering
-	}) && builtinToolRequiresApproval(kind, permissionMode)) config[nativeName] = { allowedDecisions: ["approve", "reject"] };
+	for (const [nativeName, kind] of Object.entries(NATIVE_TOOL_KIND)) {
+		if (!isBuiltinToolIncluded({
+			nativeName,
+			toolFiltering: options.builtinToolFiltering
+		})) continue;
+		if (builtinToolRequiresApproval(kind, options.permissionMode)) config[nativeName] = { allowedDecisions: ["approve", "reject"] };
+		else if ([
+			"read_file",
+			"write_file",
+			"edit_file",
+			"delete",
+			"ls",
+			"grep",
+			"glob"
+		].includes(nativeName)) config[nativeName] = {
+			allowedDecisions: ["approve", "reject"],
+			when: async ({ toolCall }) => {
+				const args = toolCall.args;
+				let target;
+				let globPrefix;
+				const access = kind === "edit" ? "write" : "read";
+				if (nativeName === "glob") {
+					if (typeof args.pattern !== "string" || /\.\.|[{}()[\]]/.test(args.pattern) || args.pattern.includes("\\") || args.pattern.startsWith("/")) return true;
+					target = args.path == null || args.path === "/" ? options.workDir : args.path;
+					const segments = args.pattern.split("/");
+					const wildcardIndex = segments.findIndex((segment) => /[*?]/.test(segment));
+					globPrefix = (wildcardIndex === -1 ? segments : segments.slice(0, wildcardIndex)).join("/");
+				} else if (nativeName === "ls" || nativeName === "grep") target = args.path ?? "/";
+				else target = "file_path" in args ? args.file_path : args.path;
+				if (typeof target !== "string") return true;
+				const paths = [target];
+				if (globPrefix) paths.push(`${path.posix.resolve(options.workDir, target)}/${globPrefix}`);
+				return !await areFileToolPathsTrusted({
+					workDir: options.workDir,
+					cwd: options.workDir,
+					paths,
+					access,
+					readableSkillRoots: options.readableSkillRoots
+				});
+			}
+		};
+	}
 	return Object.keys(config).length > 0 ? config : void 0;
 }
 function collectActionRequests(interrupts) {
@@ -647,7 +891,12 @@ function createDeepAgentsStreamEventState() {
 		pendingStep: void 0,
 		approvedToolQueue: /* @__PURE__ */ new Map(),
 		approvedRunIds: /* @__PURE__ */ new Map(),
-		dynamicToolRunIds: /* @__PURE__ */ new Set()
+		dynamicToolRunIds: /* @__PURE__ */ new Map(),
+		settledMcpRunIds: /* @__PURE__ */ new Set(),
+		unsettledStepToolCallCount: void 0,
+		observedStepHostInputCount: 0,
+		hostInputWaitingToolCallIds: /* @__PURE__ */ new Set(),
+		earlyFinishStepToolCallIds: /* @__PURE__ */ new Set()
 	};
 }
 const NATIVE_TO_COMMON = {
@@ -659,7 +908,7 @@ const NATIVE_TO_COMMON = {
 function toCommonName(nativeName) {
 	return NATIVE_TO_COMMON[nativeName] ?? nativeName;
 }
-function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolNames, structuredOutputToolNames = /* @__PURE__ */ new Set(), emit }) {
+function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolNames, structuredOutputToolNames = /* @__PURE__ */ new Set(), abortSignal, emit }) {
 	return (event) => {
 		const kind = event.event;
 		const data = event.data ?? {};
@@ -718,7 +967,8 @@ function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolN
 				state.streamedStepOutput = Math.max(state.streamedStepOutput, usage.output_tokens ?? 0);
 			}
 		} else if (kind === "on_chat_model_end") {
-			const usage = data.output?.usage_metadata;
+			const output = data.output;
+			const usage = output?.usage_metadata;
 			const stepInput = usage?.input_tokens ?? state.streamedStepInput;
 			const stepOutput = usage?.output_tokens ?? state.streamedStepOutput;
 			state.inputTokens += stepInput;
@@ -738,14 +988,29 @@ function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolN
 					input: stepInput,
 					output: stepOutput
 				};
+				state.unsettledStepToolCallCount = Array.isArray(output?.tool_calls) ? output.tool_calls.filter((toolCall) => !structuredOutputToolNames.has(toolCall?.name)).length : void 0;
+				emitEarlyFinishStepIfReady({
+					state,
+					emit
+				});
 			}
 		} else if (kind === "on_tool_start") {
 			const toolName = event.name ?? "unknown";
 			if (structuredOutputToolNames.has(toolName)) return;
 			const runId = event.run_id ?? "";
+			if (!nested && hostToolNames.has(toolName) && state.pendingStep) {
+				state.observedStepHostInputCount += 1;
+				emitEarlyFinishStepIfReady({
+					state,
+					emit
+				});
+			}
 			if (!nested && !hostToolNames.has(toolName)) {
 				const isMcpTool = mcpToolNames.has(toolName);
-				if (isMcpTool && runId) state.dynamicToolRunIds.add(runId);
+				if (isMcpTool && runId) {
+					if (state.dynamicToolRunIds.has(runId) || state.settledMcpRunIds.has(runId)) return;
+					state.dynamicToolRunIds.set(runId, toolName);
+				}
 				const queued = state.approvedToolQueue.get(toolName);
 				if (queued && queued.length > 0) {
 					const approvalId = queued.shift();
@@ -770,12 +1035,36 @@ function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolN
 					});
 				}
 			}
+		} else if (kind === "on_tool_error") {
+			const toolName = event.name ?? "unknown";
+			const runId = event.run_id ?? "";
+			if (nested || hostToolNames.has(toolName) || structuredOutputToolNames.has(toolName) || abortSignal?.aborted || !runId || data.error === void 0 || state.dynamicToolRunIds.get(runId) !== toolName || state.settledMcpRunIds.has(runId)) return;
+			state.settledMcpRunIds.add(runId);
+			const error = data.error;
+			const message = error instanceof Error ? error.message : error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : String(error);
+			emit({
+				type: "tool-result",
+				toolCallId: state.approvedRunIds.get(runId) ?? runId,
+				toolName: toCommonName(toolName),
+				result: message,
+				isError: true,
+				dynamic: true
+			});
+			state.approvedRunIds.delete(runId);
+			settleStepToolCall({
+				state,
+				emit
+			});
 		} else if (kind === "on_tool_end") {
 			const toolName = event.name ?? "unknown";
 			if (structuredOutputToolNames.has(toolName)) return;
 			const runId = event.run_id ?? "";
 			if (!nested && !hostToolNames.has(toolName)) {
-				const dynamic = state.dynamicToolRunIds.delete(runId);
+				const nativeMcpName = state.dynamicToolRunIds.get(runId);
+				if (nativeMcpName !== void 0 ? nativeMcpName !== toolName || state.settledMcpRunIds.has(runId) : mcpToolNames.has(toolName)) return;
+				const dynamic = nativeMcpName !== void 0;
+				if (dynamic) state.settledMcpRunIds.add(runId);
+				const isError = dynamic && data.output !== null && typeof data.output === "object" && "status" in data.output && data.output.status === "error";
 				let output = data.output ?? "";
 				if (output && typeof output === "object" && "content" in output) output = output.content;
 				emit({
@@ -783,9 +1072,14 @@ function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolN
 					toolCallId: state.approvedRunIds.get(runId) ?? runId,
 					toolName: toCommonName(toolName),
 					result: output ?? null,
+					...isError ? { isError: true } : {},
 					...dynamic ? { dynamic: true } : {}
 				});
 				state.approvedRunIds.delete(runId);
+				settleStepToolCall({
+					state,
+					emit
+				});
 			}
 		}
 	};
@@ -819,6 +1113,65 @@ function flushStep({ state, emit }) {
 		}
 	});
 	state.pendingStep = void 0;
+	state.unsettledStepToolCallCount = void 0;
+	state.observedStepHostInputCount = 0;
+	state.earlyFinishStepToolCallIds = /* @__PURE__ */ new Set();
+}
+function markHostToolWaiting({ state, emit, toolCallId }) {
+	state.hostInputWaitingToolCallIds.add(toolCallId);
+	emitEarlyFinishStepIfReady({
+		state,
+		emit
+	});
+}
+function markApprovalsWaiting({ state, emit, approvalIds }) {
+	state.pendingStep ??= {
+		input: 0,
+		output: 0
+	};
+	state.observedStepHostInputCount += approvalIds.length;
+	for (const approvalId of approvalIds) state.hostInputWaitingToolCallIds.add(approvalId);
+	emitEarlyFinishStepIfReady({
+		state,
+		emit
+	});
+}
+function clearHostInputWaiting({ state, toolCallId }) {
+	state.hostInputWaitingToolCallIds.delete(toolCallId);
+}
+function settleHostToolCall({ state, emit, toolCallId }) {
+	state.hostInputWaitingToolCallIds.delete(toolCallId);
+	settleStepToolCall({
+		state,
+		emit
+	});
+}
+function settleStepToolCall({ state, emit }) {
+	if (state.unsettledStepToolCallCount != null) state.unsettledStepToolCallCount = Math.max(0, state.unsettledStepToolCallCount - 1);
+	emitEarlyFinishStepIfReady({
+		state,
+		emit
+	});
+}
+function emitEarlyFinishStepIfReady({ state, emit }) {
+	const waiting = state.hostInputWaitingToolCallIds;
+	if (!state.pendingStep || waiting.size === 0 || waiting.size > state.observedStepHostInputCount) return;
+	if (state.unsettledStepToolCallCount != null && state.unsettledStepToolCallCount > waiting.size) return;
+	const uncovered = [...waiting].filter((toolCallId) => !state.earlyFinishStepToolCallIds.has(toolCallId));
+	if (uncovered.length === 0) return;
+	for (const toolCallId of uncovered) state.earlyFinishStepToolCallIds.add(toolCallId);
+	emit({
+		type: "finish-step",
+		finishReason: {
+			unified: "tool-calls",
+			raw: "host-input"
+		},
+		usage: {
+			inputTokens: { total: 0 },
+			outputTokens: { total: 0 }
+		},
+		harnessMetadata: { deepagents: { inferredStep: true } }
+	});
 }
 function ensureTextBlock({ state, emit }) {
 	if (!state.textBlockId) {
@@ -931,6 +1284,28 @@ function createLocalShellBackend({ rootDir, env = process.env }) {
 	});
 }
 //#endregion
+//#region src/bridge/mcp-tool-errors.ts
+/** Keep native MCP failures in the tool loop without recovering aborts or host-tool exceptions. */
+function createMcpToolErrorMiddleware({ mcpToolNames, abortSignal }) {
+	return createMiddleware({
+		name: "harnessMcpToolErrors",
+		wrapToolCall: async (request, handler) => {
+			const signal = abortSignal();
+			try {
+				signal?.throwIfAborted();
+				return await handler(request);
+			} catch (error) {
+				if (!signal || signal.aborted || !mcpToolNames().has(request.toolCall.name) || !(error instanceof Error) || error.name !== "ToolException" || typeof request.toolCall.id !== "string" || !request.toolCall.id) throw error;
+				return new ToolMessage({
+					content: error.message,
+					tool_call_id: request.toolCall.id,
+					status: "error"
+				});
+			}
+		}
+	});
+}
+//#endregion
 //#region src/bridge/persistent-memory-saver.ts
 const SNAPSHOT_HEADER = "deepagents-memory-saver-v1";
 function encodeString(value) {
@@ -944,6 +1319,38 @@ function encodeBytes(value) {
 }
 function decodeBytes(value) {
 	return Buffer.from(value, "base64");
+}
+function getLatestCheckpointId(checkpoints) {
+	return Object.keys(checkpoints).sort((a, b) => b.localeCompare(a))[0];
+}
+function getCheckpointStorageKey({ threadId, namespace, checkpointId }) {
+	return JSON.stringify([
+		threadId,
+		namespace,
+		checkpointId
+	]);
+}
+function pruneMemorySaver({ saver }) {
+	const retainedCheckpointKeys = /* @__PURE__ */ new Set();
+	for (const [threadId, namespaces] of Object.entries(saver.storage)) {
+		for (const [namespace, checkpoints] of Object.entries(namespaces)) {
+			const latestCheckpointId = getLatestCheckpointId(checkpoints);
+			if (latestCheckpointId === void 0) {
+				delete namespaces[namespace];
+				continue;
+			}
+			for (const checkpointId of Object.keys(checkpoints)) if (checkpointId !== latestCheckpointId) delete checkpoints[checkpointId];
+			const latestCheckpoint = checkpoints[latestCheckpointId];
+			if (latestCheckpoint !== void 0) latestCheckpoint[2] = void 0;
+			retainedCheckpointKeys.add(getCheckpointStorageKey({
+				threadId,
+				namespace,
+				checkpointId: latestCheckpointId
+			}));
+		}
+		if (Object.keys(namespaces).length === 0) delete saver.storage[threadId];
+	}
+	for (const key of Object.keys(saver.writes)) if (!retainedCheckpointKeys.has(key)) delete saver.writes[key];
 }
 async function loadMemorySaver({ path, saver }) {
 	let snapshot;
@@ -990,30 +1397,57 @@ async function loadMemorySaver({ path, saver }) {
 	}
 	saver.storage = storage;
 	saver.writes = writes;
+	pruneMemorySaver({ saver });
 }
 async function saveMemorySaver({ path, saver }) {
-	const lines = [SNAPSHOT_HEADER];
-	for (const [threadId, namespaces] of Object.entries(saver.storage)) for (const [namespace, checkpoints] of Object.entries(namespaces)) for (const [checkpointId, [checkpoint, metadata, parentCheckpointId]] of Object.entries(checkpoints)) lines.push([
-		"S",
-		encodeString(threadId),
-		encodeString(namespace),
-		encodeString(checkpointId),
-		encodeBytes(checkpoint),
-		encodeBytes(metadata),
-		parentCheckpointId == null ? "" : encodeString(parentCheckpointId)
-	].join("	"));
-	for (const [key, indexedWrites] of Object.entries(saver.writes)) for (const [index, [taskId, channel, value]] of Object.entries(indexedWrites)) lines.push([
-		"W",
-		encodeString(key),
-		encodeString(index),
-		encodeString(taskId),
-		encodeString(channel),
-		encodeBytes(value)
-	].join("	"));
 	await mkdir(dirname(path), { recursive: true });
 	const temporaryPath = `${path}.${process.pid}.tmp`;
-	await writeFile(temporaryPath, `${lines.join("\n")}\n`, "utf8");
-	await rename(temporaryPath, path);
+	const retainedCheckpointKeys = /* @__PURE__ */ new Set();
+	try {
+		const file = await open(temporaryPath, "w");
+		try {
+			const writeLine = async (line) => {
+				await file.writeFile(`${line}\n`, "utf8");
+			};
+			await writeLine(SNAPSHOT_HEADER);
+			for (const [threadId, namespaces] of Object.entries(saver.storage)) for (const [namespace, checkpoints] of Object.entries(namespaces)) {
+				const checkpointId = getLatestCheckpointId(checkpoints);
+				if (checkpointId === void 0) continue;
+				retainedCheckpointKeys.add(getCheckpointStorageKey({
+					threadId,
+					namespace,
+					checkpointId
+				}));
+				const [checkpoint, metadata] = checkpoints[checkpointId];
+				await writeLine([
+					"S",
+					encodeString(threadId),
+					encodeString(namespace),
+					encodeString(checkpointId),
+					encodeBytes(checkpoint),
+					encodeBytes(metadata),
+					""
+				].join("	"));
+			}
+			for (const [key, indexedWrites] of Object.entries(saver.writes)) {
+				if (!retainedCheckpointKeys.has(key)) continue;
+				for (const [index, [taskId, channel, value]] of Object.entries(indexedWrites)) await writeLine([
+					"W",
+					encodeString(key),
+					encodeString(index),
+					encodeString(taskId),
+					encodeString(channel),
+					encodeBytes(value)
+				].join("	"));
+			}
+		} finally {
+			await file.close();
+		}
+		await rename(temporaryPath, path);
+	} catch (error) {
+		await rm(temporaryPath, { force: true }).catch(() => void 0);
+		throw error;
+	}
 }
 async function removeMemorySaverSnapshot(path) {
 	await rm(path, { force: true });
@@ -1091,8 +1525,33 @@ function createBuiltinToolFilteringMiddleware(input) {
 	};
 }
 //#endregion
+//#region src/bridge/repository-resources.ts
+function createDeepAgentsRepositoryResourceMiddlewares({ workDir, homeDir, skillsPaths }) {
+	const backend = new CompositeBackend(new StateBackend(), {
+		[`${path.resolve(workDir)}/`]: new FilesystemBackend({
+			rootDir: workDir,
+			virtualMode: true
+		}),
+		[`${path.resolve(homeDir)}/`]: new FilesystemBackend({
+			rootDir: homeDir,
+			virtualMode: true
+		})
+	});
+	return {
+		memory: createMemoryMiddleware({
+			backend,
+			sources: [path.join(workDir, "AGENTS.md")]
+		}),
+		...skillsPaths?.length ? { skills: createSkillsMiddleware({
+			backend,
+			sources: [...skillsPaths]
+		}) } : {}
+	};
+}
+//#endregion
 //#region src/bridge/index.ts
 const HARNESS_CLIENT_APP = env.AI_SDK_HARNESS_CLIENT_APP;
+env.PATH = [env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", path.dirname(rgPath)].join(path.delimiter);
 function parseArgs(rawArgs) {
 	const out = {};
 	for (let i = 0; i < rawArgs.length; i++) {
@@ -1161,14 +1620,16 @@ function createModelMiddleware() {
 }
 const args = parseArgs(argv.slice(2));
 const workdir = args.workdir;
+const homeDir = args.homeDir;
 const bridgeStateDir = args.bridgeStateDir;
-if (!workdir || !bridgeStateDir) {
-	console.error("deepagents bridge: missing --workdir / --bridge-state-dir");
+if (!workdir || !homeDir || !bridgeStateDir) {
+	console.error("deepagents bridge: missing --workdir / --home-dir / --bridge-state-dir");
 	process.exit(1);
 }
 const conversationCheckpointPath = `${bridgeStateDir}/conversation.checkpoint`;
 let agent;
 let currentTurn;
+let currentStreamEventState;
 let mcpClient;
 let mcpToolNames = /* @__PURE__ */ new Set();
 let currentResponseFormat;
@@ -1205,13 +1666,34 @@ function buildHostTools(toolSchemas) {
 			input: JSON.stringify(input),
 			providerExecuted: false
 		});
-		const { output, isError } = await turn.requestToolResult(toolCallId);
+		const streamEventState = currentStreamEventState;
+		const emit = (event) => turn.emit(event);
+		if (streamEventState != null) markHostToolWaiting({
+			state: streamEventState,
+			emit,
+			toolCallId
+		});
+		const { output, isError, toolResult } = await turn.requestToolResult(toolCallId).finally(() => {
+			if (streamEventState != null) clearHostInputWaiting({
+				state: streamEventState,
+				toolCallId
+			});
+		});
 		turn.emit({
 			type: "tool-result",
 			toolCallId,
 			toolName: schema.name,
 			result: output ?? null,
 			...isError !== void 0 ? { isError } : {}
+		});
+		if (streamEventState != null) settleHostToolCall({
+			state: streamEventState,
+			emit,
+			toolCallId
+		});
+		if (toolResult != null) return convertHarnessToolModelOutput({ output: toolResult.output }).content.map((part) => part.type === "text" ? part : {
+			type: "image_url",
+			image_url: { url: `data:${part.mediaType};base64,${part.data}` }
 		});
 		return typeof output === "string" ? output : JSON.stringify(output);
 	}, {
@@ -1228,7 +1710,12 @@ async function runTurn(start, turn) {
 	activeHeaders = start.headers;
 	currentResponseFormat = start.responseFormat?.type === "json" && start.responseFormat.schema != null ? toolStrategy(start.responseFormat.schema) : void 0;
 	const emit = (event) => turn.emit(event);
-	const interruptOn = buildInterruptOn(start.permissionMode, start.builtinToolFiltering);
+	const interruptOn = buildInterruptOn({
+		permissionMode: start.permissionMode,
+		builtinToolFiltering: start.builtinToolFiltering,
+		workDir: workdir,
+		readableSkillRoots: start.readableSkillRoots ?? []
+	});
 	const config = {
 		version: "v2",
 		configurable: { thread_id: "bridge-session" },
@@ -1238,7 +1725,10 @@ async function runTurn(start, turn) {
 	const nextAgentConfigurationSignature = JSON.stringify({
 		instructions: start.instructions,
 		tools: start.tools,
-		skillsPaths: start.skillsPaths
+		skillsPaths: start.skillsPaths,
+		permissionMode: start.permissionMode,
+		builtinToolFiltering: start.builtinToolFiltering,
+		readableSkillRoots: start.readableSkillRoots
 	});
 	if (agent == null || agentConfigurationSignature !== nextAgentConfigurationSignature || start.skillsChanged === true) {
 		if (agent != null && start.skillsChanged === true) await agent.updateState(config, { skillsMetadata: new Overwrite([]) });
@@ -1252,6 +1742,15 @@ async function runTurn(start, turn) {
 			}
 		});
 		const middleware = [
+			...Object.values(createDeepAgentsRepositoryResourceMiddlewares({
+				workDir: workdir,
+				homeDir,
+				skillsPaths: start.skillsPaths
+			})),
+			createMcpToolErrorMiddleware({
+				mcpToolNames: () => mcpToolNames,
+				abortSignal: () => currentTurn?.abortSignal
+			}),
 			responseFormatMiddleware,
 			modelMiddleware,
 			...builtinToolFilteringMiddleware ? [builtinToolFilteringMiddleware] : []
@@ -1264,7 +1763,6 @@ async function runTurn(start, turn) {
 			tools: [...mcpTools, ...hostTools],
 			backend: createLocalShellBackend({ rootDir: workdir }),
 			systemPrompt: start.instructions ? { suffix: start.instructions } : void 0,
-			...start.skillsPaths?.length ? { skills: start.skillsPaths } : {},
 			...middleware.length > 0 ? { middleware } : {},
 			...interruptOn ? { interruptOn } : {},
 			checkpointer
@@ -1275,8 +1773,10 @@ async function runTurn(start, turn) {
 	if (activeAgent == null) throw new Error("Deep Agents runtime was not initialized");
 	const hostToolNames = new Set((start.tools ?? []).map((t) => t.name));
 	const streamEventState = createDeepAgentsStreamEventState();
+	currentStreamEventState = streamEventState;
 	const emitStreamEvent = createEmitStreamEvent({
 		state: streamEventState,
+		abortSignal: turn.abortSignal,
 		configuredModel: activeModel,
 		hostToolNames,
 		mcpToolNames,
@@ -1292,7 +1792,11 @@ async function runTurn(start, turn) {
 	};
 	let resumeInput = { messages: [{
 		role: "user",
-		content: start.prompt
+		content: typeof start.prompt === "string" ? start.prompt : start.prompt.map((part) => part.type === "text" ? part : {
+			type: "image",
+			mimeType: part.mediaType,
+			data: part.data
+		})
 	}] };
 	let emittedStructuredOutput = false;
 	while (true) {
@@ -1323,8 +1827,11 @@ async function runTurn(start, turn) {
 		const actionRequests = await readPendingApprovals();
 		if (actionRequests.length === 0) break;
 		const decisions = [];
-		for (const action of actionRequests) {
-			const approvalId = `approval-${randomUUID()}`;
+		const approvals = actionRequests.map((action) => ({
+			action,
+			approvalId: `approval-${randomUUID()}`
+		}));
+		for (const { action, approvalId } of approvals) {
 			endTextBlock({
 				state: streamEventState,
 				emit
@@ -1346,11 +1853,19 @@ async function runTurn(start, turn) {
 				approvalId,
 				toolCallId: approvalId
 			});
-			flushStep({
-				state: streamEventState,
-				emit
-			});
-			const decision = await turn.requestToolApproval(approvalId);
+		}
+		const decisionPromises = approvals.map(({ approvalId }) => turn.requestToolApproval(approvalId).finally(() => clearHostInputWaiting({
+			state: streamEventState,
+			toolCallId: approvalId
+		})));
+		markApprovalsWaiting({
+			state: streamEventState,
+			emit,
+			approvalIds: approvals.map(({ approvalId }) => approvalId)
+		});
+		const settledDecisions = await Promise.all(decisionPromises);
+		for (const [index, { action, approvalId }] of approvals.entries()) {
+			const decision = settledDecisions[index];
 			if (decision.approved) {
 				const queue = streamEventState.approvedToolQueue.get(action.name) ?? [];
 				queue.push(approvalId);
@@ -1362,6 +1877,11 @@ async function runTurn(start, turn) {
 					toolCallId: approvalId,
 					toolName: toCommonName(action.name),
 					result: decision.reason ?? "Rejected by user."
+				});
+				settleHostToolCall({
+					state: streamEventState,
+					emit,
+					toolCallId: approvalId
 				});
 				decisions.push({
 					type: "reject",
@@ -1395,7 +1915,14 @@ async function runTurn(start, turn) {
 await runBridge({
 	bridgeType: "deepagents",
 	bridgeStateDir,
-	onStart: runTurn,
+	...args.hostDisconnectTimeoutMs !== void 0 ? { hostDisconnectTimeoutMs: Number(args.hostDisconnectTimeoutMs) } : {},
+	onStart: async (start, turn) => {
+		try {
+			await runTurn(start, turn);
+		} finally {
+			pruneMemorySaver({ saver: checkpointer });
+		}
+	},
 	onStop: async () => {
 		await closeMcpClient();
 		await saveMemorySaver({

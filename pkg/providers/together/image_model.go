@@ -3,8 +3,16 @@ package together
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -32,7 +40,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "together"
+	return "togetherai.image"
 }
 
 // ModelID returns the model ID
@@ -43,18 +51,36 @@ func (m *ImageModel) ModelID() string {
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	if opts.Mask != nil {
-		return nil, fmt.Errorf("together AI does not support mask-based image editing")
+		// TS throws this exact text.
+		return nil, errors.New("Together AI does not support mask-based image editing. " + //nolint:staticcheck // matches TS SDK's exact error text
+			"Use FLUX Kontext models (e.g., black-forest-labs/FLUX.1-kontext-pro) " +
+			"with a reference image and descriptive prompt instead.")
+	}
+
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
 	}
 
 	reqBody := m.buildRequestBody(opts)
 
-	resp, err := m.provider.client.Post(ctx, "/v1/images/generations", reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: "/v1/images/generations", Body: reqBody, Headers: opts.Headers})
 	if err != nil {
-		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		// TS handleFetchError: a failure without an HTTP response (abort, deadline, the "Cannot connect to API" error) is returned unchanged
+		return nil, err
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("together AI API returned status %d: %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, providererrors.NewSchemaProviderError("together", resp.StatusError(resp.Body), togetherErrorSchema)
+	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator("together", providerutils.SchemaTogetherImage)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	result, err := m.convertResponse(resp.Body)
@@ -62,7 +88,40 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	result.Warnings = append(result.Warnings, togetherWarnings(m.modelID, opts)...)
+	result.Response = &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}
 	return result, nil
+}
+
+// MaxImagesPerCall mirrors TS TogetherAIImageModel#maxImagesPerCall.
+func (m *ImageModel) MaxImagesPerCall() int { return 1 }
+
+// SupportsFileInputs mirrors TS TogetherAIImageModel#supportsFileInputs.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	switch m.modelID {
+	case "black-forest-labs/FLUX.1-kontext-pro", "black-forest-labs/FLUX.1-kontext-max",
+		"black-forest-labs/FLUX.1-kontext-dev", "black-forest-labs/FLUX.1-canny",
+		"black-forest-labs/FLUX.1-depth", "black-forest-labs/FLUX.1-redux",
+		"black-forest-labs/FLUX.2-pro", "black-forest-labs/FLUX.2-flex":
+		t := true
+		return &t
+	case "stabilityai/stable-diffusion-xl-base-1.0", "black-forest-labs/FLUX.1-dev",
+		"black-forest-labs/FLUX.1-dev-lora", "black-forest-labs/FLUX.1-schnell",
+		"black-forest-labs/FLUX.1.1-pro", "black-forest-labs/FLUX.1-pro",
+		"black-forest-labs/FLUX.1-schnell-Free", "black-forest-labs/FLUX.2-dev",
+		"google/gemini-3-pro-image":
+		f := false
+		return &f
+	}
+	return nil
+}
+
+// SupportsMaskInputs mirrors TS TogetherAIImageModel#supportsMaskInputs.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if m.SupportsFileInputs() == nil {
+		return nil
+	}
+	f := false
+	return &f
 }
 
 // nonDiffusionImageModels lists Together image models that aren't diffusion
@@ -90,19 +149,25 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	}
 
 	if opts.Size != "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height) //nolint:errcheck
-		if width > 0 && height > 0 {
-			reqBody["width"] = width
-			reqBody["height"] = height
+		// TS size.split('x') and parseInt of each part; NaN (or a missing
+		// part) is sent as null (togetherai-image-model.ts:144-157).
+		parts := strings.Split(opts.Size, "x")
+		height := ""
+		if len(parts) > 1 {
+			height = parts[1]
 		}
+		reqBody["width"] = togetherParseInt(parts[0])
+		reqBody["height"] = togetherParseInt(height)
 	}
 
 	if len(opts.Files) > 0 {
 		reqBody["image_url"] = togetherImageFileToDataURI(opts.Files[0])
 	}
 
-	if togetherOpts, ok := opts.ProviderOptions["togetherai"].(map[string]interface{}); ok {
+	// Read through the JSON form (TS options are JSON objects), so a typed
+	// literal such as map[string]int is sent like the map[string]interface{}
+	// form.
+	if togetherOpts, ok := providerutils.NormalizeProviderOptionsObject(opts.ProviderOptions["togetherai"]); ok {
 		for key, value := range togetherOpts {
 			if isNonDiffusion && nonDiffusionExcludedOptions[key] {
 				continue
@@ -171,12 +236,14 @@ func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
 		} `json:"data"`
 	}
 
-	if err := json.Unmarshal(body, &response); err != nil {
+	if err := jsonexact.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if len(response.Data) == 0 {
-		return nil, fmt.Errorf("no images generated")
+		// TS returns an empty `images` array; core retries and then throws
+		// NoImageGeneratedError, so an empty response is not a provider error.
+		return &types.ImageResult{}, nil
 	}
 
 	result := &types.ImageResult{
@@ -190,16 +257,19 @@ func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
 			}
 			result.MimeType = "image/png"
 		}
-		if item.B64JSON != "" {
-			image := []byte(item.B64JSON)
-			result.Images = append(result.Images, image)
-			result.Base64Images = append(result.Base64Images, item.B64JSON)
-			if result.Image == nil {
-				result.Image = image
-				result.Base64Image = item.B64JSON
-			}
-			result.MimeType = "image/png"
+		// TS images: response.data.map(item => item.b64_json); the schema
+		// requires the string, so a present "" is an (empty) image too.
+		image, err := fileutil.ConvertBase64ToBytes(item.B64JSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 image: %w", err)
 		}
+		result.Images = append(result.Images, image)
+		result.Base64Images = append(result.Base64Images, item.B64JSON)
+		if len(result.Images) == 1 {
+			result.Image = image
+			result.Base64Image = item.B64JSON
+		}
+		result.MimeType = "image/png"
 	}
 
 	if result.Usage.ImageCount == 0 {
@@ -207,4 +277,30 @@ func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
 	}
 
 	return result, nil
+}
+
+// togetherParseInt is JS parseInt(s, 10) as JSON: leading whitespace, an
+// optional sign and the leading digits; nil (JSON null for NaN) when there
+// are none.
+func togetherParseInt(s string) interface{} {
+	s = strings.TrimLeft(s, " \t\n\r\v\f\u00a0\ufeff")
+	sign := 1
+	if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
+		if s[0] == '-' {
+			sign = -1
+		}
+		s = s[1:]
+	}
+	n, digits := 0, 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+		digits++
+	}
+	if digits == 0 {
+		return nil
+	}
+	return sign * n
 }

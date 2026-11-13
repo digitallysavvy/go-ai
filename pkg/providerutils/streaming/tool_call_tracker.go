@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // GenerateID returns a compact random ID for provider deltas that omit a tool
@@ -30,11 +32,146 @@ func GenerateID() string {
 // mid-stream, and the tracker is responsible for correlating fragments
 // correctly regardless (see StreamingToolCallTracker).
 type ToolCallDelta struct {
-	Index            *int
-	ID               string
-	Name             string
-	ArgumentsDelta   string
+	Index          *int
+	ID             string
+	Name           string
+	ArgumentsDelta string
+	// ArgumentsPresent reports that the wire delta carried an arguments
+	// string (possibly empty). TS emits a tool-input-delta for a present
+	// empty string on an existing call (`arguments != null`) but nothing
+	// for a missing or null one. Callers that leave it false get the
+	// string-only behavior (an empty ArgumentsDelta emits nothing).
+	ArgumentsPresent bool
 	ProviderMetadata map[string]interface{}
+
+	// NameBlank reports that the wire delta carried a function name that was
+	// present but empty or whitespace-only. TS ignores such a delta when it
+	// would start a new call (it never creates a tracked call) and never
+	// treats it as an error, even when no other call exists.
+	NameBlank bool
+	// Type is the wire delta's tool call type ("" when absent or null). It
+	// is only inspected when the tracker has a TypeValidation mode set.
+	Type string
+
+	// NameAbsent reports that the wire delta had no function name at all
+	// (missing or null). TS throws "Expected 'function.name' to be a string."
+	// when such a delta would start a new call, regardless of sibling calls:
+	// TrackDelta returns that error chunk and the tracker fails (see
+	// Failed). Callers that cannot tell blank from absent leave both false
+	// and get the legacy deferred behavior (see Flush).
+	NameAbsent bool
+
+	// IDPresent reports that the wire delta carried an id, even an empty
+	// string, and MetadataPresent that it carried the field ProviderMetadata
+	// is extracted from (openai-compatible extra_content), even when it
+	// yielded no metadata. Only BufferNamelessIndexedCalls reads them: TS
+	// pendingToolCalls keeps the first id and extra_content that are not
+	// null (`?? null`), so a later value never replaces a present empty one.
+	// A non-empty ID or non-nil ProviderMetadata counts as present anyway.
+	IDPresent       bool
+	MetadataPresent bool
+}
+
+// WireName is a function name decoded from JSON that remembers whether the
+// field was present, so callers can fill ToolCallDelta.NameBlank/NameAbsent
+// the way TS distinguishes `name: ""` from a missing or null name.
+type WireName struct {
+	Value   string
+	Present bool
+}
+
+// UnmarshalJSON decodes a JSON string (Present) or null (absent).
+func (n *WireName) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		*n = WireName{}
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*n = WireName{Value: v, Present: true}
+	return nil
+}
+
+// MarshalJSON encodes the name as a string (null when absent).
+func (n WireName) MarshalJSON() ([]byte, error) {
+	if !n.Present {
+		return []byte("null"), nil
+	}
+	return json.Marshal(n.Value)
+}
+
+// String returns the decoded name ("" when absent).
+func (n WireName) String() string { return n.Value }
+
+// TypeValidation mirrors the TS StreamingToolCallTracker typeValidation
+// option: how the `type` field of a delta that starts a new tool call is
+// checked.
+type TypeValidation int
+
+const (
+	// TypeValidationNone does not check the type (TS 'none', the default).
+	TypeValidationNone TypeValidation = iota
+	// TypeValidationIfPresent rejects a type that is present and not
+	// "function" (TS 'if-present').
+	TypeValidationIfPresent
+	// TypeValidationRequired rejects any type other than "function" (TS
+	// 'required').
+	TypeValidationRequired
+)
+
+// SetTypeValidation sets how the type of a new tool call's first delta is
+// validated. A violation yields an error chunk (TS throws
+// InvalidResponseDataError "Expected 'function' type.") and creates no call.
+func (t *StreamingToolCallTracker) SetTypeValidation(mode TypeValidation) {
+	if t != nil {
+		t.typeValidation = mode
+	}
+}
+
+// TrackWireWithType is TrackWire for callers that also have the delta's
+// tool call type.
+func (t *StreamingToolCallTracker) TrackWireWithType(index *int, id string, name WireName, typ string, delta string) []ToolCallChunk {
+	d := ToolCallDelta{Index: index, ID: id, Name: name.Value, ArgumentsDelta: delta, Type: typ}
+	if nonBlank(name.Value) == "" {
+		d.NameBlank = name.Present
+		d.NameAbsent = !name.Present
+	}
+	return t.TrackDelta(d)
+}
+
+// TrackWire is Track for callers that decoded the function name as a
+// WireName: a present-but-blank name and an absent name behave as in TS.
+func (t *StreamingToolCallTracker) TrackWire(index *int, id string, name WireName, delta string) []ToolCallChunk {
+	d := ToolCallDelta{Index: index, ID: id, Name: name.Value, ArgumentsDelta: delta}
+	if nonBlank(name.Value) == "" {
+		d.NameBlank = name.Present
+		d.NameAbsent = !name.Present
+	}
+	return t.TrackDelta(d)
+}
+
+// TrackWireWithTypePtr is TrackWireWithType for callers that decoded the
+// wire arguments as *string: a present (possibly empty) string emits a
+// tool-input-delta on an existing call as in TS (`arguments != null`), a
+// missing or null one emits nothing.
+func (t *StreamingToolCallTracker) TrackWireWithTypePtr(index *int, id string, name WireName, typ string, args *string) []ToolCallChunk {
+	d := ToolCallDelta{Index: index, ID: id, Name: name.Value, Type: typ}
+	if args != nil {
+		d.ArgumentsDelta = *args
+		d.ArgumentsPresent = true
+	}
+	if nonBlank(name.Value) == "" {
+		d.NameBlank = name.Present
+		d.NameAbsent = !name.Present
+	}
+	return t.TrackDelta(d)
+}
+
+// TrackWirePtr is TrackWireWithTypePtr without a type.
+func (t *StreamingToolCallTracker) TrackWirePtr(index *int, id string, name WireName, args *string) []ToolCallChunk {
+	return t.TrackWireWithTypePtr(index, id, name, "", args)
 }
 
 // ToolCallChunk is a chunk emitted by the tracker while processing or
@@ -62,6 +199,17 @@ type trackedToolCall struct {
 	hasFinished    bool
 	inputStarted   bool
 	metadata       map[string]interface{}
+}
+
+// pendingToolCall is a TS openai-compatible pendingToolCalls entry: the
+// deltas of one index buffered until its function.name arrives.
+type pendingToolCall struct {
+	index       int
+	id          string
+	idSet       bool
+	args        string
+	metadata    map[string]interface{}
+	metadataSet bool
 }
 
 // resolutionKind mirrors TS's ToolCallResolution discriminated union
@@ -97,6 +245,46 @@ type StreamingToolCallTracker struct {
 	usedToolCallIDs         map[string]struct{}
 	nextGeneratedIDSuffixes map[string]int
 	generateIDFunc          func() string
+	typeValidation          TypeValidation
+	// failed is set once a delta raised an error TS throws from
+	// processDelta (a new call with an unexpected type, or with no
+	// function.name at all). The TS stream errors at that point, so the
+	// tracker accepts no further delta and Flush emits nothing.
+	failed bool
+	// bufferNamelessIndexed: see BufferNamelessIndexedCalls.
+	bufferNamelessIndexed bool
+	pending               map[int]*pendingToolCall
+	pendingOrder          []int
+	forwardedIndices      map[int]struct{}
+}
+
+// BufferNamelessIndexedCalls ports the TS openai-compatible pendingToolCalls
+// buffer in front of the tracker. A delta with an index that has not been
+// forwarded yet is buffered (first id and extra_content kept, arguments
+// concatenated) until a delta of that index carries a function name (blank
+// included); the tracker then sees one delta with that name, the buffered
+// id, metadata and arguments, and later deltas of the index go to it
+// directly. A delta without an index goes to it directly too. At Flush the
+// still-buffered entries are forwarded first, in insertion order, without a
+// name, exactly as TS flush() does: one that resolves to a sole unfinished
+// call continues it, an ambiguous one is dropped, and one that would start
+// a new call fails the tracker (TS throws "Expected 'function.name' to be a
+// string."), so Flush then returns the chunks so far and that error, and no
+// tool call is finalized.
+func (t *StreamingToolCallTracker) BufferNamelessIndexedCalls() {
+	if t != nil {
+		t.bufferNamelessIndexed = true
+	}
+}
+
+// Failed reports whether a delta raised an error that TS throws from
+// processDelta: a new call whose type fails the TypeValidation mode, or
+// whose function name is absent (ToolCallDelta.NameAbsent). TS's transform
+// throws there, so the stream ends with that error: callers end the stream
+// after the returned error chunk without reading further events, flushing
+// tool calls or emitting a finish chunk.
+func (t *StreamingToolCallTracker) Failed() bool {
+	return t != nil && t.failed
 }
 
 // NewStreamingToolCallTracker creates a tracker with the default ID generator.
@@ -138,16 +326,110 @@ func (t *StreamingToolCallTracker) Track(index *int, id, name, delta string) []T
 // and ports its correlation precedence for unreliable ones (see
 // resolveToolCall).
 func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChunk {
-	if t == nil {
+	if t == nil || t.failed {
 		return nil
 	}
+	if t.bufferNamelessIndexed && delta.Index != nil {
+		if _, forwarded := t.forwardedIndices[*delta.Index]; !forwarded {
+			return t.bufferPending(delta)
+		}
+	}
+	return t.processDelta(delta)
+}
 
+// bufferPending is TS openai-compatible processToolCallDelta for a delta of
+// an index that has not been forwarded to the tracker yet.
+func (t *StreamingToolCallTracker) bufferPending(delta ToolCallDelta) []ToolCallChunk {
+	index := *delta.Index
+	idPresent := delta.IDPresent || delta.ID != ""
+	metadataPresent := delta.MetadataPresent || delta.ProviderMetadata != nil
+	if t.pending == nil {
+		t.pending = make(map[int]*pendingToolCall)
+	}
+	p := t.pending[index]
+	if p == nil {
+		p = &pendingToolCall{index: index, id: delta.ID, idSet: idPresent, metadata: delta.ProviderMetadata, metadataSet: metadataPresent}
+		t.pending[index] = p
+		t.pendingOrder = append(t.pendingOrder, index)
+	} else {
+		if !p.idSet && idPresent {
+			p.id, p.idSet = delta.ID, true
+		}
+		if !p.metadataSet && metadataPresent {
+			p.metadata, p.metadataSet = delta.ProviderMetadata, true
+		}
+	}
+	if delta.ArgumentsPresent || delta.ArgumentsDelta != "" {
+		p.args += delta.ArgumentsDelta
+	}
+	// TS `name != null`: a present name, blank or not, forwards the call (a
+	// blank one is then ignored by the tracker, as on any new call).
+	if delta.Name == "" && !delta.NameBlank {
+		return nil
+	}
+	t.removePending(index)
+	if t.forwardedIndices == nil {
+		t.forwardedIndices = make(map[int]struct{})
+	}
+	t.forwardedIndices[index] = struct{}{}
+	idx := index
+	fwd := ToolCallDelta{
+		Index:            &idx,
+		ID:               p.id,
+		Name:             delta.Name,
+		ArgumentsDelta:   p.args,
+		ArgumentsPresent: true,
+		ProviderMetadata: p.metadata,
+	}
+	if nonBlank(delta.Name) == "" {
+		fwd.NameBlank = true
+	}
+	return t.processDelta(fwd)
+}
+
+func (t *StreamingToolCallTracker) removePending(index int) {
+	delete(t.pending, index)
+	for i, v := range t.pendingOrder {
+		if v == index {
+			t.pendingOrder = append(t.pendingOrder[:i], t.pendingOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// flushPending is the TS openai-compatible flush() loop that forwards every
+// still-pending entry without a function name before toolCallTracker.flush().
+func (t *StreamingToolCallTracker) flushPending() []ToolCallChunk {
+	var chunks []ToolCallChunk
+	order := t.pendingOrder
+	pending := t.pending
+	t.pendingOrder, t.pending = nil, nil
+	for _, index := range order {
+		p := pending[index]
+		idx := index
+		chunks = append(chunks, t.processDelta(ToolCallDelta{
+			Index:            &idx,
+			ID:               p.id,
+			ArgumentsDelta:   p.args,
+			ArgumentsPresent: true,
+			NameAbsent:       true,
+		})...)
+		if t.failed {
+			break
+		}
+	}
+	return chunks
+}
+
+// processDelta is TS StreamingToolCallTracker.processDelta.
+func (t *StreamingToolCallTracker) processDelta(delta ToolCallDelta) []ToolCallChunk {
 	wireID := nonBlank(delta.ID)
 	name := nonBlank(delta.Name)
 	index := delta.Index
 	hasExplicitCallStart := name != "" && StartsWithStructuredValue(delta.ArgumentsDelta)
+	hasEmptyArguments := providerutils.JSTrim(delta.ArgumentsDelta) == ""
 
-	res := t.resolveToolCall(wireID, index, name, hasExplicitCallStart)
+	res := t.resolveToolCall(wireID, index, name, hasExplicitCallStart, hasEmptyArguments)
 	if res.kind == resolutionAmbiguous {
 		return nil
 	}
@@ -156,19 +438,45 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 	var chunks []ToolCallChunk
 
 	if res.kind == resolutionNew {
+		// TS: a present-but-blank name cannot start a usable call and is
+		// ignored outright -- never an error, even if nothing else succeeds.
+		if name == "" && delta.NameBlank {
+			return nil
+		}
+		if (t.typeValidation == TypeValidationRequired && delta.Type != "function") ||
+			(t.typeValidation == TypeValidationIfPresent && delta.Type != "" && delta.Type != "function") {
+			const message = "Expected 'function' type."
+			t.failed = true
+			return []ToolCallChunk{{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewInvalidResponseDataError(delta, message),
+			}}
+		}
+		if name == "" && delta.NameAbsent {
+			// TS processNewToolCall throws InvalidResponseDataError
+			// ({data: toolCallDelta}) at once for a missing function.name;
+			// no later delta can name the call.
+			const message = "Expected 'function.name' to be a string."
+			t.failed = true
+			return []ToolCallChunk{{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewInvalidResponseDataError(delta, message),
+			}}
+		}
 		call = t.processNewToolCall(delta, wireID, index, name)
 		if name != "" {
 			chunks = t.startChunksForNewCall(call)
 		}
-		// A blank, whitespace-only, or entirely missing function name cannot
-		// start a usable call. TS ignores a present-but-blank name here and
-		// throws synchronously for an entirely absent one (a distinction Go
-		// cannot represent, since a plain string can't tell "absent" from
-		// "blank" apart); Track/TrackDelta never returns an error, so both
-		// are handled the same deferred way: the call is buffered without
-		// emitting input-start/delta chunks, and either gets promoted once a
-		// correlated delta supplies a name (see processExistingToolCall), or
-		// is reported as an error chunk from Flush if one never arrives.
+		// A call started without a name (a caller that cannot tell blank
+		// from absent, so neither NameBlank nor NameAbsent is set) is
+		// buffered without emitting input-start/delta chunks: it is
+		// promoted once a correlated delta supplies a name (see
+		// processExistingToolCall), or reported as an error chunk from
+		// Flush if one never arrives. A known-absent name failed above, as
+		// TS throws there (BufferNamelessIndexedCalls buffers such deltas
+		// before they reach this point).
 	} else {
 		call = res.call
 		if wireID != "" {
@@ -187,7 +495,19 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 // Flush finalizes any unfinished tool calls. Should be called during the
 // stream's flush handler to ensure all tool calls are properly completed.
 func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
-	if t == nil || len(t.toolCalls) == 0 {
+	if t == nil || t.failed {
+		return nil
+	}
+	pendingChunks := t.flushPending()
+	if t.failed {
+		return pendingChunks
+	}
+	return append(pendingChunks, t.flushCalls()...)
+}
+
+// flushCalls is TS StreamingToolCallTracker.flush.
+func (t *StreamingToolCallTracker) flushCalls() []ToolCallChunk {
+	if len(t.toolCalls) == 0 {
 		return nil
 	}
 
@@ -266,11 +586,12 @@ func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
 //	| known | matching | any | matching call, new call, or ambiguity |
 //	| known | conflicting | named | new call |
 //	| unseen | matching | structured start | new call |
+//	| unseen | matching | named empty arguments | incomplete call, new call, or ambiguity |
 //	| unseen | matching | continuation | matching call or ambiguity |
 //	| absent | matching | any | matching call, new call, or ambiguity |
 //	| absent | absent | named | new call |
 //	| absent | absent | unnamed | sole unfinished call, new call, or ambiguity |
-func (t *StreamingToolCallTracker) resolveToolCall(wireID string, index *int, name string, hasExplicitCallStart bool) resolution {
+func (t *StreamingToolCallTracker) resolveToolCall(wireID string, index *int, name string, hasExplicitCallStart, hasEmptyArguments bool) resolution {
 	var indexedCalls []*trackedToolCall
 	if index != nil {
 		indexedCalls = t.toolCallsByIndex[*index]
@@ -313,15 +634,15 @@ func (t *StreamingToolCallTracker) resolveToolCall(wireID string, index *int, na
 		}
 
 		if len(matchingIndexed) > 0 {
-			// A previously unseen ID plus a named structured argument start
-			// is stronger evidence of a distinct call than a reused
-			// index/name. This also keeps interleaved same-name calls
-			// separate while still allowing IDs to change on ordinary
-			// continuation fragments.
+			// A named structured start with an unseen ID identifies a new
+			// call. Empty arguments can also occur when a continuation
+			// changes its ID. Keep the incomplete matching call in that case,
+			// and start a new call only after the matching structured
+			// arguments are complete.
 			if hasExplicitCallStart {
 				return resolution{kind: resolutionNew}
 			}
-			return resolveMatchingToolCall(matchingIndexed, false)
+			return resolveMatchingToolCall(matchingIndexed, name != "" && hasEmptyArguments)
 		}
 
 		return resolution{kind: resolutionNew}
@@ -344,13 +665,7 @@ func (t *StreamingToolCallTracker) resolveToolCall(wireID string, index *int, na
 			unfinished = append(unfinished, call)
 		}
 	}
-	if len(unfinished) == 1 {
-		return resolution{kind: resolutionExisting, call: unfinished[0]}
-	}
-	if len(unfinished) > 1 {
-		return resolution{kind: resolutionAmbiguous}
-	}
-	return resolution{kind: resolutionNew}
+	return resolveMatchingToolCall(unfinished, false)
 }
 
 // filterByName narrows calls to those whose name matches, porting TS's
@@ -379,16 +694,11 @@ func resolveMatchingToolCall(calls []*trackedToolCall, hasExplicitCallStart bool
 		return resolution{kind: resolutionNew}
 	}
 
-	if !hasExplicitCallStart {
-		if len(calls) == 1 {
-			return resolution{kind: resolutionExisting, call: calls[0]}
-		}
-		return resolution{kind: resolutionAmbiguous}
-	}
-
 	// A repeated name can occur on continuations. A fresh structured
 	// argument prefix is evidence of another call only after the matching
-	// call has completed its own structured argument payload.
+	// call has completed its own structured argument payload. When labels
+	// are missing, a sole call without a complete structured payload is the
+	// only viable continuation target.
 	var continuable []*trackedToolCall
 	for _, call := range calls {
 		if !call.argumentState.HasCompleteStructuredValue() {
@@ -396,12 +706,18 @@ func resolveMatchingToolCall(calls []*trackedToolCall, hasExplicitCallStart bool
 		}
 	}
 
+	if !hasExplicitCallStart && len(calls) == 1 {
+		return resolution{kind: resolutionExisting, call: calls[0]}
+	}
+
 	if len(continuable) == 1 {
 		return resolution{kind: resolutionExisting, call: continuable[0]}
 	}
-	if len(continuable) > 1 {
+
+	if len(continuable) > 1 || !hasExplicitCallStart {
 		return resolution{kind: resolutionAmbiguous}
 	}
+
 	return resolution{kind: resolutionNew}
 }
 
@@ -463,13 +779,14 @@ func (t *StreamingToolCallTracker) processExistingToolCall(call *trackedToolCall
 		return nil
 	}
 
-	if len(delta.ProviderMetadata) > 0 && call.metadata == nil {
-		call.metadata = delta.ProviderMetadata
-	}
-
+	// TS extracts a call's metadata once, from the delta that creates it;
+	// a legacy nameless call (Go only) is created by the delta naming it.
 	wasPending := call.name == ""
 	if wasPending && name != "" {
 		call.name = name
+		if call.metadata == nil {
+			call.metadata = delta.ProviderMetadata
+		}
 	}
 
 	if delta.ArgumentsDelta != "" {
@@ -487,7 +804,7 @@ func (t *StreamingToolCallTracker) processExistingToolCall(call *trackedToolCall
 		return t.startChunksForNewCall(call)
 	}
 
-	if delta.ArgumentsDelta == "" {
+	if delta.ArgumentsDelta == "" && !delta.ArgumentsPresent {
 		return nil
 	}
 	return []ToolCallChunk{
@@ -513,6 +830,8 @@ func (t *StreamingToolCallTracker) finishToolCall(call *trackedToolCall) []ToolC
 			{
 				Type: provider.ChunkTypeError,
 				Text: "Expected 'function.name' to be a string.",
+				// TS throws InvalidResponseDataError here.
+				Err: providererrors.NewInvalidResponseDataError(nil, "Expected 'function.name' to be a string."),
 				ToolCall: &types.ToolCall{
 					ID:           call.id,
 					RawArguments: call.args,
@@ -645,7 +964,7 @@ func cloneIntPtr(p *int) *int {
 // otherwise "". Ports TS StreamingToolCallTracker.getNonBlankString; the
 // returned string is never trimmed, only tested for blankness.
 func nonBlank(value string) string {
-	if strings.TrimSpace(value) == "" {
+	if providerutils.JSTrim(value) == "" {
 		return ""
 	}
 	return value
@@ -656,7 +975,7 @@ func parseToolArguments(raw string) map[string]interface{} {
 		return map[string]interface{}{}
 	}
 	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+	if err := jsonexact.Unmarshal([]byte(raw), &args); err != nil {
 		return nil
 	}
 	if args == nil {

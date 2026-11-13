@@ -112,7 +112,8 @@ const (
 	ModelGPT6Sol   = "gpt-6-sol"
 
 	// GPT-6.1 series
-	ModelGPT61Sol = "gpt-6.1-sol"
+	ModelGPT61Sol   = "gpt-6.1-sol"
+	ModelGPT61Terra = "gpt-6.1-terra"
 )
 
 // Completion model ID constants for the legacy OpenAI Completions API.
@@ -136,6 +137,10 @@ const (
 	ModelGPTImage25Flare_2026_09_08    = "gpt-image-2.5-flare-2026-09-08"
 	ModelGPTImage25Sunburst            = "gpt-image-2.5-sunburst"
 	ModelGPTImage25Sunburst_2026_09_08 = "gpt-image-2.5-sunburst-2026-09-08"
+
+	// GPT Image 2.6 series (TS 6549344e0a)
+	ModelGPTImage26Flare    = "gpt-image-2.6-flare"
+	ModelGPTImage26Sunburst = "gpt-image-2.6-sunburst"
 )
 
 // Embedding model ID constants for OpenAI embedding models.
@@ -164,6 +169,10 @@ const (
 	ModelGPT4oMiniTranscribe            = "gpt-4o-mini-transcribe"
 	ModelGPT4oMiniTranscribe_2025_03_20 = "gpt-4o-mini-transcribe-2025-03-20"
 	ModelGPT4oMiniTranscribe_2025_12_15 = "gpt-4o-mini-transcribe-2025-12-15"
+	// TS OpenAITranscriptionModelId (openai-transcription-model-options.ts:8-18).
+	ModelGPTLiveTranscribe  = "gpt-live-transcribe"
+	ModelGPTRealtimeWhisper = "gpt-realtime-whisper"
+	ModelGPTTranscribe      = "gpt-transcribe"
 )
 
 // Realtime model ID constants for OpenAI realtime models.

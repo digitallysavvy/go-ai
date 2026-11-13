@@ -17,9 +17,14 @@ const (
 	SpanTypeTool          SpanType = "tool"
 	SpanTypeEmbedding     SpanType = "embedding"
 	SpanTypeReranking     SpanType = "reranking"
+	SpanTypeDecision      SpanType = "experimental_decision"
 )
 
-// EnrichSpanOptions describes a span that is about to be created.
+// EnrichSpanOptions describes a span that is about to be created. The
+// OpenTelemetry (GenAI) integration passes what TS enrichSpan receives: the
+// call's operation (for example "ai.streamText"; a decision model call has its
+// own operation id), the call ID, and the call's runtime context (none for
+// object and audio calls).
 type EnrichSpanOptions struct {
 	SpanType       SpanType
 	OperationType  string
@@ -39,15 +44,19 @@ type Options struct {
 	// nil means enabled, matching the TypeScript SDK's optional isEnabled field.
 	IsEnabled *bool
 
-	// RecordInputs controls whether input data is recorded in spans. Defaults to true when telemetry is enabled.
-	// You might want to disable input recording to avoid recording sensitive
-	// information, to reduce data transfers, or to increase performance.
-	RecordInputs bool
+	// RecordInputs controls whether input data (prompts, messages, tool
+	// arguments, embedding values, rerank documents) is recorded in spans.
+	// nil means record, as an omitted recordInputs in TS; set it to
+	// Bool(false) to keep inputs out of spans, for example to avoid
+	// recording sensitive information, to reduce data transfers, or to
+	// increase performance. Read it with ShouldRecordInputs.
+	RecordInputs *bool
 
-	// RecordOutputs controls whether output data is recorded in spans. Defaults to true when telemetry is enabled.
-	// You might want to disable output recording to avoid recording sensitive
-	// information, to reduce data transfers, or to increase performance.
-	RecordOutputs bool
+	// RecordOutputs controls whether output data (generated text, objects,
+	// tool results, embeddings) is recorded in spans. nil means record, as an
+	// omitted recordOutputs in TS; set it to Bool(false) to keep outputs out
+	// of spans. Read it with ShouldRecordOutputs.
+	RecordOutputs *bool
 
 	// FunctionID is an identifier for grouping telemetry data by function or operation.
 	FunctionID string
@@ -64,8 +73,11 @@ type Options struct {
 	// included in telemetry per tool. Context is excluded by default.
 	IncludeToolsContext map[string]map[string]bool
 
-	// Integrations are per-call telemetry integrations. When non-empty, they
-	// replace globally registered integrations for this call.
+	// Integrations are per-call telemetry integrations. When non-nil, they
+	// replace the globally registered integrations for this call, as TS
+	// `integrations` does: an empty, non-nil slice means no integrations
+	// (nothing is emitted for the call). nil uses the global integrations.
+	// (v0.5.x treated an empty slice like nil.)
 	Integrations []TelemetryIntegration
 }
 
@@ -78,14 +90,26 @@ type Settings = Options
 func DefaultSettings() *Settings {
 	return &Settings{
 		IsEnabled:     Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  Bool(true),
+		RecordOutputs: Bool(true),
 	}
 }
 
 // Bool returns a bool pointer for optional telemetry fields.
 func Bool(v bool) *bool {
 	return &v
+}
+
+// ShouldRecordInputs reports whether inputs are recorded: true unless
+// RecordInputs is set to false. A nil *Options records inputs.
+func (s *Options) ShouldRecordInputs() bool {
+	return s == nil || s.RecordInputs == nil || *s.RecordInputs
+}
+
+// ShouldRecordOutputs reports whether outputs are recorded: true unless
+// RecordOutputs is set to false. A nil *Options records outputs.
+func (s *Options) ShouldRecordOutputs() bool {
+	return s == nil || s.RecordOutputs == nil || *s.RecordOutputs
 }
 
 // Enabled reports whether telemetry should run for settings.
@@ -103,14 +127,14 @@ func (s *Settings) WithEnabled(enabled bool) *Settings {
 // WithRecordInputs returns a copy of Settings with RecordInputs set to the given value.
 func (s *Settings) WithRecordInputs(record bool) *Settings {
 	copy := *s
-	copy.RecordInputs = record
+	copy.RecordInputs = Bool(record)
 	return &copy
 }
 
 // WithRecordOutputs returns a copy of Settings with RecordOutputs set to the given value.
 func (s *Settings) WithRecordOutputs(record bool) *Settings {
 	copy := *s
-	copy.RecordOutputs = record
+	copy.RecordOutputs = Bool(record)
 	return &copy
 }
 

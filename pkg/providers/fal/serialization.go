@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterImageModelDeserializer("fal", deserializeImageModel)
+	provider.RegisterImageModelDeserializer("fal.image", deserializeImageModel)
 	provider.RegisterSpeechModelDeserializer("fal.speech", deserializeSpeechModel)
 	provider.RegisterTranscriptionModelDeserializer("fal.transcription", deserializeTranscriptionModel)
 }

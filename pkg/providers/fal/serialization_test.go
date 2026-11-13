@@ -13,7 +13,7 @@ func TestFalSerializeAndDeserializeImageModel(t *testing.T) {
 		t.Fatalf("ImageModel error = %v", err)
 	}
 	serialized := model.(*ImageModel).Serialize()
-	if serialized.Provider != "fal" || serialized.ModelID != "fal-ai/flux/dev" {
+	if serialized.Provider != "fal.image" || serialized.ModelID != "fal-ai/flux/dev" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -23,7 +23,7 @@ func TestFalSerializeAndDeserializeImageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeImageModel error = %v", err)
 	}
-	if restored.Provider() != "fal" || restored.ModelID() != "fal-ai/flux/dev" {
+	if restored.Provider() != "fal.image" || restored.ModelID() != "fal-ai/flux/dev" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

@@ -1,5 +1,5 @@
 // Package harness is the Go port of the TypeScript `@ai-sdk/harness` package
-// (pinned to ai@7.0.113).
+// (pinned to ai@7.0.167, TS 9f7a842ae1).
 //
 // It contains the harness-v1 specification types that adapters implement
 // (TS `HarnessV1*`), the stream-part vocabulary, JSON lifecycle state that is
@@ -427,6 +427,17 @@ type SkillFile struct {
 // by harness id. Mirrors TS `HarnessV1Metadata`.
 type Metadata map[string]map[string]any
 
+// UnmarshalJSON decodes the record and rejects a null harness entry like
+// `harnessV1MetadataSchema` (every value must be an object).
+func (m *Metadata) UnmarshalJSON(data []byte) error {
+	out, err := decodeNamespacedRecord(data)
+	if err != nil {
+		return err
+	}
+	*m = out
+	return nil
+}
+
 // CallWarningType discriminates CallWarning.
 type CallWarningType string
 
@@ -542,6 +553,10 @@ type CredentialForwardingOptions struct {
 // `HarnessV1CredentialForwarding`.
 type CredentialForwarding func(ctx context.Context, opts CredentialForwardingOptions) (string, error)
 
-// MintBridgeTokenCallback creates the bridge channel token for one session.
-// Mirrors TS `HarnessV1MintBridgeTokenCallback`.
+// MintBridgeTokenCallback created the bridge channel token for one session.
+// Mirrors TS `HarnessV1MintBridgeTokenCallback`, which TS c849d37dac
+// deprecates: sandbox bridge authentication uses adapter-generated Ed25519
+// key pairs, and adapters ignore a callback passed in their (deprecated)
+// MintBridgeToken settings and warn once when the harness is created. The
+// adapters' settings fields carry the formal deprecation notice.
 type MintBridgeTokenCallback func(sandboxID string) string

@@ -26,6 +26,29 @@ type SpeechModelOptions struct {
 
 	// Language is the ISO 639-1 language code to generate speech in.
 	Language string `json:"language,omitempty"`
+
+	// Volume of the generated speech, between 0.5 and 2 (Sonic 3 and
+	// newer); sent as generation_config.volume.
+	Volume *float64 `json:"volume,omitempty"`
+
+	// Emotion of the generated speech (beta, best with English; Sonic 3 and
+	// newer), e.g. "neutral", "happy", "calm"; sent as
+	// generation_config.emotion.
+	Emotion string `json:"emotion,omitempty"`
+
+	// Locale is the regional locale code to generate speech in (e.g.
+	// "en-GB", "es-MX"; Sonic 3.6 and later). It cannot be combined with
+	// Language.
+	Locale string `json:"locale,omitempty"`
+
+	// Normalization controls text normalization ("auto", "off", or a
+	// language or locale code).
+	Normalization string `json:"normalization,omitempty"`
+
+	// PronunciationDictionaryID is the ID of a pronunciation dictionary
+	// created with the Cartesia API (Sonic 3 and newer); sent as
+	// pronunciation_dict_id.
+	PronunciationDictionaryID string `json:"pronunciationDictionaryId,omitempty"`
 }
 
 // extractSpeechModelOptions decodes providerOptions["cartesia"] into

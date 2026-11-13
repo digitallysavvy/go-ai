@@ -30,7 +30,7 @@ func TestPipeUIMessageChunksToResponse(t *testing.T) {
 		t.Fatalf("pipe: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, `data: {"data":{"step":1},"id":"p1","type":"data-progress"}`) {
+	if !strings.Contains(out, `data: {"type":"data-progress","id":"p1","data":{"step":1}}`) {
 		t.Fatalf("missing data part:\n%s", out)
 	}
 	if !strings.HasSuffix(out, "data: [DONE]\n\n") {
@@ -42,13 +42,18 @@ func TestPipeUIMessageChunksToResponse_KeepAliveAndConsume(t *testing.T) {
 	keepAlive := time.Hour
 	var side bytes.Buffer
 	var buf bytes.Buffer
+	consumed := make(chan struct{})
 	err := PipeUIMessageChunksToResponse(customChunkStream(context.Background()), &buf, &UIMessageStreamResponseInit{
 		KeepAliveMs: &keepAlive,
 		ConsumeSSEStream: func(r io.Reader) error {
+			defer close(consumed)
 			_, err := io.Copy(&side, r)
 			return err
 		},
 	})
+	// The helper does not wait for the callback (TS does not await
+	// consumeSseStream).
+	<-consumed
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}

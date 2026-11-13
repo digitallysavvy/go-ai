@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/baseten"
 	"github.com/digitallysavvy/go-ai/pkg/providers/cerebras"
@@ -57,12 +58,14 @@ func TestWrapperProvidersDoNotSendOpenAIKey(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		_, _ = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		_, genErr := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
 		mu.Lock()
 		got := append([]string(nil), auth...)
 		mu.Unlock()
-		if len(got) == 0 {
-			t.Errorf("%s: no request reached the server", name)
+		// v0.6.0 fails a keyless call with a LoadAPIKeyError before sending
+		// anything (TS loadApiKey); v0.5.3 sent it without a key.
+		if len(got) == 0 && !providererrors.IsLoadAPIKeyError(genErr) {
+			t.Errorf("%s: no request and no LoadAPIKeyError: %v", name, genErr)
 		}
 		for _, a := range got {
 			if strings.Contains(a, "sk-openai-leak") {

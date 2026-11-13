@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/claudecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -45,7 +46,7 @@ func TestBuiltinTools_Declared(t *testing.T) {
 }
 
 // TS `claude-code-harness.ts` CLAUDE_CODE_BUILTIN_TOOLS: the complete
-// 47-entry table (7 common tools + askUserQuestions + 39 native-only tools).
+// 48-entry table (7 common tools + askUserQuestions + 40 native-only tools).
 func TestBuiltinTools_CompleteTable(t *testing.T) {
 	h, err := claudecode.New(claudecode.Settings{})
 	if err != nil {
@@ -57,15 +58,15 @@ func TestBuiltinTools_CompleteTable(t *testing.T) {
 		"WebFetch", "NotebookEdit", "TodoWrite", "Agent", "TaskCreate", "TaskGet",
 		"TaskUpdate", "TaskList", "TaskStop", "TaskOutput", "Monitor",
 		"ListMcpResources", "ListMcpResourcesTool", "ReadMcpResource", "ReadMcpResourceTool",
-		"ReadMcpResourceDirTool", "RefreshMcpTools", "ExitPlanMode", "EnterPlanMode",
+		"ReadMcpResourceDirTool", "RefreshMcpTools", "ListAgents", "ExitPlanMode", "EnterPlanMode",
 		"EnterWorktree", "ExitWorktree", "askUserQuestions", "Skill", "ToolSearch",
 		"Artifact", "CronCreate", "CronDelete", "CronList", "DesignSync", "LSP",
 		"PowerShell", "PushNotification", "RemoteTrigger", "ReportFindings",
 		"ScheduleWakeup", "SendMessage", "SendUserFile", "ShareOnboardingGuide",
 		"WaitForMcpServers", "Workflow",
 	}
-	if len(want) != 47 {
-		t.Fatalf("test bug: want list has %d entries, expected 47", len(want))
+	if len(want) != 48 {
+		t.Fatalf("test bug: want list has %d entries, expected 48", len(want))
 	}
 	if len(tools) != len(want) {
 		t.Errorf("len(BuiltinTools()) = %d, want %d", len(tools), len(want))
@@ -92,13 +93,13 @@ func TestBuiltinTools_CompleteTable(t *testing.T) {
 // TS: "throws HarnessCapabilityUnsupportedError when the network sandbox
 // session exposes no ports"
 func TestDoStart_NoPortsUnsupportedError(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	sandbox.ports = nil
 	wireSpawn(sandbox)
 
-	h, err := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }})
+	h, err := claudecode.New(claudecode.Settings{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -133,12 +134,10 @@ func asCapabilityUnsupported(err error, target **harness.CapabilityUnsupportedEr
 // with a fixed token, ready for h.DoStart.
 func startedHarness(t *testing.T, settings claudecode.Settings, onStart func(turn *bridgetest.Turn, start map[string]any)) (*claudecode.Harness, harness.Session) {
 	t.Helper()
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: onStart})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: onStart})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
-
-	settings.MintBridgeToken = func(string) string { return "tok" }
 	settings.StartupTimeout = 2 * time.Second
 	h, err := claudecode.New(settings)
 	if err != nil {
@@ -378,7 +377,7 @@ func TestDoPromptTurn_SubmitUserMessage(t *testing.T) {
 func TestDoCompact_SendsUserMessageFireAndForget(t *testing.T) {
 	var mu sync.Mutex
 	var received []map[string]any
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnUserMessage: func(messageID, text string) (bool, string) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnUserMessage: func(messageID, text string) (bool, string) {
 		mu.Lock()
 		received = append(received, map[string]any{"messageId": messageID, "text": text})
 		mu.Unlock()
@@ -388,8 +387,7 @@ func TestDoCompact_SendsUserMessageFireAndForget(t *testing.T) {
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
+		StartupTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -435,19 +433,12 @@ func TestDoCompact_SendsUserMessageFireAndForget(t *testing.T) {
 // DoStart with ResumeFrom reopens a socket to the same still-running bridge
 // instead of respawning it).
 func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
-	var mintCalls int32
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 
-	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout: 2 * time.Second,
-		MintBridgeToken: func(string) string {
-			atomic.AddInt32(&mintCalls, 1)
-			return "tok"
-		},
-	})
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -480,9 +471,6 @@ func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
 	if sandbox.SpawnCount() != 1 {
 		t.Fatalf("SpawnCount after attach = %d, want 1 (attach must not respawn)", sandbox.SpawnCount())
 	}
-	if atomic.LoadInt32(&mintCalls) != 1 {
-		t.Fatalf("mintBridgeToken called %d times, want 1 (attach reuses the persisted token)", mintCalls)
-	}
 	if !attached.IsResume() {
 		t.Error("attached session.IsResume() = false, want true")
 	}
@@ -514,7 +502,7 @@ func TestDoStart_AttachesToParkedBridge_NoRespawn(t *testing.T) {
 func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	var starts int32
 	var lastStart map[string]any
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		atomic.AddInt32(&starts, 1)
 		lastStart = start
 		turn.Emit(map[string]any{
@@ -527,8 +515,7 @@ func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 	wireSpawn(sandbox)
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
+		StartupTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -581,7 +568,7 @@ func TestDoStart_AttachFailureFallsBackToRespawn(t *testing.T) {
 func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	var captured map[string]any
 	captureDone := make(chan struct{})
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		captured = start
 		close(captureDone)
 	}})
@@ -590,9 +577,9 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	wireSpawn(sandbox)
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
-		Auth:            harness.AuthEnvironment(map[string]string{"AI_GATEWAY_API_KEY": "gateway-key"}),
+		StartupTimeout: 2 * time.Second,
+
+		Auth: harness.AuthEnvironment(map[string]string{"AI_GATEWAY_API_KEY": "gateway-key"}),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -617,8 +604,8 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	}
 
 	env, _ := captured["env"].(map[string]any)
-	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk/harness-claude-code/1.0.142" {
-		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk/harness-claude-code/1.0.142", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
+	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk-harness-claude-code/1.0.185" {
+		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk-harness-claude-code/1.0.185", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
 	}
 }
 
@@ -627,7 +614,7 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 func TestDoStart_ClientAppNotSetForDirectAuth(t *testing.T) {
 	var captured map[string]any
 	captureDone := make(chan struct{})
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		captured = start
 		close(captureDone)
 	}})
@@ -636,9 +623,9 @@ func TestDoStart_ClientAppNotSetForDirectAuth(t *testing.T) {
 	wireSpawn(sandbox)
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
-		Auth:            harness.AuthEnvironment(map[string]string{"ANTHROPIC_API_KEY": "anthropic-key"}),
+		StartupTimeout: 2 * time.Second,
+
+		Auth: harness.AuthEnvironment(map[string]string{"ANTHROPIC_API_KEY": "anthropic-key"}),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -731,7 +718,7 @@ func TestDoStart_UsesNativeSubscriptionWhenNoExplicitCredential(t *testing.T) {
 // finished turn, the respawned bridge is asked to replay it from disk
 // (`BRIDGE_REPLAY_FROM_DISK=1`) and the channel opens with `resume: true`.
 func TestDoContinueTurn_ReplaysDiskLogOnRespawn(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey})
 	t.Cleanup(srv.Close)
 	sandbox := newTestSandbox(srv)
 
@@ -763,8 +750,7 @@ func TestDoContinueTurn_ReplaysDiskLogOnRespawn(t *testing.T) {
 	}
 
 	h, err := claudecode.New(claudecode.Settings{
-		StartupTimeout:  2 * time.Second,
-		MintBridgeToken: func(string) string { return "tok" },
+		StartupTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -814,7 +800,7 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 		reported <- struct{}{}
 	}
 
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnStart: func(turn *bridgetest.Turn, start map[string]any) {
 		turn.Emit(map[string]any{"type": "sandbox-log", "source": "claude", "stream": "stderr", "line": "boom"})
 		turn.Emit(map[string]any{"type": "debug-event", "level": "warn", "subsystem": "claude-code.bridge", "message": "retrying"})
 		turn.Emit(map[string]any{
@@ -826,7 +812,7 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 	sandbox := newTestSandbox(srv)
 	wireSpawn(sandbox)
 
-	h, err := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -869,5 +855,105 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 	}
 	if eventDiag.Kind != "event" || eventDiag.Message != "retrying" || eventDiag.Subsystem != "claude-code.bridge" || eventDiag.SessionID != "diag-session" {
 		t.Errorf("event diagnostic = %+v", eventDiag)
+	}
+}
+
+func resumedRerunSession(t *testing.T) (harness.Session, *int32, <-chan map[string]any) {
+	t.Helper()
+	var starts int32
+	markers := make(chan map[string]any, 4)
+	srv := bridgetest.NewServer(bridgetest.Options{PublicKey: claudecode.R91carryTestKeys.PublicKey, OnToolResult: func(f map[string]any) { markers <- f },
+		OnFrame: func(ft string) {
+			if ft == bridge.TypeStart {
+				atomic.AddInt32(&starts, 1)
+			}
+		},
+		OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+			turn.Emit(map[string]any{
+				"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+				"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}},
+			})
+		}})
+	t.Cleanup(srv.Close)
+	sandbox := newTestSandbox(srv)
+	wireSpawn(sandbox)
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resumeState, err := harness.NewResumeSessionState(claudecode.HarnessID, map[string]any{"claudeSessionId": "claude-session-1"})
+	if err != nil {
+		t.Fatalf("NewResumeSessionState: %v", err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir", ResumeFrom: resumeState,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	return sess, &starts, markers
+}
+
+// settle sends a marker tool-result on the same connection and waits until the
+// bridge has received it. Frames on one connection are processed in order, so
+// any start frame sent before the marker has already been counted: this
+// replaces a timing-based "no further start frame" sleep.
+func settle(t *testing.T, c harness.PromptControl, markers <-chan map[string]any) {
+	t.Helper()
+	if err := c.SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "settle-marker", Output: "ok"}); err != nil {
+		t.Fatalf("settle marker: %v", err)
+	}
+	select {
+	case <-markers:
+	case <-time.After(2 * time.Second):
+		t.Fatal("settle marker never reached the bridge")
+	}
+}
+
+func waitDone(t *testing.T, c harness.PromptControl) {
+	t.Helper()
+	select {
+	case <-c.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn never finished")
+	}
+}
+
+// TS (#22569) continuation-first resume: the recovery start is sent once.
+func TestDoContinueTurn_RerunRecoveryStartsNativeTurnOnce(t *testing.T) {
+	sess, starts, markers := resumedRerunSession(t)
+	emit := func(harness.StreamPart) {}
+	first, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit})
+	if err != nil {
+		t.Fatalf("first DoContinueTurn: %v", err)
+	}
+	waitDone(t, first)
+	second, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit})
+	if err != nil {
+		t.Fatalf("second DoContinueTurn: %v", err)
+	}
+	settle(t, second, markers)
+	if got := atomic.LoadInt32(starts); got != 1 {
+		t.Fatalf("bridge received %d start frames, want exactly 1", got)
+	}
+}
+
+// TS (#22569) prompt-first resume: a recovered prompt consumes the rerun flag.
+func TestDoContinueTurn_AfterRecoveredPromptSendsNoStart(t *testing.T) {
+	sess, starts, markers := resumedRerunSession(t)
+	emit := func(harness.StreamPart) {}
+	prompt, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: emit})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	waitDone(t, prompt)
+	cont, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit})
+	if err != nil {
+		t.Fatalf("DoContinueTurn: %v", err)
+	}
+	settle(t, cont, markers)
+	if got := atomic.LoadInt32(starts); got != 1 {
+		t.Fatalf("bridge received %d start frames, want 1 (the prompt only)", got)
 	}
 }

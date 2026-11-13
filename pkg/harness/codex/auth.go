@@ -46,9 +46,11 @@ func resolveAuthenticationMode(auth harness.Authentication, processEnv map[strin
 	return AuthModeDirect
 }
 
-// resolveAuthenticationEnvironment mirrors TS `resolveCodexEnv`, including
-// the native-subscription fallback (`resolveCodexAuthentication`).
-func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) map[string]string {
+// resolveAuthentication mirrors TS `resolveCodexAuthentication`: the
+// environment plus the request headers (ChatGPT account id) of a native
+// subscription credential. storeMode is the `cli_auth_credentials_store`
+// override from CodexConfig.
+func resolveAuthentication(ctx context.Context, auth harness.Authentication, processEnv map[string]string, storeMode string) (map[string]string, map[string]string, error) {
 	authEnv := processEnv
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
@@ -62,27 +64,32 @@ func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authenti
 		authModeString = harness.AuthModeDirect
 	}
 	if auth.Mode == harness.AuthModeDirect {
-		return pickOpenAI(ctx, authEnv, trySubscription, authModeString)
+		return pickOpenAI(ctx, authEnv, trySubscription, authModeString, storeMode)
 	}
 	gw := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
 	if auth.Mode == harness.AuthModeAIGateway || gw.APIKey != "" {
-		return pickGateway(gw)
+		return pickGateway(gw), nil, nil
 	}
-	return pickOpenAI(ctx, authEnv, trySubscription, authModeString)
+	return pickOpenAI(ctx, authEnv, trySubscription, authModeString, storeMode)
 }
 
-func pickOpenAI(ctx context.Context, env map[string]string, trySubscription bool, authModeString string) map[string]string {
+func pickOpenAI(ctx context.Context, env map[string]string, trySubscription bool, authModeString, storeMode string) (map[string]string, map[string]string, error) {
 	if trySubscription {
 		hasDirect := env["OPENAI_API_KEY"] != "" || env["CODEX_API_KEY"] != ""
 		if harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
-			if subEnv, ok := readCodexSubscription(ctx); ok {
-				return subEnv
+			sub, ok, err := resolveCodexSubscription(ctx, storeMode)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ok {
+				return sub.Environment, sub.RequestHeaders, nil
 			}
 		}
 	}
 	out := map[string]string{}
-	apiKey := env["OPENAI_API_KEY"]
-	if apiKey == "" {
+	// TS uses `??`: a present-but-empty OPENAI_API_KEY wins over CODEX_API_KEY.
+	apiKey, ok := env["OPENAI_API_KEY"]
+	if !ok {
 		apiKey = env["CODEX_API_KEY"]
 	}
 	if apiKey != "" {
@@ -97,7 +104,7 @@ func pickOpenAI(ctx context.Context, env map[string]string, trySubscription bool
 	if v := env["OPENAI_PROJECT"]; v != "" {
 		out["OPENAI_PROJECT"] = v
 	}
-	return out
+	return out, nil, nil
 }
 
 func pickGateway(gw harnessutil.AIGatewayAuth) map[string]string {
@@ -124,7 +131,7 @@ func toCodexGatewayBaseURL(baseURL string) string {
 // throws synchronously on an invalid matchUrl (`new URL(matchUrl)`), failing
 // the whole `doStart` call; the Go port propagates the same error instead of
 // silently dropping the transformation.
-func requestTransformations(env, sandboxEnv map[string]string, authMode ResolvedAuthenticationMode) ([]harness.RequestTransformation, error) {
+func requestTransformations(env, sandboxEnv map[string]string, authMode ResolvedAuthenticationMode, requestHeaders map[string]string) ([]harness.RequestTransformation, error) {
 	if env["CODEX_API_KEY"] == "" || sandboxEnv["CODEX_API_KEY"] == "" {
 		return nil, nil
 	}
@@ -143,6 +150,11 @@ func requestTransformations(env, sandboxEnv map[string]string, authMode Resolved
 	})
 	if err != nil {
 		return nil, err
+	}
+	// TS `createCodexSubscriptionRequestTransformations`: extra request
+	// headers (the ChatGPT account id) are merged into every transform.
+	for k, v := range requestHeaders {
+		t.Transform.Headers[k] = v
 	}
 	return []harness.RequestTransformation{t}, nil
 }

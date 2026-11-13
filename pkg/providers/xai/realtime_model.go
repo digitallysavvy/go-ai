@@ -3,13 +3,19 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"reflect"
+	"strconv"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -53,52 +59,142 @@ func (m *XAIRealtimeModel) ModelID() string              { return m.modelID }
 // DoCreateClientSecret directly on the concrete type, so losing either
 // method would otherwise only surface as a runtime failure elsewhere.
 var (
-	_ provider.Experimental_RealtimeModelV4    = (*XAIRealtimeModel)(nil)
-	_ provider.RealtimeClientSecretCreator     = (*XAIRealtimeModel)(nil)
-	_ provider.RealtimeWebSocketConfigProvider = (*XAIRealtimeModel)(nil)
+	_ provider.Experimental_RealtimeModelV4     = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator      = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider  = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeServerConnectionProvider = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeIntentCodec              = (*XAIRealtimeModel)(nil)
 )
 
-func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	if m.provider.config.APIKey == "" {
-		return provider.ClientSecretResult{}, fmt.Errorf("xAI API key API key is missing. Pass it using the 'apiKey' parameter or the XAI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
+// xaiConversationIntent rejects every intent but conversation (TS
+// assertConversationIntent, 892af4dab7).
+func xaiConversationIntent(intent provider.RealtimeSessionIntent) error {
+	if intent != "" && intent != provider.RealtimeSessionIntentConversation {
+		return errors.New("xAI realtime does not support the '" + string(intent) + "' session intent.")
 	}
+	return nil
+}
+
+// GetServerConnection returns the conversational upstream WebSocket for a
+// trusted server, <ws base>/realtime?model=<id> with the provider headers
+// (TS getServerWebSocketConfig({intent}), 892af4dab7). xAI has no
+// transcription endpoint.
+func (m *XAIRealtimeModel) GetServerConnection(ctx context.Context, opts provider.RealtimeServerConnectionOptions) (provider.WebSocketConfig, error) {
+	if err := xaiConversationIntent(opts.Intent); err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	// TS new URL(baseURL): WHATWG protocol, host (default port left out)
+	// and pathname.
+	scheme, host, pathname, err := xaiJSURLParts(m.provider.realtimeBaseURL)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	wsScheme := "wss"
+	if scheme == "http" {
+		wsScheme = "ws"
+	}
+	wsURL := wsScheme + "://" + host + strings.TrimSuffix(pathname, "/") + "/realtime?model=" + providerutils.EncodeURIComponent(m.modelID)
+	headers, err := m.provider.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: headers}, nil
+}
+
+// BuildSessionConfigForIntent is BuildSessionConfig for an intent.
+func (m *XAIRealtimeModel) BuildSessionConfigForIntent(config provider.RealtimeSessionConfig, intent provider.RealtimeSessionIntent) (any, error) {
+	if err := xaiConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.BuildSessionConfig(config), nil
+}
+
+// SerializeClientEventForIntent is SerializeClientEvent for an intent.
+func (m *XAIRealtimeModel) SerializeClientEventForIntent(event provider.RealtimeClientEvent, intent provider.RealtimeSessionIntent) (json.RawMessage, error) {
+	if err := xaiConversationIntent(intent); err != nil {
+		return nil, err
+	}
+	return m.SerializeClientEvent(event)
+}
+
+func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	body := map[string]interface{}{}
 	if opts.ExpiresAfterSeconds != nil {
 		body["expires_after"] = map[string]interface{}{"seconds": *opts.ExpiresAfterSeconds}
 	}
+	// TS loadApiKey runs for the client-secret request: a missing key is a
+	// LoadAPIKeyError (and XAI_API_KEY is read now, not at construction).
+	userHeaders, userKey := m.provider.config.Headers, m.provider.config.APIKey
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: m.provider.realtimeBaseURL,
 		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + m.provider.config.APIKey,
-			"Content-Type":  "application/json",
+			"Content-Type": "application/json",
 		}, m.provider.config.Headers), version.ProviderUserAgent("xai")),
+		HeadersFunc: func() (map[string]string, error) {
+			if keyFunc := m.provider.config.APIKeyFunc; keyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, userHeaders, providerutils.ResolveAPIKeyOptions{
+					APIKey: userKey, APIKeyFunc: keyFunc, EnvVar: "XAI_API_KEY", Description: "xAI API key",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(userHeaders, userKey, "XAI_API_KEY", "xAI API key", "Authorization", "Bearer ")
+		},
 		HTTPClient: m.provider.client.HTTPClient(),
 	})
 	resp, err := client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/realtime/client_secrets",
 		Headers: map[string]string{"Content-Type": "application/json"},
-		Body:    body,
+		// TS calls fetchFn directly with {...config headers, Content-Type}:
+		// no runtime user-agent tag, and a fetch rejection as is.
+		RawFetch: true,
+		Body:     body,
 	})
 	if err != nil {
-		return provider.ClientSecretResult{}, err
+		return provider.ClientSecretResult{}, internalhttp.UnwrapFetchRejection(err) // TS: the header error as is
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return provider.ClientSecretResult{}, fmt.Errorf("xAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body))
+		// TS: `xAI realtime client secret request failed: ${status} ${text}`.
+		cause := resp.StatusError(resp.Body)
+		// TS throws a plain Error with exactly this text
+		// (xai-realtime-model.ts:69-74); the HTTP cause stays reachable.
+		return provider.ClientSecretResult{}, &xaiPlainError{
+			msg:   fmt.Sprintf("xAI realtime client secret request failed: %d %s", resp.StatusCode, textdecode.UTF8(resp.Body)),
+			cause: cause,
+		}
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	var data struct {
 		Value     string `json:"value"`
 		ExpiresAt *int64 `json:"expires_at"`
 	}
-	if err := json.Unmarshal(resp.Body, &data); err != nil {
+	// TS (await response.json()): plain JSON.parse keeps a __proto__ key.
+	if err := providerutils.UnmarshalChunkPlain(resp.Body, &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
-	u, _ := url.Parse(m.provider.realtimeBaseURL)
+	_, host, _, err := xaiJSURLParts(m.provider.realtimeBaseURL)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	return provider.ClientSecretResult{
 		Token:     data.Value,
-		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", u.Host, url.QueryEscape(m.modelID)),
+		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", host, providerutils.EncodeURIComponent(m.modelID)), // TS encodeURIComponent
 		ExpiresAt: data.ExpiresAt,
 	}, nil
+}
+
+// xaiJSURLParts is TS new URL(raw): the scheme, url.host (with the port
+// unless it is the scheme's default) and url.pathname, or the TypeError
+// "Invalid URL".
+func xaiJSURLParts(raw string) (scheme, host, pathname string, err error) {
+	u, err := urlnorm.Parse(raw)
+	if err != nil {
+		return "", "", "", err
+	}
+	host = u.Host
+	if u.Port >= 0 {
+		host += ":" + strconv.Itoa(u.Port)
+	}
+	return u.Scheme, host, u.Pathname(), nil
 }
 
 func (m *XAIRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
@@ -151,6 +247,11 @@ func (m *XAIRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionCon
 }
 
 func (m *XAIRealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	// TS parseXaiRealtimeServerEvent reads event.type of the parsed value: a
+	// JSON null throws (the realtime event channel's fatal error).
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil, errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
+	}
 	return []provider.RealtimeServerEvent{xaiParseServerEvent(raw)}, nil
 }
 
@@ -160,7 +261,7 @@ func (m *XAIRealtimeModel) SerializeClientEvent(event provider.RealtimeClientEve
 
 func xaiParseServerEvent(raw json.RawMessage) provider.RealtimeServerEvent {
 	var event map[string]interface{}
-	_ = json.Unmarshal(raw, &event)
+	_ = jsonexact.Unmarshal(raw, &event)
 	rawType, _ := event["type"].(string)
 	e := provider.RealtimeServerEvent{Raw: raw}
 	switch rawType {
@@ -191,6 +292,7 @@ func xaiParseServerEvent(raw json.RawMessage) provider.RealtimeServerEvent {
 		e.Type = "input-transcription-completed"
 		e.ItemID = xaiStringField(event, "item_id")
 		e.Transcript = xaiStringField(event, "transcript")
+		e.Usage = xaiRealtimeTranscriptionUsage(event["usage"])
 	case "response.created":
 		e.Type = "response-created"
 		if responseID, ok := xaiNestedStringField(event, "response", "id"); ok {
@@ -210,6 +312,14 @@ func xaiParseServerEvent(raw json.RawMessage) provider.RealtimeServerEvent {
 		} else {
 			e.Status = "completed"
 		}
+		// TS 892af4dab7: event.usage ?? response.usage.
+		usage := event["usage"]
+		if usage == nil {
+			if response, ok := event["response"].(map[string]interface{}); ok {
+				usage = response["usage"]
+			}
+		}
+		e.Usage = xaiRealtimeResponseUsage(usage)
 	case "response.output_item.added":
 		e.Type = "output-item-added"
 		e.ResponseID = xaiStringField(event, "response_id")
@@ -337,7 +447,26 @@ func xaiSerializeClientEvent(event provider.RealtimeClientEvent, buildSession fu
 	default:
 		return nil, nil
 	}
-	return json.Marshal(out)
+	// TS JSON.stringify of the event object literal: its key order.
+	return json.RawMessage(providerutils.StringifyOrdered(out, xaiRealtimeClientEventOrder)), nil
+}
+
+// xaiRealtimeClientEventOrder is the key order of TS
+// serializeXaiRealtimeClientEvent's object literals and buildXaiSessionConfig's
+// session (provider options follow).
+var xaiRealtimeClientEventOrder = map[string][]string{
+	"":                            {"type", "session", "audio", "item", "response"},
+	"session":                     {"instructions", "voice", "audio", "turn_detection", "tools"},
+	"session.audio":               {"input", "output"},
+	"session.audio.input":         {"format"},
+	"session.audio.input.format":  {"type", "rate"},
+	"session.audio.output":        {"format"},
+	"session.audio.output.format": {"type", "rate"},
+	"session.turn_detection":      {"type", "threshold", "silence_duration_ms", "prefix_padding_ms"},
+	"session.tools":               {"type", "name", "description", "parameters"},
+	"item":                        {"type", "role", "content", "call_id", "output"},
+	"item.content":                {"type", "text", "audio"},
+	"response":                    {"modalities", "instructions"},
 }
 
 func xaiConversationItem(item provider.RealtimeConversationItem) (map[string]interface{}, error) {
@@ -435,3 +564,76 @@ func xaiNestedStringField(m map[string]interface{}, key, nested string) (string,
 	}
 	return xaiStringFieldPresent(child, nested)
 }
+
+func xaiRealtimeUsageNumber(m map[string]interface{}, key string) *float64 {
+	if f, ok := m[key].(float64); ok {
+		return &f // TS keeps the JS number
+	}
+	return nil
+}
+
+// xaiRealtimeResponseUsage is TS mapResponseUsage (892af4dab7; the OpenAI
+// realtime wire shape): nil when nothing is reported.
+func xaiRealtimeResponseUsage(raw interface{}) *provider.RealtimeUsage {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	input, _ := usage["input_token_details"].(map[string]interface{})
+	output, _ := usage["output_token_details"].(map[string]interface{})
+	cached, _ := input["cached_tokens_details"].(map[string]interface{})
+	u := provider.RealtimeUsage{
+		InputTokens:            xaiRealtimeUsageNumber(usage, "input_tokens"),
+		OutputTokens:           xaiRealtimeUsageNumber(usage, "output_tokens"),
+		CachedInputTokens:      xaiRealtimeUsageNumber(input, "cached_tokens"),
+		InputAudioTokens:       xaiRealtimeUsageNumber(input, "audio_tokens"),
+		InputTextTokens:        xaiRealtimeUsageNumber(input, "text_tokens"),
+		OutputAudioTokens:      xaiRealtimeUsageNumber(output, "audio_tokens"),
+		OutputTextTokens:       xaiRealtimeUsageNumber(output, "text_tokens"),
+		CachedInputAudioTokens: xaiRealtimeUsageNumber(cached, "audio_tokens"),
+		CachedInputTextTokens:  xaiRealtimeUsageNumber(cached, "text_tokens"),
+	}
+	if u.HasSeconds() {
+		return nil
+	}
+	return &u
+}
+
+// xaiRealtimeTranscriptionUsage is TS mapTranscriptionUsage.
+func xaiRealtimeTranscriptionUsage(raw interface{}) *provider.RealtimeUsage {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if usage["type"] == "duration" {
+		seconds, ok := usage["seconds"].(float64)
+		if !ok {
+			return nil
+		}
+		u := provider.RealtimeUsage{}
+		u.SetSeconds(seconds)
+		return &u
+	}
+	input, _ := usage["input_token_details"].(map[string]interface{})
+	u := provider.RealtimeUsage{
+		InputTokens:      xaiRealtimeUsageNumber(usage, "input_tokens"),
+		OutputTokens:     xaiRealtimeUsageNumber(usage, "output_tokens"),
+		InputAudioTokens: xaiRealtimeUsageNumber(input, "audio_tokens"),
+		InputTextTokens:  xaiRealtimeUsageNumber(input, "text_tokens"),
+		OutputTextTokens: xaiRealtimeUsageNumber(usage, "output_tokens"),
+	}
+	if u.HasSeconds() {
+		return nil
+	}
+	return &u
+}
+
+// xaiPlainError is a TS plain Error: its text is the message alone, and the
+// cause stays reachable through errors.As / errors.Is.
+type xaiPlainError struct {
+	msg   string
+	cause error
+}
+
+func (e *xaiPlainError) Error() string { return e.msg }
+func (e *xaiPlainError) Unwrap() error { return e.cause }

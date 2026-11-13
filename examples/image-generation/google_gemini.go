@@ -35,8 +35,8 @@ func main() {
 	// Generate image
 	fmt.Println("Generating image with Gemini 2.5 Flash...")
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "Abstract colorful art with geometric shapes and vibrant patterns",
-		Size:   "1024x1024",
+		Prompt:      "Abstract colorful art with geometric shapes and vibrant patterns",
+		AspectRatio: "1:1", // Gemini image models do not support Size
 	})
 	if err != nil {
 		fmt.Printf("Error generating image: %v\n", err)

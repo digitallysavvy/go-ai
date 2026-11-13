@@ -3,12 +3,13 @@ package openai
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"mime/multipart"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type SkillsAPI struct {
@@ -16,7 +17,7 @@ type SkillsAPI struct {
 }
 
 func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptions) (*types.UploadSkillResult, error) {
-	var warnings []types.Warning
+	warnings := []types.Warning{}
 	if opts.DisplayTitle != "" {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "displayTitle"})
 	}
@@ -24,7 +25,9 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	for _, file := range opts.Files {
-		part, err := writer.CreateFormFile("files[]", chooseFilename(file.Path))
+		// TS appends new Blob([content]) (no type) named file.path; a File
+		// named "" has no filename parameter.
+		part, err := providerutils.CreateFormDataFile(writer, "files[]", file.Path, "")
 		if err != nil {
 			return nil, err
 		}
@@ -49,34 +52,39 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.UnwrapFetchRejection(err)
 	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai skills upload failed: %d %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
+		return nil, openAICompatStatusError("openai", resp.StatusError(resp.Body))
 	}
 
-	var out struct {
-		ID             string `json:"id"`
-		Name           string `json:"name"`
-		Description    string `json:"description"`
-		DefaultVersion string `json:"default_version"`
-		LatestVersion  string `json:"latest_version"`
-		CreatedAt      *int64 `json:"created_at"`
-		UpdatedAt      *int64 `json:"updated_at"`
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaOpenAISkill)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	var out struct {
+		ID             string   `json:"id"`
+		Name           string   `json:"name"`
+		Description    string   `json:"description"`
+		DefaultVersion *string  `json:"default_version"`
+		LatestVersion  string   `json:"latest_version"`
+		CreatedAt      *float64 `json:"created_at"`
+		UpdatedAt      *float64 `json:"updated_at"`
+	}
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
 	meta := map[string]interface{}{}
-	if out.DefaultVersion != "" {
-		meta["defaultVersion"] = out.DefaultVersion
+	// TS `default_version != null`: a present empty string is kept.
+	if out.DefaultVersion != nil {
+		meta["defaultVersion"] = *out.DefaultVersion
 	}
 	if out.CreatedAt != nil {
-		meta["createdAt"] = *out.CreatedAt
+		meta["createdAt"] = unixSecondsMetadataValue(*out.CreatedAt)
 	}
 	if out.UpdatedAt != nil {
-		meta["updatedAt"] = *out.UpdatedAt
+		meta["updatedAt"] = unixSecondsMetadataValue(*out.UpdatedAt)
 	}
 
 	return &types.UploadSkillResult{

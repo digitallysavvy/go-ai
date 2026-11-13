@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"strings"
+	"io"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -18,9 +18,23 @@ type UploadFileOptions struct {
 	MediaType       string
 	Filename        string
 	ProviderOptions map[string]interface{}
+
+	// Headers are additional HTTP headers to send with the upload request.
+	// Only applicable for HTTP-based providers (TS uploadFile headers).
+	Headers map[string]string
 }
 
-func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (*types.UploadFileResult, error) {
+func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (result *types.UploadFileResult, err error) {
+	// A failed upload releases a stream the caller handed over (TS uploadFile).
+	if fd, ok := opts.Data.(types.FileData); ok && fd.Type == types.FileDataTypeStream {
+		defer func() {
+			if err != nil {
+				if c, ok := fd.Stream.(io.Closer); ok {
+					_ = c.Close()
+				}
+			}
+		}()
+	}
 	filesAPI, err := resolveFilesAPI(api)
 	if err != nil {
 		return nil, err
@@ -53,6 +67,7 @@ func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (*
 		MediaType:       mediaType,
 		Filename:        opts.Filename,
 		ProviderOptions: opts.ProviderOptions,
+		Headers:         opts.Headers,
 	})
 }
 
@@ -68,11 +83,8 @@ func uploadDataBytes(data types.FileData) ([]byte, error) {
 }
 
 func detectUploadMediaType(data []byte) string {
-	detected := http.DetectContentType(data)
-	if strings.HasPrefix(detected, "text/plain") {
-		return "text/plain"
-	}
-	if detected != "" && detected != "application/octet-stream" {
+	// TS detectMediaType: magic-number signatures only.
+	if detected, ok := fileutil.DetectMediaTypeSignature(data, ""); ok && detected != "" {
 		return detected
 	}
 	if isLikelyText(data) {

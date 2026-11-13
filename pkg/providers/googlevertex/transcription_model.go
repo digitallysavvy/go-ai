@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -18,6 +23,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
+	"golang.org/x/text/language"
 )
 
 type TranscriptionModel struct {
@@ -37,15 +43,20 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
-	vertexOpts := vertexTranscriptionOptions(opts.ProviderOptions)
+	// TS reads currentDate before the request.
+	currentDate := time.Now()
+	vertexOpts, err := vertexTranscriptionOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	region := vertexOpts.Region
 	regionArg := "location"
-	if region != "" {
+	if vertexOpts.hasRegion {
 		regionArg = "region"
 	} else {
-		region = m.provider.config.Location
+		region = m.provider.location()
 	}
-	if region == "" {
+	if region == "" && !vertexOpts.hasRegion {
 		region = "global"
 	}
 	// region is interpolated directly into the Cloud Speech-to-Text request
@@ -53,13 +64,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// DNS label is accepted. Ports TS google-vertex-transcription-model.ts
 	// (TS #21842).
 	if !providerutils.IsValidHostnamePart(region) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   regionArg,
-			Message: "Invalid Google Cloud Speech-to-Text region. Expected a single DNS label (letters, digits, and hyphens).",
-		}
+		return nil, providererrors.NewArgumentError(regionArg, "Invalid Google Cloud Speech-to-Text region. Expected a single DNS label (letters, digits, and hyphens).", nil)
 	}
 	languages := vertexOpts.LanguageCodes
-	if len(languages) == 0 {
+	if languages == nil {
 		if opts.Language != "" {
 			languages = []string{opts.Language}
 		} else {
@@ -92,23 +100,29 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		},
 		"content": content,
 	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+	// TS JSON.stringify(requestBody): the literal's key order, no HTML
+	// escaping.
+	payload := []byte(providerutils.StringifyOrdered(body, map[string][]string{
+		"":                {"config", "content"},
+		"config":          {"model", "languageCodes", "autoDecodingConfig", "features"},
+		"config.features": {"enableWordTimeOffsets", "enableAutomaticPunctuation"},
+	}))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vertexSpeechRecognizeURL(m.provider.config.Project, region), bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vertexSpeechRecognizeURL(m.provider.project(), region), bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	headers := vertexTranscriptionHeaders(m.provider.config, opts.Headers)
-	for k, v := range headers {
+	// TS postJsonToApi tags the user-agent with the runtime.
+	for k, v := range providerutils.WithUserAgentSuffix(headers, providerutils.RuntimeEnvironmentUserAgent()) {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := m.provider.client.HTTPClient().Do(req)
+	resp, err := internalhttp.WithFetchRedirects(m.provider.mainClient().HTTPClient()).Do(req)
 	if err != nil {
-		return nil, err
+		// TS postToApi/getFromApi handleFetchError: the retryable
+		// "Cannot connect to API" APICallError (aborts unchanged).
+		return nil, internalhttp.TransportErrorCtx(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	respBody, err := io.ReadAll(resp.Body)
@@ -116,14 +130,21 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("google vertex transcription request failed: %d %s", resp.StatusCode, string(respBody))
+		return nil, vertexHTTPErrorText(m.Provider(), resp.StatusCode, fileutil.ResponseStatusText(resp), resp.Header, respBody, nil)
 	}
+	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text() before JSON.parse
 
+	// TS createJsonResponseHandler(googleVertexTranscriptionResponseSchema).
+	if err := vertexValidator(m.Provider(), zVertexTranscription)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	var parsed vertexTranscriptionResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	if err := jsonexact.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode vertex transcription response: %w", err)
 	}
-	return convertVertexTranscriptionResponse(parsed, m.modelID, resp.Header, respBody), nil
+	result := convertVertexTranscriptionResponse(parsed, m.modelID, resp.Header, respBody)
+	result.Response.Timestamp = currentDate
+	return result, nil
 }
 
 type vertexTranscriptionProviderOptions struct {
@@ -131,36 +152,72 @@ type vertexTranscriptionProviderOptions struct {
 	LanguageCodes              []string
 	EnableWordTimeOffsets      *bool
 	EnableAutomaticPunctuation *bool
+	hasRegion                  bool
 }
 
-func vertexTranscriptionOptions(providerOptions map[string]interface{}) vertexTranscriptionProviderOptions {
+// vertexTranscriptionOptionsChecked is the zod-validating form of
+// googleVertexTranscriptionProviderOptionsSchema: a present value of the wrong
+// type fails with an InvalidArgumentError. Empty languageCodes stay non-nil
+// because TS forwards `languageCodes: []`.
+func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexTranscriptionProviderOptions, error) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOptions = providerutils.NormalizeOptionsJSON(providerOptions)
+	invalid := func(key string, cause error) error {
+		return providererrors.NewArgumentError("providerOptions", "invalid "+key+" provider options", cause)
+	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
-		raw, ok := providerOptions[key].(map[string]interface{})
-		if !ok {
+		rawAny, present := providerOptions[key]
+		if !present || rawAny == nil {
 			continue
 		}
-		var out vertexTranscriptionProviderOptions
-		if region, ok := raw["region"].(string); ok {
-			out.Region = region
+		raw, ok := rawAny.(map[string]interface{})
+		if !ok {
+			return vertexTranscriptionProviderOptions{}, invalid(key, fmt.Errorf("%s: expected object, received %T", key, rawAny))
 		}
-		if values, ok := raw["languageCodes"].([]string); ok {
-			out.LanguageCodes = values
-		} else if values, ok := raw["languageCodes"].([]interface{}); ok {
-			for _, v := range values {
-				if s, ok := v.(string); ok {
-					out.LanguageCodes = append(out.LanguageCodes, s)
+		var out vertexTranscriptionProviderOptions
+		if v, has := raw["region"]; has && v != nil {
+			region, isStr := v.(string)
+			if !isStr {
+				return out, invalid(key, fmt.Errorf("region: expected string, received %T", v))
+			}
+			out.Region = region
+			out.hasRegion = true
+		}
+		if v, has := raw["languageCodes"]; has && v != nil {
+			switch values := v.(type) {
+			case []string:
+				out.LanguageCodes = append([]string{}, values...)
+			case []interface{}:
+				out.LanguageCodes = make([]string, 0, len(values))
+				for i, item := range values {
+					str, isStr := item.(string)
+					if !isStr {
+						return out, invalid(key, fmt.Errorf("languageCodes[%d]: expected string, received %T", i, item))
+					}
+					out.LanguageCodes = append(out.LanguageCodes, str)
 				}
+			default:
+				return out, invalid(key, fmt.Errorf("languageCodes: expected array, received %T", v))
 			}
 		}
-		if v, ok := raw["enableWordTimeOffsets"].(bool); ok {
-			out.EnableWordTimeOffsets = &v
+		for _, name := range []string{"enableWordTimeOffsets", "enableAutomaticPunctuation"} {
+			v, has := raw[name]
+			if !has || v == nil {
+				continue
+			}
+			b, isBool := v.(bool)
+			if !isBool {
+				return out, invalid(key, fmt.Errorf("%s: expected boolean, received %T", name, v))
+			}
+			if name == "enableWordTimeOffsets" {
+				out.EnableWordTimeOffsets = &b
+			} else {
+				out.EnableAutomaticPunctuation = &b
+			}
 		}
-		if v, ok := raw["enableAutomaticPunctuation"].(bool); ok {
-			out.EnableAutomaticPunctuation = &v
-		}
-		return out
+		return out, nil
 	}
-	return vertexTranscriptionProviderOptions{}
+	return vertexTranscriptionProviderOptions{}, nil
 }
 
 func vertexTranscriptionHeaders(cfg Config, extra map[string]string) map[string]string {
@@ -185,9 +242,9 @@ type vertexTranscriptionResponse struct {
 		Alternatives []struct {
 			Transcript string `json:"transcript"`
 			Words      []struct {
-				Word        string `json:"word"`
-				StartOffset string `json:"startOffset"`
-				EndOffset   string `json:"endOffset"`
+				Word        *string `json:"word"`
+				StartOffset string  `json:"startOffset"`
+				EndOffset   string  `json:"endOffset"`
 			} `json:"words"`
 		} `json:"alternatives"`
 		LanguageCode string `json:"languageCode"`
@@ -201,22 +258,25 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 	var texts []string
 	var segments []types.TranscriptionTimestamp
 	language := ""
+	if len(resp.Results) > 0 {
+		// TS: convertBcp47ToIso6391(results[0]?.languageCode).
+		language = iso6391(resp.Results[0].LanguageCode)
+	}
 	for _, result := range resp.Results {
-		if language == "" {
-			language = iso6391(result.LanguageCode)
-		}
+		// TS joins every result's primary transcript ('' when absent), so an
+		// empty one still contributes a separator.
 		if len(result.Alternatives) == 0 {
+			texts = append(texts, "")
 			continue
 		}
 		alt := result.Alternatives[0]
-		if alt.Transcript != "" {
-			texts = append(texts, alt.Transcript)
-		}
+		texts = append(texts, alt.Transcript)
 		for _, word := range alt.Words {
 			start, okStart := parseGoogleDuration(word.StartOffset)
 			end, okEnd := parseGoogleDuration(word.EndOffset)
-			if word.Word != "" && okStart && okEnd {
-				segments = append(segments, types.TranscriptionTimestamp{Text: word.Word, Start: start, End: end})
+			// TS only skips a null/absent word; an empty string is kept.
+			if word.Word != nil && okStart && okEnd {
+				segments = append(segments, types.TranscriptionTimestamp{Text: *word.Word, Start: start, End: end})
 			}
 		}
 	}
@@ -226,12 +286,12 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 	}
 	var responseBody interface{}
 	if len(rawBody) > 0 {
-		if err := json.Unmarshal(rawBody, &responseBody); err != nil {
+		if err := jsonexact.Unmarshal(rawBody, &responseBody); err != nil {
 			responseBody = string(rawBody)
 		}
 	}
 	return &types.TranscriptionResult{
-		Text:              strings.TrimSpace(strings.Join(texts, " ")),
+		Text:              providerutils.JSTrim(strings.Join(texts, " ")),
 		Segments:          segments,
 		Timestamps:        segments,
 		Language:          language,
@@ -251,25 +311,46 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 	}
 }
 
+// parseGoogleDuration is TS Number.parseFloat for a Speech-to-Text duration
+// such as "1.200s": leading JS whitespace skipped, then the longest decimal
+// prefix, finite only.
 func parseGoogleDuration(value string) (float64, bool) {
-	value = strings.TrimSuffix(value, "s")
-	if value == "" {
+	m := leadingFloatRE.FindString(providerutils.JSTrimStart(value))
+	if m == "" {
 		return 0, false
 	}
-	seconds, err := strconv.ParseFloat(value, 64)
-	return seconds, err == nil
+	seconds, err := strconv.ParseFloat(m, 64)
+	if err != nil || math.IsInf(seconds, 0) || math.IsNaN(seconds) {
+		return 0, false
+	}
+	return seconds, true
 }
 
+var leadingFloatRE = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?`)
+
+// iso6391 ports TS convertBcp47ToIso6391: new Intl.Locale(value).language,
+// kept only when it is a two-letter code. Intl.Locale canonicalizes the
+// language subtag (case-insensitive, legacy and three-letter aliases such as
+// "eng" -> "en", "iw" -> "he", "cmn" -> "zh") and throws on a malformed tag.
 func iso6391(value string) string {
-	if value == "" {
+	if value == "" || strings.Contains(value, "_") {
 		return ""
 	}
-	if strings.HasPrefix(value, "cmn-") {
-		return "zh"
+	first := strings.ToLower(strings.SplitN(value, "-", 2)[0])
+	if first == "und" || first == "x" || first == "i" {
+		return ""
 	}
-	parts := strings.Split(value, "-")
-	if len(parts[0]) == 2 {
-		return parts[0]
+	tag, err := language.Parse(value)
+	if err != nil {
+		return ""
+	}
+	base, _ := tag.Base()
+	code := base.String()
+	if code == "cmn" {
+		code = "zh"
+	}
+	if len(code) == 2 {
+		return code
 	}
 	return ""
 }

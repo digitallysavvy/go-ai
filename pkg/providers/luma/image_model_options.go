@@ -1,5 +1,11 @@
 package luma
 
+import (
+	"reflect"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
 // ImageConfig is per-image configuration for a Luma image reference (TS
 // LumaImageConfig). Each entry corresponds to an image in Files, in order.
 type ImageConfig struct {
@@ -33,6 +39,11 @@ type ImageModelOptions struct {
 	// MaxPollAttempts overrides the maximum number of polling attempts
 	// (default 120).
 	MaxPollAttempts *int
+	// pollIntervalMillisF and maxPollAttemptsF keep the raw TS z.number()
+	// values: PollIntervalMillis/MaxPollAttempts truncate a fractional value,
+	// but the TS loop runs `i < maxPollAttempts` (2.5 allows 3 attempts).
+	pollIntervalMillisF *float64
+	maxPollAttemptsF    *float64
 	// Additional carries any passthrough fields not explicitly modeled here
 	// (the TS schema is a looseObject, and every unrecognized field is
 	// spread directly into the request body).
@@ -50,10 +61,13 @@ func parseImageModelOptions(providerOptions map[string]interface{}) *ImageModelO
 	if providerOptions == nil {
 		return nil
 	}
-	raw, ok := providerOptions["luma"].(map[string]interface{})
+	raw, ok := providerutils.NormalizeOptionsJSON(providerOptions)["luma"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
+	// Nested Go-typed values (e.g. []map[string]interface{} images) read like
+	// their JSON form, the form validateLumaImageOptions checked.
+	raw = providerutils.NormalizeOptionsJSON(raw)
 
 	opts := &ImageModelOptions{}
 	if v, ok := raw["referenceType"].(string); ok {
@@ -79,6 +93,12 @@ func parseImageModelOptions(providerOptions map[string]interface{}) *ImageModelO
 	}
 	if v, ok := intFromInterface(raw["maxPollAttempts"]); ok {
 		opts.MaxPollAttempts = &v
+	}
+	if v, ok := floatFromInterface(raw["pollIntervalMillis"]); ok {
+		opts.pollIntervalMillisF = &v
+	}
+	if v, ok := floatFromInterface(raw["maxPollAttempts"]); ok {
+		opts.maxPollAttemptsF = &v
 	}
 
 	additional := map[string]interface{}{}
@@ -112,6 +132,16 @@ func floatFromInterface(v interface{}) (float64, bool) {
 	case int64:
 		return float64(vv), true
 	default:
+		// Every other Go integer and float kind (typed literals).
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return float64(rv.Int()), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return float64(rv.Uint()), true
+		case reflect.Float32, reflect.Float64:
+			return rv.Float(), true
+		}
 		return 0, false
 	}
 }
@@ -125,6 +155,16 @@ func intFromInterface(v interface{}) (int, bool) {
 	case float64:
 		return int(vv), true
 	default:
+		// Every other Go integer and float kind (typed literals).
+		rv := reflect.ValueOf(v)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return int(rv.Int()), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return int(rv.Uint()), true
+		case reflect.Float32, reflect.Float64:
+			return int(rv.Float()), true
+		}
 		return 0, false
 	}
 }

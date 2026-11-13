@@ -3,6 +3,7 @@ package acp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -38,6 +39,35 @@ type providerAuthenticationCompatibility struct {
 	BaseURL          string
 }
 
+// MarshalJSON mirrors the TS `ACPProviderAuthenticationCompatibility` shape,
+// which feeds the authentication profile digest: `direct` carries only type
+// and mode; `ai-gateway` adds the profile env, the credential source (null
+// when none) and the base URL.
+func (c providerAuthenticationCompatibility) MarshalJSON() ([]byte, error) {
+	if c.Type != "ai-gateway" {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Mode string `json:"mode"`
+		}{c.Type, c.Mode})
+	}
+	var source *string
+	if c.CredentialSource != "" {
+		s := string(c.CredentialSource)
+		source = &s
+	}
+	env := c.GatewayEnv
+	if env == nil {
+		env = map[string]any{}
+	}
+	return json.Marshal(struct {
+		Type             string         `json:"type"`
+		Mode             string         `json:"mode"`
+		Env              map[string]any `json:"env"`
+		CredentialSource *string        `json:"credentialSource"`
+		BaseURL          string         `json:"baseUrl"`
+	}{c.Type, c.Mode, env, source, c.BaseURL})
+}
+
 // authenticationProfileIdentity is a stable digest of the authentication
 // configuration, used to reject an incompatible resume. Mirrors TS
 // `ACPAuthenticationProfileIdentity`.
@@ -47,6 +77,38 @@ type authenticationProfileIdentity struct {
 	ProviderKind            string `json:"providerKind"`
 	ProviderMode            string `json:"providerMode,omitempty"`
 	GatewayCredentialSource string `json:"gatewayCredentialSource,omitempty"`
+
+	// legacyDigest is the v0.5.2-format digest of the same profile, accepted
+	// when matching a persisted state (see legacy_digest.go). Never persisted.
+	legacyDigest string
+}
+
+// matchesDigest reports whether a persisted digest is this profile's digest in
+// the TS format or in the v0.5.2 format.
+func (a authenticationProfileIdentity) matchesDigest(persisted string) bool {
+	return persisted == a.Digest || (a.legacyDigest != "" && persisted == a.legacyDigest)
+}
+
+// fingerprintPayload is the identity as TS hashes it into the turn start
+// configuration fingerprint: an ai-gateway profile always carries
+// `gatewayCredentialSource`, `null` when no credential source resolved (the
+// struct's omitempty would drop the key).
+func (a authenticationProfileIdentity) fingerprintPayload() map[string]any {
+	out := map[string]any{"digest": a.Digest, "providerKind": a.ProviderKind}
+	if a.ACPMethodID != "" {
+		out["acpMethodId"] = a.ACPMethodID
+	}
+	if a.ProviderMode != "" {
+		out["providerMode"] = a.ProviderMode
+	}
+	if a.ProviderKind == "ai-gateway" {
+		if a.GatewayCredentialSource == "" {
+			out["gatewayCredentialSource"] = nil
+		} else {
+			out["gatewayCredentialSource"] = a.GatewayCredentialSource
+		}
+	}
+	return out
 }
 
 // createAuthenticationProfileIdentity mirrors TS
@@ -56,21 +118,19 @@ func createAuthenticationProfileIdentity(authentication *Authentication, compat 
 	if compat != nil {
 		providerKind = compat.Type
 	}
-	payload := map[string]any{}
+	// Mirrors TS `{ authentication: authentication ?? null, providerAuthentication: compat ?? null }`.
+	payload := map[string]any{"authentication": nil, "providerAuthentication": nil}
 	if authentication != nil {
-		payload["authentication"] = map[string]any{
-			"methodId": authentication.MethodID, "meta": authentication.Meta, "clientCapabilities": authentication.ClientCapabilities,
-		}
-	} else {
-		payload["authentication"] = nil
+		payload["authentication"] = authentication
 	}
 	if compat != nil {
 		payload["providerAuthentication"] = compat
-	} else {
-		payload["providerAuthentication"] = nil
 	}
-	sum := sha256.Sum256([]byte(stableStringify(payload)))
-	id := authenticationProfileIdentity{Digest: hex.EncodeToString(sum[:]), ProviderKind: providerKind}
+	sum := sha256.Sum256([]byte(stableStringifyCodeUnit(payload)))
+	id := authenticationProfileIdentity{
+		Digest: hex.EncodeToString(sum[:]), ProviderKind: providerKind,
+		legacyDigest: legacyAuthenticationDigest(authentication, compat),
+	}
 	if authentication != nil {
 		id.ACPMethodID = authentication.MethodID
 	}
@@ -139,8 +199,9 @@ func resolveProviderAuthenticationCompatibility(auth harness.Authentication, pro
 	if mode == harness.AuthModeAuto && credentialSource == "" {
 		return &providerAuthenticationCompatibility{Type: "direct", Mode: mode}
 	}
-	baseURL := resolvedEnv["AI_GATEWAY_BASE_URL"]
-	if baseURL == "" {
+	// TS `resolvedEnv.AI_GATEWAY_BASE_URL ?? DEFAULT`: only absence defaults.
+	baseURL, ok := resolvedEnv["AI_GATEWAY_BASE_URL"]
+	if !ok {
 		baseURL = defaultAIGatewayBaseURL
 	}
 	return &providerAuthenticationCompatibility{

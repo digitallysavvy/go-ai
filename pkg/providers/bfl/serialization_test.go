@@ -9,7 +9,7 @@ func TestBFLSerializeAndDeserializeImageModel(t *testing.T) {
 		t.Fatalf("ImageModel error = %v", err)
 	}
 	serialized := model.(*ImageModel).Serialize()
-	if serialized.Provider != "bfl" || serialized.ModelID != "flux-pro-1.1" || serialized.Config == nil {
+	if serialized.Provider != "black-forest-labs.image" || serialized.ModelID != "flux-pro-1.1" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestBFLSerializeAndDeserializeImageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeImageModel error = %v", err)
 	}
-	if restored.Provider() != "bfl" || restored.ModelID() != "flux-pro-1.1" {
+	if restored.Provider() != "black-forest-labs.image" || restored.ModelID() != "flux-pro-1.1" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }
@@ -31,14 +31,14 @@ func TestBFLSerializeAndDeserializeVideoModel(t *testing.T) {
 		t.Fatalf("VideoModel error = %v", err)
 	}
 	serialized := model.(*VideoModel).Serialize()
-	if serialized.Provider != "bfl.video" || serialized.ModelID != "flux-video" {
+	if serialized.Provider != "black-forest-labs.video" || serialized.ModelID != "flux-video" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	restored, err := deserializeVideoModel(serialized)
 	if err != nil {
 		t.Fatalf("deserializeVideoModel error = %v", err)
 	}
-	if restored.Provider() != "bfl.video" || restored.ModelID() != "flux-video" {
+	if restored.Provider() != "black-forest-labs.video" || restored.ModelID() != "flux-video" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

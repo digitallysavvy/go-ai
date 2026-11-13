@@ -6,14 +6,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
+	"math"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -85,20 +87,24 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("/model/%s/invoke", url.PathEscape(m.modelID))
 	baseURL, err := m.provider.runtimeBaseURL()
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("%s%s", baseURL, endpoint)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
+	invokeURL, _, err := bedrockModelURL(baseURL, m.modelID, "/invoke")
+	if err != nil {
+		return nil, err
+	}
+	req.URL = invokeURL
+	req.Host = invokeURL.Host
 
+	// TS postJsonToApi sets only Content-Type (no Accept; the "Accept
+	// header" known difference).
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 	requestHeaders := map[string]string{}
 	if opts != nil {
 		for k, v := range opts.Headers {
@@ -112,21 +118,27 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	// Make the request using provider-scoped transport.
-	resp, err := m.provider.Client().HTTPClient().Do(req)
+	resp, err := internalhttp.WithFetchRedirects(m.provider.Client().HTTPClient()).Do(req)
 	if err != nil {
-		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
+		// TS handleFetchError: a rejected fetch is returned unchanged, a
+		// network failure is the retryable "Cannot connect to API" error.
+		return nil, providerErrorFromTransport(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readJSONResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, bedrockAPIErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
+	// TS createJsonResponseHandler(amazonBedrockImageResponseSchema).
+	if err := bedrockValidator(zbImage)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	return m.convertResponse(respBody, resp.Header, warnings)
 }
 
@@ -135,23 +147,36 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 		opts = &provider.ImageGenerateOptions{}
 	}
 	warnings := []types.Warning{}
-	options, err := parseBedrockImageOptions(opts.ProviderOptions)
+	// Go-typed option literals are read through their JSON form.
+	providerOptions := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)
+	if err := validateImageProviderOptions(providerOptions); err != nil {
+		return nil, nil, err
+	}
+	options, err := parseBedrockImageOptions(providerOptions)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	imageGenerationConfig := map[string]interface{}{}
 	if opts.Size != "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
-		if width > 0 {
-			imageGenerationConfig["width"] = width
-		}
-		if height > 0 {
-			imageGenerationConfig["height"] = height
+		// TS `size.split('x').map(Number)`, each dimension sent when truthy
+		// (a non-zero number; NaN is falsy).
+		dims := strings.Split(opts.Size, "x")
+		for i, key := range []string{"width", "height"} {
+			if i >= len(dims) {
+				break
+			}
+			n, ok := providerutils.JSNumber(dims[i])
+			switch {
+			case !ok || n == 0 || math.IsNaN(n):
+			case math.IsInf(n, 0):
+				imageGenerationConfig[key] = nil // JSON.stringify(Infinity) is null
+			default:
+				imageGenerationConfig[key] = n
+			}
 		}
 	}
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		imageGenerationConfig["seed"] = *opts.Seed
 	}
 	if opts.N != nil && *opts.N != 0 {
@@ -167,7 +192,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 	var args map[string]interface{}
 	if len(opts.Files) > 0 {
 		hasMask := opts.Mask != nil && opts.Mask.Type != ""
-		hasMaskPrompt := options.MaskPrompt != ""
+		hasMaskPrompt := options.MaskPromptSet
 		taskType := options.TaskType
 		if taskType == "" {
 			if hasMask || hasMaskPrompt {
@@ -243,7 +268,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 			}
 			args = map[string]interface{}{"taskType": "IMAGE_VARIATION", "imageVariationParams": params, "imageGenerationConfig": imageGenerationConfig}
 		default:
-			return nil, nil, fmt.Errorf("unsupported task type: %s", taskType)
+			return nil, nil, fmt.Errorf("Unsupported task type: %s", taskType) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	} else {
 		params := map[string]interface{}{"text": opts.Prompt}
@@ -274,31 +299,45 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 		Details map[string]interface{} `json:"details"`
 	}
 
-	if err := json.Unmarshal(body, &response); err != nil {
+	if err := jsonexact.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if response.Status == "Request Moderated" {
 		reasons := []string{"Unknown"}
-		if rawReasons, ok := response.Details["Moderation Reasons"].([]interface{}); ok && len(rawReasons) > 0 {
+		// TS: Array.isArray(reasons) ? reasons : ['Unknown'] -- an empty array stays empty.
+		if rawReasons, ok := response.Details["Moderation Reasons"].([]interface{}); ok {
+			// Array.prototype.join: String(element), null as "".
 			reasons = reasons[:0]
 			for _, reason := range rawReasons {
-				reasons = append(reasons, fmt.Sprint(reason))
+				if reason == nil {
+					reasons = append(reasons, "")
+					continue
+				}
+				reasons = append(reasons, providerutils.JSString(reason))
 			}
 		}
 		return nil, fmt.Errorf("Amazon Bedrock request was moderated: %s", strings.Join(reasons, ", ")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 	if len(response.Images) == 0 {
-		message := "Amazon Bedrock returned no images."
+		// Same text as TS, including the space before an absent status.
+		message := "Amazon Bedrock returned no images. "
 		if response.Status != "" {
-			message += " Status: " + response.Status
+			message += "Status: " + response.Status
 		}
 		return nil, fmt.Errorf("%s", message)
 	}
 
 	images := make([][]byte, 0, len(response.Images))
 	for _, image := range response.Images {
-		images = append(images, []byte(image))
+		// Image/Images carry decoded bytes; Base64Images keeps the wire strings.
+		// TS returns the strings; core decodes them with
+		// convertBase64ToUint8Array (base64url, optional padding).
+		data, err := fileutil.ConvertBase64ToBytes(image)
+		if err != nil {
+			data = []byte(image) // not valid base64: keep the wire text as-is
+		}
+		images = append(images, data)
 	}
 	return &types.ImageResult{
 		Image:        images[0],
@@ -315,7 +354,8 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 func bedrockImageOptions(providerOptions map[string]interface{}) map[string]interface{} {
 	for _, key := range []string{"amazonBedrock", "bedrock"} {
 		raw, ok := providerOptions[key]
-		if !ok {
+		if !ok || raw == nil {
+			// TS parseProviderOptions: a null key falls back to the next.
 			continue
 		}
 		if values, ok := raw.(map[string]interface{}); ok {
@@ -328,7 +368,7 @@ func bedrockImageOptions(providerOptions map[string]interface{}) map[string]inte
 
 func bedrockImageFileBase64(file provider.ImageFile) (string, error) {
 	if file.Type == "url" || file.URL != "" {
-		return "", fmt.Errorf("URL-based images are not supported for Amazon Bedrock image editing. Please provide the image data directly")
+		return "", fmt.Errorf("URL-based images are not supported for Amazon Bedrock image editing. Please provide the image data directly.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if alreadyBase64(file.Data) {
 		return string(file.Data), nil
@@ -360,7 +400,7 @@ func stringOption(value interface{}) string {
 
 func numberOption(value interface{}) (interface{}, bool) {
 	switch v := value.(type) {
-	case int, int32, int64, float32, float64, json.Number:
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
 		return v, true
 	default:
 		return nil, false
@@ -372,11 +412,10 @@ func boolPtr(b bool) *bool {
 }
 
 func flattenHeaders(headers http.Header) map[string]string {
-	out := make(map[string]string, len(headers))
-	for key, values := range headers {
-		if len(values) > 0 {
-			out[key] = values[0]
-		}
+	// Multi-valued headers are joined with ", " like TS extractResponseHeaders.
+	out := providerutils.ExtractHeaders(headers)
+	if out == nil {
+		return map[string]string{}
 	}
 	return out
 }

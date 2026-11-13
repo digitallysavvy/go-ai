@@ -1,10 +1,12 @@
 package claudecode
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -42,6 +44,7 @@ func New(settings Settings) (*Harness, error) {
 	if settings.Thinking == nil {
 		settings.Thinking = &ThinkingConfig{Type: "adaptive", Display: "summarized"}
 	}
+	bridge.WarnMintBridgeTokenIgnored(HarnessID, settings.MintBridgeToken, nil)
 	return &Harness{settings: settings, tools: builtinTools()}, nil
 }
 
@@ -76,24 +79,81 @@ type resumeStateData struct {
 }
 
 type bridgeCoords struct {
-	Port            int     `json:"port"`
-	Token           string  `json:"token"`
+	Port int `json:"port"`
+	// PrivateKey is the session's host-only bridge authentication private
+	// key (TS `privateKey`, c849d37dac): an attach answers the bridge's
+	// challenge with it. Empty in v0.5.2 state, which carried a shared
+	// token instead; such coordinates are never attached to (the token is
+	// ignored) and the bridge is respawned with a new key pair.
+	PrivateKey      string  `json:"privateKey,omitempty"`
 	LastSeenEventID float64 `json:"lastSeenEventId"`
-	SandboxID       string  `json:"sandboxId,omitempty"`
+	// StartID is the start of the turn the coordinates were saved in (TS
+	// `startId`, 5a05735ed0): a replay or attach keeps only that turn's
+	// events.
+	StartID   string `json:"startId,omitempty"`
+	SandboxID string `json:"sandboxId,omitempty"`
 }
 
 // ValidateLifecycleStateData accepts any JSON object or null (TS
 // `z.looseObject`).
+//
+// The bridge coordinates are checked here (TS claudeCodeBridgeCoordsSchema):
+// port and lastSeenEventId are required, and so is privateKey, except that
+// v0.5.2 coordinates with a legacy token stay readable (the token is never
+// used; see bridgeCoords.PrivateKey).
 func (h *Harness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 || string(data) == "null" {
-		return nil
-	}
+	trimmed := bytes.TrimSpace(data)
 	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return fmt.Errorf("claude-code: invalid lifecycle state data: %w", err)
+	if len(trimmed) > 0 && string(trimmed) != "null" && json.Unmarshal(trimmed, &probe) == nil {
+		if raw, ok := probe["bridge"]; ok {
+			if err := validateBridgeCoords(raw); err != nil {
+				return err
+			}
+			delete(probe, "bridge")
+			rest, err := json.Marshal(probe)
+			if err != nil {
+				return err
+			}
+			trimmed = rest
+		}
+	}
+	return harnessutil.ValidateLifecycleStateObject(trimmed, &resumeStateData{})
+}
+
+// validateBridgeCoords is TS claudeCodeBridgeCoordsSchema with the legacy
+// token accepted in place of privateKey.
+func validateBridgeCoords(raw json.RawMessage) error {
+	var coords map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &coords); err != nil {
+		return fmt.Errorf("invalid lifecycle state data: bridge must be an object: %w", err)
+	}
+	present := func(key string) bool {
+		v, ok := coords[key]
+		return ok && string(bytes.TrimSpace(v)) != "null"
+	}
+	for _, key := range []string{"port", "lastSeenEventId"} {
+		if !present(key) {
+			return fmt.Errorf("invalid lifecycle state data: bridge.%s is required", key)
+		}
+	}
+	if !present("privateKey") && !present("token") {
+		return errors.New("invalid lifecycle state data: bridge.privateKey is required")
+	}
+	for _, key := range []string{"privateKey", "startId", "sandboxId"} {
+		if v, ok := coords[key]; ok && string(bytes.TrimSpace(v)) == "null" {
+			return fmt.Errorf("invalid lifecycle state data: bridge.%s must not be null", key)
+		}
+	}
+	var typed bridgeCoords
+	if err := json.Unmarshal(raw, &typed); err != nil {
+		return fmt.Errorf("invalid lifecycle state data: %w", err)
 	}
 	return nil
 }
+
+// createBridgeAuthKeyPair makes each spawn's key pair (a variable so the
+// package tests can fix it for their fake bridges).
+var createBridgeAuthKeyPair = bridge.CreateBridgeAuthKeyPair
 
 // DoStart starts a fresh session or respawns the bridge for a resumed one.
 // Mirrors TS `createClaudeCode().doStart` (see the package doc for the
@@ -107,19 +167,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if isNetwork {
 		sandboxID = networkSandbox.ID()
 	}
-	if !isNetwork {
-		if settings.Port == 0 {
-			return nil, harness.NewCapabilityUnsupportedError(
-				"The Claude Code harness requires an explicit `port` when using a basic sandbox session.", HarnessID, nil)
-		}
-		if settings.PortEndpoint == nil {
-			return nil, harness.NewCapabilityUnsupportedError(
-				"The Claude Code harness requires an explicit `portEndpoint` when using a basic sandbox session.", HarnessID, nil)
-		}
-	}
-	if settings.MintBridgeToken != nil && sandboxID == "" {
-		return nil, harness.NewCapabilityUnsupportedError(
-			"The Claude Code harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.", HarnessID, nil)
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, nil, HarnessID); err != nil {
+		return nil, err
 	}
 
 	var resumeData resumeStateData
@@ -131,7 +180,10 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	authMode := resolveAuthenticationMode(settings.Auth, harnessutil.ProcessEnv())
-	authEnv := resolveAuthenticationEnvironment(ctx, settings.Auth, harnessutil.ProcessEnv())
+	authEnv, err := resolveAuthenticationEnvironment(ctx, settings.Auth, harnessutil.ProcessEnv())
+	if err != nil {
+		return nil, err
+	}
 	claudeEnv := map[string]string{}
 	for k, v := range authEnv {
 		claudeEnv[k] = v
@@ -142,10 +194,15 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	for k, v := range settings.Env {
 		claudeEnv[k] = v
 	}
-	if len(opts.Headers) > 0 {
+	if opts.Headers != nil {
+		names := make([]string, 0, len(opts.Headers))
+		for name := range opts.Headers {
+			names = append(names, name)
+		}
+		sort.Strings(names) // deterministic; TS preserves object insertion order
 		var lines []string
-		for name, value := range opts.Headers {
-			lines = append(lines, fmt.Sprintf("%s: %s", name, value))
+		for _, name := range names {
+			lines = append(lines, fmt.Sprintf("%s: %s", name, opts.Headers[name]))
 		}
 		claudeEnv["ANTHROPIC_CUSTOM_HEADERS"] = joinLines(lines)
 	}
@@ -206,10 +263,6 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		timeout = bridge.DefaultStartupTimeout
 	}
 
-	if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
-		return nil, err
-	}
-
 	// Normalize each forwarded bridge diagnostics frame into the general
 	// harness.Diagnostic and report it. Mirrors TS `claude-code-harness.ts`
 	// `onDiagnostic` (report ? frame => report(harnessV1DiagnosticFromBridgeFrame(...)) : undefined).
@@ -220,17 +273,19 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	// Rung 1 — ATTACH. When lifecycle state carries live bridge coordinates,
 	// try to reopen a socket to the still-running bridge instead of
-	// respawning. No spawn, no fresh token (the existing bridge still
-	// authorizes the persisted one). A continued (suspended) turn requests
+	// respawning. No spawn, no new key pair (the existing bridge still
+	// trusts the persisted session key; v0.5.2 token coordinates are never
+	// attached to). A continued (suspended) turn requests
 	// replay of everything past the persisted cursor; a resumed (parked)
 	// session just attaches and waits for the next start. If the bridge is
 	// gone the open fails and DoStart falls through to a spawn-based
 	// recovery. Mirrors TS `createClaudeCode().doStart` rung 1.
 	coords := resumeData.Bridge
-	if coords != nil {
+	if coords != nil && coords.PrivateKey != "" {
 		if sess := h.tryAttach(ctx, attachOptions{
 			coords: coords, sandboxSession: sandboxSession, settings: settings, timeout: timeout,
-			sessionID: opts.SessionID, isContinue: opts.ContinueFrom != nil,
+			sessionID: opts.SessionID, sandboxID: sandboxID, isContinue: opts.ContinueFrom != nil,
+			debug:    debugConfig(opts.Observability),
 			maxTurns: settings.MaxTurns, agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
 			resumeSessionID:              resumeData.ClaudeSessionID,
 			sandboxCredentialEnvironment: sandboxCredentialEnv,
@@ -260,27 +315,34 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		}
 	}
 
-	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
+	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, HarnessID)
 	if err != nil {
-		return nil, harness.NewCapabilityUnsupportedError(
-			"The claude-code harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or pass `New(Settings{Port: ...})`.", HarnessID, err)
+		return nil, err
 	}
-	token := bridge.CreateBridgeToken()
-	if settings.MintBridgeToken != nil {
-		token = settings.MintBridgeToken(sandboxID)
+	// A fresh key pair per spawn: the sandbox gets only the public key (TS
+	// createBridgeAuthKeyPair, c849d37dac).
+	bridgeAuth := createBridgeAuthKeyPair()
+
+	// A fresh start creates the workdir and bridge-state directory; resumes
+	// reuse the ones already in the sandbox. Mirrors TS `respawnStrategy ===
+	// undefined` mkdir.
+	if respawnStrategy == "" {
+		if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
+			return nil, err
+		}
 	}
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "claude-code bridge", Source: HarnessID, Sandbox: restricted,
-		Command:        fmt.Sprintf("node %s/bridge.mjs --workdir %s --bridge-state-dir %s", harnessutil.ShellQuote(bootstrapDir), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
+		Command:        fmt.Sprintf("node %s --workdir %s --bridge-state-dir %s", harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)) + hostDisconnectTimeoutFlag(settings.HostDisconnectTimeout),
 		Port:           port,
-		Token:          token,
+		AuthPublicKey:  bridgeAuth.PublicKey,
 		ReplayFromDisk: respawnStrategy == "replay",
 		BridgeStateDir: bridgeStateDir,
 		BridgeType:     HarnessID,
 		StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
-			return bridge.ResolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort)
+			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, HarnessID)
 		},
 	})
 	if err != nil {
@@ -288,19 +350,18 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	var supportsUserMessages atomic.Bool
+	var bridgeHello atomic.Pointer[bridge.Hello]
 	channelOpts := bridge.ChannelOptions{
-		Connect: func(ctx context.Context) (bridge.Conn, error) {
-			return bridge.OpenBridgeWebSocket(ctx, launched.Endpoint, bridge.OpenOptions{
-				Name: "claude-code bridge", Timeout: timeout,
-				OnHello: func(h *bridge.Hello) {
-					if h.SupportsUserMessageResponses() {
-						supportsUserMessages.Store(true)
-					}
-				},
-			})
-		},
-		Reconnect:    settings.Reconnect,
-		OnDiagnostic: onDiagnostic,
+		Connect: bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{
+			Name: "claude-code bridge", OpenRetryTimeout: timeout, StartContext: ctx,
+			OnHello:        trackHello(&bridgeHello, &supportsUserMessages),
+			AuthPrivateKey: bridgeAuth.PrivateKey,
+		}),
+		Decode:        decodeOutbound,
+		Reconnect:     settings.Reconnect,
+		OnDebug:       settings.OnDebug,
+		OnDiagnostic:  onDiagnostic,
+		OnBridgeError: bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID),
 	}
 	replaying := respawnStrategy == "replay"
 	if replaying {
@@ -311,24 +372,34 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if replaying {
 		finishAttachment = channel.BeginListenerAttachment()
 	}
-	err = channel.Open(ctx, replaying)
-	if finishAttachment != nil {
-		finishAttachment()
-	}
-	if err != nil {
+	if err := channel.Open(ctx, replaying); err != nil {
+		if finishAttachment != nil {
+			finishAttachment()
+		}
 		return nil, err
 	}
 
+	// A rerun hands the respawned bridge the built-in call the previous one
+	// deferred while it waited for approval. Mirrors TS `deferredToolUseId`
+	// (`(continueFrom ?? resumeFrom?.continueFrom)?.pendingToolApprovals
+	// .find(kind === 'builtin')?.toolCallId`).
+	var deferredToolUseID string
+	if respawnStrategy == "rerun" {
+		deferredToolUseID = firstBuiltinApprovalToolCallID(opts)
+	}
+
 	return newSession(sessionOptions{
-		sessionID: opts.SessionID, channel: channel, proc: launched.Proc,
-		maxTurns: settings.MaxTurns, agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
-		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: isResume,
+		sessionID: opts.SessionID, channel: channel, proc: launched.Proc, finishListenerAttachment: finishAttachment, debug: debugConfig(opts.Observability),
+		maxTurns: settings.MaxTurns, startSettings: startSettingsFrom(settings), agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
+		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun", deferredToolUseID: deferredToolUseID,
+		startID:         replayStartID(replaying, coords),
 		resumeSessionID: resumeData.ClaudeSessionID,
-		bridgePort:      port, bridgeToken: token, sandboxID: sandboxID,
+		bridgePort:      launched.Port, bridgePrivateKey: bridgeAuth.PrivateKey, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
 		permissionMode:               opts.PermissionMode, builtinToolFiltering: opts.BuiltinToolFiltering,
 		mcpServers: settings.MCPServers, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
-		supportsUserMessages: supportsUserMessages.Load(),
+		supportsUserMessages: supportsUserMessages.Load,
+		bridgeHello:          bridgeHello.Load, turnStartTimeout: turnStartTimeout(settings),
 	}), nil
 }
 
@@ -339,6 +410,7 @@ type attachOptions struct {
 	settings       Settings
 	timeout        time.Duration
 	sessionID      string
+	sandboxID      string
 	isContinue     bool
 
 	maxTurns                     int
@@ -355,10 +427,11 @@ type attachOptions struct {
 	sandbox                      providerutils.SandboxSession
 	sandboxHomeDir               string
 	onDiagnostic                 func(bridge.OutboundMessage)
+	debug                        *harness.DebugConfig
 }
 
 // tryAttach reopens a socket to a still-running bridge using persisted
-// coordinates, reusing the existing token (no new mint) and reusing the
+// coordinates and session private key (no new key pair) and reusing the
 // existing process (proc: nil — DoDestroy/DoStop then only close the
 // channel). Returns nil when the bridge is unreachable, so the caller falls
 // through to a spawn-based recovery. Mirrors TS rung 1 of `doStart`.
@@ -367,59 +440,130 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 	if err != nil {
 		return nil
 	}
-	attachEndpoint, err := bridge.WithBridgeToken(endpoint, opts.coords.Token)
-	if err != nil {
-		return nil
-	}
 	var supportsUserMessages atomic.Bool
+	var bridgeHello atomic.Pointer[bridge.Hello]
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect: func(ctx context.Context) (bridge.Conn, error) {
-			return bridge.OpenBridgeWebSocket(ctx, attachEndpoint, bridge.OpenOptions{
-				Name: "claude-code bridge", Timeout: opts.timeout,
-				OnHello: func(h *bridge.Hello) {
-					if h.SupportsUserMessageResponses() {
-						supportsUserMessages.Store(true)
-					}
-				},
-			})
-		},
+		Connect: bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{
+			Name:           "claude-code bridge",
+			OnHello:        trackHello(&bridgeHello, &supportsUserMessages),
+			AuthPrivateKey: opts.coords.PrivateKey,
+		}),
+		Decode:                 decodeOutbound,
 		Reconnect:              opts.settings.Reconnect,
+		OnDebug:                opts.settings.OnDebug,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
 		OnDiagnostic:           opts.onDiagnostic,
+		OnBridgeError:          bridge.CreateBridgeErrorHandler(HarnessID, opts.sessionID),
 	})
 	var finishAttachment func()
 	if opts.isContinue {
 		finishAttachment = channel.BeginListenerAttachment()
 	}
-	err = channel.Open(ctx, opts.isContinue)
-	if finishAttachment != nil {
-		finishAttachment()
-	}
-	if err != nil {
+	if err := channel.Open(ctx, opts.isContinue); err != nil {
+		if finishAttachment != nil {
+			finishAttachment()
+		}
 		return nil
 	}
 	return newSession(sessionOptions{
-		sessionID: opts.sessionID, channel: channel, proc: nil,
-		maxTurns: opts.maxTurns, agentProgressSummaries: opts.agentProgressSummaries, forwardSubagentText: opts.forwardSubagentText, env: opts.env, thinking: opts.thinking, effort: opts.effort,
+		sessionID: opts.sessionID, channel: channel, proc: nil, finishListenerAttachment: finishAttachment, debug: opts.debug,
+		maxTurns: opts.maxTurns, startSettings: startSettingsFrom(opts.settings), agentProgressSummaries: opts.agentProgressSummaries, forwardSubagentText: opts.forwardSubagentText, env: opts.env, thinking: opts.thinking, effort: opts.effort,
 		isResume: true, continueOnFirstPrompt: false, rerunContinue: false,
+		startID:         opts.coords.StartID,
 		resumeSessionID: opts.resumeSessionID,
-		bridgePort:      opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.coords.SandboxID,
+		bridgePort:      opts.coords.Port, bridgePrivateKey: opts.coords.PrivateKey, sandboxID: opts.sandboxID,
 		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
-		supportsUserMessages:         supportsUserMessages.Load(),
-		permissionMode:               opts.permissionMode, builtinToolFiltering: opts.builtinToolFiltering,
+		supportsUserMessages:         supportsUserMessages.Load,
+		bridgeHello:                  bridgeHello.Load, turnStartTimeout: turnStartTimeout(opts.settings),
+		permissionMode: opts.permissionMode, builtinToolFiltering: opts.builtinToolFiltering,
 		mcpServers: opts.mcpServers, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
 	})
 }
 
-func mkdirs(ctx context.Context, sandbox providerutils.SandboxSession, dirs ...string) error {
-	for _, dir := range dirs {
-		if _, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{
-			Command: "mkdir -p " + harnessutil.ShellQuote(dir),
-		}); err != nil {
-			return err
+// defaultTurnStartTimeout is the default Settings.TurnStartTimeout (TS
+// `turnStartTimeoutMs ?? 120_000`).
+const defaultTurnStartTimeout = 120 * time.Second
+
+// turnStartTimeout resolves Settings.TurnStartTimeout: zero is the default
+// (TS `turnStartTimeoutMs ?? 120_000`); any other value is used as given.
+func turnStartTimeout(settings Settings) time.Duration {
+	if settings.TurnStartTimeout == 0 {
+		return defaultTurnStartTimeout
+	}
+	return settings.TurnStartTimeout
+}
+
+// trackHello records the latest bridge-hello of the connection (TS
+// `onHello`: `bridgeHello = hello`) and its user-message capability.
+func trackHello(latest *atomic.Pointer[bridge.Hello], supported *atomic.Bool) func(*bridge.Hello) {
+	track := trackUserMessageResponses(supported)
+	return func(h *bridge.Hello) {
+		latest.Store(h)
+		track(h)
+	}
+}
+
+// trackUserMessageResponses records the capability of each bridge-hello,
+// including a later one without it. Mirrors TS `onHello`
+// (`supportsUserMessageResponses = hello.capabilities?.experimental_userMessageResponses === true`).
+func trackUserMessageResponses(supported *atomic.Bool) func(*bridge.Hello) {
+	return func(h *bridge.Hello) { supported.Store(h.SupportsUserMessageResponses()) }
+}
+
+// firstBuiltinApprovalToolCallID returns the tool call ID of the first
+// built-in pending approval of the continued turn, or "".
+func firstBuiltinApprovalToolCallID(opts harness.StartOptions) string {
+	continueFrom := opts.ContinueFrom
+	if continueFrom == nil && opts.ResumeFrom != nil {
+		continueFrom = opts.ResumeFrom.ContinueFrom
+	}
+	if continueFrom == nil {
+		return ""
+	}
+	for _, approval := range continueFrom.PendingToolApprovals {
+		if approval.Kind == "builtin" {
+			return approval.ToolCallID
 		}
 	}
-	return nil
+	return ""
+}
+
+func mkdirs(ctx context.Context, sandbox providerutils.SandboxSession, dirs ...string) error {
+	quoted := make([]string, len(dirs))
+	for i, dir := range dirs {
+		quoted[i] = harnessutil.ShellQuote(dir)
+	}
+	_, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{
+		Command: "mkdir -p " + strings.Join(quoted, " "),
+	})
+	return err
+}
+
+func debugConfig(o *harness.Observability) *harness.DebugConfig {
+	if o == nil {
+		return nil
+	}
+	return o.Debug
 }
 
 func joinLines(lines []string) string { return strings.Join(lines, "\n") }
+
+// replayStartID is the persisted turn start a replaying respawn keeps (TS
+// `respawnStrategy === 'replay' ? coords?.startId : undefined`).
+func replayStartID(replaying bool, coords *bridgeCoords) string {
+	if !replaying || coords == nil {
+		return ""
+	}
+	return coords.StartID
+}
+
+// hostDisconnectTimeoutFlag is the bridge's --host-disconnect-timeout-ms
+// argument for a positive timeout (TS appends it whenever
+// hostDisconnectTimeoutMs is defined; the bridge ignores a value that is
+// not positive, so a zero / negative Go duration sends nothing).
+func hostDisconnectTimeoutFlag(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return " --host-disconnect-timeout-ms " + harnessutil.ShellQuote(providerutils.JSNumberString(float64(d)/float64(time.Millisecond)))
+}

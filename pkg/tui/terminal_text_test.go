@@ -33,3 +33,14 @@ func stringOf(r rune, n int) string {
 	}
 	return string(out)
 }
+
+func TestSliceVisibleDropsZeroWidthAfterWidthFilled(t *testing.T) {
+	// TS sliceVisible stops once the width is filled and keeps only trailing
+	// ANSI sequences, so a following combining mark is dropped.
+	if got := sliceVisible("ab́c", 2); got != "ab" {
+		t.Fatalf("got %q, want %q", got, "ab")
+	}
+	if got := sliceVisible("ab\x1b[0ḿ", 2); got != "ab\x1b[0m" {
+		t.Fatalf("got %q", got)
+	}
+}

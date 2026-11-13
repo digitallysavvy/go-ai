@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"net/http"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 
 // SpecificationVersion returns the specification version
 func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -90,15 +91,31 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVideoModel
 	}
 	jsonData, err := json.Marshal(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal google video provider options: %w", err)
+		return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("failed to marshal google video provider options: %w", err))
 	}
 	var provOpts GoogleVideoModelOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal google video provider options: %w", err)
+		return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("failed to unmarshal google video provider options: %w", err))
 	}
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(jsonData, &rawMap); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal google video provider options map: %w", err)
+		return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("failed to unmarshal google video provider options map: %w", err))
+	}
+	// TS googleVideoModelOptionsSchema: personGeneration is an enum and the
+	// poll settings are positive numbers.
+	if provOpts.PersonGeneration != nil {
+		switch *provOpts.PersonGeneration {
+		case "dont_allow", "allow_adult", "allow_all":
+		default:
+			return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("personGeneration: invalid option %q, expected one of dont_allow, allow_adult, allow_all", *provOpts.PersonGeneration))
+		}
+	}
+	for _, key := range []string{"pollIntervalMs", "pollTimeoutMs"} {
+		if v, ok := rawMap[key]; ok && v != nil {
+			if n, isNum := v.(float64); !isNum || n <= 0 {
+				return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("%s: expected a positive number", key))
+			}
+		}
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
@@ -183,19 +200,28 @@ func convertFileToGoogleImage(file *provider.VideoModelV3File, warnings *[]types
 // referenceImages entry to the request's referenceImages shape (TS
 // convertProviderReferenceImage).
 func convertProviderReferenceImage(ref googleVideoReferenceImageOpt) map[string]interface{} {
-	if ref.BytesBase64Encoded != nil {
+	if ref.BytesBase64Encoded != nil && *ref.BytesBase64Encoded != "" {
 		return map[string]interface{}{
 			"image":         map[string]interface{}{"bytesBase64Encoded": *ref.BytesBase64Encoded, "mimeType": "image/png"},
 			"referenceType": "asset",
 		}
 	}
-	if ref.GcsURI != nil {
+	if ref.GcsURI != nil && *ref.GcsURI != "" {
 		return map[string]interface{}{
 			"image":         map[string]interface{}{"gcsUri": *ref.GcsURI, "mimeType": "image/png"},
 			"referenceType": "asset",
 		}
 	}
-	return map[string]interface{}{}
+	// TS returns the entry itself when neither field is truthy, so empty
+	// strings are sent as given.
+	out := map[string]interface{}{}
+	if ref.BytesBase64Encoded != nil {
+		out["bytesBase64Encoded"] = *ref.BytesBase64Encoded
+	}
+	if ref.GcsURI != nil {
+		out["gcsUri"] = *ref.GcsURI
+	}
+	return out
 }
 
 // convertInputReferenceImage converts an inputReferences entry into the
@@ -280,8 +306,8 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[s
 		parameters["durationSeconds"] = *opts.Duration
 	}
 
-	// TS: `if (options.seed)` -- falsy (including 0) is skipped.
-	if opts.Seed != nil && *opts.Seed != 0 {
+	// TS (ef2dfb5e9f): `if (options.seed != null)` -- seed 0 is sent.
+	if opts.Seed != nil {
 		parameters["seed"] = *opts.Seed
 	}
 
@@ -323,10 +349,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	var operation googleVideoOperationWire
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
-		Body:    body,
-		Headers: callOpts.Headers,
+		ValidateResponse: googleValidator(zGoogleOperation),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
+		Body:             body,
+		Headers:          callOpts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -362,9 +389,10 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	var operation googleVideoOperationWire
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/" + op.OperationName,
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleOperation),
+		Method:           http.MethodGet,
+		Path:             "/" + op.OperationName,
+		Headers:          opts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -388,26 +416,40 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}, nil
 	}
 
-	return m.buildCompletedResult(&operation, responseInfo)
+	return m.buildCompletedResult(ctx, &operation, httpResp.Body, responseInfo)
 }
 
 // buildCompletedResult converts a done operation's response into a
 // completed status result (TS GoogleVideoModel#buildCompletedResult),
 // appending the API key to same-origin download URLs so the returned URL is
 // directly fetchable.
-func (m *VideoModel) buildCompletedResult(operation *googleVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+func (m *VideoModel) buildCompletedResult(ctx context.Context, operation *googleVideoOperationWire, body []byte, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
 	if operation.Response == nil || operation.Response.GenerateVideoResponse == nil ||
-		len(operation.Response.GenerateVideoResponse.GeneratedSamples) == 0 {
-		raw, _ := json.Marshal(operation)
-		return nil, providererrors.NewVideoGenerationError("google", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
+		operation.Response.GenerateVideoResponse.GeneratedSamples == nil || len(*operation.Response.GenerateVideoResponse.GeneratedSamples) == 0 {
+		// TS JSON.stringify(finalOperation): the googleOperationSchema parse
+		// result (schema keys in schema order, nulls kept).
+		text, ok := zodStripText(body, googleOperationShape)
+		if !ok {
+			raw, _ := json.Marshal(operation)
+			text = string(raw)
+		}
+		return nil, providererrors.NewVideoGenerationError("google", m.modelID, fmt.Sprintf("No videos in response. Response: %s", text), nil)
 	}
 
-	apiKey := m.prov.client.Headers()["x-goog-api-key"]
+	// TS resolves config.headers again for the download key; the key
+	// func gets the status call's ctx.
+	// Resolved once, and a key func error fails the call (it was retried
+	// with context.Background() through the snapshot fallback).
+	downloadHeaders, err := m.prov.requestHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	apiKey := downloadHeaders["x-goog-api-key"]
 
 	videos := []provider.VideoModelV3VideoData{}
 	videoMetadata := []map[string]interface{}{}
 
-	for _, sample := range operation.Response.GenerateVideoResponse.GeneratedSamples {
+	for _, sample := range *operation.Response.GenerateVideoResponse.GeneratedSamples {
 		if sample.Video == nil || sample.Video.URI == "" {
 			continue
 		}
@@ -499,6 +541,8 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	// than TS by default.
 	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOpts = providerutils.NormalizeOptionsJSON(providerOpts)
 	if providerOpts != nil {
 		if googleOpts, ok := providerOpts["google"].(map[string]interface{}); ok {
 			// CoerceInt (not a bare `.(int)` assertion) because
@@ -518,41 +562,116 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	return opts
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// GoogleVideoModel has no doGenerate), so ai.GenerateVideo drives it through the
+// core start/status flow (TS generate-video.ts useStartStatus). It returns
+// the v0.5.2 pollIntervalMs / pollTimeoutMs provider options (0 when unset:
+// the core 5000 / 600000 defaults), which TS ignores; Go keeps honoring them
+// (v0.5.2 contract, S6).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	opts, _ := providerutils.NormalizeOptionsJSON(providerOptions)["google"].(map[string]interface{})
+	if v, ok := providerutils.CoerceInt(opts["pollIntervalMs"]); ok && v > 0 {
+		intervalMs = v
+	}
+	if v, ok := providerutils.CoerceInt(opts["pollTimeoutMs"]); ok && v > 0 {
+		timeoutMs = v
+	}
+	return intervalMs, timeoutMs
+}
+
 func (m *VideoModel) handleError(err error) error {
 	return NewLanguageModel(m.prov, "").HandleError(err)
 }
 
 // convertGoogleHeaders flattens net/http.Header into map[string]string,
-// taking the first value for each header key.
+// like TS extractResponseHeaders.
 func convertGoogleHeaders(h http.Header) map[string]string {
 	if len(h) == 0 {
 		return map[string]string{}
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	// TS extractResponseHeaders: repeated values are joined with ", ".
+	return providerutils.ExtractHeaders(h)
 }
 
 // googleVideoOperationWire mirrors TS googleOperationSchema.
 type googleVideoOperationWire struct {
-	Name  string `json:"name"`
+	Name  string `json:"name,omitempty"`
 	Done  bool   `json:"done"`
 	Error *struct {
-		Code    *int   `json:"code,omitempty"`
-		Message string `json:"message"`
-		Status  string `json:"status,omitempty"`
+		Code    *float64 `json:"code,omitempty"` // z.number(): a fraction decodes
+		Message string   `json:"message"`
+		Status  string   `json:"status,omitempty"`
 	} `json:"error,omitempty"`
 	Response *struct {
 		GenerateVideoResponse *struct {
-			GeneratedSamples []struct {
+			// Pointer so an empty array prints as [] in the "No videos in
+			// response" error, like TS JSON.stringify of the parsed body.
+			GeneratedSamples *[]struct {
 				Video *struct {
 					URI string `json:"uri,omitempty"`
 				} `json:"video,omitempty"`
 			} `json:"generatedSamples,omitempty"`
 		} `json:"generateVideoResponse,omitempty"`
 	} `json:"response,omitempty"`
+}
+
+// googleOperationShape is googleOperationSchema (google-video-model.ts).
+var googleOperationShape = zodShape{
+	{key: "name"}, {key: "done"},
+	{key: "error", obj: zodShape{{key: "code"}, {key: "message"}, {key: "status"}}},
+	{key: "response", obj: zodShape{
+		{key: "generateVideoResponse", obj: zodShape{
+			{key: "generatedSamples", elem: zodShape{{key: "video", obj: zodShape{{key: "uri"}}}}},
+		}},
+	}},
+}
+
+// zodShape lists an object schema's keys in schema order; obj is a nested
+// object schema and elem an array's element object schema.
+type zodShape []zodShapeField
+
+type zodShapeField struct {
+	key  string
+	obj  zodShape
+	elem zodShape
+}
+
+// zodStripText is TS JSON.stringify of a z.object parse result: only the
+// schema's keys, in schema order, with present nulls kept. ok is false when
+// raw is not JSON.
+func zodStripText(raw []byte, shape zodShape) (string, bool) {
+	v, ok := jsonorder.Parse(raw)
+	if !ok {
+		return "", false
+	}
+	return jsonorder.Stringify(zodStrip(v, shape)), true
+}
+
+func zodStrip(v interface{}, shape zodShape) interface{} {
+	obj, ok := v.(*jsonorder.Object)
+	if !ok {
+		return v
+	}
+	out := jsonorder.New()
+	for _, f := range shape {
+		x, present := obj.Get(f.key)
+		if !present {
+			continue
+		}
+		switch {
+		case f.obj != nil:
+			x = zodStrip(x, f.obj)
+		case f.elem != nil:
+			if arr, isArr := x.([]interface{}); isArr {
+				items := make([]interface{}, len(arr))
+				for i, item := range arr {
+					items[i] = zodStrip(item, f.elem)
+				}
+				x = items
+			}
+		}
+		out.Set(f.key, x)
+	}
+	return out
 }

@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -28,7 +30,9 @@ const (
 
 // DownloadOptions contains options for downloading files
 type DownloadOptions struct {
-	// Timeout for the download operation
+	// Timeout for the download operation. Zero means the 60 s default;
+	// NoTimeout (any negative value) sets none, as TS download does (the
+	// request then ends only with its context).
 	Timeout time.Duration
 
 	// Headers to include in the request
@@ -43,11 +47,23 @@ type DownloadOptions struct {
 	URLValidator func(string) error
 
 	// Transport performs the HTTP requests. DefaultDownloadOptions sets it to
-	// SafeTransport(), which validates and pins DNS results at connect time
-	// (TS safe-node-fetch). A nil Transport uses http.DefaultTransport and
-	// performs no connect-time validation; a custom Transport is responsible
-	// for equivalent validation (TS: an injected fetch).
+	// SafeTransport(), which validates and pins DNS results at connect time.
+	// TS removed its DNS-pinned default (2ebc78b654) and asks callers to
+	// inject guarded-fetch; Go keeps the protection on by default. A nil
+	// Transport uses http.DefaultTransport and performs no connect-time
+	// validation; a custom Transport is responsible for equivalent
+	// validation (TS: an injected fetch). URL validation, redirect checks
+	// and header isolation apply with any Transport.
 	Transport http.RoundTripper
+
+	// RawFetch is a TS call of the fetch function itself instead of
+	// download(): the request carries no SDK user-agent tag, and a non-2xx
+	// response's body is returned as the data (fetch resolves for any
+	// status; the caller reads response.arrayBuffer(); DownloadToWriter
+	// still fails it). URL validation,
+	// connect-time checks, redirect checks, header isolation and MaxSize
+	// still apply.
+	RawFetch bool
 }
 
 // DownloadResult contains downloaded file bytes and response metadata.
@@ -133,7 +149,9 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 		req.Header.Set(k, v)
 	}
 	SanitizeRequestHeaders(req.Header)
-	setDownloadUserAgent(req.Header)
+	if !opts.RawFetch {
+		setDownloadUserAgent(req.Header)
+	}
 
 	// Execute request
 	resp, err := client.Do(req)
@@ -143,7 +161,7 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 	defer resp.Body.Close() //nolint:errcheck
 
 	// Check status code
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	if !opts.RawFetch && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		downloadErr := providererrors.NewDownloadError(
 			url,
@@ -164,7 +182,7 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 
 	return &DownloadResult{
 		Data:        data,
-		ContentType: resp.Header.Get("Content-Type"),
+		ContentType: providerutils.FetchHeaderText(resp.Header, "Content-Type"),
 		Headers:     map[string][]string(resp.Header),
 	}, nil
 }
@@ -211,7 +229,9 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 		req.Header.Set(k, v)
 	}
 	SanitizeRequestHeaders(req.Header)
-	setDownloadUserAgent(req.Header)
+	if !opts.RawFetch {
+		setDownloadUserAgent(req.Header)
+	}
 
 	// Execute request
 	resp, err := client.Do(req)
@@ -269,18 +289,45 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 
 const maxDownloadRedirects = 10
 
+// NoTimeout as DownloadOptions.Timeout disables the client timeout: TS
+// download / getFromApi set none, so a large file on a slow link is not cut
+// off; the caller's context still cancels the request.
+const NoTimeout time.Duration = -1
+
+// NoTimeoutDownloadOptions is DefaultDownloadOptions with NoTimeout: the
+// redirect, size and SSRF limits stay, and only the context ends the request
+// (TS download / downloadBlob set no timeout).
+func NoTimeoutDownloadOptions() DownloadOptions {
+	opts := DefaultDownloadOptions()
+	opts.Timeout = NoTimeout
+	return opts
+}
+
 // NewDownloadClient builds a per-download HTTP client using opts.Transport. Every redirect hop is
 // validated with opts.URLValidator before it is requested, and all caller
 // headers except User-Agent are dropped when a redirect crosses origin (TS
 // fetchWithValidatedRedirects): providers authenticate with custom headers
 // too, and nothing else stops them from riding to a foreign host.
 func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
+	timeout := opts.Timeout
+	if timeout < 0 {
+		timeout = 0 // NoTimeout
+	}
 	client := &http.Client{
-		Timeout:   opts.Timeout,
+		Timeout:   timeout,
 		Transport: opts.Transport,
 	}
 	validator := opts.URLValidator
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if next, ok := fetchRedirectURL(req, via); ok {
+			req.URL = next
+		}
+		// TS f608c056a2: a redirect from HTTPS to HTTP is rejected before the
+		// target is requested, even for a trusted-origin hop, and before the
+		// redirect-count bound (TS checks it on the redirect response itself).
+		if len(via) > 0 && strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && strings.EqualFold(req.URL.Scheme, "http") {
+			return providererrors.NewDownloadError(rawURL, 0, "", "Redirect from HTTPS to HTTP was blocked", nil)
+		}
 		if len(via) > maxDownloadRedirects {
 			return providererrors.NewDownloadError(rawURL, 0, "", fmt.Sprintf("Too many redirects (max %d)", maxDownloadRedirects), nil)
 		}
@@ -304,6 +351,39 @@ func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
 		return nil
 	}
 	return client
+}
+
+// fetchRedirectURL is the hop TS fetchWithValidatedRedirects requests:
+// new URL(response.headers.get('location'), currentUrl). Headers.get joins
+// repeated Location lines with ", " and reads each byte as one character, so
+// a raw UTF-8 byte is percent-encoded as the UTF-8 of that Latin-1 character
+// (`/caf\xc3\xa9` -> `/caf%C3%83%C2%A9`); http.Client follows the first raw
+// line. ok is false when both read the same text or the TS text does not
+// resolve.
+func fetchRedirectURL(req *http.Request, via []*http.Request) (*neturl.URL, bool) {
+	if req.Response == nil || len(via) == 0 {
+		return nil, false
+	}
+	h := req.Response.Header
+	text := providerutils.FetchHeaderText(h, "Location")
+	if len(h.Values("Location")) <= 1 && text == h.Get("Location") {
+		return nil, false
+	}
+	var b strings.Builder
+	for _, r := range text {
+		if r < utf8.RuneSelf {
+			b.WriteRune(r)
+			continue
+		}
+		for _, c := range []byte(string(r)) {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	ref, err := neturl.Parse(b.String())
+	if err != nil {
+		return nil, false
+	}
+	return via[len(via)-1].URL.ResolveReference(ref), true
 }
 
 // redirectChainCrossedOrigin reports whether req or any earlier hop has a
@@ -370,10 +450,12 @@ func originOf(u *neturl.URL) string {
 	port := u.Port()
 	if port == "" {
 		switch scheme {
-		case "http":
+		case "http", "ws":
 			port = "80"
-		case "https":
+		case "https", "wss":
 			port = "443"
+		case "ftp":
+			port = "21"
 		}
 	}
 	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
@@ -423,13 +505,23 @@ func ReadResponseWithSizeLimit(resp *http.Response, rawURL string, maxBytes int6
 	return data, nil
 }
 
+// ResponseStatusText is TS response.statusText: the reason phrase of resp's
+// status line (the standard text when the line carries none Go can split).
+func ResponseStatusText(resp *http.Response) string {
+	return responseStatusText(resp)
+}
+
 func responseStatusText(resp *http.Response) string {
 	if resp == nil {
 		return ""
 	}
-	prefix := fmt.Sprintf("%d ", resp.StatusCode)
-	if strings.HasPrefix(resp.Status, prefix) {
-		return strings.TrimPrefix(resp.Status, prefix)
+	code := strconv.Itoa(resp.StatusCode)
+	if strings.HasPrefix(resp.Status, code+" ") {
+		return strings.TrimPrefix(resp.Status, code+" ")
+	}
+	if resp.Status == code {
+		// "HTTP/1.1 418" with no reason phrase: fetch's statusText is "".
+		return ""
 	}
 	return http.StatusText(resp.StatusCode)
 }
@@ -472,6 +564,34 @@ func responseContentLength(resp *http.Response) (int64, bool) {
 	return sign * value, true
 }
 
+// TransportFailure reports the http.Client failure behind a DownloadError
+// that never reached an HTTP response: a refused, reset or unresolvable
+// connection, a dial, TLS or response-header timeout, or the caller's abort.
+// A provider porting TS getFromApi classifies it with
+// internalhttp.TransportErrorCtx, as TS handleFetchError turns a failed fetch
+// into the retryable "Cannot connect to API" APICallError (an abort stays
+// as is). A rejected URL or redirect hop, a blocked address, a non-2xx
+// status or a size limit is no transport failure and keeps its
+// DownloadError, like the DownloadError TS fetchWithValidatedRedirects
+// throws.
+func TransportFailure(err error) (error, bool) {
+	var downloadErr *providererrors.DownloadError
+	if !errors.As(err, &downloadErr) || downloadErr.StatusCode != 0 || downloadErr.Body != nil ||
+		downloadErr.Message != "" || downloadErr.Cause == nil {
+		return nil, false
+	}
+	var urlErr *neturl.Error
+	if !errors.As(downloadErr.Cause, &urlErr) || urlErr.Op == "parse" {
+		return nil, false
+	}
+	var inner *providererrors.DownloadError
+	var ssrf *providererrors.SSRFError
+	if errors.As(downloadErr.Cause, &inner) || errors.As(downloadErr.Cause, &ssrf) {
+		return nil, false
+	}
+	return downloadErr.Cause, true
+}
+
 func downloadRequestError(raw string, err error) *providererrors.DownloadError {
 	var downloadErr *providererrors.DownloadError
 	if errors.As(err, &downloadErr) {
@@ -480,6 +600,10 @@ func downloadRequestError(raw string, err error) *providererrors.DownloadError {
 	return providererrors.NewDownloadError(raw, 0, "", "", err)
 }
 
+// decodeDataURL follows the fetch data: URL processor that TS download relies
+// on: the payload is percent-decoded ('+' stays '+'), and a base64 payload is
+// decoded with the forgiving-base64 rules (ASCII whitespace ignored, padding
+// optional).
 func decodeDataURL(raw string) ([]byte, error) {
 	comma := strings.IndexByte(raw, ',')
 	if comma < 0 {
@@ -487,28 +611,219 @@ func decodeDataURL(raw string) ([]byte, error) {
 	}
 	meta := raw[len("data:"):comma]
 	payload := raw[comma+1:]
-	if strings.HasSuffix(strings.ToLower(meta), ";base64") {
-		data, err := base64.StdEncoding.DecodeString(payload)
+	if i := strings.IndexByte(payload, '#'); i >= 0 {
+		payload = payload[:i] // a fragment is not part of the data
+	}
+	decoded := percentDecode(payload)
+	if isBase64DataURLMeta(meta) {
+		data, err := DecodeForgivingBase64(decoded)
 		if err != nil {
 			return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
 		}
 		return data, nil
 	}
-	data, err := neturl.QueryUnescape(payload)
-	if err != nil {
-		return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
-	}
-	return []byte(data), nil
+	return []byte(decoded), nil
 }
 
+// ConvertBase64ToBytes ports TS provider-utils convertBase64ToUint8Array:
+// base64url characters ('-', '_') are mapped to the standard alphabet and the
+// result is decoded with the forgiving rules of atob (ASCII whitespace
+// ignored, padding optional; a length of 1 mod 4 or a non-alphabet byte is an
+// error).
+func ConvertBase64ToBytes(s string) ([]byte, error) {
+	return DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(s))
+}
+
+// DecodeForgivingBase64 is the WHATWG forgiving-base64 decode behind JS atob:
+// ASCII whitespace is ignored, up to two trailing "=" are dropped when the
+// length is a multiple of 4, and any other "=" or a length of 1 mod 4 fails.
+func DecodeForgivingBase64(s string) ([]byte, error) {
+	compact := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\f', '\r':
+			return -1
+		}
+		return r
+	}, s)
+	if len(compact)%4 == 0 {
+		if strings.HasSuffix(compact, "==") {
+			compact = compact[:len(compact)-2]
+		} else if strings.HasSuffix(compact, "=") {
+			compact = compact[:len(compact)-1]
+		}
+	}
+	if strings.Contains(compact, "=") || len(compact)%4 == 1 {
+		return nil, base64.CorruptInputError(0)
+	}
+	return base64.RawStdEncoding.DecodeString(compact)
+}
+
+// percentDecode is the URL standard's percent-decode: each valid %XX becomes
+// its byte and anything else (including a malformed escape) stays literal.
+func percentDecode(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	hex := func(c byte) int {
+		switch {
+		case c >= '0' && c <= '9':
+			return int(c - '0')
+		case c >= 'a' && c <= 'f':
+			return int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			return int(c-'A') + 10
+		}
+		return -1
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && hex(s[i+1]) >= 0 && hex(s[i+2]) >= 0 {
+			out = append(out, byte(hex(s[i+1])<<4|hex(s[i+2])))
+			i += 2
+			continue
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
+}
+
+func isBase64DataURLMeta(meta string) bool {
+	_, ok := stripBase64Marker(meta)
+	return ok
+}
+
+// stripBase64Marker removes the WHATWG data URL base64 marker (a ";", any
+// spaces, then "base64" in any case, at the end of the media type) and
+// reports whether it was there.
+func stripBase64Marker(meta string) (string, bool) {
+	trimmed := strings.Trim(meta, " \t\n\r\f")
+	if len(trimmed) < len("base64") || !strings.EqualFold(trimmed[len(trimmed)-len("base64"):], "base64") {
+		return meta, false
+	}
+	rest := strings.TrimRight(trimmed[:len(trimmed)-len("base64")], " ")
+	if !strings.HasSuffix(rest, ";") {
+		return meta, false
+	}
+	return strings.TrimRight(strings.TrimSuffix(rest, ";"), " "), true
+}
+
+// dataURLMediaType is the Content-Type fetch gives a data: URL response (the
+// WHATWG data: URL processor): the media type parsed and serialized, minus
+// the base64 marker; "text/plain" is prepended when it starts with ";", and an
+// absent or unparseable type is text/plain;charset=US-ASCII.
 func dataURLMediaType(raw string) string {
 	comma := strings.IndexByte(raw, ',')
 	if comma < 0 {
 		return ""
 	}
-	meta := raw[len("data:"):comma]
-	if semi := strings.IndexByte(meta, ';'); semi >= 0 {
-		meta = meta[:semi]
+	meta := strings.Trim(raw[len("data:"):comma], " \t\n\r\f")
+	if stripped, ok := stripBase64Marker(meta); ok {
+		meta = stripped
 	}
-	return meta
+	if strings.HasPrefix(meta, ";") {
+		meta = "text/plain" + meta
+	}
+	if mt, ok := parseWHATWGMediaType(meta); ok {
+		return mt
+	}
+	return "text/plain;charset=US-ASCII"
+}
+
+func isHTTPToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// parseWHATWGMediaType parses and serializes a MIME type like the MIME Sniffing
+// standard (parameters keep their order, the first of a repeated name wins).
+func parseWHATWGMediaType(input string) (string, bool) {
+	input = strings.Trim(input, " \t\n\r")
+	slash := strings.IndexByte(input, '/')
+	if slash < 0 {
+		return "", false
+	}
+	typ := input[:slash]
+	rest := input[slash+1:]
+	subtype, params, _ := strings.Cut(rest, ";")
+	subtype = strings.TrimRight(subtype, " \t\n\r")
+	if !isHTTPToken(typ) || !isHTTPToken(subtype) {
+		return "", false
+	}
+	var out strings.Builder
+	out.WriteString(strings.ToLower(typ) + "/" + strings.ToLower(subtype))
+	seen := map[string]bool{}
+	for params != "" {
+		params = strings.TrimLeft(params, " \t\n\r")
+		end := strings.IndexAny(params, ";=")
+		var name string
+		if end < 0 {
+			name, params = params, ""
+		} else {
+			name = params[:end]
+			if params[end] == ';' {
+				params = params[end+1:]
+				continue
+			}
+			params = params[end+1:]
+		}
+		name = strings.ToLower(name)
+		var value string
+		if strings.HasPrefix(params, `"`) {
+			var b strings.Builder
+			i := 1
+			for ; i < len(params); i++ {
+				c := params[i]
+				if c == '\\' && i+1 < len(params) {
+					i++
+					b.WriteByte(params[i])
+					continue
+				}
+				if c == '"' {
+					i++
+					break
+				}
+				b.WriteByte(c)
+			}
+			value = b.String()
+			rem := params[i:]
+			if k := strings.IndexByte(rem, ';'); k >= 0 {
+				params = rem[k+1:]
+			} else {
+				params = ""
+			}
+			if !isHTTPToken(name) || seen[name] {
+				continue
+			}
+		} else {
+			var v string
+			if k := strings.IndexByte(params, ';'); k >= 0 {
+				v, params = params[:k], params[k+1:]
+			} else {
+				v, params = params, ""
+			}
+			value = strings.TrimRight(v, " \t\n\r")
+			if value == "" || !isHTTPToken(name) || seen[name] {
+				continue
+			}
+		}
+		seen[name] = true
+		out.WriteString(";" + name + "=")
+		if isHTTPToken(value) {
+			out.WriteString(value)
+		} else {
+			out.WriteString(`"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`)
+		}
+	}
+	return out.String(), true
 }

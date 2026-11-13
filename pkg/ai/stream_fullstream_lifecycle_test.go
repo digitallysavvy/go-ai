@@ -63,11 +63,9 @@ func TestStreamText_FullStreamLifecycleSingleStep(t *testing.T) {
 	want := []provider.ChunkType{
 		provider.ChunkTypeStart,
 		provider.ChunkTypeStartStep,
-		provider.ChunkTypeFirstChunk,
 		provider.ChunkTypeText,
 		provider.ChunkTypeFinishStep,
 		provider.ChunkTypeFinish,
-		provider.ChunkTypeStreamFinish,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("chunk types = %#v, want %#v", got, want)
@@ -173,7 +171,6 @@ func TestStreamText_FullStreamLifecycleMultiStep(t *testing.T) {
 	want := []provider.ChunkType{
 		provider.ChunkTypeStart,
 		provider.ChunkTypeStartStep,
-		provider.ChunkTypeFirstChunk,
 		provider.ChunkTypeToolCall,
 		provider.ChunkTypeToolResult,
 		provider.ChunkTypeFinishStep,
@@ -181,7 +178,6 @@ func TestStreamText_FullStreamLifecycleMultiStep(t *testing.T) {
 		provider.ChunkTypeText,
 		provider.ChunkTypeFinishStep,
 		provider.ChunkTypeFinish,
-		provider.ChunkTypeStreamFinish,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("chunk types = %#v, want %#v", got, want)

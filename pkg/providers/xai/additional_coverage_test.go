@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -52,8 +52,8 @@ func TestXAIProvider_WrappersAndDefaults(t *testing.T) {
 	if model, err := p.SpeechModel("x"); err != nil || model.Provider() != "xai.speech" || model.ModelID() != "" {
 		t.Fatalf("SpeechModel = %v, %v; want xai.speech model with empty model ID", model, err)
 	}
-	if model, err := p.TranscriptionModel("x"); err != nil || model.Provider() != "xai.transcription" || model.ModelID() != "" {
-		t.Fatalf("TranscriptionModel = %v, %v; want xai.transcription model with empty model ID", model, err)
+	if model, err := p.TranscriptionModel("x"); err != nil || model.Provider() != "xai.transcription" || model.ModelID() != "x" {
+		t.Fatalf("TranscriptionModel = %v, %v; want xai.transcription model with model ID x", model, err)
 	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel expected unsupported error")
@@ -152,9 +152,9 @@ func TestXAIModelMetadataAndErrorHelpers(t *testing.T) {
 	if im.ModelID() != ModelGrokImagineImage {
 		t.Fatalf("image model ID = %q", im.ModelID())
 	}
-	ierr := im.handleError(errors.New("image fail"))
-	var ipErr *providererrors.ProviderError
-	if !errors.As(ierr, &ipErr) || ipErr.Provider != "xai.image" {
+	// A failure without an HTTP response is returned unchanged (TS
+	// handleFetchError, r91 PB-22).
+	if ierr := im.handleError(errors.New("image fail")); ierr == nil || ierr.Error() != "image fail" {
 		t.Fatalf("image handleError mismatch: %v", ierr)
 	}
 }
@@ -192,6 +192,9 @@ func TestXAIResponsesStreamHelpers(t *testing.T) {
 	t.Parallel()
 
 	respStream := newXAIResponsesStream(io.NopCloser(strings.NewReader("data: [DONE]\n\n")))
+	if c, err := respStream.Next(); err != nil || c.Type != provider.ChunkTypeFinish {
+		t.Fatalf("xaiResponsesStream first Next() = %#v, %v, want finish", c, err)
+	}
 	_, err := respStream.Next()
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("xaiResponsesStream Next() err = %v, want EOF", err)
@@ -204,9 +207,8 @@ func TestXAIResponsesStreamHelpers(t *testing.T) {
 	}
 
 	rm := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-3")
-	wrapped := rm.wrapErr(errors.New("boom"))
-	var pErr *providererrors.ProviderError
-	if !errors.As(wrapped, &pErr) || pErr.Provider != "xai.responses" {
+	// No HTTP response: returned unchanged (TS handleFetchError, r91 PB-22).
+	if wrapped := rm.wrapErr(errors.New("boom")); wrapped == nil || wrapped.Error() != "boom" {
 		t.Fatalf("wrapErr mismatch: %v", wrapped)
 	}
 }

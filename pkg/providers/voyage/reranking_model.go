@@ -1,6 +1,7 @@
 package voyage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,9 +9,11 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 type RerankingModel struct {
@@ -30,6 +33,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if opts == nil {
 		return nil, fmt.Errorf("rerank options cannot be nil")
 	}
+	if err := validateRerankProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	docs, warnings := toVoyageDocuments(opts.Documents)
 	reqBody := map[string]interface{}{
 		"query":     opts.Query,
@@ -39,7 +45,8 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if opts.TopN != nil {
 		reqBody["top_k"] = *opts.TopN
 	}
-	if po, ok := opts.ProviderOptions["voyage"].(map[string]interface{}); ok {
+	// Go-typed literals read like their JSON form (OVC-01).
+	if po, ok := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["voyage"].(map[string]interface{}); ok {
 		if v, ok := po["returnDocuments"]; ok {
 			reqBody["return_documents"] = v
 		}
@@ -55,13 +62,18 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		} `json:"data"`
 	}
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/rerank",
-		Body:    reqBody,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaVoyageRerank),
+		Method:           http.MethodPost,
+		Path:             "/rerank",
+		// TS JSON.stringify({query, documents, model, top_k, return_documents,
+		// truncation}): that key order, not sorted keys.
+		Body: bytes.NewBufferString(providerutils.StringifyOrdered(reqBody, map[string][]string{
+			"": {"query", "documents", "model", "top_k", "return_documents", "truncation"},
+		})),
 		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("voyage", 0, "", err.Error(), err)
+		return nil, handleError(err)
 	}
 
 	ranking := make([]types.RerankItem, 0, len(response.Data))
@@ -75,7 +87,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 			Timestamp: time.Now(),
 			ModelID:   m.modelID,
 			Headers:   map[string][]string(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}, nil
 }
@@ -87,14 +99,55 @@ func toVoyageDocuments(docs interface{}) ([]string, []types.Warning) {
 	case []map[string]interface{}:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
-			raw, _ := json.Marshal(item)
-			out = append(out, string(raw))
+			out = append(out, stringifyDocument(item))
 		}
 		return out, []types.Warning{{
 			Type:    "compatibility",
-			Message: "Object documents are converted to strings.",
+			Feature: "object documents",
+			Details: "Object documents are converted to strings.",
 		}}
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		objects := false
+		for _, item := range v {
+			if str, ok := item.(string); ok {
+				out = append(out, str)
+				continue
+			}
+			objects = true
+			out = append(out, stringifyDocument(item))
+		}
+		if !objects {
+			return out, nil
+		}
+		return out, []types.Warning{{
+			Type:    "compatibility",
+			Feature: "object documents",
+			Details: "Object documents are converted to strings.",
+		}}
+	case []json.RawMessage:
+		items := make([]interface{}, len(v))
+		for i, item := range v {
+			items[i] = item
+		}
+		return toVoyageDocuments(items)
 	default:
 		return []string{}, nil
 	}
+}
+
+// stringifyDocument is JSON.stringify(document) for an object document: raw
+// JSON keeps its key order, HTML characters stay literal. A Go map has no
+// order, so its keys are sorted.
+func stringifyDocument(doc interface{}) string {
+	if raw, ok := providerutils.RawJSONObject(doc); ok {
+		if parsed, ok := jsonorder.Parse(raw); ok {
+			return jsonorder.Stringify(parsed)
+		}
+	}
+	b, err := jsonstr.Marshal(doc)
+	if err != nil {
+		return "null"
+	}
+	return string(b)
 }

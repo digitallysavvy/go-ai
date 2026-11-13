@@ -64,4 +64,11 @@ type Options struct {
 
 	// HTTPClient customizes the underlying HTTP client.
 	HTTPClient *http.Client
+
+	// SupportsNativeStructuredOutput enables native structured output in
+	// structuredOutputMode "auto" for Claude 4.5 and newer (TS
+	// supportsNativeStructuredOutput). Defaults to false. Requires the Google
+	// Cloud organization policy to allow the structured_outputs feature for
+	// each model used. It does not enable strict tool input schemas.
+	SupportsNativeStructuredOutput bool
 }

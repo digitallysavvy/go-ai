@@ -100,7 +100,7 @@ func TestOpenAISerializeAndDeserializeEmbeddingModel(t *testing.T) {
 		t.Fatalf("EmbeddingModel error = %v", err)
 	}
 	serialized := modelAny.(*EmbeddingModel).Serialize()
-	if serialized.Provider != "openai" || serialized.ModelID != "text-embedding-3-small" {
+	if serialized.Provider != "openai.embedding" || serialized.ModelID != "text-embedding-3-small" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -111,7 +111,7 @@ func TestOpenAISerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeEmbeddingModel error = %v", err)
 	}
-	if restored.Provider() != "openai" || restored.ModelID() != "text-embedding-3-small" {
+	if restored.Provider() != "openai.embedding" || restored.ModelID() != "text-embedding-3-small" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -131,7 +131,7 @@ func TestOpenAISerializeAndDeserializeImageModel(t *testing.T) {
 		t.Fatalf("ImageModel error = %v", err)
 	}
 	serialized := modelAny.(*ImageModel).Serialize()
-	if serialized.Provider != "openai" || serialized.ModelID != "dall-e-3" {
+	if serialized.Provider != "openai.image" || serialized.ModelID != "dall-e-3" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 
@@ -139,7 +139,7 @@ func TestOpenAISerializeAndDeserializeImageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeImageModel error = %v", err)
 	}
-	if restored.Provider() != "openai" || restored.ModelID() != "dall-e-3" {
+	if restored.Provider() != "openai.image" || restored.ModelID() != "dall-e-3" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -159,7 +159,7 @@ func TestOpenAISerializeAndDeserializeSpeechModel(t *testing.T) {
 		t.Fatalf("SpeechModel error = %v", err)
 	}
 	serialized := modelAny.(*SpeechModel).Serialize()
-	if serialized.Provider != "openai" || serialized.ModelID != "tts-1" {
+	if serialized.Provider != "openai.speech" || serialized.ModelID != "tts-1" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 
@@ -167,7 +167,7 @@ func TestOpenAISerializeAndDeserializeSpeechModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeSpeechModel error = %v", err)
 	}
-	if restored.Provider() != "openai" || restored.ModelID() != "tts-1" {
+	if restored.Provider() != "openai.speech" || restored.ModelID() != "tts-1" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -187,7 +187,7 @@ func TestOpenAISerializeAndDeserializeTranscriptionModel(t *testing.T) {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
 	serialized := modelAny.(*TranscriptionModel).Serialize()
-	if serialized.Provider != "openai" || serialized.ModelID != "whisper-1" {
+	if serialized.Provider != "openai.transcription" || serialized.ModelID != "whisper-1" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 
@@ -195,7 +195,7 @@ func TestOpenAISerializeAndDeserializeTranscriptionModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeTranscriptionModel error = %v", err)
 	}
-	if restored.Provider() != "openai" || restored.ModelID() != "whisper-1" {
+	if restored.Provider() != "openai.transcription" || restored.ModelID() != "whisper-1" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 

@@ -1,0 +1,128 @@
+package jsonorder
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestTextKeepsWireOrderAndDoesNotEscapeHTML(t *testing.T) {
+	raw := json.RawMessage(`{ "z": 1, "a": {"y": [1, 2, {"b": true, "a": null}], "x": "<&>"} }`)
+	got := Text(raw, nil)
+	want := `{"z":1,"a":{"y":[1,2,{"b":true,"a":null}],"x":"<&>"}}`
+	if got != want {
+		t.Fatalf("Text = %s, want %s", got, want)
+	}
+}
+
+func TestWithLeadPutsKeyFirstAndInputValueWins(t *testing.T) {
+	o := Input(json.RawMessage(`{"code":"x","type":"mine"}`), nil)
+	if got := o.WithLead("type", "programmatic-tool-call").String(); got != `{"type":"mine","code":"x"}` {
+		t.Fatalf("lead with existing key = %s", got)
+	}
+	o = Input(json.RawMessage(`{"command":"ls"}`), nil)
+	if got := o.WithLead("type", "bash_code_execution").String(); got != `{"type":"bash_code_execution","command":"ls"}` {
+		t.Fatalf("lead = %s", got)
+	}
+}
+
+func TestInputFallsBackToSortedMap(t *testing.T) {
+	if got := Text(nil, map[string]interface{}{"b": 1, "a": 2}); got != `{"a":2,"b":1}` {
+		t.Fatalf("fallback = %s", got)
+	}
+	if got := Text(json.RawMessage(`not json`), nil); got != `{}` {
+		t.Fatalf("invalid raw = %s", got)
+	}
+}
+
+func TestObjectMarshalSetDeleteAndPlain(t *testing.T) {
+	var o Object
+	if err := json.Unmarshal([]byte(`{"z":1,"a":{"y":[1.5,"<"],"b":null}}`), &o); err != nil {
+		t.Fatal(err)
+	}
+	o.Set("m", true)
+	o.Set("z", 2) // existing key keeps its place
+	o.Delete("a")
+	b, err := json.Marshal(&o)
+	if err != nil || string(b) != `{"z":2,"m":true}` {
+		t.Fatalf("marshal = %s, %v", b, err)
+	}
+	if keys := o.Keys(); len(keys) != 2 || keys[0] != "z" {
+		t.Fatalf("keys = %v", keys)
+	}
+	v, _ := Parse([]byte(`{"n":3,"o":{"k":[1]}}`))
+	plain, _ := Plain(v).(map[string]interface{})
+	if plain["n"] != float64(3) {
+		t.Fatalf("plain = %#v", plain)
+	}
+	// Embedded in a struct or map, json.Marshal keeps the order.
+	out, _ := json.Marshal(map[string]interface{}{"schema": mustParseObject(t, `{"b":1,"a":2}`)})
+	if string(out) != `{"schema":{"b":1,"a":2}}` {
+		t.Fatalf("nested = %s", out)
+	}
+	if err := json.Unmarshal([]byte(`[1]`), &Object{}); err == nil {
+		t.Fatal("array accepted as object")
+	}
+}
+
+func mustParseObject(t *testing.T, raw string) *Object {
+	t.Helper()
+	v, ok := Parse([]byte(raw))
+	o, isObj := v.(*Object)
+	if !ok || !isObj {
+		t.Fatalf("bad object %s", raw)
+	}
+	return o
+}
+
+func TestHintedRestoresRawKeyOrder(t *testing.T) {
+	raw := []byte(`{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer","enum":[3,1]}},"required":["zeta"]}`)
+	hint, ok := Parse(raw)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	// A transform adds a key the hint does not know.
+	decoded.(map[string]interface{})["additionalProperties"] = false
+	got, err := json.Marshal(Hinted{V: decoded, Hint: hint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer","enum":[3,1]}},"required":["zeta"],"additionalProperties":false}`
+	if string(got) != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
+
+func TestJSKeyOrderIntegerKeysFirst(t *testing.T) {
+	v, ok := Parse([]byte(`{"b":1,"10":2,"a":3,"2":4,"01":5,"4294967295":6}`))
+	if !ok {
+		t.Fatal("parse")
+	}
+	if got, want := Stringify(v), `{"2":4,"10":2,"b":1,"a":3,"01":5,"4294967295":6}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+	o := New()
+	o.Set("x", 1)
+	o.Set("3", 2)
+	o.Set("1", 3)
+	if got, want := Stringify(o), `{"1":3,"3":2,"x":1}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+	if got, want := Stringify(FromMap(map[string]interface{}{"10": 1, "9": 2, "a": 3})), `{"9":2,"10":1,"a":3}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
+func TestStringifyNumbersUseJSNotation(t *testing.T) {
+	v, ok := Parse([]byte(`{"a":1.0,"b":1e2,"c":1E-7,"d":12345678901234567890,"e":-0,"f":0.10,"g":1e21,"h":1e400,"i":[2.50]}`))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	want := `{"a":1,"b":100,"c":1e-7,"d":12345678901234567000,"e":0,"f":0.1,"g":1e+21,"h":null,"i":[2.5]}`
+	if got := Stringify(v); got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}

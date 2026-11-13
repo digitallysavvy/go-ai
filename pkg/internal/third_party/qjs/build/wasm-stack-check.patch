@@ -1,0 +1,54 @@
+--- a/qjswasm/qjswasm.cmake
++++ b/qjswasm/qjswasm.cmake
+@@ -161,6 +161,12 @@
+ 
+ target_compile_options(qjswasm PRIVATE "-fvisibility=default")
+ 
++# Linked wasm shadow-stack size. Must stay comfortably above
++# QJS_WASM_MAX_STACK_SIZE (quickjs.c). target_link_options is required here:
++# the directory-scope add_link_options calls further down run after this
++# target exists and so do not reach it.
++target_link_options(qjswasm PRIVATE "LINKER:-z,stack-size=1048576")
++
+ target_compile_definitions(qjswasm PRIVATE ${qjs_defines})
+ 
+ target_link_libraries(qjswasm qjs)
+--- a/qjswasm/quickjs/quickjs.c
++++ b/qjswasm/quickjs/quickjs.c
+@@ -2580,10 +2580,24 @@
+     return ctx->rt;
+ }
+ 
++#ifdef __wasi__
++/* Must stay well below the -z stack-size linked in qjswasm.cmake (1 MiB):
++   native helpers run between stack checks and need headroom. */
++#define QJS_WASM_MAX_STACK_SIZE (768 * 1024)
++#endif
++
+ static void update_stack_limit(JSRuntime *rt)
+ {
+ #if defined(__wasi__)
+-    rt->stack_limit = 0; /* no limit */
++    /* QJS_WASM_STACK_PATCH: upstream disables the check on wasi, so runaway
++       recursion walks off the wasm shadow stack and traps with an
++       uncatchable "out of bounds memory access". Keep the check on, with
++       the limit capped safely below the linked -z stack-size (see
++       qjswasm.cmake); stack_size == 0 means "use the cap". */
++    size_t eff = rt->stack_size;
++    if (eff == 0 || eff > QJS_WASM_MAX_STACK_SIZE)
++        eff = QJS_WASM_MAX_STACK_SIZE;
++    rt->stack_limit = rt->stack_top - eff;
+ #else
+     if (rt->stack_size == 0) {
+         rt->stack_limit = 0; /* no limit */
+@@ -7213,7 +7227,9 @@
+ 
+ static JSValue JS_ThrowStackOverflow(JSContext *ctx)
+ {
+-    return JS_ThrowRangeError(ctx, "Maximum call stack size exceeded");
++    /* QJS_WASM_STACK_PATCH: classic QuickJS/TS code-mode shape
++       (InternalError: stack overflow) instead of quickjs-ng's RangeError. */
++    return JS_ThrowInternalError(ctx, "stack overflow");
+ }
+ 
+ static JSValue JS_ThrowTypeErrorNotAFunction(JSContext *ctx)

@@ -1,10 +1,13 @@
 package azure
 
 import (
-	"strings"
+	"errors"
+	"fmt"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // AzureTranscriptionAPI selects which backend handles an azure.Transcription
@@ -19,12 +22,12 @@ const (
 
 // AzureDiarizationOptions mirrors TS's `diarization: { enabled }` shape.
 type AzureDiarizationOptions struct {
-	Enabled bool
+	Enabled bool `json:"enabled"`
 }
 
 // AzurePhraseListOptions mirrors TS's `phraseList: { phrases }` shape.
 type AzurePhraseListOptions struct {
-	Phrases []string
+	Phrases []string `json:"phrases"`
 }
 
 // AzureSpeechTranscriptionOptions is providerOptions.azure for the Azure
@@ -32,24 +35,30 @@ type AzurePhraseListOptions struct {
 // mirroring TS AzureTranscriptionModelSpeechOptions.
 type AzureSpeechTranscriptionOptions struct {
 	// Timestamps selects "word", "segment", or "none" granularity.
-	Timestamps string
+	Timestamps string `json:"timestamps,omitempty"`
 	// TranscribeStyle is "verbatim" (default) or "clean".
-	TranscribeStyle string
+	TranscribeStyle string `json:"transcribeStyle,omitempty"`
 	// Locales forces a single language, e.g. []string{"en"}.
-	Locales []string
+	Locales []string `json:"locales,omitempty"`
 	// Diarization enables speaker diarization.
-	Diarization *AzureDiarizationOptions
+	Diarization *AzureDiarizationOptions `json:"diarization,omitempty"`
 	// PhraseList biases recognition toward specific phrases.
-	PhraseList *AzurePhraseListOptions
+	PhraseList *AzurePhraseListOptions `json:"phraseList,omitempty"`
 }
 
 // AzureTranscriptionModelOptions is the fully parsed providerOptions.azure
 // for azure.Transcription, mirroring TS AzureTranscriptionModelOptions.
 type AzureTranscriptionModelOptions struct {
-	API AzureTranscriptionAPI
+	API AzureTranscriptionAPI `json:"api,omitempty"`
 	AzureSpeechTranscriptionOptions
-	// Language is a MAI-streaming-only language hint.
-	Language string
+	// Language is a MAI-streaming-only language hint (on the OpenAI route it
+	// is the OpenAI `language` option, TS 6400cf8b88).
+	Language string `json:"language,omitempty"`
+
+	// openaiOptions are the OpenAI transcription options passed under
+	// providerOptions.azure (TS pickAzureOptions with
+	// openAITranscriptionModelOptionsShape).
+	openaiOptions azurePickedOptions
 }
 
 // azureTranscribeModelsByLowercaseID maps a lowercase model ID to its Azure
@@ -74,7 +83,7 @@ type azureMAITranscribeModel struct {
 // getMAITranscribeModel reports the Azure Speech model name for modelID,
 // mirroring TS getMAITranscribeModel. ok is false for any other model ID.
 func getMAITranscribeModel(modelID string) (azureMAITranscribeModel, bool) {
-	m, ok := azureTranscribeModelsByLowercaseID[strings.ToLower(modelID)]
+	m, ok := azureTranscribeModelsByLowercaseID[providerutils.JSToLower(modelID)]
 	if !ok {
 		return azureMAITranscribeModel{}, false
 	}
@@ -84,7 +93,7 @@ func getMAITranscribeModel(modelID string) (azureMAITranscribeModel, bool) {
 // isMAITranscribeStreaming reports whether modelID is
 // MAI-Transcribe-2-Streaming, mirroring TS isMAITranscribeStreaming.
 func isMAITranscribeStreaming(modelID string) bool {
-	return strings.EqualFold(modelID, "mai-transcribe-2-streaming")
+	return providerutils.JSToLower(modelID) == "mai-transcribe-2-streaming"
 }
 
 // parseAzureTranscriptionProviderOptions parses and strictly validates
@@ -101,7 +110,11 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 	if !ok || raw == nil {
 		return result, nil
 	}
-	m, ok := raw.(map[string]interface{})
+	// Validate Go-typed values (a map[string]string namespace, []string
+	// locales and phrases, map[string]bool diarization, ...) in their JSON
+	// form, the form TS parses; they failed as "must be an array" / "must be
+	// an object".
+	m, ok := providerutils.NormalizeProviderOptionsObject(raw)
 	if !ok {
 		return result, invalidAzureOption("providerOptions.azure", "must be an object")
 	}
@@ -110,9 +123,20 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 		"api": true, "timestamps": true, "transcribeStyle": true,
 		"locales": true, "diarization": true, "phraseList": true, "language": true,
 	}
+	// TS 6400cf8b88: the strict schema also accepts the OpenAI transcription
+	// options (validated like providerOptions.openai).
+	for _, key := range azureOpenAITranscriptionOptionKeys {
+		allowed[key] = true
+	}
 	for key := range m {
 		if !allowed[key] {
 			return result, invalidAzureOption("providerOptions.azure."+key, "unrecognized key")
+		}
+	}
+	result.openaiOptions = pickAzureOptions(providerOptions, azureOpenAITranscriptionOptionKeys)
+	if openaiOnly := result.openaiOptions.without("language"); len(openaiOnly.keys) > 0 {
+		if err := openai.ValidateTranscriptionProviderOptions(map[string]interface{}{"openai": openaiOnly.values}); err != nil {
+			return result, invalidAzureOption("providerOptions.azure", azureOpenAIOptionCause(err))
 		}
 	}
 
@@ -199,8 +223,27 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 	return result, nil
 }
 
+// invalidAzureOption is the TS parseProviderOptions failure for the azure
+// option schemas: InvalidArgumentError(providerOptions, "invalid azure
+// provider options") whose cause names the field and the problem.
 func invalidAzureOption(field, message string) error {
-	return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	return providererrors.NewArgumentError("providerOptions", "invalid azure provider options", fmt.Errorf("%s: %s", field, message))
+}
+
+// azureOpenAIOptionCause is the validation message of an OpenAI option
+// error (its cause when it has one).
+func azureOpenAIOptionCause(err error) string {
+	if u := errors.Unwrap(err); u != nil {
+		return u.Error()
+	}
+	return err.Error()
+}
+
+// azureOpenAITranscriptionOnlyWarnings is TS openaiTranscriptionOnlyWarnings:
+// the OpenAI transcription options other than the shared `language` (which
+// maiOnlyWarnings reports) warn on the Azure Speech and MAI routes.
+func azureOpenAITranscriptionOnlyWarnings(picked azurePickedOptions) []types.Warning {
+	return azureUnsupportedOptionWarnings(picked.without("language"), "This option requires the OpenAI transcription API.")
 }
 
 // azureTranscriptionSpeechOnlyWarnings returns an "unsupported" warning for

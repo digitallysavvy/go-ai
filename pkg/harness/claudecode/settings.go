@@ -1,5 +1,7 @@
 // Package claudecode is the Go host-side port of TS `@ai-sdk/harness-claude-code`
-// (`createClaudeCode`), pinned to ai@7.0.113.
+// (`createClaudeCode`), pinned to
+// ai@7.0.162, TS 3fab50aa9b (host side and the embedded bridge, resynced in
+// review round 87).
 //
 // It implements harness.Harness/Session/PromptControl by launching the
 // embedded, unchanged TS bridge (pkg/harness/bridges, WG6) as `node
@@ -7,25 +9,18 @@
 // harness-v1 bridge wire protocol to harness.StreamPart Emit calls.
 //
 // DoStart implements all three TS resume rungs: (1) ATTACH reopens a socket
-// to a still-running bridge using persisted coordinates (no respawn, no
-// fresh token); (2) REPLAY respawns the bridge with `BRIDGE_REPLAY_FROM_DISK`
+// to a still-running bridge using persisted coordinates and the session's
+// host-only authentication private key (no respawn, no new key pair); (2) REPLAY respawns the bridge with `BRIDGE_REPLAY_FROM_DISK`
 // when a continued (suspended) turn's on-disk event log ends in a finished
 // turn; (3) RERUN respawns and rehydrates the Claude conversation via
 // `resumeSessionId`/`continue` otherwise. Mid-turn steering
 // (`submitUserMessage`) is wired whenever the bridge advertises
 // `experimental_userMessageResponses` on its hello.
 //
-// Deferred versus TS (see the Sep-23-2026 WG7 report for the full rationale):
-//   - Native subscription credential discovery reads the same
-//     `~/.claude/.credentials.json` file TS reads (subscription.go), including
-//     OAuth refresh and write-back. The macOS Keychain fallback TS also has is
-//     NOT ported: this SDK's sandbox providers (pkg/harness/sandbox/local, the
-//     Vercel provider) run Linux containers, where `/usr/bin/security` does
-//     not exist, and TS itself only takes that fallback when
-//     `CLAUDE_CONFIG_DIR` is unset/default, so it is a secondary path even in
-//     TS. Linux's Secret Service / Windows Credential Manager equivalents are
-//     for the *host* Claude CLI config, not this adapter's discovery, so they
-//     are not applicable here either.
+// Native subscription credential discovery matches TS: it reads
+// `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) and, on macOS with
+// the default config dir, the "Claude Code-credentials" Keychain item,
+// refreshing and writing back as TS does (subscription.go).
 package claudecode
 
 import (
@@ -33,6 +28,28 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+)
+
+// ToolHint is a Claude Code hint for one host tool. Mirrors the value type
+// of TS `ClaudeCodeHarnessSettings.toolHints`; a nil field is left unset.
+type ToolHint struct {
+	// ReadOnly marks the tool as having no side effects.
+	ReadOnly *bool `json:"readOnly,omitempty"`
+	// AlwaysLoad sends the tool's definition from the first request instead
+	// of deferring it until the model looks it up.
+	AlwaysLoad *bool `json:"alwaysLoad,omitempty"`
+}
+
+// SkillOverride is how Claude Code exposes one named skill. Mirrors TS
+// `ClaudeCodeHarnessSettings.skillOverrides` values.
+type SkillOverride string
+
+// SkillOverride values.
+const (
+	SkillOverrideOn                SkillOverride = "on"
+	SkillOverrideNameOnly          SkillOverride = "name-only"
+	SkillOverrideUserInvocableOnly SkillOverride = "user-invocable-only"
+	SkillOverrideOff               SkillOverride = "off"
 )
 
 // Settings configures New. Mirrors TS `ClaudeCodeHarnessSettings`.
@@ -47,9 +64,51 @@ type Settings struct {
 	// Claude Agent SDK's native configuration format. The name "harness-tools"
 	// is reserved.
 	MCPServers map[string]any
+	// ToolHints are Claude Code hints for host tools, keyed by tool name.
+	// ReadOnly marks a tool with no side effects: Claude Code can run
+	// read-only tool calls in parallel, runs each call to any other host tool
+	// on its own, and allows read-only tools in plan mode, so mark only tools
+	// that change nothing. AlwaysLoad sends the tool's definition from the
+	// first request when Claude Code's tool search would otherwise defer it.
+	ToolHints map[string]ToolHint
 	// MaxTurns caps how many internal turns the CLI can take before yielding
 	// back to the caller. Zero means the CLI's default.
 	MaxTurns int
+	// SkillOverrides overrides how named skills are exposed to Claude Code.
+	// Unspecified skills keep their Claude Code defaults.
+	SkillOverrides map[string]SkillOverride
+	// MaxBudgetUSD is the maximum estimated spend in USD for each Claude
+	// query. When it is exceeded, the query stops and the turn ends with an
+	// error. Nil means no limit.
+	MaxBudgetUSD *float64
+	// AdditionalDirectories are absolute paths of directories Claude can
+	// access in addition to the session working directory; the bridge also
+	// trusts reads under them in approvals. Nil sends nothing; a non-nil
+	// empty slice is sent as []. Paths are forwarded as given (relative
+	// entries are not trusted by the bridge). Mirrors TS
+	// `additionalDirectories` (ae4e2363a2).
+	AdditionalDirectories []string
+	// StrictMCPConfig, when true, uses only the MCP servers configured with
+	// MCPServers and ignores any other MCP configuration such as a project
+	// `.mcp.json` or user settings. Nil leaves the Claude Code default.
+	StrictMCPConfig *bool
+	// AutoMode, when true, requests Claude Code's classifier-based `auto`
+	// permission mode for the allow-reads and allow-edits permission
+	// presets: only escalated calls ask the host for approval. allow-all
+	// keeps bypassing permissions, and inactive-tool restrictions stay.
+	// Observe the raw init / status parts for the effective permission
+	// mode. Nil sends nothing (Claude Code default: off). Mirrors TS
+	// `autoMode` (5c3842f9d0).
+	AutoMode *bool
+	// QuestionTimeoutMs is the maximum number of milliseconds Claude waits
+	// for an answer to an `AskUserQuestion` question before the question
+	// fails. Nil means the Claude Code default.
+	QuestionTimeoutMs *int
+	// ExcludeDynamicSections moves per-session sections (working directory,
+	// memory, git status) out of the Claude Code system prompt and into the
+	// first user message, so the system prompt can be cached across
+	// sessions. Nil leaves the Claude Code default.
+	ExcludeDynamicSections *bool
 	// AgentProgressSummaries enables periodic AI-generated progress
 	// summaries for running subagents. The summaries are forwarded in raw
 	// `task_progress` stream parts.
@@ -77,10 +136,35 @@ type Settings struct {
 	// StartupTimeout bounds how long to wait for the bridge to announce its
 	// port. Defaults to 120s.
 	StartupTimeout time.Duration
+	// TurnStartTimeout bounds how long a turn waits for its first bridge
+	// event after the start frame was sent. When it passes, the turn fails
+	// with "claude-code bridge did not emit a turn event within <n>ms." and
+	// the bridge connection is closed. Zero uses the default of 120s. Like
+	// TS `turnStartTimeoutMs` (a Node timer), a value below 1ms, negative
+	// included, fails the turn on the first timer tick after the start was
+	// sent; there is no value that disables the deadline.
+	TurnStartTimeout time.Duration
+	// HostDisconnectTimeout makes the bridge abort a running turn when its
+	// host disconnects and does not reconnect within this duration, so the
+	// turn stops spending. A suspended turn is exempt. Zero (or negative)
+	// keeps the turn running until it finishes. Mirrors TS
+	// `hostDisconnectTimeoutMs` (a54f0fd8c6), passed as
+	// --host-disconnect-timeout-ms.
+	HostDisconnectTimeout time.Duration
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions
-	// MintBridgeToken creates the bridge channel token. Defaults to a random
-	// 32-byte hex token. Requires the sandbox to expose an ID.
+	// OnDebug is called with bridge connection lifecycle events: reconnect
+	// attempts, successful reconnects, and "reconnect-failed" once the
+	// connection is closed for good. Hosts that cache idle sessions can use it
+	// to reattach before sending the next prompt. The Cause of a failed
+	// reconnect can contain connection details, so avoid logging it as is. It
+	// runs on the connection's goroutine, so it must not block.
+	OnDebug func(bridge.ChannelDebugEvent)
+	// MintBridgeToken is ignored: sandbox bridge authentication uses an
+	// adapter-generated Ed25519 key pair; the sandbox gets only the public
+	// key. New warns once when it is set.
+	//
+	// Deprecated: kept so v0.5.2 code compiles (TS c849d37dac).
 	MintBridgeToken harness.MintBridgeTokenCallback
 }

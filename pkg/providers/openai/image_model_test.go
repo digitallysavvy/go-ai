@@ -3,11 +3,13 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // BUG-T17: models whose IDs begin with recognized prefixes (chatgpt-image, gpt-image-1, etc.)
@@ -205,8 +207,16 @@ func TestImageModel_DoGenerate_InvalidTypedProviderOptions(t *testing.T) {
 			"openai": OpenAIImageProviderOptions{OutputCompression: &compression},
 		},
 	})
-	if err == nil {
-		t.Fatal("DoGenerate should reject invalid outputCompression before making a request")
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("DoGenerate should reject invalid outputCompression with InvalidArgumentError before any request, got %T %v", err, err)
+	}
+	_, err = model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:          "a cat",
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"quality": "bogus"}},
+	})
+	if !errors.As(err, &invalid) {
+		t.Fatalf("invalid quality: want InvalidArgumentError, got %T %v", err, err)
 	}
 }
 
@@ -390,5 +400,15 @@ func TestImageModel_DoGenerate_UsesVersionRelativePath(t *testing.T) {
 	}
 	if requestPath != "/v1/images/generations" {
 		t.Fatalf("path = %q, want /v1/images/generations", requestPath)
+	}
+}
+
+// TS returns an empty `images` array for empty `data`; core retries and then
+// throws NoImageGeneratedError, so convertResponse must not error.
+func TestImageModelConvertResponseEmptyDataIsNotAnError(t *testing.T) {
+	m := &ImageModel{}
+	res, err := m.convertResponse(openaiImageResponse{})
+	if err != nil || len(res.Images) != 0 {
+		t.Fatalf("res=%+v err=%v", res, err)
 	}
 }

@@ -11,15 +11,15 @@ func TestNewDefaultsToGmiCloudEndpointAndEnvVar(t *testing.T) {
 
 	p := New(Config{})
 	if p.Name() != "gmicloud" {
-		t.Fatalf("Name() = %q, want gmicloud", p.Name())
+		t.Fatalf("Name() = %q, want gmicloud.chat", p.Name())
 	}
 
 	model, err := p.LanguageModel("deepseek-ai/DeepSeek-V4-Flash-0731")
 	if err != nil {
 		t.Fatalf("LanguageModel() error = %v", err)
 	}
-	if model.Provider() != "gmicloud" {
-		t.Fatalf("model.Provider() = %q, want gmicloud", model.Provider())
+	if model.Provider() != "gmicloud.chat" {
+		t.Fatalf("model.Provider() = %q, want gmicloud.chat", model.Provider())
 	}
 }
 

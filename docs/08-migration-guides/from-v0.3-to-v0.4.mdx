@@ -110,7 +110,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Prompt: "Hello",
     Telemetry: &telemetry.Options{
         IsEnabled:    telemetry.Bool(true),
-        RecordInputs: true,
+        RecordInputs: telemetry.Bool(true),
         FunctionID:   "my-chat",
     },
 })

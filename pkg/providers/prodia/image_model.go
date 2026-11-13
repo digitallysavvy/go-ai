@@ -1,14 +1,18 @@
 package prodia
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for Prodia
@@ -100,16 +104,21 @@ func extractProviderOptions(opts *provider.ImageGenerateOptions) *ProdiaImagePro
 
 // DoGenerate performs image generation using the Prodia API.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+	currentDate := time.Now()
 	var warnings []types.Warning
 
 	// Warn about invalid size format — matches TS getArgs warning.
 	if opts.Size != "" {
-		var w, h int
-		n, _ := fmt.Sscanf(opts.Size, "%dx%d", &w, &h)
-		if n != 2 || w <= 0 || h <= 0 {
+		if _, _, ok := parseProdiaSize(opts.Size); !ok {
+			msg := fmt.Sprintf("Invalid size format: %s. Expected format: WIDTHxHEIGHT (e.g., 1024x1024)", opts.Size)
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
-				Message: fmt.Sprintf("Invalid size format: %s. Expected format: WIDTHxHEIGHT (e.g., 1024x1024)", opts.Size),
+				Feature: "size",
+				Details: msg,
+				Message: msg,
 			})
 		}
 	}
@@ -119,24 +128,37 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	reqBody := m.buildRequestBody(opts, provOpts)
 
 	resp, err := m.prov.client.Do(ctx, internalhttp.Request{
-		Method:  "POST",
-		Path:    "/job",
-		Body:    reqBody,
+		Method: "POST",
+		Path:   "/job",
+		// TS postToApi content JSON.stringify(body) in the getArgs key
+		// order, and headers {...combined, Accept, 'Content-Type'}: the
+		// fixed Accept wins over a call header.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(reqBody, prodiaJobBodyOrder)),
 		Query:   m.buildQuery(),
-		Headers: map[string]string{"Accept": "multipart/form-data; image/png"},
+		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Accept": "multipart/form-data; image/png", "Content-Type": "application/json"}),
 	})
 	if err != nil {
-		return nil, providererrors.NewProviderError("prodia", 0, "", err.Error(), err)
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, newProdiaProviderErrorFrom(resp.StatusError(resp.Body))
 	}
 
-	contentType := resp.Headers.Get("Content-Type")
-	jobResp, imageData, mimeType, err := parseMultipartResponse(contentType, resp.Body)
+	// TS response.headers.get('content-type') ?? '': repeated lines joined,
+	// each byte one character (the boundary is then UTF-8 encoded, as TS
+	// TextEncoder does).
+	contentType := providerutils.FetchHeaderText(resp.Headers, "Content-Type")
+	jobResp, imageData, mimeType, err := parseMultipartResponseFor(contentType, resp.Body, "image/")
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse prodia response: %w", err)
+		return nil, err
+	}
+
+	// TS: 'Prodia multipart response missing output image'. The legacy imageUrl
+	// field is the only other source of the image.
+	// TS `!imageBytes`: an empty output part is still an image.
+	if imageData == nil && jobResp.ImageURL == "" {
+		return nil, fmt.Errorf("Prodia multipart response missing output image") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	if mimeType == "" {
@@ -153,11 +175,46 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 			},
 		},
 	}
-	if len(imageData) == 0 && jobResp.ImageURL != "" {
+	if imageData == nil && jobResp.ImageURL != "" {
 		result.URL = jobResp.ImageURL
 	}
+	result.Response = &types.ResponseMetadata{Timestamp: currentDate, ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}
 
 	return result, nil
+}
+
+// parseProdiaSize mirrors TS getArgs: size.split('x'), both parts non-empty
+// and Number() finite; anything else is an invalid size. Zero, negative and
+// fractional values are not invalid there.
+func parseProdiaSize(size string) (width, height float64, ok bool) {
+	parts := strings.Split(size, "x")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return 0, 0, false
+	}
+	num := func(s string) (float64, bool) {
+		f, ok := providerutils.JSNumber(s)
+		return f, ok && !math.IsInf(f, 0)
+	}
+	w, wok := num(parts[0])
+	h, hok := num(parts[1])
+	if !wok || !hok {
+		return 0, 0, false
+	}
+	return w, h, true
+}
+
+// prodiaNumber keeps a whole number an int (the wire and callers' view of
+// 1024), and a fractional one a float64. A whole number that does not fit
+// in int (above 2^31-1 where int is 32 bits) is an int64 instead of being
+// corrupted by int(f) (provc-03).
+func prodiaNumber(f float64) interface{} {
+	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+		if f >= math.MinInt && f <= math.MaxInt {
+			return int(f)
+		}
+		return int64(f)
+	}
+	return f
 }
 
 // buildRequestBody builds the Prodia API request body.
@@ -168,11 +225,9 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provO
 
 	// Parse size (e.g., "1024x1024")
 	if opts.Size != "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
-		if width > 0 && height > 0 {
-			jobConfig["width"] = width
-			jobConfig["height"] = height
+		if width, height, ok := parseProdiaSize(opts.Size); ok {
+			jobConfig["width"] = prodiaNumber(width)
+			jobConfig["height"] = prodiaNumber(height)
 		}
 	}
 

@@ -267,10 +267,6 @@ if err != nil {
     switch {
     case strings.Contains(err.Error(), "model is required"):
         log.Println("Missing required model parameter")
-    case strings.Contains(err.Error(), "documents are required"):
-        log.Println("Missing required documents")
-    case strings.Contains(err.Error(), "query is required"):
-        log.Println("Missing required query")
     case strings.Contains(err.Error(), "must be []string"):
         log.Println("Invalid document type")
     case strings.Contains(err.Error(), "reranking failed"):

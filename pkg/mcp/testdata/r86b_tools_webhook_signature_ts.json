@@ -1,0 +1,40 @@
+{
+ "source": "node v24.20.0 http server request -> Headers (rawHeaders appended) -> TS mcp-event-signature.ts verifyMCPEventSignature steps (26-80); TS 30548ee7f9",
+ "secret": "whsec_AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+ "timestamp": 1700000000,
+ "body": "{\"eventId\":\"e1\"}",
+ "cases": [
+  {
+   "name": "latin-1 webhook-id",
+   "raw": "UE9TVCAvaG9vayBIVFRQLzEuMQ0KSG9zdDogeA0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uDQp3ZWJob29rLWlkOiBtc2df6Q0Kd2ViaG9vay10aW1lc3RhbXA6IDE3MDAwMDAwMDANCndlYmhvb2stc2lnbmF0dXJlOiB2MSw5NTBpUExDUm1zZjFPcGhiQnhWTEpQcjN0ViszcHRMalBxcDI3YnlmdE4wPQ0KQ29udGVudC1MZW5ndGg6IDE2DQpDb25uZWN0aW9uOiBjbG9zZQ0KDQp7ImV2ZW50SWQiOiJlMSJ9",
+   "ts": {
+    "ok": true,
+    "id": "msg_é"
+   }
+  },
+  {
+   "name": "raw utf-8 webhook-id",
+   "raw": "UE9TVCAvaG9vayBIVFRQLzEuMQ0KSG9zdDogeA0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uDQp3ZWJob29rLWlkOiBtc2dfw6kNCndlYmhvb2stdGltZXN0YW1wOiAxNzAwMDAwMDAwDQp3ZWJob29rLXNpZ25hdHVyZTogdjEsSUV2Ym9xOVZRZnEvVEpJMUJ6YVY4MEphVDlOTjJWQlBUTzVVNzE2ekRhbz0NCkNvbnRlbnQtTGVuZ3RoOiAxNg0KQ29ubmVjdGlvbjogY2xvc2UNCg0KeyJldmVudElkIjoiZTEifQ==",
+   "ts": {
+    "ok": true,
+    "id": "msg_Ã©"
+   }
+  },
+  {
+   "name": "rotation signature on a second line",
+   "raw": "UE9TVCAvaG9vayBIVFRQLzEuMQ0KSG9zdDogeA0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uDQp3ZWJob29rLWlkOiBtc2dfMQ0Kd2ViaG9vay10aW1lc3RhbXA6IDE3MDAwMDAwMDANCndlYmhvb2stc2lnbmF0dXJlOiB2MSxBQUFBDQp3ZWJob29rLXNpZ25hdHVyZTogdjEsZm02TWk4MGpMKzBVRXc2cG1SQ08vZDN3UGFuaDJXMytkWGdpK29yWngwZz0NCkNvbnRlbnQtTGVuZ3RoOiAxNg0KQ29ubmVjdGlvbjogY2xvc2UNCg0KeyJldmVudElkIjoiZTEifQ==",
+   "ts": {
+    "ok": true,
+    "id": "msg_1"
+   }
+  },
+  {
+   "name": "signature over the raw id bytes",
+   "raw": "UE9TVCAvaG9vayBIVFRQLzEuMQ0KSG9zdDogeA0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9qc29uDQp3ZWJob29rLWlkOiBtc2dfw6kNCndlYmhvb2stdGltZXN0YW1wOiAxNzAwMDAwMDAwDQp3ZWJob29rLXNpZ25hdHVyZTogdjEsOTUwaVBMQ1Jtc2YxT3BoYkJ4VkxKUHIzdFYrM3B0TGpQcXAyN2J5ZnROMD0NCkNvbnRlbnQtTGVuZ3RoOiAxNg0KQ29ubmVjdGlvbjogY2xvc2UNCg0KeyJldmVudElkIjoiZTEifQ==",
+   "ts": {
+    "ok": false,
+    "id": "msg_Ã©"
+   }
+  }
+ ]
+}

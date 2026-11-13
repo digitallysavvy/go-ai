@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/url"
 	"path"
 	"strings"
@@ -64,7 +67,7 @@ func (c *httpPolicyClient) Evaluate(ctx context.Context, policyPath string, inpu
 	for key, value := range c.headers {
 		req.Header.Set(key, value)
 	}
-	resp, err := c.client.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(c.client).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -77,13 +80,14 @@ func (c *httpPolicyClient) Evaluate(ctx context.Context, policyPath string, inpu
 		return nil, fmt.Errorf("OPA HTTP status %d: %s", resp.StatusCode, string(body))
 	}
 	var decoded any
-	if err := json.Unmarshal(body, &decoded); err != nil {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(body)), &decoded); err != nil {
 		return nil, err
 	}
 	if record, ok := decoded.(map[string]any); ok {
-		if result, ok := record["result"]; ok {
-			return result, nil
-		}
+		// OPA answers an undefined decision (no rule matched) with `{}`: the
+		// TS client returns the response's `result` field, undefined here,
+		// which normalizes to not-applicable rather than a denial.
+		return record["result"], nil
 	}
 	return decoded, nil
 }

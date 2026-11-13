@@ -39,7 +39,7 @@ func resolveSkillsDirectory(implementationHomeDir, skillsDirectory string) (stri
 		posixpath.IsAbs(skillsDirectory) || posixpath.IsWin32Abs(skillsDirectory) || containsTraversal ||
 		normalized == "." || strings.HasPrefix(normalized, "../") || strings.Contains(normalized, "/../") || strings.HasSuffix(normalized, "/..")
 	if invalid {
-		return "", fmt.Errorf("ACP skillsDirectory %q must be a relative POSIX path without traversal.", skillsDirectory) //nolint:staticcheck // matches TS SDK's exact error text
+		return "", fmt.Errorf("ACP skillsDirectory %s must be a relative POSIX path without traversal.", jsonString(skillsDirectory)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return posixpath.Join(implementationHomeDir, normalized), nil
 }
@@ -49,10 +49,10 @@ func validateSkills(skills []harness.Skill) error {
 	names := map[string]bool{}
 	for _, skill := range skills {
 		if !SkillNamePattern.MatchString(skill.Name) || skill.Name == "." || skill.Name == ".." {
-			return fmt.Errorf("Invalid ACP skill name %q: expected a kebab-case slug.", skill.Name) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("Invalid ACP skill name %s: expected a kebab-case slug.", jsonString(skill.Name)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if names[skill.Name] {
-			return fmt.Errorf("Duplicate ACP skill name %q.", skill.Name) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("Duplicate ACP skill name %s.", jsonString(skill.Name)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		names[skill.Name] = true
 
@@ -63,10 +63,10 @@ func validateSkills(skills []harness.Skill) error {
 				return err
 			}
 			if normalized == "SKILL.md" {
-				return fmt.Errorf("Invalid ACP skill file path %q for skill %q: SKILL.md is reserved for the skill definition.", file.Path, skill.Name) //nolint:staticcheck // matches TS SDK's exact error text
+				return fmt.Errorf("Invalid ACP skill file path %s for skill %s: SKILL.md is reserved for the skill definition.", jsonString(file.Path), jsonString(skill.Name)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			if filePaths[normalized] {
-				return fmt.Errorf("Duplicate ACP skill file path %q for skill %q.", file.Path, skill.Name) //nolint:staticcheck // matches TS SDK's exact error text
+				return fmt.Errorf("Duplicate ACP skill file path %s for skill %s.", jsonString(file.Path), jsonString(skill.Name)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			filePaths[normalized] = true
 		}
@@ -86,7 +86,7 @@ func validateAttachedFilePath(skillName, filePath string) (string, error) {
 		posixpath.IsAbs(filePath) || posixpath.IsWin32Abs(filePath) || containsTraversal ||
 		normalized == "." || strings.HasPrefix(normalized, "../") || strings.Contains(normalized, "/../") || strings.HasSuffix(normalized, "/..")
 	if invalid {
-		return "", fmt.Errorf("Invalid ACP skill file path %q for skill %q: expected a relative POSIX path without traversal.", filePath, skillName) //nolint:staticcheck // matches TS SDK's exact error text
+		return "", fmt.Errorf("Invalid ACP skill file path %s for skill %s: expected a relative POSIX path without traversal.", jsonString(filePath), jsonString(skillName)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return normalized, nil
 }

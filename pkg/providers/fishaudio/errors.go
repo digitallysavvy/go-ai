@@ -1,10 +1,12 @@
 package fishaudio
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
+	"math"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -13,26 +15,54 @@ import (
 // error responses (401 no permission, 402 no payment):
 // https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
 type fishAudioErrorPayload struct {
-	Status  *int   `json:"status"`
-	Message string `json:"message"`
+	Status  *float64 `json:"status"`
+	Message *string  `json:"message"`
+}
+
+// isJSONObject reports whether body is a JSON object (not null or an array).
+func isJSONObject(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	return len(trimmed) > 0 && trimmed[0] == '{'
 }
 
 // handleError converts an HTTP error into a ProviderError, parsing Fish
 // Audio's `{"status","message"}` error shape when present.
 func handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp // TS handleFetchError: an abort or timeout is returned unchanged
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		var payload fishAudioErrorPayload
-		message := string(statusErr.Body)
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.Message != "" {
-			message = payload.Message
-		} else if message == "" {
-			message = "Unknown Fish Audio error"
+		// TS fishAudioErrorDataSchema: every field is nullish, so any JSON
+		// object matches and the message is `message ?? 'Unknown Fish Audio
+		// error'`; a body that is not such an object gives the status text.
+		message := statusErr.Text()
+		// TS APICallError.data: the schema output ({status?, message?},
+		// only the keys present) for a matching body, else undefined.
+		var data interface{}
+		if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr == nil && isJSONObject(statusErr.Body) &&
+			(payload.Status == nil || (!math.IsInf(*payload.Status, 0) && !math.IsNaN(*payload.Status))) { // z.number() rejects Infinity
+			if payload.Message != nil {
+				message = *payload.Message
+			} else {
+				message = "Unknown Fish Audio error"
+			}
+			var raw map[string]interface{}
+			_ = securejson.Unmarshal(statusErr.Body, &raw)
+			data = providerutils.PickSchemaKeys(raw, "status", "message")
 		}
-		providerErr := providererrors.NewProviderError("fish-audio", statusErr.StatusCode, "", message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		perr := providererrors.NewProviderErrorFromResponse("fish-audio", 0, "", message, err)
+		perr.Data = data
+		return perr
 	}
-	return providererrors.NewProviderError("fish-audio", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }

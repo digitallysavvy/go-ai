@@ -1,10 +1,13 @@
 package groq
 
 import (
-	"fmt"
+	"context"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -19,6 +22,12 @@ type Config struct {
 	// APIKey is the Groq API key
 	APIKey string
 
+	// APIKeyFunc resolves the API key before each request (TS apiKey given as
+	// a function, 7716e189ee), for keys that are looked up, refreshed or
+	// rotated. It cannot be combined with APIKey; the environment variable is
+	// not read, and its result is sent as is.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the Groq API (optional)
 	BaseURL string
 
@@ -28,10 +37,19 @@ type Config struct {
 
 // New creates a new Groq provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the GROQ_API_KEY environment variable.
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "GROQ_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.groq.com/openai"
 	}
+	// TS withoutTrailingSlash(baseURL).
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
+	// TS baseURL values include the version segment (".../v1"); every request
+	// path here already starts with "/v1/", so accept both spellings.
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
@@ -39,6 +57,15 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("groq")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "GROQ_API_KEY", Description: "Groq",
+				}, "Authorization", "Bearer ")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "GROQ_API_KEY", "Groq", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -71,17 +98,17 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("groq does not support embeddings")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("groq does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("groq does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID (Groq Whisper,
@@ -95,7 +122,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Groq does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

@@ -3,13 +3,16 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"io"
 	"net/http"
-	"net/url"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type MintRealtimeClientSecretParams struct {
@@ -39,65 +42,87 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	if params.ExpiresAfterSeconds != nil {
 		body["expiresIn"] = *params.ExpiresAfterSeconds
 	}
-	data, err := json.Marshal(body)
+	// TS JSON.stringify of the literal: model, routeKind, expiresIn.
+	data := []byte(providerutils.StringifyOrdered(body, map[string][]string{"": {"model", "routeKind", "expiresIn"}}))
+	endpoint, err := gatewayOriginURL(p.baseURL, "/v1/realtime/client-secrets")
 	if err != nil {
 		return nil, err
 	}
-	endpoint := gatewayOriginURL(p.baseURL, "/v1/realtime/client-secrets")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range p.headers {
+	// TS createAuthHeaders: Authorization and the auth method come first and
+	// the provider's custom headers are spread after them, so a custom header
+	// of the same name wins.
+	// TS postJsonToApi then tags the user-agent with the runtime.
+	for k, v := range providerutils.WithUserAgentSuffix(mergeHeadersFold(map[string]string{
+		"Authorization":          fmt.Sprintf("Bearer %s", token),
+		"ai-gateway-auth-method": authMethod,
+	}, p.headers), providerutils.RuntimeEnvironmentUserAgent()) {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("ai-gateway-auth-method", authMethod)
 
 	httpClient := internalhttp.DefaultHTTPClient
 	if p.config.HTTPClient != nil {
 		httpClient = p.config.HTTPClient
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := internalhttp.WithFetchRedirects(httpClient).Do(req)
 	if err != nil {
+		if isGatewayCallerCancellation(ctx, err) {
+			return nil, err
+		}
 		return nil, p.gatewayUnknownError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if isGatewayCallerCancellation(ctx, err) {
+			return nil, err
+		}
 		return nil, p.gatewayUnknownError(err)
 	}
-	response := &internalhttp.Response{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header,
-		Body:       responseBody,
-	}
+	response := internalhttp.ResponseFromRaw(resp, responseBody)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, p.gatewayAPIErrorWithAuthMethod(response, authMethod)
 	}
+	// TS gatewayClientSecretResponseSchema: token is z.string() (an empty
+	// string passes) and expiresAt z.number().nullish() (read as float64 so
+	// a fractional value parses; truncated into the v0.5.2 *int64, S1).
 	var parsed struct {
-		Token     string `json:"token"`
-		ExpiresAt *int64 `json:"expiresAt"`
+		Token     *string  `json:"token"`
+		ExpiresAt *float64 `json:"expiresAt"`
 	}
-	if err := json.Unmarshal(response.Body, &parsed); err != nil || parsed.Token == "" {
-		if err == nil {
-			err = fmt.Errorf("missing token")
-		}
-		return nil, p.gatewayUnknownError(fmt.Errorf("invalid realtime client secret response: %w", err))
+	decodedBody := []byte(textdecode.UTF8(response.Body))
+	if err := jsonexact.Unmarshal(decodedBody, &parsed); err != nil || parsed.Token == nil {
+		// TS createJsonResponseHandler(gatewayClientSecretResponseSchema):
+		// the APICallError "Invalid JSON response" with the response status,
+		// turned into a GatewayResponseError by asGatewayError.
+		pe := providerutils.InvalidJSONResponseError("gateway", resp.StatusCode, resp.Header, decodedBody, nil)
+		return nil, gatewayerrors.CreateGatewayErrorFromResponse(decodedBody, resp.StatusCode, "Gateway request failed", pe, authMethod)
 	}
-	return &RealtimeClientSecret{Token: parsed.Token, ExpiresAt: parsed.ExpiresAt}, nil
+	secret := &RealtimeClientSecret{Token: *parsed.Token}
+	if parsed.ExpiresAt != nil {
+		expiresAt := int64(*parsed.ExpiresAt)
+		secret.ExpiresAt = &expiresAt
+	}
+	return secret, nil
 }
 
-func gatewayOriginURL(baseURL string, path string) string {
-	u, err := url.Parse(baseURL)
+// gatewayOriginURL is TS `new URL(path, baseURL).toString()` for an absolute
+// path: the base URL's scheme, credentials, host and port (WHATWG
+// serialization) with path, and the TypeError "Invalid URL" for a base URL
+// that does not parse.
+func gatewayOriginURL(baseURL string, path string) (string, error) {
+	base, err := urlnorm.Parse(baseURL)
 	if err != nil {
-		return path
+		return "", err
 	}
-	u.Path = path
-	u.RawPath = ""
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String()
+	u, err := base.ResolvePath(path)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }

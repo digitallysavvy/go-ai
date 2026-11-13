@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
 	"net/http"
 	"time"
@@ -49,6 +50,9 @@ type SpeechModelOptions struct {
 
 // DoGenerate synthesizes speech from text
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+	if opts == nil {
+		opts = &provider.SpeechGenerateOptions{}
+	}
 	reqBody, warnings := m.buildRequestBody(opts)
 
 	jsonData, err := json.Marshal(reqBody)
@@ -79,14 +83,16 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		// Like every raw-client site: the caller's abort stays as is, a
+		// network failure is the retryable "Cannot connect to API" error.
+		return nil, internalhttp.TransportErrorCtx(req.Context(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	// Check response status
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, internalhttp.StatusProviderErrorFrom("lmnt", internalhttp.StatusErrorFromRaw(resp, bodyBytes))
 	}
 
 	// Read audio data
@@ -106,7 +112,6 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Header),
-			Body:      audioData,
 		},
 	}
 
@@ -205,10 +210,11 @@ func extractSpeechModelOptions(providerOptions map[string]interface{}) (SpeechMo
 			return SpeechModelOptions{}, true
 		}
 		return *value, true
-	case map[string]interface{}:
-		return parseSpeechModelOptionsMap(value), true
 	default:
-		return SpeechModelOptions{}, true
+		// Maps, typed maps and other literals read through their JSON form,
+		// so every integer and float kind parses (typed-option ruling).
+		m, _ := providerutils.NormalizeOptionsJSON(map[string]interface{}{"lmnt": value})["lmnt"].(map[string]interface{})
+		return parseSpeechModelOptionsMap(m), true
 	}
 }
 

@@ -2,6 +2,8 @@ package ai
 
 import (
 	"context"
+	"net/http"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -43,6 +45,13 @@ type DownloadOptions struct {
 
 	// Headers are additional HTTP headers to include in download requests.
 	Headers map[string]string
+
+	// Transport, when set, replaces the default transport, which validates
+	// and pins DNS results at connect time (TS createDownload `fetch`, e.g.
+	// guarded-fetch). The URL and every redirect hop are still validated; a
+	// custom Transport is responsible for connect-time address checks. Nil
+	// keeps the protected default.
+	Transport http.RoundTripper
 }
 
 // CreateURLDownload creates a single-URL download function with configurable
@@ -71,6 +80,9 @@ func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMeta
 
 	return func(ctx context.Context, url string) (*DownloadResult, error) {
 		opts := fileutil.DefaultDownloadOptions()
+		// TS createDownload sets no timeout: the caller's ctx bounds the
+		// download, so a large file on a slow link is not cut off at 60 s.
+		opts.Timeout = fileutil.NoTimeout
 
 		if options.MaxBytes > 0 {
 			opts.MaxSize = options.MaxBytes
@@ -82,6 +94,9 @@ func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMeta
 
 		opts.URLValidator = downloadURLValidator
 		opts.Transport = downloadTransport()
+		if options.Transport != nil {
+			opts.Transport = options.Transport
+		}
 
 		result, err := fileutil.DownloadWithMetadata(ctx, url, opts)
 		if err != nil {
@@ -109,16 +124,38 @@ func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMeta
 func CreateDownload(options *DownloadOptions) DownloadFunction {
 	urlDownload := CreateURLDownloadWithMetadata(options)
 	return func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+		// TS createDefaultDownloadFunction downloads with Promise.all: all
+		// requests run concurrently, results keep request order, and the
+		// first failure is returned (cancelling the rest).
 		results := make([]*DownloadResult, len(requests))
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var (
+			wg       sync.WaitGroup
+			once     sync.Once
+			firstErr error
+		)
 		for i, request := range requests {
 			if request.IsURLSupportedByModel {
 				continue
 			}
-			result, err := urlDownload(ctx, request.URL)
-			if err != nil {
-				return nil, err
-			}
-			results[i] = result
+			wg.Add(1)
+			go func(i int, request DownloadRequest) {
+				defer wg.Done()
+				result, err := urlDownload(runCtx, request.URL)
+				if err != nil {
+					once.Do(func() {
+						firstErr = err
+						cancel()
+					})
+					return
+				}
+				results[i] = result
+			}(i, request)
+		}
+		wg.Wait()
+		if firstErr != nil {
+			return nil, firstErr
 		}
 		return results, nil
 	}

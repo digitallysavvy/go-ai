@@ -1,6 +1,10 @@
 package cartesia
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // TranscriptionModelOptions contains Cartesia-specific transcription
 // options, mirroring cartesiaTranscriptionModelOptionsSchema.
@@ -33,6 +37,30 @@ type StreamingOptions struct {
 	// Defaults to true. Set to false to finalize the transcript only when
 	// the audio stream ends.
 	TurnDetection *bool `json:"turnDetection,omitempty"`
+
+	// Keyterms are words or phrases the model should favor, such as product
+	// names or jargon (up to 100 terms and 1200 characters in total).
+	Keyterms []string `json:"keyterms,omitempty"`
+
+	// TurnStartThreshold starts the turn when the likelihood that the user
+	// is speaking rises above it. Ignored (with a warning) when
+	// TurnDetection is false.
+	TurnStartThreshold *float64 `json:"turnStartThreshold,omitempty"`
+
+	// TurnEagerEndThreshold signals an early end of turn when the
+	// likelihood that the user is speaking falls below it. Ignored (with a
+	// warning) when TurnDetection is false.
+	TurnEagerEndThreshold *float64 `json:"turnEagerEndThreshold,omitempty"`
+
+	// TurnEndThreshold ends the turn when the likelihood that the user is
+	// speaking falls below it. Ignored (with a warning) when TurnDetection
+	// is false.
+	TurnEndThreshold *float64 `json:"turnEndThreshold,omitempty"`
+
+	// TurnEndTimeoutMs is the longest wait in milliseconds after the user
+	// stops speaking before the turn ends. Ignored (with a warning) when
+	// TurnDetection is false.
+	TurnEndTimeoutMs *int64 `json:"turnEndTimeoutMs,omitempty"`
 }
 
 // extractTranscriptionModelOptions decodes providerOptions["cartesia"] into
@@ -61,4 +89,21 @@ func extractTranscriptionModelOptions(providerOptions map[string]interface{}) *T
 		return nil
 	}
 	return &opts
+}
+
+// transcriptionLanguageOption reports providerOptions.cartesia.language and
+// whether it is present and a string. TS checks `language != null`, so an
+// empty string counts (the batch form sends it, streaming rejects it as not
+// English); the typed options struct cannot tell "" from unset, so a
+// map-shaped option is consulted directly.
+func transcriptionLanguageOption(providerOptions map[string]interface{}, parsed *TranscriptionModelOptions) (string, bool) {
+	if parsed != nil && parsed.Language != "" {
+		return parsed.Language, true
+	}
+	m, ok := providerutils.NormalizeOptionsJSON(providerOptions)["cartesia"].(map[string]interface{})
+	if !ok {
+		return "", false
+	}
+	lang, ok := m["language"].(string)
+	return lang, ok
 }

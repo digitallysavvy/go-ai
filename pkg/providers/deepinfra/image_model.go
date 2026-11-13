@@ -1,22 +1,29 @@
 package deepinfra
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for DeepInfra.
@@ -41,7 +48,7 @@ func NewImageModel(p *Provider, modelID, baseURL, editBaseURL string) *ImageMode
 func (m *ImageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *ImageModel) Provider() string { return "deepinfra" }
+func (m *ImageModel) Provider() string { return "deepinfra.image" }
 
 // ModelID returns the model ID.
 func (m *ImageModel) ModelID() string { return m.modelID }
@@ -86,6 +93,9 @@ func boolPtr(b bool) *bool {
 // DoGenerate performs image generation or, when Files are supplied, image
 // editing via DeepInfra's OpenAI-compatible /images/edits endpoint.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if err := providerutils.ValidateMapProviderOptions("deepinfra", opts.ProviderOptions, deepInfraImageOptionsSchema); err != nil {
+		return nil, err
+	}
 	if len(opts.Files) > 0 {
 		return m.doEdit(ctx, opts)
 	}
@@ -104,9 +114,15 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	// Some DeepInfra models support size while others support aspect ratio;
 	// allow passing either and leave validation to the server.
-	if width, height, ok := splitImageSize(opts.Size); ok {
-		body["width"] = width
-		body["height"] = height
+	// TS `...(splitSize && {width: splitSize[0], height: splitSize[1]})`
+	// with size.split('x'): a size without "x" sends only width, and parts
+	// after the second are ignored.
+	if opts.Size != "" {
+		parts := strings.Split(opts.Size, "x")
+		body["width"] = parts[0]
+		if len(parts) > 1 {
+			body["height"] = parts[1]
+		}
 	}
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
@@ -117,22 +133,39 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	client := m.provider.imageClient(m.baseURL)
 	resp, err := client.Do(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/" + m.modelID,
-		Body:    body,
+		Method: http.MethodPost,
+		Path:   "/" + m.modelID,
+		// TS JSON.stringify({prompt, num_images, aspect_ratio, width, height,
+		// seed, ...options}): that key order, not sorted keys.
+		Body:    bytes.NewBufferString(providerutils.StringifyOrdered(body, map[string][]string{"": {"prompt", "num_images", "aspect_ratio", "width", "height", "seed"}})),
 		Headers: opts.Headers,
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped (loadApiKey in the headers)
+		}
 		return nil, providererrors.NewProviderError("deepinfra", 0, "", err.Error(), err)
 	}
-	if resp.StatusCode >= 400 {
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, m.parseGenerateError(resp)
+	}
+	if err := providerutils.MediaResponseValidator("deepinfra", providerutils.SchemaDeepInfraImage)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	var decoded struct {
 		Images []string `json:"images"`
 	}
-	if err := json.Unmarshal(resp.Body, &decoded); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &decoded); err != nil {
 		return nil, fmt.Errorf("deepinfra: failed to decode image response: %w", err)
 	}
 
@@ -149,6 +182,7 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 		}
 	}
 	result.MimeType = "image/png"
+	result.Response = &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}
 	return result, nil
 }
 
@@ -158,42 +192,46 @@ func stripDataURLPrefix(image string) string {
 	return dataURLPrefix.ReplaceAllString(image, "")
 }
 
-func splitImageSize(size string) (width, height string, ok bool) {
-	if size == "" {
-		return "", "", false
-	}
-	parts := strings.SplitN(size, "x", 2)
-	if len(parts) != 2 {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
-}
-
-type deepInfraGenerateError struct {
-	Detail struct {
-		Error string `json:"error"`
-	} `json:"detail"`
-}
-
+// parseGenerateError is TS createJsonErrorResponseHandler with
+// deepInfraErrorSchema ({detail: {error: string}}): a blank body or one that
+// does not match the schema gives the status text and no data; a matching
+// body gives detail.error, even "", and the schema output as data
+// ({detail: {error}}, undeclared keys stripped; tools-08).
 func (m *ImageModel) parseGenerateError(resp *internalhttp.Response) error {
-	var errResp deepInfraGenerateError
-	message := string(resp.Body)
-	if err := json.Unmarshal(resp.Body, &errResp); err == nil && errResp.Detail.Error != "" {
-		message = errResp.Detail.Error
+	return deepInfraSchemaError(resp, deepInfraGenerateErrorSchema)
+}
+
+func deepInfraGenerateErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok {
+		return "", nil, false
 	}
-	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
+	detail, ok := obj["detail"].(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	message, ok := detail["error"].(string)
+	if !ok {
+		return "", nil, false
+	}
+	return message, map[string]interface{}{"detail": map[string]interface{}{"error": message}}, true
 }
 
 // doEdit performs image editing via DeepInfra's OpenAI-compatible
 // /images/edits multipart endpoint (baseURL with /inference replaced by
 // /openai, mirroring TS getEditUrl).
 func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	// TS resolves config.headers (loadApiKey, an apiKey function) before it
+	// downloads the input files, and throws that error as is.
+	client, err := m.provider.resolvedImageClient(ctx, m.editBaseURL)
+	if err != nil {
+		return nil, err
+	}
 	body, contentType, err := m.buildEditMultipartBody(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	client := m.provider.imageClient(m.editBaseURL)
 	resp, err := client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/images/edits",
@@ -201,10 +239,25 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
+		if noResp, ok := internalhttp.NoResponseError(err); ok {
+			return nil, noResp // TS handleFetchError: an abort or timeout is returned unchanged
+		}
+		if providererrors.IsLoadAPIKeyError(err) {
+			return nil, err // TS throws LoadAPIKeyError unwrapped (loadApiKey in the headers)
+		}
 		return nil, providererrors.NewProviderError("deepinfra", 0, "", err.Error(), err)
 	}
-	if resp.StatusCode >= 400 {
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, m.parseEditError(resp)
+	}
+	if err := providerutils.MediaResponseValidator("deepinfra", providerutils.SchemaDeepInfraEdit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	var decoded struct {
@@ -212,7 +265,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 			B64JSON string `json:"b64_json"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Body, &decoded); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &decoded); err != nil {
 		return nil, fmt.Errorf("deepinfra: failed to decode image edit response: %w", err)
 	}
 
@@ -228,65 +281,130 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 		}
 	}
 	result.MimeType = "image/png"
+	result.Response = &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}
 	return result, nil
 }
 
-type deepInfraEditError struct {
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+// parseEditError is TS createJsonErrorResponseHandler with
+// deepInfraEditErrorSchema ({error?: {message: string}}) and
+// `error.error?.message ?? 'Unknown error'`: a blank body or one that does
+// not match the schema (error null or not an object, message not a string)
+// gives the status text and no data; a matching body without error gives
+// "Unknown error" and data {}, one with error gives its message and data
+// {error: {message}} (tools-08).
+func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
+	return deepInfraSchemaError(resp, deepInfraEditErrorSchema)
 }
 
-func (m *ImageModel) parseEditError(resp *internalhttp.Response) error {
-	var errResp deepInfraEditError
-	message := "Unknown error"
-	if err := json.Unmarshal(resp.Body, &errResp); err == nil && errResp.Error != nil && errResp.Error.Message != "" {
-		message = errResp.Error.Message
+func deepInfraEditErrorSchema(body interface{}) (string, interface{}, bool) {
+	obj, ok := body.(map[string]interface{})
+	if !ok {
+		return "", nil, false
 	}
-	return providererrors.NewProviderError("deepinfra", resp.StatusCode, "", message, nil)
+	raw, present := obj["error"]
+	if !present {
+		return "Unknown error", map[string]interface{}{}, true
+	}
+	errObj, ok := raw.(map[string]interface{})
+	if !ok {
+		return "", nil, false
+	}
+	message, ok := errObj["message"].(string)
+	if !ok {
+		return "", nil, false
+	}
+	return message, map[string]interface{}{"error": map[string]interface{}{"message": message}}, true
+}
+
+// deepInfraSchemaError is the APICallError of createJsonErrorResponseHandler:
+// status, response headers (so retry-after(-ms) reaches the retry loop) and
+// body, with the schema output as data only when the body matched.
+func deepInfraSchemaError(resp *internalhttp.Response, schema providererrors.ErrorSchema) error {
+	cause := resp.StatusError(resp.Body)
+	return providererrors.NewSchemaProviderError("deepinfra", cause, schema)
 }
 
 func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.ImageGenerateOptions) (io.Reader, string, error) {
+	// TS awaits fileToBlob for every file, then the mask, before
+	// postFormDataToApi: a failed download is the DownloadError itself, and
+	// the edit request is never sent.
+	images := make([]deepInfraBlob, 0, len(opts.Files))
+	for _, file := range opts.Files {
+		blob, err := deepInfraFileToBlob(ctx, file)
+		if err != nil {
+			return nil, "", err
+		}
+		images = append(images, blob)
+	}
+	var mask *deepInfraBlob
+	if opts.Mask != nil {
+		blob, err := deepInfraFileToBlob(ctx, *opts.Mask)
+		if err != nil {
+			return nil, "", err
+		}
+		mask = &blob
+	}
+
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 
 	go func() {
 		err := func() error {
-			if err := writer.WriteField("model", m.modelID); err != nil {
-				return err
-			}
-			if opts.Prompt != "" {
-				if err := writer.WriteField("prompt", opts.Prompt); err != nil {
+			// TS convertToFormData({model, prompt, image, mask, n, size,
+			// ...deepInfraOptions}, {useArrayBrackets: false}): fields in
+			// that order, an option with one of those names replaces it in
+			// place, null/undefined values are skipped, and an array is
+			// appended as repeated fields. Other option keys follow, sorted
+			// (a Go map keeps no insertion order).
+			options := deepInfraImageOptions(opts.ProviderOptions)
+			fixed := []string{"model", "prompt", "image", "mask", "n", "size"}
+			for _, key := range fixed {
+				if value, overridden := options[key]; overridden {
+					if err := writeDeepInfraFormValue(writer, key, value); err != nil {
+						return err
+					}
+					continue
+				}
+				var err error
+				switch key {
+				case "model":
+					err = providerutils.WriteFormDataField(writer, "model", m.modelID)
+				case "prompt":
+					if opts.Prompt != "" {
+						err = providerutils.WriteFormDataField(writer, "prompt", opts.Prompt)
+					}
+				case "image":
+					for _, blob := range images {
+						if err = writeImageFilePart(writer, "image", blob); err != nil {
+							break
+						}
+					}
+				case "mask":
+					if mask != nil {
+						err = writeImageFilePart(writer, "mask", *mask)
+					}
+				case "n":
+					if opts.N != nil {
+						err = providerutils.WriteFormDataField(writer, "n", strconv.Itoa(*opts.N))
+					}
+				case "size":
+					if opts.Size != "" {
+						err = providerutils.WriteFormDataField(writer, "size", opts.Size)
+					}
+				}
+				if err != nil {
 					return err
 				}
 			}
-			if opts.N != nil {
-				if err := writer.WriteField("n", strconv.Itoa(*opts.N)); err != nil {
-					return err
+			rest := make([]string, 0, len(options))
+			for key := range options {
+				if !slices.Contains(fixed, key) {
+					rest = append(rest, key)
 				}
 			}
-			if opts.Size != "" {
-				if err := writer.WriteField("size", opts.Size); err != nil {
-					return err
-				}
-			}
-			for key, value := range deepInfraImageOptions(opts.ProviderOptions) {
-				if err := writer.WriteField(key, fmt.Sprintf("%v", value)); err != nil {
-					return err
-				}
-			}
-
-			imageField := "image"
-			if len(opts.Files) > 1 {
-				imageField = "image[]"
-			}
-			for i, file := range opts.Files {
-				if err := writeImageFilePart(ctx, writer, imageField, fmt.Sprintf("image-%d.png", i), file); err != nil {
-					return err
-				}
-			}
-			if opts.Mask != nil {
-				if err := writeImageFilePart(ctx, writer, "mask", "mask.png", *opts.Mask); err != nil {
+			sort.Strings(rest)
+			for _, key := range rest {
+				if err := writeDeepInfraFormValue(writer, key, options[key]); err != nil {
 					return err
 				}
 			}
@@ -302,21 +420,84 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 	return pr, writer.FormDataContentType(), nil
 }
 
-func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
-	part, err := writer.CreateFormFile(fieldName, filename)
+// writeDeepInfraFormValue appends a provider option like TS
+// convertToFormData: null is skipped, an array is appended element by
+// element under the same name, and other values use JS String(value).
+func writeDeepInfraFormValue(writer *multipart.Writer, key string, value interface{}) error {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		for _, item := range v {
+			if err := providerutils.WriteFormDataField(writer, key, deepInfraFormString(item)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []string:
+		for _, item := range v {
+			if err := providerutils.WriteFormDataField(writer, key, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return providerutils.WriteFormDataField(writer, key, deepInfraFormString(value))
+}
+
+func deepInfraFormString(value interface{}) string {
+	switch v := value.(type) {
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case float32:
+		return providerutils.JSNumberString(float64(v))
+	}
+	return providerutils.JSString(value)
+}
+
+// deepInfraBlob is the Blob TS fileToBlob resolves for an edit file.
+type deepInfraBlob struct {
+	data      []byte
+	mediaType string
+}
+
+// deepInfraFileToBlob is TS fileToBlob.
+func deepInfraFileToBlob(ctx context.Context, file provider.ImageFile) (deepInfraBlob, error) {
+	if file.Type == "url" {
+		// TS fileToBlob: downloadBlob(file.url) types the Blob with the
+		// response content-type (none without one), not file.mediaType.
+		res, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.NoTimeoutDownloadOptions())
+		if err != nil {
+			return deepInfraBlob{}, err
+		}
+		return deepInfraBlob{data: res.Data, mediaType: res.ContentType}, nil
+	}
+	return deepInfraBlob{data: file.Data, mediaType: file.MediaType}, nil
+}
+
+func writeImageFilePart(writer *multipart.Writer, fieldName string, blob deepInfraBlob) error {
+	// TS appends a typed Blob (filename "blob").
+	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", blob.mediaType)
 	if err != nil {
 		return err
 	}
-	if file.Type == "url" && file.URL != "" {
-		data, err := fileutil.Download(ctx, file.URL, fileutil.DefaultDownloadOptions())
-		if err != nil {
-			return err
-		}
-		_, err = part.Write(data)
-		return err
-	}
-	_, err = part.Write(file.Data)
+	_, err = part.Write(blob.data)
 	return err
+}
+
+// deepInfraImageOptionsSchema is deepInfraImageModelOptionsSchema (a loose
+// object: unknown keys pass; null is accepted for every declared key).
+var deepInfraImageOptionsSchema = providerutils.OptionSchema{
+	"negative_prompt":     providerutils.OptNullable(providerutils.OptString),
+	"num_inference_steps": providerutils.OptNullable(providerutils.OptNumber),
+	"guidance_scale":      providerutils.OptNullable(providerutils.OptNumber),
+	"guidance":            providerutils.OptNullable(providerutils.OptNumber),
+	"response_format":     providerutils.OptNullable(providerutils.OptEnum("b64_json")),
+	"quality":             providerutils.OptNullable(providerutils.OptString),
+	"style":               providerutils.OptNullable(providerutils.OptString),
+	"user":                providerutils.OptNullable(providerutils.OptString),
 }
 
 // deepInfraImageOptions returns providerOptions.deepinfra as-is (a loose,
@@ -326,6 +507,7 @@ func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName
 // response_format, quality, style, and user pass through untransformed, and
 // any other key the caller sets is forwarded too.
 func deepInfraImageOptions(providerOptions map[string]interface{}) map[string]interface{} {
-	opts, _ := providerOptions["deepinfra"].(map[string]interface{})
+	// Go-typed literals read like their JSON form (OVC-01).
+	opts, _ := providerutils.NormalizeOptionsJSON(providerOptions)["deepinfra"].(map[string]interface{})
 	return opts
 }

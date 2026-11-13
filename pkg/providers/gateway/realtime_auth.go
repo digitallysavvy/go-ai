@@ -3,6 +3,8 @@ package gateway
 import (
 	"encoding/base64"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const (
@@ -12,6 +14,11 @@ const (
 	// transcription handshake (same negotiation purpose as
 	// GatewayRealtimeSubprotocol), TS GATEWAY_TRANSCRIPTION_SUBPROTOCOL.
 	GatewayTranscriptionSubprotocol = "ai-gateway-transcription.v1"
+
+	// GatewaySpeechSubprotocol is offered on every streaming speech
+	// handshake (same negotiation purpose as GatewayRealtimeSubprotocol), TS
+	// GATEWAY_SPEECH_SUBPROTOCOL.
+	GatewaySpeechSubprotocol = "ai-gateway-speech.v1"
 
 	GatewayAuthSubprotocolPrefix = "ai-gateway-auth."
 	GatewayTeamSubprotocolPrefix = "ai-gateway-team."
@@ -51,6 +58,12 @@ func GetGatewayTranscriptionProtocols(token string, teamIDOrSlug string) []strin
 	return buildGatewayProtocols(GatewayTranscriptionSubprotocol, token, teamIDOrSlug)
 }
 
+// GetGatewaySpeechProtocols is GetGatewayRealtimeProtocols with the streaming
+// speech marker subprotocol (TS getGatewaySpeechProtocols).
+func GetGatewaySpeechProtocols(token string, teamIDOrSlug string) []string {
+	return buildGatewayProtocols(GatewaySpeechSubprotocol, token, teamIDOrSlug)
+}
+
 func buildGatewayProtocols(marker, token, teamIDOrSlug string) []string {
 	protocols := []string{
 		marker,
@@ -84,7 +97,7 @@ func GetGatewayRealtimeTeamIDOrSlug(secWebSocketProtocol string) string {
 
 func findProtocol(header string, prefix string) string {
 	for _, part := range strings.Split(header, ",") {
-		protocol := strings.TrimSpace(part)
+		protocol := providerutils.JSTrim(part) // TS protocol.trim()
 		if strings.HasPrefix(protocol, prefix) {
 			return protocol
 		}
@@ -97,6 +110,9 @@ func encodeSubprotocolValue(value string) string {
 }
 
 func decodeSubprotocolValue(value string) (string, error) {
+	// TS maps -/_ to +/ and pads before atob, so standard-alphabet characters
+	// and explicit padding decode as well.
+	value = strings.NewReplacer("+", "-", "/", "_").Replace(strings.TrimRight(value, "="))
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
 		return "", err

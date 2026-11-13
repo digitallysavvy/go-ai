@@ -3,22 +3,21 @@ package anthropicaws
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	anthropictools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const (
@@ -45,6 +44,14 @@ type Config struct {
 	Headers            map[string]string  `json:"headers,omitempty"`
 	HTTPClient         *http.Client       `json:"-"`
 	CredentialProvider CredentialProvider `json:"-"`
+	// APIKeyFunc resolves the x-api-key credential before each request (TS
+	// apiKey given as a function). It must return a non-empty key
+	// ("Anthropic AWS API key must be a non-empty string." otherwise), wins
+	// over the environment and SigV4, and cannot be combined with APIKey.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+	// GenerateID creates the ids of generated sources (TS generateId
+	// provider setting). Defaults to a random id.
+	GenerateID func() string `json:"-"`
 }
 
 type Provider struct {
@@ -58,14 +65,28 @@ type Provider struct {
 func New(cfg Config) (*Provider, error) {
 	region := firstNonEmpty(cfg.Region, os.Getenv("AWS_REGION"))
 	if cfg.BaseURL == "" && region == "" {
-		return nil, fmt.Errorf("anthropicaws: AWS region is required; set Config.Region or AWS_REGION")
+		// TS getRegion: loadSetting's LoadSettingError.
+		return nil, providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION")
+	}
+	// The region is interpolated into the default endpoint host, so only a
+	// single DNS label is accepted (TS anthropic-aws getRegion); a value such
+	// as "evil.example.com/#" would otherwise redirect the request, including
+	// its x-api-key header. Custom endpoints go through BaseURL.
+	if cfg.BaseURL == "" && !providerutils.IsValidHostnamePart(region) {
+		return nil, providererrors.NewArgumentError(
+			"region",
+			"Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", //nolint:staticcheck // matches TS SDK's exact error text
+			nil,
+		)
 	}
 	workspaceID := firstNonEmpty(cfg.WorkspaceID, os.Getenv("ANTHROPIC_AWS_WORKSPACE_ID"))
 	if workspaceID == "" {
-		return nil, fmt.Errorf("anthropicaws: workspaceId is required; set Config.WorkspaceID or ANTHROPIC_AWS_WORKSPACE_ID")
+		// TS getHeaders: loadSetting's LoadSettingError (Go checks it when
+		// the provider is created, as v0.5 did).
+		return nil, providererrors.NewLoadSettingError("Anthropic AWS workspace ID", "workspaceId", "ANTHROPIC_AWS_WORKSPACE_ID")
 	}
 
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = fmt.Sprintf("https://aws-external-anthropic.%s.api.aws/v1", region)
 	}
@@ -75,23 +96,27 @@ func New(cfg Config) (*Provider, error) {
 		"anthropic-workspace-id": workspaceID,
 	}, cfg.Headers)
 
-	apiKey := firstNonEmpty(cfg.APIKey, os.Getenv("ANTHROPIC_AWS_API_KEY"))
-	httpClient := cfg.HTTPClient
-	var transport *sigV4Transport
-	if apiKey != "" {
-		headers["x-api-key"] = apiKey
-	} else {
-		transport = &sigV4Transport{
-			base:               baseRoundTripper(httpClient),
-			region:             region,
-			accessKeyID:        cfg.AccessKeyID,
-			secretAccessKey:    cfg.SecretAccessKey,
-			sessionToken:       cfg.SessionToken,
-			credentialProvider: cfg.CredentialProvider,
-		}
-		httpClient = cloneHTTPClient(httpClient)
-		httpClient.Transport = transport
+	// TS createAnthropicAws reads ANTHROPIC_AWS_API_KEY once, when the
+	// provider is created (loadOptionalSetting), and picks x-api-key or SigV4
+	// then; with no key, requests are SigV4-signed (credentials are loaded per
+	// request). An APIKeyFunc is resolved per request instead.
+	apiKey := cfg.APIKey
+	if cfg.APIKeyFunc == nil {
+		apiKey = providerutils.APIKeyOrEnv(cfg.APIKey, "ANTHROPIC_AWS_API_KEY")
 	}
+	httpClient := cloneHTTPClient(cfg.HTTPClient)
+	transport := &sigV4Transport{
+		base:               baseRoundTripper(cfg.HTTPClient),
+		region:             region,
+		apiKey:             apiKey,
+		apiKeyFunc:         cfg.APIKeyFunc,
+		accessKeyID:        cfg.AccessKeyID,
+		secretAccessKey:    cfg.SecretAccessKey,
+		sessionToken:       cfg.SessionToken,
+		credentialProvider: cfg.CredentialProvider,
+		baseURL:            baseURL,
+	}
+	httpClient.Transport = transport
 
 	inner := anthropic.New(anthropic.Config{
 		Name:          "anthropic-aws.messages",
@@ -99,6 +124,7 @@ func New(cfg Config) (*Provider, error) {
 		Headers:       headers,
 		HTTPClient:    httpClient,
 		UserAgentName: "anthropic-aws",
+		GenerateID:    cfg.GenerateID,
 	})
 
 	return &Provider{config: cfg, inner: inner, region: region, baseURL: baseURL, transport: transport}, nil
@@ -119,23 +145,23 @@ func (p *Provider) LanguageModelWithOptions(modelID string, options *anthropic.M
 }
 
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 func (p *Provider) Files() provider.FilesAPI {
@@ -160,10 +186,15 @@ func (p *Provider) LastSigningCredentials() Credentials {
 type sigV4Transport struct {
 	base               http.RoundTripper
 	region             string
+	apiKey             string
+	apiKeyFunc         providerutils.APIKeyFunc
 	accessKeyID        string
 	secretAccessKey    string
 	sessionToken       string
 	credentialProvider CredentialProvider
+	// baseURL is the endpoint: the API key or SigV4 signature goes only to
+	// requests of its origin (a redirect hop to another origin gets none).
+	baseURL string
 
 	// lastCredentials and its mutex guard the diagnostic
 	// LastSigningCredentials() accessor against concurrent RoundTrip calls.
@@ -187,24 +218,69 @@ func (t *sigV4Transport) setLastCredentials(creds Credentials) {
 	t.lastCredsMu.Unlock()
 }
 
+// RoundTrip closes the request body on every error, as the
+// http.RoundTripper contract requires (also before the base transport runs).
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Method != http.MethodPost || req.Body == nil {
+	resp, err := t.roundTrip(req)
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
+	if !providerutils.IsSameOrigin(req.URL.String(), t.baseURL) {
+		return t.base.RoundTrip(req)
+	}
+	if t.apiKeyFunc != nil {
+		// TS createApiKeyFetchFunction: a resolvable key is resolved per
+		// request, must be a non-empty string and is sent as resolved.
+		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
+			APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Anthropic AWS", RequireNonEmpty: true,
+		})
+		if err != nil {
+			return nil, internalhttp.RejectFetch(err)
+		}
+		req = req.Clone(req.Context())
+		req.Header.Set("x-api-key", key)
+		return t.base.RoundTrip(req)
+	}
+	if t.apiKey != "" {
+		req = req.Clone(req.Context())
+		req.Header.Set("x-api-key", t.apiKey)
+		return t.base.RoundTrip(req)
+	}
+	// A hop back to the API origin after a foreign hop (A -> B -> A) is not
+	// re-signed: fetch dropped the signed Authorization on the foreign hop
+	// and never adds it back (the x-api-key header above is kept, as fetch
+	// keeps it).
+	if req.Method != http.MethodPost || req.Body == nil || providerutils.IsCrossOriginRedirectHop(req) {
 		return t.base.RoundTrip(req)
 	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	_ = req.Body.Close()
+	// Sign and send a clone: a RoundTripper must not modify the caller's
+	// request.
+	req = req.Clone(req.Context())
 	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	req.ContentLength = int64(len(body))
 
+	// TS loads the region first, at request time, and fails when it is
+	// missing even if a custom baseURL made it unnecessary for routing.
+	region := firstNonEmpty(t.region, os.Getenv("AWS_REGION"))
+	if region == "" {
+		return nil, internalhttp.RejectFetch(providererrors.NewLoadSettingError("AWS region", "region", "AWS_REGION"))
+	}
 	creds, err := t.credentials(req.Context())
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	t.setLastCredentials(creds)
-	signAWSRequest(req, body, t.region, creds)
+	signAWSRequest(req, body, region, creds)
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return t.base.RoundTrip(req)
 }
@@ -213,10 +289,15 @@ func (t *sigV4Transport) credentials(ctx context.Context) (Credentials, error) {
 	if t.credentialProvider != nil {
 		creds, err := t.credentialProvider(ctx)
 		if err != nil {
-			return Credentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties", err)
+			return Credentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err) //nolint:staticcheck // message text matches TS
 		}
-		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-			return Credentials{}, fmt.Errorf("AWS credential provider failed: missing accessKeyId or secretAccessKey. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties")
+		// TS signs with the provider's credentials as returned; aws4fetch's
+		// AwsV4Signer then throws its TypeError for a missing key.
+		if creds.AccessKeyID == "" {
+			return Credentials{}, errors.New("accessKeyId is a required option")
+		}
+		if creds.SecretAccessKey == "" {
+			return Credentials{}, errors.New("secretAccessKey is a required option")
 		}
 		return creds, nil
 	}
@@ -225,79 +306,22 @@ func (t *sigV4Transport) credentials(ctx context.Context) (Credentials, error) {
 	secretAccessKey := firstNonEmpty(t.secretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
 	sessionToken := firstNonEmpty(t.sessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 	if accessKeyID == "" {
-		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in Config\n3. Use a CredentialProvider function\n4. Use API key authentication with ANTHROPIC_AWS_API_KEY or Config.APIKey")
+		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide accessKeyId and secretAccessKey in options\n3. Use a credentialProvider function\n4. Use API key authentication with ANTHROPIC_AWS_API_KEY or apiKey option\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	if secretAccessKey == "" {
-		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided")
+		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	return Credentials{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, SessionToken: sessionToken}, nil
 }
 
+// signAWSRequest signs req with AWS SigV4 for the aws-external-anthropic
+// service, using the shared Bedrock signer, which canonicalizes like
+// aws4fetch (the TS anthropic-aws-fetch.ts signer): the path is URI-encoded
+// a second time, header values are trimmed with runs of whitespace
+// collapsed, the query is canonicalized, and non-ASCII header values are not
+// signed (TS #22265).
 func signAWSRequest(req *http.Request, payload []byte, region string, creds Credentials) {
-	now := time.Now().UTC()
-	req.Header.Set("Host", req.URL.Host)
-	req.Header.Set("X-Amz-Date", now.Format("20060102T150405Z"))
-	if creds.SessionToken != "" {
-		req.Header.Set("X-Amz-Security-Token", creds.SessionToken)
-	}
-
-	canonicalRequest := canonicalRequest(req, payload)
-	scope := fmt.Sprintf("%s/%s/%s/aws4_request", now.Format("20060102"), region, serviceName)
-	hash := sha256.Sum256([]byte(canonicalRequest))
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s", now.Format("20060102T150405Z"), scope, hex.EncodeToString(hash[:]))
-	signature := signingSignature(creds.SecretAccessKey, now, region, stringToSign)
-	signedHeaders := signedHeaders(req.Header)
-	req.Header.Set("Authorization", fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s", creds.AccessKeyID, scope, signedHeaders, signature))
-}
-
-func canonicalRequest(req *http.Request, payload []byte) string {
-	payloadHash := sha256.Sum256(payload)
-	canonicalHeaders, signed := canonicalHeaders(req.Header)
-	path := req.URL.EscapedPath()
-	if path == "" {
-		path = "/"
-	}
-	return strings.Join([]string{req.Method, path, req.URL.RawQuery, canonicalHeaders, signed, hex.EncodeToString(payloadHash[:])}, "\n")
-}
-
-func canonicalHeaders(headers http.Header) (string, string) {
-	keys := make([]string, 0, len(headers))
-	values := map[string]string{}
-	for k, vals := range headers {
-		lower := strings.ToLower(k)
-		keys = append(keys, lower)
-		if len(vals) > 0 {
-			values[lower] = strings.TrimSpace(vals[0])
-		}
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteString(":")
-		b.WriteString(values[k])
-		b.WriteString("\n")
-	}
-	return b.String(), strings.Join(keys, ";")
-}
-
-func signedHeaders(headers http.Header) string {
-	_, signed := canonicalHeaders(headers)
-	return signed
-}
-
-func signingSignature(secret string, now time.Time, region, stringToSign string) string {
-	kDate := hmacSHA256([]byte("AWS4"+secret), []byte(now.Format("20060102")))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte(serviceName))
-	kSigning := hmacSHA256(kService, []byte("aws4_request"))
-	return hex.EncodeToString(hmacSHA256(kSigning, []byte(stringToSign)))
-}
-
-func hmacSHA256(key, data []byte) []byte {
-	h := hmac.New(sha256.New, key)
-	_, _ = h.Write(data)
-	return h.Sum(nil)
+	_ = bedrock.NewAWSSignerForService(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region, serviceName).SignRequest(req, payload)
 }
 
 func baseRoundTripper(client *http.Client) http.RoundTripper {

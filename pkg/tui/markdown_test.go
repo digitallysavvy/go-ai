@@ -39,3 +39,14 @@ func TestRenderMarkdownTables(t *testing.T) {
 		t.Fatalf("table = %q, want %q", got, want)
 	}
 }
+
+func TestRenderMarkdownBulletRequiresJSDotMatch(t *testing.T) {
+	// JS `.` does not match U+2028, so `^(\s*)[-+*]\s+(.*)$` fails and the
+	// line is rendered as plain text rather than a bullet.
+	if got := RenderMarkdown("- a b"); got != "- a b" {
+		t.Fatalf("got %q", got)
+	}
+	if got := RenderMarkdown("- a"); got != "• a" {
+		t.Fatalf("got %q", got)
+	}
+}

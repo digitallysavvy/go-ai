@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // LanguageModel implements the Arrow 2 / Arrow 2 Telos QuiverAI language
@@ -114,10 +117,19 @@ func deserializeQuiverAIModel(serialized provider.SerializedModel) (provider.Lan
 	return p.LanguageModel(serialized.ModelID)
 }
 
+// quiverAIReasoningEffortMap is the TS prepareQuiverAICall effortMap: the
+// levels QuiverAI accepts.
+var quiverAIReasoningEffortMap = map[types.ReasoningLevel]string{
+	types.ReasoningLow:    "low",
+	types.ReasoningMedium: "medium",
+	types.ReasoningHigh:   "high",
+	types.ReasoningXHigh:  "xhigh",
+}
+
 // prepareQuiverAICall applies QuiverAI's request policy to a call's options,
 // mirroring TS's prepareQuiverAICall: validates providerOptions.quiverai
-// reasoning fields, omits a `reasoning: "none"` request the underlying
-// Responses transport can't natively express (warning instead), and strips
+// reasoning fields, maps the top-level reasoning to a supported level when
+// providerOptions.quiverai.reasoningEffort is unset, and strips
 // private/encrypted reasoning text from replayed assistant history down to
 // its opaque item id + safe summary.
 func prepareQuiverAICall(opts *provider.GenerateOptions) (*provider.GenerateOptions, []types.Warning, error) {
@@ -125,26 +137,22 @@ func prepareQuiverAICall(opts *provider.GenerateOptions) (*provider.GenerateOpti
 		opts = &provider.GenerateOptions{}
 	}
 
-	raw, _ := opts.ProviderOptions["quiverai"].(map[string]interface{})
+	// Go-typed literals (the exported options struct, map[string]string)
+	// read like their JSON form (OVC-01).
+	raw, _ := providerutils.NormalizeOptionsJSON(opts.ProviderOptions)["quiverai"].(map[string]interface{})
 	var reasoningEffort, reasoningSummary string
 	if raw != nil {
 		if v, ok := raw["reasoningEffort"]; ok && v != nil {
 			s, ok := v.(string)
 			if !ok || !quiverLanguageReasoningEfforts[s] {
-				return nil, nil, &providererrors.InvalidArgumentError{
-					Field:   "providerOptions",
-					Message: fmt.Sprintf("Unsupported reasoning effort: %v", v),
-				}
+				return nil, nil, providererrors.NewArgumentError("providerOptions", "Unsupported reasoning effort: "+quiverTemplateString(v), nil)
 			}
 			reasoningEffort = s
 		}
 		if v, ok := raw["reasoningSummary"]; ok && v != nil {
 			s, ok := v.(string)
 			if !ok || s != "auto" {
-				return nil, nil, &providererrors.InvalidArgumentError{
-					Field:   "providerOptions",
-					Message: fmt.Sprintf("Unsupported reasoning summary: %v", v),
-				}
+				return nil, nil, providererrors.NewArgumentError("providerOptions", "Unsupported reasoning summary: "+quiverTemplateString(v), nil)
 			}
 			reasoningSummary = s
 		}
@@ -152,14 +160,15 @@ func prepareQuiverAICall(opts *provider.GenerateOptions) (*provider.GenerateOpti
 	_ = reasoningSummary
 
 	var warnings []types.Warning
-	omitReasoning := opts.Reasoning != nil && *opts.Reasoning == types.ReasoningNone && reasoningEffort == ""
-	if omitReasoning {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "reasoning effort none"})
-	}
-
 	prepared := *opts
-	if omitReasoning {
+	if reasoningEffort == "" && providerutils.IsCustomReasoning(opts.Reasoning) {
+		// TS 61a315e333: round the top-level reasoning to a level QuiverAI
+		// supports ("none" and "minimal" to "low", "max" to "xhigh").
 		prepared.Reasoning = nil
+		if effort, ok := providerutils.MapReasoningToProviderEffort(opts.Reasoning, quiverAIReasoningEffortMap, nil, &warnings); ok {
+			level := types.ReasoningLevel(effort)
+			prepared.Reasoning = &level
+		}
 	}
 	prepared.Prompt.Messages = quiverAIStripReasoningText(opts.Prompt.Messages)
 
@@ -187,16 +196,24 @@ func quiverAIStripReasoningText(messages []types.Message) []types.Message {
 				continue
 			}
 			changed = true
-			itemID, reasoningSummary := quiverAIReasoningMetadata(rc)
 			newOptions := map[string]interface{}{}
 			for k, v := range rc.ProviderOptions {
 				newOptions[k] = v
 			}
-			newOptions["quiverai"] = map[string]interface{}{
-				"itemId":           itemID,
-				"reasoningSummary": reasoningSummary,
+			// TS {itemId: metadata?.itemId, reasoningSummary:
+			// metadata?.reasoningSummary}: each value as given (undefined
+			// when absent), so the Open Responses converter sends an item id
+			// only for a string itemId.
+			replay := map[string]interface{}{}
+			metadata := quiverAIReasoningMetadata(rc)
+			for _, key := range []string{"itemId", "reasoningSummary"} {
+				if v, ok := metadata[key]; ok && v != nil {
+					replay[key] = v
+				}
 			}
+			newOptions["quiverai"] = replay
 			rc.Text = ""
+			rc.EncryptedContent = ""
 			rc.ProviderOptions = newOptions
 			newContent[j] = rc
 		}
@@ -216,16 +233,14 @@ func quiverAIStripReasoningText(messages []types.Message) []types.Message {
 // when providerOptions carries no quiverai key at all -- mirrors TS's
 // `part.providerOptions?.quiverai ?? part.providerMetadata?.quiverai`
 // (checked as a whole, not per-field).
-func quiverAIReasoningMetadata(rc types.ReasoningContent) (itemID string, reasoningSummary interface{}) {
-	metadata, ok := rc.ProviderOptions["quiverai"].(map[string]interface{})
-	if !ok {
-		metadata = decodeQuiverAIProviderMetadata(rc.ProviderMetadata)
+func quiverAIReasoningMetadata(rc types.ReasoningContent) map[string]interface{} {
+	// Typed part options read like their JSON form (OVC-01); TS `??`
+	// falls back only for a missing or null quiverai key.
+	if value, present := providerutils.NormalizeOptionsJSON(rc.ProviderOptions)["quiverai"]; present && value != nil {
+		metadata, _ := value.(map[string]interface{})
+		return metadata
 	}
-	if metadata == nil {
-		return "", nil
-	}
-	id, _ := metadata["itemId"].(string)
-	return id, metadata["reasoningSummary"]
+	return decodeQuiverAIProviderMetadata(rc.ProviderMetadata)
 }
 
 // decodeQuiverAIProviderMetadata decodes the "quiverai" key out of a
@@ -243,8 +258,26 @@ func decodeQuiverAIProviderMetadata(raw json.RawMessage) map[string]interface{} 
 		return nil
 	}
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(quiverRaw, &metadata); err != nil {
+	// TS reads the in-memory prompt object (no JSON parse), so a __proto__
+	// key is an ordinary property.
+	if err := jsonexact.UnmarshalPlain(quiverRaw, &metadata); err != nil {
 		return nil
 	}
 	return metadata
+}
+
+// quiverTemplateString is the JS template literal `${value}` of a provider
+// option: JS String() of a JSON-decoded value (an array joins its elements,
+// an object is "[object Object]"), with Go integer and float32 values as
+// numbers.
+func quiverTemplateString(v interface{}) string {
+	switch x := v.(type) {
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case float32:
+		return providerutils.JSNumberString(float64(x))
+	}
+	return providerutils.JSString(v)
 }

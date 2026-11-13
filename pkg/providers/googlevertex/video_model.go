@@ -10,6 +10,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -35,10 +36,10 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *VideoModel) SpecificationVersion() string { return "v3" }
+func (m *VideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *VideoModel) Provider() string { return "google-vertex" }
+func (m *VideoModel) Provider() string { return "google.vertex.video" }
 
 // ModelID returns the model ID.
 func (m *VideoModel) ModelID() string { return m.modelID }
@@ -79,24 +80,45 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 	if opts == nil {
 		return nil, nil, nil
 	}
-	raw, ok := opts["googleVertex"]
-	if !ok {
-		raw, ok = opts["vertex"]
+	// TS parseProviderOptions returns undefined for a null/absent entry, so
+	// a nil "googleVertex" value falls through to the legacy "vertex" key.
+	raw := opts["googleVertex"]
+	key := "googleVertex"
+	if raw == nil {
+		raw = opts["vertex"]
+		key = "vertex"
 	}
-	if !ok {
+	if raw == nil {
 		return nil, nil, nil
 	}
+	invalidVertexVideoOptions := func(cause error) error { return invalidVertexVideoOptionsFor(key, cause) }
 	jsonData, err := json.Marshal(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal googleVertex video provider options: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to marshal googleVertex video provider options: %w", err))
 	}
 	var provOpts GoogleVertexVideoModelOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal googleVertex video provider options: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to unmarshal googleVertex video provider options: %w", err))
 	}
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(jsonData, &rawMap); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal googleVertex video provider options map: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to unmarshal googleVertex video provider options map: %w", err))
+	}
+	// TS googleVertexVideoModelOptionsSchema: personGeneration is an enum and
+	// the poll settings are positive numbers.
+	if provOpts.PersonGeneration != nil {
+		switch *provOpts.PersonGeneration {
+		case "dont_allow", "allow_adult", "allow_all":
+		default:
+			return nil, nil, invalidVertexVideoOptions(fmt.Errorf("personGeneration: invalid option %q, expected one of dont_allow, allow_adult, allow_all", *provOpts.PersonGeneration))
+		}
+	}
+	for _, key := range []string{"pollIntervalMs", "pollTimeoutMs"} {
+		if v, ok := rawMap[key]; ok && v != nil {
+			if n, isNum := v.(float64); !isNum || n <= 0 {
+				return nil, nil, invalidVertexVideoOptions(fmt.Errorf("%s: expected a positive number", key))
+			}
+		}
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
@@ -105,6 +127,12 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 		}
 	}
 	return &provOpts, extra, nil
+}
+
+// invalidVertexVideoOptionsFor mirrors TS parseProviderOptions, which names
+// the key it parsed (googleVertex or the legacy vertex).
+func invalidVertexVideoOptionsFor(key string, cause error) error {
+	return providererrors.NewArgumentError("providerOptions", "invalid "+key+" provider options", cause)
 }
 
 func vertexVideoGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
@@ -260,8 +288,8 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[s
 		parameters["durationSeconds"] = *opts.Duration
 	}
 
-	// TS: `if (options.seed)` -- falsy (including 0) is skipped.
-	if opts.Seed != nil && *opts.Seed != 0 {
+	// TS (ef2dfb5e9f): `if (options.seed != null)` -- seed 0 is sent.
+	if opts.Seed != nil {
 		parameters["seed"] = *opts.Seed
 	}
 
@@ -313,11 +341,12 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	var operation vertexVideoOperationWire
-	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
-		Body:    body,
-		Headers: callOpts.Headers,
+	httpResp, err := m.prov.mainClient().DoJSONResponse(ctx, internalhttp.Request{
+		ValidateResponse: vertexValidator(m.Provider(), zVertexOperation),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
+		Body:             body,
+		Headers:          callOpts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -354,11 +383,12 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	var operation vertexVideoOperationWire
-	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/models/%s:fetchPredictOperation", m.modelID),
-		Body:    map[string]interface{}{"operationName": op.OperationName},
-		Headers: opts.Headers,
+	httpResp, err := m.prov.mainClient().DoJSONResponse(ctx, internalhttp.Request{
+		ValidateResponse: vertexValidator(m.Provider(), zVertexOperation),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/models/%s:fetchPredictOperation", m.modelID),
+		Body:             map[string]interface{}{"operationName": op.OperationName},
+		Headers:          opts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -382,7 +412,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}, nil
 	}
 
-	return m.buildCompletedResult(&operation, responseInfo)
+	return m.buildCompletedResult(&operation, httpResp.Body, responseInfo)
 }
 
 // buildCompletedResult converts a done operation's response into a
@@ -390,16 +420,22 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 // Each video is either inline base64 data (bytesBase64Encoded) or a GCS URI,
 // depending on whether providerOptions.googleVertex.gcsOutputDirectory was
 // set.
-func (m *VideoModel) buildCompletedResult(operation *vertexVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
-	if operation.Response == nil || len(operation.Response.Videos) == 0 {
-		raw, _ := json.Marshal(operation)
-		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
+func (m *VideoModel) buildCompletedResult(operation *vertexVideoOperationWire, body []byte, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+	if operation.Response == nil || operation.Response.Videos == nil || len(*operation.Response.Videos) == 0 {
+		// TS JSON.stringify(finalOperation): the googleVertexOperationSchema
+		// parse result (schema keys in schema order, nulls kept).
+		text, ok := zodStripText(body, vertexOperationShape)
+		if !ok {
+			raw, _ := json.Marshal(operation)
+			text = string(raw)
+		}
+		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, fmt.Sprintf("No videos in response. Response: %s", text), nil)
 	}
 
 	videos := []provider.VideoModelV3VideoData{}
 	videoMetadata := []map[string]interface{}{}
 
-	for _, v := range operation.Response.Videos {
+	for _, v := range *operation.Response.Videos {
 		mediaType := v.MimeType
 		if mediaType == "" {
 			mediaType = "video/mp4"
@@ -506,24 +542,26 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	// than TS by default.
 	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
+	// Typed-option ruling: Go-typed literals are read in their JSON form.
+	providerOpts = providerutils.NormalizeOptionsJSON(providerOpts)
 	if providerOpts != nil {
-		raw, ok := providerOpts["googleVertex"]
-		if !ok {
-			raw, ok = providerOpts["vertex"]
+		// A null "googleVertex" entry falls through to "vertex", like TS
+		// parseProviderOptions treating null as absent.
+		raw := providerOpts["googleVertex"]
+		if raw == nil {
+			raw = providerOpts["vertex"]
 		}
-		if ok {
-			if vertexOpts, ok := raw.(map[string]interface{}); ok {
-				// CoerceInt (not a bare `.(int)` assertion) because
-				// providerOpts commonly arrives via encoding/json.Unmarshal
-				// (a JSON config file, or a request body forwarded straight
-				// into ProviderOptions), which decodes JSON numbers as
-				// float64, not int.
-				if interval, ok := providerutils.CoerceInt(vertexOpts["pollIntervalMs"]); ok {
-					opts.PollIntervalMs = interval
-				}
-				if timeout, ok := providerutils.CoerceInt(vertexOpts["pollTimeoutMs"]); ok {
-					opts.PollTimeoutMs = timeout
-				}
+		if vertexOpts, ok := raw.(map[string]interface{}); ok {
+			// CoerceInt (not a bare `.(int)` assertion) because
+			// providerOpts commonly arrives via encoding/json.Unmarshal
+			// (a JSON config file, or a request body forwarded straight
+			// into ProviderOptions), which decodes JSON numbers as
+			// float64, not int.
+			if interval, ok := providerutils.CoerceInt(vertexOpts["pollIntervalMs"]); ok {
+				opts.PollIntervalMs = interval
+			}
+			if timeout, ok := providerutils.CoerceInt(vertexOpts["pollTimeoutMs"]); ok {
+				opts.PollTimeoutMs = timeout
 			}
 		}
 	}
@@ -531,40 +569,119 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	return opts
 }
 
+// VideoStartStatusPollDefaults marks the model as start/status only (TS
+// GoogleVertexVideoModel has no doGenerate), so ai.GenerateVideo drives it through the
+// core start/status flow (TS generate-video.ts useStartStatus). It returns
+// the v0.5.2 pollIntervalMs / pollTimeoutMs provider options (0 when unset:
+// the core 5000 / 600000 defaults), which TS ignores; Go keeps honoring them
+// (v0.5.2 contract, S6).
+func (m *VideoModel) VideoStartStatusPollDefaults(providerOptions map[string]interface{}) (intervalMs, timeoutMs int) {
+	raw := providerOptions["googleVertex"]
+	if raw == nil {
+		raw = providerOptions["vertex"]
+	}
+	opts, _ := raw.(map[string]interface{})
+	if v, ok := providerutils.CoerceInt(opts["pollIntervalMs"]); ok && v > 0 {
+		intervalMs = v
+	}
+	if v, ok := providerutils.CoerceInt(opts["pollTimeoutMs"]); ok && v > 0 {
+		timeoutMs = v
+	}
+	return intervalMs, timeoutMs
+}
+
 func (m *VideoModel) handleError(err error) error {
-	return NewLanguageModel(m.prov, "").HandleError(err)
+	// TS google-vertex-video-model.ts: googleVertexFailedResponseHandler.
+	return vertexHandleError(NewLanguageModel(m.prov, "").Provider(), err)
 }
 
 // convertVertexVideoHeaders flattens net/http.Header into map[string]string,
-// taking the first value for each header key.
+// like TS extractResponseHeaders.
 func convertVertexVideoHeaders(h http.Header) map[string]string {
 	if len(h) == 0 {
 		return map[string]string{}
 	}
-	out := make(map[string]string, len(h))
-	for k, vals := range h {
-		if len(vals) > 0 {
-			out[k] = vals[0]
-		}
-	}
-	return out
+	// TS extractResponseHeaders: repeated values are joined with ", ".
+	return providerutils.ExtractHeaders(h)
 }
 
 // vertexVideoOperationWire mirrors TS googleVertexOperationSchema.
 type vertexVideoOperationWire struct {
-	Name  string `json:"name"`
+	// omitempty and the Videos pointer keep the "No videos in response"
+	// error text equal to TS JSON.stringify of the parsed operation (an
+	// absent name is left out; an empty videos array prints as []).
+	Name  string `json:"name,omitempty"`
 	Done  bool   `json:"done"`
 	Error *struct {
-		Code    *int   `json:"code,omitempty"`
-		Message string `json:"message"`
-		Status  string `json:"status,omitempty"`
+		Code    *float64 `json:"code,omitempty"` // z.number(): a fraction decodes
+		Message string   `json:"message"`
+		Status  string   `json:"status,omitempty"`
 	} `json:"error,omitempty"`
 	Response *struct {
-		Videos []struct {
+		Videos *[]struct {
 			BytesBase64Encoded string `json:"bytesBase64Encoded,omitempty"`
 			GcsURI             string `json:"gcsUri,omitempty"`
 			MimeType           string `json:"mimeType,omitempty"`
 		} `json:"videos,omitempty"`
-		RaiMediaFilteredCount *int `json:"raiMediaFilteredCount,omitempty"`
+		RaiMediaFilteredCount *float64 `json:"raiMediaFilteredCount,omitempty"` // z.number()
 	} `json:"response,omitempty"`
+}
+
+// vertexOperationShape is googleVertexOperationSchema.
+var vertexOperationShape = zodShape{
+	{key: "name"}, {key: "done"},
+	{key: "error", obj: zodShape{{key: "code"}, {key: "message"}, {key: "status"}}},
+	{key: "response", obj: zodShape{
+		{key: "videos", elem: zodShape{{key: "bytesBase64Encoded"}, {key: "gcsUri"}, {key: "mimeType"}}},
+		{key: "raiMediaFilteredCount"},
+	}},
+}
+
+// zodShape lists an object schema's keys in schema order; obj is a nested
+// object schema and elem an array's element object schema.
+type zodShape []zodShapeField
+
+type zodShapeField struct {
+	key  string
+	obj  zodShape
+	elem zodShape
+}
+
+// zodStripText is TS JSON.stringify of a z.object parse result: only the
+// schema's keys, in schema order, with present nulls kept. ok is false when
+// raw is not JSON.
+func zodStripText(raw []byte, shape zodShape) (string, bool) {
+	v, ok := jsonorder.Parse(raw)
+	if !ok {
+		return "", false
+	}
+	return jsonorder.Stringify(zodStrip(v, shape)), true
+}
+
+func zodStrip(v interface{}, shape zodShape) interface{} {
+	obj, ok := v.(*jsonorder.Object)
+	if !ok {
+		return v
+	}
+	out := jsonorder.New()
+	for _, f := range shape {
+		x, present := obj.Get(f.key)
+		if !present {
+			continue
+		}
+		switch {
+		case f.obj != nil:
+			x = zodStrip(x, f.obj)
+		case f.elem != nil:
+			if arr, isArr := x.([]interface{}); isArr {
+				items := make([]interface{}, len(arr))
+				for i, item := range arr {
+					items[i] = zodStrip(item, f.elem)
+				}
+				x = items
+			}
+		}
+		out.Set(f.key, x)
+	}
+	return out
 }

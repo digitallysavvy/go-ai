@@ -17,6 +17,8 @@ func TestSkillsAPI_UploadSkill(t *testing.T) {
 		if strings.Contains(r.URL.Path, "/versions/") {
 			calledVersion = true
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"type":        "skill_version",
+				"skill_id":    "skill_123",
 				"name":        "test-capture-skill",
 				"description": "updated description",
 			})
@@ -70,6 +72,9 @@ func TestSkillsAPI_UploadSkill_VersionMetadataErrorPropagates(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":             "skill_123",
 			"latest_version": "1",
+			"source":         "custom",
+			"created_at":     "2026-02-26T03:59:39Z",
+			"updated_at":     "2026-02-26T03:59:39Z",
 		})
 	}))
 	defer srv.Close()

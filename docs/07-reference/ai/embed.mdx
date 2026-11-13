@@ -21,6 +21,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error)
 |-------|------|----------|-------------|
 | Model | provider.EmbeddingModel | Yes | Embedding model to use |
 | Input | string | Yes | Text to embed |
+| Dimensions | *int | No | Requested output dimensions (positive integer). Mapped to each provider's native setting; an explicit provider option takes precedence. Invalid values return an `InvalidArgumentError` before the model is called |
 
 ## Return Value
 
@@ -171,8 +172,6 @@ if err != nil {
     switch {
     case strings.Contains(err.Error(), "model is required"):
         log.Println("Missing required model parameter")
-    case strings.Contains(err.Error(), "input is required"):
-        log.Println("Missing required input text")
     case strings.Contains(err.Error(), "embedding failed"):
         log.Println("Embedding generation error:", err)
     case errors.Is(err, context.DeadlineExceeded):

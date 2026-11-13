@@ -31,8 +31,8 @@ func main() {
 		APIKey: apiKey,
 	})
 
-	// flux-kontext-dev: high-quality image generation with async polling
-	model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-dev")
+	// flux-kontext-pro: high-quality image generation with async polling
+	model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-pro")
 	if err != nil {
 		log.Fatalf("failed to get model: %v", err)
 	}
