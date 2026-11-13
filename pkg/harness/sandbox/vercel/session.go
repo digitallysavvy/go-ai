@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"path"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// posixDir returns the directory portion of a posix path (mirrors Node's
-// `path.posix.dirname`, used by TS `writeBinaryFile` to mkdir -p the parent).
-func posixDir(p string) string { return path.Dir(p) }
+// posixDir is Node's `path.posix.dirname`, used by TS `writeBinaryFile` to
+// mkdir -p the parent. Go's path.Dir also cleans the result ("new/../f"
+// gives "." where Node gives "new/..", "/a/b/" gives "/a/b" where Node
+// gives "/a"), which would skip or change the mkdir.
+func posixDir(p string) string { return posixpath.Dirname(p) }
 
 // Session is a providerutils.SandboxSession backed by a Vercel Sandbox. It is
 // the tool-safe surface (file I/O, exec, spawn) — what
@@ -171,8 +173,10 @@ func (s *Session) ReadBinaryFile(ctx context.Context, path string) ([]byte, erro
 	return data, err
 }
 
-// fileNotFoundMessage is TS isFileNotFoundError's message test.
-var fileNotFoundMessage = regexp.MustCompile(`(?i)no such file|not found|does not exist|ENOENT`)
+// fileNotFoundMessage is TS isFileNotFoundError's message test,
+// /no such file|not found|does not exist|ENOENT/i: a JS /i regexp without
+// the u flag never folds s to U+017F (Go (?i) does).
+var fileNotFoundMessage = regexp.MustCompile(`(?i)no (?-i:[sS])uch file|not found|doe(?-i:[sS]) not exi(?-i:[sS])t|ENOENT`)
 
 // isFileNotFoundError is TS VercelSandboxSession isFileNotFoundError: an
 // error whose message says the file is missing reads as a missing file.
