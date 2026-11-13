@@ -609,6 +609,11 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		rawChunk := s.rawChunk(event.Data)
+		// TS: the completion chunk union's data member is a z.object (also
+		// for openai-compatible), which strips an `error` key.
+		if len(chunk.Error) > 0 && chatChunkMatchesDataMember(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindOpenAICompletion}) {
+			chunk.Error = nil
+		}
 		if len(chunk.Error) > 0 {
 			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			// TS throwIfOpenAIStreamErrorBeforeOutput wraps only the OpenAI

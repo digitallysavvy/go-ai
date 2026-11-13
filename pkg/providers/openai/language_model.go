@@ -1777,6 +1777,12 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				s.metaExtractor.ProcessChunk(parsed)
 			}
 		}
+		// TS openaiChatChunkSchema's data member is a z.object, which strips
+		// an `error` key: a frame matching it is a data chunk, not an error
+		// (openai-compatible's looseObject keeps the key).
+		if len(chunkData.Error) > 0 && !s.compat && chatChunkMatchesDataMember(event.Data, s.chunkShape()) {
+			chunkData.Error = nil
+		}
 		if len(chunkData.Error) > 0 {
 			// TS throwIfOpenAIStreamErrorBeforeOutput wraps only the native OpenAI
 			// models; the openai-compatible chat model emits an error part.
@@ -2340,6 +2346,27 @@ func (m *LanguageModel) responseKind() providerutils.ChatResponseKind {
 		return providerutils.ResponseKindOpenAICompatible
 	}
 	return providerutils.ResponseKindOpenAI
+}
+
+// chatChunkMatchesDataMember reports whether a stream frame with an `error`
+// key also passes the data member of shape's chunk union. TS tries the data
+// member first, and its z.object strips the key, so `'error' in value` is
+// false for such a frame. The frame is checked without the key: the error
+// member requires it, so the union then passes only through the data member.
+func chatChunkMatchesDataMember(data string, shape providerutils.ChatChunkShape) bool {
+	var fields map[string]json.RawMessage
+	if jsonexact.Unmarshal([]byte(data), &fields) != nil {
+		return false
+	}
+	if _, ok := fields["error"]; !ok {
+		return false
+	}
+	delete(fields, "error")
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return false
+	}
+	return providerutils.ValidateChatChunk(stripped, shape) == nil
 }
 
 // newOpenAIToolCallTracker rejects a present tool call type that is not
