@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	stdhttp "net/http"
@@ -146,8 +145,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 
+	// usage counts are z.number(): a fractional count truncates into the
+	// int fields instead of failing (the central decoders' rule).
 	var imgResp byteDanceImageResponse
-	if err := jsonexact.Unmarshal(respBody, &imgResp); err != nil {
+	if err := providerutils.UnmarshalChunk(respBody, &imgResp); err != nil {
 		return nil, fmt.Errorf("bytedance: failed to parse image response: %w", err)
 	}
 

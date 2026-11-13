@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -139,8 +138,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAICreate)(submitResp.StatusCode, submitResp.Headers, submitBody); err != nil {
 		return nil, err
 	}
+	// code / created_at / updated_at are z.number(): a fractional value
+	// truncates into the integer fields instead of failing the call.
 	var createResp createTaskResponse
-	if err := jsonexact.Unmarshal(submitBody, &createResp); err != nil {
+	if err := providerutils.UnmarshalChunk(submitBody, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse response: %v", err))
 	}
 	// TS has no `code != 0` check on a 2xx response; a missing task_id is
@@ -200,7 +201,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, err
 	}
 	var statusResp taskStatusResponse
-	if err := jsonexact.Unmarshal(statusBody, &statusResp); err != nil {
+	if err := providerutils.UnmarshalChunk(statusBody, &statusResp); err != nil {
 		return nil, fmt.Errorf("klingai: failed to decode status response: %w", err)
 	}
 	result := downloaded
