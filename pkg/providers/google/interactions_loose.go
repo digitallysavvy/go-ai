@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // looseHook lets a type with its own UnmarshalJSON finish a loose decode
@@ -35,7 +37,8 @@ func looseDecodeValue(data []byte, rv reflect.Value) {
 		return
 	}
 	tmp := reflect.New(rv.Type())
-	if json.Unmarshal(data, tmp.Interface()) == nil {
+	// Keys match exactly, as in the strict decode (zod object keys).
+	if jsonexact.Unmarshal(data, tmp.Interface()) == nil {
 		rv.Set(tmp.Elem())
 		return
 	}

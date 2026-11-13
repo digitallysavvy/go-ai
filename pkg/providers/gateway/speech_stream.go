@@ -11,7 +11,6 @@ import (
 	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/speechstream"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
@@ -200,11 +199,13 @@ type gatewaySpeechStreamConfig struct {
 // streaming speech WebSocket.
 type gatewaySpeechStream struct {
 	*wsutil.Session[provider.SpeechStreamPart]
+	// abortCtx is the caller's context (TS abortSignal).
+	abortCtx      context.Context
 	textExhausted atomic.Bool
 }
 
 func newGatewaySpeechStream(parentCtx context.Context, cfg gatewaySpeechStreamConfig) *gatewaySpeechStream {
-	s := &gatewaySpeechStream{Session: wsutil.NewSession[provider.SpeechStreamPart](parentCtx)}
+	s := &gatewaySpeechStream{Session: wsutil.NewSession[provider.SpeechStreamPart](parentCtx), abortCtx: parentCtx}
 	go s.run(cfg)
 	return s
 }
@@ -230,10 +231,7 @@ func (s *gatewaySpeechStream) run(cfg gatewaySpeechStreamConfig) {
 	fail := func(err error) {
 		// TS finishWithError runs every terminal error except an abort reason
 		// through asGatewayError.
-		if cfg.wrapError != nil && !gatewayerrors.IsGatewayError(err) &&
-			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			err = cfg.wrapError(err)
-		}
+		err = gatewayStreamTerminalError(s.abortCtx, err, cfg.wrapError)
 		s.SetErr(err)
 		cancelText(err)
 	}
