@@ -453,7 +453,9 @@ func (c *googleConverter) googleVideoMetadata(providerOptions map[string]interfa
 		return nil, nil
 	}
 	data := jsonStringify(raw)
-	if message := zodlite.ValidationMessage(googleVideoMetadataSchema, data); message != "" {
+	// TS schema.parse of the caller's object: no secureJsonParse, so a
+	// __proto__ / constructor.prototype key is an ordinary (stripped) key.
+	if message := zodlite.ValidationMessagePlain(googleVideoMetadataSchema, data); message != "" {
 		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
 	}
 	var parsed map[string]interface{}
@@ -884,7 +886,8 @@ var (
 // validation error (TS throws the ZodError).
 func googleParseCodeExecution(schema zodlite.Node, value interface{}) (map[string]interface{}, error) {
 	data := jsonStringify(value)
-	if message := zodlite.ValidationMessage(schema, data); message != "" {
+	// TS schema.parse of the prompt value (no secureJsonParse).
+	if message := zodlite.ValidationMessagePlain(schema, data); message != "" {
 		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
 	}
 	var parsed map[string]interface{}
