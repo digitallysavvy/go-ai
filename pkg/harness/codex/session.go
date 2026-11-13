@@ -23,6 +23,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 var _ harness.Session = (*session)(nil)
@@ -149,7 +150,9 @@ func fingerprintTurnConfiguration(instructions string, tools []harness.ToolSpec)
 	// Round-trip through a generic value so every object (including raw JSON
 	// and struct-typed schemas) is re-encoded with sorted keys: value-equivalent
 	// tool definitions with reordered keys must hash identically.
-	raw, _ := json.Marshal(struct {
+	// jsonstr: a non-finite number is null, as JSON.stringify writes it
+	// (encoding/json fails the whole value).
+	raw, _ := jsonstr.Marshal(struct {
 		Instructions any        `json:"instructions"`
 		Tools        []wireTool `json:"tools"`
 	}{instructionsValue, wireTools})
