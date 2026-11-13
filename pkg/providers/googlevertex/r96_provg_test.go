@@ -62,4 +62,3 @@ func TestR96provgLiveTranscriptionSetupSendFailureAfterStreamStart(t *testing.T)
 		t.Fatalf("second = %+v, %v; want the write error", part, err)
 	}
 }
-
