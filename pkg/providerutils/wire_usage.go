@@ -1,8 +1,7 @@
 package providerutils
 
 import (
-	"encoding/json"
-
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -17,7 +16,7 @@ func ApplyWireUsageRaw(result *types.GenerateResult, body []byte) {
 	var env struct {
 		Usage map[string]interface{} `json:"usage"`
 	}
-	if json.Unmarshal(body, &env) != nil || env.Usage == nil {
+	if jsonexact.Unmarshal(body, &env) != nil || env.Usage == nil {
 		return
 	}
 	result.Usage.Raw = env.Usage

@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -502,7 +503,7 @@ func rawStreamErrorText(raw json.RawMessage) string {
 	var withMessage struct {
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
+	if err := jsonexact.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
 		return withMessage.Message
 	}
 	var text string
@@ -672,7 +673,7 @@ type openAICompatStreamUsage struct {
 func (u *openAICompatStreamUsage) UnmarshalJSON(b []byte) error {
 	type plain openAICompatStreamUsage
 	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
 		return err
 	}
 	*u = openAICompatStreamUsage(p)

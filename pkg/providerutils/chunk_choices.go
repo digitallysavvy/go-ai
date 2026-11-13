@@ -3,6 +3,8 @@ package providerutils
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // RequireChunkChoices reports the zod failure of a streamed chat-completion
@@ -12,7 +14,7 @@ func RequireChunkChoices(data []byte) error {
 	var probe struct {
 		Choices json.RawMessage `json:"choices"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
+	if err := jsonexact.Unmarshal(data, &probe); err != nil {
 		return err
 	}
 	if len(probe.Choices) == 0 || probe.Choices[0] != '[' {

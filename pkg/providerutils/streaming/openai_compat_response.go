@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -63,7 +64,7 @@ func compatContentParts(raw []byte) (string, []CompatContentPart, error) {
 		Text     json.RawMessage `json:"text"`
 		Thinking json.RawMessage `json:"thinking"`
 	}
-	if err := json.Unmarshal(raw, &wire); err != nil {
+	if err := jsonexact.Unmarshal(raw, &wire); err != nil {
 		return "", nil, err
 	}
 	var text strings.Builder
@@ -87,7 +88,7 @@ func compatContentParts(raw []byte) (string, []CompatContentPart, error) {
 					Type string `json:"type"`
 					Text string `json:"text"`
 				}
-				if json.Unmarshal(c, &chunk) == nil && chunk.Type == "text" {
+				if jsonexact.Unmarshal(c, &chunk) == nil && chunk.Type == "text" {
 					reasoning.WriteString(chunk.Text)
 				}
 			}

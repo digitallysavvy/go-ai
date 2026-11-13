@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // QuestionsToolDescription is the description of the askUserQuestions tool.
@@ -97,7 +99,8 @@ func ParseQuestionsToolInput(data []byte) (*QuestionsToolInput, error) {
 		return nil, errors.New("invalid askUserQuestions input: allowPartialAnswers is required")
 	}
 	var input QuestionsToolInput
-	if err := json.Unmarshal(data, &input); err != nil {
+	// zod matches the schema's keys exactly (jsonexact).
+	if err := jsonexact.Unmarshal(data, &input); err != nil {
 		return nil, fmt.Errorf("invalid askUserQuestions input: %w", err)
 	}
 	if err := input.Validate(); err != nil {

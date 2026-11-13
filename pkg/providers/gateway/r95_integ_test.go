@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/speechstream"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/speechstream"
 )
 
 // TS parseSpeechStreamPart keeps an audio part whatever its base64 holds;

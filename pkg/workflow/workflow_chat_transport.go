@@ -9,10 +9,13 @@ import (
 	"log"
 	"net/http"
 
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+
 	"strconv"
 	"sync"
 	"time"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -329,7 +332,7 @@ func containsFinishEvent(events []*streaming.SSEEvent) bool {
 		var chunk struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal([]byte(event.Data), &chunk) == nil && chunk.Type == "finish" {
+		if jsonexact.Unmarshal([]byte(event.Data), &chunk) == nil && chunk.Type == "finish" {
 			return true
 		}
 	}
