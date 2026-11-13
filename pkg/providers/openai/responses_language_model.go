@@ -1786,9 +1786,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		case "reasoning":
 			// Parse encrypted_content and summary text.
 			var item struct {
-				Type             string `json:"type"`
-				ID               string `json:"id,omitempty"`
-				EncryptedContent string `json:"encrypted_content,omitempty"`
+				Type             string  `json:"type"`
+				ID               string  `json:"id,omitempty"`
+				EncryptedContent *string `json:"encrypted_content,omitempty"` // TS ?? null: "" is kept
 				Summary          []struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
@@ -1810,10 +1810,14 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Text string `json:"text"`
 				}{{Type: "summary_text", Text: ""}}
 			}
+			encrypted := ""
+			if item.EncryptedContent != nil {
+				encrypted = *item.EncryptedContent
+			}
 			for _, s := range summaries {
 				result.Content = append(result.Content, types.ReasoningContent{
 					Text:             s.Text,
-					EncryptedContent: item.EncryptedContent,
+					EncryptedContent: encrypted,
 					ProviderMetadata: openAIResponsesReasoningMetadataWithEncrypted(providerName, item.ID, item.EncryptedContent),
 				})
 			}
@@ -2485,13 +2489,13 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 
 // openAIResponsesReasoningMetadataWithEncrypted mirrors the TS reasoning
 // providerMetadata {itemId, reasoningEncryptedContent: encrypted_content ?? null}.
-func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, encrypted string) json.RawMessage {
+func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID string, encrypted *string) json.RawMessage {
 	// TS always builds {itemId: part.id, reasoningEncryptedContent:
 	// part.encrypted_content ?? null}, so an item with an empty id and no
-	// encrypted_content still carries both keys.
+	// encrypted_content still carries both keys, and a present "" is kept.
 	var enc interface{}
-	if encrypted != "" {
-		enc = encrypted
+	if encrypted != nil {
+		enc = *encrypted
 	}
 	raw, _ := json.Marshal(map[string]interface{}{
 		providerName: map[string]interface{}{"itemId": itemID, "reasoningEncryptedContent": enc},
@@ -2702,6 +2706,30 @@ func toRawMetadata(m map[string]interface{}) json.RawMessage {
 func customToolRaw(input string) string {
 	raw, _ := jsonstr.Marshal(input)
 	return string(raw)
+}
+
+// responsesItemEncryptedContent is TS `encrypted_content ?? null` of a
+// reasoning item (of the event's item member when event is set): nil for an
+// absent or null value, else the string ("" included).
+func responsesItemEncryptedContent(data []byte, event bool) interface{} {
+	type item struct {
+		EncryptedContent *string `json:"encrypted_content"`
+	}
+	var v struct {
+		item
+		Item item `json:"item"`
+	}
+	if jsonexact.Unmarshal(data, &v) != nil {
+		return nil
+	}
+	enc := v.item.EncryptedContent
+	if event {
+		enc = v.Item.EncryptedContent
+	}
+	if enc == nil {
+		return nil
+	}
+	return *enc
 }
 
 // nonEmptyOrNil returns nil for an empty string so it marshals as JSON null
@@ -2940,7 +2968,9 @@ type responsesToolAccum struct {
 // before closing), or "concluded" (a reasoning-end chunk was already
 // emitted for it).
 type responsesReasoningAccum struct {
-	encryptedContent string
+	// encryptedContent is TS encrypted_content ?? null: nil or the string
+	// ("" included).
+	encryptedContent interface{}
 	summaryParts     map[int]string
 }
 
@@ -3609,15 +3639,12 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 
 			case "reasoning":
+				encMeta := responsesItemEncryptedContent([]byte(event.Data), true)
 				accum := &responsesReasoningAccum{
-					encryptedContent: e.Item.EncryptedContent,
+					encryptedContent: encMeta,
 					summaryParts:     map[int]string{0: "active"},
 				}
 				s.reasoningAccum[e.Item.ID] = accum
-				var encMeta interface{}
-				if e.Item.EncryptedContent != "" {
-					encMeta = e.Item.EncryptedContent
-				}
 				meta, _ := json.Marshal(map[string]interface{}{
 					s.providerName: map[string]interface{}{
 						"itemId":                    e.Item.ID,
@@ -3933,7 +3960,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					startMeta, _ := json.Marshal(map[string]interface{}{
 						s.providerName: map[string]interface{}{
 							"itemId":                    itemID,
-							"reasoningEncryptedContent": nonEmptyOrNil(accum.encryptedContent),
+							"reasoningEncryptedContent": accum.encryptedContent,
 						},
 					})
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
@@ -4569,7 +4596,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// not only when non-empty -- matches the key name/shape used at the
 		// other two reasoning-end sites in this file (output_item.added and
 		// reasoning_summary_part.added).
-		meta := map[string]interface{}{"itemId": id, "reasoningEncryptedContent": nonEmptyOrNil(item.EncryptedContent)}
+		meta := map[string]interface{}{"itemId": id, "reasoningEncryptedContent": responsesItemEncryptedContent(e.Item, false)}
 		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
 
 		// Row 3b9f025/6fe187f: close every summary part that is still open

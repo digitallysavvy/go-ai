@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -223,6 +224,36 @@ func TestR95provbResponsesEmptyStringOptionsSent(t *testing.T) {
 	for _, k := range []string{"conversation", "previous_response_id", "user", "instructions", "prompt_cache_key", "safety_identifier"} {
 		if v, ok := body[k]; !ok || v != "" {
 			t.Errorf("%s = %#v (present %v), want \"\"", k, v, ok)
+		}
+	}
+}
+
+// TestR95provbReasoningEmptyEncryptedContent: TS reasoning metadata is
+// `reasoningEncryptedContent: encrypted_content ?? null`, so a present ""
+// stays "" (generate and the stream's reasoning-start), not null.
+func TestR95provbReasoningEmptyEncryptedContent(t *testing.T) {
+	var lm ResponsesLanguageModel
+	res, err := lm.convertResponse(responses.ResponsesAPIResponse{Output: []json.RawMessage{[]byte(`{"type":"reasoning","id":"rs_1","encrypted_content":"","summary":[]}`)}}, true, "", nil, nil, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc := res.Content[0].(types.ReasoningContent)
+	if !strings.Contains(string(rc.ProviderMetadata), `"reasoningEncryptedContent":""`) {
+		t.Errorf("generate metadata = %s", rc.ProviderMetadata)
+	}
+	s := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"","summary":[]}}
+
+`)), false, "web_search", "openai", nil)
+	for {
+		c, err := s.Next()
+		if err != nil {
+			t.Fatal("no reasoning-start")
+		}
+		if c.Type == provider.ChunkTypeReasoningStart {
+			if !strings.Contains(string(c.ProviderMetadata), `"reasoningEncryptedContent":""`) {
+				t.Errorf("stream metadata = %s", c.ProviderMetadata)
+			}
+			return
 		}
 	}
 }
