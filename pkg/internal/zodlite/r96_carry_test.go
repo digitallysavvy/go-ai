@@ -22,3 +22,14 @@ func TestR96carryValidationMessageOutOfRange(t *testing.T) {
 func decodeForTest(data string, v *interface{}) error {
 	return jsonexact.Decode([]byte(data), v)
 }
+
+// cr-r96-provc-to-carry (provc's test).
+func TestR96carryValidationMessageOutOfRangeNumber(t *testing.T) {
+	node := Object(F("duration", Nullish(Number)))
+	if msg := ValidationMessage(node, `{"duration":1e400}`); msg == "" {
+		t.Fatal("declared z.number() holding 1e400 passed; JSON.parse reads Infinity, which z.number() rejects")
+	}
+	if msg := ValidationMessage(node, `{"duration":1,"x":1e400}`); msg != "" {
+		t.Fatalf("undeclared key holding 1e400: %s", msg)
+	}
+}
