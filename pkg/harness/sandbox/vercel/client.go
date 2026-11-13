@@ -18,6 +18,7 @@ import (
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -198,24 +199,15 @@ func (c *APIClient) path(p string, pairs ...string) string {
 	return p + "?" + q.Encode()
 }
 
-// doJSON is httpinternal.Client.DoJSON for the Vercel Sandbox API. 3.9.0
-// base-client.js parse() reads every response with plain JSON.parse (no
-// secureJsonParse), so a `__proto__` or `constructor.prototype` key is an
-// ordinary property, not a JSONParseError. The body is UTF-8 decoded like
-// response.text(), a non-2xx status is an *httpinternal.HTTPStatusError (see
-// toAPIError), and numbers decode as in DoJSON.
-func (c *APIClient) doJSON(ctx context.Context, req httpinternal.Request, out interface{}) error {
-	return c.doJSONWith(ctx, req, out, false)
-}
-
-// doJSONEmptyObject is doJSON for an EmptyResponse endpoint (mkdir, file
-// writes): parse() reads an empty body as `JSON.parse(text || "{}")`, which
-// z.object({}) accepts.
-func (c *APIClient) doJSONEmptyObject(ctx context.Context, req httpinternal.Request, out interface{}) error {
-	return c.doJSONWith(ctx, req, out, true)
-}
-
-func (c *APIClient) doJSONWith(ctx context.Context, req httpinternal.Request, out interface{}, emptyIsObject bool) error {
+// doJSON is httpinternal.Client.DoJSON for the Vercel Sandbox API, as
+// 3.9.0 base-client.js parseOrThrow(schema, response): the body is read like
+// response.text() and parsed with plain `JSON.parse(text || "{}")` (no
+// secureJsonParse, so a `__proto__` key is an ordinary property; an empty
+// body is an empty object), a non-2xx status is an
+// *httpinternal.HTTPStatusError (see toAPIError), and a body that does not
+// match schema is the APIError "Response JSON is not valid: <ZodError>".
+// The validated body is then decoded into out (numbers as in DoJSON).
+func (c *APIClient) doJSON(ctx context.Context, req httpinternal.Request, schema zodlite.Node, out interface{}) error {
 	resp, err := c.http.Do(ctx, req)
 	if err != nil {
 		return err
@@ -224,8 +216,15 @@ func (c *APIClient) doJSONWith(ctx context.Context, req httpinternal.Request, ou
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return resp.StatusError(body)
 	}
-	if emptyIsObject && len(body) == 0 {
+	if len(body) == 0 {
 		body = []byte("{}")
+	}
+	var parsed interface{}
+	if err := jsonexact.UnmarshalPlain(body, &parsed); err != nil {
+		return fmt.Errorf("failed to decode JSON response: %w", err)
+	}
+	if issues := vercelResponseIssues(schema, body); issues != "" {
+		return vercelInvalidResponse(resp.StatusCode, req.Path, issues)
 	}
 	if err := decodeAPIJSON(body, out); err != nil {
 		return fmt.Errorf("failed to decode JSON response: %w", err)
@@ -287,7 +286,7 @@ func (c *APIClient) CreateSandbox(ctx context.Context, req createSandboxRequest)
 	var out sandboxAndSessionResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: c.path(path), Headers: c.headers(nil), Body: req,
-	}, &out); err != nil {
+	}, vercelSandboxAndSessionResponse, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out, nil
@@ -303,7 +302,7 @@ func (c *APIClient) GetSandbox(ctx context.Context, name string, resume *bool) (
 	var out sandboxAndSessionResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodGet, Path: c.path("/v2/sandboxes/"+pathEscape(name), q...), Headers: c.headers(nil),
-	}, &out); err != nil {
+	}, vercelSandboxAndSessionResponse, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out, nil
@@ -314,7 +313,7 @@ func (c *APIClient) UpdateSandbox(ctx context.Context, name string, req updateSa
 	var out updateSandboxResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPatch, Path: c.path("/v2/sandboxes/"+pathEscape(name), "projectId", c.credentials.ProjectID), Headers: c.headers(nil), Body: req,
-	}, &out); err != nil {
+	}, vercelUpdateSandboxResponse, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out, nil
@@ -325,7 +324,7 @@ func (c *APIClient) DeleteSandbox(ctx context.Context, name string) error {
 	var out updateSandboxResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodDelete, Path: c.path("/v2/sandboxes/"+pathEscape(name), "projectId", c.credentials.ProjectID), Headers: c.headers(nil),
-	}, &out); err != nil {
+	}, vercelUpdateSandboxResponse, &out); err != nil {
 		return toAPIError(err)
 	}
 	return nil
@@ -336,7 +335,7 @@ func (c *APIClient) StopSession(ctx context.Context, sessionID string) (*stopSes
 	var out stopSessionResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/stop"), Headers: c.headers(nil),
-	}, &out); err != nil {
+	}, vercelStopSessionResponse, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out, nil
@@ -348,7 +347,7 @@ func (c *APIClient) CreateSnapshot(ctx context.Context, sessionID string, expira
 	var out createSnapshotResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/snapshot"), Headers: c.headers(nil), Body: createSnapshotBody(expiration),
-	}, &out); err != nil {
+	}, vercelCreateSnapshotResponse, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out, nil
@@ -396,7 +395,7 @@ func (c *APIClient) eachSnapshot(ctx context.Context, name string, yield func(sn
 		var out listSnapshotsResponse
 		if err := c.doJSON(ctx, httpinternal.Request{
 			Method: http.MethodGet, Path: c.path("/v2/sandboxes/snapshots", q...), Headers: c.headers(nil),
-		}, &out); err != nil {
+		}, vercelSnapshotsResponse, &out); err != nil {
 			return toAPIError(err)
 		}
 		for _, s := range out.Snapshots {
@@ -427,7 +426,7 @@ func (c *APIClient) eachSession(ctx context.Context, name string, yield func(ses
 		var out listSessionsResponse
 		if err := c.doJSON(ctx, httpinternal.Request{
 			Method: http.MethodGet, Path: c.path("/v2/sandboxes/sessions", q...), Headers: c.headers(nil),
-		}, &out); err != nil {
+		}, vercelSessionsResponse, &out); err != nil {
 			return toAPIError(err)
 		}
 		for _, s := range out.Sessions {
@@ -453,7 +452,7 @@ func (c *APIClient) ExtendSessionTimeout(ctx context.Context, sessionID string, 
 	var out sessionResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/extend-timeout"), Headers: c.headers(nil), Body: extendTimeoutRequest{Duration: durationMs},
-	}, &out); err != nil {
+	}, vercelSessionResponse, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out, nil
@@ -465,7 +464,7 @@ func (c *APIClient) UpdateSessionNetworkPolicy(ctx context.Context, sessionID st
 	var out sessionResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/network-policy"), Headers: c.headers(nil), Body: apiNetworkPolicy(policy),
-	}, &out); err != nil {
+	}, vercelSessionResponse, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out, nil
@@ -534,23 +533,22 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 	finished := false
 	streamErr := readJSONLines(resp.Body, sessionID, func(raw []byte) error {
 		if started == nil {
+			// jsonlines: plain JSON.parse of each line, then
+			// CommandResponse.parse (a ZodError with zod's message).
 			var first commandResponse
-			var probe struct {
-				Command *commandWire `json:"command"`
+			if err := parseCommandRecord(raw, vercelCommandResponse, &first); err != nil {
+				return err
 			}
-			// jsonlines: plain JSON.parse of each line, then CommandResponse.parse.
-			if err := jsonexact.UnmarshalPlain(raw, &probe); err != nil || probe.Command == nil {
-				return fmt.Errorf("vercel sandbox: invalid command response: %s", truncateForError(raw))
-			}
-			first.Command = *probe.Command
 			started = &first.Command
 			return nil
 		}
-		var probe struct {
-			Command *commandWire `json:"command"`
-		}
-		if jsonexact.UnmarshalPlain(raw, &probe) == nil && probe.Command != nil {
-			result.Command = *probe.Command
+		// `if (chunk.value?.command) return CommandFinishedResponse.parse(...)`.
+		if commandRecordTruthy(raw) {
+			var done commandResponse
+			if err := parseCommandRecord(raw, vercelCommandFinishedResponse, &done); err != nil {
+				return err
+			}
+			result.Command = done.Command
 			finished = true
 			return errStopJSONLines
 		}
@@ -609,6 +607,38 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 	return result, nil
 }
 
+// commandRecordTruthy is JS `chunk.value?.command` truthiness for a parsed
+// JSON Lines record.
+func commandRecordTruthy(raw []byte) bool {
+	var probe map[string]interface{}
+	if jsonexact.UnmarshalPlain(raw, &probe) != nil {
+		return false
+	}
+	switch v := probe["command"].(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case string:
+		return v != ""
+	case float64:
+		return v != 0 && v == v
+	}
+	return true
+}
+
+// parseCommandRecord is schema.parse of a command stream record: a mismatch
+// is the ZodError, whose message is the issue list.
+func parseCommandRecord(raw []byte, schema zodlite.Node, out *commandResponse) error {
+	if issues := vercelResponseIssues(schema, raw); issues != "" {
+		return errors.New(issues)
+	}
+	if err := decodeAPIJSON(raw, out); err != nil {
+		return fmt.Errorf("vercel sandbox: invalid command response: %w", err)
+	}
+	return nil
+}
+
 // RunCommandDetached posts POST .../cmd without wait, returning immediately
 // with the created command (TS detached path).
 func (c *APIClient) RunCommandDetached(ctx context.Context, sessionID string, req runCommandRequest) (*commandWire, error) {
@@ -616,7 +646,7 @@ func (c *APIClient) RunCommandDetached(ctx context.Context, sessionID string, re
 	var out commandResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd"), Headers: c.headers(nil), Body: req,
-	}, &out); err != nil {
+	}, vercelCommandResponse, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out.Command, nil
@@ -628,10 +658,14 @@ func (c *APIClient) GetCommand(ctx context.Context, sessionID, cmdID string, wai
 	if wait {
 		q = []string{"wait", "true"}
 	}
+	commandSchema := vercelCommandResponse
+	if wait {
+		commandSchema = vercelCommandFinishedResponse
+	}
 	var out commandResponse
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodGet, Path: c.path("/v2/sandboxes/sessions/"+pathEscape(sessionID)+"/cmd/"+pathEscape(cmdID), q...), Headers: c.headers(nil),
-	}, &out); err != nil {
+	}, commandSchema, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out.Command, nil
@@ -647,7 +681,7 @@ func (c *APIClient) KillCommand(ctx context.Context, sessionID, cmdID string, si
 	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/kill"),
 		Headers: c.headers(nil), Body: killCommandRequest{Signal: sig},
-	}, &out); err != nil {
+	}, vercelCommandResponse, &out); err != nil {
 		return toAPIError(err)
 	}
 	return nil
@@ -722,10 +756,10 @@ func (c *APIClient) getLogsOnce(ctx context.Context, sessionID, cmdID string, de
 // MkDir posts POST .../fs/mkdir.
 func (c *APIClient) MkDir(ctx context.Context, sessionID, path, cwd string) error {
 	var out map[string]interface{}
-	if err := c.doJSONEmptyObject(ctx, httpinternal.Request{
+	if err := c.doJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/mkdir"), Headers: c.headers(nil),
 		Body: mkdirRequest{Path: path, CWD: cwd},
-	}, &out); err != nil {
+	}, vercelEmptyResponse, &out); err != nil {
 		return toAPIError(err)
 	}
 	return nil
@@ -768,12 +802,12 @@ func (c *APIClient) WriteFiles(ctx context.Context, sessionID, extractDir string
 	}
 
 	var out map[string]interface{}
-	if err := c.doJSONEmptyObject(ctx, httpinternal.Request{
+	if err := c.doJSON(ctx, httpinternal.Request{
 		Method:  http.MethodPost,
 		Path:    c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/write"),
 		Headers: c.headers(map[string]string{"Content-Type": "application/gzip", "X-Cwd": extractDir}),
 		Body:    buf.Bytes(),
-	}, &out); err != nil {
+	}, vercelEmptyResponse, &out); err != nil {
 		return toAPIError(err)
 	}
 	return nil

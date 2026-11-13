@@ -46,7 +46,7 @@ func TestR87etoolsSnapshotListingHasNoPageBound(t *testing.T) {
 		if page+1 < pages {
 			next = fmt.Sprintf(`"p%d"`, page+1)
 		}
-		_, _ = fmt.Fprintf(w, `{"snapshots":[{"id":"s%d","status":"created","creationMethod":"manual"}],"pagination":{"count":1,"next":%s}}`, page, next)
+		_, _ = r99toolsWritef(w, `{"snapshots":[{"id":"s%d","status":"created","creationMethod":"manual"}],"pagination":{"count":1,"next":%s}}`, page, next)
 	}))
 	defer srv.Close()
 	c := NewAPIClient(srv.URL, Credentials{Token: "plain", TeamID: "team", ProjectID: "prj"})
@@ -69,11 +69,11 @@ func r87etoolsSessionsServer(t *testing.T, rec *r87etoolsRecorder, list func(cur
 		case r.Method == http.MethodGet && r.URL.Path == "/v2/sandboxes/sessions":
 			status, body := list(r.URL.Query().Get("cursor"))
 			w.WriteHeader(status)
-			_, _ = w.Write([]byte(body))
+			_, _ = r99toolsWrite(w, body)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/network-policy"):
-			_, _ = w.Write([]byte(`{"session":{"id":"session","cwd":"/vercel/sandbox","status":"running","timeout":120000,"networkPolicy":{"mode":"custom","allowedDomains":["example.com"]}}}`))
+			_, _ = r99toolsWrite(w, `{"session":{"id":"session","cwd":"/vercel/sandbox","status":"running","timeout":120000,"networkPolicy":{"mode":"custom","allowedDomains":["example.com"]}}}`)
 		case r.Method == http.MethodPatch || r.Method == http.MethodPost:
-			_, _ = w.Write([]byte(`{"sandbox":{"name":"sbx","persistent":false}}`))
+			_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sbx","persistent":false}}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -159,7 +159,7 @@ func TestR87etoolsOwnerIDArrayTeamQuery(t *testing.T) {
 		rec := &r87etoolsRecorder{}
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rec.add(r)
-			_, _ = w.Write([]byte(`{"sandbox":{"name":"sbx"},"session":{"id":"s"},"routes":[]}`))
+			_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sbx"},"session":{"id":"s"},"routes":[]}`)
 		}))
 		token := r87ctoolsRawJWT(`{"owner_id":` + tc.owner + `,"project_id":"prj"}`)
 		c := NewAPIClient(srv.URL, Credentials{Token: token, TeamID: "explicit", ProjectID: "prj"})

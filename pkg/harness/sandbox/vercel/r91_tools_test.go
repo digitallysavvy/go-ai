@@ -76,7 +76,13 @@ func TestR91toolsVercelStdinBytesWrittenSchema(t *testing.T) {
 		`{"bytesWritten":-1}`:               true,
 		`{"bytesWritten":1.5}`:              true,
 	} {
-		_, err := parseStdinResponse(&httpinternal.Response{StatusCode: 200, Body: []byte(body)}, false)
+		// A real response also carries the command (CommandStdinResponse).
+		withCommand := `{"command":{"id":"c1"}}`
+		if body != "{}" {
+			withCommand = strings.Replace(body, "{", `{"command":{"id":"c1"},`, 1)
+		}
+		full := r99toolsRealistic([]byte(withCommand))
+		_, err := parseStdinResponse(&httpinternal.Response{StatusCode: 200, Body: full}, false)
 		if (err != nil) != wantErr {
 			t.Errorf("%s: err = %v", body, err)
 		}

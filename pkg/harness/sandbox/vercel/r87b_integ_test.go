@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,7 +25,7 @@ func TestR87bintegJWTClaimsTeamOnlyOnTheWire(t *testing.T) {
 		gotQuery = r.URL.RawQuery
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"sandbox":{"name":"s"},"session":{"id":"x"}}`))
+		_, _ = r99toolsWrite(w, `{"sandbox":{"name":"s"},"session":{"id":"x"}}`)
 	}))
 	defer srv.Close()
 	token := r87btoolsJWT("team_claims", "prj_claims", time.Now().Add(time.Hour))
@@ -102,13 +101,13 @@ func TestR87bintegUpdateTracksSessionTimeoutFromResponses(t *testing.T) {
 	client, reqs, mu := r87toolsWireServer(t, func(w http.ResponseWriter, r *http.Request, _ string) {
 		switch {
 		case r.Method == http.MethodGet:
-			_, _ = fmt.Fprintf(w, r87btoolsSandboxJSON, "running", 60000)
+			_, _ = r99toolsWritef(w, r87btoolsSandboxJSON, "running", 60000)
 		case strings.HasSuffix(r.URL.Path, "/extend-timeout"):
-			_, _ = io.WriteString(w, `{"session":{"id":"sess","status":"running","timeout":90000}}`)
+			_, _ = r99toolsWrite(w, `{"session":{"id":"sess","status":"running","timeout":90000}}`)
 		case strings.HasSuffix(r.URL.Path, "/network-policy"):
-			_, _ = io.WriteString(w, `{"session":{"id":"sess","status":"running","timeout":100000,"networkPolicy":{"mode":"deny-all"}}}`)
+			_, _ = r99toolsWrite(w, `{"session":{"id":"sess","status":"running","timeout":100000,"networkPolicy":{"mode":"deny-all"}}}`)
 		default:
-			_, _ = io.WriteString(w, `{"sandbox":{"name":"sb","persistent":true}}`)
+			_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sb","persistent":true}}`)
 		}
 	})
 	sb, err := GetSandbox(context.Background(), client, "sb", nil)

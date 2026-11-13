@@ -223,7 +223,7 @@ func TestR87ctoolsQueryTeamFirstAndEmptyValues(t *testing.T) {
 	var seen r87ctoolsQuerySeen
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen.add(r)
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = r99toolsWrite(w, `{}`)
 	}))
 	defer srv.Close()
 	ctx := context.Background()
@@ -280,7 +280,7 @@ func TestR87ctoolsSnapshotPagination(t *testing.T) {
 		if r.URL.Query().Has("cursor") && key == "" {
 			key = "e"
 		}
-		_, _ = w.Write([]byte(pages[key]))
+		_, _ = r99toolsWrite(w, pages[key])
 	}))
 	defer srv.Close()
 	c := NewAPIClient(srv.URL, Credentials{Token: "plain", TeamID: "team_1", ProjectID: "prj_1"})
@@ -344,7 +344,7 @@ func TestR87ctoolsCreateSandboxSendsEmptyProjectID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		bodies <- string(raw)
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = r99toolsWrite(w, `{}`)
 	}))
 	defer srv.Close()
 	c := NewAPIClient(srv.URL, Credentials{Token: "plain"})

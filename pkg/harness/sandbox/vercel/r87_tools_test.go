@@ -73,11 +73,11 @@ func TestR87toolsNetworkPolicyRequestShape(t *testing.T) {
 	client, reqs, mu := r87toolsWireServer(t, func(w http.ResponseWriter, r *http.Request, _ string) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v3/sandboxes":
-			_, _ = fmt.Fprintf(w, r87toolsSandboxJSON, "running")
+			_, _ = r99toolsWritef(w, r87toolsSandboxJSON, "running")
 		case strings.HasSuffix(r.URL.Path, "/network-policy"):
-			_, _ = io.WriteString(w, `{"session":{"id":"sess","status":"running","networkPolicy":{"mode":"deny-all"}}}`)
+			_, _ = r99toolsWrite(w, `{"session":{"id":"sess","status":"running","networkPolicy":{"mode":"deny-all"}}}`)
 		default:
-			_, _ = io.WriteString(w, `{"sandbox":{"name":"sb","persistent":true}}`)
+			_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sb","persistent":true}}`)
 		}
 	})
 	deny := DenyAllNetworkPolicy()
@@ -125,10 +125,10 @@ func TestR87toolsUpdateSkipsInactiveSession(t *testing.T) {
 	for _, status := range []string{"stopped", "stopping", "aborted", "failed"} {
 		client, reqs, mu := r87toolsWireServer(t, func(w http.ResponseWriter, r *http.Request, _ string) {
 			if r.URL.Path == "/v2/sandboxes/sb" && r.Method == http.MethodGet {
-				_, _ = fmt.Fprintf(w, r87toolsSandboxJSON, status)
+				_, _ = r99toolsWritef(w, r87toolsSandboxJSON, status)
 				return
 			}
-			_, _ = io.WriteString(w, `{"sandbox":{"name":"sb","persistent":true}}`)
+			_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sb","persistent":true}}`)
 		})
 		sb, err := GetSandbox(context.Background(), client, "sb", nil)
 		if err != nil {
@@ -150,12 +150,12 @@ func TestR87toolsUpdateSessionFailureSkipsPatch(t *testing.T) {
 	client, reqs, mu := r87toolsWireServer(t, func(w http.ResponseWriter, r *http.Request, _ string) {
 		switch {
 		case r.Method == http.MethodGet:
-			_, _ = fmt.Fprintf(w, r87toolsSandboxJSON, "running")
+			_, _ = r99toolsWritef(w, r87toolsSandboxJSON, "running")
 		case strings.HasSuffix(r.URL.Path, "/network-policy"):
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `{"error":{"message":"bad policy"}}`)
+			_, _ = r99toolsWrite(w, `{"error":{"message":"bad policy"}}`)
 		default:
-			_, _ = io.WriteString(w, `{"sandbox":{"name":"sb"}}`)
+			_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sb"}}`)
 		}
 	})
 	sb, err := GetSandbox(context.Background(), client, "sb", nil)
@@ -182,7 +182,7 @@ func r87toolsStdinServer(t *testing.T, stdin func(n int, body string) (int, stri
 	client, reqs, mu := r87toolsWireServer(t, func(w http.ResponseWriter, r *http.Request, body string) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v2/sandboxes/sb":
-			_, _ = fmt.Fprintf(w, r87toolsSandboxJSON, "running")
+			_, _ = r99toolsWritef(w, r87toolsSandboxJSON, "running")
 		case strings.HasSuffix(r.URL.Path, "/stdin"):
 			n++
 			status, out := stdin(n, body)
@@ -190,13 +190,13 @@ func r87toolsStdinServer(t *testing.T, stdin func(n int, body string) (int, stri
 				w.Header().Set("Retry-After", "0")
 			}
 			w.WriteHeader(status)
-			_, _ = io.WriteString(w, out)
+			_, _ = r99toolsWrite(w, out)
 		case strings.HasSuffix(r.URL.Path, "/logs"):
 			w.Header().Set("Content-Type", "application/x-ndjson")
 		case strings.HasSuffix(r.URL.Path, "/cmd"):
-			_, _ = io.WriteString(w, `{"command":{"id":"c1","name":"bash","args":[],"cwd":"/","sessionId":"sess","exitCode":null,"startedAt":1}}`)
+			_, _ = r99toolsWrite(w, `{"command":{"id":"c1","name":"bash","args":[],"cwd":"/","sessionId":"sess","exitCode":null,"startedAt":1}}`)
 		default:
-			_, _ = io.WriteString(w, `{"command":{"id":"c1","exitCode":0}}`)
+			_, _ = r99toolsWrite(w, `{"command":{"id":"c1","exitCode":0}}`)
 		}
 	})
 	sb, err := GetSandbox(context.Background(), client, "sb", nil)
@@ -361,14 +361,14 @@ func TestR87toolsWriteCommandStdinRetryRules(t *testing.T) {
 		wantBytes *int64
 	}{
 		{"no offset: 503 is not retried", writeStdinParams{data: []byte("x")}, []string{`503 {}`}, 1, true, nil},
-		{"no offset: 429 is retried", writeStdinParams{data: []byte("x")}, []string{`429 {}`, `200 {"bytesWritten":1}`}, 2, false, r87toolsI64(1)},
+		{"no offset: 429 is retried", writeStdinParams{data: []byte("x")}, []string{`429 {}`, `200 {"command":{"id":"c1"},"bytesWritten":1}`}, 2, false, r87toolsI64(1)},
 		{"504 with progress continues, stalled twice fails", writeStdinParams{data: []byte("x"), offset: &zero},
 			[]string{`504 {"error":{"bytesWritten":1}}`, `504 {"error":{"bytesWritten":1}}`, `504 {}`}, 3, true, nil},
-		{"504 then success", writeStdinParams{data: []byte("x"), offset: &zero}, []string{`504 {}`, `200 {"bytesWritten":1}`}, 2, false, r87toolsI64(1)},
+		{"504 then success", writeStdinParams{data: []byte("x"), offset: &zero}, []string{`504 {}`, `200 {"command":{"id":"c1"},"bytesWritten":1}`}, 2, false, r87toolsI64(1)},
 		{"close 404 after a maybe-applied attempt succeeds", writeStdinParams{offset: &zero, close: true}, []string{`502 {}`, `404 {}`}, 2, false, nil},
 		{"close 404 on the first attempt fails", writeStdinParams{offset: &zero, close: true}, []string{`404 {}`}, 1, true, nil},
 		{"retries stop after five", writeStdinParams{offset: &zero}, []string{`503 {}`, `503 {}`, `503 {}`, `503 {}`, `503 {}`, `503 {}`}, 6, true, nil},
-		{"negative bytesWritten is invalid", writeStdinParams{}, []string{`200 {"bytesWritten":-1}`}, 1, true, nil},
+		{"negative bytesWritten is invalid", writeStdinParams{}, []string{`200 {"command":{"id":"c1"},"bytesWritten":-1}`}, 1, true, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -383,7 +383,7 @@ func TestR87toolsWriteCommandStdinRetryRules(t *testing.T) {
 				code := 0
 				_, _ = fmt.Sscanf(status, "%d", &code)
 				w.WriteHeader(code)
-				_, _ = io.WriteString(w, body)
+				_, _ = r99toolsWrite(w, body)
 			}))
 			defer srv.Close()
 			c := NewAPIClient(srv.URL, Credentials{Token: "t"})
@@ -503,7 +503,7 @@ func TestR87toolsRequestRetries(t *testing.T) {
 					w.Header().Set("Retry-After", st.retryAfter)
 				}
 				w.WriteHeader(st.status)
-				_, _ = io.WriteString(w, `{"command":{"id":"c"}}`)
+				_, _ = r99toolsWrite(w, `{"command":{"id":"c"}}`)
 			}))
 			defer srv.Close()
 			err := tc.call(NewAPIClient(srv.URL, Credentials{Token: "t"}))
@@ -541,7 +541,7 @@ func r87toolsNDJSONServer(t *testing.T, handler func(w http.ResponseWriter, r *h
 func r87toolsHangup(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(200)
-	_, _ = io.WriteString(w, body)
+	_, _ = r99toolsWrite(w, body)
 	w.(http.Flusher).Flush()
 	conn, buf, _ := w.(http.Hijacker).Hijack()
 	_ = buf.Flush()
@@ -580,7 +580,7 @@ func TestR87toolsGetLogsReconnectSkipsDelivered(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
-		_, _ = io.WriteString(w, `{"stream":"stdout","data":"h😀llo"}`+"\n"+`{"stream":"stderr","data":"e"}`+"\n"+`{"stream":"stderr","data":"rr"}`+"\n")
+		_, _ = r99toolsWrite(w, `{"stream":"stdout","data":"h😀llo"}`+"\n"+`{"stream":"stderr","data":"e"}`+"\n"+`{"stream":"stderr","data":"rr"}`+"\n")
 	})
 	var got []string
 	err := client.GetLogs(context.Background(), "s", "c", func(e LogEntry) { got = append(got, e.Stream+":"+e.Data) })
@@ -621,12 +621,12 @@ func TestR87toolsRunCommandWaitFallsBackAfterInterruption(t *testing.T) {
 			r87toolsHangup(w, `{"command":{"id":"c9"}}`+"\n"+`{"stream":"stdout","data":"ab"}`+"\n")
 		case strings.HasSuffix(r.URL.Path, "/logs"):
 			w.Header().Set("Content-Type", "application/x-ndjson")
-			_, _ = io.WriteString(w, `{"stream":"stdout","data":"abcd"}`+"\n"+`{"stream":"stderr","data":"!"}`+"\n")
+			_, _ = r99toolsWrite(w, `{"stream":"stdout","data":"abcd"}`+"\n"+`{"stream":"stderr","data":"!"}`+"\n")
 		case strings.HasSuffix(r.URL.Path, "/cmd/c9"):
 			if r.URL.Query().Get("wait") != "true" {
 				t.Errorf("command query = %q", r.URL.RawQuery)
 			}
-			_, _ = io.WriteString(w, `{"command":{"id":"c9","exitCode":3}}`)
+			_, _ = r99toolsWrite(w, `{"command":{"id":"c9","exitCode":3}}`)
 		default:
 			t.Errorf("unexpected %s", r.URL.Path)
 		}
@@ -642,11 +642,11 @@ func TestR87toolsRunCommandWaitFallsBackAfterInterruption(t *testing.T) {
 func TestR87toolsNDJSONContentTypeAndLogLine(t *testing.T) {
 	client := r87toolsNDJSONServer(t, func(w http.ResponseWriter, r *http.Request, n int) {
 		if r.URL.Query().Get("bad") == "" {
-			_, _ = io.WriteString(w, `{"stream":"stdout","data":"x"}`+"\n")
+			_, _ = r99toolsWrite(w, `{"stream":"stdout","data":"x"}`+"\n")
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
-		_, _ = io.WriteString(w, `{"stream":"stdin","data":"x"}`+"\n")
+		_, _ = r99toolsWrite(w, `{"stream":"stdin","data":"x"}`+"\n")
 	})
 	err := client.GetLogs(context.Background(), "s", "c", func(LogEntry) {})
 	var apiErr *APIError
@@ -683,16 +683,16 @@ func TestR87toolsRequestDetails(t *testing.T) {
 			} else if strings.Contains(string(b), "boom") {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(400)
-				_, _ = io.WriteString(w, `{"error":{"message":"nope","code":"bad"}}`)
+				_, _ = r99toolsWrite(w, `{"error":{"message":"nope","code":"bad"}}`)
 				return
 			} else {
 				w.Header().Set("Content-Type", "application/octet-stream")
 			}
-			_, _ = io.WriteString(w, "data")
+			_, _ = r99toolsWrite(w, "data")
 		case strings.HasSuffix(r.URL.Path, "/snapshot"):
-			_, _ = io.WriteString(w, `{"snapshot":{"id":"snap"},"session":{"id":"s","status":"stopped"}}`)
+			_, _ = r99toolsWrite(w, `{"snapshot":{"id":"snap"},"session":{"id":"s","status":"stopped"}}`)
 		default:
-			_, _ = io.WriteString(w, `{"command":{"id":"c"},"sandbox":{"name":"x"}}`)
+			_, _ = r99toolsWrite(w, `{"command":{"id":"c"},"sandbox":{"name":"x"}}`)
 		}
 	}))
 	defer srv.Close()
@@ -747,7 +747,7 @@ func TestR87toolsRequestRetryWaitsRetryAfter(t *testing.T) {
 			w.WriteHeader(429)
 			return
 		}
-		_, _ = io.WriteString(w, `{"command":{"id":"c"}}`)
+		_, _ = r99toolsWrite(w, `{"command":{"id":"c"}}`)
 	}))
 	defer srv.Close()
 	if _, err := NewAPIClient(srv.URL, Credentials{Token: "t"}).GetCommand(context.Background(), "s", "c", false); err != nil {
@@ -777,7 +777,7 @@ func TestR87toolsPortEndpointWHATWG(t *testing.T) {
 // 3.9.0 Sandbox.create sends `ports: params.ports ?? []`.
 func TestR87toolsCreateSandboxSendsPorts(t *testing.T) {
 	client, reqs, mu := r87toolsWireServer(t, func(w http.ResponseWriter, r *http.Request, _ string) {
-		_, _ = fmt.Fprintf(w, r87toolsSandboxJSON, "running")
+		_, _ = r99toolsWritef(w, r87toolsSandboxJSON, "running")
 	})
 	if _, err := CreateSandbox(context.Background(), client, CreateParams{Name: "sb"}); err != nil {
 		t.Fatal(err)

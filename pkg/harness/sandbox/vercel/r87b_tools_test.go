@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -56,19 +54,19 @@ func TestR87btoolsUpdateExtendsRunningSessionTimeout(t *testing.T) {
 		{name: "stopped 410", status: "running", timeout: 60000, newTimeout: 90000,
 			extendReply: func(w http.ResponseWriter) {
 				w.WriteHeader(http.StatusGone)
-				_, _ = io.WriteString(w, `{"error":{"code":"sandbox_stopped"}}`)
+				_, _ = r99toolsWrite(w, `{"error":{"code":"sandbox_stopped"}}`)
 			},
 			want: []step{{"GET", "/v2/sandboxes/sb", ""}, {"POST", "/v2/sandboxes/sessions/sess/extend-timeout", `{"duration":30000}`}, {"PATCH", "/v2/sandboxes/sb", `{"timeout":90000}`}}},
 		{name: "stopping 422", status: "running", timeout: 60000, newTimeout: 90000,
 			extendReply: func(w http.ResponseWriter) {
 				w.WriteHeader(http.StatusUnprocessableEntity)
-				_, _ = io.WriteString(w, `{"error":{"code":"sandbox_stopping"}}`)
+				_, _ = r99toolsWrite(w, `{"error":{"code":"sandbox_stopping"}}`)
 			},
 			want: []step{{"GET", "/v2/sandboxes/sb", ""}, {"POST", "/v2/sandboxes/sessions/sess/extend-timeout", `{"duration":30000}`}, {"PATCH", "/v2/sandboxes/sb", `{"timeout":90000}`}}},
 		{name: "other 422", status: "running", timeout: 60000, newTimeout: 90000, wantErr: true,
 			extendReply: func(w http.ResponseWriter) {
 				w.WriteHeader(http.StatusUnprocessableEntity)
-				_, _ = io.WriteString(w, `{"error":{"code":"sandbox_snapshotting"}}`)
+				_, _ = r99toolsWrite(w, `{"error":{"code":"sandbox_snapshotting"}}`)
 			},
 			want: []step{{"GET", "/v2/sandboxes/sb", ""}, {"POST", "/v2/sandboxes/sessions/sess/extend-timeout", `{"duration":30000}`}}},
 	}
@@ -76,17 +74,17 @@ func TestR87btoolsUpdateExtendsRunningSessionTimeout(t *testing.T) {
 		client, reqs, mu := r87toolsWireServer(t, func(w http.ResponseWriter, r *http.Request, _ string) {
 			switch {
 			case r.Method == http.MethodGet:
-				_, _ = fmt.Fprintf(w, r87btoolsSandboxJSON, tc.status, tc.timeout)
+				_, _ = r99toolsWritef(w, r87btoolsSandboxJSON, tc.status, tc.timeout)
 			case strings.HasSuffix(r.URL.Path, "/extend-timeout"):
 				if tc.extendReply != nil {
 					tc.extendReply(w)
 					return
 				}
-				_, _ = io.WriteString(w, `{"session":{"id":"sess","status":"running","timeout":90000}}`)
+				_, _ = r99toolsWrite(w, `{"session":{"id":"sess","status":"running","timeout":90000}}`)
 			case strings.HasSuffix(r.URL.Path, "/network-policy"):
-				_, _ = io.WriteString(w, `{"session":{"id":"sess","status":"running","timeout":90000,"networkPolicy":{"mode":"deny-all"}}}`)
+				_, _ = r99toolsWrite(w, `{"session":{"id":"sess","status":"running","timeout":90000,"networkPolicy":{"mode":"deny-all"}}}`)
 			default:
-				_, _ = io.WriteString(w, `{"sandbox":{"name":"sb","persistent":true}}`)
+				_, _ = r99toolsWrite(w, `{"sandbox":{"name":"sb","persistent":true}}`)
 			}
 		})
 		sb, err := GetSandbox(context.Background(), client, "sb", nil)
@@ -165,7 +163,7 @@ func (s *r87btoolsAuthSeen) server(t *testing.T) string {
 		s.mu.Lock()
 		s.seen = append(s.seen, r.Header.Get("Authorization")+" "+r.URL.Query().Get("teamId"))
 		s.mu.Unlock()
-		_, _ = fmt.Fprintf(w, r87btoolsSandboxJSON, "running", 60000)
+		_, _ = r99toolsWritef(w, r87btoolsSandboxJSON, "running", 60000)
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL
