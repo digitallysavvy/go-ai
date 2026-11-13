@@ -217,9 +217,13 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	}
 	if isAnthropic && thinkingType == "disabled" {
 		hasExplicitDisabledThinking := existingReasoningConfig != nil && existingReasoningConfig.Type == "disabled"
+		// TS additionalModelRequestFields?.output_config?.effort: any value
+		// that is not null counts as set (z.record(z.string(), z.any())).
 		outputConfigEffort := ""
+		outputConfigEffortSet := false
 		if oc, ok := additionalModelRequestFields["output_config"].(map[string]interface{}); ok {
 			outputConfigEffort, _ = oc["effort"].(string)
+			outputConfigEffortSet = oc["effort"] != nil
 		}
 		if legacyClaudeThinkingPattern.MatchString(m.modelID) {
 			// Claude 3.5 and earlier do not accept a thinking field, even
@@ -234,7 +238,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 				if maxReasoningEffort == "" && existingReasoningConfig != nil {
 					maxReasoningEffort = existingReasoningConfig.MaxReasoningEffort
 				}
-				if maxReasoningEffort == "" && outputConfigEffort == "" {
+				if maxReasoningEffort == "" && !outputConfigEffortSet {
 					maxReasoningEffort = "low"
 				}
 			}

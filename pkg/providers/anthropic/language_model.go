@@ -104,15 +104,19 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []string, stream bool) (map[string]string, error) {
 	headers := map[string]string{}
+	callAccept := false
 	if opts != nil {
 		for k, v := range opts.Headers {
 			if strings.EqualFold(k, "anthropic-beta") {
 				continue
 			}
+			callAccept = callAccept || strings.EqualFold(k, "accept")
 			headers[k] = v
 		}
 	}
-	if stream {
+	// The stream's Accept is Go's own (the "Accept header" known
+	// difference); a caller's Accept, which TS sends as is, wins.
+	if stream && !callAccept {
 		headers["Accept"] = "text/event-stream"
 	}
 	if len(betas) > 0 {
@@ -2657,7 +2661,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Citation    map[string]interface{} `json:"citation"`     // in citations_delta
 				} `json:"delta"`
 			}
-			if err := jsonexact.Unmarshal([]byte(event.Data), &delta); err != nil {
+			// TS z.number() index: a fractional index is truncated into the
+			// int (the "integer fields" known difference), not a failed decode.
+			if err := providerutils.UnmarshalChunk([]byte(event.Data), &delta); err != nil {
 				return nil, fmt.Errorf("failed to parse content delta: %w", err)
 			}
 
@@ -3073,7 +3079,10 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Data        json.RawMessage `json:"data"`
 				} `json:"error"`
 			}
-			if err := jsonexact.Unmarshal([]byte(event.Data), &errEvent); err != nil {
+			// TS statusCode z.number(): a fractional status code is truncated
+			// into the int (integer-fields known difference), not a skipped
+			// event.
+			if err := providerutils.UnmarshalChunk([]byte(event.Data), &errEvent); err != nil {
 				continue
 			}
 			// anthropicStreamErrorMetadata returns (0, false) for an

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
@@ -59,11 +60,27 @@ func (d *EventStreamDecoder) ReadEvent() (*EventStreamEvent, error) {
 	}, nil
 }
 
+// transformStreamBody is anthropic.Config.TransformStreamBody: TS
+// createAmazonBedrockAnthropicFetch converts only a response whose content
+// type includes application/vnd.amazon.eventstream (any other body reaches
+// the SSE parser as is) and reports the converted response with
+// content-type text/event-stream, so header is updated in place.
+func transformStreamBody(body io.ReadCloser, header http.Header) io.ReadCloser {
+	// TS response.headers.get('content-type'): repeated values joined by ", ".
+	if !strings.Contains(strings.Join(header.Values("Content-Type"), ", "), "application/vnd.amazon.eventstream") {
+		return body
+	}
+	if header != nil {
+		header.Set("Content-Type", "text/event-stream")
+	}
+	return transformEventStreamToSSE(body, header)
+}
+
 // transformEventStreamToSSE wraps a Bedrock event-stream response body,
 // producing a text/event-stream-formatted reader for the shared Anthropic SSE
 // parser. Mirrors amazon-bedrock-anthropic-fetch.ts
 // transformAmazonBedrockEventStreamToSSE (ai@7.0.113). Registered as
-// anthropic.Config.TransformStreamBody.
+// anthropic.Config.TransformStreamBody (through transformStreamBody).
 func transformEventStreamToSSE(body io.ReadCloser, _ http.Header) io.ReadCloser {
 	pr, pw := io.Pipe()
 	go func() {
@@ -123,7 +140,7 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 			// which errors the stream; it does not fall back to the payload.
 			decoded, err := convertBase64ToBytes(chunkBytes)
 			if err != nil {
-				return fmt.Errorf("invalid base64 in bedrock chunk bytes: %w", err)
+				return err // the atob error errors the stream as is
 			}
 			// TS new TextDecoder().decode(convertBase64ToUint8Array(bytes)).
 			_, err = fmt.Fprintf(w, "data: %s\n\n", prompt.DecodeUTF8Text(decoded))

@@ -1485,7 +1485,13 @@ func (c *anthropicConverter) convertToolResultContentBlock(block types.ToolResul
 	case types.CustomContentBlock:
 		opts := anthropicOptions(b.ProviderOptions)
 		if opts["type"] == "tool-reference" {
-			return map[string]interface{}{"type": "tool_reference", "tool_name": opts["toolName"]}, nil
+			// TS tool_name: anthropicOptions.toolName! -- an absent (or null)
+			// toolName is undefined, which JSON.stringify leaves out.
+			ref := map[string]interface{}{"type": "tool_reference"}
+			if name, ok := opts["toolName"]; ok && name != nil {
+				ref["tool_name"] = name
+			}
+			return ref, nil
 		}
 		c.warn("unsupported custom tool content part")
 		return nil, nil
@@ -2767,8 +2773,11 @@ func rawMetadataMap(raw json.RawMessage) map[string]interface{} {
 	if len(raw) == 0 {
 		return nil
 	}
+	// TS holds the metadata as a parsed object: a number past the double
+	// range is Infinity (ruling 4) and a __proto__ key an own property, so
+	// neither drops the metadata.
 	var out map[string]interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := jsonexact.UnmarshalPlain(raw, &out); err != nil {
 		return nil
 	}
 	return out

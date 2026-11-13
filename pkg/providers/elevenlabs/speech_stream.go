@@ -408,7 +408,10 @@ func (s *elevenLabsSpeechStream) handleMessage(cfg speechStreamConfig, text stri
 		if event.audio != "" {
 			decoded, decodeErr := types.DecodeFileDataString(event.audio)
 			if decodeErr != nil {
-				return false, fmt.Errorf("ElevenLabs speech stream sent invalid audio: %w", decodeErr)
+				// TS core streamSpeech decodes the part with
+				// convertBase64ToUint8Array, whose atob error fails the
+				// stream as is.
+				return false, decodeErr
 			}
 			audio = decoded
 		}

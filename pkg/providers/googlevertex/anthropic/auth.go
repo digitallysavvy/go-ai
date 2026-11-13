@@ -40,6 +40,10 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	_, generatedLabels := clone.Header[http.CanonicalHeaderKey(generatedLabelsHeader)]
 	clone.Header.Del(generatedLabelsHeader)
+	_, noCallUA := clone.Header[http.CanonicalHeaderKey(noCallUserAgentHeader)]
+	_, noCallCT := clone.Header[http.CanonicalHeaderKey(noCallContentTypeHeader)]
+	clone.Header.Del(noCallUserAgentHeader)
+	clone.Header.Del(noCallContentTypeHeader)
 	if !providerutils.IsSameOrigin(req.URL.String(), t.baseURL) {
 		return t.base.RoundTrip(clone)
 	}
@@ -57,12 +61,12 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 		}
 		config.Set("Authorization", "Bearer "+token)
 	}
-	for k, v := range t.headers {
+	for k, v := range internalhttp.MergeHeaders(t.headers) {
 		config.Set(k, v)
 	}
 	if resolved, ok := req.Context().Value(resolvedConfigHeadersKey{}).(map[string]string); ok {
 		// Resolved once for this call by the model (ResolveConfigHeaders).
-		for k, v := range resolved {
+		for k, v := range internalhttp.MergeHeaders(resolved) {
 			config.Set(k, v)
 		}
 	} else if t.headersFunc != nil {
@@ -70,7 +74,7 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, internalhttp.RejectFetch(err)
 		}
-		for k, v := range headers {
+		for k, v := range internalhttp.MergeHeaders(headers) {
 			config.Set(k, v)
 		}
 	}
@@ -82,6 +86,18 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 			clone.Header.Set(k, mergeConfigBetas(clone.Header.Get(k), vs[0]))
 			continue
 		}
+		// TS withUserAgentSuffix appends the runtime tag to the provider
+		// user agent when the call sets none ([ua, ...suffix].filter(Boolean)).
+		if k == "User-Agent" && noCallUA {
+			clone.Header.Set(k, joinNonEmpty(vs[0], clone.Header.Get(k)))
+			continue
+		}
+		// TS postJsonToApi spreads the headers over its default
+		// Content-Type, so a provider content type replaces it.
+		if k == "Content-Type" && noCallCT {
+			clone.Header.Set(k, vs[0])
+			continue
+		}
 		// A configured labels header beats the one generated from
 		// providerOptions.vertex.labels (TS transformRequestHeaders sees the
 		// provider headers), but not a call header.
@@ -90,6 +106,17 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	return t.base.RoundTrip(clone)
+}
+
+// joinNonEmpty joins the non-empty parts with a space.
+func joinNonEmpty(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // mergeConfigBetas adds the betas of a configured anthropic-beta header to
