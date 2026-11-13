@@ -859,7 +859,7 @@ func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCa
 		return nil
 	}
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(part.ProviderMetadata, &metadata); err != nil {
+	if err := jsonexact.UnmarshalPlain(part.ProviderMetadata, &metadata); err != nil {
 		return nil
 	}
 	return toolCallCallerFromMetadata(metadata, providerName)
@@ -1419,7 +1419,7 @@ func openAIReasoningItemID(part types.ReasoningContent, providerName string) str
 		return ""
 	}
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(part.ProviderMetadata, &metadata); err != nil {
+	if err := jsonexact.UnmarshalPlain(part.ProviderMetadata, &metadata); err != nil {
 		return ""
 	}
 	return openAIItemID(metadata, providerName)
@@ -1439,7 +1439,7 @@ func openAIReasoningEncryptedContent(part types.ReasoningContent, providerName s
 	}
 	if len(part.ProviderMetadata) > 0 {
 		var metadata map[string]interface{}
-		if err := json.Unmarshal(part.ProviderMetadata, &metadata); err == nil {
+		if err := jsonexact.UnmarshalPlain(part.ProviderMetadata, &metadata); err == nil {
 			if enc := openAIReasoningEncryptedFrom(metadata, providerName); enc != nil {
 				return enc
 			}
@@ -1470,7 +1470,7 @@ func openAIToolResultItemID(part types.ToolResultContent, providerName string) s
 		return ""
 	}
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(part.ProviderMetadata, &metadata); err != nil {
+	if err := jsonexact.UnmarshalPlain(part.ProviderMetadata, &metadata); err != nil {
 		return ""
 	}
 	return openAIItemID(metadata, providerName)
@@ -1485,7 +1485,7 @@ func openAICompactionMetadata(part types.CustomContent, providerName string) (st
 		return "", ""
 	}
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(part.ProviderMetadata, &metadata); err != nil {
+	if err := jsonexact.UnmarshalPlain(part.ProviderMetadata, &metadata); err != nil {
 		return "", ""
 	}
 	itemID, encryptedContent = openAICompactionMetadataFromMap(metadata, providerName)
@@ -1516,7 +1516,7 @@ func openAITextMetadata(part types.TextContent, providerName string) (string, st
 		return "", ""
 	}
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(part.ProviderMetadata, &metadata); err != nil {
+	if err := jsonexact.UnmarshalPlain(part.ProviderMetadata, &metadata); err != nil {
 		return "", ""
 	}
 	return openAIItemIDAndPhase(metadata, providerName)

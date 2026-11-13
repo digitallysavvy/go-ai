@@ -49,3 +49,22 @@ func TestR99provbFunctionToolNonFiniteSchema(t *testing.T) {
 		t.Errorf("marshal = %s, %v", b, err)
 	}
 }
+
+// TestR99provbReplayMetadataOutOfRange: TS reads a replayed part's provider
+// metadata as an object (a 1e400 value reads as Infinity, ruling 4); Go's
+// encoding/json decode failed and lost the item id.
+func TestR99provbReplayMetadataOutOfRange(t *testing.T) {
+	meta := json.RawMessage(`{"openai":{"itemId":"it_1","n":1e400}}`)
+	if got := openAIReasoningItemID(types.ReasoningContent{ProviderMetadata: meta}, "openai"); got != "it_1" {
+		t.Errorf("reasoning item id = %q", got)
+	}
+	if got := openAIToolResultItemID(types.ToolResultContent{ProviderMetadata: meta}, "openai"); got != "it_1" {
+		t.Errorf("tool result item id = %q", got)
+	}
+	if got, _ := openAITextMetadata(types.TextContent{ProviderMetadata: meta}, "openai"); got != "it_1" {
+		t.Errorf("text item id = %q", got)
+	}
+	if got, _ := openAICompactionMetadata(types.CustomContent{ProviderMetadata: meta}, "openai"); got != "it_1" {
+		t.Errorf("compaction item id = %q", got)
+	}
+}
