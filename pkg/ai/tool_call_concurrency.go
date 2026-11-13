@@ -116,8 +116,9 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 			return out, err
 		}
 	}
+	// TS abortSignal?.throwIfAborted(): signal.reason (context.Cause).
 	if notStarted && ctx != nil && ctx.Err() != nil {
-		return out, ctx.Err()
+		return out, context.Cause(ctx)
 	}
 	return out, nil
 }

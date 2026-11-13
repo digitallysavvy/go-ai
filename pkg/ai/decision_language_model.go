@@ -74,8 +74,8 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 	// Typed Go containers in Instructions / Criteria take their JSON form
 	// (TS providers always receive JSON).
 	opts.Questions = provider.DecisionQuestionsJSON(opts.Questions)
-	// TS abortSignal?.throwIfAborted() before any work.
-	if err := ctx.Err(); err != nil {
+	// TS abortSignal?.throwIfAborted() before any work (signal.reason).
+	if err := context.Cause(ctx); err != nil {
 		return nil, err
 	}
 	stateParts := provider.DecisionStateParts(opts.State)
@@ -237,8 +237,8 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 	if err != nil {
 		return nil, err
 	}
-	// TS abortSignal?.throwIfAborted() after the model call.
-	if err := ctx.Err(); err != nil {
+	// TS abortSignal?.throwIfAborted() after the model call (signal.reason).
+	if err := context.Cause(ctx); err != nil {
 		return nil, err
 	}
 	if genResult.FinishReason != types.FinishReasonStop {

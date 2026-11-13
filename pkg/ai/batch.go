@@ -212,7 +212,7 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 	providerRequests := make([]provider.BatchV4Request, 0, len(opts.Requests))
 	toolsByName := map[string]interface{}{}
 	for _, req := range opts.Requests {
-		if err := callCtx.Err(); err != nil {
+		if err := context.Cause(callCtx); err != nil { // TS throwIfAborted: signal.reason
 			return nil, err
 		}
 		pr, buildErr := buildBatchProviderRequest(callCtx, req, urlChecker, toolsByName)
@@ -222,8 +222,9 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 		providerRequests = append(providerRequests, pr)
 	}
 	// TS `operationAbortSignal?.throwIfAborted()` also runs after the last
-	// request is normalized: an abort then never reaches doStartBatch.
-	if err := callCtx.Err(); err != nil {
+	// request is normalized: an abort then never reaches doStartBatch. It
+	// throws signal.reason (context.Cause).
+	if err := context.Cause(callCtx); err != nil {
 		return nil, err
 	}
 

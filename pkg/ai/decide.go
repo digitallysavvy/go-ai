@@ -260,8 +260,9 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 
 	var result *provider.DecisionResult
 	err = withEmbedRetry(ctx, resolvedMaxRetries, func(callCtx context.Context) error {
-		// TS abortSignal?.throwIfAborted() before every attempt.
-		if err := callCtx.Err(); err != nil {
+		// TS abortSignal?.throwIfAborted() before every attempt: it throws
+		// signal.reason (context.Cause).
+		if err := context.Cause(callCtx); err != nil {
 			return err
 		}
 		res, callErr := model.DoDecide(callCtx, provider.DecisionCallOptions{
@@ -289,8 +290,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		return nil, err
 	}
 
-	// TS abortSignal?.throwIfAborted() after the model call.
-	if err := ctx.Err(); err != nil {
+	// TS abortSignal?.throwIfAborted() after the model call (signal.reason).
+	if err := context.Cause(ctx); err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
 		return nil, err
 	}

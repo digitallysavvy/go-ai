@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -101,4 +102,19 @@ func r94integURL(s string, err error) string {
 		return "ERR " + err.Error()
 	}
 	return s
+}
+
+// TestR94integDecisionAbortReason: TS google-decision-model
+// abortSignal?.throwIfAborted() throws signal.reason.
+func TestR94integDecisionAbortReason(t *testing.T) {
+	reason := errors.New("r94integ: caller reason")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(reason)
+	model, err := New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}).DecisionModel(ModelGeminiDecision1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.DoDecide(ctx, provider.DecisionCallOptions{State: "x"}); !errors.Is(err, reason) {
+		t.Fatalf("err = %v, want the abort reason", err)
+	}
 }

@@ -2698,7 +2698,8 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			onAbort(ctx, nil)
 		}
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
-		return nil, ctx.Err()
+		// TS options.abortSignal?.throwIfAborted(): signal.reason.
+		return nil, context.Cause(ctx)
 	}
 	system := opts.System
 	var instructionMessages []types.Message
@@ -2968,7 +2969,8 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 			onAbort(ctx, nil)
 		}
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
-		return nil, ctx.Err()
+		// TS options.abortSignal?.throwIfAborted(): signal.reason.
+		return nil, context.Cause(ctx)
 	}
 	system := opts.System
 	var instructionMessages []types.Message

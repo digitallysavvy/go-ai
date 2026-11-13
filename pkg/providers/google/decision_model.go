@@ -57,8 +57,8 @@ func (m *DecisionModel) DoEvaluate(ctx context.Context, opts provider.DecisionCa
 
 // DoDecide decides every question against the same state in one request.
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
-	// TS abortSignal?.throwIfAborted() before any work.
-	if err := ctx.Err(); err != nil {
+	// TS abortSignal?.throwIfAborted() before any work (signal.reason).
+	if err := context.Cause(ctx); err != nil {
 		return nil, err
 	}
 	// Typed Go containers in Instructions / Criteria take their JSON form.
@@ -96,7 +96,8 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	if err := ctx.Err(); err != nil {
+	// TS abortSignal?.throwIfAborted() after the call (signal.reason).
+	if err := context.Cause(ctx); err != nil {
 		return nil, err
 	}
 

@@ -3602,7 +3602,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if abortErr == nil {
 					abortErr = ctx.Err()
 				}
-				if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+				// TS rejectResultPromises(abortSignal.reason): the caller's
+				// cancel cause (context.Cause), once, not wrapped twice.
+				abortErr = abortReason(ctx, abortErr)
+				var timeoutErr *TimeoutError
+				if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) && !errors.As(abortErr, &timeoutErr) {
 					abortErr = r.timeout.timeoutError(TimeoutReasonTotal, abortErr)
 				}
 				r.err = abortErr
@@ -3619,8 +3623,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			case r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx):
 				r.err = r.timeout.timeoutError(TimeoutReasonTotal, ctx.Err())
 			default:
-				// The caller cancelled: an abort, not a timeout.
-				r.err = stepCtx.Err()
+				// The caller cancelled: an abort, not a timeout, with the
+				// caller's reason (TS abortSignal.reason).
+				r.err = abortReason(stepCtx, stepCtx.Err())
 			}
 			fireAbort(r.err)
 			cancelStep()
@@ -4082,8 +4087,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// with `abort` (onAbort, no onEnd) instead of the call's `finish` or
 		// the next step.
 		if ctx.Err() != nil {
-			abortErr := ctx.Err()
-			if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+			abortErr := abortReason(ctx, ctx.Err()) // TS abortSignal.reason
+			var timeoutErr *TimeoutError
+			if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) && !errors.As(abortErr, &timeoutErr) {
 				abortErr = r.timeout.timeoutError(TimeoutReasonTotal, abortErr)
 			}
 			r.err = abortErr

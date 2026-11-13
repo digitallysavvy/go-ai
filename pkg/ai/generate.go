@@ -2763,7 +2763,9 @@ func RefineToolCalls(ctx context.Context, calls []types.ToolCall, tools []types.
 			ToolsContext:   toolsContext,
 		})
 		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			// TS parse-tool-call catch: abortSignal?.throwIfAborted() throws
+			// signal.reason (context.Cause).
+			if ctxErr := context.Cause(ctx); ctxErr != nil {
 				return nil, ctxErr
 			}
 			refined[i].Dynamic = true
