@@ -1059,12 +1059,24 @@ func pushOpenResponsesCall(calls *[]types.ToolCall, content *[]types.ContentPart
 func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	inputTokens := int64(usage.InputTokens)
 	outputTokens := int64(usage.OutputTokens)
-	totalTokens := inputTokens + outputTokens // TS core: input total + output total
 
-	result := types.Usage{
-		InputTokens:  &inputTokens,
-		OutputTokens: &outputTokens,
-		TotalTokens:  &totalTokens,
+	result := types.Usage{}
+	// TS total: usage.input_tokens / output_tokens as read (absent stays
+	// undefined); core's totalTokens adds the totals that are present.
+	inputPresent, outputPresent := true, true
+	if wire := usage.wire(); wire != nil {
+		_, inputPresent = wire["input_tokens"].(float64)
+		_, outputPresent = wire["output_tokens"].(float64)
+	}
+	if inputPresent {
+		result.InputTokens = &inputTokens
+	}
+	if outputPresent {
+		result.OutputTokens = &outputTokens
+	}
+	if inputPresent || outputPresent {
+		totalTokens := inputTokens + outputTokens
+		result.TotalTokens = &totalTokens
 	}
 
 	// TS reads cached_tokens / cache_write_tokens / reasoning_tokens as

@@ -89,3 +89,26 @@ func TestR97provbExtensionStreamPartsKeepFields(t *testing.T) {
 		t.Fatalf("tool-result = %#v, want the extension reference, isError and providerExecuted", result)
 	}
 }
+
+// TestR97provbUsageAbsentTotals: TS reads total: usage.input_tokens /
+// output_tokens as sent, so an absent count is undefined (noCache and text
+// still compute with ?? 0); Go reported 0. Core's totalTokens adds the
+// totals that are present.
+func TestR97provbUsageAbsentTotals(t *testing.T) {
+	var u Usage
+	if err := json.Unmarshal([]byte(`{"output_tokens":5}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	got := convertOpenResponsesUsage(&u)
+	if got.InputTokens != nil || got.OutputTokens == nil || *got.OutputTokens != 5 ||
+		got.TotalTokens == nil || *got.TotalTokens != 5 ||
+		got.InputDetails == nil || got.InputDetails.NoCacheTokens == nil || *got.InputDetails.NoCacheTokens != 0 {
+		t.Fatalf("usage = %+v, want input total undefined, output 5, total 5, noCache 0", got)
+	}
+	if err := json.Unmarshal([]byte(`{}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	if got := convertOpenResponsesUsage(&u); got.InputTokens != nil || got.OutputTokens != nil || got.TotalTokens != nil {
+		t.Fatalf("usage = %+v, want every total undefined", got)
+	}
+}
