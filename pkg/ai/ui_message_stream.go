@@ -3374,6 +3374,15 @@ func writeUISSEEvents(chunks <-chan UIMessageChunk, keepAlive time.Duration, ope
 		tick = timer.C
 	}
 	for {
+		// A stop wins over a chunk or a keep-alive tick that is ready at the
+		// same time (select picks among ready cases at random): TS cancel
+		// clears the keep-alive interval and releases the reader at once, so
+		// nothing is written after it (stop closed by emit itself included).
+		select {
+		case <-stop:
+			return false, nil
+		default:
+		}
 		select {
 		case chunk, ok := <-chunks:
 			if !ok {
