@@ -1687,8 +1687,10 @@ func TestWorkflowResumeDoesNotStartQueuedApprovedCallsAfterCancel(t *testing.T) 
 		tools:               []types.Tool{tool},
 		toolCallConcurrency: 1,
 	})
-	if err != nil {
-		t.Fatal(err)
+	// TS mapWithConcurrency: the next claim's throwIfAborted rejects the
+	// resume with the abort reason (review round 95).
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
