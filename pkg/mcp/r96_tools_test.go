@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TS sends JSON.stringify(message): `<`, `>`, `&` and U+2028 stay literal.
@@ -154,5 +156,19 @@ func TestR96toolsSplitMCPAppToolsRawVisibility(t *testing.T) {
 	}
 	if _, _, err := SplitMCPAppTools(ListToolsResult{Tools: []MCPTool{tool("b", true)}}); err == nil || err.Error() != "visibility.includes is not a function" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS mcpToModelOutput writes an unknown content part as JSON.stringify(part)
+// of the parsed object: integer-like keys first and JS number text.
+func TestR96toolsGenericContentPartIsJSONStringify(t *testing.T) {
+	c := &MCPToolConverter{}
+	out := c.convertToModelOutput(map[string]interface{}{"content": []interface{}{json.RawMessage(`{"type":"custom","b":1.0,"2":"x"}`)}})
+	if len(out.Content) != 1 {
+		t.Fatalf("out = %+v", out)
+	}
+	block, ok := out.Content[0].(types.TextContentBlock)
+	if !ok || block.Text != `{"2":"x","type":"custom","b":1}` {
+		t.Fatalf("block = %#v", out.Content[0])
 	}
 }

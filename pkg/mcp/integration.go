@@ -463,11 +463,8 @@ func convertGenericMCPContentPart(raw json.RawMessage) types.ToolResultContentBl
 			}
 		}
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, raw); err != nil {
-		return types.TextContentBlock{Text: string(raw)}
-	}
-	return types.TextContentBlock{Text: compact.String()}
+	// TS JSON.stringify(part): integer-like keys first, JS number text.
+	return types.TextContentBlock{Text: jsonStringifyRaw(raw)}
 }
 
 // rawJSONStringValue returns a JSON string's value, or the compact JSON text
