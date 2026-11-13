@@ -19,6 +19,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -3120,7 +3121,7 @@ func agentProviderMetadataRaw(metadata map[string]interface{}) json.RawMessage {
 	if len(metadata) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(metadata)
+	raw, err := jsonstr.Marshal(metadata)
 	if err != nil {
 		return nil
 	}

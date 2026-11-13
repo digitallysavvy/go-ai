@@ -18,6 +18,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 
@@ -474,7 +475,7 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 			}
 			var payload interface{}
 			if raw := strings.Join(data, "\n"); len(data) > 0 && !sseBlankData.MatchString(raw) {
-				if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				if err := jsonexact.Unmarshal([]byte(raw), &payload); err != nil {
 					sendStreamEvent(ctx, out, StreamEvent{Err: fmt.Errorf("langchain: invalid event data: %w", err)})
 					return false
 				}
@@ -609,13 +610,11 @@ type GraphInterruptError struct {
 }
 
 func newGraphInterrupt(interrupts interface{}) *GraphInterruptError {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
+	// jsonstr.Marshal is JSON.stringify (a non-finite number is null), then
+	// indented as JSON.stringify(value, null, 2).
 	message := ""
-	if err := enc.Encode(interrupts); err == nil {
-		message = strings.TrimSuffix(buf.String(), "\n")
+	if compact, err := jsonstr.Marshal(interrupts); err == nil {
+		message = langGraphIndent(string(compact))
 	}
 	return &GraphInterruptError{Interrupts: interrupts, message: message}
 }

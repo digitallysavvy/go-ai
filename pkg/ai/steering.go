@@ -2,11 +2,11 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // Experimental steering (TS experimental_createSteering, #23813).
@@ -350,12 +350,12 @@ func (r *steeringRun) end(reason SteeringNotDeliveredReason) {
 // map messages to new values (for example to add provider options), so a
 // message also counts as sent when a user message has the same content.
 func steerIsSent(message types.Message, sentMessages []types.Message) bool {
-	content, _ := json.Marshal(message.Content)
+	content, _ := jsonstr.Marshal(message.Content)
 	for _, sent := range sentMessages {
 		if sent.Role != types.RoleUser {
 			continue
 		}
-		if sentContent, _ := json.Marshal(sent.Content); string(sentContent) == string(content) {
+		if sentContent, _ := jsonstr.Marshal(sent.Content); string(sentContent) == string(content) {
 			return true
 		}
 	}

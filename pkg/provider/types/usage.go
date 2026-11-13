@@ -1,9 +1,10 @@
 package types
 
 import (
-	"encoding/json"
 	"math"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // Usage represents token or resource usage for an API call
@@ -232,7 +233,7 @@ func (u EmbeddingUsage) MarshalJSON() ([]byte, error) {
 	default:
 		tokens = u.Tokens
 	}
-	return json.Marshal(alias{
+	return jsonstr.Marshal(alias{
 		Tokens:      tokens,
 		InputTokens: u.InputTokens,
 		TotalTokens: u.TotalTokens,

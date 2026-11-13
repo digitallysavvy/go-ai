@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // MessageRole represents the role of a message sender in a conversation
@@ -76,7 +78,7 @@ func (t TextContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (t TextContent) MarshalJSON() ([]byte, error) {
 	type textContentAlias TextContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		textContentAlias
 	}{
@@ -126,7 +128,7 @@ func (r ReasoningContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (r ReasoningContent) MarshalJSON() ([]byte, error) {
 	type reasoningContentAlias ReasoningContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		reasoningContentAlias
 	}{
@@ -158,7 +160,7 @@ func (i ImageContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (i ImageContent) MarshalJSON() ([]byte, error) {
 	type imageContentAlias ImageContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		imageContentAlias
 	}{
@@ -211,7 +213,7 @@ func (f FileContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (f FileContent) MarshalJSON() ([]byte, error) {
 	type fileContentAlias FileContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		fileContentAlias
 	}{
@@ -258,7 +260,7 @@ func (s SourceContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (s SourceContent) MarshalJSON() ([]byte, error) {
 	type sourceContentAlias SourceContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		sourceContentAlias
 	}{
@@ -328,7 +330,7 @@ func (f GeneratedFileContent) MarshalJSON() ([]byte, error) {
 	default:
 		data = map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(f.Data)}
 	}
-	return json.Marshal(generatedFileJSON{
+	return jsonstr.Marshal(generatedFileJSON{
 		Type:             f.ContentType(),
 		MediaType:        f.MediaType,
 		Data:             data,
@@ -441,7 +443,7 @@ func (t ToolCallContent) MarshalJSON() ([]byte, error) {
 		Error            interface{}            `json:"error,omitempty"`
 		ThoughtSignature string                 `json:"thoughtSignature,omitempty"`
 	}
-	return json.Marshal(toolCallContentJSON{
+	return jsonstr.Marshal(toolCallContentJSON{
 		Type:             t.ContentType(),
 		ToolCallID:       t.ToolCallID,
 		ToolName:         t.ToolName,
@@ -467,7 +469,7 @@ func toolCallContentInput(t ToolCallContent) interface{} {
 		return map[string]interface{}{}
 	}
 	var parsed interface{}
-	if err := json.Unmarshal([]byte(t.Input), &parsed); err == nil {
+	if err := jsonexact.Unmarshal([]byte(t.Input), &parsed); err == nil {
 		return parsed
 	}
 	return t.Input
@@ -504,7 +506,7 @@ func (c CustomContent) ContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated content-part shape.
 func (c CustomContent) MarshalJSON() ([]byte, error) {
 	type customContentAlias CustomContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		customContentAlias
 	}{
@@ -573,7 +575,7 @@ func (r ReasoningFileContent) MarshalJSON() ([]byte, error) {
 	default:
 		data = base64.StdEncoding.EncodeToString(r.Data)
 	}
-	return json.Marshal(reasoningFileJSON{
+	return jsonstr.Marshal(reasoningFileJSON{
 		Type:             r.ContentType(),
 		Data:             data,
 		MediaType:        r.MediaType,
@@ -726,7 +728,7 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 		Dynamic          bool                   `json:"dynamic,omitempty"`
 		Preliminary      bool                   `json:"preliminary,omitempty"`
 	}
-	return json.Marshal(toolResultContentJSON{
+	return jsonstr.Marshal(toolResultContentJSON{
 		Type:             t.ContentType(),
 		ToolCallID:       t.ToolCallID,
 		ToolName:         t.ToolName,
@@ -780,7 +782,7 @@ func (t ToolErrorContent) ContentType() string {
 // (`type: "tool-error"`), like every other content part.
 func (t ToolErrorContent) MarshalJSON() ([]byte, error) {
 	type toolErrorContentAlias ToolErrorContent
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		toolErrorContentAlias
 	}{
@@ -847,7 +849,7 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 		IsAutomatic: t.IsAutomatic,
 	}
 	if t.hasInputSchemaInput() {
-		raw, err := json.Marshal(t.InputSchemaInput)
+		raw, err := jsonstr.Marshal(t.InputSchemaInput)
 		if err != nil {
 			return nil, err
 		}
@@ -859,7 +861,7 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 	} else {
 		out.ToolCallID = t.ToolCallID
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // ToolApprovalResponseContent indicates that approval was granted or denied.
@@ -928,7 +930,7 @@ func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
 		toolCall := toolCallContentFromToolCall(t.ToolCall)
 		out.ToolCall = &toolCall
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // UnmarshalJSON decodes the part with the default field mapping and marks an
@@ -978,7 +980,7 @@ func providerMetadataRawFromMap(metadata map[string]interface{}) json.RawMessage
 	if len(metadata) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(metadata)
+	raw, err := jsonstr.Marshal(metadata)
 	if err != nil {
 		return nil
 	}
@@ -1094,7 +1096,7 @@ func (o ToolResultOutput) MarshalJSON() ([]byte, error) {
 			out.Value = json.RawMessage("null")
 			return nil
 		}
-		data, err := json.Marshal(value)
+		data, err := jsonstr.Marshal(value)
 		if err != nil {
 			return err
 		}
@@ -1122,7 +1124,7 @@ func (o ToolResultOutput) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // UnmarshalJSON accepts the TypeScript SDK ToolResultOutput union shape and the
@@ -1392,13 +1394,13 @@ func (r RawToolResultContentBlock) MarshalJSON() ([]byte, error) {
 		fields[key] = value
 	}
 	if r.Type != "" {
-		typeData, err := json.Marshal(r.Type)
+		typeData, err := jsonstr.Marshal(r.Type)
 		if err != nil {
 			return nil, err
 		}
 		fields["type"] = typeData
 	}
-	return json.Marshal(fields)
+	return jsonstr.Marshal(fields)
 }
 
 func (r *RawToolResultContentBlock) UnmarshalJSON(data []byte) error {
@@ -1430,7 +1432,7 @@ func (t TextContentBlock) ToolResultContentType() string {
 // MarshalJSON emits the TypeScript SDK discriminated tool-result content shape.
 func (t TextContentBlock) MarshalJSON() ([]byte, error) {
 	type textContentBlockAlias TextContentBlock
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type string `json:"type"`
 		textContentBlockAlias
 	}{
@@ -1465,7 +1467,7 @@ func (i ImageContentBlock) MarshalJSON() ([]byte, error) {
 		MediaType       string                 `json:"mediaType"`
 		ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 	}
-	return json.Marshal(imageContentBlockJSON{
+	return jsonstr.Marshal(imageContentBlockJSON{
 		Type:            "file",
 		Data:            FileData{Type: FileDataTypeData, Data: i.Data},
 		MediaType:       i.MediaType,
@@ -1579,7 +1581,7 @@ func (f FileContentBlock) MarshalJSON() ([]byte, error) {
 	default:
 		data = FileData{Type: FileDataTypeData, Data: f.Data}
 	}
-	return json.Marshal(fileContentBlockJSON{
+	return jsonstr.Marshal(fileContentBlockJSON{
 		Type:            f.ToolResultContentType(),
 		Data:            data,
 		MediaType:       firstNonEmptyString(f.MediaType, f.FileData.MediaType),
@@ -1639,7 +1641,7 @@ func (c CustomContentBlock) ToolResultContentType() string {
 
 // MarshalJSON emits the TypeScript SDK custom tool-result content shape.
 func (c CustomContentBlock) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Type            string                 `json:"type"`
 		ProviderOptions map[string]interface{} `json:"providerOptions"`
 	}{
