@@ -69,7 +69,7 @@ func (v *MCPPromptArgument) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = MCPPromptArgument(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	v.extraJSON = looseExtraRaw(data, a)
 	return nil
 }
 
@@ -87,7 +87,7 @@ func (v *ServerInfo) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = ServerInfo(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	v.extraJSON = looseExtraRaw(data, a)
 	return nil
 }
 
@@ -105,7 +105,7 @@ func (v *ClientInfo) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = ClientInfo(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	v.extraJSON = looseExtraRaw(data, a)
 	return nil
 }
 
@@ -159,7 +159,7 @@ func (v *EventsCapability) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = EventsCapability(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	v.extraJSON = looseExtraRaw(data, a)
 	return nil
 }
 
@@ -179,7 +179,7 @@ func (v *CompletionsCapability) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = CompletionsCapability{}
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, CompletionsCapability{}))
+	v.extraJSON = looseExtraRaw(data, CompletionsCapability{})
 	return nil
 }
 
@@ -199,7 +199,7 @@ func (v *SamplingCapability) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = SamplingCapability{}
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, SamplingCapability{}))
+	v.extraJSON = looseExtraRaw(data, SamplingCapability{})
 	return nil
 }
 
@@ -219,7 +219,7 @@ func (v *LoggingCapability) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = LoggingCapability{}
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, LoggingCapability{}))
+	v.extraJSON = looseExtraRaw(data, LoggingCapability{})
 	return nil
 }
 
@@ -237,7 +237,7 @@ func (v *PromptsCapability) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = PromptsCapability(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	v.extraJSON = looseExtraRaw(data, a)
 	return nil
 }
 
@@ -255,7 +255,7 @@ func (v *ResourcesCapability) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = ResourcesCapability(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	v.extraJSON = looseExtraRaw(data, a)
 	return nil
 }
 
@@ -273,7 +273,7 @@ func (v *ToolsCapability) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = ToolsCapability(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	v.extraJSON = looseExtraRaw(data, a)
 	return nil
 }
 
@@ -291,7 +291,7 @@ func (v *RootsCapability) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*v = RootsCapability(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	v.extraJSON = looseExtraRaw(data, a)
 	return nil
 }
 

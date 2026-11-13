@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // StdioTransport implements the Transport interface for stdio-based communication
@@ -305,7 +306,7 @@ func (t *StdioTransport) Send(ctx context.Context, message *MCPMessage) error {
 	}
 
 	// Marshal message to JSON
-	data, err := json.Marshal(message)
+	data, err := jsonstr.Marshal(message)
 	if err != nil {
 		return NewTransportError("failed to marshal message", err)
 	}

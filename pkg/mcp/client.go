@@ -19,6 +19,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // MCPClient represents an MCP client that can communicate with MCP servers
@@ -1292,7 +1293,7 @@ func (c *MCPClient) receiveLoop() {
 		if msg.Method == "" && msg.ID == nil && (msg.Result != nil || msg.Error != nil) {
 			// TS onResponse: a response without a message ID is a protocol
 			// error reported through onError; it cannot match a request.
-			raw, _ := json.Marshal(msg)
+			raw, _ := jsonstr.Marshal(msg)
 			c.reportError(NewMCPClientError(0, "Protocol error: Received a response without a message ID: "+string(raw), nil))
 			continue
 		}
@@ -1310,7 +1311,7 @@ func (c *MCPClient) receiveLoop() {
 				}
 			} else if c.ctx.Err() == nil {
 				// TS onResponse: a response for an id with no waiting request.
-				raw, _ := json.Marshal(msg)
+				raw, _ := jsonstr.Marshal(msg)
 				c.reportError(NewMCPClientError(0, "Protocol error: Received a response for an unknown message ID: "+string(raw), nil))
 			}
 		} else if IsNotification(msg) {
@@ -1574,7 +1575,7 @@ func zodIssues(schema zodlite.Node, value []byte) (string, interface{}) {
 func parseElicitationRequestParams(raw json.RawMessage) (ElicitationRequest, string, interface{}) {
 	var params interface{}
 	present := len(raw) > 0
-	if present && json.Unmarshal(raw, &params) != nil {
+	if present && jsonexact.Unmarshal(raw, &params) != nil {
 		return ElicitationRequest{}, "params must be JSON", nil
 	}
 	if issues := elicitationRequestIssues(params, present); issues != nil {
@@ -1627,7 +1628,7 @@ func (c *MCPClient) prepareRequestParams(method string, params interface{}) (int
 	// (tools-04).
 	paramObj := jsonorder.New()
 	if params != nil {
-		data, err := json.Marshal(params)
+		data, err := jsonstr.Marshal(params)
 		if err != nil {
 			return nil, err
 		}

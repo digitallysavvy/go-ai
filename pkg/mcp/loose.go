@@ -6,6 +6,9 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // The TS MCP schemas are z.looseObject / .loose() (passthrough): keys the
@@ -52,7 +55,7 @@ func decodeLooseExtra(data []byte, known interface{}) map[string]interface{} {
 			continue
 		}
 		var val interface{}
-		if err := json.Unmarshal(v, &val); err != nil {
+		if err := jsonexact.Unmarshal(v, &val); err != nil {
 			continue
 		}
 		if extra == nil {
@@ -66,7 +69,7 @@ func decodeLooseExtra(data []byte, known interface{}) map[string]interface{} {
 // marshalLoose encodes base (a struct value) and appends the extra keys that
 // base does not declare, in sorted order.
 func marshalLoose(base interface{}, extra map[string]interface{}) ([]byte, error) {
-	out, err := json.Marshal(base)
+	out, err := jsonstr.Marshal(base)
 	if err != nil || len(extra) == 0 {
 		return out, err
 	}
@@ -86,8 +89,8 @@ func marshalLoose(base interface{}, extra map[string]interface{}) ([]byte, error
 	buf.Write(body)
 	needComma := len(bytes.TrimSpace(body)) > 1
 	for _, k := range keys {
-		kb, _ := json.Marshal(k)
-		vb, err := json.Marshal(extra[k])
+		kb, _ := jsonstr.Marshal(k)
+		vb, err := jsonstr.Marshal(extra[k])
 		if err != nil {
 			return nil, err
 		}
@@ -103,24 +106,49 @@ func marshalLoose(base interface{}, extra map[string]interface{}) ([]byte, error
 	return buf.Bytes(), nil
 }
 
-func encodeLooseExtra(extra map[string]interface{}) string {
-	if len(extra) == 0 {
+// looseExtraRaw is the JSON object of the members decodeLooseExtra returns,
+// written from the server's own JSON text: the undeclared members are kept
+// as sent, so a value that does not survive a Go re-encode (a number beyond
+// the double range, which JSON.parse reads as Infinity) is still there for
+// Extra().
+func looseExtraRaw(data []byte, known interface{}) string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return ""
 	}
-	b, err := json.Marshal(extra)
-	if err != nil {
+	names := jsonFieldNames(reflect.TypeOf(known))
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		if !names[k] {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
 		return ""
 	}
-	return string(b)
+	sort.Strings(keys)
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		kb, _ := jsonstr.Marshal(k)
+		buf.Write(kb)
+		buf.WriteByte(':')
+		if json.Compact(&buf, raw[k]) != nil {
+			return ""
+		}
+	}
+	buf.WriteByte('}')
+	return buf.String()
 }
 
 func decodeLooseExtraJSON(s string) map[string]interface{} {
 	if s == "" {
 		return nil
 	}
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(s), &m); err != nil {
-		return nil
-	}
-	return m
+	// Member by member, as decodeLooseExtra: one value that does not decode
+	// does not hide the others.
+	return decodeLooseExtra([]byte(s), struct{}{})
 }

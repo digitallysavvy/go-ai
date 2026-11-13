@@ -272,10 +272,13 @@ func TestSplitMCPAppToolsEmptyVisibilityHidesTool(t *testing.T) {
 	for _, tool := range modelVisible.Tools {
 		got = append(got, tool.Name)
 	}
-	if !reflect.DeepEqual(got, []string{"notArray", "model"}) {
+	// A non-array visibility stays raw (the {...uiMeta} spread): the string
+	// "app" answers String.includes, so the tool is app-visible only
+	// (review round 96, checked in node).
+	if !reflect.DeepEqual(got, []string{"model"}) {
 		t.Fatalf("model visible = %v", got)
 	}
-	if len(appVisible.Tools) != 0 {
+	if len(appVisible.Tools) != 1 || appVisible.Tools[0].Name != "notArray" {
 		t.Fatalf("app visible = %v", appVisible.Tools)
 	}
 	meta, err := GetMCPAppToolMeta(mk("unknown", []interface{}{"other"}))

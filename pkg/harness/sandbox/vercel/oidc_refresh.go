@@ -2,7 +2,6 @@ package vercel
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/verceloidc"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -146,7 +146,7 @@ func unverifiedTokenOwner(token string) (owner any, projectID string, ok bool) {
 		return nil, "", false
 	}
 	var payload map[string]any
-	if json.Unmarshal(textdecode.ReplaceInvalid(raw), &payload) != nil {
+	if jsonexact.Unmarshal(textdecode.ReplaceInvalid(raw), &payload) != nil {
 		// Invalid JSON, or a payload that is not an object (null throws,
 		// a primitive has no owner_id).
 		return nil, "", false

@@ -7,6 +7,9 @@ import (
 	"math"
 	"strconv"
 	"sync/atomic"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // JSON-RPC 2.0 implementation for MCP
@@ -32,7 +35,7 @@ func (g *IDGenerator) Next() interface{} {
 func CreateRequest(id interface{}, method string, params interface{}) (*MCPMessage, error) {
 	var paramsRaw json.RawMessage
 	if params != nil {
-		paramBytes, err := json.Marshal(params)
+		paramBytes, err := jsonstr.Marshal(params)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal params: %w", err)
 		}
@@ -51,7 +54,7 @@ func CreateRequest(id interface{}, method string, params interface{}) (*MCPMessa
 func CreateNotification(method string, params interface{}) (*MCPMessage, error) {
 	var paramsRaw json.RawMessage
 	if params != nil {
-		paramBytes, err := json.Marshal(params)
+		paramBytes, err := jsonstr.Marshal(params)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal params: %w", err)
 		}
@@ -69,7 +72,7 @@ func CreateNotification(method string, params interface{}) (*MCPMessage, error) 
 func CreateResponse(id interface{}, result interface{}) (*MCPMessage, error) {
 	var resultRaw json.RawMessage
 	if result != nil {
-		resultBytes, err := json.Marshal(result)
+		resultBytes, err := jsonstr.Marshal(result)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}
@@ -288,9 +291,14 @@ func parseJSONRPCErrorObject(raw json.RawMessage) (*MCPError, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid JSON-RPC message: error.code is required")
 	}
+	// A json.Number target also takes a quoted number ("-32000"), which
+	// zod's z.number() rejects.
 	var num json.Number
 	dec := json.NewDecoder(bytes.NewReader(codeRaw))
 	dec.UseNumber()
+	if trimmed := bytes.TrimSpace(codeRaw); len(trimmed) > 0 && trimmed[0] == '"' {
+		return nil, fmt.Errorf("invalid JSON-RPC message: error.code must be an integer")
+	}
 	if err := dec.Decode(&num); err != nil {
 		return nil, fmt.Errorf("invalid JSON-RPC message: error.code must be an integer")
 	}
@@ -304,7 +312,7 @@ func parseJSONRPCErrorObject(raw json.RawMessage) (*MCPError, error) {
 	}
 	out := &MCPError{Code: int(code), Message: message}
 	if d, ok := fields["data"]; ok {
-		if err := json.Unmarshal(d, &out.Data); err != nil {
+		if err := jsonexact.Unmarshal(d, &out.Data); err != nil {
 			return nil, fmt.Errorf("invalid JSON-RPC message: invalid error.data: %w", err)
 		}
 	}

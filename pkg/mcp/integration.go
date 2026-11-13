@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -338,7 +339,7 @@ func extractMCPStructuredOutput(result CallToolResult, outputSchema schema.Schem
 			break
 		}
 		var parsed interface{}
-		if err := json.Unmarshal([]byte(part.Text), &parsed); err != nil {
+		if err := jsonexact.Unmarshal([]byte(part.Text), &parsed); err != nil {
 			return nil, &MCPClientError{Message: "Tool \"" + toolName + "\" returned content that does not match the expected outputSchema", Cause: err}
 		}
 		defaulted := schema.ApplyDefaults(parsed, outputSchema)
@@ -462,11 +463,8 @@ func convertGenericMCPContentPart(raw json.RawMessage) types.ToolResultContentBl
 			}
 		}
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, raw); err != nil {
-		return types.TextContentBlock{Text: string(raw)}
-	}
-	return types.TextContentBlock{Text: compact.String()}
+	// TS JSON.stringify(part): integer-like keys first, JS number text.
+	return types.TextContentBlock{Text: jsonStringifyRaw(raw)}
 }
 
 // rawJSONStringValue returns a JSON string's value, or the compact JSON text

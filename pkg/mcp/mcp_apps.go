@@ -35,7 +35,7 @@ func (m MCPAppToolMeta) MarshalJSON() ([]byte, error) {
 	if m.Visibility != nil {
 		out["visibility"] = m.Visibility
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // MCPAppResource is the normalized HTML resource a host can render.
@@ -144,14 +144,41 @@ func SplitMCPAppTools(definitions ListToolsResult) (modelVisible ListToolsResult
 		if metaErr != nil {
 			return ListToolsResult{}, ListToolsResult{}, metaErr
 		}
-		if meta == nil || meta.Visibility == nil || containsString(meta.Visibility, "model") {
+		model, app, visErr := mcpAppToolVisibility(meta)
+		if visErr != nil {
+			return ListToolsResult{}, ListToolsResult{}, visErr
+		}
+		if model {
 			modelVisible.Tools = append(modelVisible.Tools, tool)
 		}
-		if meta != nil && containsString(meta.Visibility, "app") {
+		if app {
 			appVisible.Tools = append(appVisible.Tools, tool)
 		}
 	}
 	return modelVisible, appVisible, nil
+}
+
+// mcpAppToolVisibility is TS splitMCPAppTools' checks on
+// getMCPAppToolMeta(tool)?.visibility: a filtered array, or, when the raw
+// value is not an array, that raw value kept by the {...uiMeta} spread. A
+// missing or null visibility is model-visible only; a string answers with
+// String.prototype.includes; any other value has no includes method, which
+// TS reports as a TypeError.
+func mcpAppToolVisibility(meta *MCPAppToolMeta) (model, app bool, err error) {
+	if meta == nil {
+		return true, false, nil
+	}
+	if meta.Visibility != nil {
+		return containsString(meta.Visibility, "model"), containsString(meta.Visibility, "app"), nil
+	}
+	switch raw := meta.Extra["visibility"].(type) {
+	case nil:
+		return true, false, nil
+	case string:
+		return strings.Contains(raw, "model"), strings.Contains(raw, "app"), nil
+	default:
+		return false, false, errors.New("visibility.includes is not a function")
+	}
 }
 
 // GetMCPAppResourceURIs returns unique ui:// resource URIs referenced by tools.

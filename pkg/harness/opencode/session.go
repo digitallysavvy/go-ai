@@ -2,7 +2,6 @@ package opencode
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -661,7 +661,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 		unsub := s.p.channel.On(bridge.TypeStop, func(e bridge.Event) {
 			if stop, ok := e.Message.(*bridge.Stop); ok {
 				var m map[string]any
-				_ = json.Unmarshal(stop.Data, &m)
+				_ = jsonexact.Unmarshal(stop.Data, &m)
 				select {
 				case replyCh <- m:
 				default:

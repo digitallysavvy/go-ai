@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -757,7 +758,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	}
 
 	// Marshal message to JSON
-	data, err := json.Marshal(message)
+	data, err := jsonstr.Marshal(message)
 	if err != nil {
 		return fail(NewTransportError("failed to marshal message", err))
 	}

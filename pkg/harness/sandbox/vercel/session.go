@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -338,7 +339,8 @@ func (s *Session) ListDirectory(ctx context.Context, filePath string) ([]provide
 		// the whole record and the type is all but its last character.
 		typ, name, ok := strings.Cut(record, " ")
 		if !ok {
-			typ, name = record[:len(record)-1], record
+			units := utf16.Encode([]rune(record))
+			typ, name = string(utf16.Decode(units[:len(units)-1])), record
 		}
 		entries = append(entries, providerutils.SandboxDirectoryEntry{Name: name, Type: typ})
 	}

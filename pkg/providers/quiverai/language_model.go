@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -257,7 +258,7 @@ func decodeQuiverAIProviderMetadata(raw json.RawMessage) map[string]interface{} 
 		return nil
 	}
 	var metadata map[string]interface{}
-	if err := json.Unmarshal(quiverRaw, &metadata); err != nil {
+	if err := jsonexact.Unmarshal(quiverRaw, &metadata); err != nil {
 		return nil
 	}
 	return metadata
