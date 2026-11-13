@@ -275,7 +275,7 @@ func seedTSState(t *testing.T, st *eventState, seed map[string]interface{}) {
 				st.messageOrder = append(st.messageOrder, p[0].(string))
 			case "currentStepsByNamespace":
 				p := it.([]interface{})
-				st.currentStepsByNamespace[p[0].(string)] = int(p[1].(float64))
+				st.currentStepsByNamespace[p[0].(string)] = p[1].(float64)
 			case "emittedToolCallsByKey":
 				// The key is `name:JSON.stringify(args)` in TS key order; Go
 				// keys use sorted-key JSON.

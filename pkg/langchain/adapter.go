@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -480,7 +481,7 @@ type eventState struct {
 	emittedSources              map[string]bool
 	messageSeen                 map[string]*messageSeenState
 	messageNamespaces           map[string][]string
-	toolCallInfoByIndex         map[string]map[int]toolCall
+	toolCallInfoByIndex         map[string]map[string]toolCall
 
 	// messageOrder lists messageSeen keys in first-seen order.
 	messageOrder []string
@@ -492,7 +493,7 @@ type eventState struct {
 	messageReasoningIDs map[string]string
 
 	// per-namespace step lifecycle bookkeeping, keyed by namespaceKey(...)
-	currentStepsByNamespace                    map[string]int
+	currentStepsByNamespace                    map[string]float64
 	messageIdsInCurrentStepByNamespace         map[string]map[string]bool
 	emittedToolCallsInCurrentStepByNamespace   map[string]map[string]bool
 	emittedToolInputsInCurrentStepByNamespace  map[string]map[string]bool
@@ -526,12 +527,12 @@ func newEventState() *eventState {
 		emittedSources:              map[string]bool{},
 		messageSeen:                 map[string]*messageSeenState{},
 		messageNamespaces:           map[string][]string{},
-		toolCallInfoByIndex:         map[string]map[int]toolCall{},
+		toolCallInfoByIndex:         map[string]map[string]toolCall{},
 		emittedImages:               map[string]bool{},
 		emittedReasoningIDs:         map[string]bool{},
 		messageReasoningIDs:         map[string]string{},
 
-		currentStepsByNamespace:                    map[string]int{},
+		currentStepsByNamespace:                    map[string]float64{},
 		messageIdsInCurrentStepByNamespace:         map[string]map[string]bool{},
 		emittedToolCallsInCurrentStepByNamespace:   map[string]map[string]bool{},
 		emittedToolInputsInCurrentStepByNamespace:  map[string]map[string]bool{},
@@ -563,7 +564,7 @@ func (s *messageSeenState) addTool(id string) {
 
 // startNamespaceStep begins a new LangGraph step scope for the given
 // namespace key, resetting the per-step emitted-call/input/output sets.
-func (state *eventState) startNamespaceStep(ns string, step int) {
+func (state *eventState) startNamespaceStep(ns string, step float64) {
 	state.currentStepsByNamespace[ns] = step
 	state.messageIdsInCurrentStepByNamespace[ns] = map[string]bool{}
 	state.emittedToolCallsInCurrentStepByNamespace[ns] = map[string]bool{}
@@ -904,7 +905,9 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 	// active UI text/reasoning part, so it is omitted when another namespace
 	// is still active (hasConcurrentMessageParts).
 	if metadata, ok := metadataMap(items); ok {
-		if step, ok := numberAsInt(metadata["langgraph_step"]); ok {
+		// TS `typeof metadata.langgraph_step === 'number'`: any number,
+		// compared as is (a fractional step is a step of its own).
+		if step, ok := jsNumberValue(metadata["langgraph_step"]); ok {
 			currentStep, exists := state.currentStepsByNamespace[eventNS]
 			switch {
 			case !exists:
@@ -992,12 +995,12 @@ func processAIMessageChunk(state *eventState, message map[string]interface{}, ms
 func processToolCallChunks(state *eventState, msgID, eventNS string, calls []toolCall) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	for _, call := range calls {
-		if call.id != "" {
+		if call.id != "" && call.index != "" {
 			if state.toolCallInfoByIndex[msgID] == nil {
-				state.toolCallInfoByIndex[msgID] = map[int]toolCall{}
+				state.toolCallInfoByIndex[msgID] = map[string]toolCall{}
 			}
 			state.toolCallInfoByIndex[msgID][call.index] = call
-		} else if stored := state.toolCallInfoByIndex[msgID][call.index]; stored.id != "" {
+		} else if stored := state.toolCallInfoByIndex[msgID][call.index]; call.id == "" && call.index != "" && stored.id != "" {
 			call.id = stored.id
 			if call.name == "" {
 				call.name = stored.name
@@ -1303,7 +1306,11 @@ func toolInputAvailableChunk(toolCallID, toolName string, input interface{}) ai.
 func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS string) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	for _, request := range actionRequests(root) {
-		if request.name == "" {
+		// An empty name is a name (TS uses it as is). A request without a
+		// string name is skipped: TS would emit a tool-input-start without
+		// a toolName, which fails the UI message chunk schema (known
+		// difference "LangGraph values with malformed fields").
+		if !request.hasName {
 			continue
 		}
 		key := toolCallKey(request.name, request.input)
@@ -1666,16 +1673,21 @@ func finalizeSeenPartsForValues(state *eventState) []ai.UIMessageChunk {
 }
 
 type toolCall struct {
-	id    string
-	name  string
-	args  interface{}
-	index int
+	id   string
+	name string
+	args interface{}
+	// index is the TS Map key of `toolCallChunk.index ?? 0` (see
+	// toolCallIndexKey); "" for an object index, which no later chunk can
+	// look up.
+	index string
 }
 
 type actionRequest struct {
-	id    string
-	name  string
-	input interface{}
+	id   string
+	name string
+	// hasName is `typeof actionRequest.name === 'string'`.
+	hasName bool
+	input   interface{}
 }
 
 func extractToolCallChunks(message map[string]interface{}) []toolCall {
@@ -1690,12 +1702,11 @@ func extractToolCallChunks(message map[string]interface{}) []toolCall {
 		if !ok {
 			continue
 		}
-		index, _ := numberAsInt(m["index"])
 		calls = append(calls, toolCall{
 			id:    stringValue(m["id"]),
 			name:  stringValue(m["name"]),
 			args:  stringValue(m["args"]),
-			index: index,
+			index: toolCallIndexKey(m["index"]),
 		})
 	}
 	return calls
@@ -1796,10 +1807,12 @@ func actionRequests(root map[string]interface{}) []actionRequest {
 			if !jsTruthy(input) {
 				input = req["arguments"]
 			}
+			name, hasName := req["name"].(string)
 			out = append(out, actionRequest{
-				id:    stringValue(req["id"]),
-				name:  stringValue(req["name"]),
-				input: input,
+				id:      stringValue(req["id"]),
+				name:    name,
+				hasName: hasName,
+				input:   input,
 			})
 		}
 	}
@@ -2487,20 +2500,41 @@ func firstPresent(m map[string]interface{}, keys ...string) interface{} {
 	return nil
 }
 
-func numberAsInt(v interface{}) (int, bool) {
+// jsNumberValue is `typeof v === 'number'` with the number's value.
+func jsNumberValue(v interface{}) (float64, bool) {
 	switch x := v.(type) {
 	case int:
-		return x, true
+		return float64(x), true
 	case int64:
-		return int(x), true
+		return float64(x), true
 	case float64:
-		return int(x), true
+		return x, true
 	case json.Number:
-		i, err := x.Int64()
-		return int(i), err == nil
+		f, ok := providerutils.JSNumber(string(x))
+		return f, ok
 	default:
 		return 0, false
 	}
+}
+
+// toolCallIndexKey is the TS Map key of `toolCallChunk.index ?? 0`: a number
+// by its value (1 and 1.5 differ), a string or boolean by its value (the
+// string "1" is not the number 1), and "" for an object or array, whose key
+// is its identity, so no other chunk finds it.
+func toolCallIndexKey(v interface{}) string {
+	if v == nil {
+		return "n:0"
+	}
+	if f, ok := jsNumberValue(v); ok {
+		return "n:" + providerutils.JSNumberString(f)
+	}
+	switch x := v.(type) {
+	case string:
+		return "s:" + x
+	case bool:
+		return "b:" + strconv.FormatBool(x)
+	}
+	return ""
 }
 
 func isNumber(v interface{}) bool {
@@ -2530,10 +2564,8 @@ func stringValue(v interface{}) string {
 	case int64:
 		return strconv.FormatInt(x, 10)
 	case float64:
-		if x == float64(int64(x)) {
-			return strconv.FormatInt(int64(x), 10)
-		}
-		return strconv.FormatFloat(x, 'f', -1, 64)
+		// JS String(number) (template literals): 1e21, 1e-7, Infinity.
+		return providerutils.JSNumberString(x)
 	default:
 		return ""
 	}
