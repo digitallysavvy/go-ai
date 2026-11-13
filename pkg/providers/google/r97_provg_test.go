@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TS google-files.ts reads the upload result with uploadResponse.json()
@@ -123,5 +125,29 @@ func TestR97provgSpeechTranslationNullMessageTypeError(t *testing.T) {
 	err = r97provgDrainErr(func() error { _, err := result.Stream.Next(); return err })
 	if err == nil || err.Error() != r97provgNullTypeError {
 		t.Fatalf("err = %v, want the TypeError", err)
+	}
+}
+
+// TS usage.raw is the usage object as sent: a fractional count stays exact in
+// raw while the typed fields truncate (cr-r97-provb-to-provg 2).
+func TestR97provgInteractionsUsageRawKeepsFraction(t *testing.T) {
+	var u interactionsUsage
+	if err := json.Unmarshal([]byte(`{"total_input_tokens":1.5,"total_tokens":3}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	if u.raw["total_input_tokens"] != 1.5 {
+		t.Fatalf("raw = %#v, want total_input_tokens 1.5", u.raw)
+	}
+	if u.TotalInputTokens == nil || *u.TotalInputTokens != 1 {
+		t.Fatalf("typed = %v", u.TotalInputTokens)
+	}
+	var wrapped struct {
+		Usage *interactionsUsage `json:"usage"`
+	}
+	if err := providerutils.UnmarshalChunk([]byte(`{"usage":{"total_input_tokens":1.5}}`), &wrapped); err != nil {
+		t.Fatal(err)
+	}
+	if wrapped.Usage.raw["total_input_tokens"] != 1.5 {
+		t.Fatalf("chunk raw = %#v", wrapped.Usage.raw)
 	}
 }
