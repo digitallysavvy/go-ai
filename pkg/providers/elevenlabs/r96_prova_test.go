@@ -17,7 +17,7 @@ type r96provaFailingWritesConn struct {
 	read atomic.Bool
 }
 
-var r96provaWriteErr = errors.New("r96prova write failed")
+var errR96provaWrite = errors.New("r96prova write failed")
 
 func (c *r96provaFailingWritesConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
@@ -27,7 +27,7 @@ func (c *r96provaFailingWritesConn) Read(b []byte) (int, error) {
 
 func (c *r96provaFailingWritesConn) Write(b []byte) (int, error) {
 	if c.read.Load() {
-		return 0, r96provaWriteErr
+		return 0, errR96provaWrite
 	}
 	return c.Conn.Write(b)
 }
@@ -48,7 +48,7 @@ func TestR96provaSpeechInitSendFailureAfterStreamStart(t *testing.T) {
 	}
 	defer result.Stream.Close() //nolint:errcheck
 	parts, err := collectSpeech(t, result.Stream)
-	if !errors.Is(err, r96provaWriteErr) {
+	if !errors.Is(err, errR96provaWrite) {
 		t.Fatalf("err = %v, want the send error", err)
 	}
 	if len(parts) != 1 || parts[0].Type != provider.SpeechStreamPartTypeStreamStart {
