@@ -168,3 +168,25 @@ func TestR97provaBatchEmptyResultsURL(t *testing.T) {
 		t.Fatalf("err = %T %v, want the DownloadError Invalid URL", err, err)
 	}
 }
+
+// TS convertAnthropicUsage passes the parsed usage as raw: a fractional count
+// (z.number()) stays as sent in Usage.Raw, while the Go int counts truncate
+// it (provb CR r97).
+func TestR97provaFractionalUsageRawExact(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","id":"m","model":"x","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":10.5,"output_tokens":3}}`))
+	}))
+	defer srv.Close()
+	model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), ClaudeSonnet4_5, nil)
+	result, err := model.DoGenerate(context.Background(), r97provaPrompt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := result.Usage.Raw["input_tokens"]; v != 10.5 {
+		t.Fatalf("Usage.Raw input_tokens = %v, want 10.5", v)
+	}
+	if result.Usage.InputDetails == nil || *result.Usage.InputDetails.NoCacheTokens != 10 {
+		t.Fatalf("noCache tokens = %+v, want 10", result.Usage.InputDetails)
+	}
+}

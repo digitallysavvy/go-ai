@@ -1521,7 +1521,10 @@ type anthropicUsage struct {
 func (u *anthropicUsage) UnmarshalJSON(data []byte) error {
 	type plain anthropicUsage
 	var p plain
-	if err := jsonexact.Unmarshal(data, &p); err != nil {
+	// TS z.number() counts: a fractional count is truncated into the typed
+	// fields only (providerutils.UnmarshalChunk), so the decode does not fail
+	// and Raw below keeps the number as sent.
+	if err := providerutils.UnmarshalChunk(data, &p); err != nil {
 		return err
 	}
 	*u = anthropicUsage(p)
