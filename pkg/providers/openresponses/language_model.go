@@ -1738,21 +1738,31 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 						ToolCall: &types.ToolCall{
 							ID:               tc.ToolCallID,
 							ToolName:         tc.ToolName,
+							Title:            tc.Title,
 							Arguments:        tc.Arguments,
 							RawArguments:     tc.Input,
 							ProviderExecuted: tc.ProviderExecuted,
+							Dynamic:          tc.Dynamic,
 							ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
 						},
 					})
 					continue
 				}
 				if tr, ok := part.(types.ToolResultContent); ok {
+					// TS enqueues the decoded part as is: its providerMetadata
+					// carries the {id, itemId} extension reference.
 					s.pending = append(s.pending, &provider.StreamChunk{
 						Type: provider.ChunkTypeToolResult,
 						ToolResult: &types.ToolResult{
-							ToolCallID: tr.ToolCallID,
-							ToolName:   tr.ToolName,
-							Result:     tr.Result,
+							ToolCallID:          tr.ToolCallID,
+							ToolName:            tr.ToolName,
+							Title:               tr.Title,
+							Input:               tr.Input,
+							Result:              tr.Result,
+							IsError:             tr.IsError,
+							ProviderExecuted:    tr.ProviderExecuted,
+							ProviderExecutedSet: tr.ProviderExecuted,
+							ProviderMetadata:    extensionToolCallProviderMetadata(tr.ProviderMetadata),
 						},
 					})
 					continue
