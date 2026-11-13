@@ -234,7 +234,10 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	if err != nil {
 		return nil, err
 	}
-	// TS postJsonToApi: the runtime user-agent tag.
+	// TS postJsonToApi: {'Content-Type': 'application/json', ...headers}
+	// (a caller Content-Type wins), then the runtime user-agent tag; the
+	// upload headers are combined after the caller's.
+	initReq.Header.Set("Content-Type", "application/json")
 	for k, v := range googleWithRuntimeUserAgent(authHeaders) {
 		initReq.Header.Set(k, v)
 	}
@@ -242,7 +245,6 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	initReq.Header.Set("X-Goog-Upload-Command", "start")
 	initReq.Header.Set("X-Goog-Upload-Header-Content-Length", strconv.Itoa(len(content)))
 	initReq.Header.Set("X-Goog-Upload-Header-Content-Type", "application/jsonl")
-	initReq.Header.Set("Content-Type", "application/json")
 
 	initResp, err := internalhttp.WithFetchRedirects(b.provider.client.HTTPClient()).Do(initReq)
 	if err != nil {
