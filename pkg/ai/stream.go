@@ -547,6 +547,11 @@ type StreamTextResult struct {
 	// Error that occurred during streaming
 	err error
 
+	// abortCause is the abort reason of a failed run whose context ended
+	// (runAbortReason); Err() reports it instead of err. Written by the
+	// processing goroutine before processingDone closes.
+	abortCause error
+
 	// chunkErr is the error of the stream's terminal error chunk (guarded by
 	// mu). Err() reports it when no other error ended the stream.
 	chunkErr error
@@ -1589,7 +1594,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if stepCancel != nil {
 			stepCancel()
 		}
-		r.fail(startErr)
+		r.fail(ctx, startErr)
 		return
 	}
 
@@ -1768,7 +1773,7 @@ func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamText
 		// wrapped.
 		r.pushPreStreamParts(ctx, opts, r.preStreamStartParts(provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})...)
 	}
-	r.fail(err)
+	r.fail(ctx, err)
 }
 
 // preStreamStartParts returns `start`, the first step's delivered steering
@@ -1896,13 +1901,19 @@ func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTex
 // or making the first provider stream request) and finalizes the result the
 // same way a mid-stream failure does (processStream's own deferred cleanup),
 // so Err()/ReadAll()/Stream() behave identically regardless of which phase
-// produced the error.
-func (r *StreamTextResult) fail(err error) {
+// produced the error. ctx is the run's context: an aborted run reports the
+// abort reason (runAbortReason) from Err() and OutputErr().
+func (r *StreamTextResult) fail(ctx context.Context, err error) {
 	r.err = err
-	r.steering.end(steeringEndReasonFor(context.TODO(), err))
+	resultErr := err
+	if reason := runAbortReason(ctx, err); reason != nil {
+		r.abortCause = reason
+		resultErr = reason
+	}
+	r.steering.end(steeringEndReasonFor(ctx, resultErr))
 	r.mu.Lock()
 	// No step was recorded.
-	r.setNoOutputErr(context.TODO(), err)
+	r.setNoOutputErr(ctx, resultErr)
 	r.status = StreamStatusDone
 	r.mu.Unlock()
 	r.notifyStreamDone()
@@ -4644,6 +4655,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			onChunk(finishChunk)
 		}
 	}
+	// An aborted run reports the abort reason from Err() and OutputErr(),
+	// whatever it was doing when the context ended (reading the model stream,
+	// a tool input callback, a file download, opening a later step).
+	resultErr := r.err
+	if reason := runAbortReason(ctx, r.err); reason != nil {
+		r.abortCause = reason
+		resultErr = reason
+	}
 	if r.err != nil {
 		if isAbortErr(ctx, r.err) {
 			fireAbort(r.err)
@@ -4674,7 +4693,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// are this error already): TS consumeStream and cancelOnAbort reject
 		// the result promises, result.output among them, with the stream's
 		// error or the abort reason, whether or not a step was recorded.
-		r.setStreamFailureOutputErr(r.err)
+		r.setStreamFailureOutputErr(resultErr)
 		r.status = StreamStatusDone
 		r.mu.Unlock()
 		return
@@ -5432,6 +5451,9 @@ func (r *StreamTextResult) Err() error {
 // terminalErr is the error that ended the stream: r.err, else the error of the
 // terminal error chunk. Call it after the stream has been consumed.
 func (r *StreamTextResult) terminalErr() error {
+	if r.abortCause != nil {
+		return r.abortCause
+	}
 	if r.err != nil {
 		return r.err
 	}
@@ -6160,6 +6182,25 @@ func abortReasonMessage(reason error) string {
 		return "TimeoutError: The operation was aborted due to timeout"
 	}
 	return reason.Error()
+}
+
+// runAbortReason is the error the result promises of a failed run whose
+// context ended reject with: TS streamText's cancelOnAbort rejects them with
+// abortSignal.reason as soon as the signal fires, so a cancellation reports
+// its cause (context.Cause: the caller's WithCancelCause reason, or the total
+// TimeoutError) instead of the bare context error that the interrupted read,
+// callback or model call returned. It is nil while ctx is live and for a
+// TimeoutError (step, chunk or total), which already is the reason. The full
+// stream itself still ends as before (TS closes it after its `abort` part).
+func runAbortReason(ctx context.Context, err error) error {
+	if err == nil || ctx == nil || ctx.Err() == nil {
+		return nil
+	}
+	var timeoutErr *TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return nil
+	}
+	return abortReason(ctx, err)
 }
 
 // classifyStepTimeout reports err as the step or total TimeoutError when
