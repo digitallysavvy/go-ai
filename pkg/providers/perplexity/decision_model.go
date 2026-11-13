@@ -107,7 +107,8 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 				QuestionID: id, QuestionType: q.Type, Provider: m.Provider(), ModelID: m.modelID,
 			}
 		}
-		nativeQuestions.Vals[id] = wire
+		// TS literal order: type, instructions, criteria.
+		nativeQuestions.Vals[id] = providerutils.OrderedMap{Keys: []string{"type", "instructions", "criteria"}, Vals: wire}
 	}
 
 	state, err := convertToPerplexityDecisionState(provider.DecisionStateParts(opts.State))
@@ -119,11 +120,12 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/v1/decisions",
-		Body: map[string]interface{}{
+		// TS body literal order: model, state, questions.
+		Body: providerutils.OrderedMap{Keys: []string{"model", "state", "questions"}, Vals: map[string]interface{}{
 			"model":     m.modelID,
 			"state":     state,
 			"questions": nativeQuestions,
-		},
+		}},
 		Headers: opts.Headers,
 		// TS createJsonResponseHandler(perplexityDecisionResponseSchema).
 		ValidateResponse: validatePerplexityDecisionResponse,

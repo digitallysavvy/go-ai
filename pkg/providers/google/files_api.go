@@ -189,7 +189,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		if err != nil {
 			return nil, err
 		}
-		for k, v := range headers {
+		// TS getFromApi tags the user-agent with the runtime (the raw
+		// fetchFn steps above send getHeaders() only).
+		for k, v := range googleWithRuntimeUserAgent(headers) {
 			pollReq.Header.Set(k, v)
 		}
 		pollResp, err := internalhttp.WithFetchRedirects(f.provider.client.HTTPClient()).Do(pollReq)
@@ -306,6 +308,14 @@ func googleRawFetchError(err error) error {
 		return cause
 	}
 	return err
+}
+
+// googleWithRuntimeUserAgent is the header set a TS postToApi /
+// postJsonToApi / getFromApi call sends: the given headers with the runtime
+// tag appended to the user-agent (withUserAgentSuffix(...,
+// getRuntimeEnvironmentUserAgent())). A raw fetchFn call does not add it.
+func googleWithRuntimeUserAgent(headers map[string]string) map[string]string {
+	return providerutils.WithUserAgentSuffix(headers, providerutils.RuntimeEnvironmentUserAgent())
 }
 
 // googleFilesError is the AISDKError TS throws for a failed upload; Name is

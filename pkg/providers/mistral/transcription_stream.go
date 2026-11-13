@@ -3,7 +3,6 @@ package mistral
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -528,11 +527,10 @@ func (s *mistralRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, aud
 		func(chunk []byte) error {
 			for offset := 0; offset < len(chunk); offset += mistralRealtimeAudioChunkBytes {
 				end := min(offset+mistralRealtimeAudioChunkBytes, len(chunk))
-				msg, _ := json.Marshal(map[string]string{
-					"type":  "input_audio.append",
-					"audio": base64.StdEncoding.EncodeToString(chunk[offset:end]),
-				})
-				if err := wsutil.Send(s.Context(), conn, string(msg)); err != nil {
+				// TS JSON.stringify({type, audio}): type first (base64 needs
+				// no escaping).
+				msg := `{"type":"input_audio.append","audio":"` + base64.StdEncoding.EncodeToString(chunk[offset:end]) + `"}`
+				if err := wsutil.Send(s.Context(), conn, msg); err != nil {
 					return err
 				}
 			}

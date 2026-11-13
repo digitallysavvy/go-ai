@@ -713,6 +713,11 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			}
 			return errorChunk, nil
 		}
+		// TS z.union tries the data member first; its z.object strips an
+		// `error` key, so a frame that is also a valid chunk is data.
+		if len(chunkData.Error) > 0 && groqChunkMatchesDataMember(event.Data) {
+			chunkData.Error = nil
+		}
 		if len(chunkData.Error) > 0 {
 			s.finishErrored = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -900,4 +905,24 @@ func validateGroqToolChoice(opts *provider.GenerateOptions) error {
 		return nil
 	}
 	return prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice)
+}
+
+// groqChunkMatchesDataMember reports whether a stream frame with an `error`
+// key also passes the data member of groqChatChunkSchema. The frame is
+// checked without the key: the error member requires it, so the union then
+// passes only through the data member.
+func groqChunkMatchesDataMember(data string) bool {
+	var fields map[string]json.RawMessage
+	if jsonexact.Unmarshal([]byte(data), &fields) != nil {
+		return false
+	}
+	if _, ok := fields["error"]; !ok {
+		return false
+	}
+	delete(fields, "error")
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return false
+	}
+	return providerutils.ValidateChatChunk(stripped, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindGroq}) == nil
 }

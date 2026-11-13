@@ -185,10 +185,11 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		"newSessionExpireTime":     newSessionExpireTime,
 		"bidiGenerateContentSetup": m.BuildSessionConfig(valueOrZero(opts.SessionConfig)),
 	}
-	payload, err := jsonstr.Marshal(body)
-	if err != nil {
-		return provider.ClientSecretResult{}, err
-	}
+	// TS JSON.stringify of the literal: uses, expireTime,
+	// newSessionExpireTime, then the setup in buildGoogleSessionConfig order.
+	orders := googleRealtimeSetupOrders("bidiGenerateContentSetup")
+	orders[""] = []string{"uses", "expireTime", "newSessionExpireTime", "bidiGenerateContentSetup"}
+	payload := []byte(providerutils.StringifyOrdered(body, orders))
 	authTokenURL, err := googleAuthTokenURL(m.provider.config.BaseURL, apiKey)
 	if err != nil {
 		return provider.ClientSecretResult{}, err
@@ -290,6 +291,21 @@ func redactURLErrorQuery(err error) error {
 		redacted.URL = "<redacted>"
 	}
 	return &redacted
+}
+
+// googleRealtimeSetupOrders is the JS insertion order of the
+// buildGoogleSessionConfig object at path prefix (for StringifyOrdered):
+// model, generationConfig, systemInstruction, tools, the transcription
+// configs, then the provider option keys Object.assign appends (sorted: a Go
+// map has no order). generationConfig adds translationConfig and then
+// thinkingConfig after its own keys; a function declaration is name,
+// description, parametersJsonSchema, behavior.
+func googleRealtimeSetupOrders(prefix string) map[string][]string {
+	return map[string][]string{
+		prefix:                                 {"model", "generationConfig", "systemInstruction", "tools", "inputAudioTranscription", "outputAudioTranscription"},
+		prefix + ".generationConfig":           {"responseModalities", "speechConfig", "translationConfig", "thinkingConfig"},
+		prefix + ".tools.functionDeclarations": {"name", "description", "parametersJsonSchema", "behavior"},
+	}
 }
 
 // BuildSessionConfig ports TS buildGoogleSessionConfig
@@ -821,7 +837,8 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 			m.inputAudioRate = *event.Config.InputAudioFormat.Rate
 		}
 		setup := (&GoogleRealtimeModel{modelID: modelID}).BuildSessionConfig(event.Config)
-		out = map[string]interface{}{"setup": setup}
+		// TS JSON.stringify keeps the buildGoogleSessionConfig key order.
+		return json.RawMessage(providerutils.StringifyOrdered(map[string]interface{}{"setup": setup}, googleRealtimeSetupOrders("setup"))), nil
 	case "input-audio-commit":
 		out = map[string]interface{}{"realtimeInput": map[string]interface{}{"audioStreamEnd": true}}
 	case "input-audio-append":

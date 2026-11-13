@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
 
@@ -43,10 +42,8 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	if params.ExpiresAfterSeconds != nil {
 		body["expiresIn"] = *params.ExpiresAfterSeconds
 	}
-	data, err := jsonstr.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+	// TS JSON.stringify of the literal: model, routeKind, expiresIn.
+	data := []byte(providerutils.StringifyOrdered(body, map[string][]string{"": {"model", "routeKind", "expiresIn"}}))
 	endpoint, err := gatewayOriginURL(p.baseURL, "/v1/realtime/client-secrets")
 	if err != nil {
 		return nil, err
@@ -58,10 +55,11 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	// TS createAuthHeaders: Authorization and the auth method come first and
 	// the provider's custom headers are spread after them, so a custom header
 	// of the same name wins.
-	for k, v := range mergeHeadersFold(map[string]string{
+	// TS postJsonToApi then tags the user-agent with the runtime.
+	for k, v := range providerutils.WithUserAgentSuffix(mergeHeadersFold(map[string]string{
 		"Authorization":          fmt.Sprintf("Bearer %s", token),
 		"ai-gateway-auth-method": authMethod,
-	}, p.headers) {
+	}, p.headers), providerutils.RuntimeEnvironmentUserAgent()) {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Content-Type", "application/json")
