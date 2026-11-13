@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -2073,7 +2074,7 @@ func jsSpreadUIValue(v interface{}) (keys map[string]interface{}, primitive bool
 		}
 		return out, false
 	}
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err == nil && len(b) > 0 {
 		switch b[0] {
 		case '"':
@@ -2122,7 +2123,7 @@ func uiJSONObject(v interface{}) (map[string]interface{}, bool) {
 	case nil, string, bool, float64, json.Number, []interface{}, []UIMessageChunk:
 		return nil, false
 	}
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil || len(b) == 0 || b[0] != '{' {
 		return nil, false
 	}
@@ -2871,7 +2872,7 @@ func steeringTextUIPart(c types.TextContent) map[string]interface{} {
 // uiPlainJSON returns v as plain JSON values (maps, slices, strings, float64,
 // bools), as a UI chunk holds them after a JSON round trip.
 func uiPlainJSON(v interface{}) interface{} {
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil {
 		return v
 	}
@@ -3448,7 +3449,7 @@ func ReadUIMessageStream(r io.Reader) ([]UIMessageChunk, error) {
 			continue
 		}
 		var chunk UIMessageChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		if err := jsonexact.Unmarshal([]byte(data), &chunk); err != nil {
 			return nil, err
 		}
 		chunks = append(chunks, chunk)
@@ -3483,7 +3484,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			return
 		}
 		var providerMetadata map[string]interface{}
-		if err := json.Unmarshal(chunk.ProviderMetadata, &providerMetadata); err == nil && len(providerMetadata) > 0 {
+		if err := jsonexact.Unmarshal(chunk.ProviderMetadata, &providerMetadata); err == nil && len(providerMetadata) > 0 {
 			part["providerMetadata"] = providerMetadata
 		}
 	}
@@ -3526,7 +3527,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if len(chunk.Citations) > 0 {
 			// Round-trip through JSON so the chunk holds the same generic
 			// shape as a decoded wire chunk.
-			if raw, err := json.Marshal(chunk.Citations); err == nil {
+			if raw, err := jsonstr.Marshal(chunk.Citations); err == nil {
 				var citations []interface{}
 				if json.Unmarshal(raw, &citations) == nil {
 					part["citations"] = citations

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // UIMessageRole is the role of a UI message. Mirrors the TypeScript
@@ -399,7 +400,7 @@ func (o *orderedJSON) field(key string, value interface{}) {
 	if o.err != nil {
 		return
 	}
-	data, err := json.Marshal(value)
+	data, err := jsonstr.Marshal(value)
 	if err != nil {
 		o.err = err
 		return
@@ -409,7 +410,7 @@ func (o *orderedJSON) field(key string, value interface{}) {
 	} else {
 		o.buf.WriteByte(',')
 	}
-	k, _ := json.Marshal(key)
+	k, _ := jsonstr.Marshal(key)
 	o.buf.Write(k)
 	o.buf.WriteByte(':')
 	o.buf.Write(data)
@@ -1014,7 +1015,7 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 // message stream callbacks, e.g. `responseMessage`) into a typed UIMessage.
 func UIMessageFromChunk(message UIMessageChunk) (UIMessage, error) {
 	var out UIMessage
-	data, err := json.Marshal(message)
+	data, err := jsonstr.Marshal(message)
 	if err != nil {
 		return out, err
 	}
@@ -1038,7 +1039,7 @@ func UIMessagesFromChunks(messages []UIMessageChunk) ([]UIMessage, error) {
 // ToChunk converts a typed UIMessage into the map-shaped UI message used by
 // UIMessageStreamOptions.OriginalMessages.
 func (m UIMessage) ToChunk() (UIMessageChunk, error) {
-	data, err := json.Marshal(m)
+	data, err := jsonstr.Marshal(m)
 	if err != nil {
 		return nil, err
 	}

@@ -15,11 +15,13 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -3781,7 +3783,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.mu.Unlock()
 		var stepProviderMeta map[string]interface{}
 		if len(stepProviderMetadataRaw) > 0 {
-			_ = json.Unmarshal(stepProviderMetadataRaw, &stepProviderMeta)
+			_ = jsonexact.Unmarshal(stepProviderMetadataRaw, &stepProviderMeta)
 		}
 
 		// Build reasoning content from deltas accumulated during this step.
@@ -3945,7 +3947,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			stepResult.ProviderMetadata = nil
 			if len(fs.ProviderMetadata) > 0 {
 				var meta map[string]interface{}
-				if json.Unmarshal(fs.ProviderMetadata, &meta) == nil {
+				if jsonexact.Unmarshal(fs.ProviderMetadata, &meta) == nil {
 					stepResult.ProviderMetadata = meta
 				}
 			}
@@ -4751,7 +4753,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	var streamProviderMeta map[string]interface{}
 	if len(r.providerMetadata) > 0 {
-		_ = json.Unmarshal(r.providerMetadata, &streamProviderMeta)
+		_ = jsonexact.Unmarshal(r.providerMetadata, &streamProviderMeta)
 	}
 	r.mu.Unlock()
 	endProvider, endModelID := finalStepModel(allSteps, r.cbModelProvider, r.cbModelID)
@@ -4819,7 +4821,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	r.mu.Lock()
 	var finalProviderMeta map[string]interface{}
 	if len(r.providerMetadata) > 0 {
-		_ = json.Unmarshal(r.providerMetadata, &finalProviderMeta)
+		_ = jsonexact.Unmarshal(r.providerMetadata, &finalProviderMeta)
 	}
 	r.mu.Unlock()
 
@@ -4920,7 +4922,7 @@ func providerToolResultError(value interface{}) error {
 	case string:
 		return errors.New(v)
 	default:
-		if b, err := json.Marshal(v); err == nil {
+		if b, err := jsonstr.Marshal(v); err == nil {
 			return errors.New(string(b))
 		}
 		return fmt.Errorf("%v", v)
@@ -5917,7 +5919,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	readAllFiles := r.files
 	var readAllProviderMeta map[string]interface{}
 	if len(r.providerMetadata) > 0 {
-		_ = json.Unmarshal(r.providerMetadata, &readAllProviderMeta)
+		_ = jsonexact.Unmarshal(r.providerMetadata, &readAllProviderMeta)
 	}
 	r.mu.Unlock()
 	endProvider, endModelID := finalStepModel([]types.StepResult{step}, r.cbModelProvider, r.cbModelID)
@@ -6431,7 +6433,7 @@ func partialOutputDedupKey(partial interface{}) (string, bool) {
 	if s, ok := partial.(string); ok {
 		return s, true
 	}
-	newJSON, err := json.Marshal(partial)
+	newJSON, err := jsonstr.Marshal(partial)
 	if err != nil {
 		return "", false
 	}

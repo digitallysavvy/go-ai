@@ -7,9 +7,11 @@ import (
 	"io"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ExternalStreamOptions configures NewStreamTextResultFromParts: the
@@ -426,7 +428,7 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		r.files = append(r.files, step.files...)
 		r.warnings = append(r.warnings, step.warnings...)
 		if len(step.providerMetadata) > 0 {
-			if raw, err := json.Marshal(step.providerMetadata); err == nil {
+			if raw, err := jsonstr.Marshal(step.providerMetadata); err == nil {
 				r.providerMetadata = raw
 			}
 		}
@@ -696,8 +698,8 @@ consumeLoop:
 				}
 				if len(chunk.ProviderMetadata) > 0 {
 					var md map[string]interface{}
-					if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
-						if raw, err := json.Marshal(md); err == nil {
+					if jsonErr := jsonexact.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
+						if raw, err := jsonstr.Marshal(md); err == nil {
 							r.providerMetadata = raw
 						}
 					}
@@ -714,7 +716,7 @@ consumeLoop:
 			step.rawFinishReason = chunk.RawFinishReason
 			if len(chunk.ProviderMetadata) > 0 {
 				var md map[string]interface{}
-				if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
+				if jsonErr := jsonexact.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
 					step.providerMetadata = md
 				}
 			}
