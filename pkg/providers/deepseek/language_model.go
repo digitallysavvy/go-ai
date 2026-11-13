@@ -557,8 +557,8 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 		}
 		meta["logprobs"] = lp
 	}
-	if response.SystemFingerprint != "" {
-		meta["systemFingerprint"] = response.SystemFingerprint
+	if response.SystemFingerprint != nil { // TS != null: a present "" is kept
+		meta["systemFingerprint"] = *response.SystemFingerprint
 	}
 	result.ProviderMetadata = map[string]interface{}{m.provider.providerOptionsName(): meta}
 
@@ -668,7 +668,7 @@ type deepseekResponse struct {
 	Object            string   `json:"object"`
 	Created           *float64 `json:"created"`
 	Model             string   `json:"model"`
-	SystemFingerprint string   `json:"system_fingerprint"`
+	SystemFingerprint *string  `json:"system_fingerprint"`
 	Choices           []struct {
 		Index        *int   `json:"index"`
 		FinishReason string `json:"finish_reason"`
@@ -753,7 +753,7 @@ type deepseekStreamChunk struct {
 	Object            string          `json:"object"`
 	Created           *float64        `json:"created"`
 	Model             string          `json:"model"`
-	SystemFingerprint string          `json:"system_fingerprint"`
+	SystemFingerprint *string         `json:"system_fingerprint"`
 	Error             json.RawMessage `json:"error,omitempty"`
 	Choices           []struct {
 		Index        *int    `json:"index"`
@@ -803,7 +803,7 @@ type deepseekStream struct {
 	// providerMetadata and usage.
 	usageRaw          json.RawMessage
 	responseObject    string
-	systemFingerprint string
+	systemFingerprint *string
 	choiceIndex       *int
 	messageRole       string
 	toolCallTypes     map[int]string
@@ -924,7 +924,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		if chunkData.Object != "" {
 			s.responseObject = chunkData.Object
 		}
-		if chunkData.SystemFingerprint != "" {
+		if chunkData.SystemFingerprint != nil { // TS != null: a present "" is kept
 			s.systemFingerprint = chunkData.SystemFingerprint
 		}
 		// TS isFirstChunk: the first valid chunk always yields response-metadata.
@@ -1121,8 +1121,8 @@ func (s *deepseekStream) attachFinishMetadata(chunk *provider.StreamChunk) {
 		}
 		meta["logprobs"] = lp
 	}
-	if s.systemFingerprint != "" {
-		meta["systemFingerprint"] = s.systemFingerprint
+	if s.systemFingerprint != nil {
+		meta["systemFingerprint"] = *s.systemFingerprint
 	}
 	// TS always attaches providerMetadata[name] to the finish part, even when
 	// every entry is undefined.

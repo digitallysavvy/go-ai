@@ -2,9 +2,11 @@ package deepseek
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -50,5 +52,35 @@ func TestR97provbPromptCacheTokensNull(t *testing.T) {
 	}
 	if meta["promptCacheMissTokens"] != 1 {
 		t.Fatalf("promptCacheMissTokens = %#v", meta["promptCacheMissTokens"])
+	}
+}
+
+// TestR97provbEmptySystemFingerprint: TS keeps system_fingerprint when it
+// is != null, so a present "" is reported in generate and stream metadata.
+func TestR97provbEmptySystemFingerprint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","system_fingerprint":"","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+	res, err := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "deepseek-chat").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := res.ProviderMetadata["deepseek"].(map[string]interface{})["systemFingerprint"]; !ok || v != "" {
+		t.Fatalf("generate systemFingerprint = %#v (present %v)", v, ok)
+	}
+	s := newDeepseekStream(io.NopCloser(strings.NewReader("data: {\"id\":\"a\",\"system_fingerprint\":\"\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n")))
+	for {
+		c, err := s.Next()
+		if err != nil {
+			t.Fatal("no finish chunk")
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			if !strings.Contains(string(c.ProviderMetadata), `"systemFingerprint":""`) {
+				t.Fatalf("stream metadata = %s", c.ProviderMetadata)
+			}
+			return
+		}
 	}
 }
