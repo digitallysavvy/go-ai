@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
@@ -26,7 +27,9 @@ func chunkProviderMetadata(raw json.RawMessage) (map[string]interface{}, bool) {
 		return nil, false
 	}
 	var md map[string]interface{}
-	if err := json.Unmarshal(raw, &md); err != nil || md == nil {
+	// A number beyond the double range reads as +-Inf, as JSON.parse reads
+	// it (ruling 4); the metadata is SDK-built, not a secureJsonParse'd body.
+	if err := jsonexact.UnmarshalPlain(raw, &md); err != nil || md == nil {
 		return nil, false
 	}
 	return md, true

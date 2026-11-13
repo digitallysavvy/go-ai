@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 // TS WorkflowChatTransport reads frames with parseJsonEventStream
@@ -70,5 +71,20 @@ func TestR97carryWorkflowChatTransportReadsLikeJSONParse(t *testing.T) {
 	}
 	if s := data["s"]; s != "a�b" {
 		t.Fatalf("s = %q, want %q", s, "a�b")
+	}
+}
+
+// TS toUIMessageChunk passes providerMetadata as the object it is; Go reads
+// the raw metadata, where a number beyond the double range is +Inf (ruling 4)
+// instead of dropping the whole metadata.
+func TestR97carryToUIMessageChunkMetadataInfinity(t *testing.T) {
+	c, ok := ToUIMessageChunk(ModelCallStreamPart{Type: provider.ChunkTypeText, ID: "t", Text: "x", ProviderMetadata: []byte(`{"p":{"n":1e400}}`)})
+	if !ok {
+		t.Fatal("no chunk")
+	}
+	md, _ := c["providerMetadata"].(map[string]interface{})
+	p, _ := md["p"].(map[string]interface{})
+	if n, _ := p["n"].(float64); !math.IsInf(n, 1) {
+		t.Fatalf("providerMetadata = %v, want p.n = +Inf", c["providerMetadata"])
 	}
 }
