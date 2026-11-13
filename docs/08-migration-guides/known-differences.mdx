@@ -172,7 +172,7 @@ Reason: S4 (coordinator ruling, round 87e).
 `BatchV4ListOptions.Cursor`, `BatchV4StartOptions.WebhookURL`, `BatchV4ListResult.NextCursor` and `BatchV4Status.RawStatus` are v0.5.2 strings, so `""` means unset: Go sends no `pageToken=` or `webhookConfig` for `""` and reports `nextPageToken: ""` as no cursor. Fractional token and invocation counts (accepted, as TS `z.number()`) are truncated toward zero because `types.Usage` and the Perplexity metadata hold integers (S1).
 
 ## Accept header
-Streaming requests send `Accept: text/event-stream` and other requests send none. TS's `fetch` adds `accept: */*` to every request that sets none (S3: Node runtime default).
+Streaming requests send `Accept: text/event-stream` (the Bedrock Converse event stream sends none, and the Bedrock Anthropic invoke stream sends `application/vnd.amazon.eventstream` in place of the Anthropic stream's `text/event-stream`) and other requests send none. TS's `fetch` adds `accept: */*` to every request that sets none (S3: Node runtime default).
 
 ## WorkflowAgent root telemetry outside a durable run
 TS WorkflowAgent reports its root telemetry in two ways, chosen by `isInWorkflow()`. In a Workflow DevKit run it records the events and reports them when the run ends, with a `call-…` call ID, the final step's fields on the end event, and an `onAbort` for a run that never closed. Outside one it dispatches live: the call ID is the literal `'workflow-agent'`, the end event has no `finalStep` (both TS OTel integrations throw on it), and an abort returned by the model step leaves the root open. Go has no Workflow DevKit and always behaves like the durable report (S3: the Node-only Workflow DevKit runtime).
@@ -869,6 +869,9 @@ The LangChain adapter reads reasoning from a message's `contentBlocks`, `content
 
 ## LangGraph values with malformed fields
 A LangGraph tool call chunk, tool call or action request whose id, name or args is a number gets that value as text (`5` -> `"5"`), and an action request without a string name is skipped. TS forwards the number, or an undefined toolName, into the UI message chunk, which the client's chunk schema rejects (S7: TS emits chunks that fail its own UI message chunk schema; review round 97).
+
+## Anthropic provider tool calls without an input
+An Anthropic `server_tool_use` or `mcp_tool_use` block that has no `input` key is reported with the input `{}`. TS reports `JSON.stringify(undefined)` (undefined), which the core turns into an invalid tool call (S1: `ToolCallContent.Input` is a v0.5.2 string where an empty value already means an empty object; an absent state needs a new exported field; review round 98).
 
 ## Features that are TypeScript-only (not ported)
 

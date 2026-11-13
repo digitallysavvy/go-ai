@@ -804,6 +804,19 @@ already, you can skip them.
 | `Usage.Raw` fractions; `null` realtime messages; OpenAI Responses tool calls; Azure MAI, DeepSeek, Open Responses edge values | Follow TS | silent behavior change | None | [OpenAI, Azure, xAI and OpenAI-compatible round 97 details](#provb-r97-details) |
 | TypeSafe AI large usage counts, fal `image`, ByteDance / KlingAI fractions, Cartesia `null` events | Follow TS | silent behavior change | None | [Media provider round 97 details](#provc-r97-details) |
 | Gateway error `param` keys, Gemini string `args` and non-object tool responses, Google / Gateway `null` realtime messages, `Usage.Raw` fractions | Follow TS | silent behavior change | None | [Google, Gateway, Mistral, Groq and Cohere round 97 details](#provg-r97-details) |
+| Tool error values that are maps or structs; LangGraph event data with `__proto__`; `StreamObject` / `SimulateStreamingMiddleware` metadata with `__proto__` | Follow TS | silent behavior change | None | [Tool errors, LangGraph events and object metadata round 98 details](#gen-r98-details) |
+| Provider metadata or transformed tool input holding `__proto__` / `constructor.prototype` in `StreamText` | Kept, as TS | silent behavior change | None | [StreamText provider metadata round 98 details](#stream-r98-details) |
+| `User-Agent` of Bedrock, Anthropic batch results, Google Files poll and batch, Vertex Chirp, Gateway client secrets, Azure Speech / MAI images, BFL polls and downloads; Bedrock `Accept` | Runtime tag added; no `Accept` | wire/protocol change | None unless you match headers | [Runtime user-agent on API requests](#runtime-user-agent-api-calls) |
+| `Headers` entries that differ only in case from an SDK header (`Anthropic-Version`, `Content-Type`, `Prefer`) | Caller's value wins | wire/protocol change | Remove overrides you do not want | [Header name case](#header-name-case-override) |
+| `ProviderError.Message` of an off-schema failed response | Server reason phrase | error text only | Match `StatusCode` | [Reason phrase](#failed-response-reason-phrase) |
+| WebSocket client frames and client-secret bodies of OpenAI, xAI, Azure MAI, Google, Vertex, Gateway, Mistral, ElevenLabs; Perplexity decision body | TS key order | wire/protocol change | Compare decoded JSON | [Client frame key order](#client-frame-key-order) |
+| Bedrock empty event-type headers; Anthropic tool search / web tool result names, `mcp_tool_use` inputs, safeguard issues; ElevenLabs URL numbers | Follow TS | silent behavior change | None | [Anthropic, Bedrock and ElevenLabs round 98 details](#prova-r98-details) |
+| Fireworks `error: null`; OpenAI-compatible frames with `choices` and `error`; Hugging Face loose frames; 32-bit number clamps; Open Responses `dynamic` / `title` | Follow TS | silent behavior change | None | [OpenAI, Azure, xAI and OpenAI-compatible round 98 details](#provb-r98-details) |
+| Media validators with `1e999`; fal `images` and empty URLs; Tencent TC3 host; Replicate empty outputs; AssemblyAI upload `Content-Type` | Follow TS | silent behavior change | None | [Media provider round 98 details](#provc-r98-details) |
+| Google `videoMetadata` / code-execution values with `__proto__`; Groq frames with `choices` and `error` | Follow TS | silent behavior change | None | [Google and Groq round 98 details](#provg-r98-details) |
+| MCP OAuth discovery `MCP-Protocol-Version` with an empty `OAuthDiscoveryOptions.ProtocolVersion` | `2026-07-28` | wire/protocol change | Set `ProtocolVersion` for a legacy server | [MCP OAuth protocol version](#mcp-oauth-latest-protocol-version) |
+| MCP `application/json` results with `__proto__`; Vercel Sandbox empty / `__proto__` bodies; Prodia empty `StopSequences` | Follow TS | silent behavior change | None | [MCP, Vercel Sandbox and Prodia round 98 details](#tools-r98-details) |
+| Harness bridge `seq` of invalid frames; `DecodeStreamPart` ±Inf in results and usage `raw`; nested key case; `WorkflowChatTransport` failed-fetch text | Follow TS | silent behavior change | None | [Harness, bridge and workflow round 98 details](#carry-r98-details) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1541,6 +1554,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 - **What changed:** `ObjectOutput` and `ArrayOutput` keep a model number beyond the double range, read as ±Inf as TS `safeParseJSON` does, when the result type can hold it (`interface{}`, a map or a slice); other types convert from its `JSON.stringify` text. v0.5 failed complete parsing with "response did not match schema" and dropped the partial output. The LangChain adapter compares `langgraph_step` as a number (`1` then `1.5` is a new step), keys tool call chunks by the TS `index ?? 0` map key (`1.5` and `"1"` are not `1`), writes a numeric source-document id with JS `String(number)` (`1e21`, `1e-7`), handles an action request named `""` like any name, and matches an interrupt's action request to an earlier tool call by name and arguments in wire key order, as TS `${name}:${JSON.stringify(args)}` (review round 97).
 - **Am I affected?** Code that reads `Output` results holding numbers beyond the double range, or LangGraph streams with fractional steps, string or fractional tool chunk indexes, numeric document ids, or HITL interrupts whose arguments repeat an earlier tool call's keys in another order.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Tool errors, LangGraph events and object metadata round 98 details {#gen-r98-details}
+
+- **What changed:** A tool error value that is neither a string nor an `error` is written into the tool-error message with `JSON.stringify` semantics, as TS `getErrorMessage`: `<`, `>` and `&` stay literal and NaN / ±Inf are `null` (v0.5 escaped them, and a value holding NaN / ±Inf gave `unknown error`). LangGraph remote run events keep a `__proto__` key in their data, as langgraph-sdk's plain `JSON.parse`, instead of failing the stream with "invalid event data". `StreamObject` finish provider metadata and the tool-call and tool-result provider metadata of `SimulateStreamingMiddleware` keep `__proto__` / `constructor.prototype` keys instead of dropping the whole metadata, as TS passes the object along (review round 98).
+- **Am I affected?** Tools that fail with map or struct error values, LangGraph remote streams whose events hold `__proto__`, and provider metadata holding those keys.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
@@ -4753,6 +4773,13 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** Match the stream failure with `errors.As(err, &validationErr)`.
 - **Kind:** silent behavior change
 
+### StreamText provider metadata round 98 details {#stream-r98-details}
+
+- **What changed:** Provider metadata that holds an own `__proto__` key or a `constructor.prototype` member (only metadata a caller or middleware builds: provider responses with such keys are rejected on entry) is kept in step results, `OnLanguageModelCallEnd`, `OnEnd` telemetry, provider tool results, UI message chunk `providerMetadata` and external stream steps, as TS passes the object along without parsing it again. v0.5 dropped the whole metadata. A stream transform's tool call whose input text holds a `__proto__` key keeps its text instead of being rewritten in Go key order (review round 98).
+- **Am I affected?** Middleware or transforms that put `__proto__` or `constructor` keys in provider metadata or tool inputs.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -5563,7 +5590,7 @@ compile-time changes.
 
 ### JSON payloads with `__proto__` keys fail like TS {#json-proto-payloads-fail}
 
-- **What changed:** v0.5, and v0.6 up to review round 95 as a known difference, accepted JSON with a `__proto__` key or a `constructor` object with a `prototype` key. v0.6 rejects it wherever TS parses with `secureJsonParse` / `safeParseJSON`, with TS's `*providererrors.JSONParseError` (`JSON parsing failed: Text: <text>.` and `Error message: SyntaxError: Object contains forbidden prototype property`): a provider or server response body fails the call (as the cause where TS reports "Invalid JSON response"); a stream chunk or WebSocket event is an error part (finish reason `error` where TS sets it) and its raw chunk value is nil; a tool-call input is an `InvalidToolInputError`; `GenerateObject`, `StreamObject` and `Output` parsing give `NoObjectGeneratedError` "No object generated: could not parse the response."; `jsonparser.ParsePartialJSON` returns the failed-parse state; `DecisionLanguageModel` gives "Decision did not return valid JSON." (review round 96). Bodies TS reads with plain `response.json()` keep such keys, as v0.5 did: the Cartesia, OpenAI, xAI and Google realtime client secrets, the Google Files upload result, the AssemblyAI transcript poll, the fal still-in-progress poll detail, MCP OAuth metadata, token and client registration responses, MCP `application/json` POST responses and the results re-read after the transport, the Vercel Sandbox OIDC token payload, You.com tool responses and QuiverAI replayed provider metadata (review round 97).
+- **What changed:** v0.5, and v0.6 up to review round 95 as a known difference, accepted JSON with a `__proto__` key or a `constructor` object with a `prototype` key. v0.6 rejects it wherever TS parses with `secureJsonParse` / `safeParseJSON`, with TS's `*providererrors.JSONParseError` (`JSON parsing failed: Text: <text>.` and `Error message: SyntaxError: Object contains forbidden prototype property`): a provider or server response body fails the call (as the cause where TS reports "Invalid JSON response"); a stream chunk or WebSocket event is an error part (finish reason `error` where TS sets it) and its raw chunk value is nil; a tool-call input is an `InvalidToolInputError`; `GenerateObject`, `StreamObject` and `Output` parsing give `NoObjectGeneratedError` "No object generated: could not parse the response."; `jsonparser.ParsePartialJSON` returns the failed-parse state; `DecisionLanguageModel` gives "Decision did not return valid JSON." (review round 96). Bodies TS reads with plain `response.json()` keep such keys, as v0.5 did: the Cartesia, OpenAI, xAI and Google realtime client secrets, the Google Files upload result, the AssemblyAI transcript poll, the fal still-in-progress poll detail, MCP OAuth metadata, token and client registration responses, MCP `application/json` POST responses and the results re-read after the transport, the Vercel Sandbox OIDC token payload, You.com tool responses and QuiverAI replayed provider metadata (review round 97). Round 98 adds the LangGraph remote event data, the Vercel Sandbox API responses, log lines and stdin responses, MCP modern result fields, and values TS validates in memory without a parse (the MCP `ElicitResult`, Anthropic tool outputs, OpenAI and xAI Responses tool args, Google `videoMetadata` and code-execution values) (review round 98).
 - **Am I affected?** Only if a provider, proxy, mock server or model returns JSON with a `__proto__` key or a `constructor.prototype` member, at any depth. Search test fixtures for `__proto__`.
 - **What to do:** No action unless your fixtures or servers send such keys. Match the failure with `errors.As(err, &jsonErr)` for `var jsonErr *providererrors.JSONParseError`.
 - **Kind:** silent behavior change
@@ -9126,6 +9153,62 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+### Provider API requests on a raw client carry the runtime user-agent tag {#runtime-user-agent-api-calls}
+
+- **What changed:** TS `postToApi`, `postJsonToApi`, `postFormDataToApi` and `getFromApi` append `getRuntimeEnvironmentUserAgent()` to the user agent (`go/<version>` in Go). v0.5 sent these requests on a raw `net/http` client with the provider tag only (the Google batch upload went out with Go's default `Go-http-client/1.1`): every Amazon Bedrock call (Converse, Converse stream, embeddings, images, rerank), Anthropic batch result downloads (the off-origin results hop carries only the user agent, as TS), the Google Files upload poll, the Google batch resumable init, upload and results download, Vertex Chirp transcription, the AI Gateway realtime client secret, Azure Speech speech and transcription, Azure MAI images, and the Black Forest Labs image poll and image download. Bedrock requests no longer send `Accept: application/json` (TS sets none; see the known difference "Accept header") (review round 98, medium).
+- **Am I affected?** Proxies, gateways or servers that match the `User-Agent` or `Accept` header of these requests.
+- **What to do:** No action unless you match those headers.
+- **Kind:** wire/protocol change
+
+### A header name that differs only in case replaces the SDK header {#header-name-case-override}
+
+- **What changed:** A `Config.Headers` or per-call `Headers` entry whose name differs only in case from a header the SDK sets (for example `Anthropic-Version`, `Content-Type` or `Prefer`) now replaces it, as TS `combineHeaders` followed by the lower-casing in `postToApi` / `getFromApi` (the later spelling wins). v0.5 kept both keys and sent one of them at random, or the SDK's value after the user-agent merge: `anthropic.Config{Headers: map[string]string{"Anthropic-Version": "2099-01-01"}}` sent `2023-06-01`. Two keys of one map that differ only in case resolve in sorted key order (review round 98, medium).
+- **Am I affected?** `Headers` maps whose keys use a different case from the provider's own header names, or that hold the same name twice in different cases.
+- **What to do:** No action unless you relied on the SDK value winning over your header; remove the override in that case.
+- **Kind:** wire/protocol change
+
+### Provider errors fall back to the server reason phrase {#failed-response-reason-phrase}
+
+- **What changed:** For a failed response whose body does not match the provider's error schema, `ProviderError.Message` (and the fallback message of each provider's error type) is the status line's reason phrase, TS `response.statusText`: `Custom Phrase` for `HTTP/1.1 418 Custom Phrase`, and `""` for a status line without one. v0.5 used Go's standard text for the code (`http.StatusText`). Servers that send the standard phrase, and HTTP/2 responses (Go supplies the standard text), give the same message as before. Every provider (review round 98).
+- **Am I affected?** Code that matches `ProviderError.Message` against the standard status text for servers that send a custom reason phrase.
+- **What to do:** Match `ProviderError.StatusCode` instead of the message text.
+- **Kind:** error text only
+
+### Realtime and streaming client frames keep the TS key order {#client-frame-key-order}
+
+- **What changed:** Client frames and bodies that TS builds as object literals are written in the TS key order instead of Go's sorted map order: OpenAI transcription and speech translation `input_audio_buffer.append` and `session.update`, OpenAI GA and Live realtime client events and the client-secret body, xAI realtime client events, Azure MAI transcription append and `session.update`, the Google realtime setup frame and auth token body, Google live transcription and speech translation setup, Vertex live transcription setup, the AI Gateway realtime client-secret mint body and transcription `start` frame, the Mistral audio append, the Perplexity decision request, and ElevenLabs transcription audio and commit frames and speech stream frames (review round 98).
+- **Am I affected?** Servers, proxies or tests that compare the bytes of these frames.
+- **What to do:** No action unless you compare frame bytes; compare the decoded JSON instead.
+- **Kind:** wire/protocol change
+
+### Anthropic, Bedrock and ElevenLabs round 98 details {#prova-r98-details}
+
+- **What changed:** The Bedrock event stream treats an empty `:event-type` or `:exception-type` header as present (a payload key or an error type), as TS `??` / `== null`; new `eventstream.Event.HasEventType` / `HasExceptionType` and `bedrock/anthropic.EventStreamEvent.HasEventType` / `HasExceptionType` report presence. Anthropic: safeguard `tool_uses` issues name every invalid entry in key order; a `tool_search_tool_result` takes its name only from a tool-search call; streamed `web_fetch_tool_result` and `web_search_tool_result` are named `web_fetch` / `web_search` (through the custom tool names); a streamed `mcp_tool_use` with a `null`, array or scalar input keeps its `JSON.stringify` text instead of `{}`; the spliced-stream check tells a `null` message id from an absent one; a root-level `container` in `message_delta` is ignored (only `delta.container`); a tool call named `json` is suppressed while the JSON response tool is in use. Anthropic prompts: an invalid tool output with a `__proto__` key reports the zod issues; a `text/plain` document checks its provider options before decoding the data; a provider tool error value that is the string `"null"` fails with TS's TypeError; a caller `toolId` is a truthiness check. ElevenLabs realtime transcription and speech URL numbers use JS number text (`1e-7`, `1e+21`) (review round 98).
+- **Am I affected?** Code that reads Bedrock event-stream frames, Anthropic server tool names or safeguard errors, or ElevenLabs URL parameters with very small or large numbers.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### OpenAI, Azure, xAI and OpenAI-compatible round 98 details {#provb-r98-details}
+
+- **What changed:** A Fireworks `{"error": null}` body gives the status text. DeepSeek, Moonshot, OpenAI chat and OpenAI completions treat a stream frame with valid `choices` plus an `error` key as data (the strict zod member strips the key) instead of an error part. Hugging Face streams read a frame that fails the typed decode (a fractional usage count, a non-object response) through the loose fallback instead of finishing as interrupted, and `Usage.Raw` keeps the wire numbers in generate and stream. OpenAI realtime `GetServerConnection` validates the base URL before the intent. Wire numbers past the platform `int` stay float64 or are clamped on 32-bit targets (OpenAI Responses, Azure MAI, OpenAI Live times, Open Responses). Open Responses generate results keep an extension tool call's `dynamic` and `title`. OpenAI Responses and xAI Responses tool args and tool-call inputs with a `__proto__` key validate, as TS `validateTypes` on the value (review round 98).
+- **Am I affected?** Code that reads these providers' edge values, error parts of frames that also carry `choices`, or Hugging Face usage.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Media provider round 98 details {#provc-r98-details}
+
+- **What changed:** The Deepgram, fal, Luma, Replicate and Black Forest Labs provider response validators read `1e999` as Infinity (under a key zod strips it no longer fails the call), and Black Forest Labs reports a `__proto__` body as the JSONParseError before the schema. A fal image result whose `image` matched rejects a passthrough `images` that is not a valid list; an empty fal image URL fails with `Invalid URL: `. Tencent Cloud TC3 signs the WHATWG host (lower case, default port dropped; an invalid base URL fails first), and its error data keeps only `Code` and `Message`. Replicate images download every output entry (an empty URL fails validation) and an empty output array gives no images. The AssemblyAI upload uses a `Content-Type` set in `Config.Headers`. Failed polls and downloads of fal, Gladia, Rev.ai, Replicate, KlingAI, ByteDance and Black Forest Labs use the server reason phrase (review round 98).
+- **Am I affected?** Code that reads these providers' results or errors for the edge values above, or sets `Content-Type` in AssemblyAI `Config.Headers`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Google and Groq round 98 details {#provg-r98-details}
+
+- **What changed:** Google prompt conversion validates `videoMetadata` provider options and code-execution tool inputs and outputs that hold `__proto__` / `constructor.prototype` keys (zod strips them, as TS `schema.parse` on the caller's object) instead of failing with the forbidden-prototype error. A Groq stream frame with an `error` key that also matches the data member is data, not an error part (review round 98).
+- **Am I affected?** Prompts whose Google file options or code-execution values hold those keys; Groq frames that carry `choices` and `error`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -9286,6 +9369,20 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 
 - **What changed:** The MCP HTTP transport accepts a `__proto__` key in an `application/json` POST response and in results re-read after the transport (TS `response.json()`); SSE, stdio, the webhook and OAuth error bodies keep rejecting it. The `Mcp-Name` header is sent for a tool with an argument named `__proto__`. `MCPAppResource`, `GetPromptParams` and `CompleteRequestParams` JSON keeps `<`, `>` and `&` literal and writes NaN / ±Inf as `null`. An elicitation issue names a non-finite number by its value (`received Infinity`). ACP writes a NaN / ±Inf in session meta, client capabilities or the provider environment as `null` (v0.5 panicked in `DoStart`), writes non-string profile values with `JSON.stringify`, and gives `"undefined"` for an unknown `$source`. Codex fingerprints a tool schema holding NaN / ±Inf like `JSON.stringify`. Cerebras keeps the request body's key order and appends its extras. A MiniMax video error with a non-finite `http_code` does not match the error schema (review round 97).
 - **Am I affected?** MCP servers or ACP and Codex configurations with these values, and proxies that compare Cerebras request bytes.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### MCP OAuth discovery sends the latest protocol version {#mcp-oauth-latest-protocol-version}
+
+- **What changed:** `mcp.DiscoverOAuthProtectedResourceMetadata` and `mcp.DiscoverAuthorizationServerMetadata` send `MCP-Protocol-Version: 2026-07-28` (`mcp.LatestProtocolVersion`, TS `LATEST_PROTOCOL_VERSION`) when `OAuthDiscoveryOptions.ProtocolVersion` is empty, which is every discovery request of the default OAuth flow. v0.5 sent the legacy `2025-11-25` (`mcp.ProtocolVersion`) (review round 98, medium).
+- **Am I affected?** MCP servers that check `MCP-Protocol-Version` on their `.well-known` OAuth metadata endpoints, and code that calls the discovery functions with an empty `ProtocolVersion`.
+- **What to do:** No action unless your server requires the legacy version: set `OAuthDiscoveryOptions.ProtocolVersion` to `mcp.ProtocolVersion`.
+- **Kind:** wire/protocol change
+
+### MCP, Vercel Sandbox and Prodia round 98 details {#tools-r98-details}
+
+- **What changed:** MCP modern results read over `application/json` (TS `response.json()`) with a `__proto__` key: `resultType`, the `input_required` loop, elicitation requests and loose passthrough members now read like TS instead of failing with "Modern MCP result is missing resultType" or rejecting the request; an `ElicitResult` whose content holds such a key validates (zod issues for an invalid one). The Vercel Sandbox client reads API responses, ndjson log lines and stdin responses with plain `JSON.parse` (`__proto__` kept), and an empty body of `fs/mkdir`, `fs/write` or a stdin response is `{}` instead of "unexpected end of JSON input". The Prodia language model warns about `StopSequences` set to an empty, non-nil slice (TS `!== undefined`) (review round 98).
+- **Am I affected?** MCP servers or Vercel Sandbox endpoints that send `__proto__` keys or empty bodies, and Prodia callers that pass `StopSequences: []string{}`.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
@@ -9963,6 +10060,13 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What changed:** `WorkflowChatTransport` reads chunks like TS `safeParseJSON`: a `__proto__` key is a `JSONParseError`, `1e400` reads as Infinity, invalid UTF-8 is replaced (TextDecoder), and a chunk that is not a JSON object (`null` included) is a validation error instead of a nil chunk. `workflow.ToUIMessageChunk` keeps provider metadata holding ±Inf. `WorkflowAgent` `OnAbort` steps carry the deprecated `ResponseMessages` alias. Harness stream parts (`DecodeStreamPart`) and bridge frames match keys exactly (zod) and read `1e400` in `unknown` values; `harness.MarshalTagged` writes NaN / ±Inf as `null`. The `askUserQuestions` output JSON Schema has `propertyNames: {type: "string"}`, and a `null` `optionIds` element is rejected. OpenAI Responses `response.completed`, `incomplete` and `failed` chunks validate `prompt_cache_diagnostics` (TS 5a645e92d2): a malformed one is an error part with finish reason `error`. `jsonstr.Marshal` writes `-0` as `0`. Zod-style issues of records, catchalls and strict objects come in JS key order (array-index keys first, then wire order), which decides the issue a chunk or response error names first. A count past the int64 range in an integer field takes the nearest int64 instead of failing the decode (review round 97).
 - **Am I affected?** Bridge implementations that send differently cased frame keys, `WorkflowChatTransport` servers that send non-object chunks, and code that matches schema error text with several bad keys.
 - **What to do:** No action unless you send differently cased bridge keys or match the issue order.
+- **Kind:** silent behavior change
+
+### Harness, bridge and workflow round 98 details {#carry-r98-details}
+
+- **What changed:** The harness bridge reads a frame's `seq` from any parsed JSON object before validating it, as TS SandboxChannel (a frame that fails validation still advances the resume cursor; `1e400` is +Inf). `harness.DecodeStreamPart` rejects ±Inf (`1e400`) in a tool-result `result` and a usage `raw` (JSON values, `z.number()` rejects Infinity); error and raw parts keep it. The nested decoders of input and output token usage, error parts and `askUserQuestions` `allowFreeForm` match keys exactly (`{"Total":5}` no longer fills `total`). `WorkflowChatTransport` "Failed to fetch chat: <status> <body>" carries the whole body, UTF-8 decoded, instead of the first 4096 bytes, and a failed body read returns its own error. `providerutils.MediaSchemaParserPlain` reports a body with a `__proto__` key that fails the schema as the validation error (new `providerutils.ChunkParseFailurePlain`) (review round 98).
+- **Am I affected?** Bridge implementations that send malformed frames, harness stream parts holding ±Inf, differently cased nested keys, and code that matches the workflow transport's error text.
+- **What to do:** No action.
 - **Kind:** silent behavior change
 
 ## Policy {#policy}
