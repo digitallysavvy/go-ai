@@ -526,10 +526,9 @@ func (m *ImageModel) convertBody(ctx context.Context, raw []byte) (*types.ImageR
 	firstType := ""
 	firstURL := ""
 	for i, img := range rawImages {
+		// url is z.string(): an empty one is fetched like any other and
+		// fails URL validation (TS getFromApi validateUrl).
 		url, _ := img["url"].(string)
-		if url == "" {
-			return nil, fmt.Errorf("fal image %d is missing a url", i)
-		}
 		data, err := m.downloadImage(ctx, url)
 		if err != nil {
 			// TS getFromApi with createStatusCodeErrorResponseHandler.
