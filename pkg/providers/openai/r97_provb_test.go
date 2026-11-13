@@ -226,3 +226,73 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply
 		}
 	}
 }
+
+// r97provbStreamParts drains a Responses stream into "type:id" strings and
+// returns its terminal error (nil at io.EOF).
+func r97provbStreamParts(t *testing.T, sse string) ([]string, error) {
+	t.Helper()
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(sse)), false)
+	defer stream.Close() //nolint:errcheck
+	var parts []string
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			return parts, nil
+		}
+		if err != nil {
+			return parts, err
+		}
+		id := chunk.ID
+		if id == "" && chunk.ToolCall != nil {
+			id = chunk.ToolCall.ID
+		}
+		if chunk.Type == provider.ChunkTypeToolInputDelta {
+			id += "=" + chunk.Text
+		}
+		if chunk.Type != provider.ChunkTypeFinish {
+			parts = append(parts, string(chunk.Type)+":"+id)
+		}
+	}
+}
+
+// TestR97provbOngoingToolCallSharedAcrossTypes: TS keeps one
+// ongoingToolCalls entry per output_index whatever its tool type, so an
+// input delta event streams into the call holding the index, and
+// code_interpreter_call_code.done keeps its entry (a repeat emits again) and
+// throws reading codeInterpreter!.containerId of another tool type.
+func TestR97provbOngoingToolCallSharedAcrossTypes(t *testing.T) {
+	parts, err := r97provbStreamParts(t, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_f","name":"f","arguments":""}}
+
+data: {"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"fc_1","delta":"x"}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"web_search_call","id":"ws_1","status":"in_progress"}}
+
+data: {"type":"response.function_call_arguments.delta","output_index":1,"item_id":"ws_1","delta":"y"}
+
+`)
+	want := "tool-input-start:call_f,tool-input-delta:call_f=x,tool-input-start:ws_1,tool-input-end:ws_1,tool-call:ws_1,tool-input-delta:ws_1=y"
+	if err != nil || strings.Join(parts, ",") != want {
+		t.Fatalf("parts = %v (err %v), want %s", parts, err, want)
+	}
+
+	parts, err = r97provbStreamParts(t, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"code_interpreter_call","id":"ci_1","container_id":"c1","code":"","outputs":null,"status":"in_progress"}}
+
+data: {"type":"response.code_interpreter_call_code.done","output_index":0,"item_id":"ci_1","code":"1"}
+
+data: {"type":"response.code_interpreter_call_code.done","output_index":0,"item_id":"ci_1","code":"1"}
+
+`)
+	if err != nil || strings.Count(strings.Join(parts, ","), "tool-call:ci_1") != 2 {
+		t.Fatalf("parts = %v (err %v), want two tool-call:ci_1", parts, err)
+	}
+
+	parts, err = r97provbStreamParts(t, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ct_1","call_id":"call_c","name":"c","input":""}}
+
+data: {"type":"response.code_interpreter_call_code.done","output_index":0,"item_id":"ct_1","code":"1"}
+
+`)
+	want = `tool-input-start:call_c,tool-input-delta:call_c="},tool-input-end:call_c`
+	if err == nil || err.Error() != "Cannot read properties of undefined (reading 'containerId')" || strings.Join(parts, ",") != want {
+		t.Fatalf("parts = %v (err %v), want %s then the TypeError", parts, err, want)
+	}
+}
