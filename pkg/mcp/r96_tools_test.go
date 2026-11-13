@@ -117,3 +117,14 @@ func TestR96toolsEventTerminationCodeIsAnyIntegerNumber(t *testing.T) {
 		}
 	}
 }
+
+// TS JSONRPCErrorSchema error.code is z.number().int(): a quoted number is
+// not a number (a json.Number target accepted it).
+func TestR96toolsJSONRPCErrorCodeStringRejected(t *testing.T) {
+	if _, err := parseMCPMessage([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":"-32000","message":"m"}}`)); err == nil {
+		t.Fatal("quoted error.code accepted")
+	}
+	if msg, err := parseMCPMessage([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-3.2e4,"message":"m"}}`)); err != nil || msg.Error.Code != -32000 {
+		t.Fatalf("msg = %+v, err = %v", msg, err)
+	}
+}

@@ -291,9 +291,14 @@ func parseJSONRPCErrorObject(raw json.RawMessage) (*MCPError, error) {
 	if !ok {
 		return nil, fmt.Errorf("invalid JSON-RPC message: error.code is required")
 	}
+	// A json.Number target also takes a quoted number ("-32000"), which
+	// zod's z.number() rejects.
 	var num json.Number
 	dec := json.NewDecoder(bytes.NewReader(codeRaw))
 	dec.UseNumber()
+	if trimmed := bytes.TrimSpace(codeRaw); len(trimmed) > 0 && trimmed[0] == '"' {
+		return nil, fmt.Errorf("invalid JSON-RPC message: error.code must be an integer")
+	}
 	if err := dec.Decode(&num); err != nil {
 		return nil, fmt.Errorf("invalid JSON-RPC message: error.code must be an integer")
 	}
