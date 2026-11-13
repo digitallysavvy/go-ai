@@ -272,8 +272,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream"] = true
 	}
 
-	// Add instructions if present
-	if instructions != "" {
+	// TS instructions: systemMessages.join('\n') whenever the prompt has a
+	// system message, so a system message of "" sends instructions: "".
+	if instructions != "" || openResponsesHasSystemMessage(promptMessages) {
 		body["instructions"] = instructions
 	}
 
@@ -2199,4 +2200,15 @@ func openResponsesErrorResponse(resp *internalhttp.Response) (map[string]string,
 	}
 	_, headers, _ := (&internalhttp.HTTPStatusError{Headers: resp.Headers}).HTTPStatusDetails()
 	return headers, string(resp.Body)
+}
+
+// openResponsesHasSystemMessage reports whether the prompt has a system
+// message (TS pushes each one's content, even "", into the instructions).
+func openResponsesHasSystemMessage(messages []types.Message) bool {
+	for _, msg := range messages {
+		if msg.Role == types.RoleSystem {
+			return true
+		}
+	}
+	return false
 }

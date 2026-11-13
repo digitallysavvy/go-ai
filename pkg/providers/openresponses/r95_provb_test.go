@@ -85,3 +85,27 @@ func TestR95provbFinishReasonLikeTS(t *testing.T) {
 		t.Errorf("stream finish = %+v, want other", finish)
 	}
 }
+
+// TestR95provbEmptySystemMessageInstructions: TS joins every system
+// message's content into instructions when there is one, so a system
+// message of "" is sent as instructions: "" (no system message: no key).
+func TestR95provbEmptySystemMessageInstructions(t *testing.T) {
+	lm := New(Config{BaseURL: "http://localhost/v1", Name: "test"}).languageModelForTest("m")
+	for _, tc := range []struct {
+		name     string
+		messages []types.Message
+		want     bool
+	}{
+		{"empty system", []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: ""}}}, {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}, true},
+		{"no system", []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}, false},
+	} {
+		body, _, err := lm.(*LanguageModel).buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Messages: tc.messages}}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, ok := body["instructions"]
+		if ok != tc.want || (ok && v != "") {
+			t.Errorf("%s: instructions = %#v (present %v), want present %v", tc.name, v, ok, tc.want)
+		}
+	}
+}
