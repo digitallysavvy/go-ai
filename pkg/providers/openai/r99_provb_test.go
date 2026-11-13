@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"math"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -39,5 +40,22 @@ func TestR99provbBatchErrorInfiniteCode(t *testing.T) {
 	got = convertOpenAIBatchErrorResponse([]byte(`{"error":{"message":"m","code":42}}`), 400)
 	if got.Message != "m" || got.Code != "42" {
 		t.Errorf("error = %+v, want message m code 42", got)
+	}
+}
+
+// TestR99provbDecisionUsagePlatformInt: a Decisions usage count beyond the
+// platform int is clamped instead of an implementation-defined conversion
+// (it wraps on 386 / arm and is MinInt64 on amd64).
+func TestR99provbDecisionUsagePlatformInt(t *testing.T) {
+	for _, tc := range []struct{ in, want float64 }{{1e19, math.MaxInt}, {-1e19, math.MinInt}, {12.9, 12}} {
+		v := tc.in
+		if got := floatToIntPtr(&v); got == nil || float64(*got) != tc.want {
+			t.Errorf("floatToIntPtr(%v) = %d, want %v", tc.in, *got, tc.want)
+		}
+	}
+	if big := 3e9; float64(math.MaxInt) < big {
+		if got := floatToIntPtr(&big); *got != math.MaxInt {
+			t.Errorf("floatToIntPtr(3e9) = %d on a 32-bit int", *got)
+		}
 	}
 }

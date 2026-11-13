@@ -333,13 +333,13 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 	usage.ImageCount = len(allImages)
 	if hasUsage {
 		if inputSeen {
-			usage.InputTokens = int(inTotal)
+			usage.InputTokens = azureMaiTokenInt(inTotal)
 		}
 		if outputSeen {
-			usage.OutputTokens = int(outTotal)
+			usage.OutputTokens = azureMaiTokenInt(outTotal)
 		}
 		if totalSeen {
-			usage.TotalTokens = int(totalTotal)
+			usage.TotalTokens = azureMaiTokenInt(totalTotal)
 		}
 	}
 
@@ -391,6 +391,20 @@ func azureMaiJSNumber(f float64) interface{} {
 		return int(f)
 	}
 	return f
+}
+
+// azureMaiTokenInt is a summed token count in the ImageUsage int fields:
+// truncated, and clamped to the platform int (a Go conversion of a double
+// beyond it is implementation-defined, and 32-bit targets overflow past
+// 2^31-1).
+func azureMaiTokenInt(f float64) int {
+	switch {
+	case f >= math.MaxInt:
+		return math.MaxInt
+	case f <= math.MinInt:
+		return math.MinInt
+	}
+	return int(f)
 }
 
 type azureMaiField struct{ key, value string }

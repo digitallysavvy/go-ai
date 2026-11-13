@@ -2,6 +2,7 @@ package azure
 
 import (
 	"context"
+	"math"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"sync"
@@ -72,5 +73,15 @@ func TestR99provbMaiImageErrorInfiniteCode(t *testing.T) {
 	err = azureMaiImageAPIErrorText(400, "Bad Request", nil, []byte(`{"error":{"code":7,"message":"m"}}`))
 	if pe, ok := err.(*providererrors.ProviderError); !ok || pe.Message != "m" {
 		t.Errorf("err = %#v, want message m", err)
+	}
+}
+
+// TestR99provbMaiTokenSumPlatformInt: a summed MAI token count beyond the
+// platform int is clamped instead of an implementation-defined conversion.
+func TestR99provbMaiTokenSumPlatformInt(t *testing.T) {
+	for _, tc := range []struct{ in, want float64 }{{1e19, math.MaxInt}, {-1e19, math.MinInt}, {7.5, 7}} {
+		if got := azureMaiTokenInt(tc.in); float64(got) != tc.want {
+			t.Errorf("azureMaiTokenInt(%v) = %d, want %v", tc.in, got, tc.want)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -345,11 +346,23 @@ func (m *DecisionModel) handleError(err error) error {
 	return pe
 }
 
+// floatToIntPtr is a wire token count (a finite double) in the v0.5.2 int
+// field: truncated, and clamped to the platform int (a Go conversion of a
+// double beyond it is implementation-defined, and 32-bit targets overflow
+// past 2^31-1).
 func floatToIntPtr(v *float64) *int {
 	if v == nil {
 		return nil
 	}
-	i := int(*v)
+	var i int
+	switch {
+	case *v >= math.MaxInt:
+		i = math.MaxInt
+	case *v <= math.MinInt:
+		i = math.MinInt
+	default:
+		i = int(*v)
+	}
 	return &i
 }
 
