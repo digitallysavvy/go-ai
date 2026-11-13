@@ -4732,10 +4732,12 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if item.ID != nil {
 			itemID = *item.ID
 		}
+		// TS toolCallId: the call id recorded at output_item.added (the done
+		// item's call_id only goes into the input).
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
-				ID:               item.CallID,
+				ID:               toolCall.toolCallID,
 				ToolName:         openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),

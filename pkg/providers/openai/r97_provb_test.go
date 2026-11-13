@@ -202,3 +202,27 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custo
 		t.Fatalf("stream names = %v, want %v", names, want)
 	}
 }
+
+// TestR97provbApplyPatchToolCallIDFromAdded: TS emits the final apply_patch
+// tool-call under the call id recorded at output_item.added
+// (toolCall.toolCallId); the done item's call_id only goes into the input.
+func TestR97provbApplyPatchToolCallIDFromAdded(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_a","status":"in_progress","operation":{"type":"delete_file","path":"f.txt"}}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_b","status":"completed","operation":{"type":"delete_file","path":"f.txt"}}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("no tool-call chunk (err %v)", err)
+		}
+		if chunk.Type == provider.ChunkTypeToolCall {
+			if chunk.ToolCall.ID != "call_a" || chunk.ToolCall.Arguments["callId"] != "call_b" {
+				t.Fatalf("tool-call = %#v, want ID call_a with input callId call_b", chunk.ToolCall)
+			}
+			return
+		}
+	}
+}
