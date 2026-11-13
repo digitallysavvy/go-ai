@@ -263,7 +263,8 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		Value     string `json:"value"`
 		ExpiresAt *int64 `json:"expires_at"`
 	}
-	if err := providerutils.UnmarshalChunk(resp.Body, &data); err != nil {
+	// TS (await response.json()): plain JSON.parse keeps a __proto__ key.
+	if err := providerutils.UnmarshalChunkPlain(resp.Body, &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	base := m.provider.config.BaseURL

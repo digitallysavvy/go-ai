@@ -504,13 +504,15 @@ var languageValues = []string{
 
 // decodeYouJSON is fetch's response.json(): the body is UTF-8 decoded
 // (WHATWG TextDecoder: a leading BOM dropped, invalid bytes replaced) and
-// then parsed as one JSON text (JSON.parse rejects trailing data).
+// then parsed as one JSON text (JSON.parse rejects trailing data). Plain
+// JSON.parse keeps a __proto__ key as an ordinary property (no
+// secureJsonParse).
 func decodeYouJSON(r io.Reader, v interface{}) error {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return err
 	}
-	return jsonexact.Unmarshal([]byte(textdecode.UTF8(data)), v)
+	return jsonexact.UnmarshalPlain([]byte(textdecode.UTF8(data)), v)
 }
 
 func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {

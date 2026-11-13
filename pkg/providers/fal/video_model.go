@@ -314,7 +314,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			var detail struct {
 				Detail string `json:"detail"`
 			}
-			if jsonErr := jsonexact.Unmarshal(errBody, &detail); jsonErr == nil && detail.Detail == falStillInProgressDetail {
+			// TS response.clone().json(): plain JSON.parse keeps a __proto__ key.
+			if jsonErr := jsonexact.UnmarshalPlain(errBody, &detail); jsonErr == nil && detail.Detail == falStillInProgressDetail {
 				return &provider.VideoModelV3OperationStatusResult{
 					Status: provider.VideoOperationStatusPending,
 					Response: provider.VideoModelV3ResponseInfo{

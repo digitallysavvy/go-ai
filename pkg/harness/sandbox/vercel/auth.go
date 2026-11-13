@@ -137,11 +137,13 @@ func decodeOIDCClaims(token string) (ownerID, projectID string, err error) {
 	}
 	text := textdecode.ReplaceInvalid(decoded)
 	var payload interface{}
-	if err := jsonexact.Unmarshal(text, &payload); err != nil {
+	// @vercel/sandbox decode-base64-url.js: JSON.parse, then schema.parse
+	// (no secureJsonParse), so a __proto__ key is an ordinary property.
+	if err := jsonexact.UnmarshalPlain(text, &payload); err != nil {
 		// Go's parse error text, not V8's SyntaxError text.
 		return "", "", invalid(err.Error())
 	}
-	if message := zodlite.ValidationMessage(oidcCredentialsSchema, string(text)); message != "" {
+	if message := zodlite.ValidationMessagePlain(oidcCredentialsSchema, string(text)); message != "" {
 		// ZodError.message: the issue list after the frame value.
 		_, issues, _ := strings.Cut(message, ".\nError message: ")
 		return "", "", invalid(issues)

@@ -165,7 +165,8 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 		Value     string `json:"value"`
 		ExpiresAt *int64 `json:"expires_at"`
 	}
-	if err := providerutils.UnmarshalChunk(resp.Body, &data); err != nil {
+	// TS (await response.json()): plain JSON.parse keeps a __proto__ key.
+	if err := providerutils.UnmarshalChunkPlain(resp.Body, &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	_, host, _, err := xaiJSURLParts(m.provider.realtimeBaseURL)

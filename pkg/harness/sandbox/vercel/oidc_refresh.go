@@ -146,7 +146,9 @@ func unverifiedTokenOwner(token string) (owner any, projectID string, ok bool) {
 		return nil, "", false
 	}
 	var payload map[string]any
-	if jsonexact.Unmarshal(textdecode.ReplaceInvalid(raw), &payload) != nil {
+	// @vercel/sandbox decodeUnverifiedToken: plain JSON.parse keeps a
+	// __proto__ key.
+	if jsonexact.UnmarshalPlain(textdecode.ReplaceInvalid(raw), &payload) != nil {
 		// Invalid JSON, or a payload that is not an object (null throws,
 		// a primitive has no owner_id).
 		return nil, "", false

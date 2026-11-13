@@ -500,6 +500,17 @@ func CheckTypedFrame(data string) (string, error) {
 // whole frame as encoding/json does. zod's object schemas then strip such a
 // value under an undeclared key, so the frame passes as in TS.
 func parseJSValue(data []byte) (interface{}, error) {
+	return parseJSValueChecked(data, true)
+}
+
+// parseJSValuePlain is parseJSValue without the prototype check: TS
+// `await response.json()` (plain JSON.parse) keeps a `__proto__` key or a
+// `constructor.prototype` as an ordinary own property.
+func parseJSValuePlain(data []byte) (interface{}, error) {
+	return parseJSValueChecked(data, false)
+}
+
+func parseJSValueChecked(data []byte, checkPrototype bool) (interface{}, error) {
 	if !json.Valid(data) {
 		var v interface{}
 		if err := json.Unmarshal(data, &v); err != nil {
@@ -514,8 +525,10 @@ func parseJSValue(data []byte) (interface{}, error) {
 	}
 	// secureJsonParse: a forbidden prototype key fails the parse (the
 	// caller's JSONParseError carries this cause).
-	if err := jsonexact.CheckPrototype(data); err != nil {
-		return nil, err
+	if checkPrototype {
+		if err := jsonexact.CheckPrototype(data); err != nil {
+			return nil, err
+		}
 	}
 	return jsNumberTree(v), nil
 }

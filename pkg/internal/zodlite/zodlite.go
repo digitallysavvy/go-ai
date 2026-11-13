@@ -444,6 +444,15 @@ func Validate(schema Node, data []byte, value interface{}) *Issue {
 	return schema(value, true, nil)
 }
 
+// ValidateWithin is Validate for value, a part of root, where root is the
+// JSON.parse result of data (for example one member of a parsed envelope).
+func ValidateWithin(schema Node, data []byte, root, value interface{}) *Issue {
+	s := &orderSource{data: data, value: root}
+	orderSources.Store(s, struct{}{})
+	defer orderSources.Delete(s)
+	return schema(value, true, nil)
+}
+
 // Literal is z.literal(want) for strings.
 func Literal(want string) Node {
 	return func(v interface{}, present bool, path []interface{}) *Issue {
@@ -823,6 +832,21 @@ func ValidationMessage(schema Node, data string) string {
 		}
 		return ""
 	}
+	return validationMessage(schema, data, value)
+}
+
+// ValidationMessagePlain is ValidationMessage for a value TS reads with plain
+// JSON.parse (no secureJsonParse): a `__proto__` key or a
+// `constructor.prototype` is an ordinary own property, not a parse failure.
+func ValidationMessagePlain(schema Node, data string) string {
+	var value interface{}
+	if err := jsonexact.UnmarshalPlain([]byte(data), &value); err != nil {
+		return ""
+	}
+	return validationMessage(schema, data, value)
+}
+
+func validationMessage(schema Node, data string, value interface{}) string {
 	bad := Validate(schema, []byte(data), value)
 	if bad == nil {
 		return ""

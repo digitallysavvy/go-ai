@@ -358,7 +358,7 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			var detail struct {
 				Detail string `json:"detail"`
 			}
-			_ = jsonexact.Unmarshal(resp.Body, &detail)
+			_ = jsonexact.UnmarshalPlain(resp.Body, &detail) // TS clone.json(): plain JSON.parse
 			if detail.Detail == falTranscriptionStillInProgress {
 				if time.Now().After(deadline) {
 					return nil, nil, nil, providererrors.NewProviderError(

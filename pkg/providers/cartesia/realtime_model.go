@@ -172,7 +172,7 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	// the parser's SyntaxError (Go's parser error here), and a null body
 	// throws reading its token.
 	var data interface{}
-	if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &data); err != nil {
+	if err := jsonexact.UnmarshalPlain([]byte(textdecode.UTF8(resp.Body)), &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	if data == nil {

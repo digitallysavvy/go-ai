@@ -453,11 +453,13 @@ func (m *TranscriptionModel) pollTranscript(ctx context.Context, transcriptID st
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return nil, nil, m.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
 	}
-	if err := providerutils.MediaSchemaParser(providerutils.SchemaAssemblyAITranscript)(httpResp.StatusCode, httpResp.Header, body); err != nil {
+	// TS `await response.json()` then schema.parse: plain JSON.parse keeps
+	// a __proto__ key as an ordinary property.
+	if err := providerutils.MediaSchemaParserPlain(providerutils.SchemaAssemblyAITranscript)(httpResp.StatusCode, httpResp.Header, body); err != nil {
 		return nil, nil, err
 	}
 	var raw map[string]interface{}
-	if err := jsonexact.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.UnmarshalPlain(body, &raw); err != nil {
 		return nil, nil, err
 	}
 	return raw, &internalhttp.Response{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body}, nil
@@ -540,7 +542,9 @@ func (m *TranscriptionModel) convertResponse(raw map[string]interface{}, current
 			End   float64 `json:"end"`
 		} `json:"words"`
 	}
-	_ = jsonexact.Unmarshal(b, &transcript)
+	// The in-memory transcript of `await response.json()`: a __proto__ key
+	// is an ordinary property there.
+	_ = jsonexact.UnmarshalPlain(b, &transcript)
 
 	segments := make([]types.TranscriptionTimestamp, 0, len(transcript.Words))
 	for _, word := range transcript.Words {

@@ -56,9 +56,7 @@ func unmarshalSafeJSON(data []byte, target interface{}) error {
 // unmarshalPlainJSON is unmarshalSafeJSON for a body TS reads with plain
 // JSON.parse (response.json(), or a result re-read after the transport):
 // the depth and field limits still apply (Go memory guards), the prototype
-// check does not. The final decode is still jsonexact.Unmarshal, which has
-// its own prototype check until its non-checking entry point lands (round
-// 97 CR to the integrator).
+// check does not.
 func unmarshalPlainJSON(data []byte, target interface{}) error {
 	return unmarshalServerJSON(data, target, false)
 }
@@ -73,8 +71,9 @@ func unmarshalServerJSON(data []byte, target interface{}, checkPrototype bool) e
 
 	// Server messages decode with exact keys, as zod: a key whose only
 	// match is case-insensitive is left out (a loose type keeps it as an
-	// extra key).
-	return jsonexact.Unmarshal(data, target)
+	// extra key). checkServerJSON has already applied the prototype check
+	// when TS secure-parses, so the decode itself does not repeat it.
+	return jsonexact.UnmarshalPlain(data, target)
 }
 
 // checkServerJSON parses data and applies the depth and field limits, and

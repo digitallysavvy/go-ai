@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
-	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -168,7 +166,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if err := googleFilesUploadResultShape(uploadText); err != nil {
 		return nil, err
 	}
-	if err := googlePlainJSONParse(uploadText, &uploadResult); err != nil {
+	if err := jsonexact.UnmarshalPlain(uploadText, &uploadResult); err != nil {
 		return nil, err
 	}
 	file := uploadResult.File
@@ -279,7 +277,7 @@ func googleFilesStatusOK(code int) bool {
 // body fails on `.file`, a missing or null file on `.state`.
 func googleFilesUploadResultShape(body []byte) error {
 	var top interface{}
-	if err := googlePlainJSONParse(body, &top); err != nil {
+	if err := jsonexact.UnmarshalPlain(body, &top); err != nil {
 		return err
 	}
 	if top == nil {
@@ -297,56 +295,6 @@ func googleFilesUploadResultShape(body []byte) error {
 		return errors.New("Cannot read properties of null (reading 'state')") //nolint:staticcheck // TS V8 TypeError text
 	}
 	return nil
-}
-
-// googlePlainJSONParse decodes a body TS reads with response.json() (plain
-// JSON.parse, as for the Files upload result and the realtime auth token),
-// not secureJsonParse: a `__proto__` key or a `constructor.prototype` there is
-// an ordinary own property, not a parse failure. Such keys are dropped before
-// the exact-key decode (the fields Go reads are never one of them); a body
-// without them decodes as is.
-func googlePlainJSONParse(body []byte, v interface{}) error {
-	if securejson.Check(body) == nil {
-		return jsonexact.Unmarshal(body, v)
-	}
-	tree, ok := jsonorder.Parse(body)
-	if !ok {
-		return jsonexact.Unmarshal(body, v)
-	}
-	return jsonexact.Unmarshal([]byte(jsonorder.Stringify(googleDropPrototypeKeys(tree, 0))), v)
-}
-
-// googleDropPrototypeKeys removes, at any depth, every `__proto__` key and
-// every `constructor` object that has an own `prototype` key (the keys
-// secureJsonParse rejects).
-func googleDropPrototypeKeys(v interface{}, depth int) interface{} {
-	if depth > 10000 {
-		return v
-	}
-	switch x := v.(type) {
-	case *jsonorder.Object:
-		out := jsonorder.New()
-		for _, k := range x.Keys() {
-			val, _ := x.Get(k)
-			if k == "__proto__" {
-				continue
-			}
-			if c, ok := val.(*jsonorder.Object); ok && k == "constructor" {
-				if _, has := c.Get("prototype"); has {
-					continue
-				}
-			}
-			out.Set(k, googleDropPrototypeKeys(val, depth+1))
-		}
-		return out
-	case []interface{}:
-		out := make([]interface{}, len(x))
-		for i, e := range x {
-			out[i] = googleDropPrototypeKeys(e, depth+1)
-		}
-		return out
-	}
-	return v
 }
 
 // googleRawFetchError is a failed raw fetch (TS google-files.ts and the

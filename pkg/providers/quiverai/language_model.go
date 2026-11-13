@@ -258,7 +258,9 @@ func decodeQuiverAIProviderMetadata(raw json.RawMessage) map[string]interface{} 
 		return nil
 	}
 	var metadata map[string]interface{}
-	if err := jsonexact.Unmarshal(quiverRaw, &metadata); err != nil {
+	// TS reads the in-memory prompt object (no JSON parse), so a __proto__
+	// key is an ordinary property.
+	if err := jsonexact.UnmarshalPlain(quiverRaw, &metadata); err != nil {
 		return nil
 	}
 	return metadata

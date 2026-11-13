@@ -312,7 +312,10 @@ func parseJSONRPCErrorObject(raw json.RawMessage) (*MCPError, error) {
 	}
 	out := &MCPError{Code: int(code), Message: message}
 	if d, ok := fields["data"]; ok {
-		if err := jsonexact.Unmarshal(d, &out.Data); err != nil {
+		// TS validates the parsed message object (no JSON parse here): the
+		// transport has already applied the prototype check where TS runs
+		// parseJSONRPCMessage, and a response.json() body keeps the key.
+		if err := jsonexact.UnmarshalPlain(d, &out.Data); err != nil {
 			return nil, fmt.Errorf("invalid JSON-RPC message: invalid error.data: %w", err)
 		}
 	}

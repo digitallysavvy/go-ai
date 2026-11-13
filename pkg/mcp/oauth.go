@@ -310,7 +310,9 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 		return OAuthProtectedResourceMetadata{}, fmt.Errorf("invalid OAuth protected resource metadata: %w", err)
 	}
 	var metadata OAuthProtectedResourceMetadata
-	if err := jsonexact.Unmarshal(rawBody, &metadata); err != nil {
+	// TS `await response.json()` (oauth.ts 605): plain JSON.parse keeps a
+	// __proto__ key.
+	if err := jsonexact.UnmarshalPlain(rawBody, &metadata); err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
 	if err := validateOAuthProtectedResourceMetadata(metadata); err != nil {
@@ -408,7 +410,9 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 			return nil, fmt.Errorf("invalid authorization server metadata: %w", err)
 		}
 		var metadata OAuthAuthorizationServerMetadata
-		if err := jsonexact.Unmarshal(rawBody, &metadata); err != nil {
+		// TS `await response.json()` (oauth.ts 754 / 759): plain JSON.parse
+		// keeps a __proto__ key.
+		if err := jsonexact.UnmarshalPlain(rawBody, &metadata); err != nil {
 			return nil, err
 		}
 		// TS issuer is z.string(): present-but-empty passes the schema and is

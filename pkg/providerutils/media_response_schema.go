@@ -548,7 +548,7 @@ func NodeResponseValidator(providerName string, node zodlite.Node) func(statusCo
 		if err != nil {
 			return err
 		}
-		if bad := node(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(node, body, value); bad != nil {
 			return bad
 		}
 		return nil
@@ -569,14 +569,25 @@ func MediaResponseValidator(providerName string, schema MediaResponseSchema) fun
 // "Invalid JSON response"): the failure is the typed validation (or JSON
 // parse) error.
 func MediaSchemaParser(schema MediaResponseSchema) func(statusCode int, headers http.Header, body []byte) error {
+	return mediaSchemaParser(schema, parseJSValue)
+}
+
+// MediaSchemaParserPlain is MediaSchemaParser for a body TS reads with
+// `await response.json()` and then `schema.parse` (plain JSON.parse keeps a
+// `__proto__` key as an ordinary property; secureJsonParse would reject it).
+func MediaSchemaParserPlain(schema MediaResponseSchema) func(statusCode int, headers http.Header, body []byte) error {
+	return mediaSchemaParser(schema, parseJSValuePlain)
+}
+
+func mediaSchemaParser(schema MediaResponseSchema, parse func([]byte) (interface{}, error)) func(statusCode int, headers http.Header, body []byte) error {
 	node, ok := mediaSchemas[schema]
 	if !ok {
 		panic(fmt.Sprintf("providerutils: unknown media response schema %q", schema))
 	}
 	return func(_ int, _ http.Header, body []byte) error {
-		value, cause := parseJSValue(body)
+		value, cause := parse(body)
 		if cause == nil {
-			if bad := node(value, true, nil); bad != nil {
+			if bad := zodlite.Validate(node, body, value); bad != nil {
 				cause = bad
 			}
 		}

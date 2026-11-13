@@ -46,6 +46,39 @@ var r96integPlainJSONDecodes = map[string]struct {
 	"pkg/mcp/safe_json.go|checkServerJSON":                            {1, "the depth and field limits, plus the prototype check when TS secure-parses (unmarshalSafeJSON, parseMCPMessage); without it for TS response.json() (parseMCPHTTPJSONMessages, parseMCPMessagePlain, unmarshalPlainJSON), then jsonexact.Unmarshal"},
 }
 
+// r97integResponseJSONDecodes are the calls of the plain-JSON entry points
+// (jsonexact.UnmarshalPlain, providerutils.UnmarshalChunkPlain,
+// providerutils.MediaSchemaParserPlain, zodlite.ValidationMessagePlain),
+// which keep a __proto__ / constructor.prototype key the way TS plain
+// JSON.parse does, with the TS site that reads the value without
+// secureJsonParse (round 97). Anywhere TS runs secureJsonParse /
+// safeParseJSON, the checking decoders stay.
+var r97integResponseJSONDecodes = map[string]struct {
+	count  int
+	reason string
+}{
+	"assemblyai/transcription_model.go|*TranscriptionModel.pollTranscript":  {2, "assemblyai-transcription-model.ts:318 await response.json(), then schema.parse"},
+	"assemblyai/transcription_model.go|*TranscriptionModel.convertResponse": {1, "the in-memory transcript of the response.json() poll above, re-read"},
+	"cartesia/realtime_model.go|*RealtimeModel.DoCreateClientSecret":        {1, "cartesia-realtime-model.ts:110 await response.json()"},
+	"fal/transcription_model.go|*TranscriptionModel.pollForResult":          {1, "fal-transcription-model.ts:167 clone.json() (still-in-progress detail)"},
+	"fal/video_model.go|*VideoModel.DoStatus":                               {1, "fal-video-model.ts:289 response.clone().json() (still-in-progress detail)"},
+	"google/files_api.go|*FilesAPI.UploadFile":                              {1, "google-files.ts:126 await uploadResponse.json()"},
+	"google/files_api.go|googleFilesUploadResultShape":                      {1, "google-files.ts:126 await uploadResponse.json() (uploadResult.file.state)"},
+	"google/realtime_model.go|*GoogleRealtimeModel.DoCreateClientSecret":    {1, "google realtime client secret: await response.json()"},
+	"openai/realtime_model.go|*OpenAIRealtimeModel.DoCreateClientSecret":    {1, "openai-realtime-model.ts:89 await response.json()"},
+	"xai/realtime_model.go|*XAIRealtimeModel.DoCreateClientSecret":          {1, "xai-realtime-model.ts:76 await response.json()"},
+	"youcom/tools.go|decodeYouJSON":                                         {1, "@youdotcom-oss/ai-sdk-plugin await response.json()"},
+	"quiverai/language_model.go|decodeQuiverAIProviderMetadata":             {1, "TS reads part.providerMetadata.quiverai from the in-memory prompt (no parse)"},
+	"pkg/providerutils/chunk_schema.go|unmarshalChunkNumbers":               {2, "the shared decode of UnmarshalChunk (prototype check before it) and UnmarshalChunkPlain"},
+	"pkg/mcp/safe_json.go|unmarshalServerJSON":                              {1, "after checkServerJSON, which applies the prototype check when TS secure-parses"},
+	"pkg/mcp/jsonrpc.go|parseJSONRPCErrorObject":                            {1, "error.data of a validated message object (no parse in TS; the transport checked where TS runs parseJSONRPCMessage)"},
+	"pkg/mcp/oauth.go|DiscoverOAuthProtectedResourceMetadata":               {1, "oauth.ts:605 await response.json()"},
+	"pkg/mcp/oauth.go|DiscoverAuthorizationServerMetadata":                  {1, "oauth.ts:754 / 759 await response.json()"},
+	"pkg/mcp/oauth_schema.go|decodeOAuthFields":                             {1, "oauth.ts:1106 / 1211 / 1274 await response.json() (tokens, client registration)"},
+	"pkg/harness/sandbox/vercel/auth.go|decodeOIDCClaims":                   {2, "@vercel/sandbox decode-base64-url.js:9 JSON.parse, then schema.parse"},
+	"pkg/harness/sandbox/vercel/oidc_refresh.go|unverifiedTokenOwner":       {1, "@vercel/sandbox api-client.js:75 decodeUnverifiedToken JSON.parse"},
+}
+
 // TestR96integNetworkDecodesRejectForbiddenPrototype is the class guard for
 // the retired "JSON payloads with __proto__" known difference. It
 // type-checks every package in r95integGuardPatterns and follows network
@@ -390,6 +423,41 @@ func TestR96integNetworkDecodesRejectForbiddenPrototype(t *testing.T) {
 			}
 			return true
 		})
+	}
+	// The plain-JSON entry points: every call is listed with its TS site.
+	plainFound := map[string]int{}
+	for _, fn := range fns {
+		info := fn.info
+		ast.Inspect(fn.decl.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			f := funcOf(info, call)
+			if f == nil || f.Pkg() == nil {
+				return true
+			}
+			switch f.Pkg().Path() + "." + f.Name() {
+			case module + "pkg/internal/jsonexact.UnmarshalPlain",
+				module + "pkg/providerutils.UnmarshalChunkPlain",
+				module + "pkg/providerutils.MediaSchemaParserPlain",
+				module + "pkg/internal/zodlite.ValidationMessagePlain":
+			default:
+				return true
+			}
+			key := fn.file + "|" + fn.name
+			plainFound[key]++
+			if _, ok := r97integResponseJSONDecodes[key]; !ok {
+				problems = append(problems, fmt.Sprintf("%s:%d (%s): %s keeps __proto__ keys (TS plain JSON.parse); list %q in r97integResponseJSONDecodes with the TS response.json() site, or use the checking decoder",
+					fn.file, fset.Position(call.Pos()).Line, fn.name, f.Name(), key))
+			}
+			return true
+		})
+	}
+	for key, want := range r97integResponseJSONDecodes {
+		if got := plainFound[key]; got != want.count {
+			problems = append(problems, fmt.Sprintf("r97integResponseJSONDecodes[%q]: %d plain decodes found, %d listed (%s)", key, got, want.count, want.reason))
+		}
 	}
 	for key, want := range r96integPlainJSONDecodes {
 		if got := found[key]; got != want.count {

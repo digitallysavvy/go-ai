@@ -190,10 +190,13 @@ func integerizeOAuthNumbers(fields map[string]json.RawMessage, keys ...string) {
 }
 
 // decodeOAuthFields unmarshals the (possibly integerized) fields into v.
+// Its callers decode bodies TS reads with `await response.json()` (the token
+// and client registration responses, oauth.ts 1106 / 1211 / 1274): plain
+// JSON.parse keeps a `__proto__` key, so there is no prototype check.
 func decodeOAuthFields(fields map[string]json.RawMessage, v interface{}) error {
 	data, err := json.Marshal(fields)
 	if err != nil {
 		return err
 	}
-	return jsonexact.Unmarshal(data, v)
+	return jsonexact.UnmarshalPlain(data, v)
 }
