@@ -2773,8 +2773,11 @@ func rawMetadataMap(raw json.RawMessage) map[string]interface{} {
 	if len(raw) == 0 {
 		return nil
 	}
+	// TS holds the metadata as a parsed object: a number past the double
+	// range is Infinity (ruling 4) and a __proto__ key an own property, so
+	// neither drops the metadata.
 	var out map[string]interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := jsonexact.UnmarshalPlain(raw, &out); err != nil {
 		return nil
 	}
 	return out
