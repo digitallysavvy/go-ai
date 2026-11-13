@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -332,6 +334,13 @@ func uiMessagesToJSONValue(messages interface{}) (interface{}, error) {
 	case string:
 		data = []byte(v)
 	default:
+		// TS reports a non-finite number in metadata as one issue
+		// (11323f9894). The UIMessage marshalers write such a number as
+		// null (JSON.stringify, ruling 4), so look for it in the Go value
+		// first.
+		if uiValueHasNonFinite(reflect.ValueOf(v), 0) {
+			return nil, providererrors.NewValidationErrorWithContext(nil, uiInvalidJSONValueMessage, nil, &providererrors.ValidationContext{})
+		}
 		encoded, err := json.Marshal(v)
 		if err != nil {
 			// TS reports a non-finite number in metadata as one issue
@@ -356,6 +365,45 @@ func uiMessagesToJSONValue(messages interface{}) (interface{}, error) {
 		return nil, &providererrors.InvalidArgumentError{Field: "messages", Message: err.Error(), Cause: err}
 	}
 	return out, nil
+}
+
+// uiValueHasNonFinite reports whether a NaN or +-Inf float is reachable the
+// way encoding/json reaches values (exported struct fields, map values, slice
+// and array elements, pointer and interface targets).
+func uiValueHasNonFinite(rv reflect.Value, depth int) bool {
+	if depth > 512 || !rv.IsValid() {
+		return false
+	}
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		f := rv.Float()
+		return math.IsNaN(f) || math.IsInf(f, 0)
+	case reflect.Pointer, reflect.Interface:
+		return !rv.IsNil() && uiValueHasNonFinite(rv.Elem(), depth+1)
+	case reflect.Struct:
+		for i := 0; i < rv.NumField(); i++ {
+			if rv.Type().Field(i).IsExported() && uiValueHasNonFinite(rv.Field(i), depth+1) {
+				return true
+			}
+		}
+	case reflect.Map:
+		iter := rv.MapRange()
+		for iter.Next() {
+			if uiValueHasNonFinite(iter.Value(), depth+1) {
+				return true
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return false
+		}
+		for i := 0; i < rv.Len(); i++ {
+			if uiValueHasNonFinite(rv.Index(i), depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // decodeValidatedUIMessages decodes structurally valid messages and drops
