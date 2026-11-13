@@ -196,7 +196,7 @@ already, you can skip them.
 | `ResolveSerializableTools` dynamic defs | No title, metadata or strict | silent behavior change | Set them on the resolved tool | [Resolved dynamic tools](#workflow-resolve-dynamic-tools) |
 | UI `text-delta` with empty `delta` | Sent when it carries `providerMetadata` | wire/protocol change | None | [Empty text deltas](#ui-empty-text-delta-metadata) |
 | GenAI embeddings span `gen_ai.operation.name` | `embeddings` instead of `ai.embed.doEmbed` | silent behavior change | Match `embeddings` | [Embeddings operation name](#telemetry-embeddings-operation-name) |
-| `StopSequences: []string{}` on gateway / groq / mistral / vertex xai | Sent as `[]` | wire/protocol change | Pass nil to omit | [Empty stop sequences are sent](#empty-stop-sequences) |
+| `StopSequences: []string{}` on gateway / groq / mistral / vertex xai / openai / deepseek / moonshot / alibaba / fireworks / together / zai / gmicloud | Sent as `[]` (Hugging Face warns) | wire/protocol change | Pass nil to omit | [Empty stop sequences are sent](#empty-stop-sequences) |
 | Gateway tool results with a nil value | `value: null` sent | wire/protocol change | No action | [Gateway tool outputs without a value](#gateway-tool-output-null) |
 | Anthropic provider tools under a custom `Name`; `anthropic.*` literals | Matched by id, sent | silent behavior change | No action | [Anthropic provider tools are matched by id](#anthropic-provider-tool-id) |
 | Anthropic provider tools on Bedrock | Validated; calls named after the tool | silent behavior change | Match `Tool.Name` | [Anthropic provider tools on Bedrock](#bedrock-anthropic-provider-tools) |
@@ -770,12 +770,21 @@ already, you can skip them.
 | `Transcribe` with an invalid `AudioBase64`, error text | TS InvalidDataContentError text | error text only | Use `errors.As` | [Transcribe reports undecodable base64 audio with the TS text](#transcribe-base64-error-text) |
 | `VideoPromptImage.DataString` holding an `http(s)://` URL | Sent as a URL file | silent behavior change | None | [Video image data strings with an http(s) URL are sent as URLs](#video-datastring-url) |
 | `RetryError` text with an apostrophe | Quotes not escaped | error text only | Match the plain text | [The non-retryable RetryError message keeps quotes as is](#retry-non-retryable-message-quotes) |
-| Provider responses with differently cased keys | Key ignored (exact match, as zod) | silent behavior change | Send the documented keys | [Provider responses are decoded with exact keys](#provider-response-keys-case-exact) |
+| Provider, MCP server or sandbox API responses with differently cased keys | Key ignored (exact match, as zod) | silent behavior change | Send the documented keys | [Provider responses are decoded with exact keys](#provider-response-keys-case-exact) |
 | Gateway decision answers, Gateway model `Warnings`; non-object `providerOptions.gateway` on decisions | Only the type's own fields; the call fails | silent behavior change | None | [Gateway decision answers and warnings keep only their own fields](#gateway-response-schema-keys) |
 | Google Files upload without `file`, Google / Vertex "No videos in response", Interactions file URIs | TS error texts, WHATWG URLs | error text only | None | [Google and Vertex error texts for malformed responses follow TS](#provg-r94-error-texts) |
 | Interactions `systemInstruction: ""`, `previousInteractionId: ""`, empty enum options | Sent; enum options fail | wire/protocol change | Leave them out | [Google Interactions sends empty string options](#google-interactions-empty-options) |
 | Custom `BaseURL` of realtime, live and streaming WebSocket models | WHATWG serialization; Invalid URL | wire/protocol change | None | [Realtime and live WebSocket URLs follow the WHATWG URL parser](#websocket-urls-whatwg) |
-| `context.WithCancelCause` with `ExperimentalStartBatch`, tool refinement / queued tools, `WorkflowAgent`, `StreamText` tools, WebSocket streams | The cause, not `context.Canceled` | silent behavior change | Check `errors.Is(err, cause)` | [Cancellations with a cause return the cause](#abort-cause-r94) |
+| `context.WithCancelCause` with `ExperimentalStartBatch`, tool refinement / queued tools, `WorkflowAgent`, `StreamText`, limited tool concurrency, polling, WebSocket streams, MCP transports | The cause, not `context.Canceled` | silent behavior change | Check `errors.Is(err, cause)` | [Cancellations with a cause return the cause](#abort-cause-r94) |
+| Context cancelled during a retry backoff | `context.Canceled` / `DeadlineExceeded`, not the cause or the v0.5 text | error text only | Use `errors.Is(err, context.Canceled)` | [A cancel during a retry backoff returns the context error](#retry-abort-during-backoff) |
+| Open Responses `FinishReason` with tool calls | `length` / `content-filter` / `other` like TS | silent behavior change | Handle those reasons | [Open Responses maps the finish reason like TS](#openresponses-finish-reason-ts) |
+| OpenAI Responses options set to `""`; `""` reasons, ids, namespaces in OpenAI / xAI / Open Responses results | Sent and kept | wire/protocol change | Leave unset options out | [OpenAI, xAI and Open Responses keep present empty strings](#provb-empty-string-values) |
+| xAI video `null` options; malformed DeepSeek Responses / OpenAI batch bodies | Rejected like the TS schemas | silent behavior change | Leave unset options out | [OpenAI, xAI and DeepSeek validate more responses and options](#provb-r95-validation) |
+| `ProviderMetadata["google"]["interactionId"]` on Interactions built-in tool calls | No provider metadata | silent behavior change | Read the response metadata | [Google Interactions built-in tool calls carry no provider metadata](#interactions-builtin-tool-call-metadata) |
+| Interactions `imageConfig`, `agentConfig`, `responseModalities`, allowlist `transform` options | Checked like the TS schema | silent behavior change | Use the documented values | [Google Interactions options follow the TS option schema](#google-interactions-option-schema) |
+| Dial error text of streaming WebSocket models | TS socket error text | error text only | Match the TS text | [Streams that fail to open their WebSocket report the TS socket error](#websocket-open-failure-ts-text) |
+| Gateway speech stream with undecodable audio | Fails with `*speechstream.InvalidCharacterError` | silent behavior change | Use `errors.As` | [The Gateway speech stream fails on audio it cannot decode](#gateway-speech-undecodable-audio) |
+| `SkillsAPI.UploadSkill` with stream file data | `UnsupportedFunctionalityError` | error text only | Pass the bytes | [Anthropic Skills uploads reject stream file data](#anthropic-skills-stream-upload) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1297,7 +1306,8 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 ### Cancellations with a cause return the cause {#abort-cause-r94}
 
-- **What changed:** A context cancelled with `context.WithCancelCause` made `ExperimentalStartBatch`, the tool-input refinement of `GenerateText` (`ExperimentalRefineToolInput`), queued tool calls that were not started, a `WorkflowAgent` call cancelled before it starts, a `StreamText` run cancelled while its tools ran or during a step's end callbacks, and the realtime and live WebSocket streams return `context.Canceled`. v0.6 returns the cause (`context.Cause(ctx)`), as TS `abortSignal.throwIfAborted()` throws `signal.reason`. A plain `cancel()` still returns `context.Canceled`, and a timeout keeps its `*ai.TimeoutError` (review round 94).
+- **What changed:** A context cancelled with `context.WithCancelCause` made `ExperimentalStartBatch`, the tool-input refinement of `GenerateText` (`ExperimentalRefineToolInput`), queued tool calls that were not started, a `WorkflowAgent` call cancelled before it starts, a `StreamText` run cancelled at any point (while the model stream is read, while a tool input callback or its tools run, during a step's end callbacks, or before its first model call opens; `Err()`, `ReadAll()` and `OutputErr()`; queued steering messages then end with `aborted`; the full stream still ends with the context error after its `abort` part), and the realtime and live WebSocket streams return `context.Canceled`. v0.6 returns the cause (`context.Cause(ctx)`), as TS `abortSignal.throwIfAborted()` throws `signal.reason`. A plain `cancel()` still returns `context.Canceled`, and a timeout keeps its `*ai.TimeoutError` (review rounds 94, 95).
+  Round 95 adds: with `ToolCallConcurrency` below the number of tool calls, an abort while the last calls run fails the step with the abort cause (TS mapWithConcurrency), also in a `WorkflowAgent` resume of approved calls. The ToolLoopAgent legacy loop returns the abort cause and, for a step timeout during tools, the step `*ai.TimeoutError` (still `errors.Is(err, context.DeadlineExceeded)`). Luma image, Rev.ai and fal transcription polling, and the `GenerateVideo` status wait return the cause. The Gateway speech and transcription streams fail with the cause itself, not a `GatewayResponseError` that wraps it. A WebSocket stream cancelled before or during its handshake fails with the cause. The Vercel sandbox stdin writer, the MCP HTTP and SSE transports' `Send`, the ACP and Grok Build `PrepareSandbox` and the bash tool return the cause.
 - **Am I affected?** Code that cancels with `context.WithCancelCause` and checks `errors.Is(err, context.Canceled)` on these calls.
 - **What to do:** Check `errors.Is(err, cause)` for your own cause, or `ctx.Err()` for the cancellation itself.
 - **Kind:** silent behavior change
@@ -5605,10 +5615,17 @@ compile-time changes.
 - **What to do:** Match the unescaped text, or use `errors.As` and `RetryError.LastError`.
 - **Kind:** error text only
 
+### A cancel during a retry backoff returns the context error {#retry-abort-during-backoff}
+
+- **What changed:** When the context ended during the wait between retries, v0.5 returned `context cancelled after N attempts: <last error>`, and v0.6 up to round 94 returned the context's cause. v0.6 returns the context's own error (`context.Canceled` or `context.DeadlineExceeded`), as TS `delay()` rejects with its own `AbortError` whatever the abort reason (review round 95).
+- **Am I affected?** Code that matches that text, uses `errors.Is` against the last attempt's error, or expects a custom cause after a cancel during retries.
+- **What to do:** Use `errors.Is(err, context.Canceled)` or `errors.Is(err, context.DeadlineExceeded)`.
+- **Kind:** error text only
+
 ### Provider responses are decoded with exact keys {#provider-response-keys-case-exact}
 
-- **What changed:** Provider response bodies, stream frames and error bodies were decoded with `encoding/json`, which also fills a field from a differently cased key (`"Message"` filled `message`). v0.6 decodes provider responses with exact keys, as the TS zod schemas do: a key that differs only in case is ignored (review round 94). Provider options and other values you build keep matching keys without regard to case, as in v0.5 (see the known difference "Option keys match case-insensitively").
-- **Am I affected?** Only if a provider, proxy or mock server sends response keys whose case differs from the provider's documented API (for example `"Choices"` or `"ID"`).
+- **What changed:** Provider response bodies, stream frames and error bodies were decoded with `encoding/json`, which also fills a field from a differently cased key (`"Message"` filled `message`). v0.6 decodes provider responses with exact keys, as the TS zod schemas do: a key that differs only in case is ignored (review round 94). Round 95 extends this to MCP server messages (`pkg/mcp`, including `CallToolResult`, tool lists and OAuth metadata), the Vercel sandbox API responses (`pkg/harness/sandbox/vercel`, including the network policy), the Gateway and Google Interactions lenient decoders, the Open Responses response body, the shared OpenAI-compatible stream decoders, the `askUserQuestions` tool input, a workflow chat transport's finish chunk, the OpenAI Responses prompt tool arguments and outputs that TS validates with zod, and the MCP `Mcp-Name` header source (`params.name` / `params.uri`). Provider options and other values you build keep matching keys without regard to case, as in v0.5 (see the known difference "Option keys match case-insensitively").
+- **Am I affected?** Only if a provider, MCP server, sandbox API, proxy or mock server sends response keys whose case differs from the documented API (for example `"Choices"`, `"ID"` or `"IsError"`).
 - **What to do:** No action for real provider APIs. Fix mock servers and test fixtures to send the documented key names.
 - **Kind:** silent behavior change
 
@@ -5702,6 +5719,10 @@ compile-time changes.
   sent as an empty list by the AI Gateway (`stopSequences: []`), Groq,
   Mistral (chat and conversations) and Vertex xAI (`stop: []`), as TS
   forwards `stopSequences` as given. nil stays absent (review round 74).
+  Round 95 adds the OpenAI, DeepSeek, Moonshot, Alibaba, Fireworks,
+  Together, Z.AI and GMI Cloud chat APIs (`stop: []`, TS
+  `stopSequences != null`); Hugging Face gives its `stopSequences`
+  unsupported warning for an empty list too.
 - **Am I affected?** Callers that pass a non-nil empty `StopSequences` to
   those providers.
 - **What to do:** no action unless an API rejects the empty list; pass nil
@@ -8912,6 +8933,62 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **Am I affected?** Only with a custom `BaseURL` that has upper-case host letters, an explicit default port, dot segments or characters the WHATWG parser encodes, or that does not parse.
 - **What to do:** No action unless your proxy matches the URL byte for byte.
 - **Kind:** wire/protocol change
+
+### Open Responses maps the finish reason like TS {#openresponses-finish-reason-ts}
+
+- **What changed:** The Open Responses language model (`pkg/providers/openresponses`) mapped the finish reason with the v0.5 helper. v0.6 maps it like TS `mapOpenResponsesFinishReason`, in generate and stream: `max_output_tokens` is `length` and `content_filter` is `content-filter` even when the response has tool calls (v0.5 said `tool-calls`), any other reported reason (including `""`, `max_tokens`, `stop` and `error`) is `other`, or `tool-calls` when there are tool calls, and only a missing reason is `stop` (review round 95).
+- **Am I affected?** Code that reads `FinishReason` from an Open Responses model, mainly for a response with tool calls cut off by the token limit or the content filter.
+- **What to do:** Treat `length` and `content-filter` as possible finish reasons when there are tool calls. The exported `openresponses.MapOpenResponsesFinishReason` keeps the v0.5 mapping.
+- **Kind:** silent behavior change
+
+### OpenAI, xAI and Open Responses keep present empty strings {#provb-empty-string-values}
+
+- **What changed:** Several present `""` values were treated as absent. v0.6 keeps them, as TS `??` / `!= null` does: the OpenAI Responses `conversation`, `previousResponseId`, `user`, `instructions`, `promptCacheKey` and `safetyIdentifier` options are sent as `""`; an Open Responses system message of `""` sends `instructions: ""`; an empty incomplete reason, reasoning `encrypted_content`, `call_id`, `approval_request_id`, item `id` and tool `namespace` are kept in results and provider metadata; an xAI `mcp_call` name `""` and an empty `x-trace-id` header are kept (review round 95).
+- **Am I affected?** Code that sets those options to `""`, or reads the listed fields expecting a fallback for `""`.
+- **What to do:** Leave out options you do not want sent.
+- **Kind:** wire/protocol change
+
+### OpenAI, xAI and DeepSeek validate more responses and options {#provb-r95-validation}
+
+- **What changed:** v0.6 applies more of the TS schemas (review round 95). A DeepSeek Responses generate body is validated against the TS response schema (a usage count that is not a number, or an output element that is not `{type: string}`, is "Invalid JSON response" instead of zero usage or a skipped item). An OpenAI batch result body is validated against the Responses schema (a bad body gives the item an `invalid_response` error). xAI video options reject a present `null` for `mode`, `videoUrl`, `referenceVoiceIds`, `keyframes`, `storageOptions` and `user`, and `storageOptions` takes `publicUrl` as a boolean or an object with an integer `expiresAfter`. An xAI video `202` status body gives `pending`. The Files APIs keep a fractional `bytes` in `providerMetadata.bytes`. An OpenAI stream error `code` that is neither a string nor a number is dropped.
+- **Am I affected?** Code that sends `null` xAI video options, or relies on the lenient handling of malformed DeepSeek or OpenAI batch bodies.
+- **What to do:** Leave out options you do not set.
+- **Kind:** silent behavior change
+
+### Google Interactions built-in tool calls carry no provider metadata {#interactions-builtin-tool-call-metadata}
+
+- **What changed:** Built-in tool calls (Google Search, code execution, URL context and the other server-side tools) of a Google Interactions model carried `providerMetadata.google.interactionId`. v0.6 gives them no provider metadata, in generate and in the synthesized stream, as TS does (review round 95).
+- **Am I affected?** Code that reads `ProviderMetadata["google"]["interactionId"]` from an Interactions built-in tool call.
+- **What to do:** Read the interaction ID from the response's provider metadata instead.
+- **Kind:** silent behavior change
+
+### Google Interactions options follow the TS option schema {#google-interactions-option-schema}
+
+- **What changed:** v0.6 checks the Interactions options like TS googleInteractionsLanguageModelOptions (review round 95): the `imageConfig` and deep-research `agentConfig` enums reject `""` and non-strings, `agentConfig` is the dynamic (loose, extra fields allowed) or deep-research union (an empty `type` fails), `responseModalities` items must be strings and environment allowlist `transform` entries must be records of strings. An interaction status or error code of `""` in the stream is a value, not absent, and a background stream is cancelled on the server only when the caller aborts it.
+- **Am I affected?** `providerOptions["google"]` on Interactions models with empty or mistyped values in those options.
+- **What to do:** Leave out options you do not set, or use the documented values.
+- **Kind:** silent behavior change
+
+### Streams that fail to open their WebSocket report the TS socket error {#websocket-open-failure-ts-text}
+
+- **What changed:** When the WebSocket of a streaming model failed to open (a refused handshake such as a 401, an unreachable host), the stream failed with the raw `websocket.Dial` error. v0.6 fails with the provider's TS socket error text, as TS connectToWebSocket's `onerror` does: "ElevenLabs speech stream error.", "ElevenLabs realtime transcription error.", "OpenAI realtime transcription error", "OpenAI realtime translation error", "Azure MAI transcription WebSocket error", "xAI streaming transcription error.", "Cartesia streaming transcription error", "Google Live transcription error", "Google Live translation error", "Vertex Live transcription error.", and the Gateway "Connection error on AI Gateway ... stream" through its error mapping. The dial error stays reachable through `errors.Unwrap` where the provider wraps it, and a stream cancelled before or during the handshake fails with the cancel cause (review round 95).
+- **Am I affected?** Code that matches the dial error text of these streams.
+- **What to do:** Match the TS text, or use `errors.As` on the dial error where it is wrapped.
+- **Kind:** error text only
+
+### The Gateway speech stream fails on audio it cannot decode {#gateway-speech-undecodable-audio}
+
+- **What changed:** An audio part whose base64 the Gateway speech stream could not decode was skipped, and the stream then ended with "closed before a finish part". v0.6 fails the stream at that part with `*speechstream.InvalidCharacterError` (`Invalid character`, or `The string to be decoded is not correctly encoded.`, as Node's `atob`), after the earlier parts; the error is not wrapped as a Gateway error, as TS streamSpeech does (review round 95).
+- **Am I affected?** Code that streams Gateway speech and matches the "closed before a finish part" error.
+- **What to do:** Use `errors.As(err, &invalid)` with `var invalid *speechstream.InvalidCharacterError`.
+- **Kind:** silent behavior change
+
+### Anthropic Skills uploads reject stream file data {#anthropic-skills-stream-upload}
+
+- **What changed:** `SkillsAPI.UploadSkill` with a file of stream data (`FileDataTypeStream`) returned a plain error and left the stream open. v0.6 cancels the stream and returns `*providererrors.UnsupportedFunctionalityError` for "streaming file upload", as TS uploadSkill (convertInlineFileDataToUint8Array) does (review round 95).
+- **Am I affected?** Code that uploads skills with stream file data and matches the old error.
+- **What to do:** Pass the file bytes, and use `errors.As` with `*providererrors.UnsupportedFunctionalityError`.
+- **Kind:** error text only
 
 ### Vertex errors follow the Vertex error schema {#vertex-error-schema}
 

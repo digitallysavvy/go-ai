@@ -718,7 +718,7 @@ TS WorkflowAgent writes "Provider-executed tool ... did not receive a result fro
 TS Interactions warnings are `{type: 'other', message}` or `{type: 'unsupported', feature, details}`. Go sets both `Message` and `Details` on each, as v0.5.2 did; callers that read either field keep working (S6; review round 90).
 
 ## Fractional counts in integer fields
-Where a Go field that v0.5.2 already exposed is an integer, a fractional count from the API is truncated; TS keeps the fraction: `Usage` token counts (`*int64`), Gateway `GenerationInfo` latencies and token counts, `SpendReportRow` counts, `RealtimeClientSecret.ExpiresAt`, and a Gateway video SSE error `statusCode` (`SSEVideoEvent.StatusCode *int`; a fractional value fails the event parse) (S1: exported integer field types; review round 90).
+Where a Go field that v0.5.2 already exposed is an integer, a fractional count from the API is truncated; TS keeps the fraction: `Usage` token counts (`*int64`), Gateway `GenerationInfo` latencies and token counts, `SpendReportRow` counts, `RealtimeClientSecret.ExpiresAt`, a Gateway video SSE error `statusCode` (`SSEVideoEvent.StatusCode *int`; a fractional value fails the event parse), and decision usage token counts (`provider.DecisionUsage`, the v0.5.2 `EvaluationUsage` with `*int` fields; TypeSafe AI and the other decision models) (S1: exported integer field types; review rounds 90, 95).
 
 ## Gemini non-streaming string functionCall args
 When a non-streaming Gemini response carries `functionCall.args` as a string, Go uses it verbatim; TS JSON.stringify's the value into a quoted JSON string that no tool can parse as arguments (S7: TS defect; review round 90).
@@ -878,6 +878,12 @@ Provider options and other caller-built values that Go decodes into option struc
 
 ## Azure Speech transcription phrases metadata
 `providerMetadata.azure.phrases` is a v0.5.2 exported `[]AzureSpeechPhrase` with `omitempty` fields. A phrase member that is null on the wire (`offsetMilliseconds`, `locale`, `speaker`, ...) or an empty `words: []` is left out, while TS reports the zod-parsed phrase with the null or empty array kept. Changing the type would break v0.5.2 callers that type-assert it (S6; review round 94).
+
+## ToolLoopAgent per-call deprecated tool callbacks
+A per-call `OnToolCallStart` / `OnToolCallFinish` (deprecated) runs after the agent's `OnToolExecutionStart` / `OnToolExecutionEnd`. TS drops the per-call `experimental_onToolCallStart` / `experimental_onToolCallFinish` when the agent settings define the stable callback (generateText reads `onToolExecutionStart ?? experimental_onToolCallStart`). v0.5.2 fired both: `pkg/agent/toolloop.go` at a0f9d3f9, `resolveAgentToolExecutionStart` / `resolveAgentToolExecutionEnd` (lines 111-123) picked the per-call callback and `mergeCallbacks` (lines 61-82) merged it with the settings callback through `mergeListener` (settings first) in Generate, GenerateAgent and Stream (S6: v0.5.2 runtime contract; review round 95).
+
+## Response body idle timeout
+Node's fetch (undici) fails a response whose body sends nothing for 5 minutes (`bodyTimeout`); Go's default HTTP client waits until the call's context ends. TS in other runtimes (browsers, edge) has no such limit either. Set a context deadline or `Timeout` to bound a call (S3: runtime fetch default, not SDK code; informational; review round 95).
 
 ## Features that are TypeScript-only (not ported)
 
