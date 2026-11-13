@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -70,5 +71,57 @@ func TestR97provgInteractionsToolArgsNonFiniteNumber(t *testing.T) {
 	}
 	if args, _ := interactionToolArgs(nil, `{"__proto__":{}}`); args["value"] != `{"__proto__":{}}` {
 		t.Fatalf("prototype key: args = %#v", args)
+	}
+}
+
+const r97provgNullTypeError = "Cannot read properties of null (reading 'setupComplete')"
+
+func r97provgDrainErr(next func() error) error {
+	for i := 0; i < 100; i++ {
+		if err := next(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// TS onMessageText reads message.setupComplete of the safeParseJSON value: a
+// JSON null message throws a TypeError, which fails the stream
+// (cr-r97-provb-to-provg 1).
+func TestR97provgLiveTranscriptionNullMessageTypeError(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	server.toSend <- nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := newLiveTestModel(t, server.ts.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio: newChanAudioStream(), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	err = r97provgDrainErr(func() error { _, err := result.Stream.Next(); return err })
+	if err == nil || err.Error() != r97provgNullTypeError {
+		t.Fatalf("err = %v, want the TypeError", err)
+	}
+}
+
+func TestR97provgSpeechTranslationNullMessageTypeError(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	server.toSend <- nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := newSpeechTranslationTestModel(t, server.ts.URL, 0).DoStream(ctx, &provider.SpeechTranslationStreamOptions{
+		Audio: newChanAudioStream(), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"}, TargetLanguage: "es",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	err = r97provgDrainErr(func() error { _, err := result.Stream.Next(); return err })
+	if err == nil || err.Error() != r97provgNullTypeError {
+		t.Fatalf("err = %v, want the TypeError", err)
 	}
 }

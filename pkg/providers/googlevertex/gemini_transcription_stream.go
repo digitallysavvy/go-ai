@@ -497,6 +497,12 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 					return
 				}
 			}
+			// TS reads message.setupComplete of the parsed value: a JSON null
+			// message throws a TypeError, which onProcessingError reports.
+			if rawValue == nil {
+				fail(errors.New("Cannot read properties of null (reading 'setupComplete')")) //nolint:staticcheck // TS V8 TypeError text
+				return
+			}
 
 			var message geminiLiveServerMessage
 			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
