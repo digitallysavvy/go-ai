@@ -13,6 +13,7 @@ import (
 // file: URL, or when the URL is a file: URL with an empty host. A port equal
 // to the new scheme's default port becomes null.
 func (u *URL) SetProtocol(value string) {
+	value = removeTabNewline(value) // the basic URL parser strips them first
 	var b strings.Builder
 	for i := 0; i < len(value); i++ {
 		c := rune(value[i])
@@ -79,8 +80,15 @@ func (u *URL) SetPathname(value string) {
 		if p != "" && !strings.HasPrefix(p, "/") {
 			p = "/" + p
 		}
-	} else if strings.HasPrefix(p, "//") {
-		p = "/." + p // keep "//" in the path rather than read it as an authority
+	} else {
+		// Path start state with a null host: a missing leading "/" is
+		// implied ("foo:/a" pathname "c" is "foo:/c", "" is "foo:/").
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		if strings.HasPrefix(p, "//") {
+			p = "/." + p // keep "//" in the path rather than read it as an authority
+		}
 	}
 	parsed, err := Parse(u.authorityPrefix() + p)
 	if err != nil || parsed.opaque {
@@ -95,14 +103,31 @@ func (u *URL) SetPathname(value string) {
 // and fragment from path. It fails with ErrInvalidURL when u has an opaque
 // path or path is not path-absolute.
 func (u *URL) ResolvePath(path string) (*URL, error) {
-	trimmed := strings.TrimLeft(path, "\t\n\r")
+	// The basic URL parser drops tabs and newlines before reading the
+	// slashes ("/\t/x" is the authority form "//x").
+	stripped := removeTabNewline(path)
 	slash := func(i int) bool {
-		return i < len(trimmed) && (trimmed[i] == '/' || (u.IsSpecial() && trimmed[i] == '\\'))
+		return i < len(stripped) && (stripped[i] == '/' || (u.IsSpecial() && stripped[i] == '\\'))
 	}
 	if u.opaque || !slash(0) || slash(1) {
 		return nil, ErrInvalidURL
 	}
+	if u.Scheme == "file" && len(u.path) > 0 && isNormalizedWindowsDriveLetter(u.path[0]) &&
+		!startsWithWindowsDriveLetter(stripped[1:]) {
+		// File slash state: the base's drive letter stays ("/x" against
+		// file:///C:/y is file:///C:/x).
+		return Parse(u.authorityPrefix() + "/" + u.path[0] + path)
+	}
 	return Parse(u.authorityPrefix() + path)
+}
+
+// startsWithWindowsDriveLetter is the URL Standard's "starts with a Windows
+// drive letter".
+func startsWithWindowsDriveLetter(s string) bool {
+	if len(s) < 2 || !isWindowsDriveLetter(s[:2]) {
+		return false
+	}
+	return len(s) == 2 || strings.ContainsRune(`/\?#`, rune(s[2]))
 }
 
 // authorityPrefix is the URL's serialization up to (not including) its path:
@@ -127,4 +152,13 @@ func (u *URL) authorityPrefix() string {
 		}
 	}
 	return b.String()
+}
+
+func removeTabNewline(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, s)
 }
