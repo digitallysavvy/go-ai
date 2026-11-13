@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
@@ -956,7 +957,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}})
 				var parsed interface{}
-				if err := jsonexact.Unmarshal([]byte(text), &parsed); err != nil {
+				if err := securejson.Unmarshal([]byte(text), &parsed); err != nil { // TS parseJSON (secureJsonParse)
 					s.err = providererrors.NewJSONParseError(text, err)
 				} else {
 					args, _ := parsed.(map[string]interface{})

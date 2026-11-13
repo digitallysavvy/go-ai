@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -714,7 +715,7 @@ func (s *perplexityAgentStream) processEvent(data string) {
 		// TS enqueues the raw part for every frame; rawValue is undefined
 		// when the frame is not JSON.
 		var rawValue interface{}
-		if err := jsonexact.Unmarshal([]byte(data), &rawValue); err != nil {
+		if err := securejson.Unmarshal([]byte(data), &rawValue); err != nil { // TS rawValue undefined on a failed safeParseJSON
 			rawValue = nil
 		}
 		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawValue})

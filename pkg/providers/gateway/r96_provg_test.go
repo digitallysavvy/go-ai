@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -22,5 +24,34 @@ func TestR96provgV4ToolErrorTextIsJSONStringify(t *testing.T) {
 	part, _ := decodeV4Content(p)
 	if tr, ok := part.(types.ToolResultContent); !ok || tr.Error != want {
 		t.Errorf("generate tool error = %#v, want %s", part, want)
+	}
+}
+
+// TestR96provgTranscriptionPartRejectsPrototypeKeys: TS
+// parseTranscriptionStreamPart parses with secureJsonParse, which throws on a
+// __proto__ key or a constructor.prototype, so the frame is ignored.
+func TestR96provgTranscriptionPartRejectsPrototypeKeys(t *testing.T) {
+	for _, frame := range []string{
+		`{"type":"transcript-delta","delta":"x","__proto__":{}}`,
+		`{"type":"transcript-delta","delta":"x","providerMetadata":{"constructor":{"prototype":{}}}}`,
+	} {
+		if part, ok := parseGatewayTranscriptionStreamPart(frame); ok {
+			t.Errorf("%s: part = %+v, want ignored", frame, part)
+		}
+	}
+	if part, ok := parseGatewayTranscriptionStreamPart(`{"type":"transcript-delta","delta":"x","constructor":{}}`); !ok || part.Delta != "x" {
+		t.Errorf("constructor without prototype: ok=%v part=%+v, want the delta", ok, part)
+	}
+}
+
+// TestR96provgStreamChunkPrototypeKeyIsJSONParseError: TS safeParseJSON fails
+// the part (controller.error with the JSONParseError); the lenient decode
+// must not accept it.
+func TestR96provgStreamChunkPrototypeKeyIsJSONParseError(t *testing.T) {
+	var chunk gatewayStreamChunk
+	err := decodeGatewayStreamChunk([]byte(`{"type":"text-delta","id":"1","delta":"x","__proto__":{}}`), &chunk)
+	var pe *providererrors.JSONParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("err = %T %v, want *JSONParseError", err, err)
 	}
 }

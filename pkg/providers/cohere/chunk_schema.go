@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -14,7 +14,7 @@ import (
 // with "error").
 func validateCohereChunk(data []byte) error {
 	var top map[string]interface{}
-	if err := jsonexact.Unmarshal(data, &top); err != nil {
+	if err := securejson.Unmarshal(data, &top); err != nil { // TS safeParseJSON (secureJsonParse)
 		return err
 	}
 	if top == nil {

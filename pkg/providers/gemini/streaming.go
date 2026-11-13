@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -220,6 +221,20 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 		if s.includeRawChunks {
 			raw := streaming.RawChunkValue(event.Data)
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
+		}
+
+		// TS secureJsonParse: a frame with a __proto__ key or a
+		// constructor.prototype fails to parse, a JSONParseError `error` part
+		// (before any schema check), and the stream keeps reading.
+		if cerr := securejson.Check([]byte(event.Data)); cerr != nil {
+			s.markParseError()
+			perr := providererrors.NewJSONParseError(event.Data, cerr)
+			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: perr.Error(), Err: perr}
+			if len(s.chunkBuffer) > 0 {
+				s.chunkBuffer = append(s.chunkBuffer, errChunk)
+				continue
+			}
+			return errChunk, nil
 		}
 
 		// TS validates each parsed frame against chunkSchema; a mismatch is a

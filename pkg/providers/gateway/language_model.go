@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -308,6 +309,12 @@ type gatewayStreamChunk struct {
 // and is skipped, and the string fields Go reads (ids, deltas, tool names,
 // tool arguments) hold JS String(value) of a non-string value.
 func decodeGatewayStreamChunk(data []byte, chunk *gatewayStreamChunk) error {
+	// TS safeParseJSON (secureJsonParse): a __proto__ key or a
+	// constructor.prototype fails the part with a JSONParseError, which the
+	// lenient field-by-field decode below must not swallow.
+	if err := securejson.Check(data); err != nil {
+		return providererrors.NewJSONParseError(string(data), err)
+	}
 	if err := decodeGatewayLenient(data, chunk); err != nil {
 		return err
 	}

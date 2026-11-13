@@ -3,11 +3,14 @@ package google
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 var errR96provgWrite = errors.New("r96provg: write failed")
@@ -80,5 +83,30 @@ func TestR96provgSpeechTranslationSetupSendFailureAfterStreamStart(t *testing.T)
 	}
 	if part, err := result.Stream.Next(); !errors.Is(err, errR96provgWrite) {
 		t.Fatalf("second = %+v, %v; want the write error", part, err)
+	}
+}
+
+// TestR96provgInteractionsFramePrototypeKeyIsJSONParseError: TS
+// secureJsonParse fails such a frame (never the loose unknownEvent
+// dispatch), a JSONParseError error part.
+func TestR96provgInteractionsFramePrototypeKeyIsJSONParseError(t *testing.T) {
+	body := `data: {"event_type":"step.start","index":0,"step":{"type":"thought"},"__proto__":{}}` + "\n\n" +
+		`data: {"event_type":"interaction.completed","interaction":{"id":"v1","status":"completed"}}` + "\n\n"
+	s := newInteractionsEventStream(context.Background(), New(Config{APIKey: "k"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
+	var sawParseErr bool
+	for _, c := range drainInteractions(t, s) {
+		if c.Type == provider.ChunkTypeReasoningStart {
+			t.Fatal("the frame was dispatched")
+		}
+		if c.Type == provider.ChunkTypeError {
+			var pe *providererrors.JSONParseError
+			if !errors.As(c.Err, &pe) {
+				t.Fatalf("error part = %T %v, want *JSONParseError", c.Err, c.Err)
+			}
+			sawParseErr = true
+		}
+	}
+	if !sawParseErr {
+		t.Fatal("no error part")
 	}
 }

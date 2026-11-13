@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -384,8 +385,13 @@ restart:
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 		var payload interactionsEvent
+		// TS secureJsonParse: a __proto__ key or a constructor.prototype is a
+		// JSON parse failure, never the loose unknownEvent dispatch.
+		forbidden := securejson.Check([]byte(event.Data))
 		err = jsonexact.Unmarshal([]byte(event.Data), &payload)
-		if err == nil && !hasStringEventType(event.Data) {
+		if forbidden != nil {
+			err = forbidden
+		} else if err == nil && !hasStringEventType(event.Data) {
 			// Every member of TS googleInteractionsEventSchema (including the
 			// unknownEvent fallback) requires a string event_type, so null,
 			// non-object JSON and objects without it fail validation.
@@ -402,7 +408,9 @@ restart:
 			// TS: an unparsable chunk marks the interaction failed, is
 			// surfaced as an error part and reading continues.
 			var chunkErr error
-			if !json.Valid([]byte(event.Data)) {
+			if forbidden != nil {
+				chunkErr = providererrors.NewJSONParseError(event.Data, forbidden)
+			} else if !json.Valid([]byte(event.Data)) {
 				var probe interface{}
 				chunkErr = providererrors.NewJSONParseError(event.Data, json.Unmarshal([]byte(event.Data), &probe))
 			} else {
