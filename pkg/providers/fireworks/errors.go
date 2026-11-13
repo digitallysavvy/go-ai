@@ -3,6 +3,8 @@ package fireworks
 import (
 	"encoding/json"
 	"errors"
+	"math"
+	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
@@ -65,14 +67,23 @@ func parseFireworksProviderError(err error) error {
 	return pe
 }
 
-// fireworksValidCode is TS `code: z.union([z.string(), z.number()]).nullish()`.
+// fireworksValidCode is TS `code: z.union([z.string(), z.number()]).nullish()`;
+// zod's z.number() rejects a number beyond the double range (JSON.parse
+// reads it as Infinity).
 func fireworksValidCode(raw json.RawMessage) bool {
 	if len(raw) == 0 || string(raw) == "null" {
 		return true
 	}
 	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return true
+	}
 	var n json.Number
-	return json.Unmarshal(raw, &s) == nil || json.Unmarshal(raw, &n) == nil
+	if json.Unmarshal(raw, &n) != nil {
+		return false
+	}
+	f, _ := strconv.ParseFloat(n.String(), 64) // an underflow reads as 0 (valid)
+	return !math.IsInf(f, 0)
 }
 
 // fireworksErrorCode stringifies a code that may be a JSON string or number.
