@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -152,7 +153,7 @@ func executeYouAPI(ctx context.Context, config YouToolsConfig, endpoint endpoint
 		input = normalizeContentsInput(input)
 	}
 
-	body, err := json.Marshal(input)
+	body, err := jsonstr.Marshal(input)
 	if err != nil {
 		return nil, err
 	}
@@ -576,7 +577,7 @@ func checkResponseForErrors(responseData interface{}) error {
 		if s, ok := errValue.(string); ok {
 			return fmt.Errorf("You.com API Error: %s", s) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}
-		data, err := json.Marshal(errValue)
+		data, err := jsonstr.Marshal(errValue)
 		if err != nil {
 			return fmt.Errorf("You.com API Error: %v", errValue) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}

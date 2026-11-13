@@ -7,6 +7,8 @@ import (
 	"math"
 	"strconv"
 	"sync/atomic"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // JSON-RPC 2.0 implementation for MCP
@@ -32,7 +34,7 @@ func (g *IDGenerator) Next() interface{} {
 func CreateRequest(id interface{}, method string, params interface{}) (*MCPMessage, error) {
 	var paramsRaw json.RawMessage
 	if params != nil {
-		paramBytes, err := json.Marshal(params)
+		paramBytes, err := jsonstr.Marshal(params)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal params: %w", err)
 		}
@@ -51,7 +53,7 @@ func CreateRequest(id interface{}, method string, params interface{}) (*MCPMessa
 func CreateNotification(method string, params interface{}) (*MCPMessage, error) {
 	var paramsRaw json.RawMessage
 	if params != nil {
-		paramBytes, err := json.Marshal(params)
+		paramBytes, err := jsonstr.Marshal(params)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal params: %w", err)
 		}
@@ -69,7 +71,7 @@ func CreateNotification(method string, params interface{}) (*MCPMessage, error) 
 func CreateResponse(id interface{}, result interface{}) (*MCPMessage, error) {
 	var resultRaw json.RawMessage
 	if result != nil {
-		resultBytes, err := json.Marshal(result)
+		resultBytes, err := jsonstr.Marshal(result)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal result: %w", err)
 		}

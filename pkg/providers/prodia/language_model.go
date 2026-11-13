@@ -4,16 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -284,7 +286,7 @@ func (m *ProdiaLanguageModel) DoStream(ctx context.Context, opts *provider.Gener
 	// Finish chunk — mirror TS: include providerMetadata on the finish event.
 	var finishMeta json.RawMessage
 	if gr.ProviderMetadata != nil {
-		if b, err := json.Marshal(gr.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(gr.ProviderMetadata); err == nil {
 			finishMeta = b
 		}
 	}

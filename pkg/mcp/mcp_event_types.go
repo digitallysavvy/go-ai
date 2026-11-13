@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // This file ports the experimental MCP events types (TS mcp-event-types.ts,
@@ -37,7 +38,7 @@ func (n Nullable[T]) MarshalJSON() ([]byte, error) {
 	if n.Value == nil {
 		return []byte("null"), nil
 	}
-	return json.Marshal(*n.Value)
+	return jsonstr.Marshal(*n.Value)
 }
 
 // UnmarshalJSON implements json.Unmarshaler.

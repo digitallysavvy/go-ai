@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // The TS MCP schemas are z.looseObject / .loose() (passthrough): keys the
@@ -66,7 +68,7 @@ func decodeLooseExtra(data []byte, known interface{}) map[string]interface{} {
 // marshalLoose encodes base (a struct value) and appends the extra keys that
 // base does not declare, in sorted order.
 func marshalLoose(base interface{}, extra map[string]interface{}) ([]byte, error) {
-	out, err := json.Marshal(base)
+	out, err := jsonstr.Marshal(base)
 	if err != nil || len(extra) == 0 {
 		return out, err
 	}
@@ -86,8 +88,8 @@ func marshalLoose(base interface{}, extra map[string]interface{}) ([]byte, error
 	buf.Write(body)
 	needComma := len(bytes.TrimSpace(body)) > 1
 	for _, k := range keys {
-		kb, _ := json.Marshal(k)
-		vb, err := json.Marshal(extra[k])
+		kb, _ := jsonstr.Marshal(k)
+		vb, err := jsonstr.Marshal(extra[k])
 		if err != nil {
 			return nil, err
 		}

@@ -3,7 +3,6 @@ package mcp
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -405,7 +405,7 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		defer stop()
 	}
 
-	data, err := json.Marshal(message)
+	data, err := jsonstr.Marshal(message)
 	if err != nil {
 		return t.sendFailed(ctx, NewTransportError("failed to marshal message", err))
 	}

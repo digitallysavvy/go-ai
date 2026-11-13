@@ -390,7 +390,7 @@ func (p CallToolParams) MarshalJSON() ([]byte, error) {
 	if args == nil {
 		args = map[string]interface{}{}
 	}
-	return json.Marshal(callToolParamsJSON{Name: p.Name, Arguments: args})
+	return jsonstr.Marshal(callToolParamsJSON{Name: p.Name, Arguments: args})
 }
 
 // CallToolResult represents the result of calling a tool

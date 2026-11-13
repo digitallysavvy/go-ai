@@ -35,7 +35,7 @@ func (m MCPAppToolMeta) MarshalJSON() ([]byte, error) {
 	if m.Visibility != nil {
 		out["visibility"] = m.Visibility
 	}
-	return json.Marshal(out)
+	return jsonstr.Marshal(out)
 }
 
 // MCPAppResource is the normalized HTML resource a host can render.

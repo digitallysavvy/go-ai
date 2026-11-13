@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // Multi-round-trip request limits (TS mcp-client.ts, c3af430640).
@@ -35,7 +36,7 @@ func (p inputRequiredRetryParams) MarshalJSON() ([]byte, error) {
 	// keys in their order, then the added ones.
 	merged := jsonorder.New()
 	if p.base != nil {
-		data, err := json.Marshal(p.base)
+		data, err := jsonstr.Marshal(p.base)
 		if err != nil {
 			return nil, err
 		}
