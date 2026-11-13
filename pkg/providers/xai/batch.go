@@ -21,7 +21,6 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // xaiBatchEndpoint is the sub-request URL embedded in each JSONL line for a
@@ -100,7 +99,7 @@ func extractXAIBatchProviderOptions(providerOptions map[string]interface{}) (xai
 	if !ok || raw == nil {
 		return opts, nil
 	}
-	b, err := jsonstr.Marshal(raw)
+	b, err := json.Marshal(raw) // caller options: a non-finite number is invalid (zod), not null
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
 	}
