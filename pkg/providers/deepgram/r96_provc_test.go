@@ -36,3 +36,14 @@ func TestR96provcBase64AudioSentAsGiven(t *testing.T) {
 		t.Fatalf("sent %q, want the base64 string as given", sent)
 	}
 }
+
+// TestR96provcStreamingAuthorizationTrimmed: TS reads the authorization
+// header through new Headers(...).get(), which strips leading and trailing
+// HTTP whitespace, so " Bearer tok\t" still gives the bearer subprotocols.
+func TestR96provcStreamingAuthorizationTrimmed(t *testing.T) {
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), "nova-3")
+	_, protocols, err := m.streamingHandshake(map[string]string{"Authorization": " Bearer tok\t"})
+	if err != nil || len(protocols) != 2 || protocols[0] != "bearer" || protocols[1] != "tok" {
+		t.Fatalf("protocols = %v, err = %v", protocols, err)
+	}
+}

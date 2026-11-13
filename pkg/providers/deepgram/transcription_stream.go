@@ -253,7 +253,9 @@ func (m *TranscriptionModel) streamingHandshake(callHeaders map[string]string) (
 	if !hasAuthorization {
 		return headers, nil, nil
 	}
-	credentials := deepgramAuthorizationPattern.FindStringSubmatch(authorization)
+	// TS new Headers(...).get('authorization') normalizes the value: leading
+	// and trailing HTTP whitespace (tab, LF, CR, space) is removed.
+	credentials := deepgramAuthorizationPattern.FindStringSubmatch(strings.Trim(authorization, "\t\n\r "))
 	if credentials == nil {
 		return nil, nil, providererrors.NewArgumentError("headers", "Deepgram streaming authorization must use the Token or Bearer scheme.", nil)
 	}
