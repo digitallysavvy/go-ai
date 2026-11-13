@@ -8,9 +8,11 @@ package jsonexact
 
 import (
 	"bytes"
+	"cmp"
 	"encoding"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -84,50 +86,133 @@ type structFields struct {
 
 var fieldCache sync.Map // reflect.Type -> *structFields
 
-// fields lists the JSON names of t's fields as encoding/json sees them:
-// json tag names, Go field names when untagged, promoted fields of untagged
-// embedded structs; unexported and `json:"-"` fields are skipped.
+// fields lists the JSON names of t's fields as encoding/json sees them (a
+// port of its typeFields): json tag names, Go field names when untagged,
+// promoted fields of untagged embedded structs with Go's dominance rules (the
+// shallowest field wins, then the tagged one; two at the same depth hide the
+// name); unexported and `json:"-"` fields are skipped.
 func fields(t reflect.Type) *structFields {
 	if f, ok := fieldCache.Load(t); ok {
 		return f.(*structFields)
 	}
 	f := &structFields{exact: map[string]reflect.Type{}}
-	collectFields(t, f, map[reflect.Type]bool{})
+	for _, fl := range typeFields(t) {
+		f.exact[fl.name] = fl.typ
+		f.names = append(f.names, fl.name)
+	}
 	fieldCache.Store(t, f)
 	return f
 }
 
-func collectFields(t reflect.Type, f *structFields, visiting map[reflect.Type]bool) {
-	if visiting[t] {
-		return
-	}
-	visiting[t] = true
-	defer delete(visiting, t)
-	for i := 0; i < t.NumField(); i++ {
-		sf := t.Field(i)
-		tag := sf.Tag.Get("json")
-		if tag == "-" {
-			continue
-		}
-		name, _, _ := strings.Cut(tag, ",")
-		if sf.Anonymous && name == "" {
-			ft := deref(sf.Type)
-			if ft.Kind() == reflect.Struct {
-				collectFields(ft, f, visiting)
+type field struct {
+	name  string
+	tag   bool
+	index []int
+	typ   reflect.Type
+}
+
+func typeFields(t reflect.Type) []field {
+	var current []field
+	next := []field{{typ: t}}
+	var count, nextCount map[reflect.Type]int
+	visited := map[reflect.Type]bool{}
+	var found []field
+	for len(next) > 0 {
+		current, next = next, current[:0]
+		count, nextCount = nextCount, map[reflect.Type]int{}
+		for _, f := range current {
+			if visited[f.typ] {
 				continue
 			}
-		}
-		if !sf.IsExported() {
-			continue
-		}
-		if name == "" {
-			name = sf.Name
-		}
-		if _, dup := f.exact[name]; !dup {
-			f.exact[name] = sf.Type
-			f.names = append(f.names, name)
+			visited[f.typ] = true
+			for i := 0; i < f.typ.NumField(); i++ {
+				sf := f.typ.Field(i)
+				if sf.Anonymous {
+					et := sf.Type
+					if et.Kind() == reflect.Pointer {
+						et = et.Elem()
+					}
+					if !sf.IsExported() && et.Kind() != reflect.Struct {
+						continue
+					}
+				} else if !sf.IsExported() {
+					continue
+				}
+				tag := sf.Tag.Get("json")
+				if tag == "-" {
+					continue
+				}
+				name, _, _ := strings.Cut(tag, ",")
+				if !validTag(name) {
+					name = ""
+				}
+				index := make([]int, len(f.index)+1)
+				copy(index, f.index)
+				index[len(f.index)] = i
+				ft := sf.Type
+				if ft.Name() == "" && ft.Kind() == reflect.Pointer {
+					ft = ft.Elem()
+				}
+				if name != "" || !sf.Anonymous || ft.Kind() != reflect.Struct {
+					tagged := name != ""
+					if name == "" {
+						name = sf.Name
+					}
+					found = append(found, field{name: name, tag: tagged, index: index, typ: sf.Type})
+					if count[f.typ] > 1 {
+						found = append(found, found[len(found)-1])
+					}
+					continue
+				}
+				nextCount[ft]++
+				if nextCount[ft] == 1 {
+					next = append(next, field{name: ft.Name(), index: index, typ: ft})
+				}
+			}
 		}
 	}
+	slices.SortFunc(found, func(a, b field) int {
+		if c := strings.Compare(a.name, b.name); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(len(a.index), len(b.index)); c != 0 {
+			return c
+		}
+		if a.tag != b.tag {
+			if a.tag {
+				return -1
+			}
+			return 1
+		}
+		return slices.Compare(a.index, b.index)
+	})
+	out := found[:0]
+	for advance, i := 0, 0; i < len(found); i += advance {
+		fi := found[i]
+		for advance = 1; i+advance < len(found) && found[i+advance].name == fi.name; advance++ {
+		}
+		if advance > 1 && len(fi.index) == len(found[i+1].index) && fi.tag == found[i+1].tag {
+			continue // hidden: two dominant candidates
+		}
+		out = append(out, fi)
+	}
+	slices.SortFunc(out, func(a, b field) int { return slices.Compare(a.index, b.index) })
+	return out
+}
+
+// validTag is encoding/json's isValidTag.
+func validTag(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c):
+		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
+			return false
+		}
+	}
+	return true
 }
 
 // dropped reports whether key would fill a field only case-insensitively.
@@ -144,12 +229,13 @@ func (f *structFields) dropped(key string) bool {
 }
 
 // suspicious is a cheap pass: it collects every field name reachable from t
-// and reports whether any object key in data fold-matches one of them
-// without matching any exactly. Most bodies have none and skip the rewrite.
+// and reports whether any object key in data fold-matches one of them while
+// differing from it. A key exact for one struct can still be only a
+// case-insensitive match in another, so an exact match elsewhere does not
+// clear it. Most bodies have none and skip the rewrite.
 func suspicious(data []byte, t reflect.Type) bool {
-	exact := map[string]bool{}
-	folded := map[string]bool{}
-	collectNames(t, exact, folded, map[reflect.Type]bool{})
+	folded := map[string]map[string]bool{} // foldKey -> exact names
+	collectNames(t, folded, map[reflect.Type]bool{})
 	if len(folded) == 0 {
 		return false
 	}
@@ -174,7 +260,7 @@ func suspicious(data []byte, t reflect.Type) bool {
 			if stack[top].expectKey {
 				key, _ := tok.(string)
 				stack[top].expectKey = false
-				if !exact[key] && folded[foldKey(key)] {
+				if names := folded[foldKey(key)]; len(names) > 1 || (len(names) == 1 && !names[key]) {
 					return true
 				}
 				continue
@@ -210,7 +296,7 @@ func foldKey(s string) string {
 	return b.String()
 }
 
-func collectNames(t reflect.Type, exact, folded map[string]bool, seen map[reflect.Type]bool) {
+func collectNames(t reflect.Type, folded map[string]map[string]bool, seen map[reflect.Type]bool) {
 	t = deref(t)
 	if seen[t] || custom(t) {
 		return
@@ -220,12 +306,15 @@ func collectNames(t reflect.Type, exact, folded map[string]bool, seen map[reflec
 	case reflect.Struct:
 		f := fields(t)
 		for name, ft := range f.exact {
-			exact[name] = true
-			folded[foldKey(name)] = true
-			collectNames(ft, exact, folded, seen)
+			k := foldKey(name)
+			if folded[k] == nil {
+				folded[k] = map[string]bool{}
+			}
+			folded[k][name] = true
+			collectNames(ft, folded, seen)
 		}
 	case reflect.Slice, reflect.Array, reflect.Map:
-		collectNames(t.Elem(), exact, folded, seen)
+		collectNames(t.Elem(), folded, seen)
 	}
 }
 
