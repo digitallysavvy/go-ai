@@ -313,6 +313,14 @@ func tokenCount(v *float64) int {
 	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) {
 		return 0
 	}
+	// A wire number beyond the platform int is clamped: int(f) out of range
+	// is implementation-defined (and overflows on 32-bit targets).
+	if *v >= math.MaxInt {
+		return math.MaxInt
+	}
+	if *v <= math.MinInt {
+		return math.MinInt
+	}
 	return int(*v)
 }
 

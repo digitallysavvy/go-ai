@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -195,7 +196,12 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		}
 	}
 
-	inputTokens, outputTokens := int(response.Usage.InputTokens), 0
+	// input_tokens is a non-negative safe integer (schema-checked); it is
+	// clamped to the platform int (32-bit targets).
+	inputTokens, outputTokens := math.MaxInt, 0
+	if response.Usage.InputTokens < math.MaxInt {
+		inputTokens = int(response.Usage.InputTokens)
+	}
 
 	var warnings []types.Warning
 	if opts.MaxOutputTokens != nil {
