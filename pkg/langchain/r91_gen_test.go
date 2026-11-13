@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -173,7 +174,8 @@ func TestR91genLangGraphNullInterrupt(t *testing.T) {
 	chunks, errs := transport.SendMessagesWithCallbacks(context.Background(), nil, &StreamCallbacks{OnError: func(err error) error { seen = err; return nil }})
 	_, _ = drain(t, chunks, errs)
 	var gi *GraphInterruptError
-	if !errors.As(seen, &gi) || gi.Interrupts != nil || gi.Error() != "null" {
+	// TS GraphInterrupt: interrupts ?? [] (round 99), message "null".
+	if !errors.As(seen, &gi) || !reflect.DeepEqual(gi.Interrupts, []interface{}{}) || gi.Error() != "null" {
 		t.Fatalf("OnError got %v, want GraphInterrupt(null)", seen)
 	}
 }

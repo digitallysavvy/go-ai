@@ -20,6 +20,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -267,7 +268,9 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			defer func() { _ = resp.Body.Close() }()
 			data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxLangGraphErrorBody))
-			text := string(data)
+			// response.text(): UTF-8 with a leading BOM dropped and invalid
+			// bytes replaced.
+			text := textdecode.UTF8(data)
 			if readErr != nil {
 				// HTTPError.fromResponse falls back to statusText.
 				text = strings.TrimSpace(strings.TrimPrefix(resp.Status, fmt.Sprint(resp.StatusCode)))
@@ -546,11 +549,13 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 			default:
 				field, value, _ := strings.Cut(line, ":")
 				value = strings.TrimPrefix(value, " ")
+				// SSEDecoder decodes each value with TextDecoder (ignoreBOM):
+				// every invalid byte sequence becomes U+FFFD.
 				switch field {
 				case "event":
-					event = value
+					event = textdecode.ReplaceInvalidString(value)
 				case "data":
-					data = append(data, value)
+					data = append(data, textdecode.ReplaceInvalidString(value))
 				}
 			}
 		}
@@ -625,6 +630,11 @@ func newGraphInterrupt(interrupts interface{}) *GraphInterruptError {
 	message := ""
 	if compact, err := jsonstr.Marshal(interrupts); err == nil {
 		message = langGraphIndent(string(compact))
+	}
+	// TS `this.interrupts = interrupts ?? []`: a null __interrupt__ is an
+	// empty list (the message stays "null").
+	if interrupts == nil {
+		interrupts = []interface{}{}
 	}
 	return &GraphInterruptError{Interrupts: interrupts, message: message}
 }
