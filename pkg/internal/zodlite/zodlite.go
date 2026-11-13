@@ -184,7 +184,7 @@ type Node func(v interface{}, present bool, path []interface{}) *Issue
 
 // JSType names the JS type of a decoded JSON value.
 func JSType(v interface{}, present bool) string {
-	switch v.(type) {
+	switch x := v.(type) {
 	case nil:
 		if !present {
 			return "undefined"
@@ -195,12 +195,12 @@ func JSType(v interface{}, present bool) string {
 	case float64:
 		// zod 4 names a non-finite number by its value (JSON.parse reads a
 		// number beyond the double range as +-Infinity).
-		switch f := v.(float64); {
-		case math.IsInf(f, 1):
+		switch {
+		case math.IsInf(x, 1):
 			return "Infinity"
-		case math.IsInf(f, -1):
+		case math.IsInf(x, -1):
 			return "-Infinity"
-		case math.IsNaN(f):
+		case math.IsNaN(x):
 			return "NaN"
 		}
 		return "number"
