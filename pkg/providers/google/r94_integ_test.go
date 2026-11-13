@@ -65,3 +65,40 @@ func TestR94integRealtimeClientSecretISOString(t *testing.T) {
 		t.Fatal("request sent after the RangeError")
 	}
 }
+
+// TestR94integRealtimeURLsAreWHATWG: TS getRealtimeBaseURL /
+// getRealtimeWebSocketURL / getAuthTokensURL use new URL plus the protocol and
+// pathname setters (cr-r94-provb-to-provg). Expected from Node 24.
+func TestR94integRealtimeURLsAreWHATWG(t *testing.T) {
+	const base = "https://GenerativeLanguage.GoogleAPIs.com:443/x/../v1beta?b=1"
+	u, err := googleRealtimeWebSocketURL(base, "P")
+	if err != nil || u.String() != "wss://generativelanguage.googleapis.com/ws/P?b=1" {
+		t.Errorf("websocket URL = %v, %v", u, err)
+	}
+	if got, err := googleAuthTokenURL(base, "k"); err != nil || got != "https://generativelanguage.googleapis.com/v1alpha/auth_tokens?b=1?key=k" {
+		t.Errorf("auth token URL = %q, %v", got, err)
+	}
+	if got, err := getLiveTranscriptionWebSocketURL(base, "k"); err != nil || got != "wss://generativelanguage.googleapis.com/ws/"+liveTranscriptionWebSocketPath+"?b=1&key=k" {
+		t.Errorf("live transcription URL = %q, %v", got, err)
+	}
+	for _, f := range []func() (string, error){
+		func() (string, error) { return googleWebSocketURL("not a url") },
+		func() (string, error) { return googleServerWebSocketURL("not a url") },
+		func() (string, error) { return googleAuthTokenURL("not a url", "k") },
+		func() (string, error) { return getLiveTranscriptionWebSocketURL("not a url", "k") },
+		func() (string, error) { return getLiveSpeechTranslationWebSocketURL("not a url", "k") },
+	} {
+		if _, err := f(); err == nil || err.Error() != "Invalid URL" {
+			t.Errorf("invalid base: err = %v, want Invalid URL", err)
+		}
+	}
+}
+
+// r94integURL adapts the (string, error) URL builders for table tests: an
+// error reads as "ERR <text>".
+func r94integURL(s string, err error) string {
+	if err != nil {
+		return "ERR " + err.Error()
+	}
+	return s
+}

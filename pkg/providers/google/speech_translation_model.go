@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -154,14 +153,20 @@ func (m *SpeechTranslationModel) baseSpeechTranslationHeaders() map[string]strin
 // getRealtimeWebSocketURL): the base URL's trailing /v1beta or /v1alpha
 // segment is stripped, the scheme is upgraded to ws(s), and the API key
 // rides the `key` query parameter.
-func getLiveSpeechTranslationWebSocketURL(baseURL, apiKey string) string {
-	u := googleRealtimeBaseURL(baseURL)
-	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
-	u.Path = strings.TrimSuffix(u.Path, "/") + "/ws/" + liveSpeechTranslationWebSocketPath
+func getLiveSpeechTranslationWebSocketURL(baseURL, apiKey string) (string, error) {
+	u, err := googleRealtimeWebSocketURL(baseURL, liveSpeechTranslationWebSocketPath)
+	if err != nil {
+		return "", err
+	}
 	// TS url.searchParams.set('key', apiKey): the base URL's own parameters
 	// keep their order and the whole query uses URLSearchParams escaping.
-	u.RawQuery = internalhttp.SetSearchParam(u.RawQuery, "key", apiKey)
-	return u.String()
+	query := ""
+	if u.Query != nil {
+		query = *u.Query
+	}
+	query = internalhttp.SetSearchParam(query, "key", apiKey)
+	u.Query = &query
+	return u.String(), nil
 }
 
 // DoStream streams a speech-to-speech translation over the Gemini Live API
@@ -231,7 +236,10 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		finishGrace = speechTranslationDefaultFinishGraceDuration
 	}
 
-	wsURL := getLiveSpeechTranslationWebSocketURL(m.prov.config.BaseURL, apiKey)
+	wsURL, err := getLiveSpeechTranslationWebSocketURL(m.prov.config.BaseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {

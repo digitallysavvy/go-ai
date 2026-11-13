@@ -64,7 +64,7 @@ func TestGeminiLiveWebSocketURLIgnoresBaseURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "wss://europe-west4-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
-	if got := geminiLiveWebSocketURL(p, "europe-west4"); got != want {
+	if got, err := geminiLiveWebSocketURL(p, "europe-west4"); err != nil || got != want {
 		t.Fatalf("url = %q, want %q", got, want)
 	}
 }

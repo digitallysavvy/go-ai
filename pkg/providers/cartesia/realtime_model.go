@@ -17,6 +17,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -156,14 +157,21 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	if useTurnDetection {
 		path = "/stt/turns/websocket"
 	}
-	u, err := url.Parse(base + path)
+	// TS new URL(`${baseURL}${path}`) (WHATWG serialization, "Invalid URL"
+	// for a base URL it rejects), then url.protocol = protocol === 'http:' ?
+	// 'ws:' : 'wss:' (the setter leaves a non-special scheme unchanged).
+	wsURL, err := urlnorm.Parse(base + path)
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
-	if u.Scheme == "http" {
-		u.Scheme = "ws"
+	if wsURL.Scheme == "http" {
+		wsURL.SetProtocol("ws")
 	} else {
-		u.Scheme = "wss"
+		wsURL.SetProtocol("wss")
+	}
+	u, err := url.Parse(wsURL.String())
+	if err != nil {
+		return provider.ClientSecretResult{}, err
 	}
 	// TS url.searchParams.set on new URL(...): the base URL's own parameters
 	// first, insertion order, URLSearchParams escaping.

@@ -67,7 +67,10 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		startFrame["includeRawChunks"] = true
 	}
 
-	wsURL := ToGatewayTranscriptionURL(m.provider.baseURL, m.modelID)
+	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/transcription-model", m.modelID)
+	if err != nil {
+		return nil, err
+	}
 	// The auth token and team scope ride the subprotocols from the fully merged per-call
 	// header set (headers, above — config headers + opts.Headers), not the
 	// static TeamIDOrSlug config field, so a caller overriding

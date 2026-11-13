@@ -21,6 +21,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -113,7 +114,11 @@ func (m *GoogleRealtimeModel) GetServerConnection(ctx context.Context, opts prov
 	if err != nil {
 		return provider.WebSocketConfig{}, err
 	}
-	return provider.WebSocketConfig{URL: googleServerWebSocketURL(m.provider.config.BaseURL), Headers: headers}, nil
+	wsURL, err := googleServerWebSocketURL(m.provider.config.BaseURL)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: headers}, nil
 }
 
 // BuildSessionConfigForIntent is BuildSessionConfig for an intent
@@ -180,7 +185,11 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, googleAuthTokenURL(m.provider.config.BaseURL, apiKey), bytes.NewReader(payload))
+	authTokenURL, err := googleAuthTokenURL(m.provider.config.BaseURL, apiKey)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, authTokenURL, bytes.NewReader(payload))
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
@@ -219,9 +228,13 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 			expiresAt = &sec
 		}
 	}
+	wsURL, err := googleWebSocketURL(m.provider.config.BaseURL)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	return provider.ClientSecretResult{
 		Token:     data.Name,
-		URL:       googleWebSocketURL(m.provider.config.BaseURL),
+		URL:       wsURL,
 		ExpiresAt: expiresAt,
 	}, nil
 }
@@ -822,48 +835,72 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 	return jsonstr.Marshal(out)
 }
 
-func googleAuthTokenURL(base, apiKey string) string {
-	u := googleRealtimeBaseURL(base)
-	u.Path = strings.TrimSuffix(u.Path, "/") + "/v1alpha/auth_tokens" // TS replace(/\/$/, '')
-	// TS `${getAuthTokensURL(baseURL)}?key=${encodeURIComponent(apiKey)}`.
-	return u.String() + "?key=" + providerutils.EncodeURIComponent(apiKey)
-}
-
-func googleWebSocketURL(base string) string {
-	baseURL := googleRealtimeBaseURL(base)
-	baseURL.Scheme = strings.Replace(baseURL.Scheme, "http", "ws", 1)
-	baseURL.Path = strings.TrimSuffix(baseURL.Path, "/") + "/ws/" + realtimeWebSocketPath
-	return baseURL.String()
-}
-
-func googleServerWebSocketURL(base string) string {
-	baseURL := googleRealtimeBaseURL(base)
-	if baseURL.Scheme == "https" {
-		baseURL.Scheme = "wss"
-	} else {
-		baseURL.Scheme = "ws"
+// googleAuthTokenURL is TS getAuthTokensURL plus the key query:
+// `${getAuthTokensURL(baseURL)}?key=${encodeURIComponent(apiKey)}`.
+func googleAuthTokenURL(base, apiKey string) (string, error) {
+	u, err := googleRealtimeBaseURL(base)
+	if err != nil {
+		return "", err
 	}
-	baseURL.Path = strings.TrimSuffix(baseURL.Path, "/") + "/ws/" + realtimeServerWebSocketPath
-	return baseURL.String()
+	u.SetPathname(strings.TrimSuffix(u.Pathname(), "/") + "/v1alpha/auth_tokens") // TS replace(/\/$/, '')
+	return u.String() + "?key=" + providerutils.EncodeURIComponent(apiKey), nil
 }
 
-func googleRealtimeBaseURL(base string) *url.URL {
+// googleWebSocketURL is TS getWebSocketURL (the constrained endpoint).
+func googleWebSocketURL(base string) (string, error) {
+	u, err := googleRealtimeWebSocketURL(base, realtimeWebSocketPath)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
+// googleServerWebSocketURL is TS getServerWebSocketURL.
+func googleServerWebSocketURL(base string) (string, error) {
+	u, err := googleRealtimeWebSocketURL(base, realtimeServerWebSocketPath)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
+// googleRealtimeWebSocketURL is TS getRealtimeWebSocketURL:
+// url.protocol = protocol === 'https:' ? 'wss:' : 'ws:', then
+// url.pathname = `${pathname.replace(/\/$/, ”)}/ws/${webSocketPath}`.
+func googleRealtimeWebSocketURL(base, webSocketPath string) (*urlnorm.URL, error) {
+	u, err := googleRealtimeBaseURL(base)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "https" {
+		u.SetProtocol("wss")
+	} else {
+		u.SetProtocol("ws")
+	}
+	u.SetPathname(strings.TrimSuffix(u.Pathname(), "/") + "/ws/" + webSocketPath)
+	return u, nil
+}
+
+// googleRealtimeBaseURL is TS getRealtimeBaseURL: new URL(baseURL) (WHATWG,
+// "Invalid URL" for a base URL it rejects), with a trailing v1beta or
+// v1alpha path segment removed through the pathname setter.
+func googleRealtimeBaseURL(base string) (*urlnorm.URL, error) {
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	u, _ := url.Parse(base)
-	segments := strings.Split(u.Path, "/")
-	if len(segments) > 0 {
-		last := segments[len(segments)-1]
-		if last == "v1beta" || last == "v1alpha" {
-			segments = segments[:len(segments)-1]
-			u.Path = strings.Join(segments, "/")
-			if u.Path == "" {
-				u.Path = "/"
-			}
-		}
+	u, err := urlnorm.Parse(base)
+	if err != nil {
+		return nil, err
 	}
-	return u
+	segments := strings.Split(u.Pathname(), "/")
+	if last := segments[len(segments)-1]; last == "v1beta" || last == "v1alpha" {
+		joined := strings.Join(segments[:len(segments)-1], "/")
+		if joined == "" {
+			joined = "/"
+		}
+		u.SetPathname(joined)
+	}
+	return u, nil
 }
 
 // googleRealtimeISOString is new Date(ms).toISOString(): TimeClip (an

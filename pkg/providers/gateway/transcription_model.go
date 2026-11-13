@@ -70,9 +70,13 @@ func (p *Provider) GetTranscriptionToken(ctx context.Context, modelID string, op
 	if err != nil {
 		return nil, err
 	}
+	wsURL, err := gatewayWebSocketURLChecked(p.baseURL, "/transcription-model", modelID)
+	if err != nil {
+		return nil, err
+	}
 	return &TranscriptionClientSecretResult{
 		Token:     secret.Token,
-		URL:       ToGatewayTranscriptionURL(p.baseURL, modelID),
+		URL:       wsURL,
 		ExpiresAt: secret.ExpiresAt,
 	}, nil
 }
@@ -82,7 +86,8 @@ func (p *Provider) GetTranscriptionToken(ctx context.Context, modelID string, op
 // gateway-transcription-model.ts): the HTTP(S) base is upgraded to WS(S) and
 // the model id is passed as the "ai-model-id" query parameter, since a
 // browser WebSocket cannot set headers and slashes in qualified ids (e.g.
-// "openai/gpt-realtime-whisper") must survive query encoding.
+// "openai/gpt-realtime-whisper") must survive query encoding. It is "" when
+// the base URL does not parse (TS throws "Invalid URL").
 func ToGatewayTranscriptionURL(baseURL string, modelID string) string {
 	return gatewayWebSocketURL(baseURL, "/transcription-model", modelID)
 }

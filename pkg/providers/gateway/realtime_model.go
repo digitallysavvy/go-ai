@@ -55,9 +55,13 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
+	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/realtime-model", m.modelID)
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	return provider.ClientSecretResult{
 		Token:     secret.Token,
-		URL:       ToGatewayRealtimeURL(m.provider.baseURL, m.modelID),
+		URL:       wsURL,
 		ExpiresAt: secret.ExpiresAt,
 	}, nil
 }
@@ -255,7 +259,11 @@ func (m *RealtimeModel) GetServerConnection(ctx context.Context, opts provider.R
 			out[strings.ToLower(k)] = v
 		}
 	}
-	return provider.WebSocketConfig{URL: ToGatewayRealtimeURL(m.provider.baseURL, m.modelID), Headers: out}, nil
+	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/realtime-model", m.modelID)
+	if err != nil {
+		return provider.WebSocketConfig{}, err
+	}
+	return provider.WebSocketConfig{URL: wsURL, Headers: out}, nil
 }
 
 // BuildSessionConfigForIntent is BuildSessionConfig for an intent
@@ -296,7 +304,9 @@ var (
 // ?ai-model-id= query — the WS transport of the ai-model-id header the HTTP
 // routes use, since a browser WebSocket cannot set headers. The model id is
 // passed through verbatim; the Gateway owns resolution (including the bare
-// -> "openai/" qualification), exactly like the non-realtime routes.
+// -> "openai/" qualification), exactly like the non-realtime routes. The URL
+// is the WHATWG serialization of TS new URL(...); it is "" when the base URL
+// does not parse (TS throws "Invalid URL").
 func ToGatewayRealtimeURL(baseURL string, modelID string) string {
 	return gatewayWebSocketURL(baseURL, "/realtime-model", modelID)
 }

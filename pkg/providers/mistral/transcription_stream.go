@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,21 +123,20 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 // toWebSocketUrl(`${baseURL}/audio/transcriptions/realtime`) with
 // searchParams.set('model', modelId).
 func mistralRealtimeTranscriptionURL(baseURL, modelID string) (string, error) {
-	u, err := url.Parse(baseURL + "/v1/audio/transcriptions/realtime")
+	href, err := wsutil.ToWebSocketURL(baseURL + "/v1/audio/transcriptions/realtime")
 	if err != nil {
 		return "", err
 	}
-	switch u.Scheme {
-	case "http":
-		u.Scheme = "ws"
-	case "https":
-		u.Scheme = "wss"
+	u, err := urlnorm.Parse(href)
+	if err != nil {
+		return "", err
 	}
-	u.RawQuery = internalhttp.SetSearchParam(u.RawQuery, "model", modelID)
-	u.ForceQuery = false
-	if href, err := urlnorm.Href(u.String()); err == nil {
-		return href, nil
+	query := ""
+	if u.Query != nil {
+		query = *u.Query
 	}
+	query = internalhttp.SetSearchParam(query, "model", modelID)
+	u.Query = &query
 	return u.String(), nil
 }
 

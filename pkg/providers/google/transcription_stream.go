@@ -39,14 +39,20 @@ const defaultFinishGraceDuration = 3 * time.Second
 // trailing /v1beta or /v1alpha segment is stripped (googleRealtimeBaseURL),
 // the scheme is upgraded to ws(s), and the API key rides the `key` query
 // parameter.
-func getLiveTranscriptionWebSocketURL(baseURL, apiKey string) string {
-	u := googleRealtimeBaseURL(baseURL)
-	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
-	u.Path = strings.TrimSuffix(u.Path, "/") + "/ws/" + liveTranscriptionWebSocketPath
+func getLiveTranscriptionWebSocketURL(baseURL, apiKey string) (string, error) {
+	u, err := googleRealtimeWebSocketURL(baseURL, liveTranscriptionWebSocketPath)
+	if err != nil {
+		return "", err
+	}
 	// TS url.searchParams.set('key', apiKey): the base URL's own parameters
 	// keep their order and the whole query uses URLSearchParams escaping.
-	u.RawQuery = internalhttp.SetSearchParam(u.RawQuery, "key", apiKey)
-	return u.String()
+	query := ""
+	if u.Query != nil {
+		query = *u.Query
+	}
+	query = internalhttp.SetSearchParam(query, "key", apiKey)
+	u.Query = &query
+	return u.String(), nil
 }
 
 // baseTranscriptionHeaders returns the provider's default headers
@@ -190,7 +196,10 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		finishGrace = defaultFinishGraceDuration
 	}
 
-	wsURL := getLiveTranscriptionWebSocketURL(m.prov.config.BaseURL, apiKey)
+	wsURL, err := getLiveTranscriptionWebSocketURL(m.prov.config.BaseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {

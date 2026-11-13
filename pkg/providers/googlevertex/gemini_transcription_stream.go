@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -44,12 +45,16 @@ const defaultGeminiFinishGraceDuration = 3 * time.Second
 // "wss://{vertexHost}" origin; TS instead injects a mock WebSocket
 // constructor via config.webSocket, a DI point Go's wsutil.Dial has no
 // equivalent for.
-func geminiLiveWebSocketURL(p *Provider, location string) string {
+//
+// TS new URL(`wss://${vertexHost(location)}/ws/${liveWebSocketPath}`): the
+// WHATWG serialization (host lower-cased), and the TypeError "Invalid URL"
+// for a location that does not make a valid host.
+func geminiLiveWebSocketURL(p *Provider, location string) (string, error) {
 	origin := p.liveWebSocketOrigin
 	if origin == "" {
 		origin = "wss://" + vertexHost(location)
 	}
-	return fmt.Sprintf("%s/ws/%s", origin, liveGeminiTranscriptionWebSocketPath)
+	return urlnorm.Href(fmt.Sprintf("%s/ws/%s", origin, liveGeminiTranscriptionWebSocketPath))
 }
 
 // vertexModelResourcePath builds the fully-qualified Vertex model resource
@@ -153,7 +158,10 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		finishGrace = defaultGeminiFinishGraceDuration
 	}
 
-	wsURL := geminiLiveWebSocketURL(m.provider, location)
+	wsURL, err := geminiLiveWebSocketURL(m.provider, location)
+	if err != nil {
+		return nil, err
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {

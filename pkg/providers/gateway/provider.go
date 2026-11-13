@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/internal/verceloidc"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -797,13 +797,28 @@ func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
 	}, nil
 }
 
+// gatewayBaseOrigin is TS new URL(this.config.baseURL).origin (WHATWG: host
+// lower-cased, a default port left out, no credentials). An opaque origin
+// cannot take the absolute path, as new URL('/v1/credits', 'null') throws.
+func gatewayBaseOrigin(baseURL string) (string, error) {
+	base, err := urlnorm.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	origin := base.Origin()
+	if origin == "null" {
+		return "", urlnorm.ErrInvalidURL
+	}
+	return origin, nil
+}
+
 func (p *Provider) originClient() (*internalhttp.Client, error) {
-	base, err := url.Parse(p.baseURL)
+	origin, err := gatewayBaseOrigin(p.baseURL)
 	if err != nil {
 		return nil, err
 	}
 	return internalhttp.NewClient(internalhttp.Config{
-		BaseURL:    base.Scheme + "://" + base.Host,
+		BaseURL:    origin,
 		Headers:    p.headers,
 		HTTPClient: newGatewayHTTPClient(p.config.HTTPClient, p.authResolver),
 	}), nil

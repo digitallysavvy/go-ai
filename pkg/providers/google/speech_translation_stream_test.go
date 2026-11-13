@@ -115,7 +115,7 @@ func TestSpeechTranslationModel_DoStream_RequiresAPIKey(t *testing.T) {
 }
 
 func TestSpeechTranslationModel_DoStream_URLIncludesAPIKeyAndModelPath(t *testing.T) {
-	got := getLiveSpeechTranslationWebSocketURL("https://generativelanguage.googleapis.com/v1beta", "test-api-key")
+	got := r94integURL(getLiveSpeechTranslationWebSocketURL("https://generativelanguage.googleapis.com/v1beta", "test-api-key"))
 	want := "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=test-api-key"
 	if got != want {
 		t.Fatalf("getLiveSpeechTranslationWebSocketURL() = %q, want %q", got, want)

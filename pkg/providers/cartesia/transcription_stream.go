@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -64,16 +65,24 @@ func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding 
 	if useTurnDetection {
 		path = "/stt/turns/websocket"
 	}
-	u, err := url.Parse(strings.TrimRight(baseURL, "/") + "/")
+	// TS toWebSocketUrl(new URL(path, baseURL)): the base URL's origin and
+	// credentials with the absolute path, WHATWG serialization, "Invalid URL"
+	// for a base URL it rejects; http: to ws:, https: to wss:.
+	base, err := urlnorm.Parse(baseURL)
 	if err != nil {
 		return nil, err
 	}
-	u.Path, u.RawPath, u.RawQuery, u.Fragment = path, "", "", ""
-	switch u.Scheme {
-	case "https":
-		u.Scheme = "wss"
-	case "http":
-		u.Scheme = "ws"
+	resolved, err := base.ResolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+	normalized, err := wsutil.ToWebSocketURL(resolved.String())
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return nil, err
 	}
 
 	pairs := [][2]string{

@@ -867,7 +867,7 @@ func TestGoogleRealtimeClientSecretErrorsAndURLs(t *testing.T) {
 		"https://proxy.example.com/google/v1beta": "wss://proxy.example.com/google/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
 		"http://localhost:8787/v1beta":            "ws://localhost:8787/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
 	} {
-		if got := googleWebSocketURL(base); got != want {
+		if got := r94integURL(googleWebSocketURL(base)); got != want {
 			t.Fatalf("googleWebSocketURL(%q) = %q, want %q", base, got, want)
 		}
 	}

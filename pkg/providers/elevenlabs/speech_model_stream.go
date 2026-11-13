@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -241,18 +242,16 @@ func (m *SpeechModel) streamHeaders(ctx context.Context, perCall map[string]stri
 
 // toWebSocketURL upgrades the configured HTTP(S) base URL plus path to a
 // WS(S) URL. The host always comes from the configured base URL.
+//
+// TS toWebSocketUrl(config.url({path})) is new URL: the WHATWG
+// serialization (host lower-cased, a default port left out), and
+// "Invalid URL" for a base URL it rejects.
 func toWebSocketURL(baseURL, path string) (*url.URL, error) {
-	u, err := url.Parse(strings.TrimRight(baseURL, "/") + path)
+	normalized, err := wsutil.ToWebSocketURL(strings.TrimRight(baseURL, "/") + path)
 	if err != nil {
 		return nil, err
 	}
-	switch u.Scheme {
-	case "https":
-		u.Scheme = "wss"
-	case "http":
-		u.Scheme = "ws"
-	}
-	return u, nil
+	return url.Parse(normalized)
 }
 
 func containsString(list []string, s string) bool {

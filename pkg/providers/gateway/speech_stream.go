@@ -67,16 +67,21 @@ func (p *Provider) GetSpeechToken(ctx context.Context, modelID string, opts *Spe
 	if err != nil {
 		return nil, err
 	}
+	wsURL, err := gatewayWebSocketURLChecked(p.baseURL, "/speech-model", modelID)
+	if err != nil {
+		return nil, err
+	}
 	return &SpeechClientSecretResult{
 		Token:     secret.Token,
-		URL:       ToGatewaySpeechURL(p.baseURL, modelID),
+		URL:       wsURL,
 		ExpiresAt: secret.ExpiresAt,
 	}, nil
 }
 
 // ToGatewaySpeechURL builds the Gateway streaming speech WebSocket URL for
 // modelID (TS toGatewaySpeechUrl): the HTTP(S) base is upgraded to WS(S) and
-// the model id is passed as the "ai-model-id" query parameter.
+// the model id is passed as the "ai-model-id" query parameter. It is "" when
+// the base URL does not parse (TS throws "Invalid URL").
 func ToGatewaySpeechURL(baseURL string, modelID string) string {
 	return gatewayWebSocketURL(baseURL, "/speech-model", modelID)
 }
@@ -149,7 +154,10 @@ func (m *SpeechModel) DoStreamSpeech(ctx context.Context, opts *provider.SpeechS
 
 	// The WebSocket URL is derived from the configured base URL only, so the
 	// credentials in headers and subprotocols never leave the configured host.
-	wsURL := ToGatewaySpeechURL(m.provider.baseURL, m.modelID)
+	wsURL, err := gatewayWebSocketURLChecked(m.provider.baseURL, "/speech-model", m.modelID)
+	if err != nil {
+		return nil, err
+	}
 	protocols := []string{GatewaySpeechSubprotocol}
 	if bearer := gatewayHeaderValue(headers, "authorization"); strings.HasPrefix(bearer, "Bearer ") {
 		protocols = GetGatewaySpeechProtocols(strings.TrimPrefix(bearer, "Bearer "), gatewayTeamFromHeaders(headers))

@@ -777,7 +777,7 @@ func TestTranscriptionModel_DoStream_EmitsRawChunks(t *testing.T) {
 // TestTranscriptionModel_DoStream_URLIncludesAPIKeyAndModelPath asserts the
 // Live API WebSocket URL shape (TS's exact URL assertion).
 func TestTranscriptionModel_DoStream_URLIncludesAPIKeyAndModelPath(t *testing.T) {
-	if got, want := getLiveTranscriptionWebSocketURL("https://generativelanguage.googleapis.com/v1beta", "test-api-key"),
+	if got, want := r94integURL(getLiveTranscriptionWebSocketURL("https://generativelanguage.googleapis.com/v1beta", "test-api-key")),
 		"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=test-api-key"; got != want {
 		t.Fatalf("getLiveTranscriptionWebSocketURL() = %q, want %q", got, want)
 	}

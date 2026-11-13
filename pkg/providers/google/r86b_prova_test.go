@@ -77,10 +77,10 @@ func TestR86bprovaParseOffsetSecondsJSWhitespace(t *testing.T) {
 func TestR86bprovaRealtimeURLsOneTrailingSlash(t *testing.T) {
 	const base = "https://x.example/a//"
 	for got, want := range map[string]string{
-		googleWebSocketURL(base):                        "wss://x.example/a//ws/" + realtimeWebSocketPath,
-		googleAuthTokenURL(base, "k"):                   "https://x.example/a//v1alpha/auth_tokens?key=k",
-		getLiveTranscriptionWebSocketURL(base, "k"):     "wss://x.example/a//ws/" + liveTranscriptionWebSocketPath + "?key=k",
-		getLiveSpeechTranslationWebSocketURL(base, "k"): "wss://x.example/a//ws/" + liveSpeechTranslationWebSocketPath + "?key=k",
+		r94integURL(googleWebSocketURL(base)):                        "wss://x.example/a//ws/" + realtimeWebSocketPath,
+		r94integURL(googleAuthTokenURL(base, "k")):                   "https://x.example/a//v1alpha/auth_tokens?key=k",
+		r94integURL(getLiveTranscriptionWebSocketURL(base, "k")):     "wss://x.example/a//ws/" + liveTranscriptionWebSocketPath + "?key=k",
+		r94integURL(getLiveSpeechTranslationWebSocketURL(base, "k")): "wss://x.example/a//ws/" + liveSpeechTranslationWebSocketPath + "?key=k",
 	} {
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)
@@ -95,10 +95,10 @@ func TestR86bprovaRealtimeURLsOneTrailingSlash(t *testing.T) {
 func TestR86bprovaRealtimeCredentialQueryEscaping(t *testing.T) {
 	const base = "https://x.example/v1beta"
 	for got, want := range map[string]string{
-		googleAuthTokenURL(base, "a~b*c d"):                                   "https://x.example/v1alpha/auth_tokens?key=a~b*c%20d",
+		r94integURL(googleAuthTokenURL(base, "a~b*c d")):                      "https://x.example/v1alpha/auth_tokens?key=a~b*c%20d",
 		(&GoogleRealtimeModel{}).GetWebSocketConfig("t~*/ ", "wss://h/p").URL: "wss://h/p?access_token=t~*%2F%20",
-		getLiveTranscriptionWebSocketURL(base, "a~b*c d"):                     "wss://x.example/ws/" + liveTranscriptionWebSocketPath + "?key=a%7Eb*c+d",
-		getLiveSpeechTranslationWebSocketURL(base, "a~b*c d"):                 "wss://x.example/ws/" + liveSpeechTranslationWebSocketPath + "?key=a%7Eb*c+d",
+		r94integURL(getLiveTranscriptionWebSocketURL(base, "a~b*c d")):        "wss://x.example/ws/" + liveTranscriptionWebSocketPath + "?key=a%7Eb*c+d",
+		r94integURL(getLiveSpeechTranslationWebSocketURL(base, "a~b*c d")):    "wss://x.example/ws/" + liveSpeechTranslationWebSocketPath + "?key=a%7Eb*c+d",
 	} {
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)

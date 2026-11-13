@@ -148,15 +148,16 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 // schema order (arrays appended once per entry; any other non-null option
 // warns unless it is false), then the streaming options.
 func deepgramStreamingURL(baseURL, modelID, encoding string, rate int, rawOpts map[string]interface{}, warnings *[]types.Warning) (string, error) {
-	u, err := url.Parse(baseURL + "/v1/listen")
+	// TS toWebSocketUrl(config.url({path: '/v1/listen'})): new URL (WHATWG
+	// serialization, "Invalid URL" for a base URL it rejects), http: to ws:,
+	// https: to wss:.
+	normalized, err := wsutil.ToWebSocketURL(baseURL + "/v1/listen")
 	if err != nil {
 		return "", err
 	}
-	switch strings.ToLower(u.Scheme) {
-	case "https":
-		u.Scheme = "wss"
-	case "http":
-		u.Scheme = "ws"
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "", err
 	}
 	q := internalhttp.ParseSearchParams(u.RawQuery)
 	q.Set("model", modelID)

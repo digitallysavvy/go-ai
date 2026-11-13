@@ -90,16 +90,15 @@ func elevenLabsRealtimeAudioFormat(format provider.AudioFormat) (audioFormat str
 // buildElevenLabsRealtimeURL builds the wss:// realtime transcription URL
 // with query parameters, mirroring TS buildElevenLabsRealtimeTranscriptionUrl.
 func buildElevenLabsRealtimeURL(baseURL, modelID, audioFormat string, languageCode *string, streaming *StreamingOptions) (*url.URL, error) {
-	full := strings.TrimRight(baseURL, "/") + "/v1/speech-to-text/realtime"
-	u, err := url.Parse(full)
+	// TS toWebSocketUrl(config.url({path})): new URL (WHATWG serialization,
+	// "Invalid URL" for a base URL it rejects), http: to ws:, https: to wss:.
+	normalized, err := wsutil.ToWebSocketURL(strings.TrimRight(baseURL, "/") + "/v1/speech-to-text/realtime")
 	if err != nil {
 		return nil, err
 	}
-	switch u.Scheme {
-	case "https":
-		u.Scheme = "wss"
-	case "http":
-		u.Scheme = "ws"
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return nil, err
 	}
 
 	// URLSearchParams keeps insertion order, and the request URL is surfaced

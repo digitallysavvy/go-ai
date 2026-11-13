@@ -5,10 +5,10 @@ import (
 	"context"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
-	"net/url"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -47,7 +47,10 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	if err != nil {
 		return nil, err
 	}
-	endpoint := gatewayOriginURL(p.baseURL, "/v1/realtime/client-secrets")
+	endpoint, err := gatewayOriginURL(p.baseURL, "/v1/realtime/client-secrets")
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
@@ -114,14 +117,18 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	return secret, nil
 }
 
-func gatewayOriginURL(baseURL string, path string) string {
-	u, err := url.Parse(baseURL)
+// gatewayOriginURL is TS `new URL(path, baseURL).toString()` for an absolute
+// path: the base URL's scheme, credentials, host and port (WHATWG
+// serialization) with path, and the TypeError "Invalid URL" for a base URL
+// that does not parse.
+func gatewayOriginURL(baseURL string, path string) (string, error) {
+	base, err := urlnorm.Parse(baseURL)
 	if err != nil {
-		return path
+		return "", err
 	}
-	u.Path = path
-	u.RawPath = ""
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String()
+	u, err := base.ResolvePath(path)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
