@@ -2,9 +2,11 @@ package mistral
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"golang.org/x/net/websocket"
 )
 
@@ -82,4 +84,26 @@ func TestR96integRealtimeSegmentNumberRejectsNonFinite(t *testing.T) {
 			t.Errorf("start %s: err = %v, wantErr %v", c.start, err, c.wantErr)
 		}
 	}
+}
+
+// provg CR §4 (round 96, "JSON payloads with __proto__" retired): a
+// conversation stream frame with a __proto__ key fails secureJsonParse, so
+// it is an error chunk carrying the JSONParseError.
+func TestR96integConversationFramePrototypeKey(t *testing.T) {
+	m := New(Config{APIKey: "k"}).ConversationModel("mistral-medium-latest")
+	s := &conversationStream{executions: map[string]*conversationExecution{}, converter: m.newConverter(nil)}
+	s.handle(`{"type":"conversation.response.started","conversation_id":"c","__proto__":{}}`)
+	for _, c := range s.queue {
+		if c.Type == provider.ChunkTypeError {
+			var pe *providererrors.JSONParseError
+			if !errors.As(c.Err, &pe) {
+				t.Fatalf("error chunk = %T %v, want *JSONParseError", c.Err, c.Err)
+			}
+			return
+		}
+		if c.Type == provider.ChunkTypeResponseMetadata {
+			t.Fatalf("response metadata emitted for a forbidden frame")
+		}
+	}
+	t.Fatal("no error chunk")
 }
