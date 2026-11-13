@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,5 +93,27 @@ func TestR96toolsLooseCapabilityExtraKeepsDecodableMembers(t *testing.T) {
 	}
 	if got := caps.Tools.Extra(); got["x-a"] != "<b>" {
 		t.Fatalf("extra = %#v, want x-a kept", got)
+	}
+}
+
+// TS z.number().int() takes the number's value: 1.0 and -3.2e4 are
+// integers, a fraction, a string or a number beyond the safe range is not.
+func TestR96toolsEventTerminationCodeIsAnyIntegerNumber(t *testing.T) {
+	for _, tc := range []struct {
+		code string
+		want int
+		ok   bool
+	}{
+		{"1.0", 1, true}, {"-3.2e4", -32000, true}, {"7", 7, true},
+		{"1.5", 0, false}, {`"1"`, 0, false}, {"null", 0, false}, {"9007199254740992", 0, false},
+	} {
+		raw := map[string]json.RawMessage{
+			"type":  json.RawMessage(`"terminated"`),
+			"error": json.RawMessage(`{"code":` + tc.code + `,"message":"m"}`),
+		}
+		_, term, err := parseMCPEventControl(raw)
+		if (err == nil) != tc.ok || (tc.ok && term.Error.Code != tc.want) {
+			t.Errorf("code %s: term = %+v, err = %v", tc.code, term, err)
+		}
 	}
 }

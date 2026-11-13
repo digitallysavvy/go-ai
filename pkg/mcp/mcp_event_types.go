@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
@@ -282,16 +283,15 @@ func parseMCPEventControl(raw map[string]json.RawMessage) (*MCPEventGap, *MCPEve
 		if err := json.Unmarshal(raw["error"], &errObj); err != nil || errObj == nil {
 			return nil, nil, fmt.Errorf("invalid MCP event control: terminated error must be an object")
 		}
-		var code json.Number
-		dec := json.NewDecoder(bytes.NewReader(errObj["code"]))
-		dec.UseNumber()
-		if err := dec.Decode(&code); err != nil {
+		// zod z.number().int(): any JSON number whose value is a safe
+		// integer (1.0 and 1e2 included); null, strings and fractions fail.
+		var code float64
+		rawCode := bytes.TrimSpace(errObj["code"])
+		if len(rawCode) == 0 || rawCode[0] == 'n' || json.Unmarshal(rawCode, &code) != nil ||
+			code != math.Trunc(code) || math.Abs(code) > 1<<53-1 {
 			return nil, nil, fmt.Errorf("invalid MCP event control: error code must be an integer")
 		}
-		codeInt, err := code.Int64()
-		if err != nil {
-			return nil, nil, fmt.Errorf("invalid MCP event control: error code must be an integer")
-		}
+		codeInt := int64(code)
 		var message string
 		if err := unmarshalNonNullJSON(errObj["message"], &message); err != nil {
 			return nil, nil, fmt.Errorf("invalid MCP event control: error message must be a string")
