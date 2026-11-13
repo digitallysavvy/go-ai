@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -81,7 +80,9 @@ func resolveProfileSource(source string, gw gatewayValues) string {
 	case "client-app-version":
 		return gw.ClientAppVersion
 	}
-	return ""
+	// TS resolveSource returns undefined for any other $source string, which
+	// the template literal writes as "undefined".
+	return "undefined"
 }
 
 // resolveLaunchEnvironment mirrors TS `resolveACPLaunchEnvironment` for an
@@ -98,11 +99,12 @@ func resolveLaunchEnvironment(profile map[string]any, gw gatewayValues) (map[str
 			out[k] = s
 			continue
 		}
-		data, err := json.Marshal(v)
+		// TS JSON.stringify(value): <, > and & literal, NaN / +-Inf null.
+		data, err := encodeNoEscape(v)
 		if err != nil {
 			return nil, err
 		}
-		out[k] = string(data)
+		out[k] = data
 	}
 	return out, nil
 }
