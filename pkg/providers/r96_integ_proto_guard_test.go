@@ -32,7 +32,6 @@ var r96integPlainJSONDecodes = map[string]struct {
 	reason string
 }{
 	"anthropic/language_model.go|*anthropicStream.nextEvent":          {1, "error text of a frame json.Valid rejected (no object was parsed)"},
-	"cerebras/provider.go|cerebrasTransformTransport.RoundTrip":       {1, "SDK-built request body (RoundTripper), not a response"},
 	"gateway/language_model.go|decodeGatewayLenient":                  {1, "key-by-key fallback after jsonexact.Unmarshal, which already returned the forbidden prototype error"},
 	"gemini/streaming.go|*stream.Next":                                {1, "error text of a frame json.Valid rejected (no object was parsed)"},
 	"gmicloud/provider.go|gmicloudIncludeUsageTransport.roundTrip":    {1, "SDK-built request body (RoundTripper), not a response"},
@@ -44,7 +43,7 @@ var r96integPlainJSONDecodes = map[string]struct {
 	"perplexity/agent_api.go|validatePerplexityAgentResponse":         {1, "runs after securejson.Check on the body"},
 	"pkg/mcp/jsonrpc.go|ValidateJSONRPCMessage":                       {1, "parseMCPMessage runs unmarshalSafeJSON (prototype check) first"},
 	"pkg/mcp/mcp_event_webhook.go|*mcpEventWebhook.handle":            {2, "runs after unmarshalSafeJSON (prototype check) on the webhook body"},
-	"pkg/mcp/safe_json.go|unmarshalSafeJSON":                          {1, "the prototype check itself (rejectUnsafeJSON), then jsonexact.Unmarshal"},
+	"pkg/mcp/safe_json.go|checkServerJSON":                            {1, "the depth and field limits, plus the prototype check when TS secure-parses (unmarshalSafeJSON, parseMCPMessage); without it for TS response.json() (parseMCPHTTPJSONMessages, parseMCPMessagePlain, unmarshalPlainJSON), then jsonexact.Unmarshal"},
 }
 
 // TestR96integNetworkDecodesRejectForbiddenPrototype is the class guard for
