@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,30 @@ func TestR99provbSpeechNullBody(t *testing.T) {
 		srv.Close()
 		if (status == 205) != (err != nil && strings.Contains(err.Error(), "Response body is empty")) {
 			t.Errorf("%d: err = %v", status, err)
+		}
+	}
+}
+
+// TestR99provbWebSearchOutputPassthrough: TS mapWebSearchOutput passes the
+// parsed action through: a url source keeps url "" ({type:'url', url}), an
+// open_page / find_in_page action without url or pattern leaves the key out
+// (undefined) and a null one stays null. Go dropped "" and wrote null for
+// an absent key.
+func TestR99provbWebSearchOutputPassthrough(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"type":"search","sources":[{"type":"url","url":""},{"type":"api","name":""}]}`: `{"action":{"type":"search"},"sources":[{"type":"url","url":""},{"name":"","type":"api"}]}`,
+		`{"type":"open_page"}`:                   `{"action":{"type":"openPage"}}`,
+		`{"type":"open_page","url":null}`:        `{"action":{"type":"openPage","url":null}}`,
+		`{"type":"find_in_page","url":"u"}`:      `{"action":{"type":"findInPage","url":"u"}}`,
+		`{"type":"find_in_page","pattern":null}`: `{"action":{"pattern":null,"type":"findInPage"}}`,
+	} {
+		var action WebSearchAction
+		if err := json.Unmarshal([]byte(raw), &action); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(mapWebSearchOutput(&action))
+		if string(got) != want {
+			t.Errorf("%s: output = %s, want %s", raw, got, want)
 		}
 	}
 }

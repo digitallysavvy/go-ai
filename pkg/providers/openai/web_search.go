@@ -1,5 +1,11 @@
 package openai
 
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+)
+
 // WebSearchCallItem represents a web_search_call output item in the
 // OpenAI Responses API. The model emits this when it performs a web search.
 //
@@ -40,6 +46,28 @@ type WebSearchAction struct {
 
 	// Sources are the search result sources (for "search" type).
 	Sources []WebSearchSource `json:"sources,omitempty"`
+
+	// urlPresent / patternPresent record a url / pattern key in the wire
+	// action, null included (TS passes action.url and action.pattern
+	// through, so an absent one is undefined and a null one null).
+	urlPresent, patternPresent bool
+}
+
+// UnmarshalJSON decodes the action and records which of url and pattern
+// were present.
+func (a *WebSearchAction) UnmarshalJSON(data []byte) error {
+	type plain WebSearchAction
+	var p plain
+	if err := jsonexact.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*a = WebSearchAction(p)
+	var keys map[string]json.RawMessage
+	if jsonexact.Unmarshal(data, &keys) == nil {
+		_, a.urlPresent = keys["url"]
+		_, a.patternPresent = keys["pattern"]
+	}
+	return nil
 }
 
 // WebSearchSource represents a single result source from a web search.
