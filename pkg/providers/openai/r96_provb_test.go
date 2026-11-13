@@ -231,3 +231,41 @@ func TestR96provbFractionalNumberOptions(t *testing.T) {
 		t.Errorf("chat body max_completion_tokens = %#v, top_logprobs = %#v, want 100.5 and 2.5", cbody["max_completion_tokens"], cbody["top_logprobs"])
 	}
 }
+
+// TestR96provbStreamEmptyIDsKept: TS records response.id and an added
+// message's id as given (required strings), so a present "" is the finish
+// responseId and the text-end id, not null / the done item's id.
+func TestR96provbStreamEmptyIDsKept(t *testing.T) {
+	stream := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"","created_at":1,"model":"m"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"","role":"assistant","status":"in_progress","content":[]}}
+
+data: {"type":"response.output_text.delta","item_id":"x","output_index":0,"content_index":0,"delta":"hi"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"x","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}}
+
+data: {"type":"response.completed","response":{"id":"","created_at":1,"model":"m","status":"completed","output":[]}}
+
+`)), false, "web_search", "openai", nil)
+	defer stream.Close() //nolint:errcheck
+	var textEndID *string
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			t.Fatal("no finish chunk")
+		}
+		if c.Type == provider.ChunkTypeTextEnd {
+			id := c.ID
+			textEndID = &id
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			if textEndID == nil || *textEndID != "" {
+				t.Errorf("text-end id = %v, want \"\"", textEndID)
+			}
+			if !strings.Contains(string(c.ProviderMetadata), `"responseId":""`) {
+				t.Errorf("finish metadata = %s, want responseId \"\"", c.ProviderMetadata)
+			}
+			return
+		}
+	}
+}

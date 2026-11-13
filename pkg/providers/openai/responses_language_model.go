@@ -3064,6 +3064,7 @@ type responsesStream struct {
 	webSearchToolName string
 	providerName      string
 	responseID        string
+	responseIDSet     bool
 	logprobsEnabled   bool              // providerOptions.<name>.logprobs is truthy
 	logprobs          []json.RawMessage // per-delta logprobs collected for finish metadata
 	outputStarted     bool
@@ -3336,7 +3337,11 @@ func (s *responsesStream) queueEOFFinish() {
 	}
 	// TS: { responseId (null until response.created arrives), logprobs?,
 	// serviceTier?, reasoningContext? }.
-	fields := map[string]interface{}{"responseId": nonEmptyOrNil(s.responseID)}
+	var responseID interface{} // TS responseId: null until response.created
+	if s.responseIDSet {
+		responseID = s.responseID
+	}
+	fields := map[string]interface{}{"responseId": responseID}
 	if len(s.logprobs) > 0 {
 		fields["logprobs"] = s.logprobs
 	}
@@ -3581,9 +3586,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				continue
 			}
-			if e.Response.ID != "" {
-				s.responseID = e.Response.ID
-			}
+			// TS responseId = value.response.id (a required string: "" kept).
+			s.responseID, s.responseIDSet = e.Response.ID, true
 			metadata := &provider.ResponseMetadata{
 				ID:      e.Response.ID,
 				ModelID: e.Response.Model,
@@ -3617,7 +3621,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// id for its output_index until that item is done (a later item,
 			// such as the next response in the same stream, replaces it);
 			// other item types are not recorded.
-			if (e.Item.Type == "message" || e.Item.Type == "reasoning") && e.Item.ID != "" {
+			// The id is a required string, so a present "" is recorded too
+			// (TS `activeOutputItemIds[i] ?? itemId` keeps it).
+			if e.Item.Type == "message" || e.Item.Type == "reasoning" {
 				s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
 			}
 			// TS isResponseOutputChunk: an item type the chunk schema does not
@@ -4588,8 +4594,8 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		itemID := s.firstItemIDByOutputIndex[e.OutputIndex]
-		if itemID == "" {
+		itemID, recorded := s.firstItemIDByOutputIndex[e.OutputIndex]
+		if !recorded {
 			itemID = item.ID
 		}
 		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
@@ -4621,7 +4627,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// Row 73d48d0: use the id first seen for this output_index (at
 		// output_item.added) rather than this done event's own id, in case
 		// OpenAI rotated the item id mid-stream.
-		firstID := s.firstItemIDByOutputIndex[e.OutputIndex]
+		firstID, recorded := s.firstItemIDByOutputIndex[e.OutputIndex]
 		delete(s.itemTypes, e.OutputIndex)
 		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
 		var item struct {
@@ -4635,7 +4641,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// carries neither an id nor encrypted_content still closes the
 		// reasoning parts opened at output_item.added.
 		id := firstID
-		if id == "" {
+		if !recorded {
 			id = item.ID
 		}
 		accum := s.reasoningAccum[id]
