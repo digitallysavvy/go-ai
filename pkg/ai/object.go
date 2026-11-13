@@ -2188,7 +2188,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			streamProviderMetadata = nil
 			if len(chunk.ProviderMetadata) > 0 {
 				var pm map[string]interface{}
-				if jsonErr := jsonexact.Unmarshal(chunk.ProviderMetadata, &pm); jsonErr == nil {
+				// TS keeps the finish part's object as is (no re-parse), so a
+				// __proto__ key survives: plain decode.
+				if jsonErr := jsonexact.UnmarshalPlain(chunk.ProviderMetadata, &pm); jsonErr == nil {
 					streamProviderMetadata = pm
 				}
 			}

@@ -475,7 +475,9 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 			}
 			var payload interface{}
 			if raw := strings.Join(data, "\n"); len(data) > 0 && !sseBlankData.MatchString(raw) {
-				if err := jsonexact.Unmarshal([]byte(raw), &payload); err != nil {
+				// langgraph-sdk decodeArraysToJson: plain JSON.parse, so a
+				// __proto__ key is an ordinary property (no secureJsonParse).
+				if err := jsonexact.UnmarshalPlain([]byte(raw), &payload); err != nil {
 					sendStreamEvent(ctx, out, StreamEvent{Err: fmt.Errorf("langchain: invalid event data: %w", err)})
 					return false
 				}

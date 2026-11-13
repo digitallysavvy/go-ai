@@ -79,7 +79,8 @@ func toolResultFromResultContent(rc types.ToolResultContent) types.ToolResult {
 	}
 	var providerMetadata map[string]interface{}
 	if len(rc.ProviderMetadata) > 0 {
-		_ = jsonexact.Unmarshal(rc.ProviderMetadata, &providerMetadata)
+		// TS enqueues the part's providerMetadata as is (no re-parse).
+		_ = jsonexact.UnmarshalPlain(rc.ProviderMetadata, &providerMetadata)
 	}
 	return types.ToolResult{
 		ToolCallID:       rc.ToolCallID,
@@ -110,7 +111,8 @@ func toolCallFromCallContent(part types.ToolCallContent) types.ToolCall {
 	}
 	var providerMetadata map[string]interface{}
 	if len(part.ProviderMetadata) > 0 {
-		_ = jsonexact.Unmarshal(part.ProviderMetadata, &providerMetadata)
+		// TS enqueues the part's providerMetadata as is (no re-parse).
+		_ = jsonexact.UnmarshalPlain(part.ProviderMetadata, &providerMetadata)
 	}
 	return types.ToolCall{
 		ID:                  part.ToolCallID,
