@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // Candidate holds a single candidate from a Gemini API response.
@@ -145,7 +146,7 @@ func (u *UsageMetadata) UnmarshalJSON(data []byte) error {
 	}
 	*u = UsageMetadata(fields.usageMetadataFields)
 	var raw map[string]interface{}
-	if json.Unmarshal(data, &raw) == nil {
+	if jsonexact.Unmarshal(data, &raw) == nil {
 		u.raw = raw
 	}
 	return nil
@@ -157,7 +158,7 @@ func (u UsageMetadata) MarshalJSON() ([]byte, error) {
 	if u.raw != nil && !u.summed {
 		// Exactly what the API sent, including keys nested inside the
 		// token-detail entries that the typed fields do not model.
-		return json.Marshal(u.raw)
+		return jsonstr.Marshal(u.raw)
 	}
 	typed, err := json.Marshal(usageMetadataFields(u))
 	if err != nil || u.raw == nil {
@@ -174,7 +175,7 @@ func (u UsageMetadata) MarshalJSON() ([]byte, error) {
 			merged[k] = v
 		}
 	}
-	return json.Marshal(merged)
+	return jsonstr.Marshal(merged)
 }
 
 // initialPromptTokens is TS `usage?.promptTokenCount` for the first request of
@@ -290,7 +291,7 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 	if len(raw.Args) > 0 && string(raw.Args) != "null" {
 		f.ArgsSet = true
 		f.ArgsRaw = raw.Args
-		if err := json.Unmarshal(raw.Args, &f.Args); err != nil {
+		if err := jsonexact.Unmarshal(raw.Args, &f.Args); err != nil {
 			// "args" is `z.unknown()` in the TS schema: a string value is a
 			// valid (if rare) wire shape, used as-is rather than re-encoded
 			// (google-language-model.ts:1180). Any other non-object shape
@@ -490,7 +491,7 @@ func convertUsage(usage *UsageMetadata) types.Usage {
 		},
 	}
 
-	if raw, err := json.Marshal(usage); err == nil {
+	if raw, err := jsonstr.Marshal(usage); err == nil {
 		var rawMap map[string]interface{}
 		if json.Unmarshal(raw, &rawMap) == nil {
 			result.Raw = rawMap
@@ -665,7 +666,7 @@ func isJSONObject(raw json.RawMessage) bool {
 // object to integers (see UsageMetadata.UnmarshalJSON).
 func coerceUsageCounts(data []byte) []byte {
 	var m map[string]interface{}
-	if json.Unmarshal(data, &m) != nil {
+	if jsonexact.Unmarshal(data, &m) != nil {
 		return data
 	}
 	toInt := func(v interface{}) interface{} {
@@ -690,7 +691,7 @@ func coerceUsageCounts(data []byte) []byte {
 			}
 		}
 	}
-	out, err := json.Marshal(m)
+	out, err := jsonstr.Marshal(m)
 	if err != nil {
 		return data
 	}

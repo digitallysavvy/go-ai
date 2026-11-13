@@ -1,10 +1,10 @@
 package perplexity
 
 import (
-	"encoding/json"
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -70,7 +70,7 @@ func convertPerplexityUsage(usage *perplexityUsage, rawUsage []byte) types.Usage
 
 	if len(rawUsage) > 0 {
 		var raw map[string]interface{}
-		if err := json.Unmarshal(rawUsage, &raw); err == nil {
+		if err := jsonexact.Unmarshal(rawUsage, &raw); err == nil {
 			result.Raw = raw
 		}
 	}

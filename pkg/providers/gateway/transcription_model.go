@@ -3,12 +3,12 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -255,7 +255,7 @@ func durationValue(duration *float64) float64 {
 
 func parseGatewayTranscriptionRawBody(body []byte) interface{} {
 	var raw interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return string(body)
 	}
 	return raw

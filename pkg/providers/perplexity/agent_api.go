@@ -271,7 +271,7 @@ func validatePerplexityAgentResponse(raw []byte) error {
 	// The full zod schema: member types, the required usage counts, a message
 	// content part's type, and the error message.
 	var value interface{}
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := jsonexact.Unmarshal(raw, &value); err != nil {
 		return err
 	}
 	if bad := pplxschema.Response(value, true, nil); bad != nil {

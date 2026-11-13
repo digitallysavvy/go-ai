@@ -1031,7 +1031,7 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 // googleBatchResultLineSchema.
 func googleBatchLineError(line []byte) error {
 	var value interface{}
-	if syntax := json.Unmarshal(line, &value); syntax != nil {
+	if syntax := jsonexact.Unmarshal(line, &value); syntax != nil {
 		return providererrors.NewJSONParseError(string(line), syntax)
 	}
 	if bad := zGoogleBatchResultLine(value, true, nil); bad != nil {

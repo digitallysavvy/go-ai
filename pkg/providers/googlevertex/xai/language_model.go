@@ -2,7 +2,6 @@ package xai
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 
@@ -12,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -317,7 +317,7 @@ func (m *LanguageModel) convertResponse(response vertexXaiResponse) *types.Gener
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
+				_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
 			result.ToolCalls[i] = types.ToolCall{
 				ID:        tc.ID,
@@ -447,7 +447,7 @@ func newVertexXaiStream(reader io.ReadCloser) *vertexXaiStream {
 	}
 	s.MetadataKey = vertexXaiProviderKey
 	s.ConvertUsage = func(wire map[string]interface{}) *types.Usage {
-		b, err := json.Marshal(wire)
+		b, err := jsonstr.Marshal(wire)
 		if err != nil {
 			return nil
 		}

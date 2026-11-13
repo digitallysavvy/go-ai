@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
@@ -18,6 +19,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -321,7 +323,7 @@ func parseGoogleErrorData(body []byte, out *googleErrorData) bool {
 		return false
 	}
 	var details []interface{}
-	if len(raw.Error.Details) > 0 && json.Unmarshal(raw.Error.Details, &details) != nil {
+	if len(raw.Error.Details) > 0 && jsonexact.Unmarshal(raw.Error.Details, &details) != nil {
 		return false
 	}
 	if code != nil {
@@ -449,7 +451,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 		if part.InlineData != nil {
 			var fileMeta json.RawMessage
 			if part.ThoughtSignature != "" {
-				fileMeta, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+				fileMeta, _ = jsonstr.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
 					"thoughtSignature": part.ThoughtSignature,
 				}))
 			}
@@ -511,7 +513,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			if part.ThoughtSignature != "" {
 				// TS carries the signature in providerMetadata.google
 				// .thoughtSignature; Signature stays for existing callers.
-				sigMeta, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+				sigMeta, _ = jsonstr.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
 					"thoughtSignature": part.ThoughtSignature,
 				}))
 			}
@@ -536,7 +538,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 		if part.Text == "" && !part.textAbsent && part.ThoughtSignature != "" && part.FunctionCall == nil && part.ToolCall == nil && part.ToolResponse == nil {
 			// TS: an empty text part carrying a thoughtSignature attaches it
 			// to the previous content part.
-			meta, _ := json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+			meta, _ := jsonstr.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
 				"thoughtSignature": part.ThoughtSignature,
 			}))
 			attachSignatureToLastContent(result, meta)
@@ -545,7 +547,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			textParts = append(textParts, part.Text)
 			tc := types.TextContent{Text: part.Text}
 			if part.ThoughtSignature != "" {
-				meta, _ := json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+				meta, _ := jsonstr.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
 					"thoughtSignature": part.ThoughtSignature,
 				}))
 				tc.ProviderMetadata = meta
@@ -556,7 +558,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 		if part.FunctionCall != nil && jsonResponseToolName != "" && part.FunctionCall.Name == jsonResponseToolName {
 			tc := types.TextContent{Text: completeCallArgsJSON(part.FunctionCall)}
 			if part.ThoughtSignature != "" {
-				tc.ProviderMetadata, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{ //nolint:errcheck
+				tc.ProviderMetadata, _ = jsonstr.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{ //nolint:errcheck
 					"thoughtSignature": part.ThoughtSignature,
 				}))
 			}
@@ -641,7 +643,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			if part.ThoughtSignature != "" {
 				meta["thoughtSignature"] = part.ThoughtSignature
 			}
-			metaJSON, _ := json.Marshal(m.cfg.wrapProviderMetadata(meta))
+			metaJSON, _ := jsonstr.Marshal(m.cfg.wrapProviderMetadata(meta))
 			result.Content = append(result.Content, types.ToolResultContent{
 				ToolCallID:       toolCallID,
 				ToolName:         "server:" + part.ToolResponse.ToolType,
@@ -739,7 +741,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 	// TS serviceTier: usageMetadata?.serviceTier ?? null. A top-level
 	// serviceTier in the body is not read.
 	if response.UsageMetadata != nil {
-		if um, err := json.Marshal(response.UsageMetadata); err == nil {
+		if um, err := jsonstr.Marshal(response.UsageMetadata); err == nil {
 			meta["usageMetadata"] = um
 		}
 	} else {
@@ -778,7 +780,7 @@ func executableCodeInput(language, code string) string {
 func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 	var meta json.RawMessage
 	if len(tc.ProviderMetadata) > 0 {
-		meta, _ = json.Marshal(tc.ProviderMetadata)
+		meta, _ = jsonstr.Marshal(tc.ProviderMetadata)
 	}
 	return types.ToolCallContent{
 		ToolCallID:       tc.ID,

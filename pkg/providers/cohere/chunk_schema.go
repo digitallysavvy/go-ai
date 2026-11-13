@@ -1,10 +1,10 @@
 package cohere
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -14,7 +14,7 @@ import (
 // with "error").
 func validateCohereChunk(data []byte) error {
 	var top map[string]interface{}
-	if err := json.Unmarshal(data, &top); err != nil {
+	if err := jsonexact.Unmarshal(data, &top); err != nil {
 		return err
 	}
 	if top == nil {

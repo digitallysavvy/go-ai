@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -866,7 +867,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			}
 		}
 		var data interface{}
-		if json.Unmarshal([]byte(s.currentEventData), &data) != nil {
+		if jsonexact.Unmarshal([]byte(s.currentEventData), &data) != nil {
 			data = nil
 		}
 		s.completed = true
@@ -896,7 +897,7 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 	case "function_call":
 		var args map[string]interface{}
 		if open.argsString != "" {
-			_ = json.Unmarshal([]byte(open.argsString), &args)
+			_ = jsonexact.Unmarshal([]byte(open.argsString), &args)
 		}
 		if args == nil {
 			args = map[string]interface{}{}
@@ -1013,7 +1014,7 @@ func (s *sliceTextStream) Close() error { return nil }
 // && typeof arguments === 'object') and decodes it.
 func objectArguments(raw json.RawMessage) (map[string]interface{}, bool) {
 	var args map[string]interface{}
-	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil || args == nil {
+	if len(raw) == 0 || jsonexact.Unmarshal(raw, &args) != nil || args == nil {
 		return nil, false
 	}
 	return args, true

@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -666,7 +667,7 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		meta["finishMessage"] = json.RawMessage("null")
 	}
 	if s.lastUsageMetadata != nil {
-		if um, err := json.Marshal(s.lastUsageMetadata); err == nil {
+		if um, err := jsonstr.Marshal(s.lastUsageMetadata); err == nil {
 			meta["usageMetadata"] = um
 		}
 	} else {
@@ -687,7 +688,7 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		ip, _ := json.Marshal(*s.initialPromptTokenCount)
 		meta["initialPromptTokenCount"] = ip
 	}
-	provMeta, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
+	provMeta, _ := jsonstr.Marshal(s.cfg.wrapProviderMetadata(meta))
 	return provMeta
 }
 
@@ -759,7 +760,7 @@ func (s *stream) processNonFuncPart(part Part) {
 		if part.ThoughtSignature != "" {
 			meta["thoughtSignature"] = part.ThoughtSignature
 		}
-		metaJSON, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
+		metaJSON, _ := jsonstr.Marshal(s.cfg.wrapProviderMetadata(meta))
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
@@ -794,7 +795,7 @@ func (s *stream) processNonFuncPart(part Part) {
 			meta["thoughtSignature"] = part.ThoughtSignature
 		}
 		wrapped := s.cfg.wrapProviderMetadata(meta)
-		metaJSON, _ := json.Marshal(wrapped)
+		metaJSON, _ := jsonstr.Marshal(wrapped)
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
@@ -819,7 +820,7 @@ func (s *stream) processNonFuncPart(part Part) {
 		// TS: providerMetadata carries the part's own thoughtSignature.
 		var fileMeta json.RawMessage
 		if part.ThoughtSignature != "" {
-			fileMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+			fileMeta, _ = jsonstr.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
 				"thoughtSignature": part.ThoughtSignature,
 			}))
 		}
@@ -850,7 +851,7 @@ func (s *stream) processNonFuncPart(part Part) {
 	// Build provider metadata for thoughtSignature, if present.
 	var sigMeta json.RawMessage
 	if part.ThoughtSignature != "" {
-		sigMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+		sigMeta, _ = jsonstr.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
 			"thoughtSignature": part.ThoughtSignature,
 		}))
 	}
@@ -966,7 +967,7 @@ func (s *stream) processFuncCallPart(part Part) {
 
 	var sigMeta json.RawMessage
 	if part.ThoughtSignature != "" {
-		sigMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+		sigMeta, _ = jsonstr.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
 			"thoughtSignature": part.ThoughtSignature,
 		}))
 	}
@@ -1041,7 +1042,7 @@ func (s *stream) processFuncCallPart(part Part) {
 			// object, expose it structurally too. TS has no equivalent field
 			// here (its tool-call chunk only carries `input` text).
 			var m map[string]interface{}
-			if json.Unmarshal([]byte(argsJSON), &m) == nil {
+			if jsonexact.Unmarshal([]byte(argsJSON), &m) == nil {
 				args = m
 			}
 		}

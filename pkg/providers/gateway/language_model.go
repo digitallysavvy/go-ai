@@ -6,14 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -110,7 +111,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.RawRequest = reqBody
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
 	var rawResponse interface{}
-	if json.Unmarshal(httpResp.Body, &rawResponse) == nil {
+	if jsonexact.Unmarshal(httpResp.Body, &rawResponse) == nil {
 		result.RawResponse = rawResponse
 	}
 	if result.ResponseMetadata == nil {
@@ -310,7 +311,7 @@ func decodeGatewayStreamChunk(data []byte, chunk *gatewayStreamChunk) error {
 	if err := decodeGatewayLenient(data, chunk); err != nil {
 		return err
 	}
-	_ = json.Unmarshal(data, &chunk.raw)
+	_ = jsonexact.Unmarshal(data, &chunk.raw)
 	_ = jsonexact.Unmarshal(data, &chunk.part)
 	if chunk.raw == nil {
 		return nil
@@ -564,9 +565,9 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		// Parse tool call arguments if present
 		var args map[string]interface{}
 		if chunk.ToolCallArgs != "" {
-			_ = json.Unmarshal([]byte(chunk.ToolCallArgs), &args) //nolint:errcheck
+			_ = jsonexact.Unmarshal([]byte(chunk.ToolCallArgs), &args) //nolint:errcheck
 		} else if chunk.ToolCallArgsText != "" {
-			_ = json.Unmarshal([]byte(chunk.ToolCallArgsText), &args) //nolint:errcheck
+			_ = jsonexact.Unmarshal([]byte(chunk.ToolCallArgsText), &args) //nolint:errcheck
 		}
 
 		return &provider.StreamChunk{
@@ -679,7 +680,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		}
 		var code interface{}
 		if len(chunk.Error.Code) > 0 {
-			_ = json.Unmarshal(chunk.Error.Code, &code)
+			_ = jsonexact.Unmarshal(chunk.Error.Code, &code)
 		}
 		// TS parity: the Gateway's `ProviderStreamError` marker (a JS
 		// Symbol.for tag set by the origin provider's createProviderStreamError)

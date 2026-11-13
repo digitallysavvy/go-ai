@@ -451,7 +451,7 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
 			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				_ = jsonexact.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
 			result.ToolCalls[i] = types.ToolCall{
 				ID:        tc.ID,
@@ -572,7 +572,7 @@ func convertMistralUsage(raw json.RawMessage) types.Usage {
 	// hand-picked subset, matching TS convertMistralUsage's `raw: usage`.
 	var rawMap map[string]interface{}
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &rawMap)
+		_ = jsonexact.Unmarshal(raw, &rawMap)
 	}
 	if rawMap == nil {
 		rawMap = map[string]interface{}{}

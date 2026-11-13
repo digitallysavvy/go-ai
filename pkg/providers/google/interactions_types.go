@@ -262,7 +262,7 @@ func (u *interactionsUsage) UnmarshalJSON(b []byte) error {
 	*u = interactionsUsage(p)
 	u.raw = nil
 	var raw map[string]interface{}
-	if json.Unmarshal(b, &raw) == nil {
+	if jsonexact.Unmarshal(b, &raw) == nil {
 		u.raw = raw
 	}
 	return nil
@@ -272,7 +272,7 @@ func (u *interactionsUsage) UnmarshalJSON(b []byte) error {
 func (u *interactionsUsage) afterLooseDecode(b []byte) {
 	u.raw = nil
 	var raw map[string]interface{}
-	if json.Unmarshal(b, &raw) == nil {
+	if jsonexact.Unmarshal(b, &raw) == nil {
 		u.raw = raw
 	}
 }

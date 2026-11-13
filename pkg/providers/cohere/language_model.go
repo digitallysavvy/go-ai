@@ -501,7 +501,7 @@ func convertCohereUsage(raw json.RawMessage) types.Usage {
 	}
 
 	var rawMap map[string]interface{}
-	_ = json.Unmarshal(raw, &rawMap)
+	_ = jsonexact.Unmarshal(raw, &rawMap)
 
 	var inputTokens, outputTokens, totalTokens, cacheRead, noCache *int64
 	if usage.Tokens != nil {
@@ -587,7 +587,7 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 		}
 		var args map[string]interface{}
 		if strings.TrimSpace(rawInput) != "" {
-			_ = json.Unmarshal([]byte(rawInput), &args) //nolint:errcheck // malformed input stays in RawArguments
+			_ = jsonexact.Unmarshal([]byte(rawInput), &args) //nolint:errcheck // malformed input stays in RawArguments
 		}
 		if args == nil {
 			args = map[string]interface{}{}
@@ -956,7 +956,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}})
 				var parsed interface{}
-				if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+				if err := jsonexact.Unmarshal([]byte(text), &parsed); err != nil {
 					s.err = providererrors.NewJSONParseError(text, err)
 				} else {
 					args, _ := parsed.(map[string]interface{})

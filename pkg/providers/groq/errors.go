@@ -125,7 +125,7 @@ func newGroqStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.RawMess
 		dataSrc = raw
 	}
 	var data interface{}
-	_ = json.Unmarshal(dataSrc, &data)
+	_ = jsonexact.Unmarshal(dataSrc, &data)
 	// A zero statusCode means the type wasn't recognized (TS's
 	// getGroqStreamErrorMetadata returns {}); leave both statusCode and
 	// isRetryable unset so NewStreamProviderError falls back to its own

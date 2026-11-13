@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // The Gateway speaks LanguageModelV4 on the wire (the
@@ -224,7 +225,7 @@ func (p v4Part) toolCall() types.ToolCall {
 		}
 	}
 	var args map[string]interface{}
-	_ = json.Unmarshal([]byte(input), &args)
+	_ = jsonexact.Unmarshal([]byte(input), &args)
 	tc := types.ToolCall{
 		ID:               p.ToolCallID,
 		ToolName:         p.ToolName,
@@ -238,7 +239,7 @@ func (p v4Part) toolCall() types.ToolCall {
 	}
 	if len(p.ProviderMetadata) > 0 {
 		var md map[string]interface{}
-		if json.Unmarshal(p.ProviderMetadata, &md) == nil {
+		if jsonexact.Unmarshal(p.ProviderMetadata, &md) == nil {
 			tc.ProviderMetadata = md
 		}
 	}
@@ -247,7 +248,7 @@ func (p v4Part) toolCall() types.ToolCall {
 
 func (p v4Part) toolResult() types.ToolResult {
 	var result interface{}
-	_ = json.Unmarshal(p.Result, &result)
+	_ = jsonexact.Unmarshal(p.Result, &result)
 	tr := types.ToolResult{
 		ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: result, Dynamic: p.Dynamic,
 		Preliminary: p.Preliminary,
@@ -256,14 +257,14 @@ func (p v4Part) toolResult() types.ToolResult {
 	}
 	if len(p.ProviderMetadata) > 0 {
 		var md map[string]interface{}
-		if json.Unmarshal(p.ProviderMetadata, &md) == nil {
+		if jsonexact.Unmarshal(p.ProviderMetadata, &md) == nil {
 			tr.ProviderMetadata = md
 		}
 	}
 	if p.IsError {
 		if s, ok := result.(string); ok {
 			tr.Error = errors.New(s)
-		} else if b, err := json.Marshal(result); err == nil {
+		} else if b, err := jsonstr.Marshal(result); err == nil {
 			tr.Error = errors.New(string(b))
 		}
 	}
@@ -302,7 +303,7 @@ func decodeV4Content(p v4Part) (types.ContentPart, *types.ToolCall) {
 		}, &tc
 	case "tool-result":
 		var result interface{}
-		_ = json.Unmarshal(p.Result, &result)
+		_ = jsonexact.Unmarshal(p.Result, &result)
 		tr := types.ToolResultContent{
 			ToolCallID:       p.ToolCallID,
 			ToolName:         p.ToolName,
@@ -315,7 +316,7 @@ func decodeV4Content(p v4Part) (types.ContentPart, *types.ToolCall) {
 		if p.IsError {
 			if s, ok := result.(string); ok {
 				tr.Error = s
-			} else if b, err := json.Marshal(result); err == nil {
+			} else if b, err := jsonstr.Marshal(result); err == nil {
 				tr.Error = string(b)
 			}
 		}
@@ -348,7 +349,7 @@ func decodeV4GenerateResult(body []byte) (*types.GenerateResult, error) {
 	for _, raw := range wire.Content {
 		var p v4Part
 		var fields map[string]interface{}
-		if json.Unmarshal(raw, &fields) != nil {
+		if jsonexact.Unmarshal(raw, &fields) != nil {
 			continue
 		}
 		_ = jsonexact.Unmarshal(raw, &p)

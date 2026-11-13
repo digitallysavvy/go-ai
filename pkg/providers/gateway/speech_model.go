@@ -2,12 +2,12 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -110,7 +110,7 @@ type gatewaySpeechResponse struct {
 
 func parseGatewaySpeechRawBody(body []byte) (interface{}, error) {
 	var raw interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse Gateway speech response metadata: %w", err)
 	}
 	return raw, nil

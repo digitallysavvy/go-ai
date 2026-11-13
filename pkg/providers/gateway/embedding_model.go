@@ -2,10 +2,10 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -187,7 +187,7 @@ func warningsOrEmpty(warnings []types.Warning) []types.Warning {
 
 func rawJSONBody(body []byte) interface{} {
 	var raw interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := jsonexact.Unmarshal(body, &raw); err != nil {
 		return nil
 	}
 	return raw

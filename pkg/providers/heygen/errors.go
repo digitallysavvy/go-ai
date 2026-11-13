@@ -54,7 +54,7 @@ func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
 		for _, key := range []string{"code", "param"} {
 			if raw, ok := present.Error[key]; ok {
 				var v interface{}
-				_ = json.Unmarshal(raw, &v)
+				_ = jsonexact.Unmarshal(raw, &v)
 				inner[key] = v // a present null stays null
 			}
 		}
