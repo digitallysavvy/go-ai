@@ -510,7 +510,7 @@ func TestR88provbRealtimeServerConnectionAndIntent(t *testing.T) {
 	}
 	whisper := NewRealtimeModel(New(Config{APIKey: "k"}), "gpt-realtime-whisper")
 	out, err := whisper.SerializeClientEventForIntent(provider.RealtimeClientEvent{Type: "session-update"}, provider.RealtimeSessionIntentTranscription)
-	if err != nil || string(out) != `{"session":{"audio":{"input":{"transcription":{"model":"gpt-realtime-whisper"}}},"type":"transcription"},"type":"session.update"}` {
+	if err != nil || string(out) != `{"type":"session.update","session":{"type":"transcription","audio":{"input":{"transcription":{"model":"gpt-realtime-whisper"}}}}}` {
 		t.Errorf("serialize = %s, %v", out, err)
 	}
 	// The conversation intent keeps the v0.5 session.

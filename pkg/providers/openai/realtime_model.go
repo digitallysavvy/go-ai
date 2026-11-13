@@ -16,7 +16,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 type OpenAIRealtimeModel struct {
@@ -240,10 +239,15 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 			session = built
 		}
 	}
-	body := map[string]interface{}{"session": session}
+	bodyMap := map[string]interface{}{"session": session}
 	if opts.ExpiresAfterSeconds != nil {
-		body["expires_after"] = map[string]interface{}{"anchor": "created_at", "seconds": *opts.ExpiresAfterSeconds}
+		bodyMap["expires_after"] = map[string]interface{}{"anchor": "created_at", "seconds": *opts.ExpiresAfterSeconds}
 	}
+	// TS JSON.stringify({session, expires_after: {anchor, seconds}}).
+	body := []byte(providerutils.StringifyOrdered(bodyMap, withOrderPrefix(map[string][]string{
+		"":              {"session", "expires_after"},
+		"expires_after": {"anchor", "seconds"},
+	}, "session", openAIRealtimeSessionOrder)))
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/realtime/client_secrets",
@@ -684,7 +688,44 @@ func serializeOpenAICompatibleRealtimeClientEvent(event provider.RealtimeClientE
 	default:
 		return nil, nil
 	}
-	return jsonstr.Marshal(out)
+	// TS JSON.stringify of the event object literal: its key order.
+	return json.RawMessage(providerutils.StringifyOrdered(out, openAIRealtimeClientEventOrder)), nil
+}
+
+// openAIRealtimeSessionOrder is the key order of TS buildOpenAISessionConfig's
+// session object (provider options follow, as Object.assign appends them).
+var openAIRealtimeSessionOrder = map[string][]string{
+	"":                           {"type", "model", "instructions", "output_modalities", "audio", "tools", "tool_choice"},
+	"audio":                      {"input", "output"},
+	"audio.input":                {"format", "turn_detection", "transcription"},
+	"audio.input.format":         {"type", "rate"},
+	"audio.input.turn_detection": {"type", "threshold", "silence_duration_ms", "prefix_padding_ms"},
+	"audio.input.transcription":  {"model", "language", "prompt"},
+	"audio.output":               {"format", "voice"},
+	"audio.output.format":        {"type", "rate"},
+	"tools":                      {"type", "name", "description", "parameters"},
+}
+
+// openAIRealtimeClientEventOrder is the key order of TS
+// serializeOpenAIRealtimeClientEvent's object literals (each event uses a
+// subset; event_id is spread last).
+var openAIRealtimeClientEventOrder = withOrderPrefix(map[string][]string{
+	"":             {"type", "session", "item", "item_id", "content_index", "audio_end_ms", "audio", "response", "event_id"},
+	"item":         {"type", "role", "content", "call_id", "output"},
+	"item.content": {"type", "text", "audio"},
+	"response":     {"output_modalities", "instructions", "metadata"},
+}, "session", openAIRealtimeSessionOrder)
+
+// withOrderPrefix returns orders plus nested's paths under prefix.
+func withOrderPrefix(orders map[string][]string, prefix string, nested map[string][]string) map[string][]string {
+	for path, keys := range nested {
+		if path == "" {
+			orders[prefix] = keys
+		} else {
+			orders[prefix+"."+path] = keys
+		}
+	}
+	return orders
 }
 
 func openAIConversationItem(item provider.RealtimeConversationItem) (map[string]interface{}, error) {

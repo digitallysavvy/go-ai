@@ -63,6 +63,8 @@ type realtimeTranscriptionTestServer struct {
 
 	mu       sync.Mutex
 	received []map[string]interface{}
+	// rawReceived keeps each frame's text (key order included).
+	rawReceived []string
 
 	toSend    chan interface{}
 	closeConn chan struct{}
@@ -101,6 +103,7 @@ func newRealtimeTranscriptionTestServer(t *testing.T) *realtimeTranscriptionTest
 			}
 			s.mu.Lock()
 			s.received = append(s.received, decoded)
+			s.rawReceived = append(s.rawReceived, raw)
 			s.mu.Unlock()
 		}
 	}

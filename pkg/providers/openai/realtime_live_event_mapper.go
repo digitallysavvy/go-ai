@@ -9,7 +9,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // openAILiveOptions is the parsed form of
@@ -470,7 +469,21 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 	for k, v := range eventID {
 		out[k] = v
 	}
-	return jsonstr.Marshal(out)
+	// TS JSON.stringify of the event object literal: its key order.
+	return json.RawMessage(providerutils.StringifyOrdered(out, openAILiveClientEventOrder)), nil
+}
+
+// openAILiveClientEventOrder is the key order of TS
+// serializeOpenAILiveClientEvent's object literals and
+// buildOpenAILiveSessionConfig's session (event_id is spread last).
+var openAILiveClientEventOrder = map[string][]string{
+	"":                           {"type", "session", "audio", "content", "delegation_id", "event_id"},
+	"session":                    {"model", "instructions", "audio", "delegation", "client", "input", "store"},
+	"session.audio":              {"format", "output"},
+	"session.audio.format":       {"type", "rate"},
+	"session.audio.output":       {"voice"},
+	"session.audio.output.voice": {"id"},
+	"session.delegation":         {"type"},
 }
 
 var openAILiveKnownServerTypes = map[string]bool{

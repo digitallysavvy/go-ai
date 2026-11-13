@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -69,4 +70,47 @@ func TestR98provbRuntimeUserAgent(t *testing.T) {
 	img, _ := p.ImageModel("MAI-Image-2.6-Flash")
 	_, err = img.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
 	check("mai image", err)
+}
+
+// TestR98provbMaiFrameKeyOrder: TS sends JSON.stringify of the session.update
+// and append object literals, so their key order is the literal order (type
+// first). Go marshaled maps with sorted keys.
+func TestR98provbMaiFrameKeyOrder(t *testing.T) {
+	server := newMAITestServer()
+	defer server.close()
+	p, err := New(Config{APIKey: "k", ResourceName: "r", MaiBaseURL: server.ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ := p.TranscriptionModel("mai-transcribe-2-streaming")
+	rate := 16000
+	result, err := model.(provider.TranscriptionStreamer).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	go func() {
+		for {
+			if _, err := result.Stream.Next(); err != nil {
+				return
+			}
+		}
+	}()
+	server.toSend <- map[string]interface{}{"type": "session.created"}
+	server.waitForReceived(t, "session.update", time.Second)
+	server.toSend <- map[string]interface{}{"type": "session.updated"}
+	server.waitForReceived(t, "input_audio_buffer.append", time.Second)
+	server.mu.Lock()
+	raws := append([]string(nil), server.rawReceived...)
+	server.mu.Unlock()
+	want := []string{
+		`{"type":"session.update","session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":16000},"transcription":{"model":"mai-transcribe-2-streaming"},"turn_detection":null,"noise_reduction":null}}}}`,
+		`{"type":"input_audio_buffer.append","audio":"AQID"}`,
+	}
+	if len(raws) < 2 || raws[0] != want[0] || raws[1] != want[1] {
+		t.Fatalf("frames = %q\nwant %q", raws, want)
+	}
 }

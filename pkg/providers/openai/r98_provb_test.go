@@ -4,8 +4,11 @@ import (
 	"context"
 	"io"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -128,5 +131,107 @@ func TestR98provbLiveMsPlatformInt(t *testing.T) {
 	}
 	if got := liveMsInt(2.9); got != 2 {
 		t.Errorf("liveMsInt(2.9) = %d, want 2", got)
+	}
+}
+
+// r98provbRawFrame returns the first raw client frame whose text starts with
+// prefix.
+func r98provbRawFrame(t *testing.T, s *realtimeTranscriptionTestServer, want string) string {
+	t.Helper()
+	s.waitForReceived(t, want, time.Second)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, raw := range s.rawReceived {
+		if strings.Contains(raw, `"`+want+`"`) {
+			return raw
+		}
+	}
+	return ""
+}
+
+// TestR98provbRealtimeFrameKeyOrder: TS sends JSON.stringify of object
+// literals, so the session.update and append frames keep their literal key
+// order (type first). Go marshaled maps with sorted keys.
+func TestR98provbRealtimeFrameKeyOrder(t *testing.T) {
+	server := newRealtimeTranscriptionTestServer(t)
+	defer server.close()
+	rate := 16000
+	result, err := newTestTranscriptionModel(server.ts.URL).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+		ProviderOptions:  map[string]interface{}{"openai": map[string]interface{}{"language": "en"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	if got, want := r98provbRawFrame(t, server, "session.update"), `{"type":"session.update","session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":16000},"transcription":{"model":"gpt-realtime-whisper","language":"en"},"turn_detection":null}}}}`; got != want {
+		t.Errorf("session.update = %s\nwant %s", got, want)
+	}
+	if got, want := r98provbRawFrame(t, server, "input_audio_buffer.append"), `{"type":"input_audio_buffer.append","audio":"AQID"}`; got != want {
+		t.Errorf("append = %s, want %s", got, want)
+	}
+
+	server2 := newRealtimeTranscriptionTestServer(t)
+	defer server2.close()
+	rate2 := 24000
+	res2, err := newTestSpeechTranslationModel(server2.ts.URL).DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanTestAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate2},
+		TargetLanguage:   "es",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res2.Stream.Close() //nolint:errcheck
+	if got, want := r98provbRawFrame(t, server2, "session.update"), `{"type":"session.update","session":{"audio":{"input":{"transcription":{"model":"gpt-realtime-whisper"},"noise_reduction":null},"output":{"language":"es"}}}}`; got != want {
+		t.Errorf("translation session.update = %s\nwant %s", got, want)
+	}
+	if got, want := r98provbRawFrame(t, server2, "session.input_audio_buffer.append"), `{"type":"session.input_audio_buffer.append","audio":"AQID"}`; got != want {
+		t.Errorf("translation append = %s, want %s", got, want)
+	}
+}
+
+// TestR98provbRealtimeClientEventKeyOrder: the GA realtime, Live and client
+// secret payloads keep the TS object literal key order.
+func TestR98provbRealtimeClientEventKeyOrder(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "k"}), "gpt-realtime")
+	instructions, voice, threshold := "Hi", "alloy", 0.5
+	raw, err := m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "session-update", EventID: "e1", Config: provider.RealtimeSessionConfig{
+		Instructions: &instructions, Voice: &voice, OutputModalities: []string{"audio"},
+		TurnDetection: &provider.RealtimeTurnDetection{Type: "server-vad", Threshold: &threshold},
+		Tools:         []provider.RealtimeToolDefinition{{Name: "f", Parameters: map[string]interface{}{"type": "object"}}},
+	}})
+	want := `{"type":"session.update","session":{"type":"realtime","model":"gpt-realtime","instructions":"Hi","output_modalities":["audio"],"audio":{"input":{"turn_detection":{"type":"server_vad","threshold":0.5}},"output":{"voice":"alloy"}},"tools":[{"type":"function","name":"f","parameters":{"type":"object"}}],"tool_choice":"auto"},"event_id":"e1"}`
+	if err != nil || string(raw) != want {
+		t.Errorf("session-update = %s, %v\nwant %s", raw, err, want)
+	}
+	raw, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "conversation-item-truncate", ItemID: "i", ContentIndex: 0, AudioEndMs: 5})
+	if want := `{"type":"conversation.item.truncate","item_id":"i","content_index":0,"audio_end_ms":5}`; string(raw) != want {
+		t.Errorf("truncate = %s", raw)
+	}
+	raw, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "conversation-item-create", Item: provider.RealtimeConversationItem{Type: "function-call-output", CallID: "c", Output: "o"}})
+	if want := `{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"c","output":"o"}}`; string(raw) != want {
+		t.Errorf("item create = %s", raw)
+	}
+	live := NewRealtimeModelLive(New(Config{APIKey: "k"}), "gpt-live-1")
+	raw, err = live.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "AA==", EventID: "e"})
+	if want := `{"type":"session.input_audio.append","audio":"AA==","event_id":"e"}`; err != nil || string(raw) != want {
+		t.Errorf("live append = %s, %v", raw, err)
+	}
+
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		_, _ = io.WriteString(w, `{"value":"v"}`)
+	}))
+	defer srv.Close()
+	secs := 60
+	if _, err := NewRealtimeModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "gpt-realtime").DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{ExpiresAfterSeconds: &secs}); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"session":{"type":"realtime","model":"gpt-realtime"},"expires_after":{"anchor":"created_at","seconds":60}}`; body != want {
+		t.Errorf("client secret body = %s, want %s", body, want)
 	}
 }

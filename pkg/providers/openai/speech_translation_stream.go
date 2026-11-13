@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net"
 	"strconv"
@@ -13,7 +12,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -74,10 +72,8 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	// (mirrors TS onOpen, where controller.enqueue does not block on a
 	// reader before the socket send and sendAudio() call that follow it).
 	streamStart := provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart, Warnings: cfg.warnings}
-	payload, err := jsonstr.Marshal(cfg.sessionUpdate)
-	if err == nil {
-		err = s.send(conn, payload)
-	}
+	// TS JSON.stringify(sessionUpdate): the object literal's key order.
+	err = s.send(conn, []byte(providerutils.StringifyOrdered(cfg.sessionUpdate, openAIRealtimeSpeechTranslationSessionOrder)))
 	if err != nil {
 		// TS onOpen enqueues stream-start before it serializes and sends
 		// the session update, so a failure errors the stream after that
@@ -234,6 +230,15 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	}
 }
 
+// openAIRealtimeSpeechTranslationSessionOrder is the key order of TS
+// buildOpenAIRealtimeSpeechTranslationSession's object literal.
+var openAIRealtimeSpeechTranslationSessionOrder = map[string][]string{
+	"":                    {"type", "session"},
+	"session":             {"audio"},
+	"session.audio":       {"input", "output"},
+	"session.audio.input": {"transcription", "noise_reduction"},
+}
+
 // pumpAudio reads chunks from audio and forwards them as
 // session.input_audio_buffer.append messages, sending session.close at EOF.
 // Any other failure — reading from the AudioStream, or writing to the
@@ -242,14 +247,11 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 func (s *openAIRealtimeSpeechTranslationStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, errCh chan<- error) {
 	wsutil.PumpAudio(s.Context(), audio,
 		func(chunk []byte) error {
-			msg, marshalErr := json.Marshal(map[string]string{
+			// TS JSON.stringify({type, audio}): literal key order.
+			return s.send(conn, []byte(providerutils.StringifyOrdered(map[string]interface{}{
 				"type":  "session.input_audio_buffer.append",
 				"audio": base64.StdEncoding.EncodeToString(chunk),
-			})
-			if marshalErr != nil {
-				return nil
-			}
-			return s.send(conn, msg)
+			}, openAIRealtimeAppendOrder)))
 		},
 		func() error {
 			return s.send(conn, []byte(`{"type":"session.close"}`))

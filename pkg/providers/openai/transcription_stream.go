@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -17,7 +16,6 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -388,10 +386,8 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 	// (mirrors TS onOpen, where controller.enqueue does not block on a
 	// reader before the socket send and sendAudio() call that follow it).
 	streamStart := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.Warnings}
-	payload, err := jsonstr.Marshal(cfg.SessionUpdate)
-	if err == nil {
-		err = s.send(conn, payload)
-	}
+	// TS JSON.stringify(sessionUpdate): the object literal's key order.
+	err = s.send(conn, []byte(providerutils.StringifyOrdered(cfg.SessionUpdate, openAIRealtimeTranscriptionSessionOrder)))
 	if err != nil {
 		// TS onOpen enqueues stream-start before it serializes and sends
 		// the session update, so a failure errors the stream after that
@@ -511,6 +507,21 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 	}
 }
 
+// openAIRealtimeAppendOrder is the key order of TS's input audio append
+// frames ({type, audio}).
+var openAIRealtimeAppendOrder = map[string][]string{"": {"type", "audio"}}
+
+// openAIRealtimeTranscriptionSessionOrder is the key order of TS
+// buildOpenAIRealtimeTranscriptionSession's object literal.
+var openAIRealtimeTranscriptionSessionOrder = map[string][]string{
+	"":                                  {"type", "session"},
+	"session":                           {"type", "audio", "include"},
+	"session.audio":                     {"input"},
+	"session.audio.input":               {"format", "transcription", "turn_detection"},
+	"session.audio.input.format":        {"type", "rate"},
+	"session.audio.input.transcription": {"model", "language", "languages", "delay"},
+}
+
 // pumpAudio reads chunks from audio and forwards them as
 // input_audio_buffer.append messages, committing the buffer at EOF. Any other
 // failure — reading from the AudioStream, or writing to the WebSocket — is
@@ -520,14 +531,11 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 func (s *openAIRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, errCh chan<- error) {
 	wsutil.PumpAudio(s.Context(), audio,
 		func(chunk []byte) error {
-			msg, marshalErr := json.Marshal(map[string]string{
+			// TS JSON.stringify({type, audio}): literal key order.
+			return s.send(conn, []byte(providerutils.StringifyOrdered(map[string]interface{}{
 				"type":  "input_audio_buffer.append",
 				"audio": base64.StdEncoding.EncodeToString(chunk),
-			})
-			if marshalErr != nil {
-				return nil
-			}
-			return s.send(conn, msg)
+			}, openAIRealtimeAppendOrder)))
 		},
 		func() error {
 			return s.send(conn, []byte(`{"type":"input_audio_buffer.commit"}`))
