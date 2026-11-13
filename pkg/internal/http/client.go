@@ -213,6 +213,14 @@ type Request struct {
 	// returned as is instead of the retryable "Cannot connect to API"
 	// APICallError (no handleFetchError).
 	RawFetch bool
+
+	// KeepNullBody makes DoStream return a successful 204 / 205 response as
+	// is (its empty body included) instead of the "Failed to process
+	// successful response" EmptyResponseBodyError failure of the TS
+	// provider-utils stream handlers. Set it for a port of a TS client that
+	// does not go through postToApi / getFromApi and checks `response.body`
+	// itself (for example @vercel/sandbox).
+	KeepNullBody bool
 }
 
 // Response represents an HTTP response
@@ -899,7 +907,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// createJsonStreamResponseHandler) throw EmptyResponseBodyError, which
 	// postToApi wraps in the APICallError "Failed to process successful
 	// response" (no response body; not retryable for a 2xx status).
-	if isNullBodyStatus(httpResp.StatusCode) {
+	if !req.KeepNullBody && isNullBodyStatus(httpResp.StatusCode) {
 		_ = httpResp.Body.Close()
 		return nil, SuccessfulResponseFailure(httpResp, &providererrors.EmptyResponseBodyError{})
 	}

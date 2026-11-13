@@ -518,7 +518,8 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 	req.Logs = true
 	result := &RunCommandWaitResult{}
 	resp, err := c.http.DoStream(withoutRetry(ctx), httpinternal.Request{
-		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd"), Headers: c.headers(nil), Body: req,
+		KeepNullBody: true, // 3.9.0 checks response.body itself
+		Method:       http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd"), Headers: c.headers(nil), Body: req,
 	})
 	if err != nil {
 		return result, toAPIError(err)
@@ -717,7 +718,8 @@ func (c *APIClient) getLogsStream(ctx context.Context, sessionID, cmdID string, 
 
 func (c *APIClient) getLogsOnce(ctx context.Context, sessionID, cmdID string, delivered logDelivered, onLog func(LogEntry)) error {
 	resp, err := c.http.DoStream(ctx, httpinternal.Request{
-		Method: http.MethodGet, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/logs"), Headers: c.headers(nil),
+		KeepNullBody: true, // 3.9.0 checks response.body itself
+		Method:       http.MethodGet, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/logs"), Headers: c.headers(nil),
 	})
 	if err != nil {
 		return toAPIError(err)
@@ -817,7 +819,8 @@ func (c *APIClient) WriteFiles(ctx context.Context, sessionID, extractDir string
 // on a 404 (file not found). The caller must Close the returned reader.
 func (c *APIClient) ReadFile(ctx context.Context, sessionID, path, cwd string) (io.ReadCloser, error) {
 	resp, err := c.http.DoStream(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/read"), Headers: c.headers(nil),
+		KeepNullBody: true, // 3.9.0 readFile returns null for a null body
+		Method:       http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/read"), Headers: c.headers(nil),
 		Body: readFileRequest{Path: path, CWD: cwd},
 	})
 	// 3.9.0 readFile: 404 is a missing file; any other error status, or a
