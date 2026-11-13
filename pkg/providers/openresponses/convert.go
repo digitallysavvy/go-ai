@@ -893,7 +893,7 @@ func asInt(value interface{}) (int, bool) {
 	case int32:
 		return int(v), true
 	case int64:
-		return int(v), true
+		return clampInt64ToInt(v), true
 	case float64:
 		// TS keeps the double (typeof number); the v0.5.2 int field takes
 		// the nearest int, with the same result on every platform (a Go
@@ -913,10 +913,22 @@ func asInt(value interface{}) (int, bool) {
 		if err != nil {
 			return 0, false
 		}
-		return int(i), true
+		return clampInt64ToInt(i), true
 	default:
 		return 0, false
 	}
+}
+
+// clampInt64ToInt is v in the platform int: clamped on 32-bit targets, where
+// a plain conversion wraps past 2^31-1.
+func clampInt64ToInt(v int64) int {
+	switch {
+	case v > math.MaxInt:
+		return math.MaxInt
+	case v < math.MinInt:
+		return math.MinInt
+	}
+	return int(v)
 }
 
 // convertToolResults converts tool results to Open Responses format. A

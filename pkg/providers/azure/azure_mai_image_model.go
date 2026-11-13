@@ -385,7 +385,9 @@ func addAzureMaiTokens(a, b *float64) (float64, bool) {
 // azureMaiJSNumber is a metadata token count as the JS number TS reports:
 // an int when integral, else the exact fraction.
 func azureMaiJSNumber(f float64) interface{} {
-	if f == math.Trunc(f) && math.Abs(f) <= 1<<53 {
+	// An int only when it fits the platform int (32-bit included); a larger
+	// integral count stays float64, which encodes the same.
+	if f == math.Trunc(f) && math.Abs(f) <= 1<<53 && f >= math.MinInt && f <= math.MaxInt {
 		return int(f)
 	}
 	return f
