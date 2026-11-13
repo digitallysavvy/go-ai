@@ -131,7 +131,7 @@ func validateTranscriptionResponse(statusCode int, headers http.Header, body []b
 	var value interface{}
 	err := json.Unmarshal(body, &value)
 	if err == nil {
-		if bad := deepgramTranscriptionResponseNode(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(deepgramTranscriptionResponseNode, body, value); bad != nil {
 			err = bad
 		}
 	}

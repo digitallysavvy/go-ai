@@ -302,7 +302,7 @@ func ValidateChatResponse(body []byte, kind ChatResponseKind) error {
 	if err != nil {
 		return err
 	}
-	if bad := kind.node()(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(kind.node(), body, value); bad != nil {
 		return bad
 	}
 	return nil
@@ -444,7 +444,7 @@ func ResponsesResponseValidator(providerName string) func(statusCode int, header
 		if err != nil {
 			return err
 		}
-		if bad := zOpenAIResponsesResponse(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(zOpenAIResponsesResponse, body, value); bad != nil {
 			return bad
 		}
 		return nil
@@ -488,7 +488,7 @@ func HuggingFaceResponsesResponseValidator(providerName string) func(statusCode 
 		if err != nil {
 			return err
 		}
-		if bad := zHuggingFaceResponse(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(zHuggingFaceResponse, body, value); bad != nil {
 			return bad
 		}
 		return nil
@@ -537,7 +537,7 @@ func MistralConversationResponseValidator(providerName string) func(statusCode i
 		if err != nil {
 			return err
 		}
-		if bad := zMistralConversationResponse(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(zMistralConversationResponse, body, value); bad != nil {
 			return bad
 		}
 		return nil
@@ -555,7 +555,7 @@ func MistralConversationStreamContentError(raw []byte) error {
 	if _, ok := value.(string); ok {
 		return nil
 	}
-	if bad := zMistralConversationContent(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(zMistralConversationContent, raw, value); bad != nil {
 		return bad
 	}
 	return nil
@@ -568,7 +568,7 @@ func MistralConversationUsageError(raw []byte) error {
 	if err != nil {
 		return err
 	}
-	if bad := zMistralConversationUsage(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(zMistralConversationUsage, raw, value); bad != nil {
 		return bad
 	}
 	return nil

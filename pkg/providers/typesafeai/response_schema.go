@@ -38,7 +38,7 @@ func validateDecisionResponse(statusCode int, headers http.Header, body []byte) 
 	var value interface{}
 	err := jsonexact.Unmarshal(body, &value)
 	if err == nil {
-		if bad := typesafeResponseNode(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(typesafeResponseNode, body, value); bad != nil {
 			err = bad
 		}
 	}

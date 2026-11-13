@@ -43,7 +43,7 @@ func validateLumaGeneration(statusCode int, headers http.Header, body []byte) er
 	var value interface{}
 	err := json.Unmarshal(body, &value)
 	if err == nil {
-		if bad := lumaGenerationNode(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(lumaGenerationNode, body, value); bad != nil {
 			err = bad
 		}
 	}

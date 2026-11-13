@@ -242,7 +242,7 @@ func validateBFLSubmitBodyWith(node zodlite.Node, body []byte) error {
 	if err := json.Unmarshal(body, &value); err != nil {
 		return err
 	}
-	if bad := node(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(node, body, value); bad != nil {
 		return bad
 	}
 	return nil
@@ -274,7 +274,7 @@ func validateBFLPollBody(body []byte) error {
 	if err := json.Unmarshal(body, &value); err != nil {
 		return err
 	}
-	if bad := bflPollNode(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(bflPollNode, body, value); bad != nil {
 		return bad
 	}
 	obj, _ := value.(map[string]interface{})
@@ -302,7 +302,7 @@ func validateBFLVideoPollBody(body []byte) error {
 	if err := json.Unmarshal(body, &value); err != nil {
 		return err
 	}
-	if bad := bflVideoPollNode(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(bflVideoPollNode, body, value); bad != nil {
 		return bad
 	}
 	obj, _ := value.(map[string]interface{})

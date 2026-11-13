@@ -87,7 +87,7 @@ func tokenHubResponse(statusCode int, headers http.Header, body []byte, schema z
 	if err := securejson.Unmarshal(body, &tree); err != nil {
 		return nil, providerutils.InvalidJSONResponseError("tencent", statusCode, headers, body, err)
 	}
-	if issue := schema(tree, true, nil); issue != nil {
+	if issue := zodlite.Validate(schema, body, tree); issue != nil {
 		return nil, providerutils.InvalidJSONResponseError("tencent", statusCode, headers, body, issue)
 	}
 	raw := tree.(map[string]interface{})

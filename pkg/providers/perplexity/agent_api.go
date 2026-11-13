@@ -7,6 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/pplxschema"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -280,7 +281,7 @@ func validatePerplexityAgentResponse(raw []byte) error {
 	if err := jsonexact.Unmarshal(raw, &value); err != nil {
 		return err
 	}
-	if bad := pplxschema.Response(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(pplxschema.Response, raw, value); bad != nil {
 		return bad
 	}
 	return nil

@@ -531,7 +531,7 @@ func openaiBatchResultLineValid(line []byte) error {
 	var value interface{}
 	cause := jsonexact.Unmarshal(line, &value)
 	if cause == nil {
-		if bad := openaiBatchResultLineNode(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(openaiBatchResultLineNode, line, value); bad != nil {
 			cause = bad
 		}
 	}

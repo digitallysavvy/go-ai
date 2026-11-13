@@ -340,7 +340,7 @@ func validateParallelDecisionResponse(statusCode int, headers http.Header, body 
 	var value interface{}
 	err := jsonexact.Unmarshal(body, &value)
 	if err == nil {
-		if bad := parallelDecisionResponseNode(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(parallelDecisionResponseNode, body, value); bad != nil {
 			err = bad
 		}
 	}

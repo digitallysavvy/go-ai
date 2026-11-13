@@ -146,7 +146,7 @@ func checkFalResponse(node zodlite.Node, statusCode int, headers http.Header, bo
 	var value interface{}
 	err := json.Unmarshal(body, &value)
 	if err == nil {
-		if bad := node(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(node, body, value); bad != nil {
 			err = bad
 		}
 	}

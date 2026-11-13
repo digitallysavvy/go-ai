@@ -245,7 +245,7 @@ func (p *Provider) postTencentCloudAPI(ctx context.Context, service, action, api
 	if err := securejson.Unmarshal(resp.Body, &tree); err != nil {
 		return nil, providerutils.InvalidJSONResponseError("tencent", resp.StatusCode, resp.Headers, resp.Body, err)
 	}
-	if issue := tencentCloudEnvelopeSchema(tree, true, nil); issue != nil {
+	if issue := zodlite.Validate(tencentCloudEnvelopeSchema, resp.Body, tree); issue != nil {
 		return nil, providerutils.InvalidJSONResponseError("tencent", resp.StatusCode, resp.Headers, resp.Body, issue)
 	}
 	envelope := tree.(map[string]interface{})
@@ -262,7 +262,7 @@ func (p *Provider) postTencentCloudAPI(ctx context.Context, service, action, api
 		return nil, perr
 	}
 
-	if issue := responseSchema(response, true, nil); issue != nil {
+	if issue := zodlite.ValidateWithin(responseSchema, resp.Body, tree, response); issue != nil {
 		return nil, &providererrors.ProviderError{
 			Provider:        "tencent",
 			StatusCode:      resp.StatusCode,

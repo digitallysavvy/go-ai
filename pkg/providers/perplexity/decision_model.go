@@ -277,7 +277,7 @@ func validatePerplexityDecisionResponse(statusCode int, headers http.Header, bod
 	var value interface{}
 	err := jsonexact.Unmarshal(body, &value)
 	if err == nil {
-		if bad := perplexityDecisionResponseNode(value, true, nil); bad != nil {
+		if bad := zodlite.Validate(perplexityDecisionResponseNode, body, value); bad != nil {
 			err = bad
 		}
 	}

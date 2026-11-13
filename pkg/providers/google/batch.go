@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/geminischema"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -1041,7 +1042,7 @@ func googleBatchLineError(line []byte) error {
 		}
 		return providererrors.NewJSONParseError(string(line), syntax)
 	}
-	if bad := zGoogleBatchResultLine(value, true, nil); bad != nil {
+	if bad := zodlite.Validate(zGoogleBatchResultLine, line, value); bad != nil {
 		_, typed := providerutils.ChunkParseFailure(string(line), bad)
 		return typed
 	}
