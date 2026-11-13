@@ -199,7 +199,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	req := internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/v1/listen",
-		Body:   opts.Audio,
+		// TS postToApi body.content is options.audio: the bytes, or a base64
+		// string audio as given.
+		Body: transcriptionContent(opts),
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{
 			"Content-Type": opts.MimeType,
 		}),
@@ -342,4 +344,13 @@ type deepgramTranscriptionResponse struct {
 			} `json:"alternatives"`
 		} `json:"channels"`
 	} `json:"results"`
+}
+
+// transcriptionContent is TS options.audio as the request content: the audio
+// bytes, or a base64 string audio sent as that string.
+func transcriptionContent(opts *provider.TranscriptionOptions) []byte {
+	if len(opts.Audio) == 0 && opts.AudioBase64 != "" {
+		return []byte(opts.AudioBase64)
+	}
+	return opts.Audio
 }
