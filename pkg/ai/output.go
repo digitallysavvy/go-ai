@@ -341,7 +341,7 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 	if err := securejson.Unmarshal([]byte(options.Text), &result); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
-			Cause:        providererrors.NewJSONParseError(options.Text, err),
+			Cause:        singleJSONParseError(options.Text, err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -610,7 +610,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if err := securejson.Unmarshal([]byte(options.Text), &outerValue); err != nil {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
-			Cause:        providererrors.NewJSONParseError(options.Text, err),
+			Cause:        singleJSONParseError(options.Text, err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -859,7 +859,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if err := securejson.Unmarshal([]byte(options.Text), &outerValue); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
-			Cause:        providererrors.NewJSONParseError(options.Text, err),
+			Cause:        singleJSONParseError(options.Text, err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -1049,7 +1049,7 @@ func (o *jsonOutput) ParseCompleteOutput(ctx context.Context, options ParseCompl
 	if err := securejson.Unmarshal([]byte(options.Text), &result); err != nil {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: could not parse the response.",
-			Cause:        providererrors.NewJSONParseError(options.Text, err),
+			Cause:        singleJSONParseError(options.Text, err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,

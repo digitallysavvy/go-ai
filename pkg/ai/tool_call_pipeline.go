@@ -430,6 +430,18 @@ func (e *toolInputJSONParseError) Unwrap() error { return e.JSONParseError }
 // ErrorName is the TS error name, used where TS shows error.toString().
 func (e *toolInputJSONParseError) ErrorName() string { return "AI_JSONParseError" }
 
+// singleJSONParseError is TS safeParseJSON's JSONParseError for text: a
+// secureJsonParse rejection that jsonexact / securejson already reported as
+// a JSONParseError keeps its own cause, so the error is not nested (TS has
+// one JSONParseError whose cause is the SyntaxError).
+func singleJSONParseError(text string, err error) *providererrors.JSONParseError {
+	var parseErr *providererrors.JSONParseError
+	if errors.As(err, &parseErr) {
+		err = parseErr.Cause
+	}
+	return providererrors.NewJSONParseError(text, err)
+}
+
 // toolInputParseError types a toolCallInputArguments failure: text that is
 // not JSON is a JSONParseError; JSON that is not an object fails the input
 // schema (a TypeValidationError of the parsed value).
@@ -437,7 +449,7 @@ func toolInputParseError(call types.ToolCall, err error) error {
 	if errors.Is(err, errToolInputNotObject) {
 		return newToolInputTypeValidationError(call, nil, err)
 	}
-	return &toolInputJSONParseError{providererrors.NewJSONParseError(call.RawArguments, err)}
+	return &toolInputJSONParseError{singleJSONParseError(call.RawArguments, err)}
 }
 
 // errToolInputNotObject marks tool input that is JSON but not an object.

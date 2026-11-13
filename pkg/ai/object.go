@@ -374,7 +374,7 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 			// TS: the cause (and the error repairText gets) is a
 			// JSONParseError; the parser error stays reachable through
 			// Unwrap.
-			err = providererrors.NewJSONParseError(result.Text, err)
+			err = singleJSONParseError(result.Text, err)
 		}
 		return nil, nil, "", newNoObjectGeneratedError(message, err, result.Text, model, result)
 	}
