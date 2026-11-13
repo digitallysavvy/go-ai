@@ -93,11 +93,12 @@ func (m *AzureMaiTranscriptionModel) DoStream(ctx context.Context, opts *provide
 		},
 	}
 
-	urlStr, err := m.url()
+	// TS awaits config.headers() before it calls config.url().
+	baseHeaders, err := m.headers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	baseHeaders, err := m.headers(ctx)
+	urlStr, err := m.url()
 	if err != nil {
 		return nil, err
 	}

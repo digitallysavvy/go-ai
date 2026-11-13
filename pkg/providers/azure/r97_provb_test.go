@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestR97provbMaiImageFractionalTokenMetadata: TS maiImageResponseSchema
@@ -62,5 +63,31 @@ func TestR97provbMaiImageEditUppercaseJpegName(t *testing.T) {
 	}
 	if len(c.files) != 1 || c.files[0] != "image-1.jpg" || c.fileType[0] != "image/jpeg" {
 		t.Fatalf("files = %v, types = %v", c.files, c.fileType)
+	}
+}
+
+// TestR97provbMaiStreamHeadersBeforeURL: TS AzureMaiTranscriptionModel
+// awaits config.headers() before it calls config.url(), so without an API
+// key and a resource name the missing key is the error (Go reported the
+// missing resource name).
+func TestR97provbMaiStreamHeadersBeforeURL(t *testing.T) {
+	t.Setenv("AZURE_API_KEY", "")
+	t.Setenv("AZURE_RESOURCE_NAME", "")
+	p, err := New(Config{BaseURL: "https://example.test/openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := p.TranscriptionModel("MAI-Transcribe-2-Streaming")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm, ok := m.(provider.TranscriptionStreamer)
+	if !ok {
+		t.Fatalf("%T is not a streaming model", m)
+	}
+	rate := 24000
+	_, err = sm.DoStream(context.Background(), &provider.TranscriptionStreamOptions{InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate}})
+	if err == nil || !providererrors.IsLoadAPIKeyError(err) {
+		t.Fatalf("err = %v, want the LoadAPIKeyError", err)
 	}
 }
