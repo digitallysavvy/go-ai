@@ -6,12 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TS postJsonToApi sets only Content-Type, so a Bedrock JSON request carries
@@ -130,6 +132,46 @@ func TestR98provaStreamEmptyEventTypeHeader(t *testing.T) {
 	for _, c := range chunks {
 		if c.Type == provider.ChunkTypeError {
 			t.Fatalf("missing event type produced an error part: %+v", c)
+		}
+	}
+}
+
+// TS postJsonToApi appends getRuntimeEnvironmentUserAgent() after the
+// provider's own ai-sdk/amazon-bedrock tag on every Bedrock JSON call.
+func TestR98provaRuntimeUserAgent(t *testing.T) {
+	var mu sync.Mutex
+	uas := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		uas[r.URL.Path] = r.Header.Get("User-Agent")
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"stop"}`))
+	}))
+	defer srv.Close()
+	p := signedProvider(srv.URL)
+	ctx := context.Background()
+	lm, _ := p.LanguageModel("amazon.nova-lite-v1:0")
+	_, _ = lm.DoGenerate(ctx, &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if s, err := lm.DoStream(ctx, &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err == nil {
+		_ = s.Close()
+	}
+	em, _ := p.EmbeddingModel("amazon.titan-embed-text-v2:0")
+	_, _ = em.DoEmbed(ctx, "hi", nil)
+	im, _ := p.ImageModel("amazon.nova-canvas-v1:0")
+	_, _ = im.DoGenerate(ctx, &provider.ImageGenerateOptions{Prompt: "a cat"})
+	rm, _ := p.RerankingModel("amazon.rerank-v1:0")
+	_, _ = rm.DoRerank(ctx, &provider.RerankOptions{Query: "q", Documents: []string{"a"}})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(uas) < 4 {
+		t.Fatalf("requests = %v", uas)
+	}
+	want := " " + providerutils.RuntimeEnvironmentUserAgent()
+	for path, ua := range uas {
+		if !strings.Contains(ua, "ai-sdk-amazon-bedrock/") || !strings.HasSuffix(ua, want) {
+			t.Errorf("%s: User-Agent = %q, want the bedrock tag then the runtime tag", path, ua)
 		}
 	}
 }

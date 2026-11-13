@@ -3,12 +3,16 @@ package anthropic
 import (
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // r98provaStream runs SSE data frames through the stream parser and returns
@@ -208,5 +212,44 @@ func TestR98provaStreamJSONNamedToolCallSuppressed(t *testing.T) {
 		if c.Type == provider.ChunkTypeToolCall || c.Type == provider.ChunkTypeToolInputEnd {
 			t.Fatalf("unexpected %s chunk for the json-named tool block: %+v", c.Type, c.ToolCall)
 		}
+	}
+}
+
+// TS getFromApi appends getRuntimeEnvironmentUserAgent() to the results
+// download (same-origin and off-origin hops alike; an off-origin hop sends
+// no other header).
+func TestR98provaBatchResultsRuntimeUserAgent(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	var mu sync.Mutex
+	var ua string
+	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":0,"canceled":1,"expired":0},"created_at":"c","expires_at":"e","results_url":"` + srv.URL + `/results"}`))
+	})
+	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ua = r.Header.Get("User-Agent")
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"custom_id":"x","result":{"type":"canceled"}}`))
+	})
+	b := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.HasSuffix(ua, " "+providerutils.RuntimeEnvironmentUserAgent()) {
+		t.Fatalf("results User-Agent = %q, want it to end with the runtime tag", ua)
+	}
+
+	// The off-origin hop (not reachable through the SSRF transport in a
+	// test) gets only the user agent.
+	off := anthropicBatchResultsHeaders(nil)
+	if len(off) != 1 || off["user-agent"] != providerutils.RuntimeEnvironmentUserAgent() {
+		t.Fatalf("off-origin headers = %v, want only the runtime user agent", off)
 	}
 }

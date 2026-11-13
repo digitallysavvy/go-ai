@@ -240,6 +240,10 @@ func (p *Provider) applyRequestHeaders(req *stdhttp.Request, overrides map[strin
 		headers[k] = v
 	}
 	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("amazon-bedrock"))
+	// TS postJsonToApi then appends getRuntimeEnvironmentUserAgent() (the
+	// internal client adds it for client requests; these go through the raw
+	// HTTP client, so it is added here, before SigV4 signing).
+	headers = providerutils.WithUserAgentSuffix(headers, providerutils.RuntimeEnvironmentUserAgent())
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
