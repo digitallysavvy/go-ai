@@ -104,3 +104,16 @@ func TestR99provcFalSpeechEmptyAudioURL(t *testing.T) {
 		t.Fatalf("err = %T %v", err, err)
 	}
 }
+
+// TS reads options.operation.responseUrl with an exact key.
+func TestR99provcVideoStatusOperationKeyExact(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	defer srv.Close()
+	m := NewVideoModel(New(Config{APIKey: "k"}), "fal-ai/luma-dream-machine")
+	op := []byte(`{"ResponseURL":"` + srv.URL + `/r","submitUrl":"` + srv.URL + `/s"}`)
+	_, _ = m.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if hits != 0 {
+		t.Fatalf("a wrong-case responseUrl was fetched")
+	}
+}

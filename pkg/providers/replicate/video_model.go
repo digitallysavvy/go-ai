@@ -271,7 +271,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	currentDate := time.Now()
 
 	var op replicateVideoOperation
-	if err := json.Unmarshal(opts.Operation, &op); err != nil {
+	if err := jsonexact.UnmarshalPlain(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("replicate: invalid operation reference: %w", err)
 	}
 

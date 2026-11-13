@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -48,5 +50,17 @@ func TestR99provcImageDownloadNoContent(t *testing.T) {
 	var pe *providererrors.ProviderError
 	if !errors.As(err, &pe) || pe.Message != "Response body is empty" || pe.StatusCode != 204 {
 		t.Fatalf("err = %#v", err)
+	}
+}
+
+// TS reads options.operation.getUrl with an exact key.
+func TestR99provcVideoStatusOperationKeyExact(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	defer srv.Close()
+	m := NewVideoModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "m")
+	_, _ = m.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: []byte(`{"GetURL":"` + srv.URL + `/p"}`)})
+	if hits != 0 {
+		t.Fatalf("a wrong-case getUrl was fetched")
 	}
 }

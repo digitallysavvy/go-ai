@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -54,5 +56,20 @@ func TestR99provcBFLImageDownloadNoContent(t *testing.T) {
 	var pe *providererrors.ProviderError
 	if !errors.As(err, &pe) || pe.Message != "Response body is empty" || pe.StatusCode != 204 || pe.ResponseHeaders["x-a"] != "b" {
 		t.Fatalf("err = %#v", err)
+	}
+}
+
+// TS reads options.operation.requestId / pollingUrl with exact keys.
+func TestR99provcStatusOperationKeyExact(t *testing.T) {
+	var got string
+	r99provcSwapTransport(t, func(r *http.Request) (*http.Response, error) {
+		got = r.URL.String()
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"status":"Pending"}`)), Request: r}, nil
+	})
+	m := NewVideoModel(New(Config{APIKey: "k", BaseURL: "https://api.bfl.ai"}), "flux-3-video")
+	_, _ = m.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: []byte(`{"RequestID":"wrongcase","pollingUrl":"https://api.bfl.ai/v1/get_result"}`)})
+	if strings.Contains(got, "wrongcase") {
+		t.Fatalf("poll URL = %q", got)
 	}
 }

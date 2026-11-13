@@ -670,7 +670,7 @@ func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, header
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
 	currentDate := time.Now()
 	var op bflVideoOperation
-	if err := json.Unmarshal(opts.Operation, &op); err != nil {
+	if err := jsonexact.UnmarshalPlain(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("bfl: invalid operation reference: %w", err)
 	}
 
