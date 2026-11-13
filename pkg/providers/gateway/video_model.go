@@ -172,17 +172,12 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
 
-	// Set response metadata from the HTTP response
-	responseHeaders := make(map[string]string)
-	for k, vs := range httpResp.Header {
-		if len(vs) > 0 {
-			responseHeaders[k] = vs[0]
-		}
-	}
+	// TS Object.fromEntries([...response.headers]): a repeated header joins
+	// its values with ", " (fetch Headers), as DoStart and DoStatus report.
 	result.Response = provider.VideoModelV3ResponseInfo{
 		Timestamp: time.Now(),
 		ModelID:   m.modelID,
-		Headers:   responseHeaders,
+		Headers:   flattenHeaders(httpResp.Header),
 	}
 
 	return result, nil

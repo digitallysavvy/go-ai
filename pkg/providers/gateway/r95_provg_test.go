@@ -201,3 +201,27 @@ func TestR95provgMetadataPricingRequiresInputAndOutput(t *testing.T) {
 		t.Fatalf("err = %T %v, want a GatewayResponseError", err, err)
 	}
 }
+
+// TS doGenerate response.headers is Object.fromEntries([...response.headers]):
+// a repeated response header joins its values with ", ", as DoStart and
+// DoStatus report it, not just its first value.
+func TestR95provgVideoGenerateRepeatedResponseHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Add("X-R95provg", "a")
+		w.Header().Add("X-R95provg", "b")
+		_, _ = w.Write([]byte("data: {\"type\":\"result\",\"videos\":[{\"type\":\"url\",\"url\":\"https://x/v.mp4\",\"mediaType\":\"video/mp4\"}]}\n\n"))
+	}))
+	defer srv.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := NewVideoModel(p, "google/veo-3").DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "p", N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Response.Headers["X-R95provg"]; got != "a, b" {
+		t.Fatalf("X-R95provg = %q, want %q (headers %v)", got, "a, b", res.Response.Headers)
+	}
+}
