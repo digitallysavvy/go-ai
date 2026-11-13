@@ -128,3 +128,31 @@ func TestR96toolsJSONRPCErrorCodeStringRejected(t *testing.T) {
 		t.Fatalf("msg = %+v, err = %v", msg, err)
 	}
 }
+
+// TS splitMCPAppTools reads a non-array visibility as the raw value the
+// {...uiMeta} spread keeps: a string answers with String.includes, another
+// value has no includes method (TypeError).
+func TestR96toolsSplitMCPAppToolsRawVisibility(t *testing.T) {
+	tool := func(name string, vis interface{}) MCPTool {
+		return MCPTool{Name: name, Meta: map[string]interface{}{"ui": map[string]interface{}{"resourceUri": "ui://x", "visibility": vis}}}
+	}
+	model, app, err := SplitMCPAppTools(ListToolsResult{Tools: []MCPTool{tool("a", "app"), tool("m", "model,app"), tool("n", nil)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := func(r ListToolsResult) (out []string) {
+		for _, t := range r.Tools {
+			out = append(out, t.Name)
+		}
+		return out
+	}
+	if got := names(model); len(got) != 2 || got[0] != "m" || got[1] != "n" {
+		t.Fatalf("model-visible = %v, want [m n]", got)
+	}
+	if got := names(app); len(got) != 2 || got[0] != "a" || got[1] != "m" {
+		t.Fatalf("app-visible = %v, want [a m]", got)
+	}
+	if _, _, err := SplitMCPAppTools(ListToolsResult{Tools: []MCPTool{tool("b", true)}}); err == nil || err.Error() != "visibility.includes is not a function" {
+		t.Fatalf("err = %v", err)
+	}
+}
