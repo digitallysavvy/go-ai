@@ -508,7 +508,7 @@ func TestOpenAIBatch_AcceptsIncompleteErrorDetails(t *testing.T) {
 }
 
 func responsesResultBodyJSON(id, text string) string {
-	return `{"custom_id":"` + id + `","response":{"status_code":200,"request_id":"openai-` + id + `","body":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.6","output":[{"type":"message","role":"assistant","id":"msg_123","content":[{"type":"output_text","text":"` + text + `"}]}],"usage":{"input_tokens":10,"output_tokens":3}}},"error":null}`
+	return `{"custom_id":"` + id + `","response":{"status_code":200,"request_id":"openai-` + id + `","body":{"id":"resp_123","created_at":1700000000,"model":"gpt-5.6","output":[{"type":"message","role":"assistant","id":"msg_123","content":[{"type":"output_text","text":"` + text + `","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":3}}},"error":null}`
 }
 
 func TestOpenAIBatch_StreamsResults(t *testing.T) {
@@ -565,7 +565,7 @@ func TestOpenAIBatch_PreservesReasoningOutput(t *testing.T) {
 	mux.HandleFunc("/files/file-output/content", func(w http.ResponseWriter, r *http.Request) {
 		body := `{"id":"resp_123","created_at":1700000000,"model":"gpt-5.6","output":[` +
 			`{"type":"reasoning","id":"reasoning-123","encrypted_content":"encrypted-reasoning","summary":[{"type":"summary_text","text":"I should answer directly."}]},` +
-			`{"type":"message","role":"assistant","id":"msg_123","content":[{"type":"output_text","text":"Paris"}]}` +
+			`{"type":"message","role":"assistant","id":"msg_123","content":[{"type":"output_text","text":"Paris","annotations":[]}]}` +
 			`],"usage":{"input_tokens":10,"output_tokens":3}}`
 		line := `{"custom_id":"reasoning","response":{"status_code":200,"body":` + body + `},"error":null}`
 		_, _ = w.Write([]byte(line + "\n"))

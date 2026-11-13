@@ -748,6 +748,12 @@ func convertOpenAIBatchErrorResponse(body json.RawMessage, statusCode int) *prov
 // webSearchToolName/providerOptionsName parameters, so a zero-value receiver
 // is safe here — there is no original request context for a batch result).
 func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateResult, *provider.BatchError) {
+	// TS safeValidateTypes({value: body, schema: openaiResponsesResponseSchema}):
+	// a body that fails the schema (an output item missing a required member,
+	// a non-object body, ...) is an invalid result.
+	if providerutils.ResponsesResponseValidator("openai")(http.StatusOK, nil, body) != nil {
+		return nil, &provider.BatchError{Message: "OpenAI returned an invalid Responses batch result.", Code: "invalid_response"}
+	}
 	var resp openAIBatchResponseBody
 	if err := providerutils.UnmarshalChunk(body, &resp); err != nil {
 		return nil, &provider.BatchError{Message: "OpenAI returned an invalid Responses batch result.", Code: "invalid_response"}

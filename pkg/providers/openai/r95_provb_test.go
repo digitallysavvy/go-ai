@@ -152,3 +152,16 @@ data: {"error":{"message":"boom","type":"server_error","param":null,"code":null}
 		t.Fatal("no error part")
 	}
 }
+
+// TestR95provbBatchResultBodySchema: TS convertOpenAIBatchResult validates
+// the body with openaiResponsesResponseSchema, so an output_text part
+// without its required annotations array is an invalid result.
+func TestR95provbBatchResultBodySchema(t *testing.T) {
+	_, berr := convertOpenAIBatchResponseBodyBytes([]byte(`{"id":"r","created_at":1,"model":"m","output":[{"type":"message","role":"assistant","id":"m1","content":[{"type":"output_text","text":"hi"}]}]}`))
+	if berr == nil || berr.Code != "invalid_response" {
+		t.Fatalf("berr = %+v, want invalid_response", berr)
+	}
+	if _, berr := convertOpenAIBatchResponseBodyBytes([]byte(`{"id":"r","created_at":1,"model":"m","output":[{"type":"message","role":"assistant","id":"m1","content":[{"type":"output_text","text":"hi","annotations":[]}]}]}`)); berr != nil {
+		t.Fatalf("valid body: %+v", berr)
+	}
+}
