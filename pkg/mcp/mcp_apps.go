@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -56,7 +55,7 @@ type MCPAppResource struct {
 // JSON.stringify does for the TS resource; only a nil Meta is omitted.
 func (r MCPAppResource) MarshalJSON() ([]byte, error) {
 	if r.Meta != nil && len(r.Meta) == 0 {
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			URI      string                 `json:"uri"`
 			MimeType string                 `json:"mimeType"`
 			HTML     string                 `json:"html"`
@@ -64,7 +63,7 @@ func (r MCPAppResource) MarshalJSON() ([]byte, error) {
 		}{r.URI, r.MimeType, r.HTML, r.Meta})
 	}
 	type plain MCPAppResource
-	return json.Marshal(plain(r))
+	return jsonstr.Marshal(plain(r))
 }
 
 // MCPAppClientCapabilities returns the client capabilities advertised by hosts

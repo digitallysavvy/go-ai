@@ -962,11 +962,11 @@ type GetPromptParams struct {
 
 func (p GetPromptParams) MarshalJSON() ([]byte, error) {
 	if p.Arguments == nil {
-		return json.Marshal(struct {
+		return jsonstr.Marshal(struct {
 			Name string `json:"name"`
 		}{Name: p.Name})
 	}
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Name      string                 `json:"name"`
 		Arguments map[string]interface{} `json:"arguments"`
 	}{Name: p.Name, Arguments: p.Arguments})
@@ -1100,7 +1100,7 @@ func (p CompleteRequestParams) MarshalJSON() ([]byte, error) {
 	case p.ResourceRef != nil:
 		ref = p.ResourceRef
 	}
-	return json.Marshal(struct {
+	return jsonstr.Marshal(struct {
 		Ref      interface{}        `json:"ref"`
 		Argument CompletionArgument `json:"argument"`
 		Context  *CompletionContext `json:"context,omitempty"`
