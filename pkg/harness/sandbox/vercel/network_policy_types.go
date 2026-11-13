@@ -181,7 +181,7 @@ func (p *NetworkPolicy) UnmarshalJSON(data []byte) error {
 		Subnets *PolicySubnets  `json:"subnets"`
 	}
 	// The API's policy is parsed by its zod schema: exact keys (jsonexact).
-	if err := jsonexact.Unmarshal(data, &obj); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &obj); err != nil { // plain JSON.parse (base-client.js parse)
 		return err
 	}
 	out := NetworkPolicy{Subnets: obj.Subnets}
@@ -191,7 +191,7 @@ func (p *NetworkPolicy) UnmarshalJSON(data []byte) error {
 			out.AllowList = list
 		} else {
 			var m map[string][]PolicyRule
-			if err := jsonexact.Unmarshal(obj.Allow, &m); err != nil {
+			if err := jsonexact.UnmarshalPlain(obj.Allow, &m); err != nil {
 				return err
 			}
 			out.AllowMap = m

@@ -92,13 +92,13 @@ type sessionWire struct {
 func (w *sessionWire) UnmarshalJSON(data []byte) error {
 	type plain sessionWire
 	var p plain
-	if err := jsonexact.Unmarshal(data, &p); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &p); err != nil { // base-client.js parse(): plain JSON.parse
 		return err
 	}
 	var raw struct {
 		NetworkPolicy json.RawMessage `json:"networkPolicy"`
 	}
-	if err := jsonexact.Unmarshal(data, &raw); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &raw); err != nil {
 		return err
 	}
 	p.RawNetworkPolicy = raw.NetworkPolicy

@@ -109,7 +109,8 @@ func parseLogLine(raw []byte, sessionID string) (logLine, error) {
 		Stream *string          `json:"stream"`
 		Data   *json.RawMessage `json:"data"`
 	}
-	if err := jsonexact.Unmarshal(raw, &line); err != nil || line.Stream == nil || line.Data == nil {
+	// jsonlines: plain JSON.parse of each line, then LogLine.parse.
+	if err := jsonexact.UnmarshalPlain(raw, &line); err != nil || line.Stream == nil || line.Data == nil {
 		return logLine{}, invalidLogLine(raw)
 	}
 	switch *line.Stream {
@@ -124,7 +125,7 @@ func parseLogLine(raw []byte, sessionID string) (logLine, error) {
 			Code    *string `json:"code"`
 			Message *string `json:"message"`
 		}
-		if err := jsonexact.Unmarshal(*line.Data, &data); err != nil || data.Code == nil || data.Message == nil {
+		if err := jsonexact.UnmarshalPlain(*line.Data, &data); err != nil || data.Code == nil || data.Message == nil {
 			return logLine{}, invalidLogLine(raw)
 		}
 		return logLine{Stream: "error", Err: &StreamError{Code: *data.Code, Message: *data.Message, SessionID: sessionID}}, nil
