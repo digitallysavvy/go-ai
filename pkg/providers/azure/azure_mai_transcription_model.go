@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -100,13 +101,10 @@ func (m *AzureMaiTranscriptionModel) DoStream(ctx context.Context, opts *provide
 	if err != nil {
 		return nil, err
 	}
-	headers := map[string]string{}
-	for k, v := range baseHeaders {
-		headers[k] = v
-	}
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	// TS {...config.headers(), ...options.headers}: the ws handshake sets
+	// each key with setHeader, so a caller spelling of a configured header
+	// (Api-Key over api-key) replaces it.
+	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 
 	wsURL, err := toWebSocketURL(urlStr)
 	if err != nil {
