@@ -94,3 +94,30 @@ func TestR99toolsSSEStartNullBodyStatus(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// TS request(): in the modern-era multi-round-trip loop the final
+// resultSchema.parse (CallToolResultSchema, GetPromptResultSchema,
+// ReadResourceResultSchema) throws a ZodError that the loop wraps as
+// "Failed to process server response"; only the base ResultSchema check in
+// requestOnce keeps "Failed to parse server response".
+func TestR99toolsModernFinalResultSchemaFailureText(t *testing.T) {
+	c, _ := r85toolsSetup(t,
+		`{"resultType":"complete","content":"x"}`,
+		`{"resultType":"complete","messages":"x"}`,
+		`{"resultType":"complete","contents":[{"text":"t"}]}`,
+	)
+	const want = "Failed to process server response"
+	_, err := c.CallTool(context.Background(), "deploy", nil)
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || mcpErr.Message != want {
+		t.Errorf("CallTool err = %v, want %q", err, want)
+	}
+	_, err = c.GetPrompt(context.Background(), "p", nil)
+	if !errors.As(err, &mcpErr) || mcpErr.Message != want {
+		t.Errorf("GetPrompt err = %v, want %q", err, want)
+	}
+	_, err = c.ReadResource(context.Background(), "file:///a")
+	if !errors.As(err, &mcpErr) || mcpErr.Message != want {
+		t.Errorf("ReadResource err = %v, want %q", err, want)
+	}
+}

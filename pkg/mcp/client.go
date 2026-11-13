@@ -795,7 +795,15 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[str
 			return nil, err
 		}
 		if err := validateCallToolResult(&result); err != nil {
-			return nil, &MCPClientError{Message: "Failed to parse server response", Cause: err}
+			// TS CallToolResultSchema.parse: in requestOnce (legacy era)
+			// "Failed to parse server response"; in the modern-era
+			// multi-round-trip loop the ZodError is caught by request() and
+			// wrapped as "Failed to process server response".
+			message := "Failed to parse server response"
+			if c.protocolEra == "modern" {
+				message = "Failed to process server response"
+			}
+			return nil, &MCPClientError{Message: message, Cause: err}
 		}
 
 		return &result, nil
