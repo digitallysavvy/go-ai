@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -512,23 +511,24 @@ func (t *HTTPTransport) applyModernRequestHeaders(req *http.Request, message *MC
 		return
 	}
 	req.Header.Set("Mcp-Method", message.Method)
-	var params struct {
-		URI  interface{} `json:"uri"`
-		Name interface{} `json:"name"`
-	}
+	// TS reads params.uri / params.name by their exact names (a map keeps
+	// key case). The params are the client's own request object, so no
+	// prototype-key check applies: a tool argument named __proto__ keeps the
+	// header.
+	var params map[string]json.RawMessage
 	if len(message.Params) > 0 {
-		// TS reads params.uri / params.name by their exact names.
-		_ = jsonexact.Unmarshal(message.Params, &params)
+		_ = json.Unmarshal(message.Params, &params)
 	}
-	var name interface{}
+	var key string
 	switch message.Method {
 	case "resources/read":
-		name = params.URI
+		key = "uri"
 	case "tools/call", "prompts/get":
-		name = params.Name
+		key = "name"
 	}
-	if s, ok := name.(string); ok {
-		req.Header.Set("Mcp-Name", EncodeMCPHeaderValue(s))
+	var name string
+	if raw, ok := params[key]; ok && key != "" && isJSONString(raw) && json.Unmarshal(raw, &name) == nil {
+		req.Header.Set("Mcp-Name", EncodeMCPHeaderValue(name))
 	}
 }
 
@@ -1067,13 +1067,19 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 	// TS validateJSONRPCMessage runs on the body, or on each element of an
 	// array body, and throws on a message that is not JSON-RPC.
 	if trimmed[0] == '[' {
+		// TS response.json(): plain JSON.parse, so a __proto__ key is an
+		// ordinary member (the event-stream paths use parseJSONRPCMessage,
+		// which rejects it).
+		if err := checkServerJSON(trimmed, false); err != nil {
+			return nil, err
+		}
 		var batch []json.RawMessage
-		if err := unmarshalSafeJSON(trimmed, &batch); err != nil {
+		if err := json.Unmarshal(trimmed, &batch); err != nil {
 			return nil, err
 		}
 		messages := make([]*MCPMessage, 0, len(batch))
 		for _, raw := range batch {
-			msg, err := parseMCPMessage(raw)
+			msg, err := parseMCPMessagePlain(raw)
 			if err != nil {
 				return nil, err
 			}
@@ -1081,7 +1087,7 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 		}
 		return messages, nil
 	}
-	msg, err := parseMCPMessage(trimmed)
+	msg, err := parseMCPMessagePlain(trimmed)
 	if err != nil {
 		return nil, err
 	}

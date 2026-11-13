@@ -46,18 +46,28 @@ const (
 	defaultJSONMaxFields = 1 << 22
 )
 
+// unmarshalSafeJSON decodes a server message the way TS secureJsonParse /
+// parseJSONRPCMessage reads it: a forbidden prototype key fails, and the
+// depth and field limits apply.
 func unmarshalSafeJSON(data []byte, target interface{}) error {
+	return unmarshalServerJSON(data, target, true)
+}
+
+// unmarshalPlainJSON is unmarshalSafeJSON for a body TS reads with plain
+// JSON.parse (response.json(), or a result re-read after the transport):
+// the depth and field limits still apply (Go memory guards), the prototype
+// check does not. The final decode is still jsonexact.Unmarshal, which has
+// its own prototype check until its non-checking entry point lands (round
+// 97 CR to the integrator).
+func unmarshalPlainJSON(data []byte, target interface{}) error {
+	return unmarshalServerJSON(data, target, false)
+}
+
+func unmarshalServerJSON(data []byte, target interface{}, checkPrototype bool) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
 	}
-
-	var raw interface{}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&raw); err != nil {
-		return err
-	}
-	if err := rejectUnsafeJSON(raw, defaultJSONMaxDepth, defaultJSONMaxFields); err != nil {
+	if err := checkServerJSON(data, checkPrototype); err != nil {
 		return err
 	}
 
@@ -67,24 +77,41 @@ func unmarshalSafeJSON(data []byte, target interface{}) error {
 	return jsonexact.Unmarshal(data, target)
 }
 
-func rejectUnsafeJSON(value interface{}, maxDepth, maxFields int) error {
+// checkServerJSON parses data and applies the depth and field limits, and
+// the prototype check when checkPrototype is set.
+func checkServerJSON(data []byte, checkPrototype bool) error {
+	var raw interface{}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
+		return err
+	}
 	fields := 0
-	return rejectUnsafeJSONWalk(value, 1, maxDepth, maxFields, &fields)
+	return rejectUnsafeJSONWalk(raw, 1, defaultJSONMaxDepth, defaultJSONMaxFields, &fields, checkPrototype)
 }
 
-func rejectUnsafeJSONWalk(value interface{}, depth, maxDepth, maxFields int, fields *int) error {
+// rejectUnsafeJSON applies the depth and field limits and the prototype
+// check to a decoded value.
+func rejectUnsafeJSON(value interface{}, maxDepth, maxFields int) error {
+	fields := 0
+	return rejectUnsafeJSONWalk(value, 1, maxDepth, maxFields, &fields, true)
+}
+
+func rejectUnsafeJSONWalk(value interface{}, depth, maxDepth, maxFields int, fields *int, checkPrototype bool) error {
 	if depth > maxDepth {
 		return fmt.Errorf("JSON nesting exceeds maximum depth %d", maxDepth)
 	}
 
 	switch v := value.(type) {
 	case map[string]interface{}:
-		if _, ok := v["__proto__"]; ok {
-			return fmt.Errorf("Object contains forbidden prototype property") //nolint:staticcheck // matches TS SDK's exact error text
-		}
-		if constructor, ok := v["constructor"].(map[string]interface{}); ok {
-			if _, hasPrototype := constructor["prototype"]; hasPrototype {
+		if checkPrototype {
+			if _, ok := v["__proto__"]; ok {
 				return fmt.Errorf("Object contains forbidden prototype property") //nolint:staticcheck // matches TS SDK's exact error text
+			}
+			if constructor, ok := v["constructor"].(map[string]interface{}); ok {
+				if _, hasPrototype := constructor["prototype"]; hasPrototype {
+					return fmt.Errorf("Object contains forbidden prototype property") //nolint:staticcheck // matches TS SDK's exact error text
+				}
 			}
 		}
 		for _, nested := range v {
@@ -92,13 +119,13 @@ func rejectUnsafeJSONWalk(value interface{}, depth, maxDepth, maxFields int, fie
 			if *fields > maxFields {
 				return fmt.Errorf("JSON field count exceeds maximum %d", maxFields)
 			}
-			if err := rejectUnsafeJSONWalk(nested, depth+1, maxDepth, maxFields, fields); err != nil {
+			if err := rejectUnsafeJSONWalk(nested, depth+1, maxDepth, maxFields, fields, checkPrototype); err != nil {
 				return err
 			}
 		}
 	case []interface{}:
 		for _, nested := range v {
-			if err := rejectUnsafeJSONWalk(nested, depth+1, maxDepth, maxFields, fields); err != nil {
+			if err := rejectUnsafeJSONWalk(nested, depth+1, maxDepth, maxFields, fields, checkPrototype); err != nil {
 				return err
 			}
 		}

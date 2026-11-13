@@ -970,8 +970,14 @@ func minimaxVideoErrorSchemaOutput(v interface{}) (map[string]interface{}, bool)
 				}
 			}
 			if code, present := e["http_code"]; present {
-				switch code.(type) {
-				case nil, string, float64:
+				// z.union([z.string(), z.number()]): z.number() rejects a
+				// non-finite number (JSON.parse of 1e400, ruling 4).
+				switch c := code.(type) {
+				case nil, string:
+				case float64:
+					if math.IsInf(c, 0) || math.IsNaN(c) {
+						return nil, false
+					}
 				default:
 					return nil, false
 				}

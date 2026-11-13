@@ -2,12 +2,12 @@ package cerebras
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -151,11 +151,17 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 	if err != nil {
 		return nil, internalhttp.RejectFetch(err)
 	}
-	var payload interface{}
-	if err := json.Unmarshal(body, &payload); err == nil {
-		applyCerebrasRequestExtras(payload, extras)
-		if transformed, err := jsonstr.Marshal(payload); err == nil {
-			body = transformed
+	// TS {...restArgs, ...extras}: the body keeps its key order, a key
+	// already there keeps its place and the others follow it (a Go map
+	// re-encode sorted every key).
+	if parsed, ok := jsonorder.Parse(body); ok {
+		if obj, isObj := parsed.(*jsonorder.Object); isObj {
+			for _, key := range cerebrasExtrasKeyOrder(extras) {
+				obj.Set(key, extras[key])
+			}
+			if transformed, err := obj.MarshalJSON(); err == nil {
+				body = transformed
+			}
 		}
 	}
 	clone := req.Clone(req.Context())
@@ -207,19 +213,36 @@ func renameMaxTokens(payload map[string]interface{}) {
 	payload["max_completion_tokens"] = maxTokens
 }
 
-// applyCerebrasRequestExtras merges providerOptions.cerebras-derived fields
-// into the request body (TS transformCerebrasRequestBody). strictJsonSchema
-// is not among these: the base OpenAI-compatible chat model already applies
-// it to response_format.json_schema.strict when building the body (see
+// cerebrasExtrasTSOrder is the order TS transformCerebrasRequestBody adds
+// the providerOptions.cerebras-derived fields in.
+var cerebrasExtrasTSOrder = []string{
+	"user", "logprobs", "reasoning_effort", "prediction",
+	"parallel_tool_calls", "top_logprobs", "logit_bias", "service_tier", "reasoning_format", "prompt_cache_key",
+}
+
+// cerebrasExtrasKeyOrder lists the extras keys (the providerOptions.cerebras-
+// derived fields, TS transformCerebrasRequestBody) in TS order, then any
+// others sorted. strictJsonSchema is not among these: the base
+// OpenAI-compatible chat model already applies it to
+// response_format.json_schema.strict when building the body (see
 // resolveCerebrasOptions).
-func applyCerebrasRequestExtras(value interface{}, extras cerebrasRequestExtras) {
-	payload, ok := value.(map[string]interface{})
-	if !ok {
-		return
+func cerebrasExtrasKeyOrder(extras cerebrasRequestExtras) []string {
+	keys := make([]string, 0, len(extras))
+	seen := make(map[string]bool, len(extras))
+	for _, k := range cerebrasExtrasTSOrder {
+		if _, ok := extras[k]; ok {
+			keys = append(keys, k)
+			seen[k] = true
+		}
 	}
-	for key, val := range extras {
-		payload[key] = val
+	var rest []string
+	for k := range extras {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
 	}
+	sort.Strings(rest)
+	return append(keys, rest...)
 }
 
 // renameReasoningContent mirrors TS transformCerebrasRequestBody's assistant
@@ -289,4 +312,16 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 // transcription factory (provc-05).
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
+}
+
+// applyCerebrasRequestExtras merges the providerOptions.cerebras-derived
+// fields into a request body map (the exposed request body and raw request).
+func applyCerebrasRequestExtras(value interface{}, extras cerebrasRequestExtras) {
+	payload, ok := value.(map[string]interface{})
+	if !ok {
+		return
+	}
+	for key, val := range extras {
+		payload[key] = val
+	}
 }

@@ -1,6 +1,6 @@
 package acp
 
-import "encoding/json"
+import "github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 
 // BridgeConfigurationEnv is the environment variable the host serializes
 // ACPBridgeConfiguration into for the embedded bridge to read. Mirrors TS
@@ -52,7 +52,7 @@ func (c bridgeConfiguration) MarshalJSON() ([]byte, error) {
 	if c.NonTextContentTypes != nil {
 		w.NonTextContentTypes = &c.NonTextContentTypes
 	}
-	return json.Marshal(w)
+	return jsstr.Marshal(w)
 }
 
 // bridgeProviderAuth mirrors TS `ACPResolvedProviderAuthentication`
@@ -64,7 +64,10 @@ type bridgeProviderAuth struct {
 
 // createBridgeEnvironment mirrors TS `createACPBridgeEnvironment`.
 func createBridgeEnvironment(cfg bridgeConfiguration) map[string]string {
-	data, err := json.Marshal(cfg)
+	// TS JSON.stringify: a non-finite number in sessionMeta,
+	// clientCapabilities or the provider env is null (encoding/json failed
+	// it and the panic below took the process down).
+	data, err := jsstr.Marshal(cfg)
 	if err != nil {
 		panic(err)
 	}
