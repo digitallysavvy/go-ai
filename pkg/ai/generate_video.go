@@ -500,7 +500,9 @@ func executeStartStatusFlow(ctx context.Context, opts startStatusFlowOptions) (*
 				if timedOut {
 					return nil, timeoutErr
 				}
-				return nil, ctx.Err()
+				// TS Promise.race settles with doStatus's rejection: the
+				// abort reason.
+				return nil, context.Cause(ctx)
 			}
 		}
 

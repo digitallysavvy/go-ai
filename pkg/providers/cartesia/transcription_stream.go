@@ -401,7 +401,14 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 
 	conn, err := s.dial(cfg.url)
 	if err != nil {
-		fail(err)
+		// TS connectToWebSocket: an abort before or during the handshake is
+		// onAbort(abortSignal.reason); a socket that fails to open (a refused
+		// handshake, an unreachable host) fires onSocketError.
+		if cause := context.Cause(s.Context()); cause != nil {
+			fail(cause)
+		} else {
+			fail(errors.New("Cartesia streaming transcription error")) //nolint:staticcheck // TS onSocketError text
+		}
 		return
 	}
 	s.SetConn(conn)

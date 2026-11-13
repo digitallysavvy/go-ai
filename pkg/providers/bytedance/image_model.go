@@ -3,7 +3,10 @@ package bytedance
 import (
 	"context"
 	"fmt"
+	"sort"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	stdhttp "net/http"
 	"time"
@@ -170,12 +173,15 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 }
 
 // buildRequestBody builds the /images/generations request body from call
-// options and typed provider options (TS doGenerate body construction).
-func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteDanceOptions *ImageModelOptions) (map[string]interface{}, error) {
-	body := map[string]interface{}{
-		"model":  m.modelID,
-		"prompt": opts.Prompt,
-	}
+// options and typed provider options (TS doGenerate body construction), in
+// the TS insertion order JSON.stringify keeps: model, prompt, image, size,
+// then the provider options (a key set again keeps its first position), the
+// passthrough options (sorted: a Go map has no caller order) and
+// response_format.
+func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteDanceOptions *ImageModelOptions) (*jsonorder.Object, error) {
+	body := jsonorder.New()
+	body.Set("model", m.modelID)
+	body.Set("prompt", opts.Prompt)
 
 	if len(opts.Files) > 0 {
 		if len(opts.Files) == 1 {
@@ -183,7 +189,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteD
 			if err != nil {
 				return nil, err
 			}
-			body["image"] = encoded
+			body.Set("image", encoded)
 		} else {
 			encodedImages := make([]string, 0, len(opts.Files))
 			for i := range opts.Files {
@@ -193,45 +199,50 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteD
 				}
 				encodedImages = append(encodedImages, encoded)
 			}
-			body["image"] = encodedImages
+			body.Set("image", encodedImages)
 		}
 	}
 
 	if opts.Size != "" {
-		body["size"] = opts.Size
+		body.Set("size", opts.Size)
 	}
 
 	if byteDanceOptions.Watermark != nil {
-		body["watermark"] = *byteDanceOptions.Watermark
+		body.Set("watermark", *byteDanceOptions.Watermark)
 	}
 	if byteDanceOptions.OutputFormat != nil {
-		body["output_format"] = *byteDanceOptions.OutputFormat
+		body.Set("output_format", *byteDanceOptions.OutputFormat)
 	}
 	// A resolution level (e.g. "2K") overrides the top-level pixel size.
 	if byteDanceOptions.Size != nil {
-		body["size"] = *byteDanceOptions.Size
+		body.Set("size", *byteDanceOptions.Size)
 	}
 	if byteDanceOptions.SequentialImageGeneration != nil {
-		body["sequential_image_generation"] = *byteDanceOptions.SequentialImageGeneration
+		body.Set("sequential_image_generation", *byteDanceOptions.SequentialImageGeneration)
 	}
 	if byteDanceOptions.MaxImages != nil {
-		body["sequential_image_generation_options"] = map[string]interface{}{
+		body.Set("sequential_image_generation_options", map[string]interface{}{
 			"max_images": *byteDanceOptions.MaxImages,
-		}
+		})
 	}
 	if byteDanceOptions.OptimizePromptMode != nil {
-		body["optimize_prompt_options"] = map[string]interface{}{
+		body.Set("optimize_prompt_options", map[string]interface{}{
 			"mode": *byteDanceOptions.OptimizePromptMode,
-		}
+		})
 	}
 	// Pass through any additional options not explicitly handled above.
-	for k, v := range byteDanceOptions.Additional {
-		body[k] = v
+	extra := make([]string, 0, len(byteDanceOptions.Additional))
+	for k := range byteDanceOptions.Additional {
+		extra = append(extra, k)
+	}
+	sort.Strings(extra)
+	for _, k := range extra {
+		body.Set(k, byteDanceOptions.Additional[k])
 	}
 
 	// Always request base64 so the SDK receives the image bytes; this is not
 	// user-overridable.
-	body["response_format"] = "b64_json"
+	body.Set("response_format", "b64_json")
 
 	return body, nil
 }

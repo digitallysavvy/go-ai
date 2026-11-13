@@ -115,9 +115,11 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 		return provider.ClientSecretResult{}, fmt.Errorf("Cartesia Ink 2 currently supports English only.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
-	body := map[string]interface{}{"grants": map[string]interface{}{"stt": true}}
+	// TS JSON.stringify({grants, ...expires_in}): grants first.
+	body := jsonorder.New()
+	body.Set("grants", map[string]interface{}{"stt": true})
 	if opts.ExpiresAfterSeconds != nil {
-		body["expires_in"] = *opts.ExpiresAfterSeconds
+		body.Set("expires_in", *opts.ExpiresAfterSeconds)
 	}
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
