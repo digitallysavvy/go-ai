@@ -40,7 +40,9 @@ func TestR95integValidatorsReadOutOfRangeNumbers(t *testing.T) {
 		{"HuggingFaceResponsesResponseValidator", httpOK(HuggingFaceResponsesResponseValidator("huggingface")), `{"id":"r","model":"m","object":"response","created_at":1,"status":"completed","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[]}`},
 		{"MistralConversationResponseValidator", httpOK(MistralConversationResponseValidator("mistral")), `{"conversation_id":"c","outputs":[]}`},
 		{"MistralConversationStreamContentError", func(b string) error { return MistralConversationStreamContentError([]byte(b)) }, `{"type":"text","text":"a"}`},
-		{"MistralConversationUsageError", func(b string) error { return MistralConversationUsageError([]byte(b)) }, `{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}`},
+		// MistralConversationUsageError is not here: mistralUsageSchema is
+		// .catchall(z.json()), so zod rejects an undeclared key holding
+		// Infinity (TestR96integMistralJSONValueSites).
 	} {
 		if err := c.check(c.body); err != nil {
 			t.Errorf("%s: base body rejected: %v", c.name, err)
