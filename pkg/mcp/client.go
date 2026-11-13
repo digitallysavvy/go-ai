@@ -1539,7 +1539,9 @@ var elicitResultSchema = zodlite.Object(
 // JSON.stringify(issues, null, 2)) and the issues for value, or "" when it
 // matches schema.
 func zodIssues(schema zodlite.Node, value []byte) (string, interface{}) {
-	message := zodlite.ValidationMessage(schema, string(value))
+	// The value is the caller's own result object (TS ElicitResultSchema.parse
+	// on it, no JSON parse): a `__proto__` key is an ordinary property.
+	message := zodlite.ValidationMessagePlain(schema, string(value))
 	if message == "" {
 		return "", nil
 	}
@@ -1559,7 +1561,10 @@ func zodIssues(schema zodlite.Node, value []byte) (string, interface{}) {
 func parseElicitationRequestParams(raw json.RawMessage) (ElicitationRequest, string, interface{}) {
 	var params interface{}
 	present := len(raw) > 0
-	if present && jsonexact.Unmarshal(raw, &params) != nil {
+	// TS validates the parsed message object: the transport has applied the
+	// prototype check where TS secure-parses, and an input request inside an
+	// application/json result (response.json()) keeps a __proto__ key.
+	if present && jsonexact.UnmarshalPlain(raw, &params) != nil {
 		return ElicitationRequest{}, "params must be JSON", nil
 	}
 	if issues := elicitationRequestIssues(params, present); issues != nil {
@@ -1656,7 +1661,9 @@ func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessag
 		ResultType json.RawMessage `json:"resultType"`
 	}
 	if len(rawResult) > 0 {
-		_ = jsonexact.Unmarshal(rawResult, &probe)
+		// TS reads response.result.resultType on the parsed object (no
+		// prototype check here; an application/json body keeps __proto__).
+		_ = jsonexact.UnmarshalPlain(rawResult, &probe)
 	}
 	// TS checks `input_required` in every era, the missing resultType
 	// (`resultType == null`) only in the modern one. A resultType that is
@@ -1679,7 +1686,7 @@ func isInputRequiredResult(raw json.RawMessage) bool {
 	var probe struct {
 		ResultType *string `json:"resultType"`
 	}
-	return jsonexact.Unmarshal(raw, &probe) == nil && probe.ResultType != nil && *probe.ResultType == "input_required"
+	return jsonexact.UnmarshalPlain(raw, &probe) == nil && probe.ResultType != nil && *probe.ResultType == "input_required"
 }
 
 // sendMessage sends msg via the transport, attaching headers through

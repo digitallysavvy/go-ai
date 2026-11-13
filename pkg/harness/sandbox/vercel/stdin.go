@@ -13,6 +13,7 @@ import (
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -163,7 +164,13 @@ func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64,
 	var out struct {
 		BytesWritten json.RawMessage `json:"bytesWritten"`
 	}
-	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
+	// base-client.js parse(): `JSON.parse(text || "{}")` of response.text()
+	// (plain JSON.parse, an empty body is an empty object).
+	body := []byte(textdecode.UTF8(resp.Body))
+	if len(body) == 0 {
+		body = []byte("{}")
+	}
+	if err := jsonexact.UnmarshalPlain(body, &out); err != nil {
 		return nil, &stdinWriteError{err: err, maybeApplied: maybeApplied}
 	}
 	if out.BytesWritten == nil {
@@ -187,7 +194,8 @@ func stdinTimeoutBytesWritten(body []byte) (int64, bool) {
 			BytesWritten *float64 `json:"bytesWritten"`
 		} `json:"error"`
 	}
-	if jsonexact.Unmarshal(body, &out) != nil || out.Error.BytesWritten == nil {
+	// readStdinTimeout: plain JSON.parse.
+	if jsonexact.UnmarshalPlain(body, &out) != nil || out.Error.BytesWritten == nil {
 		return 0, false
 	}
 	v := *out.Error.BytesWritten

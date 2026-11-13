@@ -111,7 +111,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	if opts.MaxTokens != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "maxOutputTokens", Message: "maxOutputTokens is not supported"})
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil { // TS !== undefined: an empty array counts
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences", Message: "stopSequences is not supported"})
 	}
 	if opts.PresencePenalty != nil {

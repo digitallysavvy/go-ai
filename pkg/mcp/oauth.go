@@ -263,7 +263,9 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 	client := opts.HTTPClient
 	protocolVersion := opts.ProtocolVersion
 	if protocolVersion == "" {
-		protocolVersion = ProtocolVersion
+		// TS defaults to LATEST_PROTOCOL_VERSION (oauth.ts 545 / 706), the
+		// modern version, not the legacy ProtocolVersion alias.
+		protocolVersion = LatestProtocolVersion
 	}
 	metadataURL, err := protectedResourceMetadataURL(serverURL, opts.ResourceMetadataURL)
 	if err != nil {
@@ -355,7 +357,9 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 	client := opts.HTTPClient
 	protocolVersion := opts.ProtocolVersion
 	if protocolVersion == "" {
-		protocolVersion = ProtocolVersion
+		// TS defaults to LATEST_PROTOCOL_VERSION (oauth.ts 545 / 706), the
+		// modern version, not the legacy ProtocolVersion alias.
+		protocolVersion = LatestProtocolVersion
 	}
 	urls, err := BuildAuthorizationServerDiscoveryURLs(authorizationServerURL)
 	if err != nil {
