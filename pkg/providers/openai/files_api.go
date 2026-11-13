@@ -386,7 +386,7 @@ func parseOpenAIFilesOptions(providerOptions map[string]interface{}) (openAIFile
 	}
 	if v, ok := openaiOpts["expiresAfter"]; ok {
 		n, ok := numericValue(v)
-		if !ok || math.IsNaN(n) { // z.number() rejects NaN
+		if !ok || math.IsNaN(n) || math.IsInf(n, 0) { // zod 4 z.number() rejects NaN and +-Infinity
 			return out, invalid("Invalid input: expected number at expiresAfter")
 		}
 		out.expiresAfter = &n
