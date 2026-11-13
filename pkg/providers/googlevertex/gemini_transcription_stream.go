@@ -263,7 +263,9 @@ type geminiLiveServerMessage struct {
 		InterimInputTranscription *geminiLiveTranscription `json:"interimInputTranscription,omitempty"`
 		TurnComplete              bool                     `json:"turnComplete,omitempty"`
 		GenerationComplete        bool                     `json:"generationComplete,omitempty"`
-		InteractionStatus         string                   `json:"interactionStatus,omitempty"`
+		// InteractionStatus is a pointer: TS `interactionStatus == null` is
+		// false for a present "".
+		InteractionStatus *string `json:"interactionStatus,omitempty"`
 	} `json:"serverContent,omitempty"`
 	InputTranscription *geminiLiveTranscription `json:"inputTranscription,omitempty"`
 	UsageMetadata      map[string]interface{}   `json:"usageMetadata,omitempty"`
@@ -554,7 +556,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 
 			if serverContent != nil && audioEnded {
 				status := serverContent.InteractionStatus
-				if status == "IDLE" || status == "REQUIRES_ACTION" || (serverContent.TurnComplete && status == "") {
+				if (status != nil && (*status == "IDLE" || *status == "REQUIRES_ACTION")) || (serverContent.TurnComplete && status == nil) {
 					finish()
 					return
 				}

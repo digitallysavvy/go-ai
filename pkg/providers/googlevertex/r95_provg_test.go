@@ -102,3 +102,31 @@ func TestR95provgTranscriptionOptionNullRejected(t *testing.T) {
 		}
 	}
 }
+
+// TS finishes on turnComplete only when interactionStatus == null; a
+// present "" status is not null, so the stream keeps going.
+func TestR95provgLiveEmptyInteractionStatusDoesNotFinish(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	res, err := newLiveTestModel(t, server.ts.URL).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio: newChanAudioStream([]byte{1, 2}), InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Stream.Close() //nolint:errcheck
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, 2*time.Second)
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), 2*time.Second)
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"turnComplete": true, "interactionStatus": ""}}
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"inputTranscription": map[string]interface{}{"text": "late", "finished": true}}}
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"interactionStatus": "IDLE"}}
+	parts, err := drainUntilFinishOrError(t, res.Stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := parts[len(parts)-1]
+	if last.Type != provider.TranscriptionStreamPartTypeFinish || last.FinishText != "late" {
+		t.Fatalf("finish = %+v, want text \"late\"", last)
+	}
+}
