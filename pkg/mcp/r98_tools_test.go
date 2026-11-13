@@ -188,3 +188,44 @@ func TestR98toolsLooseExtraKeepsNestedProtoKey(t *testing.T) {
 		t.Fatal("secure decode accepted __proto__")
 	}
 }
+
+// TS discoverMetadataWithFallback / discoverAuthorizationServerMetadata
+// default MCP-Protocol-Version to LATEST_PROTOCOL_VERSION (oauth.ts 545 /
+// 706; oauth.test.ts expects it on every discovery GET), and auth() passes
+// none. Go defaulted to the legacy ProtocolVersion alias (2025-11-25), so
+// every OAuth discovery request of an authenticated MCP connection carried
+// the wrong version (review round 98).
+func TestR98toolsOAuthDiscoveryDefaultProtocolVersion(t *testing.T) {
+	var mu sync.Mutex
+	var versions []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		versions = append(versions, r.URL.Path+" "+r.Header.Get("MCP-Protocol-Version"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource":
+			_, _ = io.WriteString(w, `{"resource":"`+"http://"+r.Host+`","authorization_servers":["http://`+r.Host+`"]}`)
+		case "/.well-known/oauth-authorization-server":
+			_, _ = io.WriteString(w, `{"issuer":"http://`+r.Host+`","authorization_endpoint":"http://`+r.Host+`/authorize","token_endpoint":"http://`+r.Host+`/token","response_types_supported":["code"],"code_challenge_methods_supported":["S256"]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	if _, err := DiscoverOAuthProtectedResourceMetadata(context.Background(), server.URL, OAuthDiscoveryOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DiscoverAuthorizationServerMetadata(context.Background(), server.URL, OAuthDiscoveryOptions{TrustedOrigin: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"/.well-known/oauth-protected-resource 2026-07-28",
+		"/.well-known/oauth-authorization-server 2026-07-28",
+	}
+	if strings.Join(versions, "|") != strings.Join(want, "|") {
+		t.Fatalf("requests = %q, want %q", versions, want)
+	}
+}

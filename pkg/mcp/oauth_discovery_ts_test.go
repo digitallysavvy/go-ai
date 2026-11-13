@@ -44,8 +44,8 @@ func TestTSPRMDiscoveryFallsBackOnEach4xx(t *testing.T) {
 			t.Fatalf("%d: md=%+v err=%v", status, md, err)
 		}
 		want := []recordedCall{
-			{"https://resource.example.com/.well-known/oauth-protected-resource/path/name", ProtocolVersion},
-			{"https://resource.example.com/.well-known/oauth-protected-resource", ProtocolVersion},
+			{"https://resource.example.com/.well-known/oauth-protected-resource/path/name", LatestProtocolVersion},
+			{"https://resource.example.com/.well-known/oauth-protected-resource", LatestProtocolVersion},
 		}
 		if len(*calls) != 2 || (*calls)[0] != want[0] || (*calls)[1] != want[1] {
 			t.Fatalf("%d: calls = %+v", status, *calls)
@@ -126,7 +126,7 @@ func TestTSPRMDiscoveryRetriesNetworkFailureWithoutProtocolHeader(t *testing.T) 
 	if _, err := DiscoverOAuthProtectedResourceMetadata(context.Background(), "https://resource.example.com/deep/path", OAuthDiscoveryOptions{HTTPClient: client}); err != nil {
 		t.Fatal(err)
 	}
-	if len(*calls) != 3 || (*calls)[2].url != "https://resource.example.com/.well-known/oauth-protected-resource" || (*calls)[2].header != ProtocolVersion {
+	if len(*calls) != 3 || (*calls)[2].url != "https://resource.example.com/.well-known/oauth-protected-resource" || (*calls)[2].header != LatestProtocolVersion {
 		t.Fatalf("calls = %+v", *calls)
 	}
 
