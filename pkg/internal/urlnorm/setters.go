@@ -97,11 +97,13 @@ func (u *URL) SetPathname(value string) {
 	u.path = parsed.path
 }
 
-// ResolvePath is `new URL(path, u)` for a path-absolute reference: path
-// starts with "/" (or "\" for a special URL) and not with "//". The result
-// keeps u's scheme, credentials, host and port and takes its path, query
-// and fragment from path. It fails with ErrInvalidURL when u has an opaque
-// path or path is not path-absolute.
+// ResolvePath is `new URL(path, u)` for a path-absolute or scheme-relative
+// reference: path starts with "/" (or "\" for a special URL). A
+// path-absolute reference keeps u's scheme, credentials, host and port and
+// takes its path, query and fragment from path; a scheme-relative one
+// ("//host/x", tabs and newlines dropped first) keeps only u's scheme. It
+// fails with ErrInvalidURL when u has an opaque path or path starts with
+// neither.
 func (u *URL) ResolvePath(path string) (*URL, error) {
 	// The basic URL parser drops tabs and newlines before reading the
 	// slashes ("/\t/x" is the authority form "//x").
@@ -109,8 +111,13 @@ func (u *URL) ResolvePath(path string) (*URL, error) {
 	slash := func(i int) bool {
 		return i < len(stripped) && (stripped[i] == '/' || (u.IsSpecial() && stripped[i] == '\\'))
 	}
-	if u.opaque || !slash(0) || slash(1) {
+	if u.opaque || !slash(0) {
 		return nil, ErrInvalidURL
+	}
+	if slash(1) {
+		// Relative slash state: an authority follows and only the scheme
+		// comes from the base.
+		return Parse(u.Scheme + ":" + path)
 	}
 	if u.Scheme == "file" && len(u.path) > 0 && isNormalizedWindowsDriveLetter(u.path[0]) &&
 		!startsWithWindowsDriveLetter(stripped[1:]) {

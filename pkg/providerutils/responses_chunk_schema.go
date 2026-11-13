@@ -14,16 +14,21 @@ import (
 var (
 	zRespOptStr = zOptional(zStr)
 
-	zRespUsage = zObj(
+	// jsonObjectSchema(): z.record(z.string(), jsonValueSchema().optional()),
+	// intersected with each usage object, so every value must be a JSON
+	// value (a number JSON.parse read as Infinity fails).
+	zRespJSONObject = zRec(zodlite.JSON)
+
+	zRespUsage = zodlite.Intersection(zRespJSONObject, zObj(
 		fl("input_tokens", zNum),
-		fl("input_tokens_details", zNullish(zObj(
+		fl("input_tokens_details", zNullish(zodlite.Intersection(zRespJSONObject, zObj(
 			fl("cached_tokens", nNum), fl("cache_write_tokens", nNum),
-			fl("cache_write_tokens_details", zNullish(zObj(fl("ttl_30m_tokens", nNum), fl("ttl_12h_tokens", nNum)))),
-			fl("orchestration_input_tokens", nNum), fl("orchestration_input_cached_tokens", nNum)))),
+			fl("cache_write_tokens_details", zNullish(zodlite.Intersection(zRespJSONObject, zObj(fl("ttl_30m_tokens", nNum), fl("ttl_12h_tokens", nNum))))),
+			fl("orchestration_input_tokens", nNum), fl("orchestration_input_cached_tokens", nNum))))),
 		fl("output_tokens", zNum),
-		fl("output_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum), fl("orchestration_output_tokens", nNum)))),
+		fl("output_tokens_details", zNullish(zodlite.Intersection(zRespJSONObject, zObj(fl("reasoning_tokens", nNum), fl("orchestration_output_tokens", nNum))))),
 		fl("total_tokens", zOptional(zNum)),
-	)
+	))
 
 	zRespKeys = zNullish(zArr(zStr))
 
@@ -94,7 +99,7 @@ var (
 		fl("call_id", zNullable(zStr)), fl("status", zRespStatus3), fl("arguments", zAny))
 
 	zRespToolSearchOutput = zObj(fl("type", zLit("tool_search_output")), fl("id", zStr), fl("execution", zRespExecution),
-		fl("call_id", zNullable(zStr)), fl("status", zRespStatus3), fl("tools", zArr(zRec(zAny))))
+		fl("call_id", zNullable(zStr)), fl("status", zRespStatus3), fl("tools", zArr(zRespJSONObject)))
 
 	zRespMcpError = zUnionOf(zStr, zObj(fl("type", zRespOptStr), fl("code", zOptional(zUnionOf(zNum, zStr))), fl("message", zRespOptStr)))
 

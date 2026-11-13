@@ -13,12 +13,14 @@ package zodlite
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
@@ -62,6 +64,9 @@ type Issue struct {
 	// a refinement) that does not abort the value; a union whose only
 	// non-aborted member failed with such issues reports them directly.
 	Continue bool
+	// Received is the invalid_type "received" field zod's z.number() adds
+	// for a non-finite number ("Infinity", "-Infinity", "NaN").
+	Received string
 	// Errors holds, for a plain invalid_union issue, each member's issue
 	// list with paths relative to the union value (zod v4 nested `errors`).
 	Errors [][]*Issue
@@ -115,6 +120,8 @@ func (i *Issue) json() []byte {
 		parts = append(parts, `"code":`+enc(i.Code), `"expected":`+enc(i.Expected))
 	case i.Expected != "" && i.Format != "":
 		parts = append(parts, `"expected":`+enc(i.Expected), `"format":`+enc(i.Format), `"code":`+enc(i.Code))
+	case i.Expected != "" && i.Received != "":
+		parts = append(parts, `"expected":`+enc(i.Expected), `"code":`+enc(i.Code), `"received":`+enc(i.Received))
 	case i.Expected != "":
 		parts = append(parts, `"expected":`+enc(i.Expected), `"code":`+enc(i.Code))
 	case i.Code == "invalid_value":
@@ -231,9 +238,19 @@ func String(v interface{}, present bool, path []interface{}) *Issue {
 // with invalid_type, "received Infinity").
 func Number(v interface{}, present bool, path []interface{}) *Issue {
 	if f, ok := v.(float64); !ok || math.IsInf(f, 0) || math.IsNaN(f) {
-		return Invalid("number", v, present, path)
+		return invalidNumber(v, present, path)
 	}
 	return nil
+}
+
+// invalidNumber is z.number()'s invalid_type issue: a non-finite number
+// also carries "received" (zod 4.6 $ZodNumber).
+func invalidNumber(v interface{}, present bool, path []interface{}) *Issue {
+	issue := Invalid("number", v, present, path)
+	if _, ok := v.(float64); ok {
+		issue.Received = JSType(v, present)
+	}
+	return issue
 }
 
 // Boolean is z.boolean().
@@ -244,8 +261,63 @@ func Boolean(v interface{}, present bool, path []interface{}) *Issue {
 	return nil
 }
 
-// Unknown is z.unknown() / z.json(): any value passes.
+// Unknown is z.unknown(): any value passes.
 func Unknown(interface{}, bool, []interface{}) *Issue { return nil }
+
+// Null is z.null().
+func Null(v interface{}, present bool, path []interface{}) *Issue {
+	if v != nil || !present {
+		return Invalid("null", v, present, path)
+	}
+	return nil
+}
+
+// JSON is z.json() (and the providers' recursive jsonValueSchema, the same
+// union): a string, finite number, boolean, null, array of JSON values or
+// record of JSON values. A decoded JSON tree fails it only where JSON.parse
+// read a number beyond the double range as +-Infinity.
+var JSON Node
+
+func init() {
+	JSON = Union(String, Number, Boolean, Null, Array(Lazy(func() Node { return JSON })), RecordOf(Lazy(func() Node { return JSON })))
+}
+
+// Intersection is z.intersection(a, b): both run on the value and their
+// issues are reported left first (zod handleIntersectionResults).
+func Intersection(a, b Node) Node {
+	return func(v interface{}, present bool, path []interface{}) *Issue {
+		return join([]*Issue{a(v, present, path), b(v, present, path)})
+	}
+}
+
+// ObjectCatchall is z.object({...}).catchall(rest): the declared fields'
+// issues, then rest's for every other key (sorted: Go maps lose wire order).
+func ObjectCatchall(rest Node, fields ...Field) Node {
+	known := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		known[f.Key] = true
+	}
+	inner := Object(fields...)
+	return func(v interface{}, present bool, path []interface{}) *Issue {
+		bad := inner(v, present, path)
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return bad
+		}
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			if !known[k] {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		list := []*Issue{bad}
+		for _, k := range keys {
+			list = append(list, rest(m[k], true, append(append([]interface{}{}, path...), k)))
+		}
+		return join(list)
+	}
+}
 
 // Literal is z.literal(want) for strings.
 func Literal(want string) Node {
@@ -489,7 +561,7 @@ const maxSafeInteger int64 = 1<<53 - 1
 func Int(v interface{}, present bool, path []interface{}) *Issue {
 	f, ok := v.(float64)
 	if !ok || math.IsInf(f, 0) || math.IsNaN(f) {
-		return Invalid("number", v, present, path)
+		return invalidNumber(v, present, path)
 	}
 	if math.Trunc(f) != f {
 		return &Issue{Path: path, Code: "invalid_type", Expected: "int", Format: "safeint", Message: "Invalid input: expected int, received number"}
@@ -617,8 +689,16 @@ func Typed(t string, fields ...Field) Node {
 // best-effort rendering (path plus the zod v4 message of the first failing
 // field).
 func ValidationMessage(schema Node, data string) string {
+	// JSON.parse reads a number beyond the double range as +-Infinity,
+	// which z.number() then rejects; encoding/json fails the whole frame.
 	var value interface{}
-	if err := json.Unmarshal([]byte(data), &value); err != nil {
+	if err := jsonexact.Decode([]byte(data), &value); err != nil {
+		var parseErr *jsonexact.JSONParseError
+		if errors.As(err, &parseErr) {
+			// secureJsonParse rejected the frame (a forbidden prototype
+			// key): it never validates, so it must not pass.
+			return parseErr.Error()
+		}
 		return ""
 	}
 	bad := schema(value, true, nil)

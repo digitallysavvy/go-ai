@@ -268,6 +268,10 @@ func TestR94integProviderResponsesDecodeCaseExact(t *testing.T) {
 		switch {
 		case obj.Pkg().Path() == "encoding/json" && obj.Name() == "Unmarshal" && len(call.Args) == 2:
 			return callJSON, 1, obj
+		case strings.HasSuffix(obj.Pkg().Path(), "/internal/jsonexact") && obj.Name() == "Decode" && len(call.Args) == 2:
+			// json.Unmarshal with JSON.parse's number range: lenient keys
+			// unless the bytes came from Filter for the same target.
+			return callJSON, 1, obj
 		case strings.HasSuffix(obj.Pkg().Path(), "/internal/jsonexact") && (obj.Name() == "Unmarshal" || obj.Name() == "Filter") && len(call.Args) == 2:
 			return callExact, 1, obj
 		case strings.HasPrefix(obj.Pkg().Path(), module):

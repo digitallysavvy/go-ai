@@ -2,6 +2,8 @@ package providerutils
 
 import (
 	"net/http"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 )
 
 // Port of xaiResponsesChunkSchema (xai/src/responses/xai-responses-api.ts): a
@@ -41,10 +43,12 @@ var (
 			fl("content", zNullish(zArr(zObj(fl("type", zStr), fl("text", zStr))))), fl("status", zStr), fl("encrypted_content", nStr)),
 	})
 
-	zXaiUsage = zObj(
+	// xaiResponsesUsageSchema: .catchall(z.json()) on the usage and both
+	// details objects.
+	zXaiUsage = zodlite.ObjectCatchall(zodlite.JSON,
 		fl("input_tokens", zNum), fl("output_tokens", zNum), fl("total_tokens", zOptional(zNum)),
-		fl("input_tokens_details", zOptional(zObj(fl("cached_tokens", zOptional(zNum))))),
-		fl("output_tokens_details", zOptional(zObj(fl("reasoning_tokens", zOptional(zNum))))),
+		fl("input_tokens_details", zOptional(zodlite.ObjectCatchall(zodlite.JSON, fl("cached_tokens", zOptional(zNum))))),
+		fl("output_tokens_details", zOptional(zodlite.ObjectCatchall(zodlite.JSON, fl("reasoning_tokens", zOptional(zNum))))),
 		fl("num_sources_used", zOptional(zNum)), fl("num_server_side_tools_used", zOptional(zNum)), fl("cost_in_usd_ticks", nNum),
 	)
 
@@ -56,7 +60,7 @@ var (
 		return zObj(
 			fl("id", nStr), fl("created_at", nNum), fl("model", nStr), fl("object", zLit("response")),
 			fl("output", zArr(zXaiOutputItem)), fl("usage", usage), fl("status", status),
-			fl("service_tier", nStr), fl("prompt_cache_key", nStr), fl("safety_identifier", nStr))
+			fl("incomplete_details", zNullish(zObj(fl("reason", zStr)))), fl("service_tier", nStr), fl("prompt_cache_key", nStr), fl("safety_identifier", nStr))
 	}
 
 	zXaiItemOut = func(typ string, extra ...zFld) zNode {

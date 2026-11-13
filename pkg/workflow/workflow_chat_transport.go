@@ -18,6 +18,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/google/uuid"
 )
@@ -251,7 +252,7 @@ func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMess
 		}
 		headers = mergeHeaders(headers, prepared.Headers)
 	}
-	raw, err := json.Marshal(body)
+	raw, err := jsonstr.Marshal(body) // JSON.stringify: NaN/Infinity as null, no HTML escaping
 	if err != nil {
 		return nil, err
 	}

@@ -37,7 +37,6 @@ package speechstream
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -45,7 +44,6 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsdate"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -340,24 +338,14 @@ func toWireFormat(f provider.AudioFormat) wireAudioFormat {
 // payloads that are Go errors serialize as {name, message}. It returns false
 // for payloads that are not JSON-serializable; callers drop the frame.
 func SerializePart(part *provider.SpeechStreamPart) (string, bool) {
-	v, ok := serializablePart(part, false)
+	v, ok := serializablePart(part)
 	if !ok {
 		return "", false
 	}
+	// jsonstr writes NaN and Infinity as null, as JSON.stringify does.
 	data, err := jsonstr.Marshal(v)
 	if err != nil {
-		// encoding/json rejects NaN and Infinity, which JSON.stringify writes
-		// as null; retry with the free-form values made JSON values.
-		var unsupported *json.UnsupportedValueError
-		if !errors.As(err, &unsupported) {
-			return "", false
-		}
-		if v, ok = serializablePart(part, true); !ok {
-			return "", false
-		}
-		if data, err = jsonstr.Marshal(v); err != nil {
-			return "", false
-		}
+		return "", false
 	}
 	return string(data), true
 }
@@ -377,21 +365,7 @@ func jsErrorName(err error) string {
 	return "Error"
 }
 
-// jsValue returns v unchanged when it marshals, and otherwise (with
-// nonFinite) its JSON value with NaN and Infinity as null; false when it
-// cannot be serialized at all (a cycle, a channel).
-func jsValue(v interface{}, nonFinite bool) (interface{}, bool) {
-	if !nonFinite || v == nil {
-		return v, true
-	}
-	if _, err := jsonstr.Marshal(v); err == nil {
-		return v, true
-	}
-	out := jsonorder.ToJSONValue(v)
-	return out, out != nil
-}
-
-func serializablePart(part *provider.SpeechStreamPart, nonFinite bool) (interface{}, bool) {
+func serializablePart(part *provider.SpeechStreamPart) (interface{}, bool) {
 	switch part.Type {
 	case provider.SpeechStreamPartTypeStreamStart:
 		warnings := part.Warnings
@@ -404,10 +378,7 @@ func serializablePart(part *provider.SpeechStreamPart, nonFinite bool) (interfac
 		}{part.Type, warnings}, true
 
 	case provider.SpeechStreamPartTypeAudio:
-		metadata, ok := jsValue(mapOrNil(part.ProviderMetadata), nonFinite)
-		if !ok {
-			return nil, false
-		}
+		metadata := mapOrNil(part.ProviderMetadata)
 		return struct {
 			Type             string          `json:"type"`
 			ID               string          `json:"id,omitempty"`
@@ -426,10 +397,7 @@ func serializablePart(part *provider.SpeechStreamPart, nonFinite bool) (interfac
 				ts = iso
 			}
 		}
-		body, ok := jsValue(part.Body, nonFinite)
-		if !ok {
-			return nil, false
-		}
+		body := part.Body
 		return struct {
 			Type      string      `json:"type"`
 			Timestamp interface{} `json:"timestamp,omitempty"`
@@ -443,38 +411,22 @@ func serializablePart(part *provider.SpeechStreamPart, nonFinite bool) (interfac
 		if part.Usage != nil {
 			usage = part.Usage
 		}
-		usage, ok := jsValue(usage, nonFinite)
-		if !ok {
-			return nil, false
-		}
-		metadata, ok := jsValue(mapOrNil(part.ProviderMetadata), nonFinite)
-		if !ok {
-			return nil, false
-		}
 		return struct {
 			Type             string      `json:"type"`
 			Usage            interface{} `json:"usage,omitempty"`
 			ProviderMetadata interface{} `json:"providerMetadata,omitempty"`
-		}{part.Type, usage, metadata}, true
+		}{part.Type, usage, mapOrNil(part.ProviderMetadata)}, true
 
 	case provider.SpeechStreamPartTypeRaw:
-		raw, ok := jsValue(part.RawValue, nonFinite)
-		if !ok {
-			return nil, false
-		}
 		return struct {
 			Type     string      `json:"type"`
 			RawValue interface{} `json:"rawValue"`
-		}{part.Type, raw}, true
+		}{part.Type, part.RawValue}, true
 
 	case provider.SpeechStreamPartTypeError:
 		payload := part.Err
 		if err, ok := payload.(error); ok {
 			payload = errorPayload{Name: jsErrorName(err), Message: err.Error()}
-		}
-		payload, ok := jsValue(payload, nonFinite)
-		if !ok {
-			return nil, false
 		}
 		return struct {
 			Type  string      `json:"type"`

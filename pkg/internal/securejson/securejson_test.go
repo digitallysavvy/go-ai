@@ -1,6 +1,9 @@
 package securejson
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestRejectsForbiddenPrototypeKeys(t *testing.T) {
 	bad := []string{
@@ -12,7 +15,7 @@ func TestRejectsForbiddenPrototypeKeys(t *testing.T) {
 	}
 	for _, s := range bad {
 		var v any
-		if err := Unmarshal([]byte(s), &v); err != ErrForbiddenPrototype {
+		if err := Unmarshal([]byte(s), &v); !errors.Is(err, ErrForbiddenPrototype) {
 			t.Errorf("%s: err=%v", s, err)
 		}
 	}
@@ -24,7 +27,7 @@ func TestRejectsForbiddenPrototypeKeys(t *testing.T) {
 		}
 	}
 	var v any
-	if err := Unmarshal([]byte(`{`), &v); err == nil || err == ErrForbiddenPrototype {
+	if err := Unmarshal([]byte(`{`), &v); err == nil || errors.Is(err, ErrForbiddenPrototype) {
 		t.Errorf("invalid JSON must report a syntax error, got %v", err)
 	}
 }

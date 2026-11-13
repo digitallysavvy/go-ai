@@ -236,7 +236,8 @@ var (
 			zObj(fl("type", zLit("text")), fl("text", zStr))))),
 	}))))
 
-	zMistralDetails = zObj(fl("messages", zNullish(zArr(zAny))), fl("cached_tokens", nNum), fl("audio_tokens", nNum))
+	// convert-mistral-usage.ts: every usage object is .catchall(z.json()).
+	zMistralDetails = zodlite.ObjectCatchall(zodlite.JSON, fl("messages", zNullish(zArr(zodlite.JSON))), fl("cached_tokens", nNum), fl("audio_tokens", nNum))
 
 	zMistralChunk = zObj(
 		fl("id", nStr), fl("created", nNum), fl("model", nStr),
@@ -252,12 +253,12 @@ var (
 			fl("finish_reason", nStr),
 			fl("index", zNum),
 		))),
-		fl("usage", zNullish(zObj(
+		fl("usage", zNullish(zodlite.ObjectCatchall(zodlite.JSON,
 			fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum),
 			fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
 			fl("prompt_tokens_details", zNullish(zMistralDetails)),
 			fl("prompt_token_details", zNullish(zMistralDetails)),
-			fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
+			fl("completion_tokens_details", zNullish(zodlite.ObjectCatchall(zodlite.JSON, fl("reasoning_tokens", nNum)))),
 		))),
 	)
 
@@ -428,6 +429,17 @@ func ChunkParseFailure(data string, cause error) (string, error) {
 		err := providererrors.NewJSONParseError(data, syntax)
 		return err.Error(), err
 	}
+	// A secureJsonParse rejection reported by the caller's own decode is
+	// TS's JSONParseError too (safeParseJSON), not a validation error.
+	var parseErr *providererrors.JSONParseError
+	if errors.As(cause, &parseErr) {
+		err := providererrors.NewJSONParseError(data, parseErr.Cause)
+		return err.Error(), err
+	}
+	if errors.Is(cause, jsonexact.ErrForbiddenPrototype) {
+		err := providererrors.NewJSONParseError(data, jsonexact.ErrForbiddenPrototype)
+		return err.Error(), err
+	}
 	compact := data
 	var b bytes.Buffer
 	if err := json.Compact(&b, []byte(data)); err == nil {
@@ -480,8 +492,9 @@ func CheckTypedFrame(data string) (string, error) {
 	return "", nil
 }
 
-// parseJSValue is JSON.parse for a frame validated by a zod schema: syntax
-// errors fail (with encoding/json's text), and a number out of the double
+// parseJSValue is secureJsonParse for a frame validated by a zod schema:
+// syntax errors fail (with encoding/json's text), a forbidden prototype key
+// fails with ErrForbiddenPrototype, and a number out of the double
 // range reads as +-Infinity (0 when it underflows) instead of failing the
 // whole frame as encoding/json does. zod's object schemas then strip such a
 // value under an undeclared key, so the frame passes as in TS.
@@ -496,6 +509,11 @@ func parseJSValue(data []byte) (interface{}, error) {
 	dec.UseNumber()
 	var v interface{}
 	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	// secureJsonParse: a forbidden prototype key fails the parse (the
+	// caller's JSONParseError carries this cause).
+	if err := jsonexact.CheckPrototype(data); err != nil {
 		return nil, err
 	}
 	return jsNumberTree(v), nil
@@ -528,10 +546,15 @@ func jsNumberTree(v interface{}) interface{} {
 // exact value, so a frame TS accepts is never rejected for its number
 // spelling and no float is altered.
 func UnmarshalChunk(data []byte, v interface{}) error {
+	// TS parseJsonEventStream (safeParseJSON) rejects a forbidden prototype
+	// key with a JSONParseError over the frame as sent.
+	if perr := jsonexact.ParseError(data); perr != nil {
+		return perr
+	}
 	// zod matches object keys exactly; drop the ones encoding/json would
 	// fill a field with only case-insensitively.
 	data = jsonexact.Filter(data, v)
-	err := json.Unmarshal(data, v)
+	err := jsonexact.Decode(data, v)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
 		return err
@@ -558,7 +581,7 @@ func UnmarshalChunk(data []byte, v interface{}) error {
 		if merr != nil {
 			return err
 		}
-		err = json.Unmarshal(normalized, v)
+		err = jsonexact.Decode(normalized, v)
 		if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
 			return err
 		}
