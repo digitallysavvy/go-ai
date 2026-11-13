@@ -219,6 +219,9 @@ func TestR95provgLiveEmptyInteractionStatusDoesNotFinish(t *testing.T) {
 	}
 	defer res.Stream.Close() //nolint:errcheck
 	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, 2*time.Second)
+	if _, err := res.Stream.Next(); err != nil { // stream-start
+		t.Fatal(err)
+	}
 	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
 	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), 2*time.Second)
 	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"turnComplete": true, "interactionStatus": ""}}
