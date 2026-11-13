@@ -77,6 +77,24 @@ var r97integResponseJSONDecodes = map[string]struct {
 	"pkg/mcp/oauth_schema.go|decodeOAuthFields":                             {1, "oauth.ts:1106 / 1211 / 1274 await response.json() (tokens, client registration)"},
 	"pkg/harness/sandbox/vercel/auth.go|decodeOIDCClaims":                   {2, "@vercel/sandbox decode-base64-url.js:9 JSON.parse, then schema.parse"},
 	"pkg/harness/sandbox/vercel/oidc_refresh.go|unverifiedTokenOwner":       {1, "@vercel/sandbox api-client.js:75 decodeUnverifiedToken JSON.parse"},
+	// Round 98 (tools CR): plain decodes of objects TS already holds, and the
+	// bundled @vercel/sandbox JSON.parse sites.
+	"pkg/mcp/client.go|zodIssues":                                    {1, "mcp-client.ts 1754 / 988 ElicitResultSchema.parse(result) on the handler's own object (no JSON parse)"},
+	"pkg/mcp/client.go|parseElicitationRequestParams":                {1, "mcp-client.ts 1734 / 982 ElicitationRequestSchema / InputRequiredElicitationSchema.parse on the validated message object; an input request inside an application/json result is response.json() (mcp-http-transport.ts 390)"},
+	"pkg/mcp/client.go|*MCPClient.validateModernResult":              {1, "mcp-client.ts 1137 / 1144 response.result.resultType read on the validated message object (response.json() body on the plain path)"},
+	"pkg/mcp/client.go|isInputRequiredResult":                        {1, "mcp-client.ts 951 result.resultType on the parsed result object"},
+	"pkg/mcp/input_required.go|parseInputRequiredResult":             {1, "mcp-client.ts 956 InputRequiredResultSchema.parse(result) on the parsed result object"},
+	"pkg/mcp/loose.go|decodeLooseExtra":                              {1, "zod looseObject passthrough copies the parsed value (the entry decoder applied the check where TS secure-parses)"},
+	"pkg/harness/sandbox/vercel/client.go|decodeAPIJSON":             {2, "@vercel/sandbox 3.9.0 base-client.js:102 parse(): JSON.parse(text || \"{}\") of every API response, then validator.safeParse"},
+	"pkg/harness/sandbox/vercel/client.go|toAPIError":                {1, "@vercel/sandbox 3.9.0 base-client.js:102 parse() of the error body, then extractServerMessage"},
+	"pkg/harness/sandbox/vercel/client.go|*APIClient.RunCommandWait": {2, "@vercel/sandbox 3.9.0 api-client.js:227 / 241 jsonlines (plain JSON.parse per line), then CommandResponse / CommandFinishedResponse.parse"},
+	"pkg/harness/sandbox/vercel/ndjson.go|parseLogLine":              {2, "@vercel/sandbox 3.9.0 api-client.js:242 / 563 jsonlines (plain JSON.parse per line), then LogLine.parse"},
+	"pkg/harness/sandbox/vercel/stdin.go|parseStdinResponse":         {1, "@vercel/sandbox 3.9.0 api-client.js:50 parseOrThrow(CommandStdinResponse) -> base-client.js:102 JSON.parse(text || \"{}\")"},
+	"pkg/harness/sandbox/vercel/stdin.go|stdinTimeoutBytesWritten":   {1, "@vercel/sandbox 3.9.0 api-client.js:60 readStdinTimeout JSON.parse(text)"},
+	// Round 98 (provg CR): caller-value validations (schema.parse on objects
+	// TS already holds).
+	"pkg/providerutils/prompt/google.go|*googleConverter.googleVideoMetadata": {1, "convert-to-google-messages.ts:381 googleVideoMetadataSchema.parse of the caller's providerOptions object (no JSON parse, no secureJsonParse)"},
+	"pkg/providerutils/prompt/google.go|googleParseCodeExecution":             {1, "convert-to-google-messages.ts:576 / 644 codeExecutionInput/OutputSchema.parse of the prompt's tool input / output value (no JSON parse)"},
 }
 
 // TestR96integNetworkDecodesRejectForbiddenPrototype is the class guard for

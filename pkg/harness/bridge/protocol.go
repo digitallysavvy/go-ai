@@ -149,15 +149,13 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 	if err := securejson.Check(data); err != nil {
 		return nil, nil, err
 	}
+	// TS SandboxChannel reads `seq` from any parsed object before the schema
+	// runs (a frame without a valid type still advances the cursor), and
+	// JSON.parse reads 1e400 as Infinity.
+	seq = frameSeq(data)
 	typ, fields, err := harness.ReadTagged(data)
 	if err != nil {
-		return nil, nil, err
-	}
-	if rawSeq, ok := fields["seq"]; ok {
-		var s float64
-		if json.Unmarshal(rawSeq, &s) == nil {
-			seq = &s
-		}
+		return nil, seq, err
 	}
 	if harness.IsStreamPartType(typ) {
 		part, err := harness.DecodeStreamPart(data)
@@ -525,6 +523,27 @@ func DecodeInbound(data []byte) (InboundCommand, error) {
 		return nil, fmt.Errorf("harness bridge: invalid %s command: %w", typ, err)
 	}
 	return cmd, nil
+}
+
+// frameSeq is TS SandboxChannel's `typeof value.seq === 'number' ?
+// value.seq : undefined` over the JSON.parse result of data.
+func frameSeq(data []byte) *float64 {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return nil
+	}
+	raw, ok := obj["seq"]
+	if !ok {
+		return nil
+	}
+	var v interface{}
+	if jsonexact.UnmarshalPlain(raw, &v) != nil {
+		return nil
+	}
+	if s, ok := v.(float64); ok {
+		return &s
+	}
+	return nil
 }
 
 func readObject(raw json.RawMessage) map[string]json.RawMessage {

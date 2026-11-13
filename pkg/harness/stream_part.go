@@ -107,7 +107,8 @@ func (u *InputTokenUsage) UnmarshalJSON(data []byte) error {
 		CacheRead  *float64 `json:"cacheRead"`
 		CacheWrite *float64 `json:"cacheWrite"`
 	}
-	if err := json.Unmarshal(data, &w); err != nil {
+	// zod matches keys exactly ("Total" is stripped, not read as total).
+	if err := jsonexact.UnmarshalPlain(data, &w); err != nil {
 		return err
 	}
 	*u = InputTokenUsage{Total: tokenCount(w.Total), NoCache: tokenCount(w.NoCache),
@@ -123,7 +124,7 @@ func (u *OutputTokenUsage) UnmarshalJSON(data []byte) error {
 		Text      *float64 `json:"text"`
 		Reasoning *float64 `json:"reasoning"`
 	}
-	if err := json.Unmarshal(data, &w); err != nil {
+	if err := jsonexact.UnmarshalPlain(data, &w); err != nil {
 		return err
 	}
 	*u = OutputTokenUsage{Total: tokenCount(w.Total), Text: tokenCount(w.Text), Reasoning: tokenCount(w.Reasoning)}
@@ -368,7 +369,8 @@ func (p *ErrorPart) UnmarshalJSON(data []byte) error {
 	var aux struct {
 		Error json.RawMessage `json:"error"`
 	}
-	if err := json.Unmarshal(data, &aux); err != nil {
+	// zod matches keys exactly: an "ERROR" key is stripped, not the error.
+	if err := jsonexact.UnmarshalPlain(data, &aux); err != nil {
 		return err
 	}
 	p.Error, p.errorText, p.errorTextFor = nil, "", nil
@@ -606,8 +608,11 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 		}
 	} else if err := jsonexact.UnmarshalPlain(data, part); err != nil {
 		// zod matches keys exactly, and JSON.parse reads 1e400 as Infinity
-		// in a z.unknown() value (a tool result, a raw value). The caller
-		// runs the secureJsonParse check.
+		// in a z.unknown() value (an error, a raw value). The caller runs the
+		// secureJsonParse check.
+		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
+	}
+	if err := requireJSONValues(part); err != nil {
 		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 	}
 	if err := validateStreamPart(part); err != nil {
@@ -627,6 +632,53 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 		p.ProviderExecutedOmitted = !present
 	}
 	return part, nil
+}
+
+// requireJSONValues checks the values harnessV1JsonValueSchema validates
+// that the typed decode reads into interface values: a tool result and a
+// usage `raw` object. JSON.parse reads 1e400 as Infinity, which z.number()
+// (and so the JSON value schema) rejects.
+func requireJSONValues(part StreamPart) error {
+	switch p := part.(type) {
+	case *ToolResultPart:
+		if hasNonFinite(p.Result, 0) {
+			return errors.New("result must be a JSON value")
+		}
+	case *FinishStepPart:
+		if hasNonFinite(p.Usage.Raw, 0) {
+			return errors.New("usage.raw must hold JSON values")
+		}
+	case *FinishPart:
+		if hasNonFinite(p.TotalUsage.Raw, 0) {
+			return errors.New("totalUsage.raw must hold JSON values")
+		}
+	}
+	return nil
+}
+
+// hasNonFinite reports whether a decoded JSON value holds a NaN or +-Inf
+// number at any depth.
+func hasNonFinite(v any, depth int) bool {
+	if depth > 10000 {
+		return false
+	}
+	switch x := v.(type) {
+	case float64:
+		return math.IsInf(x, 0) || math.IsNaN(x)
+	case map[string]any:
+		for _, e := range x {
+			if hasNonFinite(e, depth+1) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if hasNonFinite(e, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // requireWarningKeys checks the per-variant keys of `harnessV1CallWarningSchema`:
