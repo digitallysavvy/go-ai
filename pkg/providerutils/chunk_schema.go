@@ -429,6 +429,17 @@ func ChunkParseFailure(data string, cause error) (string, error) {
 		err := providererrors.NewJSONParseError(data, syntax)
 		return err.Error(), err
 	}
+	// A secureJsonParse rejection reported by the caller's own decode is
+	// TS's JSONParseError too (safeParseJSON), not a validation error.
+	var parseErr *providererrors.JSONParseError
+	if errors.As(cause, &parseErr) {
+		err := providererrors.NewJSONParseError(data, parseErr.Cause)
+		return err.Error(), err
+	}
+	if errors.Is(cause, jsonexact.ErrForbiddenPrototype) {
+		err := providererrors.NewJSONParseError(data, jsonexact.ErrForbiddenPrototype)
+		return err.Error(), err
+	}
 	compact := data
 	var b bytes.Buffer
 	if err := json.Compact(&b, []byte(data)); err == nil {

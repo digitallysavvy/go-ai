@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
@@ -99,5 +100,18 @@ func TestR96carryChunkForbiddenPrototype(t *testing.T) {
 	}
 	if err := UnmarshalChunk([]byte(`{"choices":[],"constructor":"x"}`), &v); err != nil {
 		t.Errorf("accepted frame failed: %v", err)
+	}
+}
+
+// cr from provb: a cause of securejson.ErrForbiddenPrototype (or a
+// JSONParseError from the caller's decode) is TS's JSONParseError.
+func TestR96carryChunkParseFailureForbiddenCause(t *testing.T) {
+	frame := `{"type":"x"}`
+	want := "JSON parsing failed: Text: " + frame + ".\nError message: Object contains forbidden prototype property"
+	for _, cause := range []error{securejson.ErrForbiddenPrototype, providererrors.NewJSONParseError("inner", securejson.ErrForbiddenPrototype)} {
+		msg, err := ChunkParseFailure(frame, cause)
+		if msg != want || !providererrors.IsJSONParseError(err) || err.Error() != want {
+			t.Errorf("ChunkParseFailure(%v) = %q, %T", cause, msg, err)
+		}
 	}
 }
