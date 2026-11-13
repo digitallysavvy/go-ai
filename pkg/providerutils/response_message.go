@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"sort"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -359,23 +360,40 @@ func normalizeResponseToolCall(call types.ToolCall) types.ToolCall {
 	// JSON: the persisted tool-call part and the HMAC approval signature both
 	// need to agree on the same (refined) input. Mirrors the TS SDK, which
 	// has only a single `input` field that carries the refined value.
-	if call.Arguments != nil {
-		return stripResponseToolCallMetadata(call)
-	}
-	if call.RawArguments != "" {
-		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(call.RawArguments), &parsed); err != nil {
-			call.Arguments = map[string]interface{}{}
-			return stripResponseToolCallMetadata(call)
-		}
-		if parsed == nil {
-			parsed = map[string]interface{}{}
-		}
-		call.Arguments = parsed
-		return stripResponseToolCallMetadata(call)
-	}
-	call.Arguments = map[string]interface{}{}
+	call.Arguments = responseToolCallInput(call.Arguments, call.RawArguments, call.Invalid)
 	return stripResponseToolCallMetadata(call)
+}
+
+// responseToolCallInput is the input a response message replays for a tool
+// call. TS `part.invalid && typeof part.input !== 'object' ? {} :
+// part.input`: an invalid call's input is the raw text when safeParseJSON
+// (secureJsonParse) rejects it, a `__proto__` key included, so it replays as
+// {} rather than the provider's decoded arguments. Otherwise the arguments
+// win; raw text that was never decoded parses as safeParseJSON does (a
+// number beyond the double range reads as +-Inf), {} when it does not parse.
+func responseToolCallInput(args map[string]interface{}, raw string, invalid bool) map[string]interface{} {
+	if invalid && JSTrim(raw) != "" {
+		var value interface{}
+		if err := jsonexact.Unmarshal([]byte(raw), &value); err != nil {
+			return map[string]interface{}{}
+		}
+		// A non-object value (a custom tool's text, a number) is not an
+		// object; Go arguments cannot hold null or an array either.
+		if _, ok := value.(map[string]interface{}); !ok {
+			return map[string]interface{}{}
+		}
+	}
+	if args != nil {
+		return args
+	}
+	if raw != "" {
+		var parsed map[string]interface{}
+		if err := jsonexact.Unmarshal([]byte(raw), &parsed); err != nil || parsed == nil {
+			return map[string]interface{}{}
+		}
+		return parsed
+	}
+	return map[string]interface{}{}
 }
 
 func stripResponseToolCallMetadata(call types.ToolCall) types.ToolCall {
@@ -516,8 +534,11 @@ func providerMetadataOptions(metadata json.RawMessage) map[string]interface{} {
 	if len(metadata) == 0 || string(metadata) == "null" {
 		return nil
 	}
+	// TS passes the providerMetadata object on as is (no parse): a key such
+	// as __proto__ stays, and a number beyond the double range is the
+	// Infinity JSON.parse read it as (written back as null).
 	var options map[string]interface{}
-	if err := json.Unmarshal(metadata, &options); err != nil || len(options) == 0 {
+	if err := jsonexact.UnmarshalPlain(metadata, &options); err != nil || len(options) == 0 {
 		return nil
 	}
 	return options
@@ -655,21 +676,6 @@ func normalizeResponseToolCallContent(part types.ToolCallContent) types.ToolCall
 	// See normalizeResponseToolCall: Arguments wins over a reparse of the raw
 	// Input string so a refined input is not overwritten by the stale
 	// pre-refinement JSON.
-	if part.Arguments != nil {
-		return part
-	}
-	if part.Input != "" {
-		var parsed map[string]interface{}
-		if err := json.Unmarshal([]byte(part.Input), &parsed); err != nil {
-			part.Arguments = map[string]interface{}{}
-			return part
-		}
-		if parsed == nil {
-			parsed = map[string]interface{}{}
-		}
-		part.Arguments = parsed
-		return part
-	}
-	part.Arguments = map[string]interface{}{}
+	part.Arguments = responseToolCallInput(part.Arguments, part.Input, part.Invalid)
 	return part
 }
