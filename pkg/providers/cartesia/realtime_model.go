@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -368,7 +369,13 @@ func (m *RealtimeModel) finishManualTranscript(event cartesiaRealtimeWireEvent, 
 	combinedObj := jsonorder.New()
 	combinedObj.Set("event", parsed(raw))
 	combinedObj.Set("transcriptEvents", transcriptEvents)
-	combinedObj.Set("duration", json.Number(providerutils.JSNumberString(state.duration)))
+	// JSON.stringify writes a non-finite sum (durations that overflow the
+	// double range) as null.
+	var duration interface{}
+	if !math.IsInf(state.duration, 0) && !math.IsNaN(state.duration) {
+		duration = json.Number(providerutils.JSNumberString(state.duration))
+	}
+	combinedObj.Set("duration", duration)
 	combined, _ := json.Marshal(combinedObj)
 	return []provider.RealtimeServerEvent{
 		{Type: "audio-committed", ItemID: itemID, Raw: raw},
