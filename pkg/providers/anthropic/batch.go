@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	stdhttp "net/http"
@@ -250,7 +251,9 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if batch.ArchivedAt != nil {
 		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch \"%s\" results are no longer available.", opts.BatchID), nil)
 	}
-	if batch.ResultsURL == nil || *batch.ResultsURL == "" {
+	// TS results_url == null: an empty URL goes on to getFromApi, whose URL
+	// validation rejects it (DownloadError "Invalid URL: ").
+	if batch.ResultsURL == nil {
 		return nil, providererrors.NewInvalidResponseDataError(batch,
 			fmt.Sprintf("Anthropic batch \"%s\" completed without batch output.", opts.BatchID))
 	}
@@ -877,13 +880,25 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 // anthropicBatchResultLineSchema ({custom_id: string, result: unknown}).
 func anthropicBatchLineError(line []byte) error {
 	if syntax := jsonexact.Unmarshal(line, new(interface{})); syntax != nil {
-		return providererrors.NewJSONParseError(string(line), syntax)
+		return jsonParseFailure(string(line), syntax)
 	}
 	message := zodlite.ValidationMessage(zBatchResultLine, string(line))
 	if message == "" {
 		return nil
 	}
 	return providererrors.NewValidationErrorWithContext(compactJSON(string(line)), validationIssueText(message), nil, &providererrors.ValidationContext{})
+}
+
+// jsonParseFailure is TS safeParseJSON's JSONParseError for text: a
+// secureJsonParse rejection, which jsonexact already reports as a
+// JSONParseError, keeps its SyntaxError as the cause instead of nesting a
+// second JSONParseError.
+func jsonParseFailure(text string, err error) *providererrors.JSONParseError {
+	var parseErr *providererrors.JSONParseError
+	if errors.As(err, &parseErr) {
+		return providererrors.NewJSONParseError(text, parseErr.Cause)
+	}
+	return providererrors.NewJSONParseError(text, err)
 }
 
 func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLineWire) *provider.BatchV4ItemResult {

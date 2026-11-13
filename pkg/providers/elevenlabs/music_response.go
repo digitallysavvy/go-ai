@@ -2,6 +2,7 @@ package elevenlabs
 
 import (
 	"bytes"
+	"errors"
 	"regexp"
 	"strings"
 
@@ -120,7 +121,7 @@ func parseMusicTimestampsResponse(contentType string, body []byte) (*musicTimest
 func parseMusicMetadata(text string) (*musicTimestampsResponse, error) {
 	var raw interface{}
 	if err := jsonexact.Unmarshal([]byte(text), &raw); err != nil {
-		return nil, &providererrors.JSONParseError{Text: text, Cause: err}
+		return nil, jsonParseFailure(text, err)
 	}
 	if message := zodlite.ValidationMessage(musicMetadataSchema, text); message != "" {
 		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(text), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
@@ -142,6 +143,18 @@ func parseMusicMetadata(text string) (*musicTimestampsResponse, error) {
 		}
 	}
 	return out, nil
+}
+
+// jsonParseFailure is TS safeParseJSON's JSONParseError for text: a
+// secureJsonParse rejection, which jsonexact already reports as a
+// JSONParseError, keeps its SyntaxError as the cause instead of nesting a
+// second JSONParseError.
+func jsonParseFailure(text string, err error) *providererrors.JSONParseError {
+	var parseErr *providererrors.JSONParseError
+	if errors.As(err, &parseErr) {
+		return providererrors.NewJSONParseError(text, parseErr.Cause)
+	}
+	return providererrors.NewJSONParseError(text, err)
 }
 
 func findMusicBytes(data, pattern []byte, from int) int {

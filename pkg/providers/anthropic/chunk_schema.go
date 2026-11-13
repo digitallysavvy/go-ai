@@ -350,6 +350,13 @@ func anthropicResponseValidator(providerName string) func(int, http.Header, []by
 // anthropicSchemaValidator is anthropicResponseValidator for any schema.
 func anthropicSchemaValidator(providerName string, schema zodlite.Node) func(int, http.Header, []byte) error {
 	return func(statusCode int, headers http.Header, body []byte) error {
+		// TS safeParseJSON: a body that is not JSON (or that secureJsonParse
+		// rejects) is the "Invalid JSON response" APICallError caused by the
+		// JSONParseError.
+		var parsed interface{}
+		if jsonexact.Decode(body, &parsed) != nil {
+			return providerutils.InvalidJSONResponseError(providerName, statusCode, headers, body, nil)
+		}
 		message := zodlite.ValidationMessage(schema, string(body))
 		if message == "" {
 			return nil

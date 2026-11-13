@@ -93,7 +93,7 @@ func parseSpeechTimestampsResponse(statusCode int, headers http.Header, body []b
 		}
 	}
 	if err := jsonexact.Unmarshal([]byte(text), &raw); err != nil {
-		return nil, invalid(&providererrors.JSONParseError{Text: text, Cause: err})
+		return nil, invalid(jsonParseFailure(text, err))
 	}
 	if message := zodlite.ValidationMessage(speechTimestampsResponseSchema, text); message != "" {
 		return nil, invalid(providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(text), zodlite.IssueText(message), nil, &providererrors.ValidationContext{}))
@@ -112,7 +112,7 @@ func parseSpeechTimestampsResponse(statusCode int, headers http.Header, body []b
 		} `json:"voice_segments"`
 	}
 	if err := jsonexact.Unmarshal([]byte(text), &wire); err != nil {
-		return nil, invalid(&providererrors.JSONParseError{Text: text, Cause: err})
+		return nil, invalid(jsonParseFailure(text, err))
 	}
 	// TS convertBase64ToUint8Array (atob throws on invalid input).
 	audio, err := fileutil.ConvertBase64ToBytes(wire.AudioBase64)

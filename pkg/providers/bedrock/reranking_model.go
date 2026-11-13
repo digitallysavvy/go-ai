@@ -3,7 +3,6 @@ package bedrock
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // RerankingModel implements provider.RerankingModel for Amazon Bedrock.
@@ -50,7 +50,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	if err != nil {
 		return nil, err
 	}
-	bodyBytes, err := json.Marshal(body)
+	// JSON.stringify: a non-finite number in a JSON document or
+	// additionalModelRequestFields is written as null (ruling 4).
+	bodyBytes, err := jsonstr.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal rerank request: %w", err)
 	}
