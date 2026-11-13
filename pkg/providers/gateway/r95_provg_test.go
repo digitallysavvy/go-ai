@@ -225,3 +225,46 @@ func TestR95provgVideoGenerateRepeatedResponseHeader(t *testing.T) {
 		t.Fatalf("X-R95provg = %q, want %q (headers %v)", got, "a, b", res.Response.Headers)
 	}
 }
+
+// TS onSocketError then asGatewayError: a Gateway socket that fails to open
+// (a 401 handshake) is a GatewayError with the stream's connection error
+// text; a signal aborted before the open is the reason itself.
+func TestR95provgStreamRefusedHandshakeAndPreAbort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	res, err := newTestGatewayTranscriptionModel(t, srv.URL).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio: &r95provgOpenAudio{}, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := r95provgDrain(t, func() error { _, err := res.Stream.Next(); return err })
+	if !gatewayerrors.IsGatewayError(got) || got.Error() != "Invalid error response format: Gateway request failed: Connection error on AI Gateway transcription stream" {
+		t.Errorf("transcription: err = %T %v", got, got)
+	}
+	sres, err := newTestGatewaySpeechModel(t, srv.URL).DoStreamSpeech(context.Background(), &provider.SpeechStreamOptions{Text: newSpeechTestText()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = r95provgDrain(t, func() error { _, err := sres.Stream.Next(); return err })
+	if !gatewayerrors.IsGatewayError(got) || got.Error() != "Invalid error response format: Gateway request failed: Connection error on AI Gateway speech stream" {
+		t.Errorf("speech: err = %T %v", got, got)
+	}
+
+	reason := errors.New("r95provg aborted before open")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(reason)
+	res, err = newTestGatewayTranscriptionModel(t, srv.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio: &r95provgOpenAudio{}, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err == nil {
+		if got := r95provgDrain(t, func() error { _, err := res.Stream.Next(); return err }); got != reason {
+			t.Errorf("pre-aborted transcription: err = %v, want the reason", got)
+		}
+	} else if err != reason {
+		t.Errorf("pre-aborted transcription: DoStream err = %v", err)
+	}
+}

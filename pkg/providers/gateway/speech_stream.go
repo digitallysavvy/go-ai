@@ -239,7 +239,7 @@ func (s *gatewaySpeechStream) run(cfg gatewaySpeechStreamConfig) {
 	closeInfo := &wsutil.CloseInfo{}
 	conn, err := wsutil.Dial(s.Context(), cfg.url, wsutil.DialOptions{Headers: cfg.headers, Protocols: cfg.protocols, WrapConn: closeInfo.Wrap})
 	if err != nil {
-		fail(err)
+		fail(gatewayDialError(s.Context(), "Connection error on AI Gateway speech stream", err))
 		return
 	}
 	s.SetConn(conn)

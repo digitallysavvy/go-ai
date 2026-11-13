@@ -199,7 +199,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 
 	conn, err := s.dial(cfg.url, cfg.protocols, cfg.headers)
 	if err != nil {
-		fail(err)
+		fail(gatewayDialError(s.Context(), "Connection error on AI Gateway transcription stream", err))
 		return
 	}
 	s.SetConn(conn)
@@ -706,4 +706,25 @@ func failOnAbort(setErr func(error), ctx context.Context) {
 	if ctx != nil && ctx.Err() != nil {
 		setErr(context.Cause(ctx))
 	}
+}
+
+// gatewaySocketOpenError is TS onSocketError for a WebSocket that fails to open (a refused
+// handshake, an unreachable host): the provider's socket error text, with the
+// dial error kept reachable through Unwrap. An abort while the handshake is
+// pending is the abort reason instead (TS onAbort).
+type gatewaySocketOpenError struct {
+	msg   string
+	cause error
+}
+
+func (e *gatewaySocketOpenError) Error() string { return e.msg }
+func (e *gatewaySocketOpenError) Unwrap() error { return e.cause }
+
+// gatewayDialError is the error of a failed dial: the cancel cause when the stream's
+// context is done (TS onAbort(abortSignal.reason)), else the socket error.
+func gatewayDialError(ctx context.Context, msg string, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return &gatewaySocketOpenError{msg: msg, cause: err}
 }

@@ -352,7 +352,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	closeInfo := &wsutil.CloseInfo{}
 	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
-		fail(err)
+		fail(googleLiveDialError(s.Context(), "Google Live transcription error", err))
 		return
 	}
 	s.SetConn(conn)
@@ -653,4 +653,25 @@ func failOnAbort(setErr func(error), ctx context.Context) {
 	if ctx != nil && ctx.Err() != nil {
 		setErr(context.Cause(ctx))
 	}
+}
+
+// googleLiveSocketOpenError is TS onSocketError for a WebSocket that fails to open (a refused
+// handshake, an unreachable host): the provider's socket error text, with the
+// dial error kept reachable through Unwrap. An abort while the handshake is
+// pending is the abort reason instead (TS onAbort).
+type googleLiveSocketOpenError struct {
+	msg   string
+	cause error
+}
+
+func (e *googleLiveSocketOpenError) Error() string { return e.msg }
+func (e *googleLiveSocketOpenError) Unwrap() error { return e.cause }
+
+// googleLiveDialError is the error of a failed dial: the cancel cause when the stream's
+// context is done (TS onAbort(abortSignal.reason)), else the socket error.
+func googleLiveDialError(ctx context.Context, msg string, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return &googleLiveSocketOpenError{msg: msg, cause: err}
 }

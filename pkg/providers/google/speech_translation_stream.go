@@ -243,7 +243,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 	closeInfo := &wsutil.CloseInfo{}
 	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
-		fail(err)
+		fail(googleLiveDialError(s.Context(), "Google Live translation error", err))
 		return
 	}
 	s.SetConn(conn)
