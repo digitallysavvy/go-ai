@@ -239,10 +239,18 @@ func NewProviderErrorFromResponse(provider string, statusCode int, errorCode, me
 // (extract-response-headers.ts: Object.fromEntries(response.headers)).
 func newProviderError(provider string, statusCode int, errorCode, message string, cause error, replaceEmpty, canonicalHeaders bool) *ProviderError {
 	// A body that failed its response schema (TS createJsonResponseHandler)
-	// is already the final APICallError "Invalid JSON response"; it is not
-	// re-wrapped.
+	// is already the final APICallError "Invalid JSON response", and a
+	// successful response without a body is the final APICallError "Failed
+	// to process successful response" (internalhttp.DoStream); neither is
+	// re-wrapped. The latter is built without a provider name, so it takes
+	// the handler's.
 	var inner *ProviderError
-	if errors.As(cause, &inner) && inner.Message == InvalidJSONResponseMessage {
+	if errors.As(cause, &inner) && isFinalResponseError(inner) {
+		if inner.Provider == "" && provider != "" {
+			named := *inner
+			named.Provider = provider
+			return &named
+		}
 		return inner
 	}
 	e := &ProviderError{
@@ -345,7 +353,7 @@ type ErrorSchema func(body interface{}) (message string, data interface{}, ok bo
 func NewSchemaProviderError(provider string, cause error, schema ErrorSchema) *ProviderError {
 	e := newProviderError(provider, 0, "", cause.Error(), cause, false, false)
 	var hs HTTPStatusDetails
-	if e.StatusCode == 0 || !errors.As(cause, &hs) || e.Message == InvalidJSONResponseMessage {
+	if e.StatusCode == 0 || !errors.As(cause, &hs) || isFinalResponseError(e) {
 		return e
 	}
 	e.Message, e.Data = StatusText(cause, e.StatusCode), nil
