@@ -40,7 +40,9 @@ func parseFireworksProviderError(err error) error {
 		return nil
 	}
 	var payload fireworksErrorPayload
-	if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr != nil || len(payload.Error) == 0 {
+	// TS z.union([z.string(), z.object(...)]): a null error fails the schema
+	// (json.Unmarshal of null into a string would succeed with "").
+	if jsonErr := securejson.Unmarshal(statusErr.Body, &payload); jsonErr != nil || len(payload.Error) == 0 || string(payload.Error) == "null" {
 		return nil
 	}
 
