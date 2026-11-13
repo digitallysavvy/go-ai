@@ -286,3 +286,68 @@ func TestR95provbResponsesEmptyCallIDKept(t *testing.T) {
 		t.Error("no approval request")
 	}
 }
+
+// TestR95provbResponsesEmptyItemIDAndNamespace: TS metadata is
+// `itemId: part.id` (a required string) and `namespace` when it is != null,
+// so a present "" is kept; the stream reads the namespace from the done item
+// only, and a computer call's tool-input-start id is `call_id ?? id`.
+func TestR95provbResponsesEmptyItemIDAndNamespace(t *testing.T) {
+	var lm ResponsesLanguageModel
+	res, err := lm.convertResponse(responses.ResponsesAPIResponse{Output: []json.RawMessage{
+		[]byte(`{"type":"function_call","id":"","call_id":"c1","name":"f","arguments":"{}","namespace":""}`),
+		[]byte(`{"type":"message","id":"","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[]}]}`),
+	}}, true, "", nil, nil, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(res.ToolCalls[0].ProviderMetadata); string(got) != `{"openai":{"itemId":"","namespace":""}}` {
+		t.Errorf("function call metadata = %s", got)
+	}
+	textMeta := ""
+	for _, c := range res.Content {
+		if tc, ok := c.(types.TextContent); ok {
+			textMeta = string(tc.ProviderMetadata)
+		}
+	}
+	if !strings.Contains(textMeta, `"itemId":""`) {
+		t.Errorf("text metadata = %q, want itemId \"\"", textMeta)
+	}
+
+	stream := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu_1","call_id":"","status":"in_progress"}}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"c1","name":"f","arguments":"","namespace":"ns"}}
+
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"c1","name":"f","arguments":"{}","status":"completed"}}
+
+data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"c2","name":"f","arguments":""}}
+
+data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"c2","name":"f","arguments":"{}","status":"completed","namespace":""}}
+
+`
+	s := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(stream)), false, "web_search", "openai", nil)
+	var computerStart string
+	computerSeen := false
+	metas := map[string]string{}
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeToolInputStart && !computerSeen && c.ToolCall != nil {
+			computerSeen, computerStart = true, c.ToolCall.ID
+		}
+		if c.Type == provider.ChunkTypeToolCall && c.ToolCall != nil {
+			b, _ := json.Marshal(c.ToolCall.ProviderMetadata)
+			metas[c.ToolCall.ID] = string(b)
+		}
+	}
+	if !computerSeen || computerStart != "" {
+		t.Errorf("computer tool-input-start id = %q (seen %v), want \"\"", computerStart, computerSeen)
+	}
+	if metas["c1"] != `{"openai":{"itemId":"fc_1"}}` {
+		t.Errorf("c1 metadata = %s, want no namespace (the done item has none)", metas["c1"])
+	}
+	if metas["c2"] != `{"openai":{"itemId":"fc_2","namespace":""}}` {
+		t.Errorf("c2 metadata = %s, want namespace \"\"", metas["c2"])
+	}
+}

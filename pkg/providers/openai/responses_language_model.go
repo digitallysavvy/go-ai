@@ -1705,7 +1705,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolName:         item.Name,
 				Arguments:        args,
 				RawArguments:     item.Arguments,
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async, item.Caller),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, responsesRawItemString(rawItem, "namespace"), item.Async, item.Caller),
 			}
 			pushCall(tc)
 
@@ -1731,7 +1731,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolName:         openAIDeclaredToolName(tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, nil, nil, nil),
 			})
 
 		case "computer_call":
@@ -1780,7 +1780,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolName:         openAIDeclaredToolName(tools, "openai.computer", "computer"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, nil, nil, nil),
 			})
 
 		case "reasoning":
@@ -1835,7 +1835,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
 				RawArguments:     string(customRaw),
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, item.Async, nil),
 			})
 
 		case "program":
@@ -1853,7 +1853,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderExecuted: true,
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil),
 			}
 			toolCalls = append(toolCalls, tc)
 			result.Content = append(result.Content, types.ToolCallContent{
@@ -1878,7 +1878,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 				// TS never sets providerExecuted on this tool-result, only
 				// on the tool-call; it carries the output item's id.
-				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
+				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil)),
 			})
 
 		case "web_search_call":
@@ -2013,7 +2013,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               toolCallID,
 				ToolName:         toolName,
 				RawArguments:     string(inputRaw),
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil),
 			}
 			json.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
 			if isHosted {
@@ -2043,7 +2043,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolCallID:       toolCallID,
 				ToolName:         openAIToolSearchDisplayName(tools),
 				Result:           map[string]interface{}{"tools": matchedTools},
-				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
+				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil)),
 			})
 
 		case "file_search_call":
@@ -2203,7 +2203,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					// TS never sets providerExecuted/dynamic on this
 					// tool-result, only on the tool-call (matches the
 					// streaming path's output_item.done handler below).
-					ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
+					ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, nil, nil, nil)),
 				},
 			)
 
@@ -2459,13 +2459,12 @@ func computerActionToSDK(action map[string]interface{}) interface{} {
 	return o
 }
 
-func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, async *bool, caller *responses.ToolCaller) map[string]interface{} {
-	openai := map[string]interface{}{}
-	if itemID != "" {
-		openai["itemId"] = itemID
-	}
-	if namespace != "" {
-		openai["namespace"] = namespace
+func openAIResponsesToolCallMetadata(providerName, itemID string, namespace *string, async *bool, caller *responses.ToolCaller) map[string]interface{} {
+	// TS `itemId: part.id`: every item's id is a required string in the
+	// response schema, so a present "" is kept.
+	openai := map[string]interface{}{"itemId": itemID}
+	if namespace != nil { // TS namespace != null: a present "" is kept
+		openai["namespace"] = *namespace
 	}
 	// Row 4a09793: forward async on tool-call replay/decode metadata.
 	if async != nil {
@@ -2480,9 +2479,6 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 		} else {
 			openai["caller"] = map[string]interface{}{"type": caller.Type}
 		}
-	}
-	if len(openai) == 0 {
-		return nil
 	}
 	return map[string]interface{}{providerName: openai}
 }
@@ -2504,18 +2500,13 @@ func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID string, 
 }
 
 func openAIResponsesMessageProviderOptions(providerName, itemID string, phase *string, annotations []responses.TextAnnotation) map[string]interface{} {
-	openai := map[string]interface{}{}
-	if itemID != "" {
-		openai["itemId"] = itemID
-	}
+	// TS `itemId: part.id` (a required string; a present "" is kept).
+	openai := map[string]interface{}{"itemId": itemID}
 	if phase != nil && *phase != "" {
 		openai["phase"] = *phase
 	}
 	if len(annotations) > 0 {
 		openai["annotations"] = annotations
-	}
-	if len(openai) == 0 {
-		return nil
 	}
 	return map[string]interface{}{providerName: openai}
 }
@@ -2730,6 +2721,36 @@ func responsesItemEncryptedContent(data []byte, event bool) interface{} {
 		return nil
 	}
 	return *enc
+}
+
+// responsesEventItemString returns an event's item[key] when it is a present,
+// non-null JSON string (TS `!= null` / `??` presence).
+func responsesEventItemString(data []byte, key string) (string, bool) {
+	var v struct {
+		Item map[string]json.RawMessage `json:"item"`
+	}
+	if jsonexact.Unmarshal(data, &v) != nil {
+		return "", false
+	}
+	var str *string
+	if raw, ok := v.Item[key]; !ok || json.Unmarshal(raw, &str) != nil || str == nil {
+		return "", false
+	}
+	return *str, true
+}
+
+// responsesRawItemString returns an item's key when it is a present,
+// non-null JSON string (TS `!= null`), else nil.
+func responsesRawItemString(item json.RawMessage, key string) *string {
+	var fields map[string]json.RawMessage
+	if jsonexact.Unmarshal(item, &fields) != nil {
+		return nil
+	}
+	var str *string
+	if raw, ok := fields[key]; !ok || json.Unmarshal(raw, &str) != nil {
+		return nil
+	}
+	return str
 }
 
 // nonEmptyOrNil returns nil for an empty string so it marshals as JSON null
@@ -2951,8 +2972,11 @@ type responsesToolAccum struct {
 	itemID    string
 	name      string
 	namespace string
-	arguments string
-	async     *bool
+	// namespaceSet: the done item carried a namespace (TS
+	// item.namespace != null; a present "" is kept).
+	namespaceSet bool
+	arguments    string
+	async        *bool
 	// suppressInputStreaming is set for an undeclared "parallel" wrapper call:
 	// its input deltas are buffered and replayed (TS isUndeclaredParallelToolCall).
 	suppressInputStreaming bool
@@ -3661,8 +3685,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				// TS: tool-input-start under call_id ?? id; the input and
 				// tool-input-end follow at output_item.done.
 				computerCallID := e.Item.ID
-				if e.Item.CallID != "" {
-					computerCallID = e.Item.CallID
+				if callID, ok := responsesEventItemString([]byte(event.Data), "call_id"); ok {
+					computerCallID = callID // TS call_id ?? id: a present "" is kept
 				}
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputStart,
@@ -4418,8 +4442,11 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			if item.ID != "" {
 				accum.itemID = item.ID
 			}
-			if item.Namespace != "" {
-				accum.namespace = item.Namespace
+			// TS reads the namespace from the done item only.
+			ns := responsesRawItemString(e.Item, "namespace")
+			accum.namespace, accum.namespaceSet = "", ns != nil
+			if ns != nil {
+				accum.namespace = *ns
 			}
 			if item.CallID != "" {
 				callID = item.CallID
@@ -4466,11 +4493,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				}
 			}
 			end := &provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID, ToolCall: &types.ToolCall{ID: callID, ToolName: name}}
-			if accum.namespace != "" {
+			var namespace *string
+			if accum.namespaceSet || accum.namespace != "" {
+				namespace = &accum.namespace
 				end.ProviderMetadata, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"namespace": accum.namespace}})
 			}
 			s.flushQueue = append(s.flushQueue, end,
-				newToolCall(callID, name, rawArguments, openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, async, item.Caller)))
+				newToolCall(callID, name, rawArguments, openAIResponsesToolCallMetadata(s.providerName, accum.itemID, namespace, async, item.Caller)))
 		}
 		if !accum.suppressInputStreaming {
 			emitUnexpanded()
@@ -4677,7 +4706,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolName:         openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, nil, nil, nil),
 			},
 		})
 
@@ -4740,7 +4769,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolName:         openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
 				Arguments:        computerArgs,
 				RawArguments:     computerRawArgs,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, nil, nil, nil),
 			},
 		})
 
@@ -4768,7 +4797,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
 				RawArguments:     customToolRaw(item.Input),
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, item.Async, nil),
 			},
 		})
 
@@ -4818,7 +4847,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderExecuted: true,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, nil, nil),
 			},
 		})
 
@@ -4835,7 +4864,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolCallID:       item.CallID,
 				ToolName:         openAIDeclaredToolName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Result:           map[string]interface{}{"result": item.Result, "status": item.Status},
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, nil, nil),
 			},
 		})
 
@@ -4972,7 +5001,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			ToolName:         toolCall.toolName,
 			RawArguments:     string(inputRaw),
 			ProviderExecuted: isHosted,
-			ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+			ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, nil, nil),
 		}
 		json.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
 		return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc})
@@ -5002,7 +5031,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolCallID:       toolCallID,
 				ToolName:         s.toolSearchToolName,
 				Result:           map[string]interface{}{"tools": matchedTools},
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, nil, nil),
 			},
 		})
 
@@ -5056,7 +5085,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolCallID:       toolCallID,
 				ToolName:         toolName,
 				Result:           mcpResult,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, nil, nil),
 			},
 		})
 
