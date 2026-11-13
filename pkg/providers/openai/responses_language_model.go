@@ -4449,24 +4449,16 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		callID, name, rawArguments := accum.id, accum.name, accum.arguments
 		var item responses.FunctionCallItem
 		if err := jsonexact.Unmarshal(e.Item, &item); err == nil {
-			if item.ID != "" {
-				accum.itemID = item.ID
-			}
-			// TS reads the namespace from the done item only.
+			// TS reads item.id / call_id / name / arguments of the done item
+			// verbatim (required strings in the chunk schema, so a present ""
+			// is kept), and the namespace from the done item only.
+			accum.itemID = item.ID
 			ns := responsesRawItemString(e.Item, "namespace")
 			accum.namespace, accum.namespaceSet = "", ns != nil
 			if ns != nil {
 				accum.namespace = *ns
 			}
-			if item.CallID != "" {
-				callID = item.CallID
-			}
-			if item.Name != "" {
-				name = item.Name
-			}
-			if item.Arguments != "" || accum.arguments == "" {
-				rawArguments = item.Arguments
-			}
+			callID, name, rawArguments = item.CallID, item.Name, item.Arguments
 		}
 		async := item.Async
 		if async == nil {
