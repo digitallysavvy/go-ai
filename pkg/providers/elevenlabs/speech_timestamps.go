@@ -1,7 +1,6 @@
 package elevenlabs
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -93,7 +92,7 @@ func parseSpeechTimestampsResponse(statusCode int, headers http.Header, body []b
 			ResponseBody:    text,
 		}
 	}
-	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(text), &raw); err != nil {
 		return nil, invalid(&providererrors.JSONParseError{Text: text, Cause: err})
 	}
 	if message := zodlite.ValidationMessage(speechTimestampsResponseSchema, text); message != "" {

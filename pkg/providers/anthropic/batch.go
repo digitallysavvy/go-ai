@@ -876,7 +876,7 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 // anthropicBatchLineError validates one results line against
 // anthropicBatchResultLineSchema ({custom_id: string, result: unknown}).
 func anthropicBatchLineError(line []byte) error {
-	if syntax := json.Unmarshal(line, new(interface{})); syntax != nil {
+	if syntax := jsonexact.Unmarshal(line, new(interface{})); syntax != nil {
 		return providererrors.NewJSONParseError(string(line), syntax)
 	}
 	message := zodlite.ValidationMessage(zBatchResultLine, string(line))
@@ -995,11 +995,11 @@ func validateAnthropicBatchMessage(raw json.RawMessage) (json.RawMessage, bool) 
 		return raw, true
 	}
 	var full map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &full); err != nil || full == nil {
+	if err := jsonexact.Unmarshal(raw, &full); err != nil || full == nil {
 		return nil, false
 	}
 	var parts []json.RawMessage
-	if err := json.Unmarshal(full["content"], &parts); err != nil || parts == nil {
+	if err := jsonexact.Unmarshal(full["content"], &parts); err != nil || parts == nil {
 		return nil, false
 	}
 	withContent := func(content []json.RawMessage) (json.RawMessage, bool) {
@@ -1024,7 +1024,7 @@ func validateAnthropicBatchMessage(raw json.RawMessage) (json.RawMessage, bool) 
 			continue
 		}
 		var fields map[string]interface{}
-		if err := json.Unmarshal(part, &fields); err != nil || fields == nil {
+		if err := jsonexact.Unmarshal(part, &fields); err != nil || fields == nil {
 			return nil, false
 		}
 		blockType, isString := fields["type"].(string)

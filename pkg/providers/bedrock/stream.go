@@ -8,10 +8,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -161,7 +163,7 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		// textDecoder.decode(body) (BOM dropped, invalid UTF-8 as U+FFFD).
 		data := prompt.DecodeUTF8Text(event.Data)
 		var rawPayload interface{}
-		if err := json.Unmarshal([]byte(data), &rawPayload); err != nil {
+		if err := jsonexact.Unmarshal([]byte(data), &rawPayload); err != nil {
 			// Mirrors TS doStream's !chunk.success branch (amazon-bedrock-chat-
 			// language-model.ts): report the error but keep reading — the stream
 			// is not aborted — and mark finishReason as error in case the stream
@@ -311,7 +313,7 @@ func (s *bedrockConverseStream) handleMetadata(metadata map[string]interface{}) 
 	// is non-empty, replaces providerMetadata with it (no merge across events).
 	payload := map[string]interface{}{}
 	if usage, ok := metadata["usage"].(map[string]interface{}); ok {
-		usageBytes, _ := json.Marshal(usage)
+		usageBytes, _ := jsonstr.Marshal(usage)
 		s.usage = convertBedrockConverseUsage(usageBytes)
 		s.hasUsage = true
 
@@ -571,7 +573,7 @@ func (s *bedrockConverseStream) handleContentBlockStop(value map[string]interfac
 		}
 		var args map[string]interface{}
 		rawInvalid := ""
-		if err := json.Unmarshal([]byte(input), &args); err != nil {
+		if err := jsonexact.Unmarshal([]byte(input), &args); err != nil {
 			// Truncated or malformed input: hand the raw text to the core so
 			// the call is marked invalid (or repaired) instead of running
 			// with silently emptied arguments (TS emits the input string).
@@ -622,7 +624,7 @@ func (s *bedrockConverseStream) flush() (*provider.StreamChunk, error) {
 		Usage:           &usage,
 	}
 	if s.providerMetadataPayload != nil {
-		data, _ := json.Marshal(map[string]interface{}{
+		data, _ := jsonstr.Marshal(map[string]interface{}{
 			"amazonBedrock": s.providerMetadataPayload,
 			"bedrock":       s.providerMetadataPayload,
 		})

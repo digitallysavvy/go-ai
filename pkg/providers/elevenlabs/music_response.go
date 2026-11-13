@@ -2,7 +2,6 @@ package elevenlabs
 
 import (
 	"bytes"
-	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -120,7 +119,7 @@ func parseMusicTimestampsResponse(contentType string, body []byte) (*musicTimest
 // JSON is a JSONParseError, a schema mismatch a type validation error.
 func parseMusicMetadata(text string) (*musicTimestampsResponse, error) {
 	var raw interface{}
-	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(text), &raw); err != nil {
 		return nil, &providererrors.JSONParseError{Text: text, Cause: err}
 	}
 	if message := zodlite.ValidationMessage(musicMetadataSchema, text); message != "" {

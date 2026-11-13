@@ -18,6 +18,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/net/websocket"
@@ -407,6 +408,9 @@ type elevenLabsRealtimeEvent struct {
 	HasError bool `json:"-"`
 	// Null reports a JSON null message (TS reads raw.message_type of it).
 	Null bool `json:"-"`
+	// Value is the parsed message as safeParseJSON returned it (the raw
+	// chunk's rawValue).
+	Value interface{} `json:"-"`
 }
 
 // decodeElevenLabsRealtimeEvent reads a server message the way TS does: any
@@ -423,7 +427,7 @@ func decodeElevenLabsRealtimeEvent(text string) (elevenLabsRealtimeEvent, bool) 
 		return elevenLabsRealtimeEvent{Null: true}, true
 	}
 	m, _ := value.(map[string]interface{})
-	var ev elevenLabsRealtimeEvent
+	ev := elevenLabsRealtimeEvent{Value: value}
 	ev.MessageType, _ = m["message_type"].(string)
 	if sid, present := m["session_id"]; present && sid != nil {
 		ev.SessionID = jsErrorMessage(sid)
@@ -514,7 +518,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, 
 			msg["previous_text"] = *cfg.previousText
 		}
 		firstChunk = false
-		payload, marshalErr := json.Marshal(msg)
+		payload, marshalErr := jsonstr.Marshal(msg)
 		if marshalErr != nil {
 			continue
 		}
@@ -684,9 +688,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 			}
 
 			if cfg.includeRawChunks {
-				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: raw.Value}) {
 					return
 				}
 			}

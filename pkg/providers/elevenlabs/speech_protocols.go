@@ -1,10 +1,10 @@
 package elevenlabs
 
 import (
-	"encoding/json"
 	"fmt"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // singleContextProtocol is the text-to-speech "stream-input" protocol: one
@@ -81,7 +81,7 @@ func errorText(raw map[string]interface{}) (string, bool) {
 	if s, ok := raw["error"].(string); ok {
 		return s, true
 	}
-	data, err := json.Marshal(raw["error"])
+	data, err := jsonstr.Marshal(raw["error"])
 	if err != nil {
 		return fmt.Sprint(raw["error"]), true
 	}

@@ -1,14 +1,15 @@
 package anthropic
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -95,7 +96,7 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 			// convertBase64ToUint8Array, and anything else without a non-empty
 			// string `bytes` falls back to the raw payload.
 			var parsed interface{}
-			if err := json.Unmarshal([]byte(event.Data), &parsed); err == nil && parsed == nil {
+			if err := jsonexact.Unmarshal([]byte(event.Data), &parsed); err == nil && parsed == nil {
 				return errors.New("Cannot read properties of null (reading 'bytes')") //nolint:staticcheck // TS TypeError text
 			}
 			var bytesValue interface{}
@@ -130,7 +131,7 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 	case "exception":
 		var data interface{}
 		message := event.Data
-		if err := json.Unmarshal([]byte(event.Data), &data); err == nil {
+		if err := jsonexact.Unmarshal([]byte(event.Data), &data); err == nil {
 			if m, ok := data.(map[string]interface{}); ok {
 				if msg, ok := m["message"].(string); ok {
 					message = msg
@@ -160,7 +161,7 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 			"type":  "error",
 			"error": errBody,
 		}
-		encoded, err := json.Marshal(payload)
+		encoded, err := jsonstr.Marshal(payload)
 		if err != nil {
 			return err
 		}

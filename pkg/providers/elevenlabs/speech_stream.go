@@ -2,7 +2,6 @@ package elevenlabs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +19,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -208,7 +208,7 @@ func newElevenLabsSpeechStream(parentCtx context.Context, cfg speechStreamConfig
 // producer (for example a reasoning model) would otherwise hit the server's
 // inactivity timeout. No keepalive follows the end of input.
 func (s *elevenLabsSpeechStream) send(conn *websocket.Conn, cfg speechStreamConfig, errCh chan<- error, message map[string]interface{}) error {
-	data, err := json.Marshal(message)
+	data, err := jsonstr.Marshal(message)
 	if err != nil {
 		return err
 	}

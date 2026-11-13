@@ -63,7 +63,7 @@ func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *pr
 func bedrockErrorData(body []byte, parsed bedrockErrorBody) map[string]interface{} {
 	data := map[string]interface{}{"message": *parsed.Message}
 	var keys map[string]json.RawMessage
-	if json.Unmarshal(body, &keys) == nil {
+	if jsonexact.Unmarshal(body, &keys) == nil {
 		if _, ok := keys["type"]; ok {
 			if parsed.Type != nil {
 				data["type"] = *parsed.Type
