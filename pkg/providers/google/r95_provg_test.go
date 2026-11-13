@@ -163,3 +163,56 @@ func TestR95provgLiveStreamsRefusedHandshakeAndPreAbort(t *testing.T) {
 		t.Errorf("pre-aborted transcription: DoStream err = %v", err)
 	}
 }
+
+// TS cancel() / onAbort run cleanup(), which cancels the caller's audio:
+// also when the consumer closes the stream while a part (here stream-start)
+// is still waiting to be read.
+func TestR95provgLiveCloseWhileEmitPendingCancelsAudio(t *testing.T) {
+	for _, name := range []string{"transcription", "translation"} {
+		t.Run(name, func(t *testing.T) {
+			server := newLiveTranscriptionTestServer(t)
+			defer server.close()
+			audio := newBlockingAudioStream()
+			var stream interface{ Close() error }
+			if name == "transcription" {
+				res, err := newLiveTestModel(t, server.ts.URL).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+					Audio: audio, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				stream = res.Stream
+			} else {
+				res, err := newSpeechTranslationTestModel(t, server.ts.URL, 0).DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+					Audio: audio, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"}, TargetLanguage: "es",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				stream = res.Stream
+			}
+			server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, 2*time.Second)
+			time.Sleep(20 * time.Millisecond)
+			_ = stream.Close()
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				if c, _ := audio.wasCancelled(); c {
+					return
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			t.Fatal("audio not cancelled after Close with a pending part")
+		})
+	}
+}
+
+// googleSpeechTranslationModelOptions: echoTargetLanguage is
+// z.boolean().optional(), so an explicit null is invalid.
+func TestR95provgSpeechTranslationEchoNullRejected(t *testing.T) {
+	if _, err := parseSpeechTranslationModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{"echoTargetLanguage": nil}}); err == nil {
+		t.Fatal("null echoTargetLanguage accepted")
+	}
+	if o, err := parseSpeechTranslationModelOptionsChecked(map[string]interface{}{"google": map[string]interface{}{}}); err != nil || o.EchoTargetLanguage != nil {
+		t.Fatalf("absent: %v %v", o, err)
+	}
+}

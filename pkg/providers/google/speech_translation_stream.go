@@ -214,6 +214,12 @@ func absPCM16(v int16) int {
 func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationStreamConfig) {
 	defer s.CloseParts()
 	defer failOnAbort(s.SetErr, s.abortCtx)
+	// TS cleanup() cancels the caller's audio on every terminal path, also a
+	// consumer cancel or an abort that unblocks a pending emit.
+	if cfg.audio != nil {
+		cfg.audio = &googleLiveAudioCancelOnce{AudioStream: cfg.audio}
+		defer cfg.audio.Cancel(nil)
+	}
 	// Release the session's resources as soon as run() returns for any
 	// reason instead of only on an explicit Close() call, which a consumer
 	// that only drains Next() to io.EOF may never make.

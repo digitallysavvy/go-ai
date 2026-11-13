@@ -64,3 +64,31 @@ func TestR95provgLiveRefusedHandshakeAndPreAbort(t *testing.T) {
 		t.Errorf("pre-aborted: DoStream err = %v", err)
 	}
 }
+
+// TS cancel() runs cleanup(), which cancels the caller's audio: also when
+// the consumer closes the stream while stream-start is still unread.
+func TestR95provgLiveCloseWhileEmitPendingCancelsAudio(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	audio := &chanAudioStream{chunks: make(chan []byte)}
+	res, err := newLiveTestModel(t, server.ts.URL).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio: audio, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, 2*time.Second)
+	time.Sleep(20 * time.Millisecond)
+	_ = res.Stream.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		audio.mu.Lock()
+		c := audio.cancelled
+		audio.mu.Unlock()
+		if c {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("audio not cancelled after Close with a pending part")
+}

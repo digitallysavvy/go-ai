@@ -101,7 +101,8 @@ func parseSpeechTranslationModelOptionsChecked(providerOptions map[string]interf
 	if !isMap {
 		return out, invalidGoogleFilesOptions(fmt.Errorf("google: expected object, received %T", raw))
 	}
-	if v, present := google["echoTargetLanguage"]; present && v != nil {
+	// z.boolean().optional(): an explicit null fails (zod accepts undefined).
+	if v, present := google["echoTargetLanguage"]; present {
 		b, isBool := v.(bool)
 		if !isBool {
 			return out, invalidGoogleFilesOptions(fmt.Errorf("echoTargetLanguage: expected boolean, received %T", v))

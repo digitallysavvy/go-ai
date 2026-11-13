@@ -323,6 +323,12 @@ type googleLiveTranscription struct {
 func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamConfig) {
 	defer s.CloseParts()
 	defer failOnAbort(s.SetErr, s.abortCtx)
+	// TS cleanup() cancels the caller's audio on every terminal path, also a
+	// consumer cancel or an abort that unblocks a pending emit.
+	if cfg.audio != nil {
+		cfg.audio = &googleLiveAudioCancelOnce{AudioStream: cfg.audio}
+		defer cfg.audio.Cancel(nil)
+	}
 	// Release the session's resources as soon as run() returns for any
 	// reason instead of only on an explicit Close() call, which a consumer
 	// that only drains Next() to io.EOF may never make.
@@ -674,4 +680,16 @@ func googleLiveDialError(ctx context.Context, msg string, err error) error {
 		return cause
 	}
 	return &googleLiveSocketOpenError{msg: msg, cause: err}
+}
+
+// googleLiveAudioCancelOnce cancels the caller's audio input once: the first reason wins and a
+// later Cancel is a no-op, so a deferred Cancel(nil) on every terminal path
+// (TS cleanup / cancel()) cannot replace a failure's reason.
+type googleLiveAudioCancelOnce struct {
+	provider.AudioStream
+	once sync.Once
+}
+
+func (a *googleLiveAudioCancelOnce) Cancel(reason error) {
+	a.once.Do(func() { a.AudioStream.Cancel(reason) })
 }
