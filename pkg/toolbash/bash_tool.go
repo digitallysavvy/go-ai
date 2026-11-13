@@ -175,8 +175,10 @@ type bashTool struct {
 }
 
 func (b *bashTool) execute(ctx context.Context, command string) (Output, error) {
-	if err := ctx.Err(); err != nil {
-		return Output{}, err
+	// TS passes the abort signal to sandbox.run, which rejects with the
+	// abort reason (throwIfAborted, or the aborted command).
+	if ctx.Err() != nil {
+		return Output{}, context.Cause(ctx)
 	}
 	runCtx := ctx
 	if b.timeout > 0 {
@@ -190,8 +192,8 @@ func (b *bashTool) execute(ctx context.Context, command string) (Output, error) 
 		WorkingDirectory: b.workingDirectory,
 	})
 	if err != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return Output{}, cerr
+		if ctx.Err() != nil {
+			return Output{}, context.Cause(ctx)
 		}
 		return Output{}, err
 	}
@@ -232,9 +234,9 @@ func (b *bashTool) execute(ctx context.Context, command string) (Output, error) 
 			timedOut = true
 		}
 	}
-	if cerr := ctx.Err(); cerr != nil {
+	if ctx.Err() != nil {
 		_ = proc.Kill()
-		return Output{}, cerr
+		return Output{}, context.Cause(ctx)
 	}
 
 	// Output pipes can stay open when a background child inherited them:

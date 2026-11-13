@@ -162,7 +162,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 			}
 			imageMIME = imageFile.MediaType
 		}
-		if imageMIME == "" || imageMIME == "image" || imageMIME == "image/*" {
+		if !fileutil.IsFullMediaType(imageMIME) { // TS isFullMediaType: "image", "image/" and "image/*" are not
 			// TS detectMediaType({ data, topLevelType: 'image' }), else image/png.
 			imageMIME = "image/png"
 			if detected, ok := fileutil.DetectMediaTypeSignature(imageData, "image"); ok {

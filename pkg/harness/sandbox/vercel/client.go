@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -208,7 +209,7 @@ func toAPIError(err error) error {
 	var body struct {
 		Error map[string]json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal(statusErr.Body, &body) == nil {
+	if jsonexact.Unmarshal(statusErr.Body, &body) == nil {
 		_ = json.Unmarshal(body.Error["message"], &apiErr.Message)
 		_ = json.Unmarshal(body.Error["code"], &apiErr.Code)
 	}
@@ -468,7 +469,7 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 			var probe struct {
 				Command *commandWire `json:"command"`
 			}
-			if err := json.Unmarshal(raw, &probe); err != nil || probe.Command == nil {
+			if err := jsonexact.Unmarshal(raw, &probe); err != nil || probe.Command == nil {
 				return fmt.Errorf("vercel sandbox: invalid command response: %s", truncateForError(raw))
 			}
 			first.Command = *probe.Command
@@ -478,7 +479,7 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 		var probe struct {
 			Command *commandWire `json:"command"`
 		}
-		if json.Unmarshal(raw, &probe) == nil && probe.Command != nil {
+		if jsonexact.Unmarshal(raw, &probe) == nil && probe.Command != nil {
 			result.Command = *probe.Command
 			finished = true
 			return errStopJSONLines

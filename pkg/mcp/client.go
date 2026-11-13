@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
@@ -1670,7 +1671,7 @@ func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessag
 		ResultType json.RawMessage `json:"resultType"`
 	}
 	if len(rawResult) > 0 {
-		_ = json.Unmarshal(rawResult, &probe)
+		_ = jsonexact.Unmarshal(rawResult, &probe)
 	}
 	// TS checks `input_required` in every era, the missing resultType
 	// (`resultType == null`) only in the modern one. A resultType that is
@@ -1693,7 +1694,7 @@ func isInputRequiredResult(raw json.RawMessage) bool {
 	var probe struct {
 		ResultType *string `json:"resultType"`
 	}
-	return json.Unmarshal(raw, &probe) == nil && probe.ResultType != nil && *probe.ResultType == "input_required"
+	return jsonexact.Unmarshal(raw, &probe) == nil && probe.ResultType != nil && *probe.ResultType == "input_required"
 }
 
 // sendMessage sends msg via the transport, attaching headers through

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
@@ -93,7 +94,7 @@ func parseInputRequiredResult(raw json.RawMessage) (inputRequiredResult, error) 
 				Params json.RawMessage `json:"params"`
 			}
 			var obj map[string]json.RawMessage
-			if json.Unmarshal(rawReq, &obj) != nil || obj == nil || json.Unmarshal(rawReq, &req) != nil || req.Method == nil {
+			if json.Unmarshal(rawReq, &obj) != nil || obj == nil || jsonexact.Unmarshal(rawReq, &req) != nil || req.Method == nil {
 				return out, fmt.Errorf("inputRequests.%s must be a request with a string method", key)
 			}
 			// TS z.optional(BaseParamsSchema): an explicit null fails.

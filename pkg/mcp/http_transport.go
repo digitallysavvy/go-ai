@@ -832,6 +832,11 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		resp, err = client.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				// TS: the aborted fetch rejects with options.signal.reason,
+				// which send() rethrows unreported.
+				return context.Cause(ctx)
+			}
 			if errors.Is(context.Cause(reqCtx), errMCPRequestTimeout) {
 				return fail(NewTransportError("failed to send request", fmt.Errorf("request timed out after %s: %w", t.requestTimeout, context.DeadlineExceeded)))
 			}

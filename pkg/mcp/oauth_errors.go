@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // maxOAuthResponseBytes caps every OAuth metadata/token/registration response
@@ -125,7 +126,7 @@ func parseOAuthErrorBody(body []byte) (oauthErrorResponseBody, bool) {
 		}
 	}
 	var parsed oauthErrorResponseBody
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := jsonexact.Unmarshal(body, &parsed); err != nil {
 		return oauthErrorResponseBody{}, false
 	}
 	return parsed, true

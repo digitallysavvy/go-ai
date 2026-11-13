@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
@@ -160,7 +161,7 @@ func (t *MCPTool) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var out mcpToolJSON
-	if err := json.Unmarshal(data, &out); err != nil {
+	if err := jsonexact.Unmarshal(data, &out); err != nil {
 		return err
 	}
 	*t = MCPTool{
@@ -426,7 +427,7 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	}
 	var out callToolResultJSON
 	looseArm := false
-	if err := json.Unmarshal(data, &out); err != nil {
+	if err := jsonexact.Unmarshal(data, &out); err != nil {
 		if _, hasToolResult := raw["toolResult"]; !hasToolResult {
 			return err
 		}
@@ -436,7 +437,7 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 			ToolResult interface{}            `json:"toolResult"`
 			Metadata   map[string]interface{} `json:"_meta,omitempty"`
 		}
-		if looseErr := json.Unmarshal(data, &looseFields); looseErr != nil {
+		if looseErr := jsonexact.Unmarshal(data, &looseFields); looseErr != nil {
 			return err
 		}
 		out = callToolResultJSON{ToolResult: looseFields.ToolResult, Metadata: looseFields.Metadata}
@@ -869,7 +870,7 @@ type resourceContentAlias ResourceContent
 // present as strings.
 func (r *ResourceContent) UnmarshalJSON(data []byte) error {
 	var alias resourceContentAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
+	if err := jsonexact.Unmarshal(data, &alias); err != nil {
 		return err
 	}
 	var raw map[string]json.RawMessage

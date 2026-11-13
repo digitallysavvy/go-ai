@@ -12,6 +12,7 @@ import (
 	"time"
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -61,13 +62,14 @@ type stdinWriteError struct {
 func (e *stdinWriteError) Error() string { return e.err.Error() }
 func (e *stdinWriteError) Unwrap() error { return e.err }
 
-// waitBeforeStdinRetry is TS `waitBeforeStdinRetry`.
+// waitBeforeStdinRetry is TS `waitBeforeStdinRetry`, which rejects with
+// signal.reason.
 func waitBeforeStdinRetry(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx)
 	case <-t.C:
 		return nil
 	}
@@ -98,7 +100,12 @@ func (c *APIClient) writeCommandStdin(ctx context.Context, sessionID, cmdID stri
 			Method: http.MethodPost, Path: c.path(path), Headers: c.headers(nil), Body: body,
 		})
 		if err != nil {
-			if !resendable || !canRetry || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				// An aborted fetch rejects with signal.reason, which TS
+				// rethrows.
+				return nil, context.Cause(ctx)
+			}
+			if !resendable || !canRetry {
 				return nil, err
 			}
 			maybeApplied = true
@@ -156,7 +163,7 @@ func parseStdinResponse(resp *httpinternal.Response, maybeApplied bool) (*int64,
 	var out struct {
 		BytesWritten json.RawMessage `json:"bytesWritten"`
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := jsonexact.Unmarshal(resp.Body, &out); err != nil {
 		return nil, &stdinWriteError{err: err, maybeApplied: maybeApplied}
 	}
 	if out.BytesWritten == nil {
@@ -180,7 +187,7 @@ func stdinTimeoutBytesWritten(body []byte) (int64, bool) {
 			BytesWritten *float64 `json:"bytesWritten"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &out) != nil || out.Error.BytesWritten == nil {
+	if jsonexact.Unmarshal(body, &out) != nil || out.Error.BytesWritten == nil {
 		return 0, false
 	}
 	v := *out.Error.BytesWritten
@@ -255,9 +262,11 @@ func (s *commandStdin) usable() error {
 	if s.streamErr != nil {
 		return s.streamErr
 	}
-	if err := s.ctx.Err(); err != nil {
-		s.streamErr = err
-		return err
+	if s.ctx.Err() != nil {
+		// TS createStdinStream: the abort listener errors the stream with
+		// abortSignal.reason.
+		s.streamErr = context.Cause(s.ctx)
+		return s.streamErr
 	}
 	return nil
 }

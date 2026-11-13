@@ -496,8 +496,11 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 // models do not support, mirroring TS TopazVideoModel#addUnsupportedWarnings.
 func addVideoUnsupportedWarnings(opts *provider.VideoModelV3CallOptions, warnings *[]types.Warning) {
 	// generateVideo requires a prompt, so an empty one is the expected way
-	// to call an enhancement model and does not warrant a warning.
-	if opts.PromptSet && providerutils.JSTrim(opts.Prompt) != "" {
+	// to call an enhancement model and does not warrant a warning. TS
+	// `prompt != null && prompt.trim() !== ''`: a non-blank prompt warns
+	// whether or not PromptSet marks it (a direct DoStart caller may leave
+	// it unset), and "" is blank either way.
+	if providerutils.JSTrim(opts.Prompt) != "" {
 		*warnings = append(*warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "prompt",

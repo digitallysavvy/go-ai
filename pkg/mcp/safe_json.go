@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 const (
@@ -59,7 +61,10 @@ func unmarshalSafeJSON(data []byte, target interface{}) error {
 		return err
 	}
 
-	return json.Unmarshal(data, target)
+	// Server messages decode with exact keys, as zod: a key whose only
+	// match is case-insensitive is left out (a loose type keeps it as an
+	// extra key).
+	return jsonexact.Unmarshal(data, target)
 }
 
 func rejectUnsafeJSON(value interface{}, maxDepth, maxFields int) error {

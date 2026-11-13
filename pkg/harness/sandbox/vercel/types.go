@@ -1,6 +1,10 @@
 package vercel
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+)
 
 // Wire (HTTP) request/response shapes for the Vercel Sandbox API. Ported from
 // the response validators in
@@ -88,13 +92,13 @@ type sessionWire struct {
 func (w *sessionWire) UnmarshalJSON(data []byte) error {
 	type plain sessionWire
 	var p plain
-	if err := json.Unmarshal(data, &p); err != nil {
+	if err := jsonexact.Unmarshal(data, &p); err != nil {
 		return err
 	}
 	var raw struct {
 		NetworkPolicy json.RawMessage `json:"networkPolicy"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := jsonexact.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	p.RawNetworkPolicy = raw.NetworkPolicy
