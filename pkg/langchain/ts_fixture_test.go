@@ -275,16 +275,16 @@ func seedTSState(t *testing.T, st *eventState, seed map[string]interface{}) {
 				st.messageOrder = append(st.messageOrder, p[0].(string))
 			case "currentStepsByNamespace":
 				p := it.([]interface{})
-				st.currentStepsByNamespace[p[0].(string)] = int(p[1].(float64))
+				st.currentStepsByNamespace[p[0].(string)] = p[1].(float64)
 			case "emittedToolCallsByKey":
 				// The key is `name:JSON.stringify(args)` in TS key order; Go
-				// keys use sorted-key JSON.
+				// keys of replayed map events (no wire order) use sorted-key JSON.
 				p := it.([]interface{})
 				key := p[0].(string)
 				i := strings.Index(key, ":")
 				var args interface{}
 				_ = json.Unmarshal([]byte(key[i+1:]), &args)
-				st.emittedToolCallsByKey[toolCallKey(key[:i], args)] = p[1].(string)
+				st.emittedToolCallsByKey[toolCallKey(key[:i], args, nil)] = p[1].(string)
 			default:
 				t.Fatalf("unhandled seed %s", name)
 			}

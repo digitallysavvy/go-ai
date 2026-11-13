@@ -19,6 +19,8 @@ func r92genEvents(t *testing.T, stream string) ([]StreamEvent, error) {
 		if ev.Err != nil {
 			return events, ev.Err
 		}
+		// The ordered tree is compared by the tool call key tests.
+		ev.ordered = nil
 		events = append(events, ev)
 	}
 	return events, nil

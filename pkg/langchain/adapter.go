@@ -15,8 +15,10 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -36,6 +38,12 @@ type StreamEvent struct {
 	// iterator throws). The adapter calls the final and error/abort callbacks
 	// and ends the UI stream with an `error` chunk.
 	Err error
+
+	// ordered is Data as an ordered tree (jsonorder.Parse of the event's
+	// wire JSON), set by the run stream reader for "values" events. It
+	// gives tool call arguments the key order TS's JSON.stringify keys
+	// with; Data decoded into Go maps has lost it.
+	ordered interface{}
 }
 
 // StreamCallbacks mirrors the TypeScript adapter callback surface for stream
@@ -480,7 +488,7 @@ type eventState struct {
 	emittedSources              map[string]bool
 	messageSeen                 map[string]*messageSeenState
 	messageNamespaces           map[string][]string
-	toolCallInfoByIndex         map[string]map[int]toolCall
+	toolCallInfoByIndex         map[string]map[string]toolCall
 
 	// messageOrder lists messageSeen keys in first-seen order.
 	messageOrder []string
@@ -492,7 +500,7 @@ type eventState struct {
 	messageReasoningIDs map[string]string
 
 	// per-namespace step lifecycle bookkeeping, keyed by namespaceKey(...)
-	currentStepsByNamespace                    map[string]int
+	currentStepsByNamespace                    map[string]float64
 	messageIdsInCurrentStepByNamespace         map[string]map[string]bool
 	emittedToolCallsInCurrentStepByNamespace   map[string]map[string]bool
 	emittedToolInputsInCurrentStepByNamespace  map[string]map[string]bool
@@ -526,12 +534,12 @@ func newEventState() *eventState {
 		emittedSources:              map[string]bool{},
 		messageSeen:                 map[string]*messageSeenState{},
 		messageNamespaces:           map[string][]string{},
-		toolCallInfoByIndex:         map[string]map[int]toolCall{},
+		toolCallInfoByIndex:         map[string]map[string]toolCall{},
 		emittedImages:               map[string]bool{},
 		emittedReasoningIDs:         map[string]bool{},
 		messageReasoningIDs:         map[string]string{},
 
-		currentStepsByNamespace:                    map[string]int{},
+		currentStepsByNamespace:                    map[string]float64{},
 		messageIdsInCurrentStepByNamespace:         map[string]map[string]bool{},
 		emittedToolCallsInCurrentStepByNamespace:   map[string]map[string]bool{},
 		emittedToolInputsInCurrentStepByNamespace:  map[string]map[string]bool{},
@@ -563,7 +571,7 @@ func (s *messageSeenState) addTool(id string) {
 
 // startNamespaceStep begins a new LangGraph step scope for the given
 // namespace key, resetting the per-step emitted-call/input/output sets.
-func (state *eventState) startNamespaceStep(ns string, step int) {
+func (state *eventState) startNamespaceStep(ns string, step float64) {
 	state.currentStepsByNamespace[ns] = step
 	state.messageIdsInCurrentStepByNamespace[ns] = map[string]bool{}
 	state.emittedToolCallsInCurrentStepByNamespace[ns] = map[string]bool{}
@@ -904,7 +912,9 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 	// active UI text/reasoning part, so it is omitted when another namespace
 	// is still active (hasConcurrentMessageParts).
 	if metadata, ok := metadataMap(items); ok {
-		if step, ok := numberAsInt(metadata["langgraph_step"]); ok {
+		// TS `typeof metadata.langgraph_step === 'number'`: any number,
+		// compared as is (a fractional step is a step of its own).
+		if step, ok := jsNumberValue(metadata["langgraph_step"]); ok {
 			currentStep, exists := state.currentStepsByNamespace[eventNS]
 			switch {
 			case !exists:
@@ -992,12 +1002,12 @@ func processAIMessageChunk(state *eventState, message map[string]interface{}, ms
 func processToolCallChunks(state *eventState, msgID, eventNS string, calls []toolCall) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	for _, call := range calls {
-		if call.id != "" {
+		if call.id != "" && call.index != "" {
 			if state.toolCallInfoByIndex[msgID] == nil {
-				state.toolCallInfoByIndex[msgID] = map[int]toolCall{}
+				state.toolCallInfoByIndex[msgID] = map[string]toolCall{}
 			}
 			state.toolCallInfoByIndex[msgID][call.index] = call
-		} else if stored := state.toolCallInfoByIndex[msgID][call.index]; stored.id != "" {
+		} else if stored := state.toolCallInfoByIndex[msgID][call.index]; call.id == "" && call.index != "" && stored.id != "" {
 			call.id = stored.id
 			if call.name == "" {
 				call.name = stored.name
@@ -1144,7 +1154,7 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 		return chunks
 	}
 
-	messages := messageMaps(root)
+	messages, orderedMessages := messageMaps(root, event.ordered)
 	if len(messages) > 0 {
 		// First pass: collect every tool call ID that has been responded to
 		// by a ToolMessage, and separately track which of those ToolMessages
@@ -1183,13 +1193,13 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 
 		// Second pass: emit tool lifecycles for new tool calls, including
 		// calls completed by trailing ToolMessages that were never streamed.
-		for _, msg := range messages {
+		for i, msg := range messages {
 			msgID := messageID(msg)
 			if msgID == "" {
 				continue
 			}
 
-			msgCalls := extractToolCalls(msg)
+			msgCalls := extractToolCalls(msg, orderedMessages[i])
 			for _, call := range msgCalls {
 				if call.id == "" {
 					continue
@@ -1212,13 +1222,13 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 				if !wasToolCallEmittedInCurrentStep &&
 					(wasObservedInCurrentStep || (!state.emittedToolCalls[call.id] && !completedToolCallIDs[call.id])) {
 					state.markToolCallStarted(call.id, lifecycleNS)
-					key := toolCallKey(call.name, call.args)
+					key := toolCallKey(call.name, call.args, call.argsHint)
 					state.emittedToolCallsByKey[key] = call.id
 					chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": call.name, "dynamic": true})
 					state.markToolInputEmitted(call.id, lifecycleNS)
 					chunks = append(chunks, toolInputAvailableChunk(call.id, call.name, call.args))
 				} else if state.emittedToolCalls[call.id] {
-					key := toolCallKey(call.name, call.args)
+					key := toolCallKey(call.name, call.args, call.argsHint)
 					state.emittedToolCallsByKey[key] = call.id
 				}
 
@@ -1260,7 +1270,7 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 		}
 	}
 
-	chunks = append(chunks, actionRequestChunks(state, root, eventNS)...)
+	chunks = append(chunks, actionRequestChunks(state, root, event.ordered, eventNS)...)
 	return chunks
 }
 
@@ -1300,13 +1310,17 @@ func toolInputAvailableChunk(toolCallID, toolName string, input interface{}) ai.
 	return chunk
 }
 
-func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS string) []ai.UIMessageChunk {
+func actionRequestChunks(state *eventState, root map[string]interface{}, orderedRoot interface{}, eventNS string) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
-	for _, request := range actionRequests(root) {
-		if request.name == "" {
+	for _, request := range actionRequests(root, orderedRoot) {
+		// An empty name is a name (TS uses it as is). A request without a
+		// string name is skipped: TS would emit a tool-input-start without
+		// a toolName, which fails the UI message chunk schema (known
+		// difference "LangGraph values with malformed fields").
+		if !request.hasName {
 			continue
 		}
-		key := toolCallKey(request.name, request.input)
+		key := toolCallKey(request.name, request.input, request.inputHint)
 		toolCallID := state.emittedToolCallsByKey[key]
 		if toolCallID == "" {
 			toolCallID = request.id
@@ -1346,7 +1360,7 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 	var chunks []ai.UIMessageChunk
 	switch stringValue(payload["event"]) {
 	case "on_tool_start":
-		key := toolCallKey(toolName, payload["input"])
+		key := toolCallKey(toolName, payload["input"], nil)
 		state.emittedToolCallsByKey[key] = toolCallID
 		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, false)...)
 	case "on_tool_event":
@@ -1666,16 +1680,26 @@ func finalizeSeenPartsForValues(state *eventState) []ai.UIMessageChunk {
 }
 
 type toolCall struct {
-	id    string
-	name  string
-	args  interface{}
-	index int
+	id   string
+	name string
+	args interface{}
+	// argsHint is the ordered tree of args (jsonorder), nil when the
+	// wire order is unknown.
+	argsHint interface{}
+	// index is the TS Map key of `toolCallChunk.index ?? 0` (see
+	// toolCallIndexKey); "" for an object index, which no later chunk can
+	// look up.
+	index string
 }
 
 type actionRequest struct {
-	id    string
-	name  string
-	input interface{}
+	id   string
+	name string
+	// hasName is `typeof actionRequest.name === 'string'`.
+	hasName bool
+	input   interface{}
+	// inputHint is the ordered tree of input, nil when unknown.
+	inputHint interface{}
 }
 
 func extractToolCallChunks(message map[string]interface{}) []toolCall {
@@ -1690,12 +1714,11 @@ func extractToolCallChunks(message map[string]interface{}) []toolCall {
 		if !ok {
 			continue
 		}
-		index, _ := numberAsInt(m["index"])
 		calls = append(calls, toolCall{
 			id:    stringValue(m["id"]),
 			name:  stringValue(m["name"]),
 			args:  stringValue(m["args"]),
-			index: index,
+			index: toolCallIndexKey(m["index"]),
 		})
 	}
 	return calls
@@ -1706,19 +1729,34 @@ func extractToolCallChunks(message map[string]interface{}) []toolCall {
 // `tool_calls` array is used as is (a call without an id is skipped by the
 // caller), and `additional_kwargs.tool_calls` (OpenAI format) is converted with
 // the `call_<index>` / `unknown` / `{}` fallbacks.
-func extractToolCalls(message map[string]interface{}) []toolCall {
+func extractToolCalls(message map[string]interface{}, orderedMessage interface{}) []toolCall {
 	if !isAIMessageChunk(message) {
 		return nil
 	}
 	source := messageDataSource(message)
+	orderedSource := orderedMessage
+	if message["type"] == "constructor" {
+		if _, ok := asMap(message["kwargs"]); ok {
+			orderedSource, _ = jsonorder.Get(orderedMessage, "kwargs")
+		}
+	}
 	if raw, ok := asSlice(source["tool_calls"]); ok {
+		orderedCalls, _ := jsonorder.Get(orderedSource, "tool_calls")
+		orderedList, _ := orderedCalls.([]interface{})
+		if len(orderedList) != len(raw) {
+			orderedList = nil
+		}
 		calls := make([]toolCall, 0, len(raw))
-		for _, item := range raw {
+		for j, item := range raw {
 			m, ok := asMap(item)
 			if !ok {
 				continue
 			}
-			calls = append(calls, toolCall{id: stringValue(m["id"]), name: stringValue(m["name"]), args: m["args"]})
+			call := toolCall{id: stringValue(m["id"]), name: stringValue(m["name"]), args: m["args"]}
+			if orderedList != nil {
+				call.argsHint, _ = jsonorder.Get(orderedList[j], "args")
+			}
+			calls = append(calls, call)
 		}
 		return calls
 	}
@@ -1730,11 +1768,19 @@ func extractToolCalls(message map[string]interface{}) []toolCall {
 			continue
 		}
 		fn, _ := asMap(m["function"])
-		calls = append(calls, toolCall{
+		call := toolCall{
 			id:   firstString(m["id"], fmt.Sprintf("call_%d", i)),
 			name: firstString(fn["name"], "unknown"),
 			args: parseArgs(fn["arguments"]),
-		})
+		}
+		// The arguments text is the wire form (TS JSON.stringify of its
+		// secureJsonParse result keys in that order).
+		if text, ok := fn["arguments"].(string); ok && text != "" {
+			if tree, ok := jsonorder.Parse([]byte(text)); ok {
+				call.argsHint = tree
+			}
+		}
+		calls = append(calls, call)
 	}
 	return calls
 }
@@ -1748,27 +1794,42 @@ func openAIToolCalls(source map[string]interface{}) []interface{} {
 	return raw
 }
 
-func messageMaps(root map[string]interface{}) []map[string]interface{} {
+// messageMaps returns the object messages of a values event and, aligned
+// with them, their ordered trees from orderedRoot (nil entries when the wire
+// order is unknown).
+func messageMaps(root map[string]interface{}, orderedRoot interface{}) ([]map[string]interface{}, []interface{}) {
 	raw, ok := asSlice(root["messages"])
 	if !ok {
-		return nil
+		return nil, nil
+	}
+	orderedRaw, _ := jsonorder.Get(orderedRoot, "messages")
+	orderedList, _ := orderedRaw.([]interface{})
+	if len(orderedList) != len(raw) {
+		orderedList = nil
 	}
 	messages := make([]map[string]interface{}, 0, len(raw))
-	for _, item := range raw {
+	ordered := make([]interface{}, 0, len(raw))
+	for i, item := range raw {
 		if msg, ok := asMap(item); ok {
 			messages = append(messages, msg)
+			var o interface{}
+			if orderedList != nil {
+				o = orderedList[i]
+			}
+			ordered = append(ordered, o)
 		}
 	}
-	return messages
+	return messages, ordered
 }
 
-func actionRequests(root map[string]interface{}) []actionRequest {
+func actionRequests(root map[string]interface{}, orderedRoot interface{}) []actionRequest {
 	rawInterrupts, ok := asSlice(root["__interrupt__"])
 	if !ok {
 		return nil
 	}
+	orderedInterrupts := orderedListLike(orderedRoot, rawInterrupts, "__interrupt__")
 	var out []actionRequest
-	for _, interrupt := range rawInterrupts {
+	for i, interrupt := range rawInterrupts {
 		item, ok := asMap(interrupt)
 		if !ok {
 			continue
@@ -1777,33 +1838,55 @@ func actionRequests(root map[string]interface{}) []actionRequest {
 		if !ok {
 			continue
 		}
+		orderedValue, _ := jsonorder.Get(orderedInterrupts[i], "value")
 		// TS: `interruptValue.actionRequests || interruptValue.action_requests`.
-		requests := value["actionRequests"]
+		requestsKey := "actionRequests"
+		requests := value[requestsKey]
 		if !jsTruthy(requests) {
-			requests = value["action_requests"]
+			requestsKey = "action_requests"
+			requests = value[requestsKey]
 		}
 		rawRequests, ok := asSlice(requests)
 		if !ok {
 			continue
 		}
-		for _, raw := range rawRequests {
+		orderedRequests := orderedListLike(orderedValue, rawRequests, requestsKey)
+		for j, raw := range rawRequests {
 			req, ok := asMap(raw)
 			if !ok {
 				continue
 			}
 			// TS: `actionRequest.args || actionRequest.arguments`.
-			input := req["args"]
+			inputKey := "args"
+			input := req[inputKey]
 			if !jsTruthy(input) {
-				input = req["arguments"]
+				inputKey = "arguments"
+				input = req[inputKey]
 			}
+			inputHint, _ := jsonorder.Get(orderedRequests[j], inputKey)
+			name, hasName := req["name"].(string)
 			out = append(out, actionRequest{
-				id:    stringValue(req["id"]),
-				name:  stringValue(req["name"]),
-				input: input,
+				id:        stringValue(req["id"]),
+				name:      name,
+				hasName:   hasName,
+				input:     input,
+				inputHint: inputHint,
 			})
 		}
 	}
 	return out
+}
+
+// orderedListLike returns the ordered tree's list at key, aligned with raw:
+// one entry per raw element, nil entries when the ordered tree does not
+// match.
+func orderedListLike(ordered interface{}, raw []interface{}, key string) []interface{} {
+	v, _ := jsonorder.Get(ordered, key)
+	list, _ := v.([]interface{})
+	if len(list) != len(raw) {
+		return make([]interface{}, len(raw))
+	}
+	return list
 }
 
 // messageDataSource is the object a message's fields live on: kwargs for a
@@ -2388,7 +2471,16 @@ func defaultFilename(mediaType, prefix string) string {
 	return prefix + ".bin"
 }
 
-func toolCallKey(name string, args interface{}) string {
+// toolCallKey is TS `${name}:${JSON.stringify(args)}`, with args in the key
+// order of hint (the ordered wire tree it was decoded from), so the same keys
+// in a different order give a different key, as in TS. Without a hint (args
+// built as Go maps, whose order is lost) the keys are sorted.
+func toolCallKey(name string, args, hint interface{}) string {
+	if hint != nil {
+		if text, err := (jsonorder.Hinted{V: args, Hint: hint}).MarshalJSON(); err == nil {
+			return name + ":" + string(text)
+		}
+	}
 	return name + ":" + stableJSONString(args)
 }
 
@@ -2487,20 +2579,41 @@ func firstPresent(m map[string]interface{}, keys ...string) interface{} {
 	return nil
 }
 
-func numberAsInt(v interface{}) (int, bool) {
+// jsNumberValue is `typeof v === 'number'` with the number's value.
+func jsNumberValue(v interface{}) (float64, bool) {
 	switch x := v.(type) {
 	case int:
-		return x, true
+		return float64(x), true
 	case int64:
-		return int(x), true
+		return float64(x), true
 	case float64:
-		return int(x), true
+		return x, true
 	case json.Number:
-		i, err := x.Int64()
-		return int(i), err == nil
+		f, ok := providerutils.JSNumber(string(x))
+		return f, ok
 	default:
 		return 0, false
 	}
+}
+
+// toolCallIndexKey is the TS Map key of `toolCallChunk.index ?? 0`: a number
+// by its value (1 and 1.5 differ), a string or boolean by its value (the
+// string "1" is not the number 1), and "" for an object or array, whose key
+// is its identity, so no other chunk finds it.
+func toolCallIndexKey(v interface{}) string {
+	if v == nil {
+		return "n:0"
+	}
+	if f, ok := jsNumberValue(v); ok {
+		return "n:" + providerutils.JSNumberString(f)
+	}
+	switch x := v.(type) {
+	case string:
+		return "s:" + x
+	case bool:
+		return "b:" + strconv.FormatBool(x)
+	}
+	return ""
 }
 
 func isNumber(v interface{}) bool {
@@ -2530,10 +2643,8 @@ func stringValue(v interface{}) string {
 	case int64:
 		return strconv.FormatInt(x, 10)
 	case float64:
-		if x == float64(int64(x)) {
-			return strconv.FormatInt(int64(x), 10)
-		}
-		return strconv.FormatFloat(x, 'f', -1, 64)
+		// JS String(number) (template literals): 1e21, 1e-7, Infinity.
+		return providerutils.JSNumberString(x)
 	default:
 		return ""
 	}

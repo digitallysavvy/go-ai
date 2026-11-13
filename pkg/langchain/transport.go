@@ -519,7 +519,15 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 			case namespaced && mode != "messages":
 				return true
 			}
-			return sendStreamEvent(ctx, out, StreamEvent{Mode: mode, Data: payload})
+			streamEvent := StreamEvent{Mode: mode, Data: payload}
+			if mode == "values" && len(data) > 0 {
+				// The wire key order, for the tool call keys TS builds
+				// with JSON.stringify of the parsed data.
+				if tree, ok := jsonorder.Parse([]byte(strings.Join(data, "\n"))); ok {
+					streamEvent.ordered = tree
+				}
+			}
+			return sendStreamEvent(ctx, out, streamEvent)
 		}
 		for scanner.Scan() {
 			line := scanner.Text()
