@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // StreamPart is one event emitted by a harness adapter during a prompt turn.
@@ -472,7 +473,8 @@ func MarshalStreamPart(part StreamPart) ([]byte, error) {
 // MarshalTagged encodes v (a struct) as a JSON object whose first key is
 // `"type": typ`. It is shared with the bridge frame encoders.
 func MarshalTagged(typ string, v any) ([]byte, error) {
-	body, err := json.Marshal(v)
+	// JSON.stringify: NaN and +-Inf write null (ruling 4), no HTML escaping.
+	body, err := jsonstr.Marshal(v)
 	if err != nil {
 		return nil, err
 	}

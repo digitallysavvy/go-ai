@@ -2,6 +2,7 @@ package harness
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -50,5 +51,20 @@ func TestR97carryQuestionsOutputRejectsNullOptionID(t *testing.T) {
 	out, err := ParseQuestionsToolOutput([]byte(`{"action":"answered","answers":{"a":{"optionIds":["x",""]}}}`))
 	if err != nil || len(out.Answers["a"].OptionIDs) != 2 {
 		t.Fatalf("ParseQuestionsToolOutput = %+v, %v", out, err)
+	}
+}
+
+// Bridge frames and stream parts are JSON.stringify'd in TS: NaN and +-Inf
+// write null (ruling 4); json.Marshal failed the whole frame.
+func TestR97carryMarshalTaggedNonFiniteAsNull(t *testing.T) {
+	got, err := MarshalTagged("tool-result", struct {
+		Output interface{} `json:"output"`
+		Note   string      `json:"note"`
+	}{Output: map[string]interface{}{"n": math.Inf(1), "m": math.NaN()}, Note: "<a&b>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"type":"tool-result","output":{"m":null,"n":null},"note":"<a&b>"}`; string(got) != want {
+		t.Fatalf("MarshalTagged = %s, want %s", got, want)
 	}
 }
