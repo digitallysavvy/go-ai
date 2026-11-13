@@ -24,7 +24,7 @@ func TestR89provcPollErrorCarriesHeadersAndData(t *testing.T) {
 	if perr.Message != "slow" || perr.ResponseHeaders["Retry-After"] != "2" || !reflect.DeepEqual(perr.Data, want) {
 		t.Fatalf("provider error = %+v", perr)
 	}
-	off := &providererrors.DownloadError{URL: "u", StatusCode: 502, Body: []byte(`<html>`)}
+	off := &providererrors.DownloadError{URL: "u", StatusCode: 502, StatusText: "Bad Gateway", Body: []byte(`<html>`)}
 	if !errors.As(handleError(off), &perr) || perr.Data != nil || perr.Message != "Bad Gateway" {
 		t.Fatalf("off-schema provider error = %+v", perr)
 	}
