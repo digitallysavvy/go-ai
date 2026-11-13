@@ -1389,7 +1389,9 @@ type openAIUsage struct {
 func (u *openAIUsage) UnmarshalJSON(b []byte) error {
 	type plain openAIUsage
 	var p plain
-	if err := jsonexact.Unmarshal(b, &p); err != nil {
+	// TS z.number(): a fractional count decodes (truncated into the int
+	// fields), while the raw objects keep the exact number.
+	if err := providerutils.UnmarshalChunk(b, &p); err != nil {
 		return err
 	}
 	*u = openAIUsage(p)

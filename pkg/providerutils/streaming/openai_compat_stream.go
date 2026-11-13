@@ -674,7 +674,9 @@ type openAICompatStreamUsage struct {
 func (u *openAICompatStreamUsage) UnmarshalJSON(b []byte) error {
 	type plain openAICompatStreamUsage
 	var p plain
-	if err := jsonexact.Unmarshal(b, &p); err != nil {
+	// TS z.number(): a fractional count decodes (truncated into the int
+	// fields), while rawWire keeps the exact number (TS usage.raw).
+	if err := providerutils.UnmarshalChunk(b, &p); err != nil {
 		return err
 	}
 	*u = openAICompatStreamUsage(p)

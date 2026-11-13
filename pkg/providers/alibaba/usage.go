@@ -3,6 +3,7 @@ package alibaba
 import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // AlibabaUsage mirrors the declared fields of Alibaba's OpenAI-compatible
@@ -44,7 +45,9 @@ type AlibabaCompletionTokensDetails struct {
 func (u *AlibabaUsage) UnmarshalJSON(data []byte) error {
 	type alias AlibabaUsage
 	var a alias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	// TS z.number(): a fractional count decodes (truncated into the int
+	// fields), while raw keeps the exact number (TS raw: usage).
+	if err := providerutils.UnmarshalChunk(data, &a); err != nil {
 		return err
 	}
 	*u = AlibabaUsage(a)
