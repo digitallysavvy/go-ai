@@ -1194,12 +1194,17 @@ func MarshalJSONField(v interface{}) (string, error) {
 // validateMetadataResponse applies the required-field checks of TS
 // gatewayAvailableModelsResponseSchema that the lenient wire struct cannot
 // see: `models` must be an array and every model needs id, name and a
-// specification of version "v4" with provider and modelId.
+// specification of version "v4" with provider and modelId, and a pricing
+// object (when not null) needs input and output.
 func validateMetadataResponse(body []byte) error {
 	var raw struct {
 		Models *[]struct {
-			ID            *string `json:"id"`
-			Name          *string `json:"name"`
+			ID      *string `json:"id"`
+			Name    *string `json:"name"`
+			Pricing *struct {
+				Input  *string `json:"input"`
+				Output *string `json:"output"`
+			} `json:"pricing"`
 			Specification *struct {
 				SpecificationVersion *string `json:"specificationVersion"`
 				Provider             *string `json:"provider"`
@@ -1215,8 +1220,10 @@ func validateMetadataResponse(body []byte) error {
 	}
 	for i, m := range *raw.Models {
 		spec := m.Specification
+		// pricing is nullish, but a pricing object needs input and output.
+		badPricing := m.Pricing != nil && (m.Pricing.Input == nil || m.Pricing.Output == nil)
 		if m.ID == nil || m.Name == nil || spec == nil || spec.Provider == nil || spec.ModelID == nil ||
-			spec.SpecificationVersion == nil || *spec.SpecificationVersion != "v4" {
+			spec.SpecificationVersion == nil || *spec.SpecificationVersion != "v4" || badPricing {
 			return fmt.Errorf("Invalid JSON response: models[%d] does not match the gateway model schema", i) //nolint:staticcheck // mirrors TS wording
 		}
 	}

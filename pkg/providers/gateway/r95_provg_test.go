@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -156,5 +158,46 @@ func TestR95provgStreamChunkKeysMatchExactly(t *testing.T) {
 	}
 	if bad := jsonexact.UntaggedFields(&gatewayStreamChunk{}); len(bad) > 0 {
 		t.Fatalf("stream chunk fields without a json tag: %v", bad)
+	}
+}
+
+// TS gatewayAvailableModelsResponseSchema: pricing is nullish, but a pricing
+// object requires input and output strings, so a model without them makes
+// the whole response invalid (createJsonResponseHandler "Invalid JSON
+// response", a GatewayResponseError).
+func TestR95provgMetadataPricingRequiresInputAndOutput(t *testing.T) {
+	model := func(pricing string) string {
+		return `{"models":[{"id":"a/b","name":"B","pricing":` + pricing +
+			`,"specification":{"specificationVersion":"v4","provider":"a","modelId":"b"}}]}`
+	}
+	for _, tc := range []struct {
+		pricing string
+		valid   bool
+	}{
+		{`null`, true},
+		{`{"input":"1","output":"2"}`, true},
+		{`{"input":"1","output":"2","input_cache_read":null}`, true},
+		{`{"output":"2"}`, false},
+		{`{"input":"1"}`, false},
+		{`{}`, false},
+	} {
+		err := validateMetadataResponse([]byte(model(tc.pricing)))
+		if (err == nil) != tc.valid {
+			t.Errorf("pricing %s: err = %v, want valid=%v", tc.pricing, err, tc.valid)
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(model(`{"input":"1"}`)))
+	}))
+	defer srv.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.GetAvailableModels(context.Background())
+	var re *gatewayerrors.GatewayResponseError
+	if !errors.As(err, &re) {
+		t.Fatalf("err = %T %v, want a GatewayResponseError", err, err)
 	}
 }
