@@ -571,9 +571,10 @@ consumeLoop:
 			step.endReasoning(chunk.ID, chunk.ProviderMetadata)
 
 		case provider.ChunkTypeText:
-			if chunk.Text != "" || len(chunk.ProviderMetadata) > 0 {
-				step.addText(chunk.ID, chunk.Text, chunk.ProviderMetadata)
-			}
+			// TS appendToCurrentStepContent opens a text part for a delta
+			// whose id has no part yet, an empty delta included; addText
+			// merges an id-less empty delta into nothing, as before.
+			step.addText(chunk.ID, chunk.Text, chunk.ProviderMetadata)
 			if chunk.Text != "" {
 				step.text += chunk.Text
 			}
@@ -583,9 +584,8 @@ consumeLoop:
 			if reasoningDelta == "" {
 				reasoningDelta = chunk.Text
 			}
-			if reasoningDelta != "" || len(chunk.ProviderMetadata) > 0 {
-				step.addReasoning(chunk.ID, reasoningDelta, chunk.ProviderMetadata)
-			}
+			// As for text: an empty delta with a new id opens its part (TS).
+			step.addReasoning(chunk.ID, reasoningDelta, chunk.ProviderMetadata)
 
 		case provider.ChunkTypeToolCall:
 			if chunk.ToolCall != nil {
