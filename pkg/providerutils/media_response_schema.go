@@ -580,17 +580,17 @@ func MediaResponseValidator(providerName string, schema MediaResponseSchema) fun
 // "Invalid JSON response"): the failure is the typed validation (or JSON
 // parse) error.
 func MediaSchemaParser(schema MediaResponseSchema) func(statusCode int, headers http.Header, body []byte) error {
-	return mediaSchemaParser(schema, parseJSValue)
+	return mediaSchemaParser(schema, parseJSValue, ChunkParseFailure)
 }
 
 // MediaSchemaParserPlain is MediaSchemaParser for a body TS reads with
 // `await response.json()` and then `schema.parse` (plain JSON.parse keeps a
 // `__proto__` key as an ordinary property; secureJsonParse would reject it).
 func MediaSchemaParserPlain(schema MediaResponseSchema) func(statusCode int, headers http.Header, body []byte) error {
-	return mediaSchemaParser(schema, parseJSValuePlain)
+	return mediaSchemaParser(schema, parseJSValuePlain, ChunkParseFailurePlain)
 }
 
-func mediaSchemaParser(schema MediaResponseSchema, parse func([]byte) (interface{}, error)) func(statusCode int, headers http.Header, body []byte) error {
+func mediaSchemaParser(schema MediaResponseSchema, parse func([]byte) (interface{}, error), failure func(string, error) (string, error)) func(statusCode int, headers http.Header, body []byte) error {
 	node, ok := mediaSchemas[schema]
 	if !ok {
 		panic(fmt.Sprintf("providerutils: unknown media response schema %q", schema))
@@ -605,7 +605,7 @@ func mediaSchemaParser(schema MediaResponseSchema, parse func([]byte) (interface
 		if cause == nil {
 			return nil
 		}
-		_, typed := ChunkParseFailure(string(body), cause)
+		_, typed := failure(string(body), cause)
 		return typed
 	}
 }
