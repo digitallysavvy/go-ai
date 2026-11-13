@@ -1999,7 +1999,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			toolName := openAIToolSearchDisplayName(tools)
 			isHosted := item.Execution == "server"
 			toolCallID := item.ID
-			if item.CallID != nil && *item.CallID != "" {
+			if item.CallID != nil {
 				toolCallID = *item.CallID
 			}
 			if isHosted {
@@ -2027,7 +2027,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			toolCallID := item.ID
-			if item.CallID != nil && *item.CallID != "" {
+			if item.CallID != nil {
 				toolCallID = *item.CallID
 			} else if len(hostedToolSearchCallIds) > 0 {
 				toolCallID = hostedToolSearchCallIds[0]
@@ -2217,7 +2217,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			approvalRequestID := item.ID
-			if item.ApprovalRequestID != nil && *item.ApprovalRequestID != "" {
+			if item.ApprovalRequestID != nil {
 				approvalRequestID = *item.ApprovalRequestID
 			}
 			dummyToolCallID := streaming.GenerateID()
@@ -4945,7 +4945,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		toolCallID := toolCall.toolCallID
 		if isHosted {
 			s.hostedToolSearchIDs = append(s.hostedToolSearchIDs, toolCallID)
-		} else if item.CallID != nil && *item.CallID != "" {
+		} else if item.CallID != nil {
 			toolCallID = *item.CallID
 		} else {
 			toolCallID = item.ID
@@ -4984,7 +4984,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			return nil, false
 		}
 		toolCallID := item.ID
-		if item.CallID != nil && *item.CallID != "" {
+		if item.CallID != nil {
 			toolCallID = *item.CallID
 		} else if len(s.hostedToolSearchIDs) > 0 {
 			toolCallID = s.hostedToolSearchIDs[0]
@@ -5072,7 +5072,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			return nil, false
 		}
 		approvalRequestID := item.ID
-		if item.ApprovalRequestID != nil && *item.ApprovalRequestID != "" {
+		if item.ApprovalRequestID != nil {
 			approvalRequestID = *item.ApprovalRequestID
 		}
 		dummyToolCallID := streaming.GenerateID()

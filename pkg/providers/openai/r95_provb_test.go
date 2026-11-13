@@ -257,3 +257,32 @@ func TestR95provbReasoningEmptyEncryptedContent(t *testing.T) {
 		}
 	}
 }
+
+// TestR95provbResponsesEmptyCallIDKept: TS uses `call_id ?? id` (tool
+// search call and output) and `approval_request_id ?? id`, so a present ""
+// is the id.
+func TestR95provbResponsesEmptyCallIDKept(t *testing.T) {
+	var lm ResponsesLanguageModel
+	res, err := lm.convertResponse(responses.ResponsesAPIResponse{Output: []json.RawMessage{
+		[]byte(`{"type":"tool_search_call","id":"ts_1","call_id":"","execution":"client","arguments":{},"status":"completed"}`),
+		[]byte(`{"type":"mcp_approval_request","id":"ap_1","approval_request_id":"","name":"x","arguments":"{}","server_label":"s"}`),
+	}}, true, "", nil, nil, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ToolCalls) == 0 || res.ToolCalls[0].ID != "" {
+		t.Errorf("tool search call id = %+v, want \"\"", res.ToolCalls)
+	}
+	found := false
+	for _, c := range res.Content {
+		if a, ok := c.(types.ToolApprovalRequestContent); ok {
+			found = true
+			if a.ApprovalID != "" {
+				t.Errorf("approval id = %q, want \"\"", a.ApprovalID)
+			}
+		}
+	}
+	if !found {
+		t.Error("no approval request")
+	}
+}
