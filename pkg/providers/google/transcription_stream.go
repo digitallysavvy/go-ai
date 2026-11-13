@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"strconv"
 	"strings"
 	"sync"
@@ -366,11 +366,12 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	payload, err := jsonstr.Marshal(map[string]interface{}{"setup": cfg.setup})
-	if err != nil {
-		fail(err)
-		return
-	}
+	// TS JSON.stringify({ setup }): model, then inputAudioTranscription
+	// (buildAudioTranscriptionConfig order).
+	payload := []byte(providerutils.StringifyOrdered(map[string]interface{}{"setup": cfg.setup}, map[string][]string{
+		"setup":                         {"model", "inputAudioTranscription"},
+		"setup.inputAudioTranscription": {"languageCodes", "customVocabulary", "wordTimestamp", "diarization", "mode"},
+	}))
 	// Setup is sent (and stream-start emitted) before waiting on a consumer
 	// to start reading, mirroring TS onOpen where controller.enqueue does not
 	// block on a reader before the socket send that follows it.

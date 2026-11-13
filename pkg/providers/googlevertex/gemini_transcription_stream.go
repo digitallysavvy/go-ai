@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"strconv"
 	"sync"
 	"time"
@@ -325,11 +325,12 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	payload, err := jsonstr.Marshal(map[string]interface{}{"setup": cfg.setup})
-	if err != nil {
-		fail(err)
-		return
-	}
+	// TS JSON.stringify({ setup }): model, then inputAudioTranscription
+	// (buildAudioTranscriptionConfig order).
+	payload := []byte(providerutils.StringifyOrdered(map[string]interface{}{"setup": cfg.setup}, map[string][]string{
+		"setup":                         {"model", "inputAudioTranscription"},
+		"setup.inputAudioTranscription": {"languageCodes", "customVocabulary", "wordTimestamp", "diarization", "mode"},
+	}))
 	streamStart := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}
 	if err := s.send(conn, payload); err != nil {
 		// TS onOpen enqueues stream-start before it sends the setup, so a

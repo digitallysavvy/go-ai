@@ -8,10 +8,12 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"golang.org/x/net/websocket"
 )
 
 // TS google-files.ts polls with getFromApi, which tags the user-agent with
@@ -160,5 +162,78 @@ func TestR98provgRealtimeClientSecretBodyKeyOrder(t *testing.T) {
 	got := regexp.MustCompile(`"\d{4}-\d\d-\d\dT[0-9:.]+Z"`).ReplaceAllString(body, `"T"`)
 	if want := `{"uses":0,"expireTime":"T","newSessionExpireTime":"T","bidiGenerateContentSetup":` + r98provgSetupJSON + `}`; got != want {
 		t.Fatalf("body =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// r98provgFirstFrameServer is a Live WebSocket endpoint that records the
+// first client frame verbatim and then closes.
+func r98provgFirstFrameServer(t *testing.T) (*httptest.Server, <-chan string) {
+	t.Helper()
+	first := make(chan string, 1)
+	srv := httptest.NewServer(websocket.Server{Handler: func(conn *websocket.Conn) {
+		var raw string
+		if websocket.Message.Receive(conn, &raw) == nil {
+			first <- raw
+		}
+		_ = conn.Close()
+	}})
+	t.Cleanup(srv.Close)
+	return srv, first
+}
+
+func r98provgWaitFrame(t *testing.T, first <-chan string) string {
+	t.Helper()
+	select {
+	case raw := <-first:
+		return raw
+	case <-time.After(5 * time.Second):
+		t.Fatal("no setup frame")
+		return ""
+	}
+}
+
+// TS google-transcription-model.ts sends JSON.stringify({ setup }) with
+// setup = {model, inputAudioTranscription} and the transcription config in
+// buildAudioTranscriptionConfig order.
+func TestR98provgLiveTranscriptionSetupKeyOrder(t *testing.T) {
+	srv, first := r98provgFirstFrameServer(t)
+	model := newLiveTestModel(t, srv.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
+			"mode": "SMART", "diarization": true, "wordTimestamp": true,
+			"customVocabulary": []interface{}{"Gemini"}, "languageCodes": []interface{}{"en-US"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	want := `{"setup":{"model":"models/` + ModelGemini35TranscribeLive + `","inputAudioTranscription":{"languageCodes":["en-US"],"customVocabulary":["Gemini"],"wordTimestamp":true,"diarization":true,"mode":"SMART"}}}`
+	if got := r98provgWaitFrame(t, first); got != want {
+		t.Fatalf("setup =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TS buildGoogleLiveSpeechTranslationSetup: model, generationConfig
+// {responseModalities, translationConfig {targetLanguageCode,
+// echoTargetLanguage}}, inputAudioTranscription, outputAudioTranscription.
+func TestR98provgSpeechTranslationSetupKeyOrder(t *testing.T) {
+	srv, first := r98provgFirstFrameServer(t)
+	m := newSpeechTranslationTestModel(t, srv.URL, time.Second)
+	result, err := m.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "es",
+		ProviderOptions:  map[string]interface{}{"google": map[string]interface{}{"echoTargetLanguage": true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	want := `{"setup":{"model":"models/gemini-3.5-live-translate-preview","generationConfig":{"responseModalities":["AUDIO"],"translationConfig":{"targetLanguageCode":"es","echoTargetLanguage":true}},"inputAudioTranscription":{},"outputAudioTranscription":{}}}`
+	if got := r98provgWaitFrame(t, first); got != want {
+		t.Fatalf("setup =\n%s\nwant\n%s", got, want)
 	}
 }
