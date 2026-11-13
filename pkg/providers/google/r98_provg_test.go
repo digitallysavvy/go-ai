@@ -2,8 +2,10 @@ package google
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -103,5 +105,60 @@ func TestR98provgBatchUploadAndDownloadCarryRuntimeUserAgent(t *testing.T) {
 	}
 	if uploadUA != rt {
 		t.Errorf("upload user-agent = %q, want %q", uploadUA, rt)
+	}
+}
+
+func r98provgSessionConfig() provider.RealtimeSessionConfig {
+	instructions, voice, desc := "be brief", "Puck", "weather"
+	return provider.RealtimeSessionConfig{
+		Instructions:            &instructions,
+		Voice:                   &voice,
+		InputAudioTranscription: &provider.RealtimeAudioTranscriptionConfig{},
+		Tools: []provider.RealtimeToolDefinition{{
+			Type: "function", Name: "get_weather", Description: &desc,
+			Parameters: map[string]interface{}{"type": "object"},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"google":                   map[string]interface{}{"defaultToolBehavior": "NON_BLOCKING", "translationConfig": map[string]interface{}{"targetLanguageCode": "fr"}},
+			"contextWindowCompression": map[string]interface{}{"slidingWindow": map[string]interface{}{}},
+		},
+	}
+}
+
+// TS buildGoogleSessionConfig builds the setup object in insertion order
+// (model, generationConfig, systemInstruction, tools, the transcription
+// configs, then Object.assign of the other provider options) and the
+// session-update frame is JSON.stringify of it.
+const r98provgSetupJSON = `{"model":"models/gemini-2.0-flash-live-001","generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Puck"}}},"translationConfig":{"targetLanguageCode":"fr"}},"systemInstruction":{"parts":[{"text":"be brief"}]},"tools":[{"functionDeclarations":[{"name":"get_weather","description":"weather","parametersJsonSchema":{"type":"object"},"behavior":"NON_BLOCKING"}]}],"inputAudioTranscription":{},"contextWindowCompression":{"slidingWindow":{}}}`
+
+func TestR98provgRealtimeSetupKeyOrder(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+	frame, err := model.SerializeClientEvent(provider.RealtimeClientEvent{Type: "session-update", Config: r98provgSessionConfig()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"setup":` + r98provgSetupJSON + `}`; string(frame) != want {
+		t.Fatalf("frame =\n%s\nwant\n%s", frame, want)
+	}
+}
+
+// TS doCreateClientSecret: JSON.stringify({uses, expireTime,
+// newSessionExpireTime, bidiGenerateContentSetup}).
+func TestR98provgRealtimeClientSecretBodyKeyOrder(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		_, _ = w.Write([]byte(`{"name":"token"}`))
+	}))
+	defer srv.Close()
+	model := NewRealtimeModel(New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"}), "gemini-2.0-flash-live-001")
+	cfg := r98provgSessionConfig()
+	if _, err := model.DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{SessionConfig: &cfg}); err != nil {
+		t.Fatal(err)
+	}
+	got := regexp.MustCompile(`"\d{4}-\d\d-\d\dT[0-9:.]+Z"`).ReplaceAllString(body, `"T"`)
+	if want := `{"uses":0,"expireTime":"T","newSessionExpireTime":"T","bidiGenerateContentSetup":` + r98provgSetupJSON + `}`; got != want {
+		t.Fatalf("body =\n%s\nwant\n%s", got, want)
 	}
 }

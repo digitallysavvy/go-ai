@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
 
@@ -43,10 +42,8 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	if params.ExpiresAfterSeconds != nil {
 		body["expiresIn"] = *params.ExpiresAfterSeconds
 	}
-	data, err := jsonstr.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+	// TS JSON.stringify of the literal: model, routeKind, expiresIn.
+	data := []byte(providerutils.StringifyOrdered(body, map[string][]string{"": {"model", "routeKind", "expiresIn"}}))
 	endpoint, err := gatewayOriginURL(p.baseURL, "/v1/realtime/client-secrets")
 	if err != nil {
 		return nil, err
