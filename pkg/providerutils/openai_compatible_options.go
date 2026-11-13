@@ -3,6 +3,7 @@ package providerutils
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"sort"
 	"strings"
 
@@ -429,4 +430,34 @@ func NormalizeProviderOptionsObject(raw interface{}) (map[string]interface{}, bo
 		return nil, false
 	}
 	return normalized, true
+}
+
+// WireInt is a wire number (a finite double, TS z.number()) in a v0.5.2 int
+// field: truncated toward zero and clamped to the platform int. A Go
+// conversion of a double beyond the int range is implementation-defined
+// (MinInt64 on amd64, saturated on arm64, wrapped on 32-bit targets past
+// 2^31-1); NaN reads as 0.
+func WireInt(f float64) int {
+	switch {
+	case math.IsNaN(f):
+		return 0
+	case f >= math.MaxInt:
+		return math.MaxInt
+	case f <= math.MinInt:
+		return math.MinInt
+	}
+	return int(f)
+}
+
+// WireInt64 is WireInt for an int64 field.
+func WireInt64(f float64) int64 {
+	switch {
+	case math.IsNaN(f):
+		return 0
+	case f >= math.MaxInt64:
+		return math.MaxInt64
+	case f <= math.MinInt64:
+		return math.MinInt64
+	}
+	return int64(f)
 }

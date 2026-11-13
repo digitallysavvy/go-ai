@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -1144,29 +1145,31 @@ func decodeFractionalUsage(data []byte) (ResponsesAPIUsage, error) {
 		return ResponsesAPIUsage{}, err
 	}
 	u := ResponsesAPIUsage{
-		InputTokens:      int(w.InputTokens),
-		OutputTokens:     int(w.OutputTokens),
+		// Clamped to the platform int (a Go conversion beyond it is
+		// implementation-defined).
+		InputTokens:      providerutils.WireInt(w.InputTokens),
+		OutputTokens:     providerutils.WireInt(w.OutputTokens),
 		InputTokensCost:  w.InputTokensCost,
 		OutputTokensCost: w.OutputTokensCost,
 	}
 	if w.CostInUsdTicks != nil {
-		v := int64(*w.CostInUsdTicks)
+		v := providerutils.WireInt64(*w.CostInUsdTicks)
 		u.CostInUsdTicks = &v
 	}
 	if d := w.InputTokensDetails; d != nil {
 		u.InputTokensDetails = &struct {
 			CachedTokens     int  `json:"cached_tokens,omitempty"`
 			CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
-		}{CachedTokens: int(d.CachedTokens)}
+		}{CachedTokens: providerutils.WireInt(d.CachedTokens)}
 		if d.CacheWriteTokens != nil {
-			v := int(*d.CacheWriteTokens)
+			v := providerutils.WireInt(*d.CacheWriteTokens)
 			u.InputTokensDetails.CacheWriteTokens = &v
 		}
 	}
 	if d := w.OutputTokensDetails; d != nil {
 		u.OutputTokensDetails = &struct {
 			ReasoningTokens int `json:"reasoning_tokens,omitempty"`
-		}{ReasoningTokens: int(d.ReasoningTokens)}
+		}{ReasoningTokens: providerutils.WireInt(d.ReasoningTokens)}
 	}
 	return u, nil
 }

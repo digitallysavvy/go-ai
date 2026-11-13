@@ -2034,7 +2034,7 @@ func openResponsesOutputTextAnnotations(rawItem json.RawMessage, content []Conte
 				valid = nil
 				break
 			}
-			valid = append(valid, Annotation{Type: "url_citation", URL: url, StartIndex: int(startIndex), EndIndex: int(endIndex), Title: title})
+			valid = append(valid, Annotation{Type: "url_citation", URL: url, StartIndex: providerutils.WireInt(startIndex), EndIndex: providerutils.WireInt(endIndex), Title: title})
 		}
 		out[i] = valid
 	}

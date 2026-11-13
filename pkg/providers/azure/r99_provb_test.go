@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TestR99provbMaiCallerHeaderCaseOverride: TS spreads the call headers over
@@ -80,8 +81,8 @@ func TestR99provbMaiImageErrorInfiniteCode(t *testing.T) {
 // platform int is clamped instead of an implementation-defined conversion.
 func TestR99provbMaiTokenSumPlatformInt(t *testing.T) {
 	for _, tc := range []struct{ in, want float64 }{{1e19, math.MaxInt}, {-1e19, math.MinInt}, {7.5, 7}} {
-		if got := azureMaiTokenInt(tc.in); float64(got) != tc.want {
-			t.Errorf("azureMaiTokenInt(%v) = %d, want %v", tc.in, got, tc.want)
+		if got := providerutils.WireInt(tc.in); float64(got) != tc.want {
+			t.Errorf("WireInt(%v) = %d, want %v", tc.in, got, tc.want)
 		}
 	}
 }
