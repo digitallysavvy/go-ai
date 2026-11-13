@@ -146,6 +146,9 @@ func (m *GoogleRealtimeModel) SerializeClientEventForIntent(event provider.Realt
 func (m *GoogleRealtimeModel) NewServerEventParser() func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
 	mapper := &googleRealtimeEventMapper{inputAudioRate: 16000}
 	return func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+		if err := googleRealtimeNullEventError(raw); err != nil {
+			return nil, err
+		}
 		return mapper.parseServerEvent(raw), nil
 	}
 }
@@ -214,7 +217,8 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		Name       string `json:"name"`
 		ExpireTime string `json:"expireTime"`
 	}
-	if err := jsonexact.Unmarshal([]byte(textdecode.UTF8(respBody)), &data); err != nil {
+	// TS response.json(): plain JSON.parse, not secureJsonParse.
+	if err := googlePlainJSONParse([]byte(textdecode.UTF8(respBody)), &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	var expiresAt *int64
@@ -417,9 +421,22 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 }
 
 func (m *GoogleRealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	if err := googleRealtimeNullEventError(raw); err != nil {
+		return nil, err
+	}
 	m.mapperMu.Lock()
 	defer m.mapperMu.Unlock()
 	return m.mapper.parseServerEvent(raw), nil
+}
+
+// googleRealtimeNullEventError is the TypeError TS parseEvent throws reading
+// `data.setupComplete` of a JSON null server message; the realtime event
+// channel treats it as fatal.
+func googleRealtimeNullEventError(raw json.RawMessage) error {
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return errors.New("Cannot read properties of null (reading 'setupComplete')") //nolint:staticcheck // TS V8 TypeError text
+	}
+	return nil
 }
 
 func (m *GoogleRealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent) (json.RawMessage, error) {

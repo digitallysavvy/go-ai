@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const (
@@ -256,7 +257,9 @@ type interactionsUsage struct {
 func (u *interactionsUsage) UnmarshalJSON(b []byte) error {
 	type plain interactionsUsage
 	var p plain
-	if err := jsonexact.Unmarshal(b, &p); err != nil {
+	// TS counts are z.number(): a fractional count truncates only in the
+	// typed fields (UnmarshalChunk), so raw below keeps it exact.
+	if err := providerutils.UnmarshalChunk(b, &p); err != nil {
 		return err
 	}
 	*u = interactionsUsage(p)

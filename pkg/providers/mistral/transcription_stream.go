@@ -379,6 +379,12 @@ func (s *mistralRealtimeTranscriptionStream) run(cfg mistralRealtimeTranscriptio
 
 			var raw map[string]interface{}
 			if err := securejson.Unmarshal([]byte(res.Text), &raw); err != nil { // TS safeParseJSON (secureJsonParse)
+				// One JSONParseError whose cause is the SyntaxError (securejson
+				// already returns a JSONParseError for a prototype key).
+				var parseErr *providererrors.JSONParseError
+				if errors.As(err, &parseErr) {
+					err = parseErr.Cause
+				}
 				fail(providererrors.NewJSONParseError(res.Text, err)) // TS safeParseJSON JSONParseError
 				return
 			}

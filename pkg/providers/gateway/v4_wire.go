@@ -58,14 +58,17 @@ type v4Usage struct {
 }
 
 func (u *v4Usage) UnmarshalJSON(b []byte) error {
+	// TS passes the usage through untouched: a count is any JSON number, so
+	// a fractional one is read as a float and truncated only in the typed
+	// counts (raw keeps it exact).
 	var o struct {
 		InputTokens  json.RawMessage        `json:"inputTokens"`
 		OutputTokens json.RawMessage        `json:"outputTokens"`
 		Raw          map[string]interface{} `json:"raw"`
 
-		PromptTokens     *int64 `json:"promptTokens"`
-		CompletionTokens *int64 `json:"completionTokens"`
-		TotalTokens      *int64 `json:"totalTokens"`
+		PromptTokens     *float64 `json:"promptTokens"`
+		CompletionTokens *float64 `json:"completionTokens"`
+		TotalTokens      *float64 `json:"totalTokens"`
 	}
 	if err := jsonexact.Unmarshal(b, &o); err != nil {
 		return err
@@ -73,41 +76,41 @@ func (u *v4Usage) UnmarshalJSON(b []byte) error {
 	u.set = true
 	var out types.Usage
 	var in struct {
-		Total      *int64 `json:"total"`
-		NoCache    *int64 `json:"noCache"`
-		CacheRead  *int64 `json:"cacheRead"`
-		CacheWrite *int64 `json:"cacheWrite"`
+		Total      *float64 `json:"total"`
+		NoCache    *float64 `json:"noCache"`
+		CacheRead  *float64 `json:"cacheRead"`
+		CacheWrite *float64 `json:"cacheWrite"`
 	}
 	var outTok struct {
-		Total     *int64 `json:"total"`
-		Text      *int64 `json:"text"`
-		Reasoning *int64 `json:"reasoning"`
+		Total     *float64 `json:"total"`
+		Text      *float64 `json:"text"`
+		Reasoning *float64 `json:"reasoning"`
 	}
 	inObj := len(o.InputTokens) > 0 && o.InputTokens[0] == '{' && jsonexact.Unmarshal(o.InputTokens, &in) == nil
 	outObj := len(o.OutputTokens) > 0 && o.OutputTokens[0] == '{' && jsonexact.Unmarshal(o.OutputTokens, &outTok) == nil
 	if inObj {
-		out.InputTokens = in.Total
-		out.InputDetails = &types.InputTokenDetails{NoCacheTokens: in.NoCache, CacheReadTokens: in.CacheRead, CacheWriteTokens: in.CacheWrite}
+		out.InputTokens = v4Count(in.Total)
+		out.InputDetails = &types.InputTokenDetails{NoCacheTokens: v4Count(in.NoCache), CacheReadTokens: v4Count(in.CacheRead), CacheWriteTokens: v4Count(in.CacheWrite)}
 	} else {
-		var n int64
+		var n float64
 		if len(o.InputTokens) > 0 && json.Unmarshal(o.InputTokens, &n) == nil {
-			out.InputTokens = &n
+			out.InputTokens = v4Count(&n)
 		} else {
-			out.InputTokens = o.PromptTokens
+			out.InputTokens = v4Count(o.PromptTokens)
 		}
 	}
 	if outObj {
-		out.OutputTokens = outTok.Total
-		out.OutputDetails = &types.OutputTokenDetails{TextTokens: outTok.Text, ReasoningTokens: outTok.Reasoning}
+		out.OutputTokens = v4Count(outTok.Total)
+		out.OutputDetails = &types.OutputTokenDetails{TextTokens: v4Count(outTok.Text), ReasoningTokens: v4Count(outTok.Reasoning)}
 	} else {
-		var n int64
+		var n float64
 		if len(o.OutputTokens) > 0 && json.Unmarshal(o.OutputTokens, &n) == nil {
-			out.OutputTokens = &n
+			out.OutputTokens = v4Count(&n)
 		} else {
-			out.OutputTokens = o.CompletionTokens
+			out.OutputTokens = v4Count(o.CompletionTokens)
 		}
 	}
-	out.TotalTokens = o.TotalTokens
+	out.TotalTokens = v4Count(o.TotalTokens)
 	if out.TotalTokens == nil && out.InputTokens != nil && out.OutputTokens != nil {
 		t := *out.InputTokens + *out.OutputTokens
 		out.TotalTokens = &t
@@ -115,6 +118,15 @@ func (u *v4Usage) UnmarshalJSON(b []byte) error {
 	out.Raw = o.Raw
 	u.usage = out
 	return nil
+}
+
+// v4Count is a usage count as an integer (a fractional count truncated).
+func v4Count(f *float64) *int64 {
+	if f == nil {
+		return nil
+	}
+	v := int64(*f)
+	return &v
 }
 
 // v4Part is one LanguageModelV4Content / stream part.

@@ -585,11 +585,18 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			if toolCallID == "" {
 				toolCallID = m.generateID()
 			}
+			// TS doGenerate: input JSON.stringify(args ?? {}), so a string
+			// args value is a quoted JSON string here (only the stream and
+			// the JSON response tool use a string verbatim).
+			rawInput := completeCallArgsJSON(part.FunctionCall)
+			if part.FunctionCall.ArgsIsString {
+				rawInput = marshalJSONCompact(part.FunctionCall.ArgsString)
+			}
 			addToolCall(types.ToolCall{
 				ID:               toolCallID,
 				ToolName:         part.FunctionCall.Name,
 				Arguments:        args,
-				RawArguments:     completeCallArgsJSON(part.FunctionCall),
+				RawArguments:     rawInput,
 				ProviderMetadata: providerMetadata,
 				ThoughtSignature: part.ThoughtSignature,
 			})
@@ -632,10 +639,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			if toolCallID == "" {
 				toolCallID = m.generateID()
 			}
-			resultValue := part.ToolResponse.Response
-			if resultValue == nil {
-				resultValue = map[string]interface{}{}
-			}
+			resultValue := part.toolResponseResult()
 			meta := map[string]interface{}{
 				"serverToolCallId": toolCallID,
 				"serverToolType":   part.ToolResponse.ToolType,

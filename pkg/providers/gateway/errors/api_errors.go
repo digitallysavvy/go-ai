@@ -242,7 +242,9 @@ func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, default
 		err = newGatewayRateLimitErrorFromResponse(message, statusCode, cause, generationID)
 	case "model_not_found":
 		var param modelNotFoundParam
-		_ = json.Unmarshal(payload.Error.Param, &param) // best effort
+		// TS safeValidateTypes(modelNotFoundParamSchema): keys match
+		// exactly, so a "ModelId" key is not modelId.
+		_ = jsonexact.Unmarshal(payload.Error.Param, &param) // best effort
 		err = newGatewayModelNotFoundErrorFromResponse(message, statusCode, param.ModelID, cause, generationID)
 	case "not_found":
 		err = NewGatewayNotFoundError(message, statusCode, cause, generationID)
@@ -252,7 +254,8 @@ func CreateGatewayErrorFromResponse(responseBody []byte, statusCode int, default
 		err = NewGatewayFailedDependencyError(message, statusCode, cause, generationID)
 	case "forbidden":
 		var param forbiddenParam
-		_ = json.Unmarshal(payload.Error.Param, &param) // best effort; non-string/missing ruleId leaves RuleID empty
+		// TS safeValidateTypes(forbiddenParamSchema): keys match exactly.
+		_ = jsonexact.Unmarshal(payload.Error.Param, &param) // best effort; non-string/missing ruleId leaves RuleID empty
 		err = NewGatewayForbiddenErrorWithRuleID(message, statusCode, cause, generationID, param.RuleID)
 	default:
 		err = newGatewayInternalServerErrorFromResponse(message, statusCode, cause, generationID)

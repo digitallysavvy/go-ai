@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -1032,6 +1033,12 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 func googleBatchLineError(line []byte) error {
 	var value interface{}
 	if syntax := jsonexact.Unmarshal(line, &value); syntax != nil {
+		// A forbidden prototype key is already a JSONParseError: TS has one,
+		// whose cause is the SyntaxError.
+		var parseErr *providererrors.JSONParseError
+		if errors.As(syntax, &parseErr) {
+			syntax = parseErr.Cause
+		}
 		return providererrors.NewJSONParseError(string(line), syntax)
 	}
 	if bad := zGoogleBatchResultLine(value, true, nil); bad != nil {

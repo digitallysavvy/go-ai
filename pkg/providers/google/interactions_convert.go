@@ -1049,8 +1049,9 @@ func interactionToolArgs(args map[string]interface{}, input string) (map[string]
 	}
 	var parsed interface{}
 	// TS secureJsonParse throws on a forbidden prototype key, and the catch
-	// sends the raw text as {value: input}.
-	if err := json.Unmarshal([]byte(input), &parsed); err != nil || hasForbiddenPrototypeKey(parsed) {
+	// sends the raw text as {value: input}. A number beyond the double range
+	// parses as Infinity (ruling 4), not a parse failure.
+	if err := jsonexact.Decode([]byte(input), &parsed); err != nil || hasForbiddenPrototypeKey(parsed) {
 		return map[string]interface{}{"value": input}, ""
 	}
 	if obj, ok := parsed.(map[string]interface{}); ok {
