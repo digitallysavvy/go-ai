@@ -203,7 +203,8 @@ var (
 
 	zMoonshotUsage = zNullish(zObj(
 		fl("prompt_tokens", nNum), fl("completion_tokens", nNum), fl("cached_tokens", nNum), fl("total_tokens", nNum),
-		fl("prompt_tokens_details", zNullish(zObj(fl("cached_tokens", nNum)))),
+		// cache_write_tokens: TS fce7a32cfd
+		fl("prompt_tokens_details", zNullish(zObj(fl("cached_tokens", nNum), fl("cache_write_tokens", nNum)))),
 		fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
 	))
 
@@ -377,8 +378,8 @@ func (s ChatChunkShape) node() zNode {
 // route those to their error handling). The error is a *ChunkSchemaError, or
 // the JSON syntax error when data is not valid JSON.
 func ValidateChatChunk(data []byte, shape ChatChunkShape) error {
-	var value interface{}
-	if err := json.Unmarshal(data, &value); err != nil {
+	value, err := parseJSValue(data)
+	if err != nil {
 		return err
 	}
 	// The union's failure is reported at the root; for the single-schema kinds
@@ -423,11 +424,7 @@ func (s ChatChunkShape) dataNode() zNode {
 // TypeValidationError) for a schema or typed-decode failure, so errors.As
 // works through core. The returned message is the error's text.
 func ChunkParseFailure(data string, cause error) (string, error) {
-	var syntax error
-	if jerr := json.Unmarshal([]byte(data), new(interface{})); jerr != nil {
-		syntax = jerr
-	}
-	if syntax != nil {
+	if _, syntax := parseJSValue([]byte(data)); syntax != nil {
 		err := providererrors.NewJSONParseError(data, syntax)
 		return err.Error(), err
 	}
@@ -473,14 +470,53 @@ func CheckChatChunk(data string, shape ChatChunkShape) (string, error) {
 // chunk schema, `{type: z.string()}.loose()`: a frame without a string `type`
 // fails every member. It returns the error-part message and typed error.
 func CheckTypedFrame(data string) (string, error) {
-	var value interface{}
-	if err := json.Unmarshal([]byte(data), &value); err != nil {
+	value, err := parseJSValue([]byte(data))
+	if err != nil {
 		return ChunkParseFailure(data, nil)
 	}
 	if bad := zObj(fl("type", zStr))(value, true, nil); bad != nil {
 		return ChunkParseFailure(data, bad)
 	}
 	return "", nil
+}
+
+// parseJSValue is JSON.parse for a frame validated by a zod schema: syntax
+// errors fail (with encoding/json's text), and a number out of the double
+// range reads as +-Infinity (0 when it underflows) instead of failing the
+// whole frame as encoding/json does. zod's object schemas then strip such a
+// value under an undeclared key, so the frame passes as in TS.
+func parseJSValue(data []byte) (interface{}, error) {
+	if !json.Valid(data) {
+		var v interface{}
+		if err := json.Unmarshal(data, &v); err != nil {
+			return nil, err
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v interface{}
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	return jsNumberTree(v), nil
+}
+
+// jsNumberTree replaces each json.Number in a decoded tree with its double.
+func jsNumberTree(v interface{}) interface{} {
+	switch x := v.(type) {
+	case json.Number:
+		f, _ := strconv.ParseFloat(string(x), 64) // a range error gives +-Inf or 0
+		return f
+	case map[string]interface{}:
+		for k, child := range x {
+			x[k] = jsNumberTree(child)
+		}
+	case []interface{}:
+		for i, child := range x {
+			x[i] = jsNumberTree(child)
+		}
+	}
+	return v
 }
 
 // UnmarshalChunk decodes a schema-validated stream frame into v. zod's
