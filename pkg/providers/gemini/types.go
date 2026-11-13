@@ -331,6 +331,9 @@ func (p *Part) UnmarshalJSON(b []byte) error {
 		ToolCall *struct {
 			Args json.RawMessage `json:"args"`
 		} `json:"toolCall"`
+		ToolResponse *struct {
+			Response json.RawMessage `json:"response"`
+		} `json:"toolResponse"`
 	}
 	auxErr := jsonexact.Unmarshal(b, &aux)
 	// TS checks `'text' in part && part.text != null`: a part decoded without
@@ -338,6 +341,12 @@ func (p *Part) UnmarshalJSON(b []byte) error {
 	p.textAbsent = auxErr == nil && (len(aux.Text) == 0 || string(aux.Text) == "null")
 	if auxErr == nil && aux.ToolCall != nil && len(aux.ToolCall.Args) > 0 && string(aux.ToolCall.Args) != "null" {
 		p.toolCallArgsRaw = string(aux.ToolCall.Args)
+	}
+	// toolResponse.response is z.unknown(): a value that is not an object
+	// (dropped from the typed field by lenientPart) is kept as wire text.
+	if auxErr == nil && aux.ToolResponse != nil && len(aux.ToolResponse.Response) > 0 &&
+		string(aux.ToolResponse.Response) != "null" && !isJSONObject(aux.ToolResponse.Response) {
+		p.toolResponseRaw = string(aux.ToolResponse.Response)
 	}
 	p.applyPartUnion(b)
 	return nil
@@ -376,9 +385,9 @@ func (p *Part) applyPartUnion(b []byte) {
 	case p.ToolCall != nil && hasStrings("toolCall", "toolType", "id"):
 		*p = Part{ToolCall: p.ToolCall, toolCallArgsRaw: p.toolCallArgsRaw, ThoughtSignature: sig, textAbsent: true}
 	case p.ToolResponse != nil && hasStrings("toolResponse", "toolType", "id"):
-		*p = Part{ToolResponse: p.ToolResponse, ThoughtSignature: sig, textAbsent: true}
+		*p = Part{ToolResponse: p.ToolResponse, toolResponseRaw: p.toolResponseRaw, ThoughtSignature: sig, textAbsent: true}
 	default:
-		p.InlineData, p.ToolCall, p.ToolResponse, p.toolCallArgsRaw = nil, nil, nil, ""
+		p.InlineData, p.ToolCall, p.ToolResponse, p.toolCallArgsRaw, p.toolResponseRaw = nil, nil, nil, "", ""
 	}
 }
 
@@ -428,6 +437,23 @@ type Part struct {
 		Response map[string]interface{} `json:"response,omitempty"`
 		ID       string                 `json:"id"`
 	} `json:"toolResponse,omitempty"`
+	// toolResponseRaw is the wire text of a toolResponse.response that is not
+	// an object (TS z.unknown() keeps it as the tool result).
+	toolResponseRaw string
+}
+
+// toolResponseResult is TS `part.toolResponse.response ?? {}`.
+func (p Part) toolResponseResult() interface{} {
+	if p.ToolResponse != nil && p.ToolResponse.Response != nil {
+		return p.ToolResponse.Response
+	}
+	if p.toolResponseRaw != "" {
+		var v interface{}
+		if jsonexact.Unmarshal([]byte(p.toolResponseRaw), &v) == nil && v != nil {
+			return v
+		}
+	}
+	return map[string]interface{}{}
 }
 
 // decodeInlineData base64-decodes an inlineData payload.

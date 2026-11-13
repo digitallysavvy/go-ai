@@ -639,10 +639,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			if toolCallID == "" {
 				toolCallID = m.generateID()
 			}
-			resultValue := part.ToolResponse.Response
-			if resultValue == nil {
-				resultValue = map[string]interface{}{}
-			}
+			resultValue := part.toolResponseResult()
 			meta := map[string]interface{}{
 				"serverToolCallId": toolCallID,
 				"serverToolType":   part.ToolResponse.ToolType,

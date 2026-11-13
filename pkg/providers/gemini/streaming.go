@@ -545,9 +545,11 @@ func (s *stream) newStreamError(e *StreamError) *providererrors.StreamProviderEr
 		c := *statusCode
 		retryable = c == 408 || c == 409 || c == 429 || c >= 500
 	}
+	// TS data: the parsed error; a number beyond the double range in its
+	// details reads as +-Inf like JSON.parse (ruling 4), not a lost value.
 	var data interface{}
 	if raw, err := json.Marshal(e); err == nil {
-		_ = json.Unmarshal(raw, &data)
+		_ = jsonexact.Unmarshal(raw, &data)
 	}
 	return providererrors.NewStreamProviderError(e.Message, s.cfg.ProviderName, e.Status, code, statusCode, &retryable, data)
 }
@@ -798,10 +800,7 @@ func (s *stream) processNonFuncPart(part Part) {
 		if toolCallID == "" {
 			toolCallID = s.generateID()
 		}
-		resultValue := part.ToolResponse.Response
-		if resultValue == nil {
-			resultValue = map[string]interface{}{}
-		}
+		resultValue := part.toolResponseResult()
 		meta := map[string]interface{}{
 			"serverToolCallId": toolCallID,
 			"serverToolType":   part.ToolResponse.ToolType,
