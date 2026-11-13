@@ -1,6 +1,7 @@
 package xai
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -43,4 +44,13 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"funct
 		}
 	}
 	t.Fatal("no tool-call chunk")
+}
+
+// TestR96provbInfCallerOptionInvalid: a non-finite caller option number is
+// an invalid option (zod 4 z.number() rejects +-Infinity), not a null that
+// silently drops the option: caller option round trips keep encoding/json.
+func TestR96provbInfCallerOptionInvalid(t *testing.T) {
+	if _, err := extractXAIFilesOptions(map[string]interface{}{"xai": map[string]interface{}{"expiresAfter": math.Inf(1)}}); err == nil {
+		t.Fatal("expiresAfter +Inf: no error")
+	}
 }
