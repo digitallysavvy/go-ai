@@ -551,10 +551,22 @@ func UnmarshalChunk(data []byte, v interface{}) error {
 	if perr := jsonexact.ParseError(data); perr != nil {
 		return perr
 	}
+	return unmarshalChunkNumbers(data, v)
+}
+
+// UnmarshalChunkPlain is UnmarshalChunk without the prototype check, for a
+// body TS reads with `await response.json()` (plain JSON.parse keeps a
+// `__proto__` key as an ordinary property; see jsonexact.UnmarshalPlain).
+func UnmarshalChunkPlain(data []byte, v interface{}) error {
+	return unmarshalChunkNumbers(data, v)
+}
+
+// unmarshalChunkNumbers is UnmarshalChunk after the prototype check.
+func unmarshalChunkNumbers(data []byte, v interface{}) error {
 	// zod matches object keys exactly; drop the ones encoding/json would
 	// fill a field with only case-insensitively.
 	data = jsonexact.Filter(data, v)
-	err := jsonexact.Decode(data, v)
+	err := jsonexact.UnmarshalPlain(data, v)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
 		return err
@@ -581,7 +593,7 @@ func UnmarshalChunk(data []byte, v interface{}) error {
 		if merr != nil {
 			return err
 		}
-		err = jsonexact.Decode(normalized, v)
+		err = jsonexact.UnmarshalPlain(normalized, v)
 		if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
 			return err
 		}

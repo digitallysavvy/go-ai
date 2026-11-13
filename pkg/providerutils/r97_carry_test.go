@@ -31,3 +31,20 @@ func TestR97carryResponsesChunkPromptCacheDiagnostics(t *testing.T) {
 		}
 	}
 }
+
+// UnmarshalChunkPlain is UnmarshalChunk for a TS `response.json()` body: a
+// __proto__ key is an ordinary property, and fractional counts still decode
+// into integer fields.
+func TestR97carryUnmarshalChunkPlain(t *testing.T) {
+	body := []byte(`{"__proto__":{"x":1},"count":2.0,"value":"v"}`)
+	var out struct {
+		Count int    `json:"count"`
+		Value string `json:"value"`
+	}
+	if err := UnmarshalChunkPlain(body, &out); err != nil || out.Count != 2 || out.Value != "v" {
+		t.Fatalf("UnmarshalChunkPlain = %+v, %v", out, err)
+	}
+	if err := UnmarshalChunk(body, &out); err == nil {
+		t.Fatal("UnmarshalChunk accepted a __proto__ key")
+	}
+}
