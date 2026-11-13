@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // LanguageModel implements the provider.LanguageModel interface for Replicate
@@ -169,7 +170,7 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string,
 		default:
 		}
 
-		resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "GET", Path: "/predictions/" + predictionID, Headers: headers})
+		resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "GET", Path: "/predictions/" + providerutils.EncodePathSegment(predictionID), Headers: headers}) // the ID is response data: one path segment, as the image model's cancel URL
 		if err != nil {
 			return replicatePrediction{}, err
 		}
