@@ -7,9 +7,11 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"io"
 	"mime/multipart"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -161,8 +163,16 @@ func derefString(s *string) string {
 	return *s
 }
 
+// inlineFileBytes is TS convertInlineFileDataToUint8Array: stream data is
+// not supported, so the stream is released unread and the call fails with
+// UnsupportedFunctionalityError('streaming file upload').
 func inlineFileBytes(data types.FileData) ([]byte, error) {
 	switch data.Type {
+	case types.FileDataTypeStream:
+		if closer, ok := data.Stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming file upload"}
 	case types.FileDataTypeData:
 		if data.DataString != "" {
 			return types.DecodeFileDataString(data.DataString)

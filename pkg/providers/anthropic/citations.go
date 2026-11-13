@@ -34,7 +34,10 @@ func extractCitationDocuments(messages []types.Message) []citationDocument {
 			if !ok {
 				continue
 			}
-			if file.MediaType != "application/pdf" && file.MediaType != "text/plain" {
+			// The media type the prompt converter sends (MediaType, then
+			// the deprecated MimeType, then FileData.MediaType).
+			mediaType := firstNonEmptyString(file.MediaType, file.MimeType, file.FileData.MediaType)
+			if mediaType != "application/pdf" && mediaType != "text/plain" {
 				continue
 			}
 			if !fileCitationsEnabled(file.ProviderOptions) {
@@ -47,7 +50,7 @@ func extractCitationDocuments(messages []types.Message) []citationDocument {
 			docs = append(docs, citationDocument{
 				Title:     title,
 				Filename:  file.Filename,
-				MediaType: file.MediaType,
+				MediaType: mediaType,
 			})
 		}
 	}
@@ -340,4 +343,14 @@ func anthropicResponseHasWebSearchResults(content []anthropicContent) bool {
 		}
 	}
 	return false
+}
+
+// firstNonEmptyString returns the first non-empty value.
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
