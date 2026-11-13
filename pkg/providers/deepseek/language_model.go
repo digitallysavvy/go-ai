@@ -508,6 +508,18 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	if missTokens != nil {
 		meta["promptCacheMissTokens"] = *missTokens
 	}
+	// TS responseBody.usage?.prompt_cache_hit_tokens (no ?? undefined here,
+	// unlike the stream): a present null is kept as null.
+	if len(response.Usage) > 0 {
+		var usageKeys map[string]json.RawMessage
+		if jsonexact.Unmarshal(response.Usage, &usageKeys) == nil {
+			for wire, key := range map[string]string{"prompt_cache_hit_tokens": "promptCacheHitTokens", "prompt_cache_miss_tokens": "promptCacheMissTokens"} {
+				if string(usageKeys[wire]) == "null" {
+					meta[key] = nil
+				}
+			}
+		}
+	}
 	if response.Object != "" {
 		meta["responseObject"] = response.Object
 	}

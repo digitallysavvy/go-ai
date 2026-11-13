@@ -30,3 +30,25 @@ func TestR97provbLogprobsNullMember(t *testing.T) {
 		t.Fatalf("logprobs = %#v, want %#v", lp, want)
 	}
 }
+
+// TestR97provbPromptCacheTokensNull: TS doGenerate writes
+// promptCacheHitTokens: responseBody.usage?.prompt_cache_hit_tokens without
+// `?? undefined`, so a null count is kept as null (the stream drops it).
+func TestR97provbPromptCacheTokensNull(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_cache_hit_tokens":null,"prompt_cache_miss_tokens":1}}`))
+	}))
+	defer srv.Close()
+	res, err := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "deepseek-chat").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := res.ProviderMetadata["deepseek"].(map[string]interface{})
+	if v, ok := meta["promptCacheHitTokens"]; !ok || v != nil {
+		t.Fatalf("promptCacheHitTokens = %#v (present %v), want null", v, ok)
+	}
+	if meta["promptCacheMissTokens"] != 1 {
+		t.Fatalf("promptCacheMissTokens = %#v", meta["promptCacheMissTokens"])
+	}
+}
