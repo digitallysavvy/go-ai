@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -108,4 +109,17 @@ func TestR95provbEmptySystemMessageInstructions(t *testing.T) {
 			t.Errorf("%s: instructions = %#v (present %v), want present %v", tc.name, v, ok, tc.want)
 		}
 	}
+}
+
+// TestR95provbTSCasesFinishReasonTS replays map-open-responses-finish-reason
+// .test.ts against the mapping the language model uses
+// (mapOpenResponsesFinishReasonTS): an undefined or null reason is absent.
+func TestR95provbTSCasesFinishReasonTS(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/finish_reason.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		reason, present := in["finishReason"].(string)
+		hasToolCalls, _ := in["hasToolCalls"].(bool)
+		return string(mapOpenResponsesFinishReasonTS(reason, present, hasToolCalls)), nil, nil
+	}, nil)
 }
