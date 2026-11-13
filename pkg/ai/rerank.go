@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -507,7 +508,8 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	// Fire ExperimentalOnFinish callback
 	var providerMeta json.RawMessage
 	if result.ProviderMetadata != nil {
-		if b, merr := json.Marshal(result.ProviderMetadata); merr == nil {
+		// JSON.stringify writes a provider +-Inf as null (ruling 4).
+		if b, merr := jsonstr.Marshal(result.ProviderMetadata); merr == nil {
 			providerMeta = b
 		}
 	}

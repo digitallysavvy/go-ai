@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ConvertToResponseMessage converts accumulated assistant content and tool
@@ -534,7 +535,7 @@ func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
 	if len(metadata) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(metadata)
+	raw, err := jsonstr.Marshal(metadata) // NaN / +-Inf write null (JSON.stringify)
 	if err != nil {
 		return nil
 	}
