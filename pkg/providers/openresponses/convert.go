@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"math"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -894,6 +895,18 @@ func asInt(value interface{}) (int, bool) {
 	case int64:
 		return int(v), true
 	case float64:
+		// TS keeps the double (typeof number); the v0.5.2 int field takes
+		// the nearest int, with the same result on every platform (a Go
+		// conversion of NaN, +-Inf or an out-of-range double is
+		// implementation-defined).
+		switch {
+		case math.IsNaN(v):
+			return 0, true
+		case v >= math.MaxInt:
+			return math.MaxInt, true
+		case v <= math.MinInt:
+			return math.MinInt, true
+		}
 		return int(v), true
 	case json.Number:
 		i, err := v.Int64()
