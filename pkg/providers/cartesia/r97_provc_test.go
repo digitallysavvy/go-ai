@@ -60,3 +60,17 @@ func TestR97provcClientSecretIsRawFetch(t *testing.T) {
 		t.Errorf("User-Agent = %q, want the provider tag without the runtime tag", ua)
 	}
 }
+
+// TestR97provcRealtimeParseNullEvent (cr-r97-provb-to-provc): TS
+// parseServerEvent reads event.request_id of a JSON null message and throws;
+// Go returned a custom event.
+func TestR97provcRealtimeParseNullEvent(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "k"}), "ink-2")
+	events, err := m.ParseServerEvent([]byte(" null "))
+	if err == nil || err.Error() != "Cannot read properties of null (reading 'request_id')" || events != nil {
+		t.Fatalf("events = %+v, err = %v", events, err)
+	}
+	if _, err := m.ParseServerEvent([]byte(`{"type":"connected","request_id":"r"}`)); err != nil {
+		t.Fatalf("connected: %v", err)
+	}
+}

@@ -345,6 +345,11 @@ func (m *RealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent)
 // ParseServerEvent maps a Cartesia STT event; the first event also yields a
 // session-created event when the server did not send "connected".
 func (m *RealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	// TS reads event.request_id of the parsed message first: a JSON null
+	// throws, and the event channel fails the session with that TypeError.
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return nil, errors.New("Cannot read properties of null (reading 'request_id')") //nolint:staticcheck // ST1005: matches the TS runtime error text
+	}
 	event := decodeCartesiaRealtimeEvent(raw)
 	m.mu.Lock()
 	defer m.mu.Unlock()
