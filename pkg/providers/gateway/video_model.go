@@ -149,11 +149,10 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		return nil, err
 	}
 
-	// TS combineHeaders(config, options.headers, model headers, o11y, accept)
-	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
-
-	// Set Accept header to request SSE stream for video generation
-	headers["Accept"] = "text/event-stream"
+	// TS combineHeaders(config, options.headers, model headers, o11y,
+	// {accept}): the SSE accept comes last and replaces a call header of
+	// any case.
+	headers := internalhttp.MergeHeaders(gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders()), map[string]string{"accept": "text/event-stream"})
 
 	// Make streaming request for SSE
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{

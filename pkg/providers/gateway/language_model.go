@@ -147,8 +147,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create headers for the request
-	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders(true))
-	headers["Accept"] = "text/event-stream"
+	// TS sends no Accept (the Go streaming default, a known difference): a
+	// call header replaces it whatever its case.
+	headers := gatewayRequestHeaders(ctx, internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers), m.getModelConfigHeaders(true))
 
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{

@@ -54,9 +54,8 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// team header wins, and the subprotocols derive from the merged set.
 	headers := mergeHeadersFold(
 		map[string]string{"Authorization": "Bearer " + token, "ai-gateway-auth-method": authMethod},
-		m.provider.headers, opts.Headers, m.getModelConfigHeaders(),
+		m.provider.headers, opts.Headers, m.getModelConfigHeaders(), gatewayO11yHeaderMap(ctx),
 	)
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
 	authMethod = gatewayHeaderValue(headers, "ai-gateway-auth-method")
 
 	startFrame := map[string]interface{}{

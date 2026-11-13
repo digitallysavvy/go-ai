@@ -1170,10 +1170,19 @@ func GetO11yHeaders(ctx context.Context) O11yHeaders {
 // and the observability headers in the TS order (later wins):
 // combineHeaders(config, options.headers, model headers, o11y). The client's
 // own headers are applied by the HTTP client underneath.
+//
+// Each layer replaces a header of an earlier one whatever its case (TS
+// postToApi lower-cases the combined record in entry order).
 func gatewayRequestHeaders(ctx context.Context, call, model map[string]string) map[string]string {
-	headers := internalhttp.MergeHeaders(call, model)
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	return headers
+	return internalhttp.MergeHeaders(call, model, gatewayO11yHeaderMap(ctx))
+}
+
+// gatewayO11yHeaderMap is TS createO11yHeaders() for ctx: the observability
+// headers that are set, as their own layer.
+func gatewayO11yHeaderMap(ctx context.Context) map[string]string {
+	o11y := map[string]string{}
+	AddO11yHeaders(o11y, GetO11yHeaders(ctx))
+	return o11y
 }
 
 // AddO11yHeaders adds observability headers to the request headers
