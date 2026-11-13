@@ -641,7 +641,11 @@ func (c *googleConverter) toolCallFrom(part interface{}) (googleToolCall, bool) 
 		if p.Arguments != nil {
 			input = p.Arguments
 		} else if p.Input != "" {
-			if err := json.Unmarshal([]byte(p.Input), &input); err != nil {
+			// TS secureJsonParse: a forbidden prototype key is a parse
+			// failure, so the input stays the raw string.
+			if v, ok := SecureJSONParse(p.Input); ok {
+				input = v
+			} else {
 				input = p.Input
 			}
 		}
@@ -654,7 +658,11 @@ func (c *googleConverter) toolCallFrom(part interface{}) (googleToolCall, bool) 
 		if p.Arguments != nil {
 			input = p.Arguments
 		} else if p.RawArguments != "" {
-			if err := json.Unmarshal([]byte(p.RawArguments), &input); err != nil {
+			// TS secureJsonParse: a forbidden prototype key is a parse
+			// failure, so the input stays the raw string.
+			if v, ok := SecureJSONParse(p.RawArguments); ok {
+				input = v
+			} else {
 				input = p.RawArguments
 			}
 		}
