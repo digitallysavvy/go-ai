@@ -60,8 +60,11 @@ func groqHTTPError(statusErr *internalhttp.HTTPStatusError, cause error) (perr *
 			"message": *payload.Error.Message, "type": *payload.Error.Type,
 		}}
 	} else {
-		message := statusErr.Text()
-		if message == "" && cause != nil {
+		// TS response.statusText: the reason phrase of a received response,
+		// "" included; only a hand-built error with no standard text for its
+		// code falls back to the cause text.
+		message, fromResponse := statusErr.HTTPStatusText()
+		if message == "" && !fromResponse && cause != nil {
 			message = cause.Error()
 		}
 		perr = providererrors.NewProviderErrorFromResponse("groq", statusErr.StatusCode, "", message, cause)
