@@ -508,6 +508,18 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	if missTokens != nil {
 		meta["promptCacheMissTokens"] = *missTokens
 	}
+	// TS responseBody.usage?.prompt_cache_hit_tokens (no ?? undefined here,
+	// unlike the stream): a present null is kept as null.
+	if len(response.Usage) > 0 {
+		var usageKeys map[string]json.RawMessage
+		if jsonexact.Unmarshal(response.Usage, &usageKeys) == nil {
+			for wire, key := range map[string]string{"prompt_cache_hit_tokens": "promptCacheHitTokens", "prompt_cache_miss_tokens": "promptCacheMissTokens"} {
+				if string(usageKeys[wire]) == "null" {
+					meta[key] = nil
+				}
+			}
+		}
+	}
 	if response.Object != "" {
 		meta["responseObject"] = response.Object
 	}
@@ -530,17 +542,23 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 		meta["toolCallTypes"] = toolCallTypes
 	}
 	if choice.Logprobs != nil {
+		// TS logprobs: choice.logprobs, the parsed object (a null member
+		// is kept as null).
 		lp := map[string]interface{}{}
 		if choice.Logprobs.Content != nil {
 			lp["content"] = choice.Logprobs.Content
+		} else if choice.Logprobs.contentNull {
+			lp["content"] = nil
 		}
 		if choice.Logprobs.ReasoningContent != nil {
 			lp["reasoning_content"] = choice.Logprobs.ReasoningContent
+		} else if choice.Logprobs.reasoningNull {
+			lp["reasoning_content"] = nil
 		}
 		meta["logprobs"] = lp
 	}
-	if response.SystemFingerprint != "" {
-		meta["systemFingerprint"] = response.SystemFingerprint
+	if response.SystemFingerprint != nil { // TS != null: a present "" is kept
+		meta["systemFingerprint"] = *response.SystemFingerprint
 	}
 	result.ProviderMetadata = map[string]interface{}{m.provider.providerOptionsName(): meta}
 
@@ -650,7 +668,7 @@ type deepseekResponse struct {
 	Object            string   `json:"object"`
 	Created           *float64 `json:"created"`
 	Model             string   `json:"model"`
-	SystemFingerprint string   `json:"system_fingerprint"`
+	SystemFingerprint *string  `json:"system_fingerprint"`
 	Choices           []struct {
 		Index        *int   `json:"index"`
 		FinishReason string `json:"finish_reason"`
@@ -689,6 +707,26 @@ type deepseekLogprobEntry struct {
 type deepseekLogprobs struct {
 	Content          []deepseekLogprobEntry `json:"content,omitempty"`
 	ReasoningContent []deepseekLogprobEntry `json:"reasoning_content,omitempty"`
+
+	// contentNull / reasoningNull record a present null member: TS keeps
+	// the parsed logprobs object (nullish members) in the provider metadata.
+	contentNull, reasoningNull bool
+}
+
+// UnmarshalJSON decodes the members and records which were null.
+func (l *deepseekLogprobs) UnmarshalJSON(b []byte) error {
+	type plain deepseekLogprobs
+	var p plain
+	if err := jsonexact.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*l = deepseekLogprobs(p)
+	var keys map[string]json.RawMessage
+	if jsonexact.Unmarshal(b, &keys) == nil {
+		l.contentNull = string(keys["content"]) == "null"
+		l.reasoningNull = string(keys["reasoning_content"]) == "null"
+	}
+	return nil
 }
 
 type deepseekUsage struct {
@@ -715,7 +753,7 @@ type deepseekStreamChunk struct {
 	Object            string          `json:"object"`
 	Created           *float64        `json:"created"`
 	Model             string          `json:"model"`
-	SystemFingerprint string          `json:"system_fingerprint"`
+	SystemFingerprint *string         `json:"system_fingerprint"`
 	Error             json.RawMessage `json:"error,omitempty"`
 	Choices           []struct {
 		Index        *int    `json:"index"`
@@ -765,7 +803,7 @@ type deepseekStream struct {
 	// providerMetadata and usage.
 	usageRaw          json.RawMessage
 	responseObject    string
-	systemFingerprint string
+	systemFingerprint *string
 	choiceIndex       *int
 	messageRole       string
 	toolCallTypes     map[int]string
@@ -886,7 +924,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		if chunkData.Object != "" {
 			s.responseObject = chunkData.Object
 		}
-		if chunkData.SystemFingerprint != "" {
+		if chunkData.SystemFingerprint != nil { // TS != null: a present "" is kept
 			s.systemFingerprint = chunkData.SystemFingerprint
 		}
 		// TS isFirstChunk: the first valid chunk always yields response-metadata.
@@ -1083,8 +1121,8 @@ func (s *deepseekStream) attachFinishMetadata(chunk *provider.StreamChunk) {
 		}
 		meta["logprobs"] = lp
 	}
-	if s.systemFingerprint != "" {
-		meta["systemFingerprint"] = s.systemFingerprint
+	if s.systemFingerprint != nil {
+		meta["systemFingerprint"] = *s.systemFingerprint
 	}
 	// TS always attaches providerMetadata[name] to the finish part, even when
 	// every entry is undefined.

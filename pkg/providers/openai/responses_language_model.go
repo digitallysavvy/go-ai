@@ -1482,6 +1482,20 @@ func openAIProviderToolDisplayName(tools []types.Tool, providerID, bareName stri
 	return bareName
 }
 
+// openAIResponsesCustomToolName is TS toolNameMapping.toCustomToolName of a
+// custom_tool_call's name: a name equal to a mapped provider tool's wire name
+// (createToolNameMapping providerToolNames) reports that declared provider
+// tool's name; any other name is returned as is.
+func openAIResponsesCustomToolName(tools []types.Tool, name string) string {
+	switch name {
+	case "code_interpreter", "computer", "file_search", "image_generation",
+		"local_shell", "shell", "web_search", "web_search_preview", "mcp",
+		"apply_patch", "tool_search", "programmatic_tool_calling":
+		return openAIProviderToolDisplayName(tools, "openai."+name, name)
+	}
+	return name
+}
+
 // openAIToolSearchDisplayName is the tool name of tool_search calls and
 // outputs: the declared tool_search tool's Name (TS
 // toolNameMapping.toCustomToolName), else "tool_search". Stream and generate
@@ -1553,8 +1567,9 @@ func extractApprovalRequestIDToToolCallIDFromPrompt(prompt types.Prompt) map[str
 			if !ok {
 				continue
 			}
+			// TS approvalRequestId != null: a present "" is a key too.
 			approvalRequestID, ok := openaiOpts["approvalRequestId"].(string)
-			if !ok || approvalRequestID == "" {
+			if !ok {
 				continue
 			}
 			mapping[approvalRequestID] = toolCall.ToolCallID
@@ -1860,7 +1875,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			customRaw, _ := jsonstr.Marshal(item.Input)
 			pushCall(types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         item.Name,
+				ToolName:         openAIResponsesCustomToolName(tools, item.Name),
 				Arguments:        map[string]interface{}{"input": item.Input},
 				RawArguments:     string(customRaw),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, nil, item.Async, nil),
@@ -3196,6 +3211,38 @@ type responsesOngoingToolCall struct {
 	async *bool
 }
 
+// setOngoingToolCall records the tool call for an output_index. TS keeps one
+// ongoingToolCalls entry per output_index, so it replaces a function_call
+// recorded there too.
+func (s *responsesStream) setOngoingToolCall(outputIndex int, call *responsesOngoingToolCall) {
+	delete(s.toolAccum, outputIndex)
+	s.ongoingToolCalls[outputIndex] = call
+}
+
+// ongoingToolCallID is the tool call id of TS ongoingToolCalls[output_index]
+// whatever its type: a function_call (toolAccum) or another tool call.
+func (s *responsesStream) ongoingToolCallID(outputIndex int) (string, bool) {
+	if accum, ok := s.toolAccum[outputIndex]; ok {
+		return accum.id, true
+	}
+	if call, ok := s.ongoingToolCalls[outputIndex]; ok {
+		return call.toolCallID, true
+	}
+	return "", false
+}
+
+// takeOngoingToolCall removes and returns TS ongoingToolCalls[output_index]
+// whatever its type; a function_call is returned as its name, id and async.
+func (s *responsesStream) takeOngoingToolCall(outputIndex int) *responsesOngoingToolCall {
+	call := s.ongoingToolCalls[outputIndex]
+	if accum, ok := s.toolAccum[outputIndex]; ok && call == nil {
+		call = &responsesOngoingToolCall{toolName: accum.name, toolCallID: accum.id, async: accum.async}
+	}
+	delete(s.toolAccum, outputIndex)
+	delete(s.ongoingToolCalls, outputIndex)
+	return call
+}
+
 // applyPatchStreamState tracks whether an apply_patch_call's diff has
 // started streaming and whether its tool-input-end has already been sent.
 type applyPatchStreamState struct {
@@ -3625,6 +3672,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			switch e.Item.Type {
 			case "function_call":
 				suppress := responses.IsUndeclaredParallelToolCall(e.Item.Name, s.tools)
+				delete(s.ongoingToolCalls, e.OutputIndex) // TS: one entry per output_index
 				s.toolAccum[e.OutputIndex] = &responsesToolAccum{
 					id:                     e.Item.CallID,
 					itemID:                 e.Item.ID,
@@ -3643,6 +3691,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					})
 				}
 			case "web_search_call":
+				s.setOngoingToolCall(e.OutputIndex, &responsesOngoingToolCall{toolName: s.webSearchToolName, toolCallID: e.Item.ID})
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{
 						Type: provider.ChunkTypeToolInputStart,
@@ -3713,6 +3762,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				if callID, ok := responsesEventItemString([]byte(event.Data), "call_id"); ok {
 					computerCallID = callID // TS call_id ?? id: a present "" is kept
 				}
+				s.setOngoingToolCall(e.OutputIndex, &responsesOngoingToolCall{
+					toolName:   openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
+					toolCallID: computerCallID,
+				})
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputStart,
 					ToolCall: &types.ToolCall{
@@ -3745,11 +3798,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			case "code_interpreter_call":
 				codeInterpreterName := openAIProviderToolDisplayName(s.tools, "openai.code_interpreter", "code_interpreter")
-				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+				s.setOngoingToolCall(e.OutputIndex, &responsesOngoingToolCall{
 					toolName:        codeInterpreterName,
 					toolCallID:      e.Item.ID,
 					codeInterpreter: &codeInterpreterStreamState{containerID: e.Item.ContainerID},
-				}
+				})
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{
 						Type: provider.ChunkTypeToolInputStart,
@@ -3771,11 +3824,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				if execution == "" {
 					execution = "server"
 				}
-				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+				s.setOngoingToolCall(e.OutputIndex, &responsesOngoingToolCall{
 					toolName:            s.toolSearchToolName,
 					toolCallID:          e.Item.ID,
 					toolSearchExecution: execution,
-				}
+				})
 				if execution == "server" {
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 						Type: provider.ChunkTypeToolInputStart,
@@ -3788,23 +3841,30 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				continue
 			case "custom_tool_call":
-				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-					toolName:   e.Item.Name,
+				customName := openAIResponsesCustomToolName(s.tools, e.Item.Name)
+				s.setOngoingToolCall(e.OutputIndex, &responsesOngoingToolCall{
+					toolName:   customName,
 					toolCallID: e.Item.CallID,
 					async:      e.Item.Async,
-				}
+				})
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{
 						Type: provider.ChunkTypeToolInputStart,
 						ToolCall: &types.ToolCall{
 							ID:       e.Item.CallID,
-							ToolName: e.Item.Name,
+							ToolName: customName,
 							// Custom tool deltas are raw text; the final tool
 							// call input stays JSON-encoded (TS #23407).
 							InputEncoding: "text",
 						},
 					},
 				)
+				continue
+			case "shell_call":
+				s.setOngoingToolCall(e.OutputIndex, &responsesOngoingToolCall{
+					toolName:   openAIDeclaredToolName(s.tools, "openai.shell", "shell"),
+					toolCallID: e.Item.CallID,
+				})
 				continue
 			case "apply_patch_call":
 				// Row 45f2b6a / item 9: progressive tool-input streaming, mirroring
@@ -3816,11 +3876,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					opPath = e.Item.Operation.Path
 				}
 				isDelete := opType == "delete_file"
-				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+				s.setOngoingToolCall(e.OutputIndex, &responsesOngoingToolCall{
 					toolName:   openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 					toolCallID: callID,
 					applyPatch: &applyPatchStreamState{hasDiff: isDelete, endEmitted: isDelete},
-				}
+				})
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputStart,
 					ToolCall: &types.ToolCall{
@@ -3940,6 +4000,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						Text: e.Delta,
 					})
 				}
+			} else if call, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+				// TS streams the delta for whatever tool call holds the index.
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta,
+					ID:   call.toolCallID,
+					Text: e.Delta,
+				})
 			}
 			continue
 
@@ -4095,10 +4162,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+			if toolCallID, ok := s.ongoingToolCallID(e.OutputIndex); ok {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
-					ID:   toolCall.toolCallID,
+					ID:   toolCallID,
 					Text: e.Delta,
 				})
 				if ok {
@@ -4193,10 +4260,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+			if toolCallID, ok := s.ongoingToolCallID(e.OutputIndex); ok {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
-					ID:   toolCall.toolCallID,
+					ID:   toolCallID,
 					Text: escapeJSONDelta(e.Delta),
 				})
 				if ok {
@@ -4216,21 +4283,26 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
-				delete(s.ongoingToolCalls, e.OutputIndex)
-				containerID := ""
-				if toolCall.codeInterpreter != nil {
-					containerID = toolCall.codeInterpreter.containerID
-				}
-				inputStr := marshalNoEscape(map[string]interface{}{"code": e.Code, "containerId": containerID})
+			// TS keeps the ongoing entry (a repeated code.done emits again) and
+			// reads toolCall.codeInterpreter!.containerId after enqueuing the
+			// input end: an entry of another tool type throws a TypeError.
+			if toolCallID, ok := s.ongoingToolCallID(e.OutputIndex); ok {
 				s.flushQueue = append(s.flushQueue,
-					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}`},
-					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCallID, Text: `"}`},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCallID},
+				)
+				toolCall := s.ongoingToolCalls[e.OutputIndex]
+				if toolCall == nil || toolCall.codeInterpreter == nil {
+					s.err = errors.New("Cannot read properties of undefined (reading 'containerId')") //nolint:staticcheck // ST1005: TypeError text from TS
+					continue
+				}
+				inputStr := marshalNoEscape(map[string]interface{}{"code": e.Code, "containerId": toolCall.codeInterpreter.containerID})
+				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{
 						Type: provider.ChunkTypeToolCall,
 						ToolCall: &types.ToolCall{
-							ID:               toolCall.toolCallID,
-							ToolName:         toolCall.toolName,
+							ID:               toolCallID,
+							ToolName:         openAIProviderToolDisplayName(s.tools, "openai.code_interpreter", "code_interpreter"),
 							RawArguments:     string(inputStr),
 							ProviderExecuted: true,
 						},
@@ -4435,6 +4507,18 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	if responsesItemIsFunctionCall(itemType, e.Item, true) {
 		s.hasFunctionCall = true
 	}
+	// TS sets ongoingToolCalls[output_index] = undefined for these item
+	// types, whichever tool call held the index. The function_call and
+	// tool-call cases below read their entry before it is cleared.
+	clearOngoing := func() {
+		delete(s.toolAccum, e.OutputIndex)
+		delete(s.ongoingToolCalls, e.OutputIndex)
+	}
+	switch itemType {
+	case "web_search_call", "computer_call", "file_search_call", "code_interpreter_call",
+		"mcp_call", "mcp_list_tools", "mcp_approval_request", "local_shell_call", "shell_call":
+		defer clearOngoing()
+	}
 
 	switch itemType {
 	case "function_call":
@@ -4455,8 +4539,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				async:                  seed.Async,
 				suppressInputStreaming: responses.IsUndeclaredParallelToolCall(seed.Name, s.tools),
 			}
+			if call := s.ongoingToolCalls[e.OutputIndex]; call != nil {
+				// TS ongoingToolCall?.async of another tool call at the index.
+				accum.async = call.async
+			}
 		}
 		delete(s.toolAccum, e.OutputIndex)
+		delete(s.ongoingToolCalls, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
 
 		// TS builds the tool-input-end / tool-call parts from the done item
@@ -4683,8 +4772,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return s.emitDecodeError("apply_patch_call", err)
 		}
-		toolCall := s.ongoingToolCalls[e.OutputIndex]
-		delete(s.ongoingToolCalls, e.OutputIndex)
+		toolCall := s.takeOngoingToolCall(e.OutputIndex)
 		if toolCall != nil && toolCall.applyPatch != nil && !toolCall.applyPatch.endEmitted && item.Operation.Type != "delete_file" {
 			if !toolCall.applyPatch.hasDiff {
 				diff := ""
@@ -4716,10 +4804,12 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if item.ID != nil {
 			itemID = *item.ID
 		}
+		// TS toolCallId: the call id recorded at output_item.added (the done
+		// item's call_id only goes into the input).
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
-				ID:               item.CallID,
+				ID:               toolCall.toolCallID,
 				ToolName:         openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
@@ -4792,8 +4882,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 
 	case "custom_tool_call":
 		delete(s.itemTypes, e.OutputIndex)
-		ongoingCustom := s.ongoingToolCalls[e.OutputIndex]
-		delete(s.ongoingToolCalls, e.OutputIndex)
+		ongoingCustom := s.takeOngoingToolCall(e.OutputIndex)
 		var item responses.CustomToolCallItem
 		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
@@ -4811,7 +4900,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         item.Name,
+				ToolName:         openAIResponsesCustomToolName(s.tools, item.Name),
 				Arguments:        map[string]interface{}{"input": item.Input},
 				RawArguments:     customToolRaw(item.Input),
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, nil, item.Async, nil),
@@ -4946,10 +5035,6 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// carries the final outputs.
 		delete(s.itemTypes, e.OutputIndex)
 		codeInterpreterName := openAIProviderToolDisplayName(s.tools, "openai.code_interpreter", "code_interpreter")
-		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.toolName != "" {
-			codeInterpreterName = toolCall.toolName
-		}
-		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CodeInterpreterCallItem
 		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
@@ -4978,8 +5063,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 
 	case "tool_search_call":
 		delete(s.itemTypes, e.OutputIndex)
-		toolCall := s.ongoingToolCalls[e.OutputIndex]
-		delete(s.ongoingToolCalls, e.OutputIndex)
+		toolCall := s.takeOngoingToolCall(e.OutputIndex)
 		var item responses.ToolSearchCallItem
 		if err := jsonexact.Unmarshal(e.Item, &item); err != nil {
 			return nil, false

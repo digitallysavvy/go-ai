@@ -1059,12 +1059,24 @@ func pushOpenResponsesCall(calls *[]types.ToolCall, content *[]types.ContentPart
 func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	inputTokens := int64(usage.InputTokens)
 	outputTokens := int64(usage.OutputTokens)
-	totalTokens := inputTokens + outputTokens // TS core: input total + output total
 
-	result := types.Usage{
-		InputTokens:  &inputTokens,
-		OutputTokens: &outputTokens,
-		TotalTokens:  &totalTokens,
+	result := types.Usage{}
+	// TS total: usage.input_tokens / output_tokens as read (absent stays
+	// undefined); core's totalTokens adds the totals that are present.
+	inputPresent, outputPresent := true, true
+	if wire := usage.wire(); wire != nil {
+		_, inputPresent = wire["input_tokens"].(float64)
+		_, outputPresent = wire["output_tokens"].(float64)
+	}
+	if inputPresent {
+		result.InputTokens = &inputTokens
+	}
+	if outputPresent {
+		result.OutputTokens = &outputTokens
+	}
+	if inputPresent || outputPresent {
+		totalTokens := inputTokens + outputTokens
+		result.TotalTokens = &totalTokens
 	}
 
 	// TS reads cached_tokens / cache_write_tokens / reasoning_tokens as
@@ -1432,6 +1444,26 @@ func openResponsesConcatDelta(event *StreamEvent) string {
 
 // handleStreamEvent processes a stream event and returns appropriate chunk
 func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, bool) {
+	// TS validates chunks with z.any() and then reads chunk.item.type,
+	// chunk.response.* or chunk.error.code: a missing or null member is a
+	// TypeError that errors the stream.
+	member, prop := "", ""
+	switch event.Type {
+	case "response.output_item.added", "response.output_item.done":
+		member, prop = "item", "type"
+	case "response.completed", "response.incomplete":
+		member, prop = "response", "incomplete_details"
+	case "response.failed":
+		member, prop = "response", "error"
+	case "error":
+		member, prop = "error", "code"
+	}
+	if member != "" {
+		if what, missing := openResponsesMissingMember(event.Raw, member); missing {
+			s.err = fmt.Errorf("Cannot read properties of %s (reading '%s')", what, prop) //nolint:staticcheck // ST1005: TypeError text from TS
+			return nil, false
+		}
+	}
 	switch event.Type {
 	case "response.created":
 		// TS 4b16915083: {type: 'response-metadata', id: chunk.response.id,
@@ -1718,21 +1750,31 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 						ToolCall: &types.ToolCall{
 							ID:               tc.ToolCallID,
 							ToolName:         tc.ToolName,
+							Title:            tc.Title,
 							Arguments:        tc.Arguments,
 							RawArguments:     tc.Input,
 							ProviderExecuted: tc.ProviderExecuted,
+							Dynamic:          tc.Dynamic,
 							ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
 						},
 					})
 					continue
 				}
 				if tr, ok := part.(types.ToolResultContent); ok {
+					// TS enqueues the decoded part as is: its providerMetadata
+					// carries the {id, itemId} extension reference.
 					s.pending = append(s.pending, &provider.StreamChunk{
 						Type: provider.ChunkTypeToolResult,
 						ToolResult: &types.ToolResult{
-							ToolCallID: tr.ToolCallID,
-							ToolName:   tr.ToolName,
-							Result:     tr.Result,
+							ToolCallID:          tr.ToolCallID,
+							ToolName:            tr.ToolName,
+							Title:               tr.Title,
+							Input:               tr.Input,
+							Result:              tr.Result,
+							IsError:             tr.IsError,
+							ProviderExecuted:    tr.ProviderExecuted,
+							ProviderExecutedSet: tr.ProviderExecuted,
+							ProviderMetadata:    extensionToolCallProviderMetadata(tr.ProviderMetadata),
 						},
 					})
 					continue
@@ -2146,6 +2188,24 @@ func responseFailedHasCode(raw json.RawMessage) bool {
 		return false
 	}
 	return len(w.Response.Error.Code) > 0 && string(w.Response.Error.Code) != "null"
+}
+
+// openResponsesMissingMember reports whether raw (a JSON object) has no key
+// member ("undefined") or a null one ("null"), the values whose property
+// read throws in JS.
+func openResponsesMissingMember(raw json.RawMessage, member string) (string, bool) {
+	var fields map[string]json.RawMessage
+	if len(raw) == 0 || jsonexact.Unmarshal(raw, &fields) != nil {
+		return "", false
+	}
+	v, ok := fields[member]
+	if !ok {
+		return "undefined", true
+	}
+	if string(v) == "null" {
+		return "null", true
+	}
+	return "", false
 }
 
 // responseCreatedMetadata maps a response.created event to the

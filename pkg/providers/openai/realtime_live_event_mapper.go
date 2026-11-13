@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -619,7 +620,7 @@ func parseOpenAILiveServerEvent(raw json.RawMessage) []provider.RealtimeServerEv
 		}
 		if offsetRaw, present := envelope["offset_ms"]; present && offsetRaw != nil {
 			offset, ok := offsetRaw.(float64)
-			if !ok || offset < 0 {
+			if !ok || offset < 0 || math.IsInf(offset, 1) { // z.number(): Infinity is invalid
 				return invalidLiveServerEvent(raw)
 			}
 			off := int(offset)
@@ -719,7 +720,7 @@ func reqLiveUsage(envelope map[string]interface{}) (*provider.RealtimeUsage, boo
 		return nil, false
 	}
 	seconds, ok := usageMap["seconds"].(float64)
-	if !ok || seconds < 0 {
+	if !ok || seconds < 0 || math.IsInf(seconds, 1) { // z.number(): Infinity is invalid
 		return nil, false
 	}
 	return &provider.RealtimeUsage{Seconds: seconds}, true
@@ -749,7 +750,7 @@ func reqLiveTopString(envelope map[string]interface{}, key string, minLen int) (
 
 func reqLiveFloat(envelope map[string]interface{}, key string) (float64, bool) {
 	v, ok := envelope[key].(float64)
-	if !ok || v < 0 {
+	if !ok || v < 0 || math.IsInf(v, 1) { // z.number().nonnegative(): Infinity is invalid
 		return 0, false
 	}
 	return v, true

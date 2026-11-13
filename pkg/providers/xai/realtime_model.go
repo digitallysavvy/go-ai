@@ -244,6 +244,11 @@ func (m *XAIRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionCon
 }
 
 func (m *XAIRealtimeModel) ParseServerEvent(raw json.RawMessage) ([]provider.RealtimeServerEvent, error) {
+	// TS parseXaiRealtimeServerEvent reads event.type of the parsed value: a
+	// JSON null throws (the realtime event channel's fatal error).
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil, errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
+	}
 	return []provider.RealtimeServerEvent{xaiParseServerEvent(raw)}, nil
 }
 

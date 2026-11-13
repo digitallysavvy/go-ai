@@ -63,6 +63,7 @@ type AzureImageModelOptions struct {
 
 // parseAzureImageProviderOptions parses providerOptions["azure"] for
 // azure.Image, mirroring TS azureImageModelOptions (a non-strict object).
+// Each key is `.optional()`, not nullish: a present null is invalid.
 func parseAzureImageProviderOptions(providerOptions map[string]interface{}) (AzureImageModelOptions, error) {
 	var result AzureImageModelOptions
 	raw, ok := providerOptions["azure"]
@@ -73,7 +74,7 @@ func parseAzureImageProviderOptions(providerOptions map[string]interface{}) (Azu
 	if !ok {
 		return result, invalidAzureOption("providerOptions.azure", "must be an object")
 	}
-	if v, ok := m["api"]; ok && v != nil {
+	if v, ok := m["api"]; ok {
 		s, ok := v.(string)
 		if !ok || (s != "openai" && s != "mai") {
 			return result, invalidAzureOption("providerOptions.azure.api", `must be "openai" or "mai"`)
@@ -82,7 +83,7 @@ func parseAzureImageProviderOptions(providerOptions map[string]interface{}) (Azu
 	}
 	for _, key := range []string{"autoAspectRatio", "webGrounding"} {
 		v, ok := m[key]
-		if !ok || v == nil {
+		if !ok {
 			continue
 		}
 		b, ok := v.(bool)
@@ -136,9 +137,11 @@ type azureMaiImageResponse struct {
 	Created *float64 `json:"created"`
 	Size    *string  `json:"size"`
 	Usage   *struct {
-		NumInputTextTokens  *int `json:"num_input_text_tokens"`
-		NumInputImageTokens *int `json:"num_input_image_tokens"`
-		NumOutputTokens     *int `json:"num_output_tokens"`
+		// z.number(): a fractional count is kept (in the metadata; the
+		// ImageUsage int fields truncate the sums).
+		NumInputTextTokens  *float64 `json:"num_input_text_tokens"`
+		NumInputImageTokens *float64 `json:"num_input_image_tokens"`
+		NumOutputTokens     *float64 `json:"num_output_tokens"`
 	} `json:"usage"`
 	Data []struct {
 		B64JSON string `json:"b64_json"`
@@ -275,7 +278,7 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 	var (
 		usage                            types.ImageUsage
 		hasUsage                         bool
-		inTotal, outTotal, totalTotal    int
+		inTotal, outTotal, totalTotal    float64
 		inputSeen, outputSeen, totalSeen bool
 		allImages                        [][]byte
 		allBase64                        []string
@@ -283,7 +286,7 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 	)
 	for _, r := range results {
 		resp := r.response
-		var textTokens, imageTokens *int
+		var textTokens, imageTokens *float64
 		if resp.Usage != nil {
 			textTokens, imageTokens = resp.Usage.NumInputTextTokens, resp.Usage.NumInputImageTokens
 			input, inputOK := addAzureMaiTokens(textTokens, imageTokens)
@@ -298,7 +301,7 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 				outputSeen = true
 			}
 			if inputOK || output != nil {
-				totalTotal += input + derefInt(output)
+				totalTotal += input + derefFloat(output)
 				totalSeen = true
 			}
 		}
@@ -311,10 +314,10 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 				meta["size"] = *resp.Size
 			}
 			if textTokens != nil {
-				meta["textTokens"] = *textTokens
+				meta["textTokens"] = azureMaiJSNumber(*textTokens)
 			}
 			if imageTokens != nil {
-				meta["imageTokens"] = *imageTokens
+				meta["imageTokens"] = azureMaiJSNumber(*imageTokens)
 			}
 			metadata = append(metadata, meta)
 			decoded, err := fileutil.ConvertBase64ToBytes(d.B64JSON)
@@ -330,13 +333,13 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 	usage.ImageCount = len(allImages)
 	if hasUsage {
 		if inputSeen {
-			usage.InputTokens = inTotal
+			usage.InputTokens = int(inTotal)
 		}
 		if outputSeen {
-			usage.OutputTokens = outTotal
+			usage.OutputTokens = int(outTotal)
 		}
 		if totalSeen {
-			usage.TotalTokens = totalTotal
+			usage.TotalTokens = int(totalTotal)
 		}
 	}
 
@@ -364,7 +367,7 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 	}, nil
 }
 
-func derefInt(p *int) int {
+func derefFloat(p *float64) float64 {
 	if p == nil {
 		return 0
 	}
@@ -372,11 +375,20 @@ func derefInt(p *int) int {
 }
 
 // addAzureMaiTokens mirrors TS addTokens: undefined only when both are.
-func addAzureMaiTokens(a, b *int) (int, bool) {
+func addAzureMaiTokens(a, b *float64) (float64, bool) {
 	if a == nil && b == nil {
 		return 0, false
 	}
-	return derefInt(a) + derefInt(b), true
+	return derefFloat(a) + derefFloat(b), true
+}
+
+// azureMaiJSNumber is a metadata token count as the JS number TS reports:
+// an int when integral, else the exact fraction.
+func azureMaiJSNumber(f float64) interface{} {
+	if f == math.Trunc(f) && math.Abs(f) <= 1<<53 {
+		return int(f)
+	}
+	return f
 }
 
 type azureMaiField struct{ key, value string }
@@ -404,7 +416,8 @@ func (m *azureMaiImageModel) fileToImage(ctx context.Context, file provider.Imag
 		data = file.Data
 	}
 	ext := "png"
-	if mediaType == "image/jpeg" {
+	// TS checks blob.type, which the Blob constructor ASCII-lowercases.
+	if providerutils.FormDataBlobType(mediaType) == "image/jpeg" {
 		ext = "jpg"
 	}
 	return azureMaiImageFile{data: data, mediaType: mediaType, name: fmt.Sprintf("image-%d.%s", index, ext)}, nil

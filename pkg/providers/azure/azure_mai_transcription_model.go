@@ -93,11 +93,12 @@ func (m *AzureMaiTranscriptionModel) DoStream(ctx context.Context, opts *provide
 		},
 	}
 
-	urlStr, err := m.url()
+	// TS awaits config.headers() before it calls config.url().
+	baseHeaders, err := m.headers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	baseHeaders, err := m.headers(ctx)
+	urlStr, err := m.url()
 	if err != nil {
 		return nil, err
 	}
@@ -329,6 +330,12 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
+			}
+			if rawValue == nil {
+				// TS reads event.type of a JSON null: the TypeError fails the
+				// stream through onProcessingError.
+				fail(errors.New("Cannot read properties of null (reading 'type')")) //nolint:staticcheck // ST1005: TypeError text from TS
+				return
 			}
 			var event azureMaiRealtimeEvent
 			if jsonErr := jsonexact.Unmarshal([]byte(res.Text), &event); jsonErr != nil {

@@ -779,7 +779,9 @@ type xaiBatchTextUsageWire struct {
 func (u *xaiBatchTextUsageWire) UnmarshalJSON(data []byte) error {
 	type alias xaiBatchTextUsageWire
 	var a alias
-	if err := jsonexact.Unmarshal(data, &a); err != nil {
+	// TS z.number(): a fractional count decodes (truncated into the int
+	// fields), while Raw keeps the exact number (TS raw: usage).
+	if err := providerutils.UnmarshalChunk(data, &a); err != nil {
 		return err
 	}
 	*u = xaiBatchTextUsageWire(a)
