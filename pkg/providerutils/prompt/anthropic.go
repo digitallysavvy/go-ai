@@ -3,6 +3,7 @@ package prompt
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -453,8 +454,10 @@ func normalizeOrphanedAnthropicCallers(out []map[string]interface{}, lastUserMes
 				continue
 			}
 			callerType, _ := caller["type"].(string)
-			toolID, _ := caller["tool_id"].(string)
-			if callerType == "direct" || codeExecutionToolCallIDs[toolID] {
+			// TS Set.has(caller.tool_id): only a string id can match.
+			toolID := caller["tool_id"]
+			toolIDText, _ := toolID.(string)
+			if callerType == "direct" || codeExecutionToolCallIDs[toolIDText] {
 				continue
 			}
 
@@ -465,7 +468,7 @@ func normalizeOrphanedAnthropicCallers(out []map[string]interface{}, lastUserMes
 			delete(part, "caller")
 			if !warnedToolCallIDs[toolCallID] {
 				warnedToolCallIDs[toolCallID] = true
-				c.warn(fmt.Sprintf("Omitted caller metadata for tool %s because source code execution tool %s is missing from the conversation history.", toolCallID, toolID))
+				c.warn(fmt.Sprintf("Omitted caller metadata for tool %s because source code execution tool %s is missing from the conversation history.", toolCallID, providerutils.JSString(toolID)))
 			}
 		}
 	}
@@ -1254,8 +1257,11 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 			} else {
 				// TS convertBytesDataToString: a string payload is decoded
 				// with convertBase64ToUint8Array (atob throws when it is
-				// not base64).
+				// not base64), after the part options are parsed.
 				if f.decodeErr != nil {
+					if err := validateAnthropicFilePartOptions(anthropicOptions(p.ProviderOptions)); err != nil {
+						return nil, err
+					}
 					return nil, f.decodeErr
 				}
 				source = map[string]interface{}{
@@ -2112,12 +2118,16 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 
 	case "web_fetch":
 		if output.kind == "error-json" {
+			errorCode, err := extractErrorCode(output.value)
+			if err != nil {
+				return err
+			}
 			push(map[string]interface{}{
 				"type":        "web_fetch_tool_result",
 				"tool_use_id": part.ToolCallID,
 				"content": map[string]interface{}{
 					"type":       "web_fetch_tool_result_error",
-					"error_code": extractErrorCode(output.value),
+					"error_code": errorCode,
 				},
 			}, true)
 			return nil
@@ -2138,12 +2148,16 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 
 	case "web_search":
 		if output.kind == "error-json" {
+			errorCode, err := extractErrorCode(output.value)
+			if err != nil {
+				return err
+			}
 			push(map[string]interface{}{
 				"type":        "web_search_tool_result",
 				"tool_use_id": part.ToolCallID,
 				"content": map[string]interface{}{
 					"type":       "web_search_tool_result_error",
-					"error_code": extractErrorCode(output.value),
+					"error_code": errorCode,
 				},
 			}, true)
 			return nil
@@ -2170,12 +2184,16 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			isErrorValue = v["type"] == "tool_search_tool_result_error"
 		}
 		if output.kind == "error-json" || isErrorValue {
+			errorCode, err := extractErrorCode(output.value)
+			if err != nil {
+				return err
+			}
 			push(map[string]interface{}{
 				"type":        "tool_search_tool_result",
 				"tool_use_id": part.ToolCallID,
 				"content": map[string]interface{}{
 					"type":       "tool_search_tool_result_error",
-					"error_code": extractErrorCode(output.value),
+					"error_code": errorCode,
 				},
 			}, false)
 			return nil
@@ -2242,6 +2260,11 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultContent, output anthropicToolOutput, push func(map[string]interface{}, bool), unsupportedOutput func()) error {
 
 	if output.isError() {
+		if errorValueIsNull(output.value) {
+			// TS errorInfo = secureJsonParse("null") is null: errorInfo.type
+			// throws.
+			return errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // TS TypeError text
+		}
 		errorInfo := parseErrorValue(output.value)
 		// TS `errorInfo.errorCode ?? 'unknown'`: any present value is kept.
 		errorCode := errorInfo["errorCode"]
@@ -2417,7 +2440,9 @@ func validateAnthropicToolOutput(value interface{}, schema zodlite.Node) (interf
 		return normalized, nil
 	}
 	data := jsonStringify(normalized)
-	if message := zodlite.ValidationMessage(schema, data); message != "" {
+	// The issue text is rendered from the same value: a `__proto__` key is
+	// an ordinary own property here (ValidationMessagePlain).
+	if message := zodlite.ValidationMessagePlain(schema, data); message != "" {
 		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
 	}
 	return normalized, nil
@@ -2546,8 +2571,9 @@ func anthropicCaller(providerOptions map[string]interface{}) map[string]interfac
 		return nil
 	}
 	callerType, _ := caller["type"].(string)
-	toolID, _ := caller["toolId"].(string)
-	if (callerType == "code_execution_20250825" || callerType == "code_execution_20260120") && toolID != "" {
+	// TS `caller.toolId` is a truthiness check: any truthy value is sent.
+	toolID := caller["toolId"]
+	if (callerType == "code_execution_20250825" || callerType == "code_execution_20260120") && providerutils.JSTruthy(toolID) {
 		return map[string]interface{}{"type": callerType, "tool_id": toolID}
 	}
 	if callerType == "direct" {
@@ -2809,12 +2835,27 @@ func parseErrorValue(value interface{}) map[string]interface{} {
 }
 
 // extractErrorCode mirrors extractErrorValue(...).errorCode ?? 'unavailable':
-// any present errorCode (an empty string included) is kept.
-func extractErrorCode(value interface{}) interface{} {
-	if code := parseErrorValue(value)["errorCode"]; code != nil {
-		return code
+// any present errorCode (an empty string included) is kept. A string value
+// that parses to null makes TS read .errorCode of null, a TypeError.
+func extractErrorCode(value interface{}) (interface{}, error) {
+	if errorValueIsNull(value) {
+		return nil, errors.New("Cannot read properties of null (reading 'errorCode')") //nolint:staticcheck // TS TypeError text
 	}
-	return "unavailable"
+	if code := parseErrorValue(value)["errorCode"]; code != nil {
+		return code, nil
+	}
+	return "unavailable", nil
+}
+
+// errorValueIsNull reports a string error value that secureJsonParse reads
+// as null (TS then reads a property of null).
+func errorValueIsNull(value interface{}) bool {
+	s, ok := value.(string)
+	if !ok {
+		return false
+	}
+	parsed, ok := SecureJSONParse(s)
+	return ok && parsed == nil
 }
 
 func interfaceSlice(value interface{}) []interface{} {

@@ -20,7 +20,6 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -213,13 +212,11 @@ func newElevenLabsSpeechStream(parentCtx context.Context, cfg speechStreamConfig
 // producer (for example a reasoning model) would otherwise hit the server's
 // inactivity timeout. No keepalive follows the end of input.
 func (s *elevenLabsSpeechStream) send(conn *websocket.Conn, cfg speechStreamConfig, errCh chan<- error, message map[string]interface{}) error {
-	data, err := jsonstr.Marshal(message)
-	if err != nil {
-		return err
-	}
+	// TS JSON.stringify keeps the object literal key order of each frame.
+	data := providerutils.StringifyOrdered(message, elevenLabsSpeechFrameOrder)
 	s.writes.Lock()
 	defer s.writes.Unlock()
-	if err := wsutil.Send(s.Context(), conn, string(data)); err != nil {
+	if err := wsutil.Send(s.Context(), conn, data); err != nil {
 		return err
 	}
 	if s.keepAlive != nil {
@@ -550,3 +547,15 @@ func (s *elevenLabsSpeechStream) pumpText(conn *websocket.Conn, cfg speechStream
 }
 
 var _ provider.SpeechStream = (*elevenLabsSpeechStream)(nil)
+
+// elevenLabsSpeechFrameOrder is the key order of TS's speech stream frames:
+// the init message (getStreamInitMessage / getDialogueInitMessage, the
+// dialogue voices, then the auth field), the dialogue inputs and the
+// close_socket / keep_alive messages.
+var elevenLabsSpeechFrameOrder = map[string][]string{
+	"":                                  {"text", "voice_settings", "generation_config", "pronunciation_dictionary_locators", "voices", "xi-api-key", "xi_api_key", "inputs", "close_socket", "keep_alive"},
+	"voice_settings":                    {"stability", "similarity_boost", "style", "use_speaker_boost", "speed"},
+	"generation_config":                 {"chunk_length_schedule"},
+	"pronunciation_dictionary_locators": {"pronunciation_dictionary_id", "version_id"},
+	"inputs":                            {"text", "voice_id", "new_turn"},
+}

@@ -297,14 +297,15 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if err != nil {
 		return nil, err
 	}
+	var rawHeaders map[string]string
 	if isTrusted(resultsURL) {
-		rawHeaders, err := b.rawRequestHeaders(ctx, opts.Headers)
+		rawHeaders, err = b.rawRequestHeaders(ctx, opts.Headers)
 		if err != nil {
 			return nil, err
 		}
-		for k, v := range rawHeaders {
-			httpReq.Header.Set(k, v)
-		}
+	}
+	for k, v := range anthropicBatchResultsHeaders(rawHeaders) {
+		httpReq.Header.Set(k, v)
 	}
 
 	client := fileutil.NewDownloadClient(resultsURL, downloadOpts)
@@ -418,6 +419,14 @@ func (b *Batch) rawRequestHeaders(ctx context.Context, extra map[string]string) 
 		headers[k] = v
 	}
 	return headers, nil
+}
+
+// anthropicBatchResultsHeaders is TS getFromApi's request headers for the
+// results download: the provider headers on a same-origin hop (nil
+// otherwise, TS outgoingHeaders = {}), with getRuntimeEnvironmentUserAgent()
+// appended either way (the raw HTTP client does not add it).
+func anthropicBatchResultsHeaders(providerHeaders map[string]string) map[string]string {
+	return providerutils.WithUserAgentSuffix(providerHeaders, providerutils.RuntimeEnvironmentUserAgent())
 }
 
 // anthropicBatchProviderBetas extracts providerOptions.anthropic.anthropicBeta

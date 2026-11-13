@@ -222,8 +222,9 @@ func (m *EmbeddingModel) embedValues(ctx context.Context, values []string, opts 
 	req.URL = invokeURL
 	req.Host = invokeURL.Host
 
+	// TS postJsonToApi sets only Content-Type (no Accept; the "Accept
+	// header" known difference).
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 
 	// Forward caller-supplied headers.
 	requestHeaders := map[string]string{}

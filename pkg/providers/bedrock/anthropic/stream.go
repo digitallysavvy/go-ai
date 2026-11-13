@@ -35,6 +35,10 @@ type EventStreamEvent struct {
 	EventType     string // ":event-type" header, e.g. "chunk", "messageStop"
 	ExceptionType string // ":exception-type" header, e.g. "throttlingException"
 	Data          string // Event payload as a JSON string
+	// HasEventType / HasExceptionType report whether the header was
+	// present (an empty value included).
+	HasEventType     bool
+	HasExceptionType bool
 }
 
 // ReadEvent reads and decodes a single event from the stream.
@@ -49,7 +53,9 @@ func (d *EventStreamDecoder) ReadEvent() (*EventStreamEvent, error) {
 		EventType:     event.EventType,
 		ExceptionType: event.ExceptionType,
 		// TS createAmazonBedrockEventStreamDecoder: textDecoder.decode(body).
-		Data: prompt.DecodeUTF8Text(event.Data),
+		Data:             prompt.DecodeUTF8Text(event.Data),
+		HasEventType:     event.HasEventType,
+		HasExceptionType: event.HasExceptionType,
 	}, nil
 }
 
@@ -140,12 +146,14 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 		} else {
 			data = event.Data
 		}
-		errType := event.EventType
-		if errType == "" {
+		// TS `event.eventType ?? event.exceptionType ?? 'error'`: a present
+		// header wins even when its value is empty.
+		errType := "error"
+		switch {
+		case event.HasEventType:
+			errType = event.EventType
+		case event.HasExceptionType:
 			errType = event.ExceptionType
-		}
-		if errType == "" {
-			errType = "error"
 		}
 		errBody := map[string]interface{}{
 			"type":    errType,

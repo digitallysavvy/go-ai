@@ -957,8 +957,9 @@ func (m *LanguageModel) newConverseRequest(ctx context.Context, suffix string, b
 	}
 	req.URL = reqURL
 	req.Host = reqURL.Host
+	// TS postJsonToApi sets only Content-Type (no Accept; the "Accept
+	// header" known difference).
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 	m.provider.applyRequestHeaders(req, callHeaders)
 	if err := m.provider.authenticateRequest(ctx, req, body); err != nil {
 		return nil, err

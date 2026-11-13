@@ -79,6 +79,7 @@ type realtimeTestServer struct {
 
 	mu              sync.Mutex
 	received        []map[string]interface{}
+	rawReceived     []string
 	handshakeUA     string
 	handshakeAPIKey string
 	handshakeAll    stdhttp.Header
@@ -118,6 +119,9 @@ func newRealtimeTestServer(t *testing.T) *realtimeTestServer {
 			if err := websocket.Message.Receive(conn, &raw); err != nil {
 				return
 			}
+			s.mu.Lock()
+			s.rawReceived = append(s.rawReceived, raw)
+			s.mu.Unlock()
 			var decoded map[string]interface{}
 			if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
 				continue

@@ -3,7 +3,6 @@ package elevenlabs
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +17,6 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/net/websocket"
@@ -219,8 +217,9 @@ func formURLEncode(s string) string {
 	return b.String()
 }
 
+// formatFloatParam is TS String(value) for a number (1e-7, 1e+21).
 func formatFloatParam(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 64)
+	return providerutils.JSNumberString(f)
 }
 
 func boolValue(v *bool) bool { return v != nil && *v }
@@ -518,10 +517,8 @@ func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, 
 			msg["previous_text"] = *cfg.previousText
 		}
 		firstChunk = false
-		payload, marshalErr := jsonstr.Marshal(msg)
-		if marshalErr != nil {
-			continue
-		}
+		// TS JSON.stringify keeps the object literal key order.
+		payload := []byte(providerutils.StringifyOrdered(msg, elevenLabsAudioFrameOrder))
 		if err := s.send(conn, payload); err != nil {
 			if s.Context().Err() == nil {
 				wsutil.ReportError(s.Context(), errCh, err)
@@ -643,10 +640,10 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 			audioEndedCh = nil // consumed once; a nil channel blocks forever in future selects
 			committedEventsAtEndOfInput = committedEventCount
 			endOfInput = true
-			payload, _ := json.Marshal(map[string]interface{}{
+			payload := providerutils.StringifyOrdered(map[string]interface{}{
 				"message_type": "input_audio_chunk", "audio_base_64": "", "commit": true, "sample_rate": cfg.sampleRate,
-			})
-			_ = s.send(conn, payload)
+			}, elevenLabsAudioFrameOrder)
+			_ = s.send(conn, []byte(payload))
 
 		case audioErr := <-audioErrCh:
 			// Mirrors TS `void sendAudio(socket).catch(finishWithError)`: a
@@ -816,3 +813,9 @@ var (
 	_ provider.TranscriptionStreamer = (*TranscriptionModel)(nil)
 	_ provider.TranscriptionStream   = (*elevenLabsRealtimeTranscriptionStream)(nil)
 )
+
+// elevenLabsAudioFrameOrder is the key order of TS's input_audio_chunk
+// frames (elevenlabs-transcription-model.ts sendAudio).
+var elevenLabsAudioFrameOrder = map[string][]string{
+	"": {"message_type", "audio_base_64", "commit", "sample_rate", "previous_text"},
+}
