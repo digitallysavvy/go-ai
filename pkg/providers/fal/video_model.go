@@ -226,12 +226,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 }
 
 // falStatusFallback is the message for a status poll failure whose body does
-// not match the fal error schema: TS uses the HTTP status text.
+// not match the fal error schema: TS uses response.statusText, the server's
+// reason phrase (the DownloadError keeps it).
 func falStatusFallback(dlErr *providererrors.DownloadError) string {
-	if text := http.StatusText(dlErr.StatusCode); text != "" {
-		return text
-	}
-	return dlErr.Message
+	return dlErr.StatusText
 }
 
 // falStillInProgressDetail is the special "not an error" body the fal.ai

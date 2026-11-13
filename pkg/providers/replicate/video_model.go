@@ -476,7 +476,7 @@ func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		// TS reads the failed body as text (TextDecoder).
-		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
+		return replicateAPIErrorText(dlErr.StatusCode, dlErr.StatusText, http.Header(dlErr.Headers), []byte(textdecode.UTF8(dlErr.Body)))
 	}
 	// TS getFromApi handleFetchError: a network failure is the retryable
 	// "Cannot connect to API" error and an abort stays as is; a URL or

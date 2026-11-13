@@ -803,7 +803,7 @@ func describePollDetails(raw json.RawMessage) (string, bool) {
 func (m *VideoModel) handleVideoPollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return bflStatusError(dlErr.StatusCode, dlErr.Headers, dlErr.Body)
+		return bflStatusErrorText(dlErr.StatusCode, dlErr.StatusText, dlErr.Headers, dlErr.Body)
 	}
 	// TS getFromApi handleFetchError: a network failure is the retryable
 	// "Cannot connect to API" error and an abort stays as is; a rejected URL

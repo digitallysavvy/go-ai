@@ -24,6 +24,12 @@ import (
 //   - a terminal task status (Error, Failed, moderation, Task not found) is
 //     never retryable even on HTTP 503; otherwise 408, 409, 429 and 5xx are.
 func bflStatusError(statusCode int, headers http.Header, body []byte) error {
+	return bflStatusErrorText(statusCode, http.StatusText(statusCode), headers, body)
+}
+
+// bflStatusErrorText is bflStatusError with the response's own status text
+// (TS response.statusText, the server's reason phrase).
+func bflStatusErrorText(statusCode int, statusText string, headers http.Header, body []byte) error {
 	body = []byte(textdecode.UTF8(body)) // TS reads the failed body as text (TextDecoder)
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
 
@@ -35,7 +41,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 	}
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 || trimmed[0] != '{' || securejson.Unmarshal(body, &raw) != nil {
-		return bflOffSchemaError(statusCode, cause)
+		return bflOffSchemaError(statusText, cause)
 	}
 
 	taskStatus := ""
@@ -49,7 +55,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 	var messageText string
 	if len(raw.Message) > 0 {
 		if string(raw.Message) == "null" || json.Unmarshal(raw.Message, &messageText) != nil {
-			return bflOffSchemaError(statusCode, cause)
+			return bflOffSchemaError(statusText, cause)
 		}
 	}
 	var message string
@@ -102,8 +108,8 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 // bflOffSchemaError is the error for a body that does not match
 // bflErrorSchema: the HTTP status text and no data (TS
 // createJsonErrorResponseHandler's fallback).
-func bflOffSchemaError(statusCode int, cause error) error {
-	perr := providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(statusCode), cause)
+func bflOffSchemaError(statusText string, cause error) error {
+	perr := providererrors.NewProviderErrorFromResponse("bfl", 0, "", statusText, cause)
 	perr.Data = nil
 	return perr
 }

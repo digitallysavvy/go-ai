@@ -622,7 +622,7 @@ func (m *VideoModel) parseAPIError(body []byte, statusCode int, headers stdhttp.
 func (m *VideoModel) handlePollError(ctx context.Context, err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return m.parseAPIError(dlErr.Body, dlErr.StatusCode, stdhttp.Header(dlErr.Headers))
+		return newHTTPErrorText(dlErr.StatusCode, dlErr.StatusText, stdhttp.Header(dlErr.Headers), dlErr.Body)
 	}
 	// TS getFromApi handleFetchError: a network failure is the retryable
 	// "Cannot connect to API" error and an abort stays as is; a URL or

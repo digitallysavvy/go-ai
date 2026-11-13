@@ -854,7 +854,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 		return nil, fmt.Errorf("BFL poll response exceeded maximum size of %d bytes", limit)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bflStatusError(resp.StatusCode, resp.Header, body)
+		return nil, bflStatusErrorText(resp.StatusCode, fileutil.ResponseStatusText(resp), resp.Header, body)
 	}
 	return body, nil
 }
@@ -1026,7 +1026,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 		// message is the HTTP status text.
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: errBody}
-		return nil, nil, providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(resp.StatusCode), cause)
+		return nil, nil, providererrors.NewProviderErrorFromResponse("bfl", 0, "", fileutil.ResponseStatusText(resp), cause)
 	}
 	limit := opts.MaxSize
 	if limit == 0 {

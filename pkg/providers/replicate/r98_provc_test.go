@@ -1,8 +1,11 @@
 package replicate
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -21,5 +24,19 @@ func TestR98provcReplicatePredictionOutOfRangeUndeclared(t *testing.T) {
 	inf := []byte(`{"id":"p1","status":"succeeded","urls":{"get":"https://x/p1"},"metrics":{"predict_time":1e999}}`)
 	if err := validateVideoPrediction(200, nil, inf); !providerutils.IsInvalidJSONResponse(err) {
 		t.Fatalf("declared Infinity: want Invalid JSON response, got %v", err)
+	}
+}
+
+// TS createJsonErrorResponseHandler: a failed poll body that does not match
+// the error schema gives response.statusText, the server's reason phrase.
+func TestR98provcReplicatePollReasonPhrase(t *testing.T) {
+	for name, err := range map[string]error{
+		"image": NewImageModel(New(Config{APIKey: "k"}), "m").handlePollError(context.Background(), &providererrors.DownloadError{URL: "https://x/p", StatusCode: 418, StatusText: "Custom Phrase", Body: []byte(`[1]`)}),
+		"video": NewVideoModel(New(Config{APIKey: "k"}), "m").handlePollError(context.Background(), &providererrors.DownloadError{URL: "https://x/p", StatusCode: 418, StatusText: "Custom Phrase", Body: []byte(`[1]`)}),
+	} {
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.Message != "Custom Phrase" {
+			t.Errorf("%s: got %T %v", name, err, err)
+		}
 	}
 }

@@ -2,7 +2,9 @@ package fal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,5 +57,33 @@ func TestR98provcFalImagePipeRejectsLooseImages(t *testing.T) {
 	}
 	if err := providerutils.MediaResponseValidator("fal", providerutils.SchemaFalImage)(200, nil, []byte(`{"image":{"url":"https://x/a.png"},"seed":1}`)); err != nil {
 		t.Errorf("single image: want valid, got %v", err)
+	}
+}
+
+// r98provcReasonPhrase answers with a raw HTTP/1.1 status line carrying a
+// custom reason phrase (net/http's ResponseWriter always writes the
+// standard one).
+func r98provcReasonPhrase(w http.ResponseWriter, status int, phrase, body string) {
+	conn, buf, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close() //nolint:errcheck
+	_, _ = buf.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, phrase, len(body), body))
+	_ = buf.Flush()
+}
+
+// TS createJsonErrorResponseHandler: a failed status body that does not match
+// falErrorDataSchema gives response.statusText, the server's reason phrase.
+func TestR98provcFalVideoStatusReasonPhrase(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r98provcReasonPhrase(w, 418, "Custom Phrase", `{"other":1}`)
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	op, _ := json.Marshal(falVideoOperation{ResponseURL: srv.URL + "/requests/1", SubmitURL: srv.URL + "/fal-ai/m"})
+	res, err := NewVideoModel(p, "fal-ai/m").DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil || res.Status != provider.VideoOperationStatusError || res.Error != "Custom Phrase" {
+		t.Fatalf("status = %+v, %v", res, err)
 	}
 }
