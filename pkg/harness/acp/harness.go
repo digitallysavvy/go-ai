@@ -658,14 +658,16 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		}
 	}
 	if settings.PrepareSandbox != nil {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		// TS startOptions.abortSignal?.throwIfAborted() before and after:
+		// the abort reason.
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
 		}
 		if err := settings.PrepareSandbox(ctx, PrepareSandboxOptions{Sandbox: toolSafeSandboxSession, WorkDir: workDir}); err != nil {
 			return nil, err
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
 		}
 	}
 

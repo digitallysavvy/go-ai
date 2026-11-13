@@ -27,8 +27,8 @@ import (
 // TOML is formatted by go-toml (TS uses @iarna/toml); comments are lost in
 // both.
 func PrepareSandbox(ctx context.Context, opts acp.PrepareSandboxOptions) error {
-	if err := ctx.Err(); err != nil {
-		return err
+	if ctx.Err() != nil { // TS abortSignal?.throwIfAborted(): the abort reason
+		return context.Cause(ctx)
 	}
 	sandbox := opts.Sandbox
 	home, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{
