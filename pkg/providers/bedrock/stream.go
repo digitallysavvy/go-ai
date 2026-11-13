@@ -174,7 +174,7 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 				// TS safeParseJSON: rawValue is undefined for unparsable JSON.
 				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: nil})
 			}
-			parseErr := providererrors.NewJSONParseError(data, err)
+			parseErr := jsonParseFailure(data, err)
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: parseErr.Error(), Err: parseErr})
 			continue
 		}
@@ -306,6 +306,18 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		continue
 
 	}
+}
+
+// jsonParseFailure is TS safeParseJSON's JSONParseError for text: a
+// secureJsonParse rejection, which jsonexact already reports as a
+// JSONParseError, keeps its SyntaxError as the cause instead of nesting a
+// second JSONParseError.
+func jsonParseFailure(text string, err error) *providererrors.JSONParseError {
+	var parseErr *providererrors.JSONParseError
+	if errors.As(err, &parseErr) {
+		return providererrors.NewJSONParseError(text, parseErr.Cause)
+	}
+	return providererrors.NewJSONParseError(text, err)
 }
 
 func (s *bedrockConverseStream) handleMetadata(metadata map[string]interface{}) {

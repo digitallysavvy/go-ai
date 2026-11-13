@@ -2410,6 +2410,12 @@ func validateAnthropicToolOutput(value interface{}, schema zodlite.Node) (interf
 	if err != nil {
 		return nil, err
 	}
+	// The value is the caller's, not a parsed response: it is validated as
+	// is (ValidationMessage would reject a __proto__ key the way
+	// secureJsonParse rejects response text, which TS validateTypes does not).
+	if schema(normalized, true, nil) == nil {
+		return normalized, nil
+	}
 	data := jsonStringify(normalized)
 	if message := zodlite.ValidationMessage(schema, data); message != "" {
 		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})

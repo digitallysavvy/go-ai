@@ -627,16 +627,9 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			// prompt conversion on the next turn so replayed signed
 			// thinking blocks stay correctly bounded (TS commit a587f554f7,
 			// #21736; previously dropped entirely).
-			metadata, _ := json.Marshal(map[string]interface{}{
-				"anthropic": map[string]interface{}{
-					"type": "fallback",
-					"from": content.From,
-					"to":   content.To,
-				},
-			})
 			byBlock[blockIdx] = append(byBlock[blockIdx], types.CustomContent{
 				Kind:             "anthropic.fallback",
-				ProviderMetadata: metadata,
+				ProviderMetadata: anthropicFallbackMetadata(content.From, content.To),
 			})
 		}
 	}
@@ -1027,6 +1020,24 @@ func anthropicCompactionText(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return *text, true
+}
+
+// anthropicFallbackMetadata is the providerMetadata of an anthropic.fallback
+// custom part (TS {anthropic: {type: 'fallback', from: part.from, to:
+// part.to}}): from and to are the zod-parsed {model} objects, so other keys
+// are stripped, and the metadata is written like JSON.stringify.
+func anthropicFallbackMetadata(from, to map[string]interface{}) json.RawMessage {
+	meta, err := jsonstr.Marshal(map[string]interface{}{
+		"anthropic": map[string]interface{}{
+			"type": "fallback",
+			"from": pickKeys(from, "model"),
+			"to":   pickKeys(to, "model"),
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return meta
 }
 
 // anthropicCompactionMetadata builds the providerMetadata.anthropic payload
@@ -1998,6 +2009,13 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			}, nil
 		}
 
+		// TS safeParseJSON (secureJsonParse): a frame with a forbidden
+		// prototype key is a JSONParseError `error` part, before any schema
+		// check, and the stream goes on.
+		if perr := jsonexact.ParseError([]byte(event.Data)); perr != nil {
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: perr.Error(), Err: perr}, nil
+		}
+
 		// TS then validates the parsed value against anthropicChunkSchema; a
 		// mismatch is a TypeValidationError `error` part and the stream goes
 		// on.
@@ -2433,18 +2451,11 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// between signed thinking blocks. No contentBlocks entry is
 				// needed: content_block_stop is already a no-op for an
 				// unregistered index.
-				metadata, _ := json.Marshal(map[string]interface{}{
-					"anthropic": map[string]interface{}{
-						"type": "fallback",
-						"from": start.ContentBlock.From,
-						"to":   start.ContentBlock.To,
-					},
-				})
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeCustom,
 					CustomContent: &types.CustomContent{
 						Kind:             "anthropic.fallback",
-						ProviderMetadata: metadata,
+						ProviderMetadata: anthropicFallbackMetadata(start.ContentBlock.From, start.ContentBlock.To),
 					},
 				}, nil
 

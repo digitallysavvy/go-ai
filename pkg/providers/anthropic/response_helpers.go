@@ -18,7 +18,9 @@ func anthropicCallerInfo(caller map[string]interface{}) map[string]interface{} {
 		return nil
 	}
 	out := map[string]interface{}{"type": caller["type"]}
-	if toolID, ok := caller["tool_id"]; ok {
+	// TS reads tool_id of the zod-parsed caller, whose direct member strips
+	// it.
+	if toolID, ok := caller["tool_id"]; ok && caller["type"] != "direct" {
 		out["toolId"] = toolID
 	}
 	return out
