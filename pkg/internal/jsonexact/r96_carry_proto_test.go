@@ -22,7 +22,7 @@ func TestR96carryUnmarshalAndDecodeRejectForbiddenPrototype(t *testing.T) {
 			if !errors.As(err, &pe) || !errors.Is(err, ErrForbiddenPrototype) {
 				t.Fatalf("%s(%s) = %v, want a JSONParseError", name, s, err)
 			}
-			want := "JSON parsing failed: Text: " + s + ".\nError message: Object contains forbidden prototype property"
+			want := "JSON parsing failed: Text: " + s + ".\nError message: SyntaxError: Object contains forbidden prototype property"
 			if err.Error() != want {
 				t.Errorf("%s(%s) text = %q, want %q", name, s, err.Error(), want)
 			}

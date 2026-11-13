@@ -76,13 +76,22 @@ type JSONParseError struct {
 }
 
 // Error renders the TypeScript message: `JSON parsing failed: Text: <text>.`
-// followed by `\nError message: <cause>`.
+// followed by `\nError message: <cause>`, where the cause reads as TS
+// getErrorMessage renders it: `unknown error` for no cause, and the
+// secure-json-parse SyntaxError as `SyntaxError: <message>` (Error
+// toString).
 func (e *JSONParseError) Error() string {
-	msg := fmt.Sprintf("JSON parsing failed: Text: %s.", e.Text)
-	if e.Cause != nil {
-		msg += "\nError message: " + e.Cause.Error()
+	return fmt.Sprintf("JSON parsing failed: Text: %s.\nError message: %s", e.Text, causeMessage(e.Cause))
+}
+
+func causeMessage(cause error) string {
+	switch {
+	case cause == nil:
+		return "unknown error"
+	case errors.Is(cause, ErrForbiddenPrototype) && cause.Error() == ErrForbiddenPrototype.Error():
+		return "SyntaxError: " + cause.Error()
 	}
-	return msg
+	return cause.Error()
 }
 
 // Unwrap returns the parser error.

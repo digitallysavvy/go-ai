@@ -88,7 +88,7 @@ func TestR96carryXAIResponseIncompleteDetails(t *testing.T) {
 // prototype key into a JSONParseError; a frame without one decodes.
 func TestR96carryChunkForbiddenPrototype(t *testing.T) {
 	frame := `{"choices":[],"__proto__":{"polluted":true}}`
-	want := "JSON parsing failed: Text: " + frame + ".\nError message: Object contains forbidden prototype property"
+	want := "JSON parsing failed: Text: " + frame + ".\nError message: SyntaxError: Object contains forbidden prototype property"
 	var v struct {
 		Choices []interface{} `json:"choices"`
 	}
@@ -107,7 +107,7 @@ func TestR96carryChunkForbiddenPrototype(t *testing.T) {
 // JSONParseError from the caller's decode) is TS's JSONParseError.
 func TestR96carryChunkParseFailureForbiddenCause(t *testing.T) {
 	frame := `{"type":"x"}`
-	want := "JSON parsing failed: Text: " + frame + ".\nError message: Object contains forbidden prototype property"
+	want := "JSON parsing failed: Text: " + frame + ".\nError message: SyntaxError: Object contains forbidden prototype property"
 	for _, cause := range []error{securejson.ErrForbiddenPrototype, providererrors.NewJSONParseError("inner", securejson.ErrForbiddenPrototype)} {
 		msg, err := ChunkParseFailure(frame, cause)
 		if msg != want || !providererrors.IsJSONParseError(err) || err.Error() != want {
