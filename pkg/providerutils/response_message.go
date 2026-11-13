@@ -339,7 +339,8 @@ func toolErrorMessage(part types.ToolErrorContent) string {
 	case error:
 		return ToolErrorText(e)
 	}
-	b, err := json.Marshal(part.Error)
+	// JSON.stringify: HTML characters stay literal, NaN / +-Inf write null.
+	b, err := jsonstr.Marshal(part.Error)
 	if err != nil {
 		return "unknown error"
 	}
