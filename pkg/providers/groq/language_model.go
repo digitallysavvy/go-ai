@@ -536,7 +536,9 @@ type groqUsage struct {
 func (u *groqUsage) UnmarshalJSON(b []byte) error {
 	type plain groqUsage
 	var p plain
-	if err := jsonexact.Unmarshal(b, &p); err != nil {
+	// TS counts are z.number(): a fractional count truncates only in the
+	// typed fields (UnmarshalChunk), so the raw object keeps it exact.
+	if err := providerutils.UnmarshalChunk(b, &p); err != nil {
 		return err
 	}
 	*u = groqUsage(p)
