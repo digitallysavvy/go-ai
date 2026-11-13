@@ -3,9 +3,11 @@ package cerebras
 import (
 	"bytes"
 	"encoding/json"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
 	"net/http"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -152,7 +154,7 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 	var payload interface{}
 	if err := json.Unmarshal(body, &payload); err == nil {
 		applyCerebrasRequestExtras(payload, extras)
-		if transformed, err := json.Marshal(payload); err == nil {
+		if transformed, err := jsonstr.Marshal(payload); err == nil {
 			body = transformed
 		}
 	}
