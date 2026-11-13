@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -264,8 +265,10 @@ func googleMetadataMap(v interface{}) map[string]interface{} {
 		if len(m) == 0 {
 			return nil
 		}
+		// The metadata object as TS holds it: a number beyond the double
+		// range is Infinity (ruling 4), not a reason to drop the metadata.
 		var out map[string]interface{}
-		if json.Unmarshal(m, &out) != nil {
+		if jsonexact.UnmarshalPlain(m, &out) != nil {
 			return nil
 		}
 		return out
