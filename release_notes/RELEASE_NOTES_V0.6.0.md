@@ -368,6 +368,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Transcribe reports undecodable base64 audio with the TS text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#transcribe-base64-error-text)
 - **Video image data strings with an http(s) URL are sent as URLs** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#video-datastring-url)
 - **Cancellations with a cause return the cause** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#abort-cause-r94)
+- **Numbers beyond the double range read as Infinity and are written as null** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#out-of-range-numbers)
 
 #### Prompts and validation
 
@@ -497,6 +498,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **LangSmithDeploymentTransport follows the TS LangGraph client** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#langsmith-transport-ts-client)
 - **Struct-literal WorkflowAgent stream has no 20-step default** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-literal-stream-steps)
 - **WorkflowAgent stream skips OnStepEnd for a paused step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-paused-step-end)
+- **WorkflowAgent OnAbort gets full step results** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-onabort-full-steps)
 
 #### UI message streams
 
@@ -616,6 +618,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The non-retryable RetryError message keeps quotes as is** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#retry-non-retryable-message-quotes)
 - **Provider responses are decoded with exact keys** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-response-keys-case-exact)
 - **A cancel during a retry backoff returns the context error** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#retry-abort-during-backoff)
+- **JSON payloads with `__proto__` keys fail like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-proto-payloads-fail)
 
 #### Providers
 
@@ -938,6 +941,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Streams that fail to open their WebSocket report the TS socket error** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#websocket-open-failure-ts-text)
 - **The Gateway speech stream fails on audio it cannot decode** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-speech-undecodable-audio)
 - **Anthropic Skills uploads reject stream file data** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-skills-stream-upload)
+- **stream-start comes before a failed setup message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-start-before-setup-failure)
+- **OpenAI and xAI round 96 details** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provb-r96-details)
+- **Media provider round 96 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provc-r96-details)
 
 #### MCP
 
@@ -957,6 +963,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **MCP elicitation params follow the TS schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-elicitation-schema)
 - **MCP send errors are unwrapped** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-send-errors)
 - **MCP does not fall back to initialize after a discover network error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-discover-network-error)
+- **MCP Apps: a non-array tool visibility follows TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-app-visibility-raw)
+- **MCP and sandbox round 96 details** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-r96-details)
 
 #### Code mode
 
@@ -1039,6 +1047,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Harness file parts stay file parts** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-tool-output-file-part)
 - **Harness bridges authenticate with a per-session public key** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bridge-public-key-auth)
 - **Harness turns with an output follow the TS output stage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-output-stage)
+- **askUserQuestions input and output follow the TS schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-questions-tool-schema)
 
 #### Policy
 
@@ -1560,6 +1569,7 @@ in v0.5.3.
 - Round 93 (review round 93; TS 2ebc78b654, ai@7.0.170): a network failure in a media poll or download that ports TS getFromApi is the retryable `Cannot connect to API` error (BFL video, Replicate, KlingAI, ByteDance, fal, Gladia, Rev.ai, Luma, LMNT, Topaz, MiniMax, Fireworks, xAI, OpenAI-compatible images, HeyGen), while the Google Files upload and realtime client secret return the raw fetch error; the speech, transcribe and streamTranscribe telemetry end events carry the model's own provider metadata (no `{}` default on the span); element streams read their own replaying cursor and follow a harness turn's first text block; OpenAI Completions, Moonshot and DeepSeek Responses logprobs keep only the TS schema keys; forgiving base64 for OpenAI, Azure MAI, xAI and Together images and audio; API key callback errors returned as is from the OpenAI, xAI, DeepSeek, Anthropic, Topaz and Prodia Files / Skills / media calls; WHATWG URLs for the OpenAI and xAI realtime sockets, the LangSmith transport, BFL polls and the video and transcribe downloads; Gateway language and decision models forward provider options as given; Vertex errors follow the Vertex error schema; Deepgram fails on a response with no channel; `SpeechStreamUsage` counts keep the JS number; numeric error codes read as JS number text; Anthropic and Bedrock citation ids, empty metadata strings, rerank region, image size and cache points follow TS in edge cases; MCP `CallToolResult` validation, the Vercel Sandbox abort and auth checks, Topaz, MiniMax, DeepInfra, You.com, Google batch and Interactions, Perplexity and Azure Speech edge inputs follow TS.
 - Round 94 (review round 94; TS 2ebc78b654, ai@7.0.170): provider response bodies, stream frames and error bodies decode with exact keys, as the TS zod schemas match them (`jsonexact` at every direct decode, with a type-checked source guard; provider options keep case-insensitive keys, a known difference); provider calls that check the status themselves fail on any non-2xx response, as TS `response.ok` (Google, Groq, Mistral, Perplexity, HeyGen, Vertex, Gateway metadata, Anthropic, OpenAI, xAI, DeepSeek, Deepgram, Cartesia, Hume, Fish Audio, BFL, fal, Luma, ByteDance, Replicate, Topaz, DeepInfra, MiniMax, Vercel Sandbox); realtime and live WebSocket URLs follow the WHATWG parser (`toWebSocketUrl` / `new URL`) for OpenAI, Azure, xAI, ElevenLabs, Cartesia, Deepgram, Mistral, Google, Vertex and the Gateway; an abort with a cause reports the cause (`context.Cause`, TS `abortSignal.reason`) in Decide, the decision language model, Google decisions, StartBatch, tool execution and refinement, WorkflowAgent, StreamText and the WebSocket streams; Date#toISOString years outside 0..9999 use the expanded form (OpenAI and xAI batch, Google realtime tokens, code mode, telemetry timestamps); the LangSmith run stream body matches RemoteGraph (`recursion_limit` 25, no `type` key, TS key order); StreamTranscribe telemetry events carry the TS fields and its `Responses()` no body; streaming audio results wait for the FullStream reader; StreamSpeech leaves a model-owned text stream to the model; speech stream envelopes are JSON.stringify text; the non-retryable RetryError keeps quotes; Transcribe's invalid base64 text and video `http(s)` data strings follow TS; Gateway decision answers and warnings keep only their own fields; Google Interactions, HeyGen, Google Files and batch, Anthropic Files and Skills, Bedrock reasoning metadata and rerank, ElevenLabs frames, OpenAI Files / batch / stream errors, xAI and DeepSeek Files, MCP `CallToolResult`, DeepInfra, MiniMax and Prodia edge inputs follow TS.
 - Round 95 (review round 95; TS 2ebc78b654, ai@7.0.170): the Open Responses finish reason follows TS `mapOpenResponsesFinishReason` (length and content-filter with tool calls); Google Interactions built-in tool calls carry no provider metadata; StreamText reports the abort cause at every abort point, and an abort during limited tool concurrency, in a WorkflowAgent approved resume, in media polls, in the Gateway streams, the Vercel sandbox stdin, the MCP transports, the ACP and Grok Build sandbox preparation and the bash tool returns the cause, while a retry backoff wait returns the context error (TS `delay`); streaming WebSocket models that fail to open report the provider's TS socket error, and a cancel during the handshake the cause; the case-exact source guard follows `interface{}` decode helpers and covers MCP server messages, the Vercel sandbox API and the shared provider code (Gateway and Interactions lenient decoders, Open Responses bodies, compat stream usage and errors, the network policy, OpenAI Responses prompt tool arguments); the zod validators read numbers beyond the double range as JSON.parse does and `z.number()` rejects non-finite values; the Gateway speech stream fails on undecodable audio with atob's `InvalidCharacterError`; a stopped UI SSE writer writes nothing more (a keep-alive could follow the stop under load); empty stop sequences are sent by the OpenAI-compatible chat providers; present empty strings are kept by OpenAI, xAI and Open Responses; DeepSeek Responses and OpenAI batch bodies are validated; `jsonexact` follows Go's field dominance rules; urlnorm setters, the speech stream rate clamp, Moonshot `cache_write_tokens`, the decision language model's content text, batch providers returning no result, ToolLoopAgent step timeouts during tools, Anthropic Skills stream uploads and citation media types, Prodia, Google, Vertex image, Alibaba, Open Responses and OpenAI decision media types, Topaz prompt warnings, Vercel sandbox paths, MCP SSE endpoint URLs, ByteDance and Cartesia request key order, Replicate prediction ID encoding, Gateway metadata pricing and video headers, Interactions options and stream edges follow TS.
+- Round 96 (review round 96; TS 2ebc78b654, ai@7.0.170): main ruling 4 for numbers beyond the double range (the central decoders read `1e400` as ±Inf like `JSON.parse`, every SDK serialization of provider values writes NaN and ±Inf as `null` like `JSON.stringify` through `jsonstr.Marshal`, and the zod-style validators reject them at `z.number()` / `z.json()` sites with the zod issue text); the known difference "JSON payloads with `__proto__`" is retired: provider responses, stream chunks, WebSocket events, tool-call inputs, generated objects, partial JSON and decision answers with a `__proto__` key or `constructor.prototype` fail with TS's JSONParseError, with a type-checked source guard; WorkflowAgent `OnAbort` gets the full step results (medium); `SplitMCPAppTools` reads a non-array visibility like TS; streaming models emit `stream-start` before a failed setup message; OpenAI Responses `""` reasoning options and fractional number options are sent as given; Deepgram and AssemblyAI upload `AudioBase64`; Cartesia realtime events are read leniently.
 - Step-end events carry the step (review round 72). `OnStepFinishEvent`
   has `Content` and `Performance`, and `GenerateStepRequest` has `Messages`
   (additive fields), filled by `GenerateText`, `StreamText`, the legacy
@@ -1940,18 +1950,6 @@ Notable ones:
 - After a read error on its stream, MCP `SSETransport` is disconnected and
   `Send` fails with "Not connected"; TS stays connected, but replies over the
   dead stream never arrive.
-- JSON payloads with a `__proto__` key or a `constructor.prototype` member
-  are accepted. TS `secureJsonParse` rejects them to guard against
-  JavaScript prototype pollution; Go `encoding/json` has no prototypes, so
-  rejecting them would only turn valid JSON into errors. This covers
-  provider responses and stream chunks only: Google Interactions prompt
-  conversion follows TS and sends such a stringified tool-call input as
-  `{value: input}`.
-- The Gemini prompt converter accepts a string tool-call input with a
-  `__proto__` key or a `constructor.prototype` member for `code_execution`
-  and server tool calls; TS `secureJsonParse` throws there. In Go the input is
-  always the wire text, also where TS holds an object and does not parse it,
-  so throwing would reject inputs TS accepts (coordinator ruling, round 61).
 - A `StreamText` tool whose `ContextSchema` rejects its tool context ends the
   run with the `ValidationError` (no `finish-step`, `finish` or `OnEnd`;
   `OnError` once), as `GenerateText` and the agents fail the call. TS
@@ -2126,6 +2124,9 @@ Notable ones:
 - **ToolLoopAgent per-call deprecated tool callbacks**: a per-call `OnToolCallStart` / `OnToolCallFinish` still runs after the agent's `OnToolExecutionStart` / `OnToolExecutionEnd`, as v0.5.2 (S6) (round 95).
 - **Response body idle timeout**: Go's default client has no 5-minute body idle limit like Node's undici `bodyTimeout`; set a context deadline (S3, informational) (round 95).
 - **Fractional counts in integer fields**: also decision usage token counts (`provider.DecisionUsage`, the v0.5.2 `EvaluationUsage`) (S1) (round 95).
+- **Infinity in provider values**: a provider number beyond the double range reads as ±Inf and the SDK writes it as `null`; `encoding/json.Marshal` on it fails (Go standard library), so use `jsonstr.Marshal` (S3, informational) (round 96).
+- **Cartesia realtime `turnDetection: null`**: the typed `TurnDetection` pointer cannot tell `null` from absent; set `Type: "disabled"` (S1) (round 96).
+- **Gemini prompt custom parts**: a `CustomContent` part with `ProviderOptions["google"]` is sent as a raw Gemini part, as v0.5.2; TS drops it (S6) (round 96).
 - **Realtime transcription WebSocket hint**: widened to ElevenLabs, xAI, Vertex Gemini and the AI Gateway (S3) (round 91).
 - **TS test replays skipped in round 91**: the Google Decisions warnings order (Go map order) and the Vertex caller-fetch download tests (DNS protection stays on) (round 91).
 - **TS test replays skipped in round 88**: Replicate cancel timing, a Gladia pre-aborted call, DeepInfra and Google tests with injected functions (round 88).

@@ -280,33 +280,6 @@ agents, where a tool context failure fails the call (owner decision,
 
 Reason: S4: owner decision, 2026-10-28.
 
-## JSON payloads with `__proto__`
-
-Go accepts JSON with a `__proto__` key or a `constructor.prototype` member
-in provider responses and stream chunks. TS `secureJsonParse` rejects those
-payloads (a `JSONParseError`) as a guard against JavaScript prototype
-pollution. Go `encoding/json` decodes into maps and structs, which have no
-prototypes, so there is nothing to guard against, and rejecting the
-payloads would only turn valid JSON into errors.
-
-This difference covers provider responses and stream chunks only. Prompt
-conversion follows TS: a stringified Google Interactions tool-call input with
-such a key is sent as `{value: input}`, as TS `safeParseToolArgs` does when
-`secureJsonParse` throws.
-
-The Gemini prompt converter (`generateContent`, Google and Vertex) accepts a
-string tool-call input with such a key for `code_execution` and server tool
-calls, where TS `secureJsonParse` throws. In Go, `ToolCallContent.Input` is
-always the wire text, also for inputs that TS holds as objects and passes
-through without parsing, so throwing would reject inputs that TS accepts.
-
-This also covers JSON in model output that core parses: tool-call inputs,
-GenerateObject / StreamObject text, partial JSON and DecisionLanguageModel
-answers. TS parses these with `safeParseJSON` and treats such a key as
-invalid JSON (review round 89).
-
-Reason: S3: Go decoders build no prototypes.
-
 ## StreamText reads the provider stream without a reader
 
 `StreamText` reads the model's stream into its buffer whether or not anyone
@@ -884,6 +857,15 @@ A per-call `OnToolCallStart` / `OnToolCallFinish` (deprecated) runs after the ag
 
 ## Response body idle timeout
 Node's fetch (undici) fails a response whose body sends nothing for 5 minutes (`bodyTimeout`); Go's default HTTP client waits until the call's context ends. TS in other runtimes (browsers, edge) has no such limit either. Set a context deadline or `Timeout` to bound a call (S3: runtime fetch default, not SDK code; informational; review round 95).
+
+## Infinity in provider values
+A provider number beyond the double range (for example `1e400`) reads as `math.Inf(1)` or `math.Inf(-1)` in provider metadata, raw chunks and other `map[string]interface{}` / `interface{}` values, as JavaScript's `JSON.parse` reads Infinity, and the SDK writes a non-finite number as `null` wherever it serializes such a value (request bodies, the UI message stream, telemetry, speech stream envelopes), as `JSON.stringify` does. Calling Go's `encoding/json.Marshal` on such a value yourself returns `*json.UnsupportedValueError`; this is the Go standard library, not SDK code. Use `jsonstr.Marshal` (`github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr`), which writes NaN and ±Inf as `null` (S3: Go standard library, informational; main ruling 4, review round 96).
+
+## Cartesia realtime `turnDetection: null`
+TS treats `sessionConfig.turnDetection === null` as turn detection disabled. In Go the typed `provider.RealtimeSessionConfig.TurnDetection` (`*provider.RealtimeTurnDetection`) is the only way a session config reaches the Cartesia realtime model, and a nil pointer cannot tell null from absent, so `"turnDetection": null` decoded from JSON reads as absent (turn detection on). Use `TurnDetection: &provider.RealtimeTurnDetection{Type: "disabled"}` (S1: v0.5.2 typed field; no untyped path carries the session config; review round 96).
+
+## Gemini prompt custom parts
+The Gemini `generateContent` converter (Google and Vertex) sends a user or assistant `types.CustomContent` part whose `ProviderOptions["google"]` is a map as a raw Gemini part built from that map, as v0.5.2 did (`pkg/providerutils/prompt/google.go` at a0f9d3f9, lines 321 and 567). TS has no custom part for user messages and drops assistant custom parts in this converter, so it sends nothing for them. Leave `ProviderOptions["google"]` unset on a custom part that should not reach Gemini (S6: v0.5.2 contract; review round 96).
 
 ## Features that are TypeScript-only (not ported)
 

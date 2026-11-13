@@ -196,7 +196,7 @@ already, you can skip them.
 | `ResolveSerializableTools` dynamic defs | No title, metadata or strict | silent behavior change | Set them on the resolved tool | [Resolved dynamic tools](#workflow-resolve-dynamic-tools) |
 | UI `text-delta` with empty `delta` | Sent when it carries `providerMetadata` | wire/protocol change | None | [Empty text deltas](#ui-empty-text-delta-metadata) |
 | GenAI embeddings span `gen_ai.operation.name` | `embeddings` instead of `ai.embed.doEmbed` | silent behavior change | Match `embeddings` | [Embeddings operation name](#telemetry-embeddings-operation-name) |
-| `StopSequences: []string{}` on gateway / groq / mistral / vertex xai / openai / deepseek / moonshot / alibaba / fireworks / together / zai / gmicloud | Sent as `[]` (Hugging Face warns) | wire/protocol change | Pass nil to omit | [Empty stop sequences are sent](#empty-stop-sequences) |
+| `StopSequences: []string{}` on gateway / groq / mistral / vertex xai / openai / deepseek / moonshot / alibaba / fireworks / together / zai / gmicloud / ollama | Sent as `[]` (Hugging Face warns) | wire/protocol change | Pass nil to omit | [Empty stop sequences are sent](#empty-stop-sequences) |
 | Gateway tool results with a nil value | `value: null` sent | wire/protocol change | No action | [Gateway tool outputs without a value](#gateway-tool-output-null) |
 | Anthropic provider tools under a custom `Name`; `anthropic.*` literals | Matched by id, sent | silent behavior change | No action | [Anthropic provider tools are matched by id](#anthropic-provider-tool-id) |
 | Anthropic provider tools on Bedrock | Validated; calls named after the tool | silent behavior change | Match `Tool.Name` | [Anthropic provider tools on Bedrock](#bedrock-anthropic-provider-tools) |
@@ -785,6 +785,15 @@ already, you can skip them.
 | Dial error text of streaming WebSocket models | TS socket error text | error text only | Match the TS text | [Streams that fail to open their WebSocket report the TS socket error](#websocket-open-failure-ts-text) |
 | Gateway speech stream with undecodable audio | Fails with `*speechstream.InvalidCharacterError` | silent behavior change | Use `errors.As` | [The Gateway speech stream fails on audio it cannot decode](#gateway-speech-undecodable-audio) |
 | `SkillsAPI.UploadSkill` with stream file data | `UnsupportedFunctionalityError` | error text only | Pass the bytes | [Anthropic Skills uploads reject stream file data](#anthropic-skills-stream-upload) |
+| `jsonstr.Marshal` with NaN / ±Inf; provider values read from `1e400` passed to `encoding/json.Marshal` | Read as ±Inf, written as `null`; `jsonstr.Marshal` no longer errors | silent behavior change | Use `jsonstr.Marshal` for provider values | [Numbers beyond the double range](#out-of-range-numbers) |
+| `__proto__` or `constructor.prototype` keys in provider responses, stream chunks or model JSON | Fail with `*providererrors.JSONParseError` | silent behavior change | Remove such keys from fixtures | [JSON payloads with `__proto__` keys fail](#json-proto-payloads-fail) |
+| `OnAbort:` of `workflow.WorkflowAgent` reading the steps | Full step results | silent behavior change | None | [WorkflowAgent OnAbort steps](#workflow-onabort-full-steps) |
+| `mcp.SplitMCPAppTools` with a non-array tool `visibility` | String substring match; other values error | silent behavior change | Send an array | [MCP App visibility](#mcp-app-visibility-raw) |
+| MCP string error codes, loose capability extras, unknown tool-result parts, SSE `endpoint` with `//host`; Vercel `ListDirectory` | Follow the TS schemas and JS semantics | silent behavior change | None | [MCP and sandbox round 96 details](#tools-r96-details) |
+| OpenAI Responses `reasoningEffort: ""`, fractional number options, done function-call items; xAI `incomplete_details` | Sent as given; read verbatim | wire/protocol change | Leave unset options out | [OpenAI and xAI round 96 details](#provb-r96-details) |
+| Deepgram / AssemblyAI `AudioBase64`, Deepgram response fields, Cartesia realtime events and client secrets, non-finite error codes | Follow TS | silent behavior change | None | [Media provider round 96 details](#provc-r96-details) |
+| Setup send failure of ElevenLabs speech and OpenAI / Google / Vertex live transcription and translation streams | `stream-start` first, then the error | silent behavior change | Expect `stream-start` before the error | [stream-start before a setup failure](#stream-start-before-setup-failure) |
+| `askUserQuestions` input with `null` optional keys; differently cased output keys | Rejected / ignored like TS | silent behavior change | Leave optional keys out | [askUserQuestions schema](#harness-questions-tool-schema) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1502,10 +1511,21 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `<`, `>` and `&` literal, as `JSON.stringify`. v0.5 wrote `<`,
   `>` and `&`. Query strings use the `URLSearchParams` byte set
   (`~` is encoded, `*` is not).
+  Round 96 adds the error text of a provider-executed tool result flagged
+  as an error (`StreamText` and the AI Gateway V4 wire), MCP JSON-RPC
+  messages and transport bodies, the Cerebras body rewritten for per-call
+  extras, and the `WorkflowChatTransport` request body.
 - **Am I affected?** Golden files or request matchers that expect the escaped
   form.
 - **What to do:** update the expected JSON.
 - **Kind:** wire/protocol change
+
+### Numbers beyond the double range read as Infinity and are written as null {#out-of-range-numbers}
+
+- **What changed:** A provider value holding a number beyond the double range (for example `1e400`) failed the decode of the whole body, frame or chunk in v0.5 (`cannot unmarshal number 1e400`), or dropped the provider metadata it was in. v0.6 reads it as `math.Inf(1)` / `math.Inf(-1)` wherever Go decodes into `interface{}` or a map (provider metadata, raw chunks, `Usage.Raw`, tool inputs, error data, generated objects), as TS `JSON.parse` reads Infinity, and writes NaN and ±Inf as `null` wherever the SDK serializes such a value (request bodies, provider metadata JSON, the UI message stream, telemetry attributes, MCP messages, speech stream envelopes), as `JSON.stringify` does. `jsonstr.Marshal` writes NaN and ±Inf as `null` instead of returning an error. Where TS validates the value with zod (`z.number()`, `z.json()`, `.catchall(z.json())`), a non-finite number fails the response or chunk as in TS, and the zod-style issue carries `"received": "Infinity"`. A typed numeric field (`float64`, `int`) still fails the decode (review round 96, main ruling 4).
+- **Am I affected?** Code that calls `jsonstr.Marshal` and expects an error for NaN or ±Inf, and code that runs `encoding/json.Marshal` on provider metadata, raw chunks or tool inputs (a value read from `1e400` makes that call return `*json.UnsupportedValueError`).
+- **What to do:** No action unless you marshal provider values yourself: use `jsonstr.Marshal` from `pkg/providerutils/jsonstr`, which writes `null` like `JSON.stringify` (known difference "Infinity in provider values").
+- **Kind:** silent behavior change
 
 ### The final SSE event needs its blank line {#sse-final-event}
 
@@ -4072,6 +4092,13 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** Read the paused step from the stream result's `Steps()` or from `OnEnd`.
 - **Kind:** silent behavior change
 
+### WorkflowAgent OnAbort gets full step results {#workflow-onabort-full-steps}
+
+- **What changed:** When a `WorkflowAgent` run was cancelled after one or more steps finished, `OnAbort` (and the abort telemetry) received those steps without content, sources, provider metadata, request, response, performance data, steering messages or contexts. v0.6 passes the full `types.StepResult` of each finished step, as TS `onAbort({steps})` receives the finished `StepResult`s (review round 96).
+- **Am I affected?** `OnAbort` callbacks of a `workflow.WorkflowAgent` that read the steps.
+- **What to do:** No action; the fields are now filled.
+- **Kind:** silent behavior change
+
 ## UI message streams {#ui-message-streams}
 
 ### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
@@ -5510,6 +5537,13 @@ compile-time changes.
 - **What to do:** No action unless you match that text.
 - **Kind:** error text only
 
+### JSON payloads with `__proto__` keys fail like TS {#json-proto-payloads-fail}
+
+- **What changed:** v0.5, and v0.6 up to review round 95 as a known difference, accepted JSON with a `__proto__` key or a `constructor` object with a `prototype` key. v0.6 rejects it wherever TS parses with `secureJsonParse` / `safeParseJSON`, with TS's `*providererrors.JSONParseError` (`JSON parsing failed: Text: <text>.` and `Error message: Object contains forbidden prototype property`): a provider or server response body fails the call (as the cause where TS reports "Invalid JSON response"); a stream chunk or WebSocket event is an error part (finish reason `error` where TS sets it) and its raw chunk value is nil; a tool-call input is an `InvalidToolInputError`; `GenerateObject`, `StreamObject` and `Output` parsing give `NoObjectGeneratedError` "No object generated: could not parse the response."; `jsonparser.ParsePartialJSON` returns the failed-parse state; `DecisionLanguageModel` gives "Decision did not return valid JSON." (review round 96).
+- **Am I affected?** Only if a provider, proxy, mock server or model returns JSON with a `__proto__` key or a `constructor.prototype` member, at any depth. Search test fixtures for `__proto__`.
+- **What to do:** No action unless your fixtures or servers send such keys. Match the failure with `errors.As(err, &jsonErr)` for `var jsonErr *providererrors.JSONParseError`.
+- **Kind:** silent behavior change
+
 ### Provider errors follow each provider's TS error schema {#error-schema-message-data}
 
 - **What changed:** TS `createJsonErrorResponseHandler({errorSchema, errorToMessage})` gives the schema message and the parsed data (undeclared keys stripped) for a matching body, and the HTTP status text with no data otherwise. v0.5 read many body shapes (`error.message`, `message`, `detail`, ...) and kept any JSON body as `ProviderError.Data`. v0.6 follows each schema: Cohere (`{message}`), Mistral (`{object: "error", message, type, param, code}`), Together reranking and images (`{error: {message}}`); Fireworks images (TS createStatusCodeErrorResponseHandler) and Fireworks embeddings outside `fireworksErrorStructure` give the status text. The generic extraction remains only for providers with no TS twin (Ollama, LMNT, the Replicate language model) (review round 89).
@@ -5723,6 +5757,7 @@ compile-time changes.
   Together, Z.AI and GMI Cloud chat APIs (`stop: []`, TS
   `stopSequences != null`); Hugging Face gives its `stopSequences`
   unsupported warning for an empty list too.
+  Round 96 adds Ollama (`stop: []`).
 - **Am I affected?** Callers that pass a non-nil empty `StopSequences` to
   those providers.
 - **What to do:** no action unless an API rejects the empty list; pass nil
@@ -9004,6 +9039,27 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What to do:** Handle the error.
 - **Kind:** silent behavior change
 
+### stream-start comes before a failed setup message {#stream-start-before-setup-failure}
+
+- **What changed:** When the first message a streaming model sends after its WebSocket opens failed (the ElevenLabs speech init message, the OpenAI realtime transcription and speech-translation session update, the Google and Vertex live transcription setup and the Google speech-translation setup), the stream ended with the error and no `stream-start` part. v0.6 emits `stream-start` (with the warnings) first and then the error, as TS `onOpen` enqueues `stream-start` before it sends (review round 96).
+- **Am I affected?** Code that treats the first part of these streams as either `stream-start` or the failure.
+- **What to do:** Expect `stream-start` before the error.
+- **Kind:** silent behavior change
+
+### OpenAI and xAI round 96 details {#provb-r96-details}
+
+- **What changed:** OpenAI Responses `reasoningEffort` and `reasoningSummary` set to `""` are sent (TS `z.string()` and `!= null`: the summary defaults to `detailed`, and non-reasoning models warn). Fractional `maxToolCalls` and `logprobs` (Responses), `maxCompletionTokens` and `logprobs` (chat) and Alibaba `thinkingBudget` are sent as given instead of truncated (TS `z.number()`). OpenAI Files `expiresAfter` of ±Infinity is rejected. A done Responses `function_call` item (OpenAI and xAI) uses its own `call_id`, `name`, `arguments` and `id`, also when they are `""`; an OpenAI Responses stream keeps a present `""` response id and added item id. xAI Responses `incomplete_details` must be an object with a string `reason` (TS schema). The Open Responses stream and the raw chunk of every OpenAI-compatible stream treat a frame with a `__proto__` key as a JSONParseError part with a nil raw value (review round 96).
+- **Am I affected?** Code that sets those options to `""` or to fractions, or reads tool-call ids from OpenAI or xAI Responses streams whose done item differs from the added item.
+- **What to do:** Leave out options you do not set, and pass whole numbers where you want them.
+- **Kind:** wire/protocol change
+
+### Media provider round 96 details {#provc-r96-details}
+
+- **What changed:** Deepgram and AssemblyAI transcription upload `AudioBase64` as given when `Audio` is empty (TS `postToApi({content: audio})` sends the base64 string); v0.5 uploaded an empty body. The Deepgram live transcription handshake trims HTTP whitespace around the `Authorization` header, like `new Headers().get()`. Deepgram transcription ignores the undeclared `confidence`, `transaction_key` and `request_id` response fields, so a value of another type there no longer fails the call. Cartesia realtime server events are read from the parsed object: a field of another JSON type keeps the event's type (string fields take the JS string of a scalar) instead of turning it into a `custom` event. Cartesia `DoCreateClientSecret` reports a non-JSON success body with the JSON parse error and an error body as UTF-8 text. The TypeSafe score `legend` is checked like the TS schema. A non-finite error `code` / `status` (Gladia, Rev.ai, Hume, KlingAI, Fish Audio, Baseten, AssemblyAI) does not match the error schema, so the message is the status text (review round 96).
+- **Am I affected?** Direct provider calls that set only `AudioBase64`, and code that matches the listed error texts or Cartesia realtime event types.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -9143,6 +9199,20 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 
 - **What changed:** MCP over HTTP fell back to `initialize` after any `server/discover` failure. v0.6 falls back only for an `MCPClientError`; a network error fails the connection (TS 6141e6fefb) (review round 91).
 - **Am I affected?** MCP HTTP servers that are unreachable during discovery.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### MCP Apps: a non-array tool visibility follows TS {#mcp-app-visibility-raw}
+
+- **What changed:** `SplitMCPAppTools` treated any non-array `_meta.ui.visibility` as unset (model-visible only). v0.6, as TS, matches a string value with substring search (`"app"` puts the tool in the app-visible list only, `"model,app"` in both), and any other non-null value (a number, boolean or object) makes `SplitMCPAppTools` return the error `visibility.includes is not a function`. TS keeps the raw value through its `{...uiMeta}` spread and calls `.includes` on it (review round 96).
+- **Am I affected?** Only if you call `mcp.SplitMCPAppTools` on servers whose tool `_meta.ui.visibility` is not an array (the MCP Apps spec defines an array).
+- **What to do:** No action unless you rely on the old fallback; an array `visibility` behaves as before.
+- **Kind:** silent behavior change
+
+### MCP and sandbox round 96 details {#tools-r96-details}
+
+- **What changed:** A JSON-RPC error `code` that is a quoted number (`"-32000"`) fails the message, and a terminated event's `error.code` accepts any integer-valued number (`1.0`, `-3.2e4`) and rejects strings and integers beyond 2^53 (zod `z.number().int()`). Loose capability and server info extras keep the server's member text, so a member Go cannot re-encode is no longer dropped (`Extra()` decodes member by member). An unknown tool-result content part reaches the model as `JSON.stringify` of the parsed part (integer-like keys first, JS number text). An SSE `endpoint` event with a scheme-relative URL (`//host/path`) resolves against the server URL like `new URL` instead of failing. A tool result without `content` whose `structuredContent` holds a non-finite number fails like TS `z.json()`. Vercel Sandbox `ListDirectory` takes a record without a space minus its last UTF-16 unit as the type, as `record.slice(0, -1)` (review round 96).
+- **Am I affected?** MCP servers that send these shapes, and code that reads loose extras or `ListDirectory` types of unusual records.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
@@ -9808,6 +9878,13 @@ model, _ = google.New(google.Config{}).DecisionModel(google.ModelGeminiDecision1
 - **What to do:** No action unless you depend on per-delta grouping or on partials from a later step's text.
 - **Kind:** silent behavior change
 
+### askUserQuestions input and output follow the TS schema {#harness-questions-tool-schema}
+
+- **What changed:** The reserved `askUserQuestions` tool accepted `null` for its optional input keys (`header`, `options`, `allowMultiple`, `allowFreeForm`, an option's `description` / `preview`, an answer's `freeform`) and decoded its output with case-insensitive keys (`Action`, `OptionIds`). v0.6 rejects `null` there and a non-boolean `allowFreeForm`, as TS `.optional()`, and matches output keys exactly (review round 96).
+- **Am I affected?** Harness hosts or models that send `null` for those keys or differently cased output keys.
+- **What to do:** Leave optional keys out instead of sending `null`.
+- **Kind:** silent behavior change
+
 ## Policy {#policy}
 
 ### An OPA HTTP policy response without result is not-applicable {#opa-undefined-result}
@@ -10140,6 +10217,8 @@ after upgrading:
   [Realtime millisecond fields are integers](./known-differences.mdx).
 - **Empty API key settings**: An empty `Config.APIKey` or API key environment variable is the missing-key `LoadAPIKeyError` (round 92). See
   [Empty API key settings](./known-differences.mdx).
+- **Infinity in provider values**: A provider number beyond the double range reads as ±Inf, and `encoding/json.Marshal` on it fails; use `jsonstr.Marshal` (round 96). See
+  [Infinity in provider values](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
