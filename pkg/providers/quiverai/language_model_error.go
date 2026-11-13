@@ -41,8 +41,9 @@ func quiverAIRetryable(status int) *bool {
 }
 
 // parseQuiverAIErrorBody validates body against the TS quiveraiErrorSchema:
-// status is an integer and code, message and request_id are non-empty
-// strings. Anything else (empty body, non-JSON, a partial object) is not an
+// status is a safe integer (zod v4 z.number().int() is the "safeint" format:
+// a whole number within ±Number.MAX_SAFE_INTEGER) and code, message and
+// request_id are non-empty strings. Anything else (empty body, non-JSON, a partial object) is not an
 // API error body, and TS createJsonErrorResponseHandler then uses the HTTP
 // status text as the message.
 func parseQuiverAIErrorBody(body []byte) (quiverAPIError, bool) {
@@ -55,14 +56,18 @@ func parseQuiverAIErrorBody(body []byte) (quiverAPIError, bool) {
 	if securejson.Unmarshal(body, &raw) != nil {
 		return quiverAPIError{}, false
 	}
-	if raw.Status == nil || *raw.Status != math.Trunc(*raw.Status) ||
+	if raw.Status == nil || *raw.Status != math.Trunc(*raw.Status) || math.Abs(*raw.Status) > quiverMaxSafeInteger ||
 		raw.Code == nil || *raw.Code == "" ||
 		raw.Message == nil || *raw.Message == "" ||
 		raw.RequestID == nil || *raw.RequestID == "" {
 		return quiverAPIError{}, false
 	}
-	return quiverAPIError{Status: int(*raw.Status), Code: *raw.Code, Message: *raw.Message, RequestID: *raw.RequestID}, true
+	return quiverAPIError{Status: int64(*raw.Status), Code: *raw.Code, Message: *raw.Message, RequestID: *raw.RequestID}, true
 }
+
+// quiverMaxSafeInteger is Number.MAX_SAFE_INTEGER, the bound of zod's
+// z.number().int().
+const quiverMaxSafeInteger = 1<<53 - 1
 
 // quiverAIResponseErrorMetadata extracts QuiverAI's endpoint-specific
 // `error.status_code` from an embedded response error (200 response with an
