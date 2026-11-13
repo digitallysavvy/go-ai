@@ -175,6 +175,14 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	if len(httpResp.Body) > 0 {
 		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
 	}
+	// TS finishRaw = incomplete_details?.reason ?? status: a present ""
+	// reason is kept (raw "", unified "other" unless a function call ran).
+	if reason, ok := xaiIncompleteReason(httpResp.Body, false); ok && reason == "" {
+		result.RawFinishReason = ""
+		if !xaiHasFunctionCall(result.ToolCalls) {
+			result.FinishReason = mapXAIResponsesFinishReason("", nil)
+		}
+	}
 	result.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
 	if ts, ok := xaiResponsesCreatedAt(httpResp.Body, false); ok {
 		result.ResponseMetadata.Timestamp = ts // TS getResponseMetadata: created_at 0 is the epoch
@@ -230,6 +238,43 @@ func xaiResponseEchoes(data []byte, event bool) map[string]string {
 		out["safetyIdentifier"] = *e.SafetyIdentifier
 	}
 	return out
+}
+
+// xaiIncompleteReason reads incomplete_details.reason (of the body, or of
+// its response member for a stream event) as TS's `??`: ok for a present,
+// non-null string, "" included.
+func xaiIncompleteReason(data []byte, event bool) (string, bool) {
+	type details struct {
+		IncompleteDetails *struct {
+			Reason *string `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	var v struct {
+		details
+		Response details `json:"response"`
+	}
+	if jsonexact.Unmarshal(data, &v) != nil {
+		return "", false
+	}
+	d := v.details
+	if event {
+		d = v.Response
+	}
+	if d.IncompleteDetails == nil || d.IncompleteDetails.Reason == nil {
+		return "", false
+	}
+	return *d.IncompleteDetails.Reason, true
+}
+
+// xaiHasFunctionCall reports whether a function_call output item produced
+// one of the calls (TS hasFunctionCall): only those are not provider-executed.
+func xaiHasFunctionCall(calls []types.ToolCall) bool {
+	for _, c := range calls {
+		if !c.ProviderExecuted {
+			return true
+		}
+	}
+	return false
 }
 
 // xaiResponseWire decodes a Responses body as TS's schema does:
@@ -755,7 +800,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			"custom_tool_call", "mcp_call":
 			var item struct {
 				ID        string          `json:"id"`
-				Name      string          `json:"name,omitempty"`
+				Name      *string         `json:"name,omitempty"`
 				Action    json.RawMessage `json:"action,omitempty"`
 				Arguments string          `json:"arguments,omitempty"`
 				Input     string          `json:"input,omitempty"`
@@ -1697,9 +1742,10 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			s.recordUsage(e.Response.Usage)
 			s.finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
+			// TS raw: reason ?? 'incomplete' (a present "" is kept).
 			s.rawFinishReason = "incomplete"
-			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
-				s.rawFinishReason = e.Response.IncompleteDetails.Reason
+			if reason, ok := xaiIncompleteReason([]byte(event.Data), true); ok {
+				s.rawFinishReason = reason
 			}
 			s.recordMetadata(e.Response.Usage, xaiResponseEchoes([]byte(event.Data), true))
 			continue
@@ -1709,11 +1755,15 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			if err := jsonexact.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
+			// TS: reason ? map(reason) : 'error', raw reason ?? 'error' (a
+			// present "" is kept as the raw reason).
 			s.finishReason = types.FinishReasonError
 			s.rawFinishReason = "error"
 			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
 				s.finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
-				s.rawFinishReason = e.Response.IncompleteDetails.Reason
+			}
+			if reason, ok := xaiIncompleteReason([]byte(event.Data), true); ok {
+				s.rawFinishReason = reason
 			}
 			s.recordUsage(e.Response.Usage)
 			// Mirrors TS xai-responses-language-model.ts's response.failed
@@ -2042,7 +2092,7 @@ func isXAIProviderExecutedItem(t string) bool {
 func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json.RawMessage, done bool) {
 	var item struct {
 		ID        string          `json:"id"`
-		Name      string          `json:"name,omitempty"`
+		Name      *string         `json:"name,omitempty"`
 		Action    json.RawMessage `json:"action,omitempty"`
 		Arguments string          `json:"arguments,omitempty"`
 		Input     string          `json:"input,omitempty"`
@@ -2143,7 +2193,12 @@ func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json
 // bareXAIToolName resolves the SDK name of a provider-executed item like TS:
 // the registered name when the tool was declared, otherwise the bare tool
 // name ("web_search", "x_search", "code_execution", the item's own name).
-func bareXAIToolName(itemType, itemName string, toolNames map[string]string) string {
+// itemName is nil when the item has no (or a null) name: TS `part.name ??`.
+func bareXAIToolName(itemType string, namePtr *string, toolNames map[string]string) string {
+	itemName := ""
+	if namePtr != nil {
+		itemName = *namePtr
+	}
 	webSearchSubTools := map[string]bool{"web_search": true, "web_search_with_snippets": true, "browse_page": true}
 	xSearchSubTools := map[string]bool{"x_user_search": true, "x_keyword_search": true, "x_semantic_search": true, "x_thread_fetch": true}
 	pick := func(id, bare string) string {
@@ -2163,7 +2218,8 @@ func bareXAIToolName(itemType, itemName string, toolNames map[string]string) str
 		if n := toolNames["xai.mcp"]; n != "" {
 			return n
 		}
-		if itemName != "" {
+		// TS mcpToolName ?? part.name ?? 'mcp': a present "" name is kept.
+		if namePtr != nil {
 			return itemName
 		}
 		return "mcp"

@@ -92,7 +92,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, err // TS handleFetchError: abort as is, else "Cannot connect to API"
 	}
 	// xAI returns a trace id on every response, success and error.
+	// TS `traceId != null`: a present empty header is reported too.
 	traceID := providerutils.FetchHeaderText(http.Header(resp.Headers), "x-trace-id")
+	_, hasTraceID := http.Header(resp.Headers)[http.CanonicalHeaderKey("x-trace-id")]
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { // TS !response.ok
 		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, http.Header(resp.Headers), resp.Body)
 	}
@@ -131,7 +133,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	xaiMetadata := map[string]interface{}{}
-	if traceID != "" {
+	if hasTraceID {
 		xaiMetadata["traceId"] = traceID
 	}
 	if envelope != nil {

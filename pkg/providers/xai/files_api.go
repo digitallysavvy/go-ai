@@ -180,7 +180,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		ProviderReference: types.ProviderReference{"xai": out.ID},
 		MediaType:         opts.MediaType,
 		Filename:          filename,
-		ByteSize:          out.Bytes,
+		ByteSize:          xaiByteSize(out.Bytes),
 		CreatedAt:         xaiUnixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         xaiUnixSecondsToTime(out.ExpiresAt),
 		ProviderMetadata:  map[string]interface{}{"xai": xaiFileMetadata(out)},
@@ -232,7 +232,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 	return &provider.FileMetadataResult{
 		ProviderReference: types.ProviderReference{"xai": out.ID},
 		Filename:          xaiFilesString(out.Filename),
-		ByteSize:          out.Bytes,
+		ByteSize:          xaiByteSize(out.Bytes),
 		CreatedAt:         xaiUnixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         xaiUnixSecondsToTime(out.ExpiresAt),
 		ProviderMetadata:  map[string]interface{}{"xai": xaiFileMetadata(out)},
@@ -328,7 +328,7 @@ func xaiFileID(ref types.ProviderReference) (string, error) {
 type xaiFileResponse struct {
 	ID        string   `json:"id"`
 	Object    string   `json:"object,omitempty"`
-	Bytes     *int64   `json:"bytes,omitempty"`
+	Bytes     *float64 `json:"bytes,omitempty"` // TS z.number(): a fraction is kept in the metadata
 	CreatedAt *float64 `json:"created_at,omitempty"`
 	ExpiresAt *float64 `json:"expires_at,omitempty"`
 	Filename  *string  `json:"filename,omitempty"`
@@ -354,7 +354,7 @@ func xaiFileMetadata(r xaiFileResponse) map[string]interface{} {
 		meta["purpose"] = *r.Purpose
 	}
 	if r.Bytes != nil {
-		meta["bytes"] = *r.Bytes
+		meta["bytes"] = xaiUnixSecondsMetadataValue(*r.Bytes)
 	}
 	if r.CreatedAt != nil {
 		meta["createdAt"] = xaiUnixSecondsMetadataValue(*r.CreatedAt)
@@ -382,6 +382,16 @@ func xaiUnixSecondsToTime(sec *float64) *time.Time {
 	}
 	t := time.UnixMilli(int64(ms)).UTC()
 	return &t
+}
+
+// xaiByteSize is the wire byte count as the int64 ByteSize field: a
+// fraction is truncated (the provider metadata keeps the exact number).
+func xaiByteSize(v *float64) *int64 {
+	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) || math.Abs(*v) > 9e18 {
+		return nil
+	}
+	n := int64(*v)
+	return &n
 }
 
 // xaiUnixSecondsMetadataValue reports a wire number in provider metadata: an

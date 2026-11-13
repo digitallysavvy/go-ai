@@ -15,6 +15,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -389,7 +390,7 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 			"filename": videoData.FileOutput.Filename,
 		}
 		if videoData.FileOutput.ExpiresAt != nil {
-			fileOutput["expiresAt"] = *videoData.FileOutput.ExpiresAt
+			fileOutput["expiresAt"] = xaiUnixSecondsMetadataValue(*videoData.FileOutput.ExpiresAt)
 		}
 		if videoData.FileOutput.PublicURL != nil {
 			fileOutput["publicUrl"] = *videoData.FileOutput.PublicURL
@@ -398,7 +399,7 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 			fileOutput["publicUrlError"] = *videoData.FileOutput.PublicURLError
 		}
 		if videoData.FileOutput.PublicURLExpiresAt != nil {
-			fileOutput["publicUrlExpiresAt"] = *videoData.FileOutput.PublicURLExpiresAt
+			fileOutput["publicUrlExpiresAt"] = xaiUnixSecondsMetadataValue(*videoData.FileOutput.PublicURLExpiresAt)
 		}
 		meta["fileOutput"] = fileOutput
 	}
@@ -555,6 +556,11 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 			return &xaiVideoStatusResponse{Status: &xaiVideoPending}, respHeaders, nil
 		}
 
+		// TS safeParseJSON({text, schema}): a body that fails the status
+		// schema is pending too.
+		if providerutils.MediaSchemaParser(providerutils.SchemaXAIVideoStatus)(resp.StatusCode, resp.Headers, []byte(text)) != nil {
+			return &xaiVideoStatusResponse{Status: &xaiVideoPending}, respHeaders, nil
+		}
 		var status xaiVideoStatusResponse
 		if err := providerutils.UnmarshalChunk([]byte(text), &status); err != nil {
 			return &xaiVideoStatusResponse{Status: &xaiVideoPending}, respHeaders, nil
@@ -1138,6 +1144,19 @@ func parseVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProviderOp
 }
 
 func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVideoProviderOptions) error {
+	// TS runtimeSchema: these members are .optional() (not nullish), so a
+	// present null is invalid; pollIntervalMs, pollTimeoutMs and resolution
+	// are nullish.
+	for _, key := range []string{"mode", "videoUrl", "referenceVoiceIds", "keyframes", "storageOptions", "user"} {
+		if v, present := rawMap[key]; present && v == nil {
+			return fmt.Errorf("xai provider option %s must not be null", key)
+		}
+	}
+	if storage, ok := rawMap["storageOptions"].(map[string]interface{}); ok {
+		if err := validateXAIVideoStorageOptions(storage); err != nil {
+			return err
+		}
+	}
 	if provOpts.Mode != nil {
 		switch *provOpts.Mode {
 		case "edit-video", "extend-video", "reference-to-video":
@@ -1221,6 +1240,37 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 	}
 
 	return nil
+}
+
+// validateXAIVideoStorageOptions checks the JSON form of storageOptions
+// against TS storageOptionsSchema where the typed decode cannot: expiresAfter
+// and publicUrl are .optional() (a present null is invalid), publicUrl is a
+// boolean or an object, and its expiresAfter is an integer
+// (z.number().int()).
+func validateXAIVideoStorageOptions(storage map[string]interface{}) error {
+	if v, present := storage["expiresAfter"]; present && v == nil {
+		return fmt.Errorf("xai provider option storageOptions.expiresAfter must not be null")
+	}
+	publicURL, present := storage["publicUrl"]
+	if !present {
+		return nil
+	}
+	switch v := publicURL.(type) {
+	case bool:
+		return nil
+	case map[string]interface{}:
+		raw, has := v["expiresAfter"]
+		if !has {
+			return nil
+		}
+		f, isNumber := raw.(float64)
+		if !isNumber || f != math.Trunc(f) {
+			return fmt.Errorf("xai provider option storageOptions.publicUrl.expiresAfter must be an integer")
+		}
+		return nil
+	default:
+		return fmt.Errorf("xai provider option storageOptions.publicUrl must be a boolean or an object")
+	}
 }
 
 // publicURLObjectExpiresAfter extracts the expiresAfter field from a
@@ -1334,7 +1384,7 @@ type xaiVideoStatusResponse struct {
 	Model    string             `json:"model,omitempty"`
 	Usage    *xaiVideoUsage     `json:"usage,omitempty"`
 	Progress *float64           `json:"progress,omitempty"`
-	Warnings []xaiWarning       `json:"warnings,omitempty"`
+	Warnings xaiWarnings        `json:"warnings,omitempty"`
 	Error    *xaiVideoStatusErr `json:"error,omitempty"`
 }
 
@@ -1370,12 +1420,13 @@ type xaiVideoData struct {
 // xaiVideoFileOutput describes a video persisted via storageOptions to the
 // xAI Files API.
 type xaiVideoFileOutput struct {
-	FileID             string  `json:"file_id"`
-	Filename           string  `json:"filename"`
-	ExpiresAt          *int64  `json:"expires_at,omitempty"`
-	PublicURL          *string `json:"public_url,omitempty"`
-	PublicURLError     *string `json:"public_url_error,omitempty"`
-	PublicURLExpiresAt *int64  `json:"public_url_expires_at,omitempty"`
+	FileID   string `json:"file_id"`
+	Filename string `json:"filename"`
+	// The times are z.number(): a fraction is kept in the metadata.
+	ExpiresAt          *float64 `json:"expires_at,omitempty"`
+	PublicURL          *string  `json:"public_url,omitempty"`
+	PublicURLError     *string  `json:"public_url_error,omitempty"`
+	PublicURLExpiresAt *float64 `json:"public_url_expires_at,omitempty"`
 }
 
 // resolveVideoURL mirrors TS `video?.url ?? video?.file_output?.public_url
@@ -1397,4 +1448,27 @@ func resolveVideoURL(video *xaiVideoData) string {
 type xaiWarning struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+
+// xaiWarnings is the status response's warnings (a Go-only reading, see
+// "xAI video response warnings"). TS's schema has no warnings member and
+// strips it, so a value of any other shape (not an array, or entries that
+// are not {code, message} objects) never fails the status parse: such
+// entries are skipped.
+type xaiWarnings []xaiWarning
+
+// UnmarshalJSON decodes the entries that are warning objects.
+func (w *xaiWarnings) UnmarshalJSON(data []byte) error {
+	*w = nil
+	var entries []json.RawMessage
+	if json.Unmarshal(data, &entries) != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		var warning xaiWarning
+		if jsonexact.Unmarshal(entry, &warning) == nil {
+			*w = append(*w, warning)
+		}
+	}
+	return nil
 }
