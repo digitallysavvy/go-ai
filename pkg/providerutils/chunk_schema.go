@@ -236,7 +236,8 @@ var (
 			zObj(fl("type", zLit("text")), fl("text", zStr))))),
 	}))))
 
-	zMistralDetails = zObj(fl("messages", zNullish(zArr(zAny))), fl("cached_tokens", nNum), fl("audio_tokens", nNum))
+	// convert-mistral-usage.ts: every usage object is .catchall(z.json()).
+	zMistralDetails = zodlite.ObjectCatchall(zodlite.JSON, fl("messages", zNullish(zArr(zodlite.JSON))), fl("cached_tokens", nNum), fl("audio_tokens", nNum))
 
 	zMistralChunk = zObj(
 		fl("id", nStr), fl("created", nNum), fl("model", nStr),
@@ -252,12 +253,12 @@ var (
 			fl("finish_reason", nStr),
 			fl("index", zNum),
 		))),
-		fl("usage", zNullish(zObj(
+		fl("usage", zNullish(zodlite.ObjectCatchall(zodlite.JSON,
 			fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum),
 			fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
 			fl("prompt_tokens_details", zNullish(zMistralDetails)),
 			fl("prompt_token_details", zNullish(zMistralDetails)),
-			fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
+			fl("completion_tokens_details", zNullish(zodlite.ObjectCatchall(zodlite.JSON, fl("reasoning_tokens", nNum)))),
 		))),
 	)
 

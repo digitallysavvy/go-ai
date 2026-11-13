@@ -1,6 +1,10 @@
 package zodlite
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
+)
 
 // JSON.parse reads 1e400 as Infinity, which z.number() rejects (and an
 // undeclared key strips); encoding/json used to fail the frame, which
@@ -13,4 +17,8 @@ func TestR96carryValidationMessageOutOfRange(t *testing.T) {
 	if msg := ValidationMessage(schema, `{"n":1,"extra":1e400}`); msg != "" {
 		t.Errorf("an undeclared infinite key failed: %s", msg)
 	}
+}
+
+func decodeForTest(data string, v *interface{}) error {
+	return jsonexact.Decode([]byte(data), v)
 }
