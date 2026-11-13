@@ -328,7 +328,13 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 
 	conn, err := s.dial(cfg.url, cfg.headers)
 	if err != nil {
-		fail(err)
+		// TS connectToWebSocket: an abort fails with abortSignal.reason; a
+		// socket that fails to open fires onerror (onSocketError's text).
+		if cause := context.Cause(s.Context()); cause != nil {
+			fail(cause)
+		} else {
+			fail(errors.New("xAI streaming transcription error.")) //nolint:staticcheck // TS error text
+		}
 		return
 	}
 	s.SetConn(conn)

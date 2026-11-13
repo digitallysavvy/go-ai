@@ -3,7 +3,9 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -202,3 +204,35 @@ func TestR95provbVideoStatusLenientParse(t *testing.T) {
 		t.Errorf("fileOutput.expiresAt = %#v, want 1.5", fo["expiresAt"])
 	}
 }
+
+// TestR95provbWebSocketOpenFailure (cr-r95-prova-to-provb): TS
+// connectToWebSocket fails a socket that does not open (a 401 handshake)
+// with the onSocketError text, and an aborted dial with abortSignal.reason.
+func TestR95provbWebSocketOpenFailure(t *testing.T) {
+	refused := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer refused.Close()
+	run := func(ctx context.Context) error {
+		res, err := newTestXAITranscriptionModel(refused.URL).DoStream(ctx, &provider.TranscriptionStreamOptions{Audio: r95provbAudio{}, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"}})
+		if err != nil {
+			return err
+		}
+		_, err = drainXAIStream(res.Stream)
+		return err
+	}
+	if err := run(context.Background()); err == nil || err.Error() != "xAI streaming transcription error." {
+		t.Errorf("refused handshake: err = %v", err)
+	}
+	cause := errors.New("r95provb aborted")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(cause)
+	if err := run(ctx); !errors.Is(err, cause) {
+		t.Errorf("aborted dial: err = %v, want the abort cause", err)
+	}
+}
+
+type r95provbAudio struct{}
+
+func (r95provbAudio) Next(ctx context.Context) ([]byte, error) { <-ctx.Done(); return nil, ctx.Err() }
+func (r95provbAudio) Cancel(error)                             {}

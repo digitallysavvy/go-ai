@@ -197,7 +197,13 @@ func (s *azureMaiTranscriptionStream) run(cfg azureMaiTranscriptionStreamConfig)
 	closeInfo := &wsutil.CloseInfo{}
 	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
-		fail(err)
+		// TS connectToWebSocket: an abort fails with abortSignal.reason; a
+		// socket that fails to open fires onerror (onSocketError's text).
+		if cause := context.Cause(s.Context()); cause != nil {
+			fail(cause)
+		} else {
+			fail(errors.New("Azure MAI transcription WebSocket error")) //nolint:staticcheck // TS error text
+		}
 		return
 	}
 	s.SetConn(conn)

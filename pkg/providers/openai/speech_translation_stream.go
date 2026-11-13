@@ -52,6 +52,13 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	closeInfo := &wsutil.CloseInfo{}
 	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
+		// TS connectToWebSocket: an abort fails with abortSignal.reason; a
+		// socket that fails to open fires onerror (onSocketError's text).
+		if cause := context.Cause(s.Context()); cause != nil {
+			err = cause
+		} else {
+			err = errors.New("OpenAI realtime translation error")
+		}
 		s.SetErr(err)
 		cfg.audio.Cancel(err)
 		return

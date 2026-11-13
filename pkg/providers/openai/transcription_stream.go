@@ -366,6 +366,13 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 
 	conn, err := s.dial(cfg.URL, cfg.Headers)
 	if err != nil {
+		// TS connectToWebSocket: an abort fails with abortSignal.reason; a
+		// socket that fails to open fires onerror (onSocketError's text).
+		if cause := context.Cause(s.Context()); cause != nil {
+			err = cause
+		} else {
+			err = errors.New("OpenAI realtime transcription error")
+		}
 		s.SetErr(err)
 		cfg.Audio.Cancel(err)
 		return
