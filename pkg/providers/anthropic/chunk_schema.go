@@ -61,19 +61,10 @@ var (
 		f("type", zString),
 		f("status", zObject(
 			f("type", zString),
-			f("tool_uses", zNullish(func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
-				m, ok := v.(map[string]interface{})
-				if !ok {
-					return zodlite.Invalid("record", v, present, path)
-				}
-				entry := zObject(f("type", zString), f("outcome", zNullish(zString)), f("explanation", zNullish(zString)))
-				for k, e := range m {
-					if bad := entry(e, true, append(append([]interface{}{}, path...), k)); bad != nil {
-						return bad
-					}
-				}
-				return nil
-			})),
+			// z.record: every entry's issues, in the object's key order.
+			f("tool_uses", zNullish(zodlite.RecordOf(
+				zObject(f("type", zString), f("outcome", zNullish(zString)), f("explanation", zNullish(zString))),
+			))),
 		)),
 	)
 

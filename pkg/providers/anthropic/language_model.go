@@ -694,7 +694,10 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				})
 			}
 		case "server_tool_use":
-			serverToolProviderNames[content.ID] = content.Name
+			// TS serverToolCalls records only the tool-search calls.
+			if content.Name == "tool_search_tool_regex" || content.Name == "tool_search_tool_bm25" {
+				serverToolProviderNames[content.ID] = content.Name
+			}
 			if tc, ok := serverToolUseCall(content, toolNameMap, co.markCodeExecutionDynamic); ok {
 				addToolCall(blockIdx, tc)
 			} else if co.rawBatchCitations {
@@ -1768,7 +1771,7 @@ type anthropicStream struct {
 	// isMessageOpen / activeMessageID detect spliced streams (a second
 	// message_start while a message is still open).
 	isMessageOpen   bool
-	activeMessageID string
+	activeMessageID anthropicMessageID
 	// spliced is set once a spliced-stream error chunk has been emitted (TS
 	// hasInvalidMessageSequence). Once true, every remaining SSE event is
 	// discarded (never surfaced as a chunk, and no finish chunk is
@@ -2187,7 +2190,10 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// Track tool call ID → tool name so the corresponding *_tool_result
 				// block (deferred result) can resolve the tool name.
 				s.serverToolCallNames[start.ContentBlock.ID] = toolName
-				s.serverToolProviderNames[start.ContentBlock.ID] = name
+				// TS serverToolCalls records only the tool-search calls.
+				if name == "tool_search_tool_regex" || name == "tool_search_tool_bm25" {
+					s.serverToolProviderNames[start.ContentBlock.ID] = name
+				}
 				block := &streamContentBlock{
 					blockType:             "tool-call",
 					toolCallID:            start.ContentBlock.ID,
@@ -2236,7 +2242,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 						input = map[string]interface{}{}
 					}
 				}
-				mcpInput := jsonorder.Input(start.ContentBlock.Input, nil).String()
+				// TS JSON.stringify(part.input): an input that is not an object
+				// (z.unknown(), null included) keeps its own text.
+				mcpInput := inputText(start.ContentBlock.Input, nil)
 				// Track tool call ID → tool name for mcp_tool_result lookup, and the
 				// full toolName/providerMetadata pair so the paired mcp_tool_result
 				// can resolve the same values (TS mcpToolCalls[part.id]).
@@ -2377,10 +2385,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// s.serverToolCallNames, remap snake_case wire fields to camelCase,
 				// and grow citationDocuments so a later page_location/char_location
 				// citation can resolve against this fetched document.
-				toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
-				if toolName == "" {
-					toolName = mapAnthropicToolName(providerToolResultName(start.ContentBlock.Type), s.toolNameMap)
-				}
+				// TS toCustomToolName('web_fetch' / 'web_search'), whatever
+				// server tool the tool_use_id belongs to.
+				toolName := mapAnthropicToolName(providerToolResultName(start.ContentBlock.Type), s.toolNameMap)
 				tr := &types.ToolResult{
 					ToolCallID:       start.ContentBlock.ToolUseID,
 					ToolName:         toolName,
@@ -2408,10 +2415,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// content_block_start "web_search_tool_result" case, ~line 2272).
 				// Emits the tool-result chunk followed by a source chunk for each
 				// search result (TS enqueues 'source' parts after the 'tool-result').
-				toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
-				if toolName == "" {
-					toolName = mapAnthropicToolName(providerToolResultName(start.ContentBlock.Type), s.toolNameMap)
-				}
+				// TS toCustomToolName('web_fetch' / 'web_search'), whatever
+				// server tool the tool_use_id belongs to.
+				toolName := mapAnthropicToolName(providerToolResultName(start.ContentBlock.Type), s.toolNameMap)
 				tr := &types.ToolResult{
 					ToolCallID:       start.ContentBlock.ToolUseID,
 					ToolName:         toolName,
@@ -2501,8 +2507,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			// TS z.number() usage counts: a fractional count is truncated
 			// (providerutils.UnmarshalChunk), not a failed decode.
 			if err := providerutils.UnmarshalChunk([]byte(event.Data), &msg); err == nil {
+				messageID := anthropicMessageIDOf(event.Data)
 				if s.isMessageOpen {
-					if s.activeMessageID == msg.Message.ID {
+					if s.activeMessageID == messageID {
 						continue
 					}
 					// A spliced stream: emit an error chunk in the stream itself
@@ -2515,7 +2522,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					s.spliced = true
 					text := fmt.Sprintf(
 						"Received message_start for message %s while message %s is still open.",
-						jsonQuote(msg.Message.ID), jsonQuote(s.activeMessageID))
+						messageID.text(), s.activeMessageID.text())
 					// TS carries an InvalidResponseDataError whose data is the
 					// offending event; callers match it with errors.As.
 					var eventData interface{}
@@ -2534,7 +2541,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					s.serviceTier = msg.Message.ServiceTier
 				}
 				s.isMessageOpen = true
-				s.activeMessageID = msg.Message.ID
+				s.activeMessageID = messageID
 				// Block indexes restart with each message (TS e10aebbad6); a
 				// repeated message_start of the open message returned above.
 				s.heldBackTextByIndex = nil
@@ -2806,6 +2813,11 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			delete(s.contentBlocks, stop.Index)
 			s.lastBlockType = "" // TS resets blockType on every content_block_stop
 
+			if block != nil && block.blockType == "tool-call" && s.usesJsonResponseTool && block.toolName == "json" {
+				// TS: when the JSON response tool is in use, a tool-call block
+				// whose (custom) tool name is `json` emits nothing at its stop.
+				continue
+			}
 			if block != nil && block.blockType == "tool-call" {
 				// Parse the accumulated JSON into ToolCall.Arguments.
 				var args map[string]interface{}
@@ -2963,8 +2975,6 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				} `json:"usage"`
 				// Root-level context management (TS location; takes precedence).
 				ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
-				// Container info (with skills, if any) from message_delta
-				Container *anthropicContainerResponse `json:"container,omitempty"`
 			}
 			if err := providerutils.UnmarshalChunk([]byte(event.Data), &delta); err != nil {
 				return nil, fmt.Errorf("failed to parse message delta: %w", err)
@@ -2972,15 +2982,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 
 			// TS: container = delta.container != null ? {...} : null -- a
 			// message_delta without a container clears the one message_start
-			// reported.
-			switch {
-			case delta.Delta.Container != nil:
-				s.container = delta.Delta.Container
-			case delta.Container != nil:
-				s.container = delta.Container
-			default:
-				s.container = nil
-			}
+			// reported (a root-level container is not in the schema).
+			s.container = delta.Delta.Container
 			s.stopSequence = delta.Delta.StopSequence
 			s.stopDetails = delta.Delta.StopDetails
 			if delta.Usage.ServiceTier != nil {
@@ -3112,7 +3115,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 
 		case "message_stop":
 			s.isMessageOpen = false
-			s.activeMessageID = ""
+			s.activeMessageID = anthropicMessageID{}
 			// TS emits one finish part per message_stop and keeps reading, so a
 			// stream of several concatenated messages yields one finish each,
 			// and so does a repeated message_stop. The finish reason is the
@@ -3250,6 +3253,46 @@ func (s *anthropicStream) finalizeFinish() *provider.StreamChunk {
 func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// anthropicMessageID is a message_start's message.id as TS holds it:
+// undefined (absent), null, or a string. TS compares ids strictly, so an
+// absent id and a null id differ.
+type anthropicMessageID struct {
+	kind  int // 0 absent, 1 null, 2 string
+	value string
+}
+
+// anthropicMessageIDOf reads message.id of a message_start frame.
+func anthropicMessageIDOf(data string) anthropicMessageID {
+	var probe struct {
+		Message struct {
+			ID json.RawMessage `json:"id"`
+		} `json:"message"`
+	}
+	if jsonexact.Unmarshal([]byte(data), &probe) != nil || len(probe.Message.ID) == 0 {
+		return anthropicMessageID{}
+	}
+	if string(probe.Message.ID) == "null" {
+		return anthropicMessageID{kind: 1}
+	}
+	var id string
+	if json.Unmarshal(probe.Message.ID, &id) != nil {
+		return anthropicMessageID{}
+	}
+	return anthropicMessageID{kind: 2, value: id}
+}
+
+// text is JSON.stringify(id) in a template literal: "undefined", "null" or
+// the quoted string.
+func (id anthropicMessageID) text() string {
+	switch id.kind {
+	case 1:
+		return "null"
+	case 2:
+		return jsonQuote(id.value)
+	}
+	return "undefined"
 }
 
 // Err returns any error that occurred during streaming
