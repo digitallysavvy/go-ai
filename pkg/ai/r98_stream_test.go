@@ -57,7 +57,7 @@ func TestR98streamProviderMetadataKeepsPrototypeKeys(t *testing.T) {
 			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage, ProviderMetadata: meta},
 		}),
 		Prompt:    "x",
-		Telemetry: &telemetry.Settings{Integrations: []telemetry.TelemetryIntegration{rec}},
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}},
 	})
 	if err != nil {
 		t.Fatal(err)
