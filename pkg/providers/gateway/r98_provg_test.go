@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -51,5 +53,32 @@ func TestR98provgMintClientSecretBodyKeyOrder(t *testing.T) {
 	}
 	if want := `{"model":"m","routeKind":"transcription","expiresIn":60}`; body != want {
 		t.Fatalf("body = %s, want %s", body, want)
+	}
+}
+
+// TS gateway-transcription-model.ts startFrame: {type, inputAudioFormat,
+// providerOptions, includeRawChunks}, sent with JSON.stringify.
+func TestR98provgTranscriptionStartFrameKeyOrder(t *testing.T) {
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+	rate := 16000
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+		ProviderOptions:  map[string]interface{}{"openai": map[string]interface{}{"language": "en"}},
+		IncludeRawChunks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+	server.mu.Lock()
+	got := server.receivedText[0]
+	server.mu.Unlock()
+	want := `{"type":"` + transcriptionStreamStartFrameType + `","inputAudioFormat":{"type":"audio/pcm","rate":16000},"providerOptions":{"openai":{"language":"en"}},"includeRawChunks":true}`
+	if got != want {
+		t.Fatalf("start frame =\n%s\nwant\n%s", got, want)
 	}
 }

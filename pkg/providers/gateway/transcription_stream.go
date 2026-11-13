@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
@@ -206,12 +207,13 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	startPayload, err := jsonstr.Marshal(cfg.startFrame)
-	if err != nil {
-		fail(err)
-		return
-	}
-	if err := s.sendText(conn, string(startPayload)); err != nil {
+	// TS JSON.stringify(startFrame): type, inputAudioFormat, providerOptions,
+	// includeRawChunks (the audio format as the caller's {type, rate}).
+	startPayload := providerutils.StringifyOrdered(cfg.startFrame, map[string][]string{
+		"":                 {"type", "inputAudioFormat", "providerOptions", "includeRawChunks"},
+		"inputAudioFormat": {"type", "rate"},
+	})
+	if err := s.sendText(conn, startPayload); err != nil {
 		fail(err)
 		return
 	}
