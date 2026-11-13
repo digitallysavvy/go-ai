@@ -2,7 +2,6 @@ package voyage
 
 import (
 	"errors"
-	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/securejson"
@@ -35,14 +34,9 @@ func handleError(err error) error {
 	return err
 }
 
-// voyageErrorMessage mirrors TS voyageFailedResponseHandler: {"detail":string}
-// gives the detail, any other body gives the HTTP status text.
-func voyageErrorMessage(statusCode int, body []byte) string {
-	return voyageErrorMessageText(http.StatusText(statusCode), body)
-}
-
-// voyageErrorMessageText is voyageErrorMessage with the response's reason
-// phrase (TS response.statusText) as the off-schema message.
+// voyageErrorMessageText mirrors TS voyageFailedResponseHandler: {"detail":string}
+// gives the detail, any other body gives the status text.
+// statusText is the response's reason phrase (TS response.statusText).
 func voyageErrorMessageText(statusText string, body []byte) string {
 	var payload struct {
 		Detail *string `json:"detail"`
