@@ -155,15 +155,17 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, m.handleError(err)
 	}
 
-	if jsonResp.Audio.URL == "" {
-		return nil, providererrors.NewInvalidResponseDataError(jsonResp, "fal speech response missing audio.url")
-	}
-
+	// audio.url is z.string(): an empty one is fetched like any other and
+	// fails URL validation (TS getFromApi validateUrl), as in the image model.
 	// TS: getFromApi({ url: audioUrl, validateUrl: true, trustedOrigin: requestUrl }).
 	// Hops same-origin with the submit request URL skip the generic SSRF
 	// blocklist (which would otherwise reject the httptest loopback address
 	// used in tests); every other origin is still fully validated.
-	audioData, err := fileutil.Download(ctx, jsonResp.Audio.URL, fileutil.TrustedOriginDownloadOptions(requestPath, nil))
+	audioDownload, err := fileutil.DownloadWithMetadata(ctx, jsonResp.Audio.URL, fileutil.TrustedOriginDownloadOptions(requestPath, nil))
+	if err == nil {
+		// TS createBinaryResponseHandler: a 204 / 205 has a null body.
+		err = fileutil.EmptyBinaryBodyError("fal", audioDownload.StatusCode, http.Header(audioDownload.Headers))
+	}
 	if err != nil {
 		// TS getFromApi handleFetchError: a network failure is the retryable
 		// "Cannot connect to API" error, an abort stays as is.
@@ -178,7 +180,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	_ = jsonexact.Unmarshal(httpResp.Body, &rawResponse)
 
 	return &types.SpeechResult{
-		Audio:    audioData,
+		Audio:    audioDownload.Data,
 		Warnings: warnings,
 		Request: &types.StepRequest{
 			Body: jsonorder.Stringify(body),

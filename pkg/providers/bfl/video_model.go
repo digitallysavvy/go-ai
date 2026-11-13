@@ -647,7 +647,8 @@ func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, header
 	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 
 	opts := fileutil.DefaultDownloadOptions()
-	opts.Timeout = fileutil.NoTimeout // TS getFromApi sets no timeout
+	opts.Timeout = fileutil.NoTimeout      // TS getFromApi sets no timeout
+	opts.UserAgent = fileutil.UserAgentAPI // TS getFromApi: the runtime tag, not download()'s ai-sdk tag
 	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
 	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
 	if err := opts.URLValidator(pollURL); err != nil {

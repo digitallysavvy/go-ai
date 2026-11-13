@@ -1039,6 +1039,10 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 		cause := internalhttp.StatusErrorFromRaw(resp, errBody)
 		return nil, nil, providererrors.NewProviderErrorFromResponse("bfl", 0, "", fileutil.ResponseStatusText(resp), cause)
 	}
+	// TS createBinaryResponseHandler: a 204 / 205 has a null body.
+	if err := fileutil.EmptyBinaryBodyError("bfl", resp.StatusCode, resp.Header); err != nil {
+		return nil, nil, err
+	}
 	limit := opts.MaxSize
 	if limit == 0 {
 		limit = fileutil.DefaultMaxDownloadSize

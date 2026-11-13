@@ -349,7 +349,11 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			// response' with the status code and headers
 			// (get-from-api.ts:104-122).
 			if trimmed := strings.TrimSpace(string(resp.Body)); !json.Valid(resp.Body) || trimmed == "null" {
-				return nil, nil, nil, providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", "Failed to process error response", resp.StatusError(resp.Body))
+				perr := providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", "Failed to process error response", resp.StatusError(resp.Body))
+				// That APICallError carries the status code and headers but
+				// no responseBody or data.
+				perr.ResponseBody, perr.Data = "", nil
+				return nil, nil, nil, perr
 			}
 			var detail struct {
 				Detail string `json:"detail"`

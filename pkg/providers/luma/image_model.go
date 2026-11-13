@@ -287,6 +287,10 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) ([]byte
 		}
 		return nil, "", err
 	}
+	// TS createBinaryResponseHandler: a 204 / 205 has a null body.
+	if err := fileutil.EmptyBinaryBodyError("luma", result.StatusCode, stdhttp.Header(result.Headers)); err != nil {
+		return nil, "", err
+	}
 	return result.Data, result.ContentType, nil
 }
 

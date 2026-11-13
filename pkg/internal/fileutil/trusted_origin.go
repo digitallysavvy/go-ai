@@ -25,10 +25,12 @@ func IsSameOrigin(a, b string) bool {
 // developer-configured base URL, never response data) skip target validation
 // and use trustedTransport (nil means http.DefaultTransport); every other hop
 // is validated with ValidateDownloadURL and dialed through SafeTransport.
+// The request carries getFromApi's user-agent tag (UserAgentAPI).
 func TrustedOriginDownloadOptions(trustedOrigin string, trustedTransport http.RoundTripper) DownloadOptions {
 	opts := DefaultDownloadOptions()
 	// TS getFromApi sets no timeout; the caller's context bounds the request.
 	opts.Timeout = NoTimeout
+	opts.UserAgent = UserAgentAPI
 	if trustedTransport == nil {
 		trustedTransport = http.DefaultTransport
 	}
