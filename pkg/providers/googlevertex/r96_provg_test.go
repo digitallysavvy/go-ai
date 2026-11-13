@@ -10,7 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
-var r96provgWriteErr = errors.New("r96provg: write failed")
+var errR96provgWrite = errors.New("r96provg: write failed")
 
 // r96provgFailWriteConn fails every Write once a Read has returned (the
 // handshake response was read), so the first frame after the handshake (the
@@ -30,7 +30,7 @@ func (c *r96provgFailWriteConn) Read(p []byte) (int, error) {
 
 func (c *r96provgFailWriteConn) Write(p []byte) (int, error) {
 	if c.read.Load() {
-		return 0, r96provgWriteErr
+		return 0, errR96provgWrite
 	}
 	return c.Conn.Write(p)
 }
@@ -58,7 +58,7 @@ func TestR96provgLiveTranscriptionSetupSendFailureAfterStreamStart(t *testing.T)
 	if err != nil || part.Type != provider.TranscriptionStreamPartTypeStreamStart {
 		t.Fatalf("first part = %+v, %v; want stream-start", part, err)
 	}
-	if part, err := result.Stream.Next(); !errors.Is(err, r96provgWriteErr) {
+	if part, err := result.Stream.Next(); !errors.Is(err, errR96provgWrite) {
 		t.Fatalf("second = %+v, %v; want the write error", part, err)
 	}
 }
