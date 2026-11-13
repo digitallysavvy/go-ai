@@ -1,6 +1,7 @@
 package deepgram
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -37,13 +38,11 @@ func TestDeepgramTranscriptionModelMetadata(t *testing.T) {
 func TestDeepgramConvertResponseHandlesEmptyAndWords(t *testing.T) {
 	m := NewTranscriptionModel(New(Config{APIKey: "k"}), "nova-2")
 
-	empty, _ := m.convertResponse(deepgramTranscriptionResponse{
-		Metadata: &struct {
-			TransactionKey string  `json:"transaction_key"`
-			RequestID      string  `json:"request_id"`
-			Duration       float64 `json:"duration"`
-		}{Duration: 3.2},
-	}, &internalhttp.Response{}, time.Now())
+	var emptyResp deepgramTranscriptionResponse
+	if err := json.Unmarshal([]byte(`{"metadata":{"duration":3.2}}`), &emptyResp); err != nil {
+		t.Fatal(err)
+	}
+	empty, _ := m.convertResponse(emptyResp, &internalhttp.Response{}, time.Now())
 	if empty.Text != "" || empty.Usage.DurationSeconds != 3.2 || len(empty.Timestamps) != 0 {
 		t.Fatalf("empty response mismatch: %#v", empty)
 	}
@@ -54,50 +53,8 @@ func TestDeepgramConvertResponseHandlesEmptyAndWords(t *testing.T) {
 	}
 
 	var resp deepgramTranscriptionResponse
-	resp.Metadata = &struct {
-		TransactionKey string  `json:"transaction_key"`
-		RequestID      string  `json:"request_id"`
-		Duration       float64 `json:"duration"`
-	}{Duration: 5.5}
-	resp.Results.Channels = []struct {
-		DetectedLanguage string `json:"detected_language"`
-		Alternatives     []struct {
-			Transcript string  `json:"transcript"`
-			Confidence float64 `json:"confidence"`
-			Words      []struct {
-				Word       string  `json:"word"`
-				Start      float64 `json:"start"`
-				End        float64 `json:"end"`
-				Confidence float64 `json:"confidence"`
-			} `json:"words"`
-		} `json:"alternatives"`
-	}{
-		{
-			DetectedLanguage: "en",
-			Alternatives: []struct {
-				Transcript string  `json:"transcript"`
-				Confidence float64 `json:"confidence"`
-				Words      []struct {
-					Word       string  `json:"word"`
-					Start      float64 `json:"start"`
-					End        float64 `json:"end"`
-					Confidence float64 `json:"confidence"`
-				} `json:"words"`
-			}{
-				{
-					Transcript: "hello world",
-					Words: []struct {
-						Word       string  `json:"word"`
-						Start      float64 `json:"start"`
-						End        float64 `json:"end"`
-						Confidence float64 `json:"confidence"`
-					}{
-						{Word: "hello", Start: 0, End: 0.4},
-						{Word: "world", Start: 0.5, End: 1},
-					},
-				},
-			},
-		},
+	if err := json.Unmarshal([]byte(`{"metadata":{"duration":5.5},"results":{"channels":[{"detected_language":"en","alternatives":[{"transcript":"hello world","words":[{"word":"hello","start":0,"end":0.4},{"word":"world","start":0.5,"end":1}]}]}]}}`), &resp); err != nil {
+		t.Fatal(err)
 	}
 	converted, _ := m.convertResponse(resp, &internalhttp.Response{}, time.Now())
 	if converted.Text != "hello world" || len(converted.Timestamps) != 2 || converted.Usage.DurationSeconds != 5.5 {

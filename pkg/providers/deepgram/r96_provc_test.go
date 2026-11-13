@@ -47,3 +47,20 @@ func TestR96provcStreamingAuthorizationTrimmed(t *testing.T) {
 		t.Fatalf("protocols = %v, err = %v", protocols, err)
 	}
 }
+
+// TestR96provcUndeclaredResponseFieldsIgnored: deepgramTranscriptionResponseSchema
+// declares only metadata.duration and the transcript / words fields, so zod
+// strips confidence, transaction_key and request_id whatever their type.
+// Go decoded them into typed fields, so an unexpected type failed the call.
+func TestR96provcUndeclaredResponseFieldsIgnored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"metadata":{"duration":2,"transaction_key":7,"request_id":false},"results":{"channels":[{"alternatives":[{"transcript":"hi","confidence":"high","words":[{"word":"hi","start":0,"end":1,"confidence":null}]}]}]}}`))
+	}))
+	defer srv.Close()
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "nova-3")
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	if err != nil || res.Text != "hi" || len(res.Segments) != 1 || res.DurationInSeconds == nil || *res.DurationInSeconds != 2 {
+		t.Fatalf("err = %v, res = %+v", err, res)
+	}
+}
