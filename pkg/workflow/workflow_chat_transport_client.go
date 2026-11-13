@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -207,9 +209,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 		return
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
-		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		_ = resp.Body.Close()
-		errs <- fmt.Errorf("Failed to fetch chat: %d %s", resp.StatusCode, string(payload)) //nolint:staticcheck // matches TS SDK error text
+		errs <- failedFetchChatError(resp, api)
 		return
 	}
 
@@ -323,9 +323,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 			return
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
-			payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			_ = resp.Body.Close()
-			errs <- fmt.Errorf("Failed to fetch chat: %d %s", resp.StatusCode, string(payload)) //nolint:staticcheck // matches TS SDK error text
+			errs <- failedFetchChatError(resp, reqURL)
 			return
 		}
 
@@ -391,6 +389,20 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 	}
 
 	t.finishChat(chatID, chunkIndex, errs)
+}
+
+// failedFetchChatError is TS `new Error(\`Failed to fetch chat: ${status}
+// ${await response.text()}\`)`: the whole body (within the SDK's 2 GiB
+// response limit), UTF-8 decoded as response.text() does (BOM dropped,
+// invalid sequences replaced). A failed body read rejects with its own
+// error, as response.text() does. The body is closed.
+func failedFetchChatError(resp *http.Response, rawURL string) error {
+	defer resp.Body.Close() //nolint:errcheck
+	payload, err := fileutil.ReadResponseWithSizeLimit(resp, rawURL, fileutil.DefaultMaxDownloadSize)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("Failed to fetch chat: %d %s", resp.StatusCode, textdecode.UTF8(payload)) //nolint:staticcheck // matches TS SDK error text
 }
 
 // parseIntPrefix is JavaScript parseInt(s, 10): leading JS whitespace, an
