@@ -2,8 +2,9 @@ package fileutil
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonexact"
 )
 
 // PollJSON performs a validated-redirect GET request against rawURL and
@@ -35,7 +36,8 @@ func PollJSON(ctx context.Context, rawURL string, opts DownloadOptions, target i
 		return nil, err
 	}
 	if target != nil {
-		if err := json.Unmarshal(result.Data, target); err != nil {
+		// A provider response: keys match exactly, as zod does.
+		if err := jsonexact.Unmarshal(result.Data, target); err != nil {
 			return nil, fmt.Errorf("fileutil: failed to decode poll response from %s: %w", rawURL, err)
 		}
 	}

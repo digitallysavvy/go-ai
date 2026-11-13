@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // docsURL is linked from deprecation/nudge warnings about model selection.
@@ -301,7 +303,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAssemblyAIUpload),
 		Method:           http.MethodPost,
 		Path:             "/upload",
-		Body:             opts.Audio,
+		Body:             uploadContent(opts),
 		// TS: { 'Content-Type': ..., ...combineHeaders(config, options.headers) },
 		// so a caller header (any case matches in a map; exact key here) wins.
 		Headers: internalhttp.MergeHeaders(map[string]string{
@@ -341,6 +343,15 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	return m.convertResponse(rawTranscript, currentDate, httpResp.Headers, warnings), nil
+}
+
+// uploadContent is TS postToApi's body.content (options.audio): the audio
+// bytes, or a base64 string audio as given (TS sends the string itself).
+func uploadContent(opts *provider.TranscriptionOptions) []byte {
+	if len(opts.Audio) == 0 && opts.AudioBase64 != "" {
+		return []byte(opts.AudioBase64)
+	}
+	return opts.Audio
 }
 
 // waitForCompletion polls the given transcript until it reaches a terminal
@@ -454,7 +465,7 @@ func orderedTranscriptBody(body map[string]interface{}) *jsonorder.Object {
 // convertResponse maps a raw completed transcript response into a
 // TranscriptionResult, mirroring AssemblyAITranscriptionModel.doGenerate.
 func (m *TranscriptionModel) convertResponse(raw map[string]interface{}, currentDate time.Time, headers http.Header, warnings []types.Warning) *types.TranscriptionResult {
-	b, _ := json.Marshal(raw)
+	b, _ := jsonstr.Marshal(raw) // a provider ±Inf writes null (JSON.stringify)
 	var transcript struct {
 		Text          string   `json:"text"`
 		LanguageCode  string   `json:"language_code"`
@@ -601,7 +612,7 @@ func assemblyAIErrorData(body []byte) interface{} {
 	case map[string]interface{}:
 		message, okMessage := e["message"].(string)
 		code, okCode := e["code"].(float64)
-		if okMessage && okCode {
+		if okMessage && okCode && !math.IsInf(code, 0) && !math.IsNaN(code) { // z.number() rejects Infinity
 			return map[string]interface{}{"error": map[string]interface{}{"message": message, "code": code}}
 		}
 	}

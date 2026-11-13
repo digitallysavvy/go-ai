@@ -235,7 +235,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 
 	var rawBody interface{}
-	_ = json.Unmarshal(httpResp.Body, &rawBody)
+	_ = jsonexact.Unmarshal(httpResp.Body, &rawBody)
 
 	probabilityDecimals := 2
 	scoreDecimals := 2
@@ -274,7 +274,7 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 
 	for _, id := range ids {
 		var fields map[string]interface{}
-		if err := json.Unmarshal(raw[id], &fields); err != nil {
+		if err := jsonexact.Unmarshal(raw[id], &fields); err != nil {
 			return nil, nil, nil, providererrors.NewInvalidResponseDataError(string(raw[id]), "TypeSafe AI returned a malformed decision answer.")
 		}
 		answerType, _ := fields["type"].(string)

@@ -253,7 +253,9 @@ func (m *TranscriptionModel) streamingHandshake(callHeaders map[string]string) (
 	if !hasAuthorization {
 		return headers, nil, nil
 	}
-	credentials := deepgramAuthorizationPattern.FindStringSubmatch(authorization)
+	// TS new Headers(...).get('authorization') normalizes the value: leading
+	// and trailing HTTP whitespace (tab, LF, CR, space) is removed.
+	credentials := deepgramAuthorizationPattern.FindStringSubmatch(strings.Trim(authorization, "\t\n\r "))
 	if credentials == nil {
 		return nil, nil, providererrors.NewArgumentError("headers", "Deepgram streaming authorization must use the Token or Bearer scheme.", nil)
 	}
@@ -427,7 +429,7 @@ func (s *deepgramTranscriptionStream) run(cfg deepgramStreamConfig) {
 func (s *deepgramTranscriptionStream) handleEvent(text string, cfg deepgramStreamConfig, duration, reportedDuration **float64, language *string, finalTexts *[]deepgramFinalText, segments *[]provider.TranscriptSegment) (bool, error) {
 	text = textdecode.UTF8([]byte(text))
 	var raw interface{}
-	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+	if err := jsonexact.Unmarshal([]byte(text), &raw); err != nil {
 		return false, &providererrors.JSONParseError{Text: text, Cause: err}
 	}
 	if err := deepgramValidate(deepgramEventTypeNode, text, raw); err != nil {

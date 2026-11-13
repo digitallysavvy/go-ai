@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -583,7 +584,7 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 			return nil, nil, err
 		}
 		var raw map[string]interface{}
-		if err := json.Unmarshal(result.Data, &raw); err != nil {
+		if err := jsonexact.Unmarshal(result.Data, &raw); err != nil {
 			return nil, nil, fmt.Errorf("gladia: failed to decode poll response: %w", err)
 		}
 		last = raw
@@ -713,7 +714,7 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 	if warnings == nil {
 		warnings = []types.Warning{}
 	}
-	b, _ := json.Marshal(raw)
+	b, _ := jsonstr.Marshal(raw) // a provider ±Inf writes null (JSON.stringify)
 	var typed struct {
 		Result *struct {
 			Metadata struct {
@@ -856,7 +857,8 @@ func parseGladiaErrorBody(statusCode int, body []byte) (message string, code str
 		} `json:"error"`
 	}
 	if err := securejson.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
-		payload.Error.Message != nil && payload.Error.Code != nil {
+		payload.Error.Message != nil && payload.Error.Code != nil &&
+		!math.IsInf(*payload.Error.Code, 0) && !math.IsNaN(*payload.Error.Code) { // z.number() rejects Infinity
 		return *payload.Error.Message, providerutils.JSNumberString(*payload.Error.Code)
 	}
 	return http.StatusText(statusCode), ""

@@ -199,7 +199,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	req := internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/v1/listen",
-		Body:   opts.Audio,
+		// TS postToApi body.content is options.audio: the bytes, or a base64
+		// string audio as given.
+		Body: transcriptionContent(opts),
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{
 			"Content-Type": opts.MimeType,
 		}),
@@ -321,25 +323,32 @@ func durationValue(duration *float64) float64 {
 	return *duration
 }
 
+// deepgramTranscriptionResponse holds only the fields
+// deepgramTranscriptionResponseSchema declares (zod strips the rest).
 type deepgramTranscriptionResponse struct {
 	Metadata *struct {
-		TransactionKey string  `json:"transaction_key"`
-		RequestID      string  `json:"request_id"`
-		Duration       float64 `json:"duration"`
+		Duration float64 `json:"duration"`
 	} `json:"metadata"`
 	Results struct {
 		Channels []struct {
 			DetectedLanguage string `json:"detected_language"`
 			Alternatives     []struct {
-				Transcript string  `json:"transcript"`
-				Confidence float64 `json:"confidence"`
+				Transcript string `json:"transcript"`
 				Words      []struct {
-					Word       string  `json:"word"`
-					Start      float64 `json:"start"`
-					End        float64 `json:"end"`
-					Confidence float64 `json:"confidence"`
+					Word  string  `json:"word"`
+					Start float64 `json:"start"`
+					End   float64 `json:"end"`
 				} `json:"words"`
 			} `json:"alternatives"`
 		} `json:"channels"`
 	} `json:"results"`
+}
+
+// transcriptionContent is TS options.audio as the request content: the audio
+// bytes, or a base64 string audio sent as that string.
+func transcriptionContent(opts *provider.TranscriptionOptions) []byte {
+	if len(opts.Audio) == 0 && opts.AudioBase64 != "" {
+		return []byte(opts.AudioBase64)
+	}
+	return opts.Audio
 }

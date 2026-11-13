@@ -2,6 +2,7 @@ package baseten
 
 import (
 	"errors"
+	"math"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -32,8 +33,12 @@ func basetenErrorSchema(body interface{}) (string, interface{}, bool) {
 			}
 		}
 		if v, present := e["code"]; present && v != nil {
-			switch v.(type) {
-			case string, float64:
+			switch c := v.(type) {
+			case string:
+			case float64:
+				if math.IsInf(c, 0) || math.IsNaN(c) { // z.number() rejects Infinity
+					return "", nil, false
+				}
 			default:
 				return "", nil, false
 			}
