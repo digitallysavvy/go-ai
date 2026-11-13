@@ -114,7 +114,7 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 					seenCalls[p.ToolCallID] = true
 					opts := p.ProviderOptions
 					if opts == nil && len(p.ProviderMetadata) > 0 {
-						_ = json.Unmarshal(p.ProviderMetadata, &opts)
+						_ = jsonexact.UnmarshalPlain(p.ProviderMetadata, &opts)
 					}
 					addToolCall(p.ToolCallID, p.ToolName, toolCallContentInput(p), p.ProviderExecuted, opts)
 				case types.ToolResultContent:

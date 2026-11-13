@@ -260,7 +260,7 @@ func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response
 			var toolCallMeta map[string]interface{}
 			if len(p.ProviderMetadata) > 0 {
 				var partMeta map[string]interface{}
-				if json.Unmarshal(p.ProviderMetadata, &partMeta) == nil && partMeta != nil {
+				if jsonexact.UnmarshalPlain(p.ProviderMetadata, &partMeta) == nil && partMeta != nil {
 					toolCallMeta = partMeta
 				}
 			}
