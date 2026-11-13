@@ -485,7 +485,19 @@ func expectNDJSON(resp *http.Response, sessionID, message string) error {
 	if resp.Header.Get("Content-Type") != "application/x-ndjson" {
 		return &APIError{StatusCode: resp.StatusCode, Message: message, SessionID: sessionID}
 	}
+	// 3.9.0 `if (response.body === null) throw new APIError(response,
+	// {message: "No response body"})`.
+	if fetchNullBody(resp) {
+		return &APIError{StatusCode: resp.StatusCode, Message: "No response body", SessionID: sessionID}
+	}
 	return nil
+}
+
+// fetchNullBody is TS `response.body === null`: fetch gives a 204 or 205
+// reply (the null body statuses that are ok) a null body, where net/http
+// hands back http.NoBody.
+func fetchNullBody(resp *http.Response) bool {
+	return resp.Body == nil || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusResetContent
 }
 
 // RunCommandWait posts POST /v2/sandboxes/sessions/{id}/cmd with wait=true,
@@ -803,6 +815,11 @@ func (c *APIClient) ReadFile(ctx context.Context, sessionID, path, cwd string) (
 	if !strings.Contains(resp.Header.Get("Content-Type"), "application/octet-stream") {
 		_ = resp.Body.Close()
 		return nil, unexpected(resp.StatusCode, resp.Header, nil)
+	}
+	// 3.9.0 readFile: `if (response.body === null) return null`.
+	if fetchNullBody(resp) {
+		_ = resp.Body.Close()
+		return nil, nil
 	}
 	return resp.Body, nil
 }
