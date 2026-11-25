@@ -83,10 +83,9 @@ func (p *Provider) resolveHeaders() (map[string]string, error) {
 		return nil, err
 	}
 
-	headers := map[string]string{"Authorization": "Bearer " + apiKey}
-	for k, v := range p.config.Headers {
-		headers[k] = v
-	}
+	// TS {Authorization, ...options.headers}: a config header of any
+	// spelling wins.
+	headers := internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + apiKey}, p.config.Headers)
 	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("typesafe-ai")), nil
 }
 

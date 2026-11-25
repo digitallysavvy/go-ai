@@ -65,9 +65,9 @@ func New(cfg Config) (*Provider, error) {
 	if apiKey != "" {
 		headers["Authorization"] = "Bearer " + apiKey
 	}
-	for k, v := range cfg.Headers {
-		headers[k] = v
-	}
+	// A config header of any spelling wins (TS {...defaults,
+	// ...options.headers} lower-cased in entry order).
+	headers = internalhttp.MergeHeaders(headers, cfg.Headers)
 
 	p := &Provider{
 		config:     cfg,

@@ -162,16 +162,9 @@ func (p *Provider) resolveVideoHeaders(ctx context.Context, requestHeaders map[s
 	if err != nil {
 		return nil, err
 	}
-	headers := authHeaders
-	if headers == nil {
-		headers = map[string]string{}
-	}
-	for k, v := range p.config.Headers {
-		headers[k] = v
-	}
-	for k, v := range requestHeaders {
-		headers[k] = v
-	}
+	// Later maps win over a header of any spelling (TS combineHeaders,
+	// lower-cased in entry order).
+	headers := internalhttp.MergeHeaders(authHeaders, p.config.Headers, requestHeaders)
 	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("minimax")), nil
 }
 

@@ -58,13 +58,12 @@ func New(cfg Config) *Provider {
 		apiKey = os.Getenv("PRODIA_TOKEN")
 	}
 
-	headers := map[string]string{
+	// TS {Authorization, Content-Type, ...options.headers}, lower-cased in
+	// entry order: a config header of any spelling wins.
+	headers := internalhttp.MergeHeaders(map[string]string{
 		"Authorization": "Bearer " + apiKey,
 		"Content-Type":  "application/json",
-	}
-	for k, v := range cfg.Headers {
-		headers[k] = v
-	}
+	}, cfg.Headers)
 
 	staticHeaders := version.WithUserAgentSuffix(headers, version.ProviderUserAgent("prodia"))
 	client := internalhttp.NewClient(internalhttp.Config{

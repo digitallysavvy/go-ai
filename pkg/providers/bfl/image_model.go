@@ -1061,14 +1061,10 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 	return data, providerutils.ExtractHeaders(resp.Header), nil
 }
 
+// mergeStringMaps is TS combineHeaders as the request sees it: a later
+// header replaces an earlier one of any spelling.
 func mergeStringMaps(headers ...map[string]string) map[string]string {
-	merged := map[string]string{}
-	for _, h := range headers {
-		for k, v := range h {
-			merged[k] = v
-		}
-	}
-	return merged
+	return internalhttp.MergeHeaders(headers...)
 }
 
 type bflCreateResponse struct {

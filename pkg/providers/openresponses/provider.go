@@ -140,10 +140,9 @@ func New(cfg Config) *Provider {
 		headers["Authorization"] = fmt.Sprintf("Bearer %s", cfg.APIKey)
 	}
 
-	// Add custom headers
-	for k, v := range cfg.Headers {
-		headers[k] = v
-	}
+	// Add custom headers: a config header of any spelling wins (TS
+	// {...defaults, ...options.headers} lower-cased in entry order).
+	headers = http.MergeHeaders(headers, cfg.Headers)
 	userAgentSuffix := cfg.UserAgentSuffix
 	if userAgentSuffix == "" {
 		userAgentSuffix = version.ProviderUserAgent("open-responses")

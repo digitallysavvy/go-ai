@@ -112,14 +112,12 @@ func deriveDeepInfraImageBaseURL(chatBaseURL string) string {
 }
 
 func (p *Provider) requestHeaders() map[string]string {
-	headers := map[string]string{
+	// TS {Authorization, ...options.headers}: a config header of any
+	// spelling wins.
+	return internalhttp.MergeHeaders(map[string]string{
 		"Authorization": "Bearer " + p.apiKey,
 		"Content-Type":  "application/json",
-	}
-	for k, v := range p.headers {
-		headers[k] = v
-	}
-	return headers
+	}, p.headers)
 }
 
 // Name returns the provider name
