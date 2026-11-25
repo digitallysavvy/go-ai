@@ -32,6 +32,13 @@ func (e *ExtractionLanguageModel) SerializeStrict() (provider.SerializedModel, e
 	return provider.SerializedModel{Provider: e.providerName, ModelID: e.model.ModelID(), Config: config}, nil
 }
 
+// extractionLanguageModelConfig is the serialized config: caller-persisted
+// workflow state, not a provider response.
+type extractionLanguageModelConfig struct {
+	Model            *provider.SerializedModel `json:"model"`
+	MaxFieldsPerCall *int                      `json:"maxFieldsPerCall"`
+}
+
 // DeserializeExtractionLanguageModel restores a model serialized by
 // (*ExtractionLanguageModel).SerializeStrict. Mirrors TS
 // ExtractionLanguageModel [WORKFLOW_DESERIALIZE]. The wrapped language
@@ -39,10 +46,7 @@ func (e *ExtractionLanguageModel) SerializeStrict() (provider.SerializedModel, e
 // must be imported. Provider packages register this function for their
 // "<name>.extraction" key.
 func DeserializeExtractionLanguageModel(serialized provider.SerializedModel) (provider.ExtractionModel, error) {
-	var cfg struct {
-		Model            *provider.SerializedModel `json:"model"`
-		MaxFieldsPerCall *int                      `json:"maxFieldsPerCall"`
-	}
+	var cfg extractionLanguageModelConfig
 	data, err := json.Marshal(serialized.Config)
 	if err != nil {
 		return nil, providererrors.NewSerializationError("providerutils: invalid extraction model config", err)

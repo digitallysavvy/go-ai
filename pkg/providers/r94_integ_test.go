@@ -52,6 +52,7 @@ var r94integDirectDecodes = map[string]struct {
 	"openai/responses/provider_tool_args.go|openAICustomToolConfig":           {1, "caller tool args (custom tool definition, through toolConfig)"},
 	"topaz/video_model.go|*VideoModel.DoGenerate":                             {1, "operation reference the SDK built"},
 	"topaz/video_model.go|*VideoModel.DoStatus":                               {1, "operation reference the SDK built"},
+	"pkg/harness/sandbox/vercel/types.go|*createSandboxRequest.UnmarshalJSON": {1, "request body the SDK built (TemplateName presence; read back by the test sandbox server)"},
 }
 
 var r94integUserInputType = regexp.MustCompile(`(?i)(option|setting|config|param)`)
