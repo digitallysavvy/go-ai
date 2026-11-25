@@ -2550,7 +2550,7 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 				d.setHostOutcome(raw.ToolCallID, hostToolOutcome{err: providererrors.NewValidationErrorWithContext(
 					normalizedToolCtx, err.Error(), err,
 					&providererrors.ValidationContext{Field: "tool context", EntityName: raw.ToolName},
-				), streamErr: errors.New(invalidToolContextMessage)})
+				), streamErr: errors.New(invalidToolContextMessage)}) //nolint:staticcheck // exact TS parity string
 				d.submitHostToolResult(raw.ToolCallID, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": invalidToolContextMessage}, IsError: true})
 				return
 			}

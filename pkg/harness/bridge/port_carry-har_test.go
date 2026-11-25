@@ -310,7 +310,7 @@ func TestPortcarryharWSConnPingPongCountsBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	hb, ok := conn.(heartbeatConn)
 	if !ok {
 		t.Fatal("wsConn is not a heartbeatConn")

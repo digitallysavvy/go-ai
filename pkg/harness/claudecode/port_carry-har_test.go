@@ -78,7 +78,7 @@ func (s *portcarryharKillSandbox) ReadTextFile(ctx context.Context, o providerut
 		s.mu.Lock()
 		s.stateDir = strings.TrimSuffix(o.Path, "/bridge-meta.json")
 		s.mu.Unlock()
-		if s.spawnsAt != nil && s.testSandbox.SpawnCount() == 0 {
+		if s.spawnsAt != nil && s.SpawnCount() == 0 {
 			m := `{"type":"claude-code","state":"waiting","port":4319,"pid":4242}`
 			return &m, nil
 		}
@@ -89,14 +89,14 @@ func (s *portcarryharKillSandbox) ReadTextFile(ctx context.Context, o providerut
 func (s *portcarryharKillSandbox) Run(ctx context.Context, o providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
 	s.mu.Lock()
 	s.cmds = append(s.cmds, o.Command)
-	s.spawnsAt[o.Command] = s.testSandbox.SpawnCount()
+	s.spawnsAt[o.Command] = s.SpawnCount()
 	dir := s.stateDir
 	s.mu.Unlock()
 	switch {
 	case strings.HasPrefix(o.Command, "{ tr "):
 		return providerutils.SandboxRunResult{Stdout: "node bridge.mjs --bridge-state-dir " + dir}, nil
 	case strings.HasPrefix(o.Command, "if [ -r /proc/self/stat ]"):
-		if s.testSandbox.SpawnCount() == 0 && !s.killed() {
+		if s.SpawnCount() == 0 && !s.killed() {
 			return providerutils.SandboxRunResult{Stdout: "4242 1 S t0\n4243 4242 S t1\n"}, nil
 		}
 		return providerutils.SandboxRunResult{}, nil
