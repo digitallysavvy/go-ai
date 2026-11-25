@@ -513,3 +513,21 @@ func TestPortStreamOnWarning(t *testing.T) {
 		}
 	}
 }
+
+// TS 453d8804a7: a tool call whose input was not streamed is recorded for the
+// deferred input callbacks with the parsed call's tool name.
+func TestPortStreamRecordDeferredToolInputWithoutStart(t *testing.T) {
+	t.Parallel()
+	started := map[string]string{}
+	call := provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "tool1"}}
+	got := recordDeferredToolInput(nil, started, call)
+	if len(got) != 1 || got[0].ToolCall.ToolName != "tool1" {
+		t.Fatalf("recorded = %+v, want the call with its own tool name", got)
+	}
+	// with a start chunk the start's tool name wins
+	started["c2"] = "fromStart"
+	got = recordDeferredToolInput(nil, started, provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c2", ToolName: "parsed"}})
+	if len(got) != 1 || got[0].ToolCall.ToolName != "fromStart" || len(started) != 0 {
+		t.Fatalf("recorded = %+v started = %v", got, started)
+	}
+}

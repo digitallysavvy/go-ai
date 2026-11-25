@@ -6695,7 +6695,8 @@ func deferToolInputCallbacks(internal *InternalOptions) bool {
 // recordDeferredToolInput records a tool input lifecycle chunk for replay
 // after the model stream, as TS WorkflowAgent's model step records
 // toolInputLifecycleEvents: a start, a delta after its start, and a tool call
-// whose stream had a start (its tool looked up by the start's tool name).
+// whose stream had a start (its tool looked up by the start's tool name) or not
+// (the parsed call's own tool name).
 func recordDeferredToolInput(deferred []provider.StreamChunk, started map[string]string, chunk provider.StreamChunk) []provider.StreamChunk {
 	switch chunk.Type {
 	case provider.ChunkTypeToolInputStart:
@@ -6713,14 +6714,16 @@ func recordDeferredToolInput(deferred []provider.StreamChunk, started map[string
 		if chunk.ToolCall == nil {
 			return deferred
 		}
+		// A provider can send the tool call without streaming the input
+		// first, so the tool name does not always come from a start chunk
+		// (TS 453d8804a7: the parsed tool call provides it).
 		toolName, ok := started[chunk.ToolCall.ID]
-		if !ok {
-			return deferred
-		}
 		delete(started, chunk.ToolCall.ID)
-		call := *chunk.ToolCall
-		call.ToolName = toolName
-		chunk.ToolCall = &call
+		if ok {
+			call := *chunk.ToolCall
+			call.ToolName = toolName
+			chunk.ToolCall = &call
+		}
 		return append(deferred, chunk)
 	}
 	return deferred
