@@ -105,7 +105,7 @@ var adapterSpecs = []adapterSpec{
 		packageDir:     "harness-opencode",
 		builtBridgeDir: "dist/bridge",
 		sourceDir:      "src/bridge",
-		files:          []string{"index.mjs", "host-tool-mcp.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"},
+		files:          []string{"index.mjs", "host-tool-mcp.mjs", "opencode-read-plugin.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"},
 		bridgeEntry:    "bridge.mjs",
 	},
 	{

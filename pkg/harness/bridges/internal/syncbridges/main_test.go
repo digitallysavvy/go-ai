@@ -74,3 +74,19 @@ func TestSyncAdapterReadsDistLockfileName(t *testing.T) {
 		t.Fatalf("grokbuild pnpm-lock.yaml = %q, %v", got, err)
 	}
 }
+
+// TS 486e08f044 ships the OpenCode read plugin as a built bridge asset; the
+// resync has to copy it next to bridge.mjs.
+func TestPortToolsOpenCodeSyncCopiesReadPlugin(t *testing.T) {
+	for _, spec := range adapterSpecs {
+		if spec.dirName != "opencode" {
+			continue
+		}
+		for _, name := range spec.files {
+			if name == "opencode-read-plugin.mjs" {
+				return
+			}
+		}
+	}
+	t.Fatal("the opencode adapter does not sync opencode-read-plugin.mjs")
+}
