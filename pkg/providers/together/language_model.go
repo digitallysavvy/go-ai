@@ -473,7 +473,22 @@ func newTogetherStream(reader io.ReadCloser) *togetherStream {
 // json_schema structured outputs. Mirrors getModelStructuredOutputSupport in
 // packages/togetherai/src/togetherai-provider.ts.
 func SupportsStructuredOutputs(modelID string) bool {
-	return modelID == "deepseek-ai/DeepSeek-V4-Flash-0731"
+	return jsonSchemaModelIDs[modelID]
+}
+
+// jsonSchemaModelIDs are the chat models verified to honor
+// response_format json_schema (TS jsonSchemaModelIds in
+// togetherai-model-catalog.ts, 146396263d). Every other model ID gets
+// json_object and the schema is dropped.
+var jsonSchemaModelIDs = map[string]bool{
+	"deepseek-ai/DeepSeek-V4-Flash-0731":   true,
+	"deepseek-ai/DeepSeek-V4.1-Flash":      true,
+	"deepseek-ai/DeepSeek-V4.1-Flash-1017": true,
+	"openai/gpt-oss-120b":                  true,
+	"zai-org/GLM-5.2":                      true,
+	"zai-org/GLM-5.3-Flash":                true,
+	"moonshotai/Kimi-K3":                   true,
+	"MiniMaxAI/MiniMax-M3.1-Flash":         true,
 }
 
 // togetherStrictJSONSchema reads strictJsonSchema (default true) from the
