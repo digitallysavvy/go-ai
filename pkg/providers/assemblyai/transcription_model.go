@@ -92,35 +92,22 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 
 	body := map[string]interface{}{}
 
-	// The legacy `best` model is selected via the deprecated singular
-	// `speech_model` parameter. All other models (e.g. `universal-2`,
-	// `universal-3-pro`, `universal-3-5-pro`) are only accessible via the
-	// `speech_models` array and are rejected by `speech_model`.
-	if m.modelID == ModelBest || m.modelID == "" {
-		body["speech_model"] = ModelBest
+	// AssemblyAI selects models only through the `speech_models` array; the
+	// singular `speech_model` parameter is rejected.
+	// See https://www.assemblyai.com/docs/pre-recorded-audio/select-the-speech-model
+	body["speech_models"] = []string{m.modelID}
+	switch m.modelID {
+	case ModelUniversal35Pro:
 		warnings = append(warnings, types.Warning{
 			Type:    "deprecated",
-			Setting: fmt.Sprintf("model '%s'", ModelBest),
-			Message: "The 'best' model is a legacy AssemblyAI model. Use 'universal-3-5-pro' instead. See documentation: " + docsURL,
+			Setting: fmt.Sprintf("model '%s'", m.modelID),
+			Message: fmt.Sprintf("AssemblyAI has deprecated '%s'. Use '%s' instead. See documentation: %s", m.modelID, ModelAssemblyAISTT37, docsURL),
 		})
-	} else {
-		body["speech_models"] = []string{m.modelID}
-
-		// Forward-looking nudge: universal-3-5-pro is AssemblyAI's latest
-		// flagship and is set to replace universal-3-pro. Not a deprecation —
-		// both models still work — so this is an informational warning only.
-		switch m.modelID {
-		case ModelUniversal3Pro:
-			warnings = append(warnings, types.Warning{
-				Type:    "other",
-				Message: fmt.Sprintf("'universal-3-5-pro' is AssemblyAI's latest flagship model and is set to replace '%s'. See %s", ModelUniversal3Pro, docsURL),
-			})
-		case ModelUniversal2:
-			warnings = append(warnings, types.Warning{
-				Type:    "other",
-				Message: "'universal-3-5-pro' is AssemblyAI's latest flagship model. See " + docsURL,
-			})
-		}
+	case ModelUniversal2:
+		warnings = append(warnings, types.Warning{
+			Type:    "other",
+			Message: fmt.Sprintf("'%s' is AssemblyAI's latest flagship model; '%s' remains available for languages it does not support. See %s", ModelAssemblyAISTT37, ModelUniversal2, docsURL),
+		})
 	}
 
 	// The shared TranscriptionOptions.Language field maps to language_code;
@@ -222,7 +209,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 			warnings = append(warnings, types.Warning{
 				Type:    "deprecated",
 				Setting: setting,
-				Message: "'wordBoost' and 'boostParam' are deprecated and are rejected by 'universal-3-pro' / 'universal-3-5-pro' and 'slam-1'. Use 'keytermsPrompt' instead.",
+				Message: "'wordBoost' and 'boostParam' are deprecated and are rejected by 'assemblyai-stt-3-7' and 'universal-3-5-pro'. Use 'keytermsPrompt' instead.",
 			})
 		}
 
@@ -298,15 +285,22 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// TS: currentDate is taken before the upload.
 	currentDate := time.Now()
 
+	// TS: the upload endpoint takes the raw file, so a base64 string audio is
+	// decoded (a malformed string fails before any request).
+	audio, err := uploadContent(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	// Step 1: Upload audio.
 	var uploadResult struct {
 		UploadURL string `json:"upload_url"`
 	}
-	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAssemblyAIUpload),
 		Method:           http.MethodPost,
 		Path:             "/upload",
-		Body:             uploadContent(opts),
+		Body:             audio,
 		// TS: { 'Content-Type': ..., ...combineHeaders(config, options.headers) },
 		// so a provider or call Content-Type wins over octet-stream.
 		Headers: internalhttp.MergeHeaders(map[string]string{
@@ -314,7 +308,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}, opts.Headers),
 	}, &uploadResult)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, handleError(err)
 	}
 
 	// Step 2: Submit transcription job.
@@ -336,7 +330,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Headers:          opts.Headers,
 	}, &submitResult)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, handleError(err)
 	}
 
 	// Step 3: Poll for completion.
@@ -361,13 +355,15 @@ func (m *TranscriptionModel) uploadContentType() string {
 	return contentType
 }
 
-// uploadContent is TS postToApi's body.content (options.audio): the audio
-// bytes, or a base64 string audio as given (TS sends the string itself).
-func uploadContent(opts *provider.TranscriptionOptions) []byte {
+// uploadContent is TS doGenerate's upload content: the audio bytes, or the
+// decoded bytes of a base64 string audio (convertBase64ToUint8Array, so
+// base64url and unpadded input decode and a malformed string is the atob
+// error).
+func uploadContent(opts *provider.TranscriptionOptions) ([]byte, error) {
 	if len(opts.Audio) == 0 && opts.AudioBase64 != "" {
-		return []byte(opts.AudioBase64)
+		return fileutil.ConvertBase64ToBytes(opts.AudioBase64)
 	}
-	return opts.Audio
+	return opts.Audio, nil
 }
 
 // waitForCompletion polls the given transcript until it reaches a terminal
@@ -464,7 +460,7 @@ func (m *TranscriptionModel) pollTranscript(ctx context.Context, transcriptID st
 	// TS response.text() / response.json(): UTF-8 decoded, BOM dropped.
 	body = []byte(textdecode.UTF8(body))
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return nil, nil, m.handleError(internalhttp.StatusErrorFromRaw(httpResp, body))
+		return nil, nil, handleError(internalhttp.StatusErrorFromRaw(httpResp, body))
 	}
 	// TS `await response.json()` then schema.parse: plain JSON.parse keeps
 	// a __proto__ key as an ordinary property.
@@ -650,10 +646,13 @@ func assemblyAIErrorMessage(statusText string, body []byte) (message, code strin
 	return providerutils.NestedErrorMessageText(statusText, body)
 }
 
+// handleError is the package handleError for the transcription model.
+func (m *TranscriptionModel) handleError(err error) error { return handleError(err) }
+
 // handleError converts an HTTP error into a ProviderError, parsing
 // AssemblyAI's `{"error": "..."}` / `{"error":{"message","code"}}` error
 // shapes when present.
-func (m *TranscriptionModel) handleError(err error) error {
+func handleError(err error) error {
 	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
 		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
 	}

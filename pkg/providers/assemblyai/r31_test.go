@@ -9,7 +9,7 @@ import (
 // TS `?? undefined` keeps an empty array (and `wordBoost != null` warns for
 // one); only an absent/null option is skipped.
 func TestEmptyArrayOptionsAreSentAndWordBoostWarns(t *testing.T) {
-	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelUniversal3Pro)
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelAssemblyAISTT37)
 	body, warnings := m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
 		"assemblyai": map[string]interface{}{
 			"wordBoost": []interface{}{}, "keytermsPrompt": []interface{}{}, "customSpelling": []interface{}{},

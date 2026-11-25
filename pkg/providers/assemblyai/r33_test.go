@@ -12,7 +12,7 @@ import (
 // TS `?? undefined` keeps "" (only null/undefined are skipped), and
 // `boostParam != null` / `languageCode != null` still drive the warnings.
 func TestEmptyStringOptionsAreSent(t *testing.T) {
-	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelUniversal3Pro)
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelAssemblyAISTT37)
 	body, warnings := m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
 		"assemblyai": map[string]interface{}{
 			"prompt": "", "domain": "", "webhookUrl": "", "boostParam": "", "languageCode": "",
@@ -58,7 +58,7 @@ func TestR33_UploadContentTypeCanBeOverridden(t *testing.T) {
 
 // Unset options stay absent (only an explicit "" is forwarded).
 func TestUnsetStringOptionsAreOmitted(t *testing.T) {
-	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelUniversal3Pro)
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelAssemblyAISTT37)
 	body, _ := m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
 		"assemblyai": map[string]interface{}{"languageDetection": true, "languageDetectionOptions": map[string]interface{}{}},
 	}})

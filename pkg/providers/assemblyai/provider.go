@@ -13,15 +13,28 @@ import (
 type Provider struct {
 	config Config
 	client *http.Client
+	// speechClient talks to the text-to-speech API, a separate host from the
+	// transcription API (TS createSpeechModel url).
+	speechClient *http.Client
 }
+
+// DefaultSpeechBaseURL is the AssemblyAI text-to-speech API host (TS
+// https://tts.us.assemblyai.com).
+const DefaultSpeechBaseURL = "https://tts.us.assemblyai.com"
 
 // Config contains configuration for the AssemblyAI provider
 type Config struct {
 	// APIKey is the AssemblyAI API key
 	APIKey string
 
-	// BaseURL is the base URL for the AssemblyAI API (optional)
+	// BaseURL is the base URL for the AssemblyAI transcription API (optional)
 	BaseURL string
+
+	// SpeechBaseURL is the base URL for the AssemblyAI text-to-speech API
+	// (optional, default https://tts.us.assemblyai.com). TS has no such
+	// setting; it exists so the speech host can be redirected, for example
+	// in tests.
+	SpeechBaseURL string
 
 	// Headers are custom HTTP headers sent with every request (TS provider
 	// settings `headers`).
@@ -37,21 +50,28 @@ func New(cfg Config) *Provider {
 		baseURL = "https://api.assemblyai.com/v2"
 	}
 
-	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
-			"Authorization": cfg.APIKey,
-			"Content-Type":  "application/json",
-		}, cfg.Headers), version.ProviderUserAgent("assemblyai")),
-		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) {
-			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ASSEMBLYAI_API_KEY", "AssemblyAI", "Authorization", "")
-		},
-	})
+	newClient := func(baseURL string) *http.Client {
+		return http.NewClient(http.Config{
+			BaseURL: baseURL,
+			Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
+				"Authorization": cfg.APIKey,
+				"Content-Type":  "application/json",
+			}, cfg.Headers), version.ProviderUserAgent("assemblyai")),
+			// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+			HeadersFunc: func() (map[string]string, error) {
+				return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ASSEMBLYAI_API_KEY", "AssemblyAI", "Authorization", "")
+			},
+		})
+	}
+	speechBaseURL := providerutils.WithoutTrailingSlash(cfg.SpeechBaseURL)
+	if speechBaseURL == "" {
+		speechBaseURL = DefaultSpeechBaseURL
+	}
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:       cfg,
+		client:       newClient(baseURL),
+		speechClient: newClient(speechBaseURL),
 	}
 }
 
@@ -75,15 +95,18 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
-// SpeechModel returns a speech synthesis model by ID
+// SpeechModel returns a speech synthesis model by ID (TS provider.speech /
+// speechModel).
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
+	return NewSpeechModel(p, modelID), nil
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	if modelID == "" {
-		modelID = "best"
+		// TS has no default; "best" is no longer accepted by the API, so an
+		// empty ID selects the flagship model.
+		modelID = ModelAssemblyAISTT37
 	}
 
 	return NewTranscriptionModel(p, modelID), nil

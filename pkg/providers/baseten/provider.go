@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -34,6 +35,14 @@ type Provider struct {
 	// the embedding endpoint (only set when ModelURL is a /sync or /sync/v1
 	// URL), since embeddings use a different provider name/base URL than chat.
 	embedding *openai.Provider
+
+	// apiKey, headers and decisionClient configure decision models, which
+	// always use the Model APIs base URL (TS decisionModel ignores modelURL).
+	// The key is resolved per call (TS lazy loadApiKey).
+	apiKey          string
+	headers         map[string]string
+	decisionBaseURL string
+	decisionClient  *internalhttp.Client
 }
 
 // Config contains configuration for the Baseten provider.
@@ -113,9 +122,14 @@ func New(cfg Config) *Provider {
 		TransformRequestBodyWithWarnings: transform,
 	})
 
+	decisionBaseURL := providerutils.WithoutTrailingSlash(baseURL)
 	p := &Provider{
-		Provider: chatProvider,
-		modelURL: cfg.ModelURL,
+		Provider:        chatProvider,
+		modelURL:        cfg.ModelURL,
+		apiKey:          cfg.APIKey,
+		headers:         cfg.Headers,
+		decisionBaseURL: decisionBaseURL,
+		decisionClient:  internalhttp.NewClient(internalhttp.Config{BaseURL: decisionBaseURL, HTTPClient: cfg.HTTPClient}),
 	}
 
 	if cfg.ModelURL != "" && strings.Contains(cfg.ModelURL, "/sync") {
@@ -277,6 +291,16 @@ func (m *embeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	return m.EmbeddingModel.DoEmbedMany(ctx, inputs, opts)
 }
+
+// DecisionModel returns an experimental decision model that uses the Model
+// APIs System One endpoint (TS provider.decisionModel). Decision models
+// ignore Config.ModelURL. Any model ID is accepted; the known IDs are the
+// DecisionModel* constants.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
+	return NewDecisionModel(p, modelID), nil
+}
+
+var _ provider.DecisionModelProvider = (*Provider)(nil)
 
 // ImageModel returns a NoSuchModelError, as TS createBaseten's imageModel
 // throws (baseten-provider.ts:355); the inherited OpenAI image model is not

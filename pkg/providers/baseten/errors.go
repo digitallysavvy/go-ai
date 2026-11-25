@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -56,4 +57,26 @@ func basetenErrorStructure(provider string, err error) (*providererrors.Provider
 		return nil, false
 	}
 	return providererrors.NewSchemaProviderError(provider, err, basetenErrorSchema), true
+}
+
+// basetenDecisionError is basetenFailedResponseHandler
+// (createJsonErrorResponseHandler with basetenErrorSchema) for the decision
+// model: a failed response whose JSON body matches the schema gives the
+// error message and zod's parsed data, anything else the HTTP status text.
+// A rejected fetch, an abort and a LoadAPIKeyError are returned unchanged.
+func basetenDecisionError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause
+	}
+	if noResp, ok := internalhttp.NoResponseError(err); ok {
+		return noResp
+	}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err
+	}
+	var hs providererrors.HTTPStatusDetails
+	if !errors.As(err, &hs) {
+		return err // includes the schema failure (Invalid JSON response)
+	}
+	return providererrors.NewSchemaProviderError(decisionProviderName, err, basetenErrorSchema)
 }

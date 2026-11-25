@@ -63,6 +63,40 @@ const (
 	RealtimeSessionIntentTranscription = provider.RealtimeSessionIntentTranscription
 )
 
+// Realtime connection kinds a model can declare through
+// RealtimeConnectionsProvider (TS capabilities.connections).
+const (
+	// RealtimeConnectionClientSecretWebSocket connects with a short-lived
+	// client secret (DoCreateClientSecret + GetWebSocketConfig).
+	RealtimeConnectionClientSecretWebSocket = "client-secret-websocket"
+	// RealtimeConnectionServerWebSocket connects server-side with the
+	// provider credential in request headers.
+	RealtimeConnectionServerWebSocket = "server-websocket"
+)
+
+// RealtimeConversationContinuous is the RealtimeConversationProvider value
+// of a continuous (PCM audio-chunk) model; any other value is turn-based
+// (TS capabilities.conversation).
+const RealtimeConversationContinuous = "continuous"
+
+// RealtimeConnectionsProvider is an optional realtime model capability that
+// declares the connection kinds the model supports (TS
+// capabilities.connections). ConnectRealtime rejects a connection kind the
+// model did not declare. A model that does not implement it is not checked,
+// so existing models keep their behavior.
+type RealtimeConnectionsProvider interface {
+	RealtimeConnections() []string
+}
+
+// RealtimeConversationProvider is an optional realtime model capability that
+// reports the conversation kind (TS capabilities.conversation): "continuous"
+// or "turn-based". A continuous model connects with a client secret only
+// when it explicitly declares RealtimeConnectionClientSecretWebSocket in
+// RealtimeConnectionsProvider; the turn-based default does not count.
+type RealtimeConversationProvider interface {
+	RealtimeConversation() string
+}
+
 type RealtimeSession struct {
 	model     provider.Experimental_RealtimeModelV4
 	conn      RealtimeWebSocketConn
@@ -81,6 +115,10 @@ func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeMo
 	dialer := opts.Dialer
 	if dialer == nil {
 		dialer = WebSocketRealtimeDialer{}
+	}
+
+	if err := checkRealtimeConnection(model, opts); err != nil {
+		return nil, err
 	}
 
 	// A server-websocket-config model (e.g. OpenAI Live) authenticates the
@@ -513,4 +551,37 @@ func (c *xNetWebSocketConn) ReceiveFrame(ctx context.Context) ([]byte, bool, err
 		return nil, false, fmt.Errorf("realtime websocket receive failed: %w", err)
 	}
 	return frame.data, frame.binary, nil
+}
+
+// checkRealtimeConnection mirrors TS validateConnection(): the connection
+// kind ConnectRealtime is about to use must be one the model declares
+// (RealtimeConnectionsProvider), and a continuous model must declare
+// client-secret-websocket explicitly before it connects with a client secret
+// (the legacy default does not count). It runs before any client secret is
+// minted or socket dialed.
+func checkRealtimeConnection(model provider.Experimental_RealtimeModelV4, opts RealtimeSessionOptions) error {
+	connection := RealtimeConnectionClientSecretWebSocket
+	if _, ok := model.(provider.RealtimeServerWebSocketConfigProvider); opts.Intent != "" || ok {
+		connection = RealtimeConnectionServerWebSocket
+	}
+	var kinds []string
+	declared := false
+	if declarer, ok := model.(RealtimeConnectionsProvider); ok {
+		kinds, declared = declarer.RealtimeConnections(), true
+	}
+	supported := !declared
+	for _, kind := range kinds {
+		if kind == connection {
+			supported = true
+		}
+	}
+	if connection == RealtimeConnectionClientSecretWebSocket {
+		if conv, ok := model.(RealtimeConversationProvider); ok && conv.RealtimeConversation() == RealtimeConversationContinuous && !declared {
+			supported = false
+		}
+	}
+	if !supported {
+		return fmt.Errorf("Realtime model does not support %s", connection) //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	return nil
 }
