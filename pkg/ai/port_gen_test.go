@@ -2,11 +2,13 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -439,4 +441,66 @@ func TestPortgenApprovalMessagesSliceIsPerStep(t *testing.T) {
 			t.Fatalf("identity: 0=1 %v, 2=3 %v, 0=2 %v", portgenSameSlice(got[0], got[1]), portgenSameSlice(got[2], got[3]), portgenSameSlice(got[0], got[2]))
 		}
 	})
+}
+
+// Port of decide.test.ts 'downloads image URLs and sends their bytes to the
+// decision model' (TS 79d2004947): the call's download hook is the only
+// downloader.
+func TestPortgenDecideDownloadsFileStateThroughTheHook(t *testing.T) {
+	model := stateTestModel()
+	var requested []DownloadRequest
+	png := []byte{0x89, 0x50, 0x4e, 0x47}
+	_, err := ExperimentalDecide(context.Background(), DecideOptions{
+		Model: model, Questions: stateTestQuestions(),
+		ExperimentalDownload: func(_ context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+			requested = append(requested, requests...)
+			return []*DownloadResult{{Data: png, MediaType: "image/png"}}, nil
+		},
+		State: []provider.DecisionStatePart{provider.DecisionFilePart(types.FileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/package.png"},
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requested) != 1 || requested[0].URL != "https://example.com/package.png" {
+		t.Fatalf("requested = %+v", requested)
+	}
+	parts, ok := model.calls[0].State.([]provider.DecisionStatePart)
+	if !ok || len(parts) != 1 || parts[0].Type != "file" || parts[0].File.FileData.Type != types.FileDataTypeData || !reflect.DeepEqual(parts[0].File.FileData.Data, png) {
+		t.Fatalf("model state = %#v", model.calls[0].State)
+	}
+}
+
+// Port of 'rejects remote file state without a download hook'.
+func TestPortgenDecideRejectsRemoteFileStateWithoutDownloadHook(t *testing.T) {
+	model := stateTestModel()
+	_, err := ExperimentalDecide(context.Background(), DecideOptions{
+		Model: model, Questions: stateTestQuestions(),
+		State: []provider.DecisionStatePart{provider.DecisionFilePart(types.FileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://attacker.example/package.png"},
+		})},
+	})
+	var downloadErr *providererrors.DownloadError
+	if !errors.As(err, &downloadErr) {
+		t.Fatalf("err = %v, want a DownloadError", err)
+	}
+	if !strings.Contains(err.Error(), "experimental_download") || downloadErr.URL != "https://attacker.example/package.png" {
+		t.Fatalf("err = %v (url %q)", err, downloadErr.URL)
+	}
+	if len(model.calls) != 0 {
+		t.Fatal("model was called")
+	}
+	// Inline data needs no hook.
+	if _, err := ExperimentalDecide(context.Background(), DecideOptions{
+		Model: model, Questions: stateTestQuestions(),
+		State: []provider.DecisionStatePart{provider.DecisionFilePart(types.FileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeData, Data: []byte{1}},
+		})},
+	}); err != nil {
+		t.Fatalf("inline data: %v", err)
+	}
 }

@@ -129,6 +129,13 @@ type DecideOptions struct {
 	Headers         map[string]string
 	ProviderOptions map[string]interface{}
 
+	// ExperimentalDownload downloads the URL-backed file parts of State. It
+	// is required for them: without it a remote file fails with a
+	// DownloadError, and the call never falls back to the default
+	// downloader (TS experimental_download). Use CreateDownload with a
+	// DNS-protected transport for untrusted URLs.
+	ExperimentalDownload DownloadFunction
+
 	Telemetry             *TelemetrySettings
 	ExperimentalTelemetry *TelemetrySettings
 
@@ -239,7 +246,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 
 	// Resolve file URLs to inline data; the model-call events and the model
 	// see the prepared parts (mirrors prepareDecisionState in decide.ts).
-	preparedState, err := prepareDecisionState(ctx, opts.State)
+	preparedState, err := prepareDecisionState(ctx, opts.State, opts.ExperimentalDownload)
 	if err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
 		return nil, err

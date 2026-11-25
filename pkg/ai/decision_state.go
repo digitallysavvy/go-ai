@@ -52,23 +52,38 @@ func validateDecisionState(state interface{}) error {
 	return invalidDecisionInput("state", state, invalidDecisionStateMessage)
 }
 
+// requireExplicitDownload is the download function a state without an
+// ExperimentalDownload hook gets (TS 79d2004947): URL-backed file state is
+// never fetched silently, since URL and literal-IP validation cannot protect
+// against private DNS answers. A state without remote files never calls it.
+func requireExplicitDownload(_ context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+	if len(requests) > 0 {
+		return nil, &providererrors.DownloadError{
+			URL:     requests[0].URL,
+			Message: "URL file state requires experimental_download. For untrusted URLs, use createDownload({ fetch }) with a transport that validates DNS at connection time.",
+		}
+	}
+	return []*DownloadResult{}, nil
+}
+
 // prepareDecisionState converts a validated state into ordered parts and
-// resolves file URLs to inline data (remote files are downloaded with
-// DefaultDownload, like prompt files in TypeScript's
-// convertToLanguageModelPrompt with no supported URLs). Mirrors TypeScript's
+// resolves file URLs to inline data (remote files are downloaded with the
+// call's download function, like prompt files in TypeScript's
+// convertToLanguageModelPrompt with no supported URLs; without one, URL file
+// state fails with a DownloadError). Mirrors TypeScript's
 // prepareDecisionState.
-func prepareDecisionState(ctx context.Context, state interface{}) ([]provider.DecisionStatePart, error) {
+func prepareDecisionState(ctx context.Context, state interface{}, download DownloadFunction) ([]provider.DecisionStatePart, error) {
 	switch v := state.(type) {
 	case string:
 		return []provider.DecisionStatePart{provider.DecisionTextPart(v)}, nil
 	case []provider.DecisionStatePart:
-		return prepareDecisionStateParts(ctx, v)
+		return prepareDecisionStateParts(ctx, v, download)
 	default:
 		return []provider.DecisionStatePart{provider.DecisionJSONPart(v)}, nil
 	}
 }
 
-func prepareDecisionStateParts(ctx context.Context, parts []provider.DecisionStatePart) ([]provider.DecisionStatePart, error) {
+func prepareDecisionStateParts(ctx context.Context, parts []provider.DecisionStatePart, download DownloadFunction) ([]provider.DecisionStatePart, error) {
 	var files []types.ContentPart
 	for _, part := range parts {
 		if part.Type == "file" {
@@ -79,9 +94,12 @@ func prepareDecisionStateParts(ctx context.Context, parts []provider.DecisionSta
 		return append([]provider.DecisionStatePart(nil), parts...), nil
 	}
 
+	if download == nil {
+		download = requireExplicitDownload
+	}
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(ctx, types.Prompt{
 		Messages: []types.Message{{Role: types.RoleUser, Content: files}},
-	}, true, DefaultDownload, nil)
+	}, true, download, nil)
 	if err != nil {
 		return nil, err
 	}
